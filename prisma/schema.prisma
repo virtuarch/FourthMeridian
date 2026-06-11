@@ -1,0 +1,449 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum AccountType {
+  checking
+  savings
+  investment
+  crypto
+  debt
+  other
+}
+
+enum TransactionCategory {
+  Income
+  Transfer
+  Groceries
+  Dining
+  Shopping
+  Travel
+  Subscriptions
+  Utilities
+  Interest
+  Payment
+  Other
+  // Investment transactions
+  Buy
+  Sell
+  Dividend
+  Split
+  Fee
+}
+
+enum RiskLevel {
+  low
+  medium
+  high
+}
+
+enum PlaidItemStatus {
+  ACTIVE        // syncing normally
+  NEEDS_REAUTH  // user must re-authenticate via Plaid Link
+  ERROR         // unrecoverable error — see errorCode
+  REVOKED       // all accounts removed; itemRemove() was called
+}
+
+enum WorkspaceType {
+  PERSONAL
+  SHARED
+}
+
+enum WorkspaceMemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+enum VisibilityLevel {
+  PRIVATE       // only the owning workspace can see this account
+  SUMMARY_ONLY  // other workspaces see a qualitative summary, no raw numbers
+  SHARED        // fully visible to all workspace members
+}
+
+enum UserRole {
+  USER          // normal authenticated user
+  SYSTEM_ADMIN  // platform administration — not for daily use; requires TOTP (M3)
+}
+
+enum EmploymentStatus {
+  EMPLOYED
+  UNEMPLOYED
+  SELF_EMPLOYED
+  STUDENT
+  RETIRED
+}
+
+enum UseCase {
+  PERSONAL_TRACKING   // personal budget + net worth tracking
+  BUSINESS_VENTURES   // business / LLC financial oversight
+  INVESTING           // portfolio + market focus
+  DEBT_MANAGEMENT     // debt payoff planning
+  OTHER
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// User
+// ficoScore removed — now lives in CreditScore for time-series tracking.
+// Profile fields (DOB, employment, useCase) feed the AI advice engine.
+// dateOfBirthEncrypted is AES-256-GCM (same key as Plaid tokens).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id                   String            @id @default(cuid())
+  email                String            @unique
+  username             String?           @unique
+  name                 String?
+  firstName            String?
+  lastName             String?
+  dateOfBirthEncrypted String?           // AES-256-GCM encrypted ISO date string
+  employmentStatus     EmploymentStatus?
+  useCase              UseCase?
+  passwordHash         String?           // bcrypt hash, cost 12
+  totpSecret           String?           // TOTP seed, stored encrypted (used in M3)
+  totpEnabled          Boolean           @default(false)
+  role                 UserRole          @default(USER)
+  passwordResetToken   String?           @unique
+  passwordResetExpiry  DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  workspaces      WorkspaceMember[]
+  sentInvites     WorkspaceInvite[] @relation("SentInvites")
+  receivedInvites WorkspaceInvite[] @relation("ReceivedInvites")
+  plaidItems      PlaidItem[]
+  ownedAccounts   Account[]         // accounts this user connected/created
+  creditScores    CreditScore[]
+  auditLogs       AuditLog[]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workspace
+// Container for all financial data. Every user auto-receives one PERSONAL
+// workspace on registration. Additional SHARED workspaces can be created or
+// joined (Hogan Family, Atlanta Duplex LLC, etc.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Workspace {
+  id          String        @id @default(cuid())
+  name        String
+  description String?
+  type        WorkspaceType @default(PERSONAL)
+  isPublic    Boolean       @default(false)  // SHARED workspaces can be listed publicly
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  members       WorkspaceMember[]
+  invites       WorkspaceInvite[]
+  accounts      Account[]
+  snapshots     WorkspaceSnapshot[]
+  aiAgent       AiAgent?
+  adviceHistory AiAdvice[]
+  auditLogs     AuditLog[]
+
+  @@index([type])
+  @@index([isPublic])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WorkspaceMember
+// Join table linking users to workspaces with roles. One user can belong to
+// many workspaces; one workspace can have many members.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WorkspaceMember {
+  id          String              @id @default(cuid())
+  workspaceId String
+  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        WorkspaceMemberRole @default(MEMBER)
+  joinedAt    DateTime            @default(now())
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WorkspaceInvite
+// Grant-only access. Only existing members with OWNER or ADMIN role can invite.
+// Users cannot request access — they can only accept or decline an invite.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WorkspaceInvite {
+  id            String              @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedById   String
+  invitedBy     User                @relation("SentInvites",     fields: [invitedById],   references: [id], onDelete: Cascade)
+  invitedUserId String
+  invitedUser   User                @relation("ReceivedInvites", fields: [invitedUserId], references: [id], onDelete: Cascade)
+  role          WorkspaceMemberRole @default(MEMBER)
+  status        InviteStatus        @default(PENDING)
+  createdAt     DateTime            @default(now())
+  expiresAt     DateTime?
+
+  @@unique([workspaceId, invitedUserId])
+  @@index([invitedUserId])
+  @@index([workspaceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AiAgent
+// One agent per workspace. Owns all advice and (future) memory for that
+// workspace. Created automatically when a workspace is created.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AiAgent {
+  id           String    @id @default(cuid())
+  workspaceId  String    @unique
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name         String
+  lastActiveAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  adviceHistory AiAdvice[]
+
+  @@index([workspaceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PlaidItem
+// Stays on User — it is a credential (OAuth token), not a workspace asset.
+// One item per institution; a single token covers all accounts at that bank.
+// The accounts derived from this item are assigned to a workspace.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PlaidItem {
+  id              String          @id @default(cuid())
+  userId          String
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plaidItemId     String          @unique  // Plaid's item_id
+  institutionId   String                   // Plaid's institution_id (e.g. "ins_3")
+  institutionName String                   // human-readable (e.g. "Chase")
+  encryptedToken  String                   // AES-256-GCM encrypted access token — NEVER plaintext
+  status          PlaidItemStatus @default(ACTIVE)
+  cursor          String?                  // /transactions/sync cursor for incremental sync
+  errorCode       String?                  // last Plaid error code when status = ERROR
+  lastSyncedAt    DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  accounts Account[]
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Account
+// Owned by a Workspace, not a User directly. ownerId records who connected
+// the account (for audit and re-auth purposes). visibilityLevel controls
+// how account data is shared across workspace boundaries.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Account {
+  id               String          @id @default(cuid())
+  workspaceId      String
+  workspace        Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  ownerId          String?                          // who connected this account; nullable (SetNull on user delete)
+  owner            User?           @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  visibilityLevel  VisibilityLevel @default(PRIVATE)
+  name             String
+  type             AccountType
+  institution      String
+  balance          Float           @default(0)      // current/ledger balance
+  availableBalance Float?                           // Plaid: balance after pending transactions clear
+  creditLimit      Float?                           // credit cards: limit from Plaid or manual entry
+  currency         String          @default("USD")
+  lastUpdated      DateTime        @default(now())
+  deletedAt        DateTime?                        // soft delete — hides from UI, preserves history
+
+  // Plaid — token lives on PlaidItem, not here
+  plaidAccountId String? @unique                   // Plaid's account_id for this specific account
+  plaidItemDbId  String?                           // FK → PlaidItem.id (our internal id)
+  plaidItem      PlaidItem? @relation(fields: [plaidItemDbId], references: [id])
+
+  // Crypto self-custody fields (wallet address accounts only)
+  walletAddress String?
+  walletChain   String?
+  nativeBalance Float?
+  syncStatus    String? @default("pending")
+
+  holdings     Holding[]
+  transactions Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId])
+  @@index([workspaceId, type])
+  @@index([ownerId])
+  @@index([plaidItemDbId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Holding
+// One row per position (stock / ETF / crypto) per account. Unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Holding {
+  id        String  @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  symbol    String
+  name      String
+  quantity  Float
+  price     Float
+  value     Float
+  change24h Float   @default(0)
+  // Synthetic row written by sync job: account.balance − sum(real positions).
+  isCash    Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([accountId, symbol])
+  @@index([accountId])
+  @@index([accountId, isCash])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Transaction
+// Pulled from Plaid or entered manually. Positive = money in, negative = out.
+// Unchanged — anchored to accountId.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Transaction {
+  id          String              @id @default(cuid())
+  accountId   String
+  account     Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  date        DateTime            @db.Date
+  merchant    String
+  description String?
+  category    TransactionCategory
+  amount      Float
+  pending     Boolean             @default(false)
+
+  plaidTransactionId String? @unique // prevents duplicate inserts on re-sync
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([accountId, date])
+  @@index([date])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WorkspaceSnapshot
+// Renamed from DailySnapshot. Written once per day by the background sync job.
+// workspaceId replaces userId — snapshots belong to the workspace, not the user.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WorkspaceSnapshot {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  date        DateTime  @db.Date
+
+  // Portfolio breakdown
+  stocks Float @default(0) // sum of investment account balances
+  crypto Float @default(0) // sum of crypto account balances
+  total  Float @default(0) // stocks + crypto
+
+  // Banking breakdown
+  cash    Float @default(0) // sum of checking balances
+  savings Float @default(0) // sum of savings balances
+  debt    Float @default(0) // absolute value of debt balances
+
+  // Derived — pre-computed for fast chart queries
+  netWorth    Float @default(0) // stocks + crypto + cash + savings − debt
+  totalAssets Float @default(0) // stocks + crypto + cash + savings
+  cashToPlay  Float @default(0) // max(cash − expense_buffer, 0)
+  netLiquid   Float @default(0) // cash + savings − debt
+
+  createdAt DateTime @default(now())
+
+  @@unique([workspaceId, date])
+  @@index([workspaceId, date])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AiAdvice
+// One record per advice engine run. Belongs to a workspace and is attributed
+// to the workspace's AiAgent. userId removed — advice is workspace-scoped.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AiAdvice {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agentId     String
+  agent       AiAgent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  summary     String
+  adviceText  String    @db.Text
+  riskLevel   RiskLevel
+  playReady   Boolean   @default(false)
+  generatedAt DateTime  @default(now())
+  createdAt   DateTime  @default(now())
+
+  @@index([workspaceId, generatedAt])
+  @@index([agentId, generatedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CreditScore
+// Replaces User.ficoScore. Time-series: each manual or API update is a new
+// row. source records where the score came from (app, bureau, manual).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CreditScore {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  score      Int                      // 300–850
+  source     String   @default("manual") // "manual" | "chase_app" | "amex_app" | "experian"
+  recordedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([userId, recordedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AuditLog
+// Append-only log of security-relevant events. NEVER cascade-deleted when a
+// user or workspace is removed — userId and workspaceId are SET NULL instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id          String     @id @default(cuid())
+  userId      String?
+  user        User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  action      String     // LOGIN | LOGOUT | PLAID_SYNC | WALLET_SYNC | ACCOUNT_ADD | ACCOUNT_REMOVE
+  metadata    Json?      // e.g. { institution: "Chase", accountCount: 3 }
+  ipAddress   String?
+  createdAt   DateTime   @default(now())
+
+  @@index([userId, createdAt])
+  @@index([workspaceId, createdAt])
+}

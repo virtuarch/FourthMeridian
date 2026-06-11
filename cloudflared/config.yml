@@ -1,0 +1,8 @@
+# Cloudflare Tunnel config — coming in M1
+# tunnel: <your-tunnel-id>
+# credentials-file: /etc/cloudflared/credentials.json
+
+# ingress:
+#   - hostname: fintracker.yourdomain.com
+#     service: http://app:3000
+#   - service: http_status:404
