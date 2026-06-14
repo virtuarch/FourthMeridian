@@ -3,8 +3,13 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // In production/staging (Supabase), set DATABASE_URL to the Transaction Pooler URL
+  // (port 6543, ?pgbouncer=true) for Vercel serverless compatibility.
+  // Set DIRECT_URL to the direct connection URL (port 5432) for migrations.
+  // In local dev both can point to the same Docker Postgres URL.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
