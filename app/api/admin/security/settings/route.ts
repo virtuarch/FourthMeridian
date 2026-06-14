@@ -1,0 +1,57 @@
+/**
+ * GET  /api/admin/security/settings  — read all platform settings
+ * PATCH /api/admin/security/settings  — update one or more settings
+ *
+ * Body for PATCH: { key: string, value: string }[]
+ */
+
+import { NextRequest, NextResponse } from "next/server";
+import { getAllSettings, setSetting, PlatformSettingKey } from "@/lib/platform-settings";
+import { db } from "@/lib/db";
+import { requireSystemAdmin } from "@/lib/session";
+
+const ALLOWED_KEYS = new Set(Object.values(PlatformSettingKey));
+
+export async function GET() {
+  const [, err] = await requireSystemAdmin();
+  if (err) return err;
+
+  const settings = await getAllSettings();
+  return NextResponse.json({ settings });
+}
+
+export async function PATCH(req: NextRequest) {
+  const [admin, err] = await requireSystemAdmin();
+  if (err) return err;
+
+  const body = await req.json() as { key: string; value: string }[];
+  if (!Array.isArray(body)) {
+    return NextResponse.json({ error: "Body must be an array of {key, value}" }, { status: 400 });
+  }
+
+  for (const { key, value } of body) {
+    if (!ALLOWED_KEYS.has(key as never)) {
+      return NextResponse.json({ error: `Unknown setting key: ${key}` }, { status: 400 });
+    }
+    // require_totp_system_admin is permanently locked — cannot be disabled via API
+    if (key === "require_totp_system_admin" && value !== "true") {
+      return NextResponse.json(
+        { error: "require_totp_system_admin cannot be disabled. SYSTEM_ADMIN accounts must always use 2FA." },
+        { status: 403 },
+      );
+    }
+    await setSetting(key as never, String(value), admin.id);
+  }
+
+  // Audit log the settings change
+  await db.auditLog.create({
+    data: {
+      userId: admin.id,
+      action: "PLATFORM_SETTINGS_UPDATED",
+      metadata: { changes: body },
+    },
+  });
+
+  const settings = await getAllSettings();
+  return NextResponse.json({ settings });
+}

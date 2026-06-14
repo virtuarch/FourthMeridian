@@ -1,4 +1,5 @@
 import { Card, CardTitle } from "@/components/ui/Card";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { TrendingUp, TrendingDown } from "lucide-react";
 
 interface Props {
@@ -11,10 +12,10 @@ interface Props {
 }
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(n);
 
 const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(n);
 
 export function InvestmentsCard({ stocks, crypto, cash = 0, change, changeLabel, lastUpdated }: Props) {
   const total     = stocks + crypto + cash;

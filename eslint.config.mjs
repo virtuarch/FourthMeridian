@@ -13,6 +13,22 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  // Project-wide rule overrides
+  {
+    rules: {
+      // Allow variables prefixed with _ to be declared but not used.
+      // Useful for destructuring patterns like const [, err] or seed script
+      // variables created for side-effects (e.g. _jnVehicle = await createFullAccount(...)).
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern:    "^_",
+          varsIgnorePattern:    "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

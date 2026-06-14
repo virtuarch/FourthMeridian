@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { formatDate } from "@/lib/format";
 import { Account, Holding, InvestmentTransaction } from "@/types";
 
 type PortfolioHistoryPoint = {
@@ -37,11 +38,12 @@ import {
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
 import { RemoveAccountModal } from "@/components/dashboard/RemoveAccountModal";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(n);
 const fmtCompact = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(n);
 function truncAddr(addr: string) {
   return addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr;
 }
@@ -86,7 +88,7 @@ function TxRow({ tx, acct }: { tx: InvestmentTransaction; acct?: Account }) {
   const isBuy   = tx.category === "Buy";
   const dateObj = new Date(tx.date + "T12:00:00");
   const fmtAmt  = (n: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Math.abs(n));
+    new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
 
   return (
     <div className="flex items-center gap-3 px-4 py-3 hover:bg-gray-800/40 transition-colors">
@@ -163,8 +165,8 @@ function InvestmentActivityTable({
     <>
       {/* ── Modal ── */}
       {modalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center px-4 pt-4 pb-40 sm:p-4 bg-black/70 backdrop-blur-sm">
-          <div className="w-full max-w-lg bg-gray-900 border border-gray-700 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-180px)] sm:max-h-[85vh]">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="w-full max-w-lg bg-gray-900 border border-gray-700 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[88dvh]">
             {/* Modal header */}
             <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-800 shrink-0 flex-wrap">
               <div className="flex items-center gap-2">
@@ -313,7 +315,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
   const [holdingsExpanded, setHoldingsExpanded] = useState(false);
   const [showAddModal, setShowAddModal]         = useState(false);
   const [showRemoveModal, setShowRemoveModal]   = useState(false);
-  const [extraWallets, setExtraWallets] = useState<Account[]>([]);
+  const [extraWallets] = useState<Account[]>([]);
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
   const [selectedAsset, setSelectedAsset] = useState<CryptoRow | null>(null);
@@ -510,7 +512,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                     <p className="text-xs text-gray-400 truncate">{a.institution}</p>
                     <p className="text-sm font-semibold text-white truncate mb-2">{a.name}</p>
                     <p className="text-2xl font-bold text-violet-400">{fmt(a.balance)}</p>
-                    <p className="text-xs text-gray-600 mt-1">Updated {new Date(a.lastUpdated).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
+                    <p className="text-xs text-gray-600 mt-1">Updated {formatDate(a.lastUpdated)}</p>
                   </div>
                   {sel && (
                     <p className="text-xs text-violet-400 text-center py-1.5">
@@ -675,7 +677,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                               ) : null /* exchange account — multiple assets, no native balance */}
                               {row.lastUpdated && (
                                 <p className="text-xs text-gray-600 mt-0.5">
-                                  {new Date(row.lastUpdated).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                                  {formatDate(row.lastUpdated)}
                                 </p>
                               )}
                             </div>

@@ -1,28 +1,22 @@
 /**
  * prisma/seed.ts
  *
- * Populates the database with two demo users, a shared workspace,
- * an AI agent, and a fictional portfolio for local development.
+ * Multi-user demo world for local development.
+ * Creates three regular users (Jane, John, Alex) plus the unchanged sysadmin,
+ * 8 workspaces, 21 accounts, ~360 transactions over 120 days, holdings,
+ * goals, audit log events, and workspace snapshots.
  *
- * All data is entirely fictional. No real names, balances, wallet
- * addresses, account numbers, or institution identifiers are used.
- *
- * Run via:  npx prisma db seed
- *
+ * All data is entirely fictional. Run via: npx prisma db seed
  * Safe to re-run — all data is wiped and recreated cleanly.
- * Wipe order respects FK constraints:
- *   AuditLog → AiAdvice → WorkspaceSnapshot → Transaction → Holding
- *   → Account → PlaidItem → AiAgent → WorkspaceMember
- *   → Workspace → CreditScore → User
  *
- * ─── Demo credentials ────────────────────────────────────────────
- *   jane@example.com  / janesmith  →  ChangeMe123!
- *   john@example.com  / johndoe    →  ChangeMe123!
- *   admin@example.com / admin      →  ChangeMe123!
+ * ─── Demo credentials ─────────────────────────────────────────────────────
+ *   jane@example.com      / janesmith  →  ChangeMe123!  (USER)
+ *   john@example.com      / johndoe    →  ChangeMe123!  (USER)
+ *   alex@example.com      / alexchen   →  ChangeMe123!  (USER)
+ *   sysadmin@example.com  / sysadmin   →  ChangeMe123!  (SYSTEM_ADMIN — DEV ONLY)
  *
- * ⚠️  These are local dev credentials only.
- *     Change them before any real deployment.
- * ─────────────────────────────────────────────────────────────────
+ * ⚠️  DEVELOPMENT ONLY — never use these credentials in production.
+ * ──────────────────────────────────────────────────────────────────────────
  */
 
 import {
@@ -34,118 +28,231 @@ import {
   UserRole,
   EmploymentStatus,
   UseCase,
+  AccountOwnerType,
+  ShareStatus,
+  VisibilityLevel,
+  GoalType,
+  GoalStatus,
+  GoalCategory,
 } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { encrypt } from "../lib/plaid/encryption";
+import { getPresetsForCategory, WorkspaceCategory } from "../lib/workspace-presets";
 
 const prisma = new PrismaClient();
 
-// ─── Password resolution ──────────────────────────────────────────────────────
-// Override via env vars in CI or staging. Defaults are demo-only.
 const JANE_PASSWORD  = process.env.SEED_USER_PASSWORD  ?? "ChangeMe123!";
 const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD ?? "ChangeMe123!";
 
-// ─── Seeded deterministic random ─────────────────────────────────────────────
+// ─── Date helpers ─────────────────────────────────────────────────────────────
+const TODAY = new Date();
+TODAY.setUTCHours(0, 0, 0, 0);
+function D(n: number): Date {
+  const d = new Date(TODAY);
+  d.setDate(d.getDate() - n);
+  return d;
+}
+
+// ─── Seeded deterministic random ──────────────────────────────────────────────
 function seededRand(seed: number): number {
   const x = Math.sin(seed + 1) * 10000;
   return x - Math.floor(x);
 }
 
-// ─── 365-day history generator ───────────────────────────────────────────────
-// Fictional portfolio (June 2026):
-//   cash     ~$4,200   (Demo Bank Checking + Example CU Checking)
-//   savings  ~$8,500   (Demo Bank HYSA)
-//   stocks   ~$12,400  (Sample Brokerage)
-//   crypto   ~$6,800   (Fictional Crypto Exchange + Demo Wallet)
-//   debt     ~$3,200   (Demo Credit Card)
-//   netWorth ~$28,700
+// ─── Snapshot history generators ──────────────────────────────────────────────
 function buildHistory(workspaceId: string) {
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
   return Array.from({ length: 365 }, (_, i) => {
-    const date = new Date(today);
-    date.setDate(today.getUTCDate() - (364 - i));
-    date.setUTCHours(0, 0, 0, 0);
-
-    const t = i / 364; // 0 → 1 over the year
-
-    // Stocks: grew from ~$8,000 to ~$12,400
-    const stocks  = Math.max(Math.round(8000 + t * 4400 + Math.sin(i * 0.09) * 500 + (seededRand(i) - 0.5) * 400), 0);
-    // Crypto: moderate volatility
-    const crypto  = Math.max(Math.round(4000 + t * 2800 + Math.sin(i * 0.11) * 1200 + (seededRand(i + 99) - 0.42) * 800), 0);
-    // Cash: bounces around income/expense cycles
-    const cash    = Math.max(Math.round(3800 + Math.sin(i * 0.08) * 600 + (seededRand(i + 33) - 0.5) * 400), 0);
-    // Savings: slow steady growth
-    const savings = Math.max(Math.round(5500 + t * 3000 + (seededRand(i + 77) - 0.5) * 100), 0);
-    // Debt: credit card balance — declining over the year
-    const debt    = Math.abs(Math.round(5200 - t * 2000 + Math.sin(i * 0.05) * 300 + (seededRand(i + 55) - 0.5) * 200));
-
-    const total       = stocks + crypto;
+    const date = D(364 - i);
+    const t = i / 364;
+    const stocks  = Math.max(Math.round(8000  + t * 4400  + Math.sin(i * 0.09) * 500  + (seededRand(i)       - 0.5) * 400), 0);
+    const crypto  = Math.max(Math.round(4000  + t * 2800  + Math.sin(i * 0.11) * 1200 + (seededRand(i + 99)  - 0.42) * 800), 0);
+    const cash    = Math.max(Math.round(3800  + Math.sin(i * 0.08) * 600 + (seededRand(i + 33)  - 0.5) * 400), 0);
+    const savings = Math.max(Math.round(5500  + t * 3000  + (seededRand(i + 77)  - 0.5) * 100), 0);
+    const debt    = Math.abs(Math.round(5200  - t * 2000  + Math.sin(i * 0.05) * 300  + (seededRand(i + 55)  - 0.5) * 200));
+    const total = stocks + crypto;
     const totalAssets = stocks + crypto + cash + savings;
     const netWorth    = totalAssets - debt;
     const netLiquid   = cash + savings - debt;
     const cashToPlay  = cash + Math.max(savings - 6000, 0);
-
     return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashToPlay };
   });
 }
 
-// ─── 365-day history generator (John — medium risk) ──────────────────────────
-// Fictional portfolio (June 2026):
-//   cash     ~$2,100   (Beacon Bank Checking)
-//   savings  ~$5,500   (Beacon Bank Savings)
-//   stocks   ~$18,200  (Alpha Brokerage 401k — tech-concentrated)
-//   crypto   ~$7,400   (Alpha Crypto Exchange)
-//   debt     ~$17,000  (Beacon Credit Card $5,800 + Auto Loan $11,200)
-//   netWorth ~$16,200
 function buildJohnHistory(workspaceId: string) {
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
   return Array.from({ length: 365 }, (_, i) => {
-    const date = new Date(today);
-    date.setDate(today.getUTCDate() - (364 - i));
-    date.setUTCHours(0, 0, 0, 0);
-
+    const date = D(364 - i);
     const t = i / 364;
-
-    // 401k: grew from ~$12,000 to ~$18,200
-    const stocks  = Math.max(Math.round(12000 + t * 6200 + Math.sin(i * 0.09) * 800 + (seededRand(i + 200) - 0.5) * 600), 0);
-    // Crypto: higher volatility, grew from ~$4,500 to ~$7,400
-    const crypto  = Math.max(Math.round(4500 + t * 2900 + Math.sin(i * 0.12) * 1500 + (seededRand(i + 300) - 0.42) * 1000), 0);
-    // Cash: thin buffer, bouncy
-    const cash    = Math.max(Math.round(1800 + Math.sin(i * 0.07) * 400 + (seededRand(i + 133) - 0.5) * 300), 0);
-    // Savings: slow growth from $3,000
-    const savings = Math.max(Math.round(3000 + t * 2500 + (seededRand(i + 177) - 0.5) * 150), 0);
-    // Debt: declining from ~$22,000 (credit card + auto) to ~$17,000
-    const debt    = Math.abs(Math.round(22000 - t * 5000 + Math.sin(i * 0.04) * 400 + (seededRand(i + 155) - 0.5) * 300));
-
-    const total       = stocks + crypto;
+    const stocks  = Math.max(Math.round(12000 + t * 6200  + Math.sin(i * 0.09) * 800  + (seededRand(i + 200) - 0.5) * 600), 0);
+    const crypto  = Math.max(Math.round(4500  + t * 2900  + Math.sin(i * 0.12) * 1500 + (seededRand(i + 300) - 0.42) * 1000), 0);
+    const cash    = Math.max(Math.round(1800  + Math.sin(i * 0.07) * 400 + (seededRand(i + 133) - 0.5) * 300), 0);
+    const savings = Math.max(Math.round(3000  + t * 2500  + (seededRand(i + 177) - 0.5) * 150), 0);
+    const debt    = Math.abs(Math.round(22000 - t * 5000  + Math.sin(i * 0.04) * 400  + (seededRand(i + 155) - 0.5) * 300));
+    const total = stocks + crypto;
     const totalAssets = stocks + crypto + cash + savings;
     const netWorth    = totalAssets - debt;
     const netLiquid   = cash + savings - debt;
     const cashToPlay  = Math.max(cash + Math.max(savings - 8000, 0), 0);
-
     return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashToPlay };
   });
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
+function buildHouseholdHistory(workspaceId: string) {
+  return Array.from({ length: 120 }, (_, i) => {
+    const date = D(119 - i);
+    const t = i / 119;
+    const stocks  = Math.max(Math.round(29000 + t * 8000  + Math.sin(i * 0.09) * 1200 + (seededRand(i + 500) - 0.5) * 800), 0);
+    const crypto  = Math.max(Math.round(12000 + t * 5500  + Math.sin(i * 0.11) * 2000 + (seededRand(i + 600) - 0.42) * 1200), 0);
+    const cash    = Math.max(Math.round(5000  + Math.sin(i * 0.08) * 800  + (seededRand(i + 700) - 0.5) * 500), 0);
+    const savings = Math.max(Math.round(14000 + t * 4000  + (seededRand(i + 800) - 0.5) * 200), 0);
+    const debt    = Math.abs(Math.round(26000 - t * 4000  + (seededRand(i + 900) - 0.5) * 300));
+    const total = stocks + crypto;
+    const totalAssets = stocks + crypto + cash + savings;
+    const netWorth    = totalAssets - debt;
+    const netLiquid   = cash + savings - debt;
+    const cashToPlay  = cash + Math.max(savings - 15000, 0);
+    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashToPlay };
+  });
+}
+
+function buildDebtHistory(workspaceId: string) {
+  return Array.from({ length: 90 }, (_, i) => {
+    const date = D(89 - i);
+    const t = i / 89;
+    const debt    = Math.abs(Math.round(20200 - t * 3000 + (seededRand(i + 400) - 0.5) * 300));
+    const cash    = Math.max(Math.round(1800  + Math.sin(i * 0.1) * 400 + (seededRand(i + 450) - 0.5) * 200), 0);
+    const savings = Math.max(Math.round(5500  + t * 1000 + (seededRand(i + 460) - 0.5) * 100), 0);
+    const stocks = 0; const crypto = 0; const total = 0;
+    const totalAssets = cash + savings;
+    const netWorth  = totalAssets - debt;
+    const netLiquid = cash + savings - debt;
+    const cashToPlay = 0;
+    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashToPlay };
+  });
+}
+
+// ─── createFullAccount ────────────────────────────────────────────────────────
+// Creates Account + FinancialAccount (same id) + AccountConnection + WorkspaceAccountShare
+async function createFullAccount(opts: {
+  workspaceId:     string;
+  userId:          string;
+  plaidItemId?:    string;
+  name:            string;
+  type:            AccountType;
+  institution:     string;
+  institutionId?:  string;
+  balance:         number;
+  availableBalance?: number;
+  creditLimit?:    number;
+  debtSubtype?:    string;
+  interestRate?:   number;
+  minimumPayment?: number;
+  currency?:       string;
+  lastUpdated?:    Date;
+  plaidAccountId?: string;
+  walletAddress?:  string;
+  walletChain?:    string;
+  nativeBalance?:  number;
+  syncStatus?:     string;
+}) {
+  const {
+    workspaceId, userId, plaidItemId,
+    name, type, institution, institutionId,
+    balance, availableBalance, creditLimit, debtSubtype, interestRate, minimumPayment,
+    currency    = "USD",
+    lastUpdated = new Date("2026-06-09T10:00:00Z"),
+    plaidAccountId, walletAddress, walletChain, nativeBalance,
+    syncStatus  = "synced",
+  } = opts;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const acct = await (prisma.account.create as any)({
+    data: {
+      workspaceId, ownerId: userId, name, type, institution,
+      balance, availableBalance, creditLimit, currency, lastUpdated,
+      plaidItemDbId: plaidItemId, plaidAccountId,
+      walletAddress, walletChain, nativeBalance, syncStatus,
+    },
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (prisma.financialAccount.create as any)({
+    data: {
+      id: acct.id, ownerType: AccountOwnerType.USER, ownerUserId: userId,
+      name, type, institution, institutionId: institutionId ?? null,
+      balance, availableBalance, creditLimit, currency, lastUpdated,
+      plaidAccountId: plaidAccountId ?? null,
+      walletAddress: walletAddress ?? null, walletChain: walletChain ?? null,
+      nativeBalance: nativeBalance ?? null, debtSubtype: debtSubtype ?? null,
+      interestRate: interestRate ?? null, minimumPayment: minimumPayment ?? null,
+      syncStatus,
+    },
+  });
+
+  await prisma.accountConnection.create({
+    data: {
+      financialAccountId: acct.id, connectedByUserId: userId,
+      plaidItemDbId: plaidItemId ?? null, syncStatus, isCanonical: true,
+    },
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (prisma.workspaceAccountShare.create as any)({
+    data: {
+      workspaceId, financialAccountId: acct.id, addedByUserId: userId,
+      visibilityLevel: VisibilityLevel.FULL, status: ShareStatus.ACTIVE,
+    },
+  });
+
+  return acct;
+}
+
+// ─── shareAccount — share an existing account into another workspace ──────────
+async function shareAccount(
+  workspaceId: string,
+  accountId:   string,
+  userId:      string,
+  level:       VisibilityLevel = VisibilityLevel.FULL,
+) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (prisma.workspaceAccountShare.create as any)({
+    data: {
+      workspaceId, financialAccountId: accountId,
+      addedByUserId: userId, visibilityLevel: level, status: ShareStatus.ACTIVE,
+    },
+  });
+}
+
+// ─── updateSectionConfig ──────────────────────────────────────────────────────
+async function updateSectionConfig(workspaceId: string, key: string, config: Record<string, unknown>) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (prisma as any).workspaceDashboardSection.updateMany({ where: { workspaceId, key }, data: { config } });
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log("🌱  Seeding FinTracker database…");
-
-  // Hash passwords up front
   console.log("   ⏳ Hashing passwords (bcrypt cost 12)…");
-  const [janeHash, johnHash, adminHash] = await Promise.all([
-    bcrypt.hash(JANE_PASSWORD,  12),
-    bcrypt.hash(JANE_PASSWORD,  12), // John uses same default; both must change
+
+  const [janeHash, johnHash, alexHash, adminHash] = await Promise.all([
+    bcrypt.hash(JANE_PASSWORD, 12),
+    bcrypt.hash(JANE_PASSWORD, 12),
+    bcrypt.hash(JANE_PASSWORD, 12),
     bcrypt.hash(ADMIN_PASSWORD, 12),
   ]);
-
-  // Fictional DOBs — no real personal data
   const janeDobEncrypted = encrypt("1990-03-15");
   const johnDobEncrypted = encrypt("1988-07-22");
+  const alexDobEncrypted = encrypt("1992-11-05");
 
-  // ── Wipe in reverse-dependency order ─────────────────────────────────────
+  // ── Wipe in reverse-dependency order ────────────────────────────────────────
+  await prisma.goalCheckIn.deleteMany();
+  await prisma.goalContribution.deleteMany();
+  await prisma.workspaceGoal.deleteMany();
+  await prisma.duplicateAccountCandidate.deleteMany();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (prisma as any).workspaceDashboardSection.deleteMany();
+  await prisma.workspaceAccountShare.deleteMany();
+  await prisma.accountConnection.deleteMany();
+  await prisma.financialAccount.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.aiAdvice.deleteMany();
   await prisma.workspaceSnapshot.deleteMany();
@@ -154,687 +261,1162 @@ async function main() {
   await prisma.account.deleteMany();
   await prisma.plaidItem.deleteMany();
   await prisma.aiAgent.deleteMany();
+  await prisma.workspaceInvite.deleteMany();
   await prisma.workspaceMember.deleteMany();
   await prisma.workspace.deleteMany();
   await prisma.creditScore.deleteMany();
   await prisma.user.deleteMany();
+  console.log("   ✓ Wiped all tables");
 
-  // ── Users ─────────────────────────────────────────────────────────────────
+  // ── Users ───────────────────────────────────────────────────────────────────
   const jane = await prisma.user.create({
     data: {
-      email:                "jane@example.com",
-      username:             "janesmith",
-      name:                 "Jane Smith",
-      firstName:            "Jane",
-      lastName:             "Smith",
+      email: "jane@example.com", username: "janesmith",
+      name: "Jane Smith", firstName: "Jane", lastName: "Smith",
       dateOfBirthEncrypted: janeDobEncrypted,
-      employmentStatus:     EmploymentStatus.EMPLOYED,
-      useCase:              UseCase.PERSONAL_TRACKING,
-      passwordHash:         janeHash,
-      role:                 UserRole.USER,
+      employmentStatus: EmploymentStatus.EMPLOYED, useCase: UseCase.PERSONAL_TRACKING,
+      passwordHash: janeHash, role: UserRole.USER,
     },
   });
-  console.log(`   ✓ User: ${jane.email} (@${jane.username}) (USER)`);
-
   const john = await prisma.user.create({
     data: {
-      email:                "john@example.com",
-      username:             "johndoe",
-      name:                 "John Doe",
-      firstName:            "John",
-      lastName:             "Doe",
+      email: "john@example.com", username: "johndoe",
+      name: "John Doe", firstName: "John", lastName: "Doe",
       dateOfBirthEncrypted: johnDobEncrypted,
-      employmentStatus:     EmploymentStatus.EMPLOYED,
-      useCase:              UseCase.PERSONAL_TRACKING,
-      passwordHash:         johnHash,
-      role:                 UserRole.USER,
+      employmentStatus: EmploymentStatus.EMPLOYED, useCase: UseCase.PERSONAL_TRACKING,
+      passwordHash: johnHash, role: UserRole.USER,
     },
   });
-  console.log(`   ✓ User: ${john.email} (@${john.username}) (USER)`);
-
+  const alex = await prisma.user.create({
+    data: {
+      email: "alex@example.com", username: "alexchen",
+      name: "Alex Chen", firstName: "Alex", lastName: "Chen",
+      dateOfBirthEncrypted: alexDobEncrypted,
+      employmentStatus: EmploymentStatus.EMPLOYED, useCase: UseCase.INVESTING,
+      passwordHash: alexHash, role: UserRole.USER,
+    },
+  });
+  // ── SYSTEM_ADMIN — unchanged, dev-only account ────────────────────────────
   const admin = await prisma.user.create({
     data: {
-      email:        "admin@example.com",
-      username:     "admin",
-      name:         "System Admin",
-      passwordHash: adminHash,
-      role:         UserRole.SYSTEM_ADMIN,
+      email: "sysadmin@example.com", username: "sysadmin",
+      name: "Dev Sysadmin",
+      passwordHash: adminHash, role: UserRole.SYSTEM_ADMIN,
     },
   });
-  console.log(`   ✓ User: ${admin.email} (@${admin.username}) (SYSTEM_ADMIN)`);
+  console.log(`   ✓ Users: ${jane.email}, ${john.email}, ${alex.email}, ${admin.email}`);
 
-  // ── Workspaces ────────────────────────────────────────────────────────────
+  // ── Workspaces (8) ──────────────────────────────────────────────────────────
   const janeWorkspace = await prisma.workspace.create({
-    data: { name: "Jane's Dashboard", type: "PERSONAL" },
+    data: { name: "Jane's Dashboard", type: "PERSONAL", category: "PERSONAL" },
   });
-  console.log(`   ✓ Workspace: ${janeWorkspace.name} (PERSONAL)`);
-
   const johnWorkspace = await prisma.workspace.create({
-    data: { name: "John's Dashboard", type: "PERSONAL" },
+    data: { name: "John's Dashboard", type: "PERSONAL", category: "PERSONAL" },
   });
-  console.log(`   ✓ Workspace: ${johnWorkspace.name} (PERSONAL)`);
+  const householdWorkspace = await prisma.workspace.create({
+    data: { name: "Smith-Doe Household", type: "SHARED", category: "HOUSEHOLD", isPublic: false, description: "Shared household finances for Jane & John" },
+  });
+  const debtWorkspace = await prisma.workspace.create({
+    data: { name: "Debt Payoff Tracker", type: "SHARED", category: "DEBT_PAYOFF", isPublic: false, description: "Joint debt elimination plan" },
+  });
+  const japanWorkspace = await prisma.workspace.create({
+    data: { name: "Japan Trip 2027", type: "SHARED", category: "TRIP", isPublic: false, description: "3-week Japan trip — saving $8,500 by March 2027" },
+  });
+  const investmentWorkspace = await prisma.workspace.create({
+    data: { name: "Investment Club", type: "SHARED", category: "INVESTMENT", isPublic: false, description: "John & Jane portfolio tracking — Alex as advisor" },
+  });
+  const businessWorkspace = await prisma.workspace.create({
+    data: { name: "JD Freelance LLC", type: "SHARED", category: "BUSINESS", isPublic: false, description: "John's freelance business finances — Alex bookkeeping" },
+  });
+  const propertyWorkspace = await prisma.workspace.create({
+    data: { name: "Austin Home", type: "SHARED", category: "PROPERTY", isPublic: false, description: "Primary residence — 3BR/2BA, purchased April 2020" },
+  });
+  console.log("   ✓ Workspaces: 8");
 
-  const sharedWorkspace = await prisma.workspace.create({
+  // ── Dashboard sections ───────────────────────────────────────────────────────
+  async function seedSections(workspaceId: string, category: string) {
+    const presets = getPresetsForCategory(category);
+    if (presets.length === 0) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (prisma as any).workspaceDashboardSection.createMany({
+      data: presets.map((s) => ({
+        workspaceId, key: s.key, label: s.label,
+        tab: s.tab, enabled: s.enabled, order: s.order, config: s.config ?? null,
+      })),
+      skipDuplicates: true,
+    });
+  }
+
+  await seedSections(janeWorkspace.id,       WorkspaceCategory.PERSONAL);
+  await seedSections(johnWorkspace.id,       WorkspaceCategory.PERSONAL);
+  await seedSections(householdWorkspace.id,  WorkspaceCategory.HOUSEHOLD);
+  await seedSections(debtWorkspace.id,       WorkspaceCategory.DEBT_PAYOFF);
+  await seedSections(japanWorkspace.id,      WorkspaceCategory.TRIP);
+  await seedSections(investmentWorkspace.id, WorkspaceCategory.INVESTMENT);
+  await seedSections(businessWorkspace.id,   WorkspaceCategory.BUSINESS);
+  await seedSections(propertyWorkspace.id,   WorkspaceCategory.PROPERTY);
+
+  await updateSectionConfig(japanWorkspace.id, "trip_budget",  { targetAmount: 8500, amountSpent: 3240, currency: "USD" });
+  await updateSectionConfig(japanWorkspace.id, "trip_savings", { targetAmount: 8500, targetDate: "2027-03-01" });
+
+  // Add retirement_progress to investment workspace (not in INVESTMENT preset)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (prisma as any).workspaceDashboardSection.create({
     data: {
-      name:        "Smith-Doe Household",
-      type:        "SHARED",
-      isPublic:    false,
-      description: "Shared household finances for Jane & John",
+      workspaceId: investmentWorkspace.id, key: "retirement_progress",
+      label: "Retirement Progress", tab: "OVERVIEW", enabled: true, order: 10,
+      config: { targetAmount: 1500000, retirementAge: 65, currentAge: 38, expectedReturn: 7, annualContribution: 19500 },
     },
   });
-  console.log(`   ✓ Workspace: ${sharedWorkspace.name} (SHARED)`);
+  console.log("   ✓ WorkspaceDashboardSections + configs");
 
-  // ── WorkspaceMembers ──────────────────────────────────────────────────────
+  // ── WorkspaceMembers ─────────────────────────────────────────────────────────
   await prisma.workspaceMember.createMany({
     data: [
-      { workspaceId: janeWorkspace.id,    userId: jane.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: johnWorkspace.id,    userId: john.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: sharedWorkspace.id,  userId: jane.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: sharedWorkspace.id,  userId: john.id, role: WorkspaceMemberRole.MEMBER },
+      { workspaceId: janeWorkspace.id,       userId: jane.id, role: WorkspaceMemberRole.OWNER  },
+      { workspaceId: johnWorkspace.id,       userId: john.id, role: WorkspaceMemberRole.OWNER  },
+      { workspaceId: householdWorkspace.id,  userId: jane.id, role: WorkspaceMemberRole.OWNER  },
+      { workspaceId: householdWorkspace.id,  userId: john.id, role: WorkspaceMemberRole.MEMBER },
+      { workspaceId: debtWorkspace.id,       userId: john.id, role: WorkspaceMemberRole.OWNER  },
+      { workspaceId: debtWorkspace.id,       userId: jane.id, role: WorkspaceMemberRole.MEMBER },
+      { workspaceId: japanWorkspace.id,      userId: jane.id, role: WorkspaceMemberRole.OWNER  },
+      { workspaceId: japanWorkspace.id,      userId: john.id, role: WorkspaceMemberRole.MEMBER },
+      { workspaceId: investmentWorkspace.id, userId: john.id, role: WorkspaceMemberRole.OWNER  },
+      { workspaceId: investmentWorkspace.id, userId: jane.id, role: WorkspaceMemberRole.MEMBER },
+      { workspaceId: investmentWorkspace.id, userId: alex.id, role: WorkspaceMemberRole.VIEWER },
+      { workspaceId: businessWorkspace.id,   userId: john.id, role: WorkspaceMemberRole.OWNER  },
+      { workspaceId: businessWorkspace.id,   userId: alex.id, role: WorkspaceMemberRole.ADMIN  },
+      { workspaceId: propertyWorkspace.id,   userId: john.id, role: WorkspaceMemberRole.OWNER  },
+      { workspaceId: propertyWorkspace.id,   userId: jane.id, role: WorkspaceMemberRole.ADMIN  },
     ],
   });
-  console.log("   ✓ WorkspaceMembers: Jane (OWNER×2), John (MEMBER×1)");
+  console.log("   ✓ WorkspaceMembers: 15");
 
-  // ── AiAgent ───────────────────────────────────────────────────────────────
-  const agent = await prisma.aiAgent.create({
-    data: { workspaceId: janeWorkspace.id, name: "Jane's Financial Agent" },
-  });
-  console.log(`   ✓ AiAgent: ${agent.name}`);
+  // ── AI Agents ────────────────────────────────────────────────────────────────
+  const janeAgent = await prisma.aiAgent.create({ data: { workspaceId: janeWorkspace.id, name: "Jane's Financial Agent" } });
+  const johnAgent = await prisma.aiAgent.create({ data: { workspaceId: johnWorkspace.id, name: "John's Financial Agent" } });
+  console.log("   ✓ AiAgents");
 
-  // ── CreditScore ───────────────────────────────────────────────────────────
-  await prisma.creditScore.create({
-    data: {
-      userId:     jane.id,
-      score:      720,
-      source:     "manual",
-      recordedAt: new Date("2026-06-01T10:00:00Z"),
-    },
-  });
-  console.log("   ✓ CreditScore: 720 (manual)");
-
-  // ── PlaidItems — fictional institutions only ──────────────────────────────
-  const plaidItems = await prisma.plaidItem.createManyAndReturn({
+  // ── Credit Scores ────────────────────────────────────────────────────────────
+  await prisma.creditScore.createMany({
     data: [
-      {
-        userId:          jane.id,
-        plaidItemId:     "demo_item_demobank",
-        institutionId:   "demo_ins_001",
-        institutionName: "Demo Bank",
-        encryptedToken:  "[demo-placeholder-not-a-real-token]",
-        status:          PlaidItemStatus.ACTIVE,
-      },
-      {
-        userId:          jane.id,
-        plaidItemId:     "demo_item_examplecu",
-        institutionId:   "demo_ins_002",
-        institutionName: "Example Credit Union",
-        encryptedToken:  "[demo-placeholder-not-a-real-token]",
-        status:          PlaidItemStatus.ACTIVE,
-      },
-      {
-        userId:          jane.id,
-        plaidItemId:     "demo_item_samplebrokerage",
-        institutionId:   "demo_ins_003",
-        institutionName: "Sample Brokerage",
-        encryptedToken:  "[demo-placeholder-not-a-real-token]",
-        status:          PlaidItemStatus.ACTIVE,
-      },
-      {
-        userId:          jane.id,
-        plaidItemId:     "demo_item_fictionalcrypto",
-        institutionId:   "demo_ins_004",
-        institutionName: "Fictional Crypto Exchange",
-        encryptedToken:  "[demo-placeholder-not-a-real-token]",
-        status:          PlaidItemStatus.ACTIVE,
-      },
+      { userId: jane.id, score: 720, source: "manual", recordedAt: new Date("2026-06-01T10:00:00Z") },
+      { userId: john.id, score: 680, source: "manual", recordedAt: new Date("2026-06-01T10:00:00Z") },
+      { userId: alex.id, score: 750, source: "manual", recordedAt: new Date("2026-06-01T10:00:00Z") },
     ],
   });
+  console.log("   ✓ CreditScores: Jane 720, John 680, Alex 750");
 
-  const itemBy = Object.fromEntries(
-    plaidItems.map((p) => [(p as { institutionName: string }).institutionName, p])
-  ) as Record<string, typeof plaidItems[0]>;
-  console.log(`   ✓ PlaidItems: ${plaidItems.length}`);
+  // ════════════════════════════════════════════════════════════════════════════
+  // JANE SMITH — conservative, organized finances
+  // ════════════════════════════════════════════════════════════════════════════
 
-  // ── Accounts ──────────────────────────────────────────────────────────────
-  const accounts = await prisma.account.createManyAndReturn({
+  const janePlaidItems = await prisma.plaidItem.createManyAndReturn({
     data: [
-      // ── Demo Bank ─────────────────────────────────────────────────────────
-      {
-        workspaceId: janeWorkspace.id, ownerId: jane.id,
-        name: "Demo Bank Checking",       type: AccountType.checking,
-        institution: "Demo Bank",         balance: 3450.00, availableBalance: 3450.00,
-
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: itemBy["Demo Bank"].id,
-      },
-      {
-        workspaceId: janeWorkspace.id, ownerId: jane.id,
-        name: "Demo Bank High Yield Savings", type: AccountType.savings,
-        institution: "Demo Bank",         balance: 8500.00, availableBalance: 8500.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: itemBy["Demo Bank"].id,
-      },
-      // ── Example Credit Union ──────────────────────────────────────────────
-      {
-        workspaceId: janeWorkspace.id, ownerId: jane.id,
-        name: "Example CU Checking",      type: AccountType.checking,
-        institution: "Example Credit Union", balance: 750.00, availableBalance: 750.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: itemBy["Example Credit Union"].id,
-      },
-      {
-        workspaceId: janeWorkspace.id, ownerId: jane.id,
-        name: "Demo Credit Card",         type: AccountType.debt,
-        institution: "Example Credit Union", balance: 3200.00, creditLimit: 10000,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: itemBy["Example Credit Union"].id,
-      },
-      // ── Sample Brokerage ──────────────────────────────────────────────────
-      {
-        workspaceId: janeWorkspace.id, ownerId: jane.id,
-        name: "Sample Brokerage IRA",     type: AccountType.investment,
-        institution: "Sample Brokerage",  balance: 9200.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: itemBy["Sample Brokerage"].id,
-      },
-      {
-        workspaceId: janeWorkspace.id, ownerId: jane.id,
-        name: "Sample Brokerage Taxable", type: AccountType.investment,
-        institution: "Sample Brokerage",  balance: 3200.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: itemBy["Sample Brokerage"].id,
-      },
-      // ── Fictional Crypto Exchange ─────────────────────────────────────────
-      {
-        workspaceId: janeWorkspace.id, ownerId: jane.id,
-        name: "Fictional Crypto Exchange", type: AccountType.crypto,
-        institution: "Fictional Crypto Exchange", balance: 4850.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: itemBy["Fictional Crypto Exchange"].id,
-      },
-      // ── Self-custodied demo wallet (fake address) ─────────────────────────
-      {
-        workspaceId: janeWorkspace.id, ownerId: jane.id,
-        name: "Demo BTC Wallet",          type: AccountType.crypto,
-        institution: "Self-custodied",    balance: 1950.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:05:00Z"),
-        // Fictional/invalid address — not a real wallet
-        walletAddress: "bc1demo000000000000000000000000000000000000",
-        walletChain: "BTC", nativeBalance: 0.02, syncStatus: "synced",
-      },
+      { userId: jane.id, plaidItemId: "demo_item_demobank",         institutionId: "demo_ins_001", institutionName: "Demo Bank",                encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, plaidItemId: "demo_item_examplecu",        institutionId: "demo_ins_002", institutionName: "Example Credit Union",     encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, plaidItemId: "demo_item_samplebrokerage",  institutionId: "demo_ins_003", institutionName: "Sample Brokerage",         encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, plaidItemId: "demo_item_fictionalcrypto",  institutionId: "demo_ins_004", institutionName: "Fictional Crypto Exchange", encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
     ],
   });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const janeItemBy = Object.fromEntries(janePlaidItems.map((p: any) => [p.institutionName, p])) as Record<string, typeof janePlaidItems[0]>;
 
-  const byName: Record<string, typeof accounts[0]> = Object.fromEntries(
-    accounts.map((a) => [a.name, a])
-  );
-  console.log(`   ✓ Accounts: ${accounts.length}`);
+  // Jane — 9 accounts
+  const jDemoChecking = await createFullAccount({
+    workspaceId: janeWorkspace.id, userId: jane.id,
+    plaidItemId: janeItemBy["Demo Bank"].id, institutionId: "demo_ins_001",
+    name: "Demo Bank Checking", type: AccountType.checking,
+    institution: "Demo Bank", balance: 3450, availableBalance: 3450,
+  });
+  const jDemoHysa = await createFullAccount({
+    workspaceId: janeWorkspace.id, userId: jane.id,
+    plaidItemId: janeItemBy["Demo Bank"].id, institutionId: "demo_ins_001",
+    name: "Demo Bank High Yield Savings", type: AccountType.savings,
+    institution: "Demo Bank", balance: 8500, availableBalance: 8500,
+  });
+  const jJapanSavings = await createFullAccount({
+    workspaceId: janeWorkspace.id, userId: jane.id,
+    plaidItemId: janeItemBy["Demo Bank"].id, institutionId: "demo_ins_001",
+    name: "Demo Bank Japan Trip Fund", type: AccountType.savings,
+    institution: "Demo Bank", balance: 3240, availableBalance: 3240,
+  });
+  const _jCuChecking = await createFullAccount({
+    workspaceId: janeWorkspace.id, userId: jane.id,
+    plaidItemId: janeItemBy["Example Credit Union"].id, institutionId: "demo_ins_002",
+    name: "Example CU Checking", type: AccountType.checking,
+    institution: "Example Credit Union", balance: 750, availableBalance: 750,
+  });
+  const jCreditCard = await createFullAccount({
+    workspaceId: janeWorkspace.id, userId: jane.id,
+    plaidItemId: janeItemBy["Example Credit Union"].id, institutionId: "demo_ins_002",
+    name: "Example CU Credit Card", type: AccountType.debt,
+    institution: "Example Credit Union", balance: 3200, creditLimit: 10000,
+    debtSubtype: "credit_card", interestRate: 19.99, minimumPayment: 85,
+  });
+  const jBrokerageIra = await createFullAccount({
+    workspaceId: janeWorkspace.id, userId: jane.id,
+    plaidItemId: janeItemBy["Sample Brokerage"].id, institutionId: "demo_ins_003",
+    name: "Sample Brokerage IRA", type: AccountType.investment,
+    institution: "Sample Brokerage", balance: 9200,
+  });
+  const jBrokerageTaxable = await createFullAccount({
+    workspaceId: janeWorkspace.id, userId: jane.id,
+    plaidItemId: janeItemBy["Sample Brokerage"].id, institutionId: "demo_ins_003",
+    name: "Sample Brokerage Taxable", type: AccountType.investment,
+    institution: "Sample Brokerage", balance: 3200,
+  });
+  const jCryptoExchange = await createFullAccount({
+    workspaceId: janeWorkspace.id, userId: jane.id,
+    plaidItemId: janeItemBy["Fictional Crypto Exchange"].id, institutionId: "demo_ins_004",
+    name: "Fictional Crypto Exchange", type: AccountType.crypto,
+    institution: "Fictional Crypto Exchange", balance: 4850,
+  });
+  const jBtcWallet = await createFullAccount({
+    workspaceId: janeWorkspace.id, userId: jane.id,
+    name: "Jane BTC Wallet", type: AccountType.crypto, institution: "Self-custodied",
+    balance: 1950, walletAddress: "bc1demo000000000000000000000000000000000janeA",
+    walletChain: "BTC", nativeBalance: 0.02,
+    lastUpdated: new Date("2026-06-09T10:05:00Z"),
+  });
+  console.log("   ✓ Jane's accounts: 9");
 
-  // ── Holdings ──────────────────────────────────────────────────────────────
+  // Jane — cross-workspace shares
+  // Household: checking FULL, HYSA BALANCE_ONLY, CC BALANCE_ONLY
+  await shareAccount(householdWorkspace.id, jDemoChecking.id, jane.id, VisibilityLevel.FULL);
+  await shareAccount(householdWorkspace.id, jDemoHysa.id,     jane.id, VisibilityLevel.BALANCE_ONLY);
+  await shareAccount(householdWorkspace.id, jCreditCard.id,   jane.id, VisibilityLevel.BALANCE_ONLY);
+  // Debt workspace: CC BALANCE_ONLY (John sees Jane's CC balance for household debt view)
+  await shareAccount(debtWorkspace.id, jCreditCard.id, jane.id, VisibilityLevel.BALANCE_ONLY);
+  // Japan Trip: Japan savings FULL, HYSA BALANCE_ONLY
+  await shareAccount(japanWorkspace.id, jJapanSavings.id, jane.id, VisibilityLevel.FULL);
+  await shareAccount(japanWorkspace.id, jDemoHysa.id,     jane.id, VisibilityLevel.BALANCE_ONLY);
+  // Investment Club: IRA FULL, Taxable FULL, Crypto FULL
+  await shareAccount(investmentWorkspace.id, jBrokerageIra.id,     jane.id, VisibilityLevel.FULL);
+  await shareAccount(investmentWorkspace.id, jBrokerageTaxable.id, jane.id, VisibilityLevel.FULL);
+  await shareAccount(investmentWorkspace.id, jCryptoExchange.id,   jane.id, VisibilityLevel.FULL);
+  console.log("   ✓ Jane's cross-workspace shares: 9");
+
+  // Jane — Holdings
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (prisma.holding as any).createMany({
     data: [
-      // ── Sample Brokerage IRA ──────────────────────────────────────────────
-      { accountId: byName["Sample Brokerage IRA"].id,     symbol: "VOO",  name: "Vanguard S&P 500 ETF",     quantity: 18,     price: 490.00, value: 8820.00, change24h:  0.6 },
-      { accountId: byName["Sample Brokerage IRA"].id,     symbol: "QQQ",  name: "Invesco QQQ Trust",         quantity:  1,     price: 380.00, value:  380.00, change24h:  1.1 },
-      { accountId: byName["Sample Brokerage IRA"].id,     symbol: "CASH", name: "Uninvested Cash",           quantity:  0.00,  price:   1.00, value:    0.00, change24h:  0,   isCash: true },
-
-      // ── Sample Brokerage Taxable ──────────────────────────────────────────
-      { accountId: byName["Sample Brokerage Taxable"].id, symbol: "AAPL", name: "Apple Inc",                 quantity:  8,     price: 195.00, value: 1560.00, change24h:  0.4 },
-      { accountId: byName["Sample Brokerage Taxable"].id, symbol: "MSFT", name: "Microsoft Corp",            quantity:  3,     price: 420.00, value: 1260.00, change24h:  0.7 },
-      { accountId: byName["Sample Brokerage Taxable"].id, symbol: "VTI",  name: "Vanguard Total Market ETF", quantity:  2,     price: 245.00, value:  490.00, change24h:  0.5 },
-      { accountId: byName["Sample Brokerage Taxable"].id, symbol: "CASH", name: "Buying Power",              quantity: -110.00, price:   1.00, value: -110.00, change24h:  0,  isCash: true },
-
-      // ── Fictional Crypto Exchange ─────────────────────────────────────────
-      { accountId: byName["Fictional Crypto Exchange"].id, symbol: "BTC", name: "Bitcoin",                   quantity: 0.025,  price: 98000.00, value: 2450.00, change24h:  1.2 },
-      { accountId: byName["Fictional Crypto Exchange"].id, symbol: "ETH", name: "Ethereum",                  quantity: 0.8,    price: 2750.00, value: 2200.00, change24h:  0.8 },
-      { accountId: byName["Fictional Crypto Exchange"].id, symbol: "SOL", name: "Solana",                    quantity: 3.0,    price:   66.67, value:  200.00, change24h:  2.3 },
-      { accountId: byName["Fictional Crypto Exchange"].id, symbol: "CASH", name: "USD Balance",              quantity:  0.00,  price:   1.00, value:    0.00, change24h:  0,   isCash: true },
-
-      // ── Demo BTC Wallet ───────────────────────────────────────────────────
-      { accountId: byName["Demo BTC Wallet"].id,           symbol: "BTC", name: "Bitcoin",                   quantity: 0.02,   price: 98000.00, value: 1960.00, change24h:  1.2 },
+      { accountId: jBrokerageIra.id,     symbol: "VOO",  name: "Vanguard S&P 500 ETF",     quantity: 18,    price: 490,   value: 8820,  change24h:  0.6 },
+      { accountId: jBrokerageIra.id,     symbol: "QQQ",  name: "Invesco QQQ Trust",         quantity:  1,    price: 380,   value:  380,  change24h:  1.1 },
+      { accountId: jBrokerageIra.id,     symbol: "CASH", name: "Uninvested Cash",           quantity:  0,    price:   1,   value:    0,  change24h:  0,   isCash: true },
+      { accountId: jBrokerageTaxable.id, symbol: "AAPL", name: "Apple Inc",                 quantity:  8,    price: 195,   value: 1560,  change24h:  0.4 },
+      { accountId: jBrokerageTaxable.id, symbol: "MSFT", name: "Microsoft Corp",            quantity:  3,    price: 420,   value: 1260,  change24h:  0.7 },
+      { accountId: jBrokerageTaxable.id, symbol: "VTI",  name: "Vanguard Total Market ETF", quantity:  2,    price: 245,   value:  490,  change24h:  0.5 },
+      { accountId: jBrokerageTaxable.id, symbol: "CASH", name: "Buying Power",              quantity: -110,  price:   1,   value: -110,  change24h:  0,   isCash: true },
+      { accountId: jCryptoExchange.id,   symbol: "BTC",  name: "Bitcoin",                   quantity: 0.025, price: 98000, value: 2450,  change24h:  1.2 },
+      { accountId: jCryptoExchange.id,   symbol: "ETH",  name: "Ethereum",                  quantity: 0.8,   price: 2750,  value: 2200,  change24h:  0.8 },
+      { accountId: jCryptoExchange.id,   symbol: "SOL",  name: "Solana",                    quantity: 3.0,   price: 66.67, value:  200,  change24h:  2.3 },
+      { accountId: jCryptoExchange.id,   symbol: "CASH", name: "USD Balance",               quantity: 0,     price:   1,   value:    0,  change24h:  0,   isCash: true },
+      { accountId: jBtcWallet.id,        symbol: "BTC",  name: "Bitcoin",                   quantity: 0.02,  price: 98000, value: 1960,  change24h:  1.2 },
     ],
   });
-  console.log("   ✓ Holdings: 13");
+  console.log("   ✓ Holdings (Jane): 12");
 
-  // ── Transactions ──────────────────────────────────────────────────────────
-  const tx = (
-    accountName: string,
-    date:        string,
-    merchant:    string,
-    category:    TransactionCategory,
-    amount:      number,
-    pending      = false,
-    description?: string,
-  ) => ({
-    accountId: byName[accountName].id,
-    date:      new Date(date),
-    merchant,
-    category,
-    amount,
-    pending,
-    description,
-  });
+  // Jane — transaction helpers
+  const { Income, Transfer, Groceries, Dining, Shopping, Travel, Subscriptions, Utilities,
+          Interest, Payment, Other, Buy, Sell, Dividend } = TransactionCategory;
 
-  await prisma.transaction.createMany({
-    data: [
-      // ── Income ────────────────────────────────────────────────────────────
-      tx("Demo Bank Checking", "2026-06-06", "Payroll Direct Deposit", TransactionCategory.Income,  3800.00),
-      tx("Demo Bank Checking", "2026-05-23", "Payroll Direct Deposit", TransactionCategory.Income,  3800.00),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type TxRow = any;
+  const tx = (acct: { id: string }, n: number, merchant: string, cat: TransactionCategory, amount: number, pending = false, desc?: string): TxRow =>
+    ({ accountId: acct.id, date: D(n), merchant, category: cat, amount, pending, description: desc });
+  const itx = (acct: { id: string }, n: number, ticker: string, cat: TransactionCategory, amount: number, desc: string): TxRow =>
+    ({ accountId: acct.id, date: D(n), merchant: ticker, category: cat, amount, pending: false, description: desc });
 
-      // ── Interest ──────────────────────────────────────────────────────────
-      tx("Demo Bank High Yield Savings", "2026-06-01", "Interest Credit", TransactionCategory.Interest,  30.62, false, "HYSA Interest — May 2026 (4.35% APY)"),
-      tx("Demo Bank High Yield Savings", "2026-05-01", "Interest Credit", TransactionCategory.Interest,  28.90, false, "HYSA Interest — Apr 2026"),
+  await prisma.transaction.createMany({ data: [
+    // Jane Checking — Payroll (bi-weekly ×9)
+    tx(jDemoChecking,  2, "Payroll Direct Deposit", Income,  3800),
+    tx(jDemoChecking, 16, "Payroll Direct Deposit", Income,  3800),
+    tx(jDemoChecking, 30, "Payroll Direct Deposit", Income,  3800),
+    tx(jDemoChecking, 44, "Payroll Direct Deposit", Income,  3800),
+    tx(jDemoChecking, 58, "Payroll Direct Deposit", Income,  3800),
+    tx(jDemoChecking, 72, "Payroll Direct Deposit", Income,  3800),
+    tx(jDemoChecking, 86, "Payroll Direct Deposit", Income,  3800),
+    tx(jDemoChecking,100, "Payroll Direct Deposit", Income,  3800),
+    tx(jDemoChecking,114, "Payroll Direct Deposit", Income,  3800),
+    // Groceries (every ~8 days ×14)
+    tx(jDemoChecking,  1, "Fresh Market",     Groceries,  -92.40, true),
+    tx(jDemoChecking,  9, "Whole Foods Local",Groceries,  -67.80),
+    tx(jDemoChecking, 17, "Fresh Market",     Groceries,  -84.15),
+    tx(jDemoChecking, 25, "Bulk Warehouse",   Groceries, -118.60),
+    tx(jDemoChecking, 33, "Fresh Market",     Groceries,  -71.20),
+    tx(jDemoChecking, 41, "Whole Foods Local",Groceries,  -58.40),
+    tx(jDemoChecking, 49, "Fresh Market",     Groceries,  -95.80),
+    tx(jDemoChecking, 57, "Bulk Warehouse",   Groceries, -126.30),
+    tx(jDemoChecking, 65, "Fresh Market",     Groceries,  -78.60),
+    tx(jDemoChecking, 73, "Whole Foods Local",Groceries,  -63.20),
+    tx(jDemoChecking, 81, "Fresh Market",     Groceries,  -89.40),
+    tx(jDemoChecking, 89, "Bulk Warehouse",   Groceries, -112.70),
+    tx(jDemoChecking, 97, "Fresh Market",     Groceries,  -74.50),
+    tx(jDemoChecking,105, "Whole Foods Local",Groceries,  -59.30),
+    // Utilities — electric ×4
+    tx(jDemoChecking,  5, "Metro Electric",   Utilities,  -94.50),
+    tx(jDemoChecking, 35, "Metro Electric",   Utilities,  -88.20),
+    tx(jDemoChecking, 65, "Metro Electric",   Utilities, -101.40),
+    tx(jDemoChecking, 95, "Metro Electric",   Utilities,  -97.80),
+    // Utilities — internet ×4
+    tx(jDemoChecking,  6, "FiberNet ISP",     Utilities,  -59.99),
+    tx(jDemoChecking, 36, "FiberNet ISP",     Utilities,  -59.99),
+    tx(jDemoChecking, 66, "FiberNet ISP",     Utilities,  -59.99),
+    tx(jDemoChecking, 96, "FiberNet ISP",     Utilities,  -59.99),
+    // Utilities — phone ×4
+    tx(jDemoChecking,  7, "TelecomPlus",      Utilities,  -65.00),
+    tx(jDemoChecking, 37, "TelecomPlus",      Utilities,  -65.00),
+    tx(jDemoChecking, 67, "TelecomPlus",      Utilities,  -65.00),
+    tx(jDemoChecking, 97, "TelecomPlus",      Utilities,  -65.00),
+    // Subscriptions ×3 services ×4 months
+    tx(jDemoChecking,  1, "StreamFlix",       Subscriptions, -15.99),
+    tx(jDemoChecking, 31, "StreamFlix",       Subscriptions, -15.99),
+    tx(jDemoChecking, 61, "StreamFlix",       Subscriptions, -15.99),
+    tx(jDemoChecking, 91, "StreamFlix",       Subscriptions, -15.99),
+    tx(jDemoChecking,  1, "MusicStream",      Subscriptions,  -9.99),
+    tx(jDemoChecking, 31, "MusicStream",      Subscriptions,  -9.99),
+    tx(jDemoChecking, 61, "MusicStream",      Subscriptions,  -9.99),
+    tx(jDemoChecking, 91, "MusicStream",      Subscriptions,  -9.99),
+    tx(jDemoChecking,  1, "Gym Membership",   Subscriptions, -32.00),
+    tx(jDemoChecking, 31, "Gym Membership",   Subscriptions, -32.00),
+    tx(jDemoChecking, 61, "Gym Membership",   Subscriptions, -32.00),
+    tx(jDemoChecking, 91, "Gym Membership",   Subscriptions, -32.00),
+    // Transfers to HYSA ×5
+    tx(jDemoChecking,  3, "Transfer to HYSA", Transfer, -400),
+    tx(jDemoChecking, 33, "Transfer to HYSA", Transfer, -400),
+    tx(jDemoChecking, 63, "Transfer to HYSA", Transfer, -400),
+    tx(jDemoChecking, 93, "Transfer to HYSA", Transfer, -400),
+    tx(jDemoChecking,113, "Transfer to HYSA", Transfer, -400),
+    // Transfers to Japan fund ×4
+    tx(jDemoChecking, 15, "Transfer to Japan Fund", Transfer, -500),
+    tx(jDemoChecking, 45, "Transfer to Japan Fund", Transfer, -500),
+    tx(jDemoChecking, 75, "Transfer to Japan Fund", Transfer, -500),
+    tx(jDemoChecking,105, "Transfer to Japan Fund", Transfer, -500),
+    // Gas ×5
+    tx(jDemoChecking, 10, "QuickFuel Gas",    Other,  -52.40),
+    tx(jDemoChecking, 28, "QuickFuel Gas",    Other,  -48.60),
+    tx(jDemoChecking, 56, "QuickFuel Gas",    Other,  -61.20),
+    tx(jDemoChecking, 84, "QuickFuel Gas",    Other,  -54.80),
+    tx(jDemoChecking,108, "QuickFuel Gas",    Other,  -50.10),
+    // Pharmacy ×3
+    tx(jDemoChecking, 18, "City Pharmacy",    Shopping, -24.60),
+    tx(jDemoChecking, 55, "City Pharmacy",    Shopping, -38.90),
+    tx(jDemoChecking, 82, "City Pharmacy",    Shopping, -19.40),
+  ]});
 
-      // ── Transfers ─────────────────────────────────────────────────────────
-      tx("Demo Bank Checking",           "2026-06-03", "Transfer to Savings",    TransactionCategory.Transfer, -300.00),
-      tx("Demo Bank High Yield Savings", "2026-06-03", "Transfer from Checking", TransactionCategory.Transfer,  300.00),
+  await prisma.transaction.createMany({ data: [
+    // Jane HYSA — interest ×4
+    tx(jDemoHysa, 10, "Interest Credit", Interest, 34.50, false, "HYSA Interest — May 2026 (4.35% APY)"),
+    tx(jDemoHysa, 40, "Interest Credit", Interest, 33.80, false, "HYSA Interest — Apr 2026"),
+    tx(jDemoHysa, 70, "Interest Credit", Interest, 31.20, false, "HYSA Interest — Mar 2026"),
+    tx(jDemoHysa,100, "Interest Credit", Interest, 28.60, false, "HYSA Interest — Feb 2026"),
+    // HYSA — transfers in ×5
+    tx(jDemoHysa,  3, "Transfer from Checking", Transfer, 400),
+    tx(jDemoHysa, 33, "Transfer from Checking", Transfer, 400),
+    tx(jDemoHysa, 63, "Transfer from Checking", Transfer, 400),
+    tx(jDemoHysa, 93, "Transfer from Checking", Transfer, 400),
+    tx(jDemoHysa,113, "Transfer from Checking", Transfer, 400),
+    // HYSA — transfers to Japan ×3
+    tx(jDemoHysa, 45, "Transfer to Japan Fund", Transfer, -300),
+    tx(jDemoHysa, 75, "Transfer to Japan Fund", Transfer, -300),
+    tx(jDemoHysa,105, "Transfer to Japan Fund", Transfer, -300),
+    // Japan savings — transfers in ×4+3
+    tx(jJapanSavings, 15, "Transfer from Checking", Transfer, 500),
+    tx(jJapanSavings, 45, "Transfer from Checking", Transfer, 500),
+    tx(jJapanSavings, 75, "Transfer from Checking", Transfer, 500),
+    tx(jJapanSavings,105, "Transfer from Checking", Transfer, 500),
+    tx(jJapanSavings, 45, "Transfer from HYSA",     Transfer, 300),
+    tx(jJapanSavings, 75, "Transfer from HYSA",     Transfer, 300),
+    tx(jJapanSavings,105, "Transfer from HYSA",     Transfer, 300),
+    tx(jJapanSavings, 30, "Interest Credit",  Interest,  8.40, false, "Japan Trip Fund Interest — Apr 2026"),
+  ]});
 
-      // ── Groceries ─────────────────────────────────────────────────────────
-      tx("Demo Bank Checking", "2026-06-07", "Fresh Market",    TransactionCategory.Groceries,  -95.40, true),
-      tx("Demo Bank Checking", "2026-06-04", "Local Grocer",    TransactionCategory.Groceries,  -58.20),
-      tx("Demo Bank Checking", "2026-05-30", "Fresh Market",    TransactionCategory.Groceries,  -81.15),
-      tx("Demo Bank Checking", "2026-05-25", "Bulk Warehouse",  TransactionCategory.Groceries, -122.60),
-      tx("Demo Bank Checking", "2026-05-18", "Local Grocer",    TransactionCategory.Groceries,  -47.85),
+  await prisma.transaction.createMany({ data: [
+    // Jane Credit Card — Dining ×15
+    tx(jCreditCard,  2, "Sakura Sushi",         Dining,  -68.40),
+    tx(jCreditCard,  6, "Corner Coffee",         Dining,   -8.75),
+    tx(jCreditCard, 10, "Thai Garden",           Dining,  -42.50),
+    tx(jCreditCard, 14, "Corner Coffee",         Dining,   -9.25),
+    tx(jCreditCard, 18, "The Pasta House",       Dining,  -55.80),
+    tx(jCreditCard, 22, "Corner Coffee",         Dining,   -8.50),
+    tx(jCreditCard, 27, "Brunch Spot",           Dining,  -38.60),
+    tx(jCreditCard, 32, "Mexican Cantina",       Dining,  -47.20),
+    tx(jCreditCard, 38, "Corner Coffee",         Dining,   -9.00),
+    tx(jCreditCard, 44, "Italian Bistro",        Dining,  -82.40),
+    tx(jCreditCard, 50, "Thai Garden",           Dining,  -38.90),
+    tx(jCreditCard, 56, "Corner Coffee",         Dining,   -7.80),
+    tx(jCreditCard, 62, "Tapas Bar",             Dining,  -72.30),
+    tx(jCreditCard, 68, "Brunch Spot",           Dining,  -41.50),
+    tx(jCreditCard, 74, "Corner Coffee",         Dining,   -8.90),
+    // Shopping ×10
+    tx(jCreditCard,  4, "FashionNova Online",   Shopping,  -89.99),
+    tx(jCreditCard, 12, "Target",               Shopping,  -74.30),
+    tx(jCreditCard, 20, "Amazon Marketplace",   Shopping,  -54.99),
+    tx(jCreditCard, 29, "HomeGoods Store",      Shopping, -138.40),
+    tx(jCreditCard, 40, "Amazon Marketplace",   Shopping,  -32.50),
+    tx(jCreditCard, 48, "Sephora",              Shopping,  -96.80),
+    tx(jCreditCard, 59, "Amazon Marketplace",   Shopping,  -67.40),
+    tx(jCreditCard, 70, "ASOS Online",          Shopping, -119.00),
+    tx(jCreditCard, 80, "Target",               Shopping,  -58.70),
+    tx(jCreditCard, 90, "Sephora",              Shopping,  -74.30),
+    // Travel ×3
+    tx(jCreditCard, 25, "Japan Airlines",       Travel,  -820.00, false, "RT flight deposit — Tokyo"),
+    tx(jCreditCard, 60, "Hotel Booking",        Travel,  -385.00),
+    tx(jCreditCard, 88, "Airbnb",               Travel,  -290.00),
+    // Beauty ×4
+    tx(jCreditCard, 15, "Ulta Beauty",          Shopping,  -62.40),
+    tx(jCreditCard, 45, "Hair Salon",           Other,     -85.00),
+    tx(jCreditCard, 76, "Ulta Beauty",          Shopping,  -48.20),
+    tx(jCreditCard,109, "Hair Salon",           Other,     -90.00),
+    // Entertainment ×4
+    tx(jCreditCard,  8, "Cinema Downtown",      Other,  -32.00),
+    tx(jCreditCard, 35, "Event Tickets Online", Other, -140.00),
+    tx(jCreditCard, 66, "Cinema Downtown",      Other,  -28.50),
+    tx(jCreditCard, 95, "Yoga Studio",          Other,  -25.00),
+    // Subscriptions on CC ×3 months
+    tx(jCreditCard,  1, "Adobe Creative Cloud", Subscriptions, -54.99),
+    tx(jCreditCard, 31, "Adobe Creative Cloud", Subscriptions, -54.99),
+    tx(jCreditCard, 61, "Adobe Creative Cloud", Subscriptions, -54.99),
+    // CC payments ×3
+    tx(jCreditCard, 28, "CC Payment", Payment, -800),
+    tx(jCreditCard, 60, "CC Payment", Payment, -600),
+    tx(jCreditCard, 90, "CC Payment", Payment, -700),
+    // Groceries on CC ×3
+    tx(jCreditCard, 11, "Whole Foods Local",    Groceries,  -88.40, true),
+    tx(jCreditCard, 55, "Trader Joe's",         Groceries,  -67.20),
+    tx(jCreditCard, 83, "Whole Foods Local",    Groceries,  -91.60),
+  ]});
 
-      // ── Dining ────────────────────────────────────────────────────────────
-      tx("Demo Bank Checking", "2026-06-06", "The Burger Joint",  TransactionCategory.Dining,  -16.50),
-      tx("Demo Bank Checking", "2026-06-03", "Taco Stand",        TransactionCategory.Dining,  -12.80),
-      tx("Demo Bank Checking", "2026-05-29", "Coffee Corner",     TransactionCategory.Dining,   -5.75),
-      tx("Demo Bank Checking", "2026-05-22", "Sushi Spot",        TransactionCategory.Dining,  -58.00),
+  await prisma.transaction.createMany({ data: [
+    // Jane IRA ×8
+    itx(jBrokerageIra,  5, "VOO",          Buy,       -1960, "Buy 4 shares VOO @ $490"),
+    itx(jBrokerageIra, 35, "VOO",          Buy,       -1470, "Buy 3 shares VOO @ $490"),
+    itx(jBrokerageIra, 65, "QQQ",          Buy,        -380, "Buy 1 share QQQ @ $380"),
+    itx(jBrokerageIra, 95, "VOO",          Buy,        -980, "Buy 2 shares VOO @ $490"),
+    itx(jBrokerageIra, 30, "VOO",          Dividend,    88.20, "VOO Quarterly Dividend"),
+    itx(jBrokerageIra, 60, "QQQ",          Dividend,    18.40, "QQQ Quarterly Dividend"),
+    itx(jBrokerageIra, 30, "CONTRIBUTION", Income,     583,   "IRA Monthly Contribution"),
+    itx(jBrokerageIra, 60, "CONTRIBUTION", Income,     583,   "IRA Monthly Contribution"),
+    // Jane Taxable ×6
+    itx(jBrokerageTaxable, 10, "AAPL", Buy,       -780,  "Buy 4 shares AAPL @ $195"),
+    itx(jBrokerageTaxable, 40, "MSFT", Buy,      -1260,  "Buy 3 shares MSFT @ $420"),
+    itx(jBrokerageTaxable, 70, "VTI",  Buy,       -490,  "Buy 2 shares VTI @ $245"),
+    itx(jBrokerageTaxable,100, "AAPL", Buy,       -780,  "Buy 4 shares AAPL @ $195"),
+    itx(jBrokerageTaxable, 30, "AAPL", Dividend,   22.00, "AAPL Quarterly Dividend"),
+    itx(jBrokerageTaxable, 60, "MSFT", Dividend,   33.60, "MSFT Quarterly Dividend"),
+    // Jane Crypto ×6
+    itx(jCryptoExchange,  5, "BTC", Buy,  -2450, "Buy 0.025 BTC @ $98,000"),
+    itx(jCryptoExchange, 25, "ETH", Buy,  -2200, "Buy 0.8 ETH @ $2,750"),
+    itx(jCryptoExchange, 50, "SOL", Buy,   -200, "Buy 3 SOL @ $66.67"),
+    itx(jCryptoExchange, 75, "BTC", Sell,  1200, "Sell 0.013 BTC — partial exit"),
+    itx(jCryptoExchange, 90, "ETH", Buy,  -1100, "Buy 0.4 ETH @ $2,750"),
+    itx(jCryptoExchange,110, "BTC", Buy,  -1960, "Buy 0.02 BTC @ $98,000"),
+    // Jane BTC Wallet ×2
+    itx(jBtcWallet, 40, "BTC", Buy,   -1960, "Buy 0.02 BTC → self-custody transfer"),
+    itx(jBtcWallet,100, "BTC", Sell,    490, "Sell 0.005 BTC — partial profit"),
+  ]});
+  console.log("   ✓ Jane transactions: ~150");
 
-      // ── Shopping ──────────────────────────────────────────────────────────
-      tx("Demo Bank Checking", "2026-06-05", "Online Retailer",   TransactionCategory.Shopping, -74.99),
-      tx("Demo Bank Checking", "2026-06-02", "Electronics Store", TransactionCategory.Shopping, -49.00),
-      tx("Demo Bank Checking", "2026-05-28", "Online Retailer",   TransactionCategory.Shopping, -39.99),
-
-      // ── Subscriptions ─────────────────────────────────────────────────────
-      tx("Demo Bank Checking", "2026-06-01", "Streaming Service A", TransactionCategory.Subscriptions, -15.99),
-      tx("Demo Bank Checking", "2026-06-01", "Streaming Service B", TransactionCategory.Subscriptions, -13.99),
-      tx("Demo Bank Checking", "2026-06-01", "Cloud Storage",       TransactionCategory.Subscriptions,  -2.99),
-      tx("Demo Bank Checking", "2026-05-28", "Music Service",       TransactionCategory.Subscriptions,  -9.99),
-
-      // ── Utilities ─────────────────────────────────────────────────────────
-      tx("Demo Bank Checking", "2026-06-01", "Electricity Co",   TransactionCategory.Utilities, -94.50),
-      tx("Demo Bank Checking", "2026-05-28", "Mobile Carrier",   TransactionCategory.Utilities, -65.00),
-      tx("Demo Bank Checking", "2026-05-25", "Internet Provider",TransactionCategory.Utilities, -59.99),
-
-      // ── Credit Card charges ───────────────────────────────────────────────
-      tx("Demo Credit Card", "2026-06-07", "Fresh Market",     TransactionCategory.Groceries,   -88.40, true),
-      tx("Demo Credit Card", "2026-06-05", "Online Retailer",  TransactionCategory.Shopping,    -74.99),
-      tx("Demo Credit Card", "2026-06-03", "Restaurant Downtown", TransactionCategory.Dining,  -142.00),
-      tx("Demo Credit Card", "2026-06-01", "Hotel Stay",       TransactionCategory.Travel,     -285.00),
-      tx("Demo Credit Card", "2026-05-28", "Bulk Warehouse",   TransactionCategory.Groceries,  -165.00),
-      tx("Demo Credit Card", "2026-05-25", "Airline Ticket",   TransactionCategory.Travel,     -320.00),
-      tx("Demo Credit Card", "2026-05-22", "Department Store", TransactionCategory.Shopping,    -92.00),
-    ],
-  });
-  console.log("   ✓ Banking transactions: 32");
-
-  // ── Investment / Crypto transactions ──────────────────────────────────────
-  const itx = (
-    accountName: string,
-    date:        string,
-    ticker:      string,
-    category:    TransactionCategory,
-    amount:      number,
-    description: string,
-  ) => ({
-    accountId:   byName[accountName].id,
-    date:        new Date(date),
-    merchant:    ticker,
-    category,
-    amount,
-    pending:     false,
-    description,
-  });
-
-  await prisma.transaction.createMany({
-    data: [
-      itx("Sample Brokerage IRA",     "2026-05-20", "VOO",  TransactionCategory.Buy,    -1960.00, "Buy 4 shares @ $490.00"),
-      itx("Sample Brokerage IRA",     "2026-04-15", "VOO",  TransactionCategory.Buy,    -2450.00, "Buy 5 shares @ $490.00"),
-      itx("Sample Brokerage IRA",     "2026-03-10", "QQQ",  TransactionCategory.Buy,     -380.00, "Buy 1 share @ $380.00"),
-      itx("Sample Brokerage Taxable", "2026-05-01", "AAPL", TransactionCategory.Buy,     -780.00, "Buy 4 shares @ $195.00"),
-      itx("Sample Brokerage Taxable", "2026-04-10", "MSFT", TransactionCategory.Buy,    -1260.00, "Buy 3 shares @ $420.00"),
-      itx("Sample Brokerage Taxable", "2026-03-15", "VTI",  TransactionCategory.Buy,     -490.00, "Buy 2 shares @ $245.00"),
-      itx("Sample Brokerage Taxable", "2026-02-20", "AAPL", TransactionCategory.Buy,     -780.00, "Buy 4 shares @ $195.00"),
-      itx("Fictional Crypto Exchange","2026-05-28", "BTC",  TransactionCategory.Buy,    -2450.00, "Buy 0.025 BTC @ $98,000"),
-      itx("Fictional Crypto Exchange","2026-05-10", "ETH",  TransactionCategory.Buy,    -2200.00, "Buy 0.8 ETH @ $2,750"),
-      itx("Fictional Crypto Exchange","2026-04-05", "SOL",  TransactionCategory.Buy,     -200.00, "Buy 3 SOL @ $66.67"),
-      itx("Fictional Crypto Exchange","2026-02-01", "BTC",  TransactionCategory.Sell,   1200.00,  "Sell 0.013 BTC — partial exit"),
-    ],
-  });
-  console.log("   ✓ Investment/crypto transactions: 11");
-
-  // ── AI Advice ─────────────────────────────────────────────────────────────
+  // Jane — AI Advice
   await prisma.aiAdvice.create({
     data: {
-      workspaceId: janeWorkspace.id,
-      agentId:     agent.id,
-      summary:     "Good savings rate and low debt — focus on increasing investment contributions and reducing the credit card balance.",
-      adviceText: `**Market Context (June 2026):** BTC near $98,000. S&P 500 steady. Interest rates elevated — HYSA at 4.35% APY remains attractive.
+      workspaceId: janeWorkspace.id, agentId: janeAgent.id,
+      summary: "Strong savings rate and low debt — focus on IRA contributions and CC payoff.",
+      adviceText: `**Market Context (June 2026):** BTC ~$98,000. S&P 500 steady. HYSA at 4.35% APY.
 
 **Your Position:**
-- Liquid cash: $3,450 (Demo Bank Checking) + $750 (Example CU) = **$4,200** — healthy 1-month cushion.
-- Savings: $8,500 (Demo Bank HYSA at 4.35% APY) = **$8,500** — good emergency fund (~2 months expenses).
-- Investments: Sample Brokerage IRA ($9,200) + Taxable ($3,200) = **$12,400** — well diversified in index funds.
-- Crypto: Exchange ($4,850) + Demo Wallet ($1,950) = **$6,800** — ~28% of investable assets, manageable.
-- Debt: Demo Credit Card **$3,200** at standard APR — moderate but worth addressing.
-- Net worth: ~**$28,700** (assets $31,900 − debt $3,200).
+- Cash: $3,450 + $750 = **$4,200** (~1 month cushion)
+- HYSA: **$8,500** (~2 months expenses)
+- Japan Fund: **$3,240** (target $8,500 — on track)
+- Investments: **$12,400** — well diversified
+- Crypto: **$6,800** (~28% of investable assets)
+- Debt: **$3,200** credit card (19.99% APR)
+- Net worth: ~**$28,700**
 
-**Suggestions:**
-1. **Priority #1 — Pay down the credit card.** At typical APR this costs more than any savings interest earned. Target payoff within 3–4 months.
-2. **Priority #2 — Max IRA contribution.** You're on a good path. Consider increasing monthly contributions to max the annual IRA limit.
-3. **Crypto at 28%** of investable assets is within a reasonable range. No action needed unless it rises above 35%.
-4. **HYSA is working** — keep the 3-month emergency fund target ($12,000) as the next milestone.
-5. VOO and VTI positions are solid long-term holds. No changes needed.
+**Priority Actions:**
+1. Pay down CC in 3–4 months (19.99% APR)
+2. Max IRA contribution ($7,000/yr)
+3. Hit $12,000 emergency fund milestone
+4. Japan Trip on track — keep $500/mo transfers
 
-**Risk Level: Low-Medium** — debt is manageable, savings are healthy, portfolio is well diversified.
-
-**Play Ready: Yes** — credit card under control and cash reserves are adequate for small opportunistic moves.`,
-      riskLevel:   "low",
-      playReady:   true,
-      generatedAt: new Date("2026-06-09T09:00:00Z"),
+**Risk Level: Low-Medium** | **Play Ready: Yes**`,
+      riskLevel: "low", playReady: true, generatedAt: new Date("2026-06-09T09:00:00Z"),
     },
   });
-  console.log("   ✓ AiAdvice: 1");
 
-  // ── WorkspaceSnapshots (365 days) ─────────────────────────────────────────
-  const snapshots = buildHistory(janeWorkspace.id);
-  await prisma.workspaceSnapshot.createMany({ data: snapshots });
-  console.log(`   ✓ WorkspaceSnapshots: ${snapshots.length}`);
+  // Jane — Snapshots
+  await prisma.workspaceSnapshot.createMany({ data: buildHistory(janeWorkspace.id) });
+  console.log("   ✓ WorkspaceSnapshots (Jane): 365");
 
   // ════════════════════════════════════════════════════════════════════════════
-  // ── JOHN DOE — medium-risk profile ─────────────────────────────────────────
+  // JOHN DOE — medium risk, freelance side income, higher debt
   // ════════════════════════════════════════════════════════════════════════════
 
-  // ── John's AiAgent ─────────────────────────────────────────────────────────
-  const johnAgent = await prisma.aiAgent.create({
-    data: { workspaceId: johnWorkspace.id, name: "John's Financial Agent" },
-  });
-  console.log(`   ✓ AiAgent: ${johnAgent.name}`);
-
-  // ── John's CreditScore ─────────────────────────────────────────────────────
-  await prisma.creditScore.create({
-    data: {
-      userId:     john.id,
-      score:      680,
-      source:     "manual",
-      recordedAt: new Date("2026-06-01T10:00:00Z"),
-    },
-  });
-  console.log("   ✓ CreditScore (John): 680 (manual)");
-
-  // ── John's PlaidItems ──────────────────────────────────────────────────────
   const johnPlaidItems = await prisma.plaidItem.createManyAndReturn({
     data: [
-      {
-        userId:          john.id,
-        plaidItemId:     "demo_item_beaconbank",
-        institutionId:   "demo_ins_005",
-        institutionName: "Beacon Bank",
-        encryptedToken:  "[demo-placeholder-not-a-real-token]",
-        status:          PlaidItemStatus.ACTIVE,
-      },
-      {
-        userId:          john.id,
-        plaidItemId:     "demo_item_alphabrokerage",
-        institutionId:   "demo_ins_006",
-        institutionName: "Alpha Brokerage",
-        encryptedToken:  "[demo-placeholder-not-a-real-token]",
-        status:          PlaidItemStatus.ACTIVE,
-      },
-      {
-        userId:          john.id,
-        plaidItemId:     "demo_item_alphacrypto",
-        institutionId:   "demo_ins_007",
-        institutionName: "Alpha Crypto Exchange",
-        encryptedToken:  "[demo-placeholder-not-a-real-token]",
-        status:          PlaidItemStatus.ACTIVE,
-      },
+      { userId: john.id, plaidItemId: "demo_item_beaconbank",     institutionId: "demo_ins_005", institutionName: "Beacon Bank",           encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, plaidItemId: "demo_item_alphabrokerage", institutionId: "demo_ins_006", institutionName: "Alpha Brokerage",       encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, plaidItemId: "demo_item_alphacrypto",    institutionId: "demo_ins_007", institutionName: "Alpha Crypto Exchange", encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, plaidItemId: "demo_item_summitbusiness", institutionId: "demo_ins_008", institutionName: "Summit Business Bank",  encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, plaidItemId: "demo_item_manual_john",    institutionId: "manual_entry", institutionName: "Manual Entry",           encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
     ],
   });
-  const johnItemBy = Object.fromEntries(
-    johnPlaidItems.map((p) => [(p as { institutionName: string }).institutionName, p])
-  ) as Record<string, typeof johnPlaidItems[0]>;
-  console.log(`   ✓ PlaidItems (John): ${johnPlaidItems.length}`);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const johnItemBy = Object.fromEntries(johnPlaidItems.map((p: any) => [p.institutionName, p])) as Record<string, typeof johnPlaidItems[0]>;
 
-  // ── John's Accounts ────────────────────────────────────────────────────────
-  const johnAccounts = await prisma.account.createManyAndReturn({
-    data: [
-      // ── Beacon Bank ──────────────────────────────────────────────────────
-      {
-        workspaceId: johnWorkspace.id, ownerId: john.id,
-        name: "Beacon Bank Checking",    type: AccountType.checking,
-        institution: "Beacon Bank",      balance: 2100.00, availableBalance: 2100.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: johnItemBy["Beacon Bank"].id,
-      },
-      {
-        workspaceId: johnWorkspace.id, ownerId: john.id,
-        name: "Beacon Bank Savings",     type: AccountType.savings,
-        institution: "Beacon Bank",      balance: 5500.00, availableBalance: 5500.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: johnItemBy["Beacon Bank"].id,
-      },
-      {
-        workspaceId: johnWorkspace.id, ownerId: john.id,
-        name: "Beacon Credit Card",      type: AccountType.debt,
-        institution: "Beacon Bank",      balance: 5800.00, creditLimit: 15000,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: johnItemBy["Beacon Bank"].id,
-      },
-      {
-        workspaceId: johnWorkspace.id, ownerId: john.id,
-        name: "Beacon Auto Loan",        type: AccountType.debt,
-        institution: "Beacon Bank",      balance: 11200.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: johnItemBy["Beacon Bank"].id,
-      },
-      // ── Alpha Brokerage ───────────────────────────────────────────────────
-      {
-        workspaceId: johnWorkspace.id, ownerId: john.id,
-        name: "Alpha Brokerage 401k",    type: AccountType.investment,
-        institution: "Alpha Brokerage",  balance: 18200.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: johnItemBy["Alpha Brokerage"].id,
-      },
-      // ── Alpha Crypto Exchange ─────────────────────────────────────────────
-      {
-        workspaceId: johnWorkspace.id, ownerId: john.id,
-        name: "Alpha Crypto Exchange",   type: AccountType.crypto,
-        institution: "Alpha Crypto Exchange", balance: 7400.00,
-        currency: "USD", lastUpdated: new Date("2026-06-09T10:00:00Z"),
-        plaidItemDbId: johnItemBy["Alpha Crypto Exchange"].id,
-      },
-    ],
+  // John — 12 accounts
+  const jnChecking = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
+    name: "Beacon Bank Checking", type: AccountType.checking,
+    institution: "Beacon Bank", balance: 2100, availableBalance: 2100,
   });
-  const johnByName: Record<string, typeof johnAccounts[0]> = Object.fromEntries(
-    johnAccounts.map((a) => [a.name, a])
-  );
-  console.log(`   ✓ Accounts (John): ${johnAccounts.length}`);
+  const jnSavings = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
+    name: "Beacon Bank Savings", type: AccountType.savings,
+    institution: "Beacon Bank", balance: 5500, availableBalance: 5500,
+  });
+  const jnCreditCard = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
+    name: "Beacon Credit Card", type: AccountType.debt,
+    institution: "Beacon Bank", balance: 5800, creditLimit: 15000,
+    debtSubtype: "credit_card", interestRate: 22.99, minimumPayment: 135,
+  });
+  const jnAutoLoan = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
+    name: "Beacon Auto Loan", type: AccountType.debt,
+    institution: "Beacon Bank", balance: 11200,
+    debtSubtype: "auto_loan", interestRate: 6.49, minimumPayment: 287,
+  });
+  const jnMortgage = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
+    name: "Beacon Mortgage", type: AccountType.debt,
+    institution: "Beacon Bank", balance: 285000,
+    debtSubtype: "mortgage", interestRate: 3.875, minimumPayment: 1480,
+  });
+  const jnRothIra = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Alpha Brokerage"].id, institutionId: "demo_ins_006",
+    name: "Alpha Brokerage Roth IRA", type: AccountType.investment,
+    institution: "Alpha Brokerage", balance: 28500,
+  });
+  const jn401k = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Alpha Brokerage"].id, institutionId: "demo_ins_006",
+    name: "Alpha Brokerage 401k", type: AccountType.investment,
+    institution: "Alpha Brokerage", balance: 18200,
+  });
+  const jnBrokerage = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Alpha Brokerage"].id, institutionId: "demo_ins_006",
+    name: "Alpha Brokerage Taxable", type: AccountType.investment,
+    institution: "Alpha Brokerage", balance: 12800,
+  });
+  const jnCryptoExchange = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Alpha Crypto Exchange"].id, institutionId: "demo_ins_007",
+    name: "Alpha Crypto Exchange", type: AccountType.crypto,
+    institution: "Alpha Crypto Exchange", balance: 7400,
+  });
+  const jnBtcWallet = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    name: "John BTC Wallet", type: AccountType.crypto, institution: "Self-custodied",
+    balance: 3724, walletAddress: "bc1demo000000000000000000000000000000000johnB",
+    walletChain: "BTC", nativeBalance: 0.038,
+    lastUpdated: new Date("2026-06-09T10:10:00Z"),
+  });
+  const jnBizChecking = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Summit Business Bank"].id, institutionId: "demo_ins_008",
+    name: "Summit Business Checking", type: AccountType.checking,
+    institution: "Summit Business Bank", balance: 8400, availableBalance: 8400,
+  });
+  const jnBizCard = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Summit Business Bank"].id, institutionId: "demo_ins_008",
+    name: "Summit Business Credit Card", type: AccountType.debt,
+    institution: "Summit Business Bank", balance: 2100, creditLimit: 20000,
+    debtSubtype: "credit_card", interestRate: 18.99, minimumPayment: 55,
+  });
+  // Manual asset accounts (AccountType.other as temporary asset bucket until AccountType.asset lands)
+  // These are user-entered balances — syncStatus "manual" distinguishes them from Plaid-connected accounts.
+  // They must NOT appear in debt payoff, cash-flow, or minimum-payment queries.
+  // TODO: when AccountType.asset is added to schema, run:
+  //   UPDATE "FinancialAccount" SET type = 'asset' WHERE type = 'other' AND "syncStatus" = 'manual'
+  const jnHome = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Manual Entry"].id, institutionId: "manual_entry",
+    name: "Austin Home (Est. Value)", type: AccountType.other,
+    institution: "Manual Entry", balance: 485000, syncStatus: "manual",
+  });
+  const _jnVehicle = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Manual Entry"].id, institutionId: "manual_entry",
+    name: "2022 Honda CR-V (Est. Value)", type: AccountType.other,
+    institution: "Manual Entry", balance: 22000, syncStatus: "manual",
+  });
+  const jnEquipment = await createFullAccount({
+    workspaceId: johnWorkspace.id, userId: john.id,
+    plaidItemId: johnItemBy["Manual Entry"].id, institutionId: "manual_entry",
+    name: "Freelance Business Equipment", type: AccountType.other,
+    institution: "Manual Entry", balance: 3500, syncStatus: "manual",
+  });
+  console.log("   ✓ John's accounts: 12 financial + 3 manual asset (total 15)");
 
-  // ── John's Holdings ────────────────────────────────────────────────────────
+  // John — cross-workspace shares
+  // Household: checking FULL, savings BALANCE_ONLY, CC BALANCE_ONLY, mortgage FULL
+  await shareAccount(householdWorkspace.id, jnChecking.id,    john.id, VisibilityLevel.FULL);
+  await shareAccount(householdWorkspace.id, jnSavings.id,     john.id, VisibilityLevel.BALANCE_ONLY);
+  await shareAccount(householdWorkspace.id, jnCreditCard.id,  john.id, VisibilityLevel.BALANCE_ONLY);
+  await shareAccount(householdWorkspace.id, jnMortgage.id,    john.id, VisibilityLevel.FULL);
+  // Debt workspace: CC FULL, auto loan FULL
+  await shareAccount(debtWorkspace.id, jnCreditCard.id, john.id, VisibilityLevel.FULL);
+  await shareAccount(debtWorkspace.id, jnAutoLoan.id,   john.id, VisibilityLevel.FULL);
+  // Japan Trip: John's checking BALANCE_ONLY (for trip budget awareness)
+  await shareAccount(japanWorkspace.id, jnChecking.id, john.id, VisibilityLevel.BALANCE_ONLY);
+  // Investment Club: Roth IRA FULL, 401k FULL, Taxable FULL, Crypto FULL, BTC wallet FULL
+  await shareAccount(investmentWorkspace.id, jnRothIra.id,       john.id, VisibilityLevel.FULL);
+  await shareAccount(investmentWorkspace.id, jn401k.id,          john.id, VisibilityLevel.FULL);
+  await shareAccount(investmentWorkspace.id, jnBrokerage.id,     john.id, VisibilityLevel.FULL);
+  await shareAccount(investmentWorkspace.id, jnCryptoExchange.id,john.id, VisibilityLevel.FULL);
+  await shareAccount(investmentWorkspace.id, jnBtcWallet.id,     john.id, VisibilityLevel.FULL);
+  // Business: biz checking FULL, biz CC FULL
+  await shareAccount(businessWorkspace.id, jnBizChecking.id, john.id, VisibilityLevel.FULL);
+  await shareAccount(businessWorkspace.id, jnBizCard.id,     john.id, VisibilityLevel.FULL);
+  // Property: mortgage FULL, home asset FULL, checking BALANCE_ONLY
+  await shareAccount(propertyWorkspace.id, jnMortgage.id,  john.id, VisibilityLevel.FULL);
+  await shareAccount(propertyWorkspace.id, jnHome.id,      john.id, VisibilityLevel.FULL);
+  await shareAccount(propertyWorkspace.id, jnChecking.id,  john.id, VisibilityLevel.BALANCE_ONLY);
+  // Household: home asset FULL (for household net worth)
+  await shareAccount(householdWorkspace.id, jnHome.id,     john.id, VisibilityLevel.FULL);
+  // Business: equipment FULL
+  await shareAccount(businessWorkspace.id, jnEquipment.id, john.id, VisibilityLevel.FULL);
+  console.log("   ✓ John's cross-workspace shares: 19 (incl. 3 manual asset shares)");
+
+  // Config-driven section overrides that depend on John's manual asset account IDs.
+  // Placed here (after jnHome / jnEquipment are created) to avoid a temporal dead zone error.
+  // accountId pins the section to the correct FinancialAccount so the adapter skips name heuristics.
+  await updateSectionConfig(propertyWorkspace.id, "property_value", {
+    accountId:       jnHome.id,
+    assetKind:       "real_estate",
+    purchasePrice:   320000,
+    purchaseDate:    "2020-04-15",
+    estimatedSource: "Manual",
+    estimatedAt:     "2026-06-14",
+    notes:           "3BR/2BA primary residence — Austin, TX",
+  });
+  await updateSectionConfig(businessWorkspace.id, "equipment_value", {
+    accountId:       jnEquipment.id,
+    purchasePrice:   4200,
+    purchaseDate:    "2023-09-01",
+    estimatedSource: "Manual",
+    notes:           "MacBook Pro M3 + monitors + peripherals",
+  });
+
+  // John — Holdings
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (prisma.holding as any).createMany({
     data: [
-      // ── Alpha Brokerage 401k — tech-concentrated ──────────────────────────
-      { accountId: johnByName["Alpha Brokerage 401k"].id,   symbol: "NVDA", name: "NVIDIA Corp",           quantity: 5,      price: 1100.00, value:  5500.00, change24h:  2.1 },
-      { accountId: johnByName["Alpha Brokerage 401k"].id,   symbol: "TSLA", name: "Tesla Inc",              quantity: 10,     price:  280.00, value:  2800.00, change24h: -0.9 },
-      { accountId: johnByName["Alpha Brokerage 401k"].id,   symbol: "VOO",  name: "Vanguard S&P 500 ETF",   quantity: 20,     price:  490.00, value:  9800.00, change24h:  0.6 },
-      { accountId: johnByName["Alpha Brokerage 401k"].id,   symbol: "CASH", name: "Uninvested Cash",        quantity: 100,    price:    1.00, value:   100.00, change24h:  0,   isCash: true },
-      // ── Alpha Crypto Exchange — medium-risk mix ───────────────────────────
-      { accountId: johnByName["Alpha Crypto Exchange"].id,  symbol: "BTC",  name: "Bitcoin",                quantity: 0.04,   price: 98000.00, value: 3920.00, change24h:  1.2 },
-      { accountId: johnByName["Alpha Crypto Exchange"].id,  symbol: "ETH",  name: "Ethereum",               quantity: 1.2,    price:  2750.00, value: 3300.00, change24h:  0.8 },
-      { accountId: johnByName["Alpha Crypto Exchange"].id,  symbol: "DOGE", name: "Dogecoin",               quantity: 1000,   price:     0.18, value:  180.00, change24h:  5.4 },
-      { accountId: johnByName["Alpha Crypto Exchange"].id,  symbol: "CASH", name: "USD Balance",            quantity: 0,      price:     1.00, value:    0.00, change24h:  0,   isCash: true },
+      // Roth IRA: VOO, SCHD, BND, VXUS, VNQ
+      { accountId: jnRothIra.id,        symbol: "VOO",  name: "Vanguard S&P 500 ETF",          quantity: 35,    price: 490,   value: 17150, change24h:  0.6 },
+      { accountId: jnRothIra.id,        symbol: "SCHD", name: "Schwab US Dividend ETF",         quantity: 60,    price: 78,    value:  4680, change24h:  0.3 },
+      { accountId: jnRothIra.id,        symbol: "BND",  name: "Vanguard Total Bond ETF",        quantity: 30,    price: 74,    value:  2220, change24h: -0.1 },
+      { accountId: jnRothIra.id,        symbol: "VXUS", name: "Vanguard Total Intl Stock ETF",  quantity: 25,    price: 65,    value:  1625, change24h:  0.4 },
+      { accountId: jnRothIra.id,        symbol: "VNQ",  name: "Vanguard Real Estate ETF",       quantity: 20,    price: 95,    value:  1900, change24h:  0.2 },
+      { accountId: jnRothIra.id,        symbol: "CASH", name: "Uninvested Cash",                quantity: 925,   price:   1,   value:   925, change24h:  0,   isCash: true },
+      // 401k: NVDA, TSLA, VOO
+      { accountId: jn401k.id,           symbol: "NVDA", name: "NVIDIA Corp",                    quantity: 5,     price: 1100,  value:  5500, change24h:  2.1 },
+      { accountId: jn401k.id,           symbol: "TSLA", name: "Tesla Inc",                      quantity: 10,    price:  280,  value:  2800, change24h: -0.9 },
+      { accountId: jn401k.id,           symbol: "VOO",  name: "Vanguard S&P 500 ETF",           quantity: 20,    price:  490,  value:  9800, change24h:  0.6 },
+      { accountId: jn401k.id,           symbol: "CASH", name: "Uninvested Cash",                quantity: 100,   price:    1,  value:   100, change24h:  0,   isCash: true },
+      // Taxable: QQQ, AAPL, MSFT
+      { accountId: jnBrokerage.id,      symbol: "QQQ",  name: "Invesco QQQ Trust",              quantity: 15,    price: 380,   value:  5700, change24h:  1.1 },
+      { accountId: jnBrokerage.id,      symbol: "AAPL", name: "Apple Inc",                      quantity: 20,    price: 195,   value:  3900, change24h:  0.4 },
+      { accountId: jnBrokerage.id,      symbol: "MSFT", name: "Microsoft Corp",                 quantity:  5,    price: 420,   value:  2100, change24h:  0.7 },
+      { accountId: jnBrokerage.id,      symbol: "CASH", name: "Buying Power",                   quantity: 1100,  price:   1,   value:  1100, change24h:  0,   isCash: true },
+      // Crypto exchange: BTC, ETH, DOGE
+      { accountId: jnCryptoExchange.id, symbol: "BTC",  name: "Bitcoin",                        quantity: 0.04,  price: 98000, value:  3920, change24h:  1.2 },
+      { accountId: jnCryptoExchange.id, symbol: "ETH",  name: "Ethereum",                       quantity: 1.2,   price:  2750, value:  3300, change24h:  0.8 },
+      { accountId: jnCryptoExchange.id, symbol: "DOGE", name: "Dogecoin",                       quantity: 1000,  price:  0.18, value:   180, change24h:  5.4 },
+      { accountId: jnCryptoExchange.id, symbol: "CASH", name: "USD Balance",                    quantity: 0,     price:    1,  value:     0, change24h:  0,   isCash: true },
+      // BTC wallet
+      { accountId: jnBtcWallet.id,      symbol: "BTC",  name: "Bitcoin",                        quantity: 0.038, price: 98000, value:  3724, change24h:  1.2 },
     ],
   });
-  console.log("   ✓ Holdings (John): 8");
+  console.log("   ✓ Holdings (John): 19");
 
-  // ── John's Transactions ────────────────────────────────────────────────────
-  const jtx = (
-    accountName: string,
-    date:        string,
-    merchant:    string,
-    category:    TransactionCategory,
-    amount:      number,
-    pending      = false,
-    description?: string,
-  ) => ({
-    accountId: johnByName[accountName].id,
-    date:      new Date(date),
-    merchant,
-    category,
-    amount,
-    pending,
-    description,
-  });
+  await prisma.transaction.createMany({ data: [
+    // John Checking — Payroll ×9
+    tx(jnChecking,  3, "Apex Corp Payroll",   Income,  4200),
+    tx(jnChecking, 17, "Apex Corp Payroll",   Income,  4200),
+    tx(jnChecking, 31, "Apex Corp Payroll",   Income,  4200),
+    tx(jnChecking, 45, "Apex Corp Payroll",   Income,  4200),
+    tx(jnChecking, 59, "Apex Corp Payroll",   Income,  4200),
+    tx(jnChecking, 73, "Apex Corp Payroll",   Income,  4200),
+    tx(jnChecking, 87, "Apex Corp Payroll",   Income,  4200),
+    tx(jnChecking,101, "Apex Corp Payroll",   Income,  4200),
+    tx(jnChecking,115, "Apex Corp Payroll",   Income,  4200),
+    // Groceries ×12
+    tx(jnChecking,  2, "Neighborhood Market", Groceries,  -88.50, true),
+    tx(jnChecking, 10, "Wholesale Club",      Groceries, -134.20),
+    tx(jnChecking, 18, "Neighborhood Market", Groceries,  -72.10),
+    tx(jnChecking, 26, "Neighborhood Market", Groceries,  -91.40),
+    tx(jnChecking, 34, "Wholesale Club",      Groceries, -118.60),
+    tx(jnChecking, 42, "Neighborhood Market", Groceries,  -67.80),
+    tx(jnChecking, 50, "Neighborhood Market", Groceries,  -83.20),
+    tx(jnChecking, 58, "Wholesale Club",      Groceries, -145.90),
+    tx(jnChecking, 66, "Neighborhood Market", Groceries,  -75.60),
+    tx(jnChecking, 74, "Neighborhood Market", Groceries,  -92.30),
+    tx(jnChecking, 82, "Wholesale Club",      Groceries, -128.40),
+    tx(jnChecking, 90, "Neighborhood Market", Groceries,  -68.70),
+    // Utilities — electric ×4
+    tx(jnChecking,  7, "City Power Co",       Utilities, -112.00),
+    tx(jnChecking, 37, "City Power Co",       Utilities, -124.50),
+    tx(jnChecking, 67, "City Power Co",       Utilities, -108.80),
+    tx(jnChecking, 97, "City Power Co",       Utilities, -118.30),
+    // Utilities — internet ×4
+    tx(jnChecking,  8, "CableNet Pro",        Utilities,  -89.99),
+    tx(jnChecking, 38, "CableNet Pro",        Utilities,  -89.99),
+    tx(jnChecking, 68, "CableNet Pro",        Utilities,  -89.99),
+    tx(jnChecking, 98, "CableNet Pro",        Utilities,  -89.99),
+    // Utilities — phone ×4
+    tx(jnChecking, 11, "MobileCarrier Plus",  Utilities,  -75.00),
+    tx(jnChecking, 41, "MobileCarrier Plus",  Utilities,  -75.00),
+    tx(jnChecking, 71, "MobileCarrier Plus",  Utilities,  -75.00),
+    tx(jnChecking,101, "MobileCarrier Plus",  Utilities,  -75.00),
+    // Subscriptions ×2 ×4
+    tx(jnChecking,  1, "GamePass Ultimate",   Subscriptions, -14.99),
+    tx(jnChecking, 31, "GamePass Ultimate",   Subscriptions, -14.99),
+    tx(jnChecking, 61, "GamePass Ultimate",   Subscriptions, -14.99),
+    tx(jnChecking, 91, "GamePass Ultimate",   Subscriptions, -14.99),
+    tx(jnChecking,  1, "StreamPlus",          Subscriptions, -15.99),
+    tx(jnChecking, 31, "StreamPlus",          Subscriptions, -15.99),
+    tx(jnChecking, 61, "StreamPlus",          Subscriptions, -15.99),
+    tx(jnChecking, 91, "StreamPlus",          Subscriptions, -15.99),
+    // Transfer to savings ×5
+    tx(jnChecking,  4, "Transfer to Savings", Transfer, -250),
+    tx(jnChecking, 34, "Transfer to Savings", Transfer, -250),
+    tx(jnChecking, 64, "Transfer to Savings", Transfer, -250),
+    tx(jnChecking, 94, "Transfer to Savings", Transfer, -250),
+    tx(jnChecking,114, "Transfer to Savings", Transfer, -250),
+    // Auto loan payment ×4
+    tx(jnChecking,  5, "Beacon Auto Loan Pmt",  Payment, -380),
+    tx(jnChecking, 35, "Beacon Auto Loan Pmt",  Payment, -380),
+    tx(jnChecking, 65, "Beacon Auto Loan Pmt",  Payment, -380),
+    tx(jnChecking, 95, "Beacon Auto Loan Pmt",  Payment, -380),
+    // Mortgage payment ×4
+    tx(jnChecking,  6, "Beacon Mortgage Pmt", Payment, -1680),
+    tx(jnChecking, 36, "Beacon Mortgage Pmt", Payment, -1680),
+    tx(jnChecking, 66, "Beacon Mortgage Pmt", Payment, -1680),
+    tx(jnChecking, 96, "Beacon Mortgage Pmt", Payment, -1680),
+    // Healthcare ×4
+    tx(jnChecking, 12, "HealthFirst Medical", Other, -180.00),
+    tx(jnChecking, 42, "Vision Associates",   Other,  -85.00),
+    tx(jnChecking, 72, "HealthFirst Medical", Other, -145.00),
+    tx(jnChecking,102, "City Pharmacy",       Other,  -42.80),
+    // Auto insurance ×4
+    tx(jnChecking, 20, "AutoShield Insurance",Other, -168.00),
+    tx(jnChecking, 50, "AutoShield Insurance",Other, -168.00),
+    tx(jnChecking, 80, "AutoShield Insurance",Other, -168.00),
+    tx(jnChecking,110, "AutoShield Insurance",Other, -168.00),
+    // Gas ×6
+    tx(jnChecking,  4, "Fuel Express",        Other,  -68.40),
+    tx(jnChecking, 19, "Fuel Express",        Other,  -72.80),
+    tx(jnChecking, 38, "Fuel Express",        Other,  -64.20),
+    tx(jnChecking, 57, "Fuel Express",        Other,  -70.50),
+    tx(jnChecking, 76, "Fuel Express",        Other,  -66.90),
+    tx(jnChecking, 95, "Fuel Express",        Other,  -73.10),
+    // Dining cash ×6
+    tx(jnChecking,  8, "Sports Bar & Grill",   Dining,  -48.00),
+    tx(jnChecking, 22, "Fast Food Drive-Thru", Dining,  -14.50),
+    tx(jnChecking, 46, "Pizza Palace",         Dining,  -32.00),
+    tx(jnChecking, 60, "Taco Run",             Dining,  -18.40),
+    tx(jnChecking, 78, "Sports Bar & Grill",   Dining,  -52.00),
+    tx(jnChecking,103, "Fast Food Drive-Thru", Dining,  -16.80),
+  ]});
 
-  await prisma.transaction.createMany({
-    data: [
-      // ── Income ────────────────────────────────────────────────────────────
-      jtx("Beacon Bank Checking", "2026-06-06", "Payroll Direct Deposit", TransactionCategory.Income,   4200.00),
-      jtx("Beacon Bank Checking", "2026-05-23", "Payroll Direct Deposit", TransactionCategory.Income,   4200.00),
-      // ── Interest ──────────────────────────────────────────────────────────
-      jtx("Beacon Bank Savings",  "2026-06-01", "Interest Credit",        TransactionCategory.Interest,   18.48, false, "Savings Interest — May 2026"),
-      // ── Transfers ─────────────────────────────────────────────────────────
-      jtx("Beacon Bank Checking", "2026-06-03", "Transfer to Savings",    TransactionCategory.Transfer,  -200.00),
-      jtx("Beacon Bank Savings",  "2026-06-03", "Transfer from Checking", TransactionCategory.Transfer,   200.00),
-      // ── Groceries ─────────────────────────────────────────────────────────
-      jtx("Beacon Bank Checking", "2026-06-07", "Neighborhood Market",    TransactionCategory.Groceries,  -88.50, true),
-      jtx("Beacon Bank Checking", "2026-06-04", "Wholesale Club",         TransactionCategory.Groceries, -134.20),
-      jtx("Beacon Bank Checking", "2026-05-28", "Neighborhood Market",    TransactionCategory.Groceries,  -72.10),
-      // ── Dining ────────────────────────────────────────────────────────────
-      jtx("Beacon Bank Checking", "2026-06-05", "Sports Bar & Grill",     TransactionCategory.Dining,     -48.00),
-      jtx("Beacon Bank Checking", "2026-06-02", "Fast Food Express",      TransactionCategory.Dining,     -14.50),
-      jtx("Beacon Bank Checking", "2026-05-29", "Pizza Palace",           TransactionCategory.Dining,     -32.00),
-      // ── Subscriptions ─────────────────────────────────────────────────────
-      jtx("Beacon Bank Checking", "2026-06-01", "Gaming Subscription",    TransactionCategory.Subscriptions, -14.99),
-      jtx("Beacon Bank Checking", "2026-06-01", "Streaming Service",      TransactionCategory.Subscriptions, -15.99),
-      // ── Utilities ─────────────────────────────────────────────────────────
-      jtx("Beacon Bank Checking", "2026-06-01", "Electric Co",            TransactionCategory.Utilities,  -112.00),
-      jtx("Beacon Bank Checking", "2026-05-28", "Mobile Carrier",         TransactionCategory.Utilities,   -75.00),
-      jtx("Beacon Bank Checking", "2026-05-25", "Gas & Electric",         TransactionCategory.Utilities,   -68.00),
-      // ── Auto loan payments ─────────────────────────────────────────────────
-      jtx("Beacon Bank Checking", "2026-06-05", "Auto Loan Payment",      TransactionCategory.Payment,    -380.00),
-      jtx("Beacon Bank Checking", "2026-05-05", "Auto Loan Payment",      TransactionCategory.Payment,    -380.00),
-      // ── Credit card charges ───────────────────────────────────────────────
-      jtx("Beacon Credit Card",   "2026-06-07", "Electronics Superstore", TransactionCategory.Shopping,   -349.00, true),
-      jtx("Beacon Credit Card",   "2026-06-05", "Sporting Goods Outlet",  TransactionCategory.Shopping,   -185.00),
-      jtx("Beacon Credit Card",   "2026-06-03", "Steakhouse Downtown",    TransactionCategory.Dining,     -118.00),
-      jtx("Beacon Credit Card",   "2026-06-01", "Weekend Trip Hotel",     TransactionCategory.Travel,     -420.00),
-      jtx("Beacon Credit Card",   "2026-05-28", "Online Retailer",        TransactionCategory.Shopping,    -89.99),
-      jtx("Beacon Credit Card",   "2026-05-25", "Concert Tickets",        TransactionCategory.Shopping,   -210.00),
-    ],
-  });
-  console.log("   ✓ Banking transactions (John): 24");
+  await prisma.transaction.createMany({ data: [
+    // John Savings ×10
+    tx(jnSavings,  4, "Transfer from Checking", Transfer,  250),
+    tx(jnSavings, 34, "Transfer from Checking", Transfer,  250),
+    tx(jnSavings, 64, "Transfer from Checking", Transfer,  250),
+    tx(jnSavings, 94, "Transfer from Checking", Transfer,  250),
+    tx(jnSavings,114, "Transfer from Checking", Transfer,  250),
+    tx(jnSavings, 10, "Interest Credit", Interest, 18.48, false, "Savings Interest — May 2026"),
+    tx(jnSavings, 40, "Interest Credit", Interest, 17.92, false, "Savings Interest — Apr 2026"),
+    tx(jnSavings, 70, "Interest Credit", Interest, 16.80, false, "Savings Interest — Mar 2026"),
+    tx(jnSavings,100, "Interest Credit", Interest, 15.60, false, "Savings Interest — Feb 2026"),
+    tx(jnSavings, 85, "Emergency Withdrawal", Transfer, -800, false, "Car repair fund transfer"),
+  ]});
 
-  // ── John's Investment/Crypto transactions ──────────────────────────────────
-  const jitx = (
-    accountName: string,
-    date:        string,
-    ticker:      string,
-    category:    TransactionCategory,
-    amount:      number,
-    description: string,
-  ) => ({
-    accountId:   johnByName[accountName].id,
-    date:        new Date(date),
-    merchant:    ticker,
-    category,
-    amount,
-    pending:     false,
-    description,
-  });
+  await prisma.transaction.createMany({ data: [
+    // John Credit Card — Dining ×12
+    tx(jnCreditCard,  3, "Steakhouse Downtown",  Dining, -118.00),
+    tx(jnCreditCard,  9, "Sports Bar & Grill",   Dining,  -68.40),
+    tx(jnCreditCard, 15, "Sushi Fusion",         Dining,  -94.20),
+    tx(jnCreditCard, 21, "Burger Joint",         Dining,  -24.80),
+    tx(jnCreditCard, 28, "Mexican Grill",        Dining,  -52.60),
+    tx(jnCreditCard, 34, "Steakhouse Downtown",  Dining, -102.40),
+    tx(jnCreditCard, 41, "Pizza Artisano",       Dining,  -38.90),
+    tx(jnCreditCard, 48, "Brunch Club",          Dining,  -64.50),
+    tx(jnCreditCard, 55, "Ramen House",          Dining,  -42.80),
+    tx(jnCreditCard, 63, "Sports Bar & Grill",   Dining,  -72.60),
+    tx(jnCreditCard, 70, "Steakhouse Downtown",  Dining,  -88.40),
+    tx(jnCreditCard, 78, "Mexican Grill",        Dining,  -46.20),
+    // Shopping ×10
+    tx(jnCreditCard,  5, "Electronics Superstore",Shopping,-349.00, true),
+    tx(jnCreditCard, 11, "Sporting Goods",        Shopping,-185.00),
+    tx(jnCreditCard, 19, "Amazon Marketplace",    Shopping, -89.99),
+    tx(jnCreditCard, 27, "Men's Wearhouse",       Shopping,-240.00),
+    tx(jnCreditCard, 33, "Best Buy",              Shopping,-149.99),
+    tx(jnCreditCard, 45, "Amazon Marketplace",    Shopping, -67.40),
+    tx(jnCreditCard, 53, "Sporting Goods",        Shopping, -92.00),
+    tx(jnCreditCard, 61, "Home Depot",            Shopping,-314.80),
+    tx(jnCreditCard, 75, "Amazon Marketplace",    Shopping, -45.99),
+    tx(jnCreditCard, 88, "Best Buy",              Shopping,-219.00),
+    // Travel ×4
+    tx(jnCreditCard, 22, "Weekend Hotel",        Travel, -420.00),
+    tx(jnCreditCard, 50, "Airline Ticket",       Travel, -580.00),
+    tx(jnCreditCard, 72, "Hotel Stay",           Travel, -360.00),
+    tx(jnCreditCard,100, "Rental Car",           Travel, -210.00),
+    // Entertainment ×4
+    tx(jnCreditCard,  7, "Concert Tickets",      Other, -210.00),
+    tx(jnCreditCard, 38, "Sporting Event",       Other, -180.00),
+    tx(jnCreditCard, 62, "Concert Tickets",      Other, -160.00),
+    tx(jnCreditCard, 90, "Golf Course",          Other,  -85.00),
+    // Gas on CC ×6
+    tx(jnCreditCard, 14, "Fuel Express",         Other,  -72.40),
+    tx(jnCreditCard, 29, "Fuel Express",         Other,  -68.80),
+    tx(jnCreditCard, 46, "Fuel Express",         Other,  -74.20),
+    tx(jnCreditCard, 65, "Fuel Express",         Other,  -69.50),
+    tx(jnCreditCard, 83, "Fuel Express",         Other,  -71.90),
+    tx(jnCreditCard,103, "Fuel Express",         Other,  -66.30),
+    // CC payments ×4
+    tx(jnCreditCard, 28, "CC Payment", Payment, -1200),
+    tx(jnCreditCard, 58, "CC Payment", Payment,  -800),
+    tx(jnCreditCard, 88, "CC Payment", Payment, -1000),
+    tx(jnCreditCard,118, "CC Payment", Payment,  -900),
+  ]});
 
-  await prisma.transaction.createMany({
-    data: [
-      jitx("Alpha Brokerage 401k",  "2026-05-20", "NVDA", TransactionCategory.Buy,  -1100.00, "Buy 1 share @ $1,100.00"),
-      jitx("Alpha Brokerage 401k",  "2026-04-15", "TSLA", TransactionCategory.Buy,  -2800.00, "Buy 10 shares @ $280.00"),
-      jitx("Alpha Brokerage 401k",  "2026-03-10", "VOO",  TransactionCategory.Buy,  -4900.00, "Buy 10 shares @ $490.00"),
-      jitx("Alpha Crypto Exchange", "2026-05-28", "BTC",  TransactionCategory.Buy,  -3920.00, "Buy 0.04 BTC @ $98,000"),
-      jitx("Alpha Crypto Exchange", "2026-05-10", "ETH",  TransactionCategory.Buy,  -3300.00, "Buy 1.2 ETH @ $2,750"),
-      jitx("Alpha Crypto Exchange", "2026-04-20", "DOGE", TransactionCategory.Buy,   -180.00, "Buy 1,000 DOGE @ $0.18"),
-      jitx("Alpha Crypto Exchange", "2026-02-14", "ETH",  TransactionCategory.Sell,  1500.00,  "Sell 0.55 ETH — partial profit-taking"),
-    ],
-  });
-  console.log("   ✓ Investment/crypto transactions (John): 7");
+  await prisma.transaction.createMany({ data: [
+    // John Roth IRA ×8
+    itx(jnRothIra, 10, "CONTRIBUTION", Income,   583,   "Monthly IRA Contribution — Jan"),
+    itx(jnRothIra, 40, "CONTRIBUTION", Income,   583,   "Monthly IRA Contribution — Feb"),
+    itx(jnRothIra, 70, "CONTRIBUTION", Income,   583,   "Monthly IRA Contribution — Mar"),
+    itx(jnRothIra,100, "CONTRIBUTION", Income,   583,   "Monthly IRA Contribution — Apr"),
+    itx(jnRothIra, 12, "VOO",  Buy,  -2940, "Buy 6 shares VOO @ $490"),
+    itx(jnRothIra, 42, "SCHD", Buy,  -1560, "Buy 20 shares SCHD @ $78"),
+    itx(jnRothIra, 72, "BND",  Buy,  -1480, "Buy 20 shares BND @ $74"),
+    itx(jnRothIra, 95, "VXUS", Buy,   -975, "Buy 15 shares VXUS @ $65"),
+    // John 401k ×10
+    itx(jn401k,  3, "401k Contribution", Income,  360, "Employee contribution 8.5%"),
+    itx(jn401k,  3, "401k Match",        Income,  180, "Employer match 50%"),
+    itx(jn401k, 17, "401k Contribution", Income,  360, "Employee contribution 8.5%"),
+    itx(jn401k, 17, "401k Match",        Income,  180, "Employer match 50%"),
+    itx(jn401k, 31, "401k Contribution", Income,  360, "Employee contribution 8.5%"),
+    itx(jn401k, 31, "401k Match",        Income,  180, "Employer match 50%"),
+    itx(jn401k, 45, "401k Contribution", Income,  360, "Employee contribution 8.5%"),
+    itx(jn401k, 45, "401k Match",        Income,  180, "Employer match 50%"),
+    itx(jn401k, 20, "NVDA", Buy,  -1100, "Buy 1 share NVDA @ $1,100"),
+    itx(jn401k, 50, "VOO",  Buy,  -4900, "Buy 10 shares VOO @ $490"),
+    // John Taxable ×8
+    itx(jnBrokerage, 15, "QQQ",  Buy,  -5700, "Buy 15 shares QQQ @ $380"),
+    itx(jnBrokerage, 35, "AAPL", Buy,  -3900, "Buy 20 shares AAPL @ $195"),
+    itx(jnBrokerage, 55, "MSFT", Buy,  -2100, "Buy 5 shares MSFT @ $420"),
+    itx(jnBrokerage, 75, "AAPL", Sell,  1950, "Sell 10 shares AAPL — partial profit"),
+    itx(jnBrokerage, 95, "QQQ",  Buy,  -1900, "Buy 5 shares QQQ @ $380"),
+    itx(jnBrokerage, 30, "QQQ",  Dividend,  94.50, "QQQ Quarterly Dividend"),
+    itx(jnBrokerage, 60, "AAPL", Dividend,  44.00, "AAPL Quarterly Dividend"),
+    itx(jnBrokerage, 90, "MSFT", Dividend,  33.60, "MSFT Quarterly Dividend"),
+    // John Crypto ×8
+    itx(jnCryptoExchange,  8, "BTC",  Buy,  -3920, "Buy 0.04 BTC @ $98,000"),
+    itx(jnCryptoExchange, 28, "ETH",  Buy,  -3300, "Buy 1.2 ETH @ $2,750"),
+    itx(jnCryptoExchange, 50, "DOGE", Buy,   -180, "Buy 1,000 DOGE @ $0.18"),
+    itx(jnCryptoExchange, 72, "ETH",  Sell,  1500, "Sell 0.55 ETH — partial profit"),
+    itx(jnCryptoExchange, 90, "BTC",  Buy,  -1960, "Buy 0.02 BTC @ $98,000"),
+    itx(jnCryptoExchange,110, "DOGE", Buy,   -360, "Buy 2,000 DOGE @ $0.18"),
+    itx(jnCryptoExchange, 30, "ETH",  Dividend,  42.00, "ETH Staking Reward"),
+    itx(jnCryptoExchange, 75, "ETH",  Dividend,  38.50, "ETH Staking Reward"),
+    // John BTC Wallet ×3
+    itx(jnBtcWallet, 40,  "BTC", Buy,  -3724, "Buy 0.038 BTC → self-custody"),
+    itx(jnBtcWallet,100,  "BTC", Buy,  -1960, "Buy 0.02 BTC → self-custody"),
+    itx(jnBtcWallet, 15,  "BTC", Sell,  2450, "Sell 0.025 BTC — partial exit"),
+  ]});
 
-  // ── John's AI Advice ───────────────────────────────────────────────────────
+  await prisma.transaction.createMany({ data: [
+    // John Business Checking ×25
+    tx(jnBizChecking,  8, "Acme Corp — Invoice #1042",      Income,  4500),
+    tx(jnBizChecking, 22, "TechStart Inc — Invoice #1043",  Income,  3200),
+    tx(jnBizChecking, 35, "Acme Corp — Invoice #1044",      Income,  4500),
+    tx(jnBizChecking, 48, "Digital Media Co — Invoice #1045",Income, 2800),
+    tx(jnBizChecking, 62, "Acme Corp — Invoice #1046",      Income,  4500),
+    tx(jnBizChecking, 72, "TechStart Inc — Invoice #1047",  Income,  3200),
+    tx(jnBizChecking, 85, "Digital Media Co — Invoice #1048",Income, 2800),
+    tx(jnBizChecking,100, "Acme Corp — Invoice #1049",      Income,  4500),
+    tx(jnBizChecking,112, "TechStart Inc — Invoice #1050",  Income,  3200),
+    tx(jnBizChecking,  1, "GitHub Teams",       Subscriptions,  -48.00),
+    tx(jnBizChecking, 31, "GitHub Teams",       Subscriptions,  -48.00),
+    tx(jnBizChecking, 61, "GitHub Teams",       Subscriptions,  -48.00),
+    tx(jnBizChecking, 91, "GitHub Teams",       Subscriptions,  -48.00),
+    tx(jnBizChecking,  1, "AWS Cloud Services", Subscriptions, -180.00),
+    tx(jnBizChecking, 31, "AWS Cloud Services", Subscriptions, -180.00),
+    tx(jnBizChecking, 61, "AWS Cloud Services", Subscriptions, -180.00),
+    tx(jnBizChecking, 91, "AWS Cloud Services", Subscriptions, -180.00),
+    tx(jnBizChecking, 15, "Contractor — Design Work", Other, -800),
+    tx(jnBizChecking, 45, "Contractor — Design Work", Other, -800),
+    tx(jnBizChecking, 75, "Contractor — Design Work", Other, -800),
+    tx(jnBizChecking,105, "Contractor — Design Work", Other, -800),
+    tx(jnBizChecking, 25, "Transfer to Personal", Transfer, -2000),
+    tx(jnBizChecking, 55, "Transfer to Personal", Transfer, -2000),
+    tx(jnBizChecking, 85, "Transfer to Personal", Transfer, -2000),
+    tx(jnBizChecking,115, "Transfer to Personal", Transfer, -2000),
+    // John Business Card ×15
+    tx(jnBizCard,  5, "Client Dinner — Steakhouse", Dining, -284.00),
+    tx(jnBizCard, 25, "Team Lunch",                 Dining,  -92.40),
+    tx(jnBizCard, 48, "Client Dinner — Italian",    Dining, -246.80),
+    tx(jnBizCard, 65, "Team Lunch",                 Dining,  -88.60),
+    tx(jnBizCard, 80, "Client Dinner — Steakhouse", Dining, -318.40),
+    tx(jnBizCard,100, "Team Lunch",                 Dining,  -94.20),
+    tx(jnBizCard,  1, "Figma Pro",                  Subscriptions, -45.00),
+    tx(jnBizCard, 31, "Figma Pro",                  Subscriptions, -45.00),
+    tx(jnBizCard, 61, "Figma Pro",                  Subscriptions, -45.00),
+    tx(jnBizCard, 91, "Figma Pro",                  Subscriptions, -45.00),
+    tx(jnBizCard, 12, "Office Depot",               Shopping,  -84.50),
+    tx(jnBizCard, 52, "Office Depot",               Shopping,  -62.30),
+    tx(jnBizCard, 92, "Office Depot",               Shopping,  -95.80),
+    tx(jnBizCard, 30, "Conference Hotel",            Travel,  -645.00),
+    tx(jnBizCard, 90, "Flight — Business",           Travel,  -380.00),
+  ]});
+  console.log("   ✓ John transactions: ~210");
+
+  // John — AI Advice
   await prisma.aiAdvice.create({
     data: {
-      workspaceId: johnWorkspace.id,
-      agentId:     johnAgent.id,
-      summary:     "High debt load and thin cash reserves signal 'hold' — eliminate the credit card balance before deploying any new capital.",
-      adviceText: `**Market Context (June 2026):** BTC near $98,000. S&P 500 steady. Interest rates elevated.
+      workspaceId: johnWorkspace.id, agentId: johnAgent.id,
+      summary: "High debt load, thin cash reserves — eliminate the CC before any new investments.",
+      adviceText: `**Market Context (June 2026):** BTC ~$98,000. S&P 500 steady. Rates elevated.
 
 **Your Position:**
-- Liquid cash: $2,100 (Beacon Bank Checking) — roughly 0.5 months expenses. Thin.
-- Savings: $5,500 — covers about 1 month expenses. Below the recommended 3-month cushion ($12,000+).
-- Investments: Alpha Brokerage 401k $18,200 — tech-heavy (NVDA + TSLA = 46%). High concentration risk.
-- Crypto: $7,400 — ~22% of investable assets. High side of medium-risk band.
-- Debt: Credit card $5,800 at likely 20%+ APR + auto loan $11,200 at ~6% = **$17,000 total**.
-- Net worth: ~**$16,200** (assets $33,200 − debt $17,000).
+- Cash: **$2,100** (~0.5 months expenses — thin)
+- Savings: **$5,500** (below 3-month cushion)
+- Roth IRA: **$28,500** — well diversified (VOO/SCHD/BND/VXUS/VNQ)
+- 401k: **$18,200** — tech-heavy (NVDA + TSLA = 46%)
+- Taxable: **$12,800** — QQQ/AAPL/MSFT concentration
+- Crypto: **$11,124** — BTC/ETH/DOGE across exchange + wallet
+- Debt: **$302,100** ($5.8k CC 22.99% | $11.2k auto 6.49% | $285k mortgage 3.875%)
+- Business equity: ~$6.3k net
+- Net worth: ~**$77,824**
 
-**Suggestions:**
-1. **Priority #1 — Pay down the credit card.** At 20%+ APR, this is your most expensive money. Redirect all surplus cash here until it's gone.
-2. **Priority #2 — Build the emergency fund.** $5,500 is not enough cushion. Target $12,000+ before adding new investment capital.
-3. **NVDA + TSLA = 46% of your 401k.** Rebalance toward VOO or a diversified ETF over time. Don't let two names dominate.
-4. **Crypto at 22% of investable assets** is within the medium-risk range, but adding more while carrying high-APR debt is not advised.
-5. **Auto loan at ~6%** is manageable — prioritize the credit card over accelerated auto payoff.
+**Priority Actions:**
+1. Kill the CC — 22.99% APR is wealth destruction
+2. Build emergency fund to $12,000+
+3. Rebalance 401k toward VOO/diversified ETF (NVDA + TSLA overweight)
+4. Mortgage is low rate (3.875%) — don't overpay while CC exists
+5. Business revenue strong — keep profit draws consistent
 
-**Risk Level: Medium** — good income, growing investments, but debt load is limiting flexibility.
-
-**Play Ready: No** — credit card balance and thin cash buffer rule out discretionary capital deployment right now.`,
-      riskLevel:   "medium",
-      playReady:   false,
-      generatedAt: new Date("2026-06-09T09:00:00Z"),
+**Risk Level: Medium-High** | **Play Ready: No**`,
+      riskLevel: "medium", playReady: false, generatedAt: new Date("2026-06-09T09:00:00Z"),
     },
   });
-  console.log("   ✓ AiAdvice (John): 1");
 
-  // ── John's WorkspaceSnapshots (365 days) ───────────────────────────────────
-  const johnSnapshots = buildJohnHistory(johnWorkspace.id);
-  await prisma.workspaceSnapshot.createMany({ data: johnSnapshots });
-  console.log(`   ✓ WorkspaceSnapshots (John): ${johnSnapshots.length}`);
+  // John — Snapshots
+  await prisma.workspaceSnapshot.createMany({ data: buildJohnHistory(johnWorkspace.id) });
+  console.log("   ✓ WorkspaceSnapshots (John): 365");
 
-  // ── Audit log entry for seed ───────────────────────────────────────────────
-  await prisma.auditLog.create({
-    data: {
-      userId:      jane.id,
-      workspaceId: janeWorkspace.id,
-      action:      "SEED",
-      metadata:    { note: "Initial database seed — demo data only" },
-    },
+  // Shared workspace snapshots
+  await prisma.workspaceSnapshot.createMany({ data: buildHouseholdHistory(householdWorkspace.id) });
+  await prisma.workspaceSnapshot.createMany({ data: buildDebtHistory(debtWorkspace.id) });
+  console.log("   ✓ WorkspaceSnapshots (Household 120, Debt 90)");
+
+  // ── Workspace Goals ──────────────────────────────────────────────────────────
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const goalCreate = (data: any) => (prisma.workspaceGoal as any).create({ data });
+
+  const goalJaneEmergencyFund = await goalCreate({
+    workspaceId: householdWorkspace.id, createdByUserId: jane.id,
+    name: "6-Month Emergency Fund", description: "Build a combined emergency fund covering 6 months of household expenses (~$20k)",
+    category: GoalCategory.EMERGENCY_FUND, goalType: GoalType.FINANCIAL,
+    status: GoalStatus.ACTIVE, targetAmount: 20000, currentAmount: 11740,
+    targetDate: new Date("2027-01-01"),
   });
+  const goalJaneJapan = await goalCreate({
+    workspaceId: japanWorkspace.id, createdByUserId: jane.id,
+    name: "Japan Trip 2027 Fund", description: "Save $8,500 for flights, accommodation, and spending money",
+    category: GoalCategory.TRIP, goalType: GoalType.FINANCIAL,
+    status: GoalStatus.ACTIVE, targetAmount: 8500, currentAmount: 3240,
+    targetDate: new Date("2027-03-01"),
+  });
+  const goalJaneCCPayoff = await goalCreate({
+    workspaceId: janeWorkspace.id, createdByUserId: jane.id,
+    name: "Pay Off CU Credit Card", description: "Eliminate $3,200 balance at 19.99% APR",
+    category: GoalCategory.DEBT_PAYOFF, goalType: GoalType.DEBT_REDUCTION,
+    status: GoalStatus.ACTIVE, targetAmount: 3200, currentAmount: 2100,
+    linkedAccountId: jCreditCard.id, snapshotBalance: 3200, targetReductionAmount: 3200,
+  });
+  const _goalJaneExercise = await goalCreate({
+    workspaceId: janeWorkspace.id, createdByUserId: jane.id,
+    name: "Daily Exercise Streak", description: "30-minute workout every day — building the habit",
+    category: GoalCategory.GENERAL, goalType: GoalType.HABIT,
+    status: GoalStatus.ACTIVE, habitFrequency: "DAILY", currentStreak: 12, longestStreak: 28,
+    lastCheckIn: D(1),
+  });
+  const _goalJaneDiningBudget = await goalCreate({
+    workspaceId: janeWorkspace.id, createdByUserId: jane.id,
+    name: "Dining Budget — $300/mo", description: "Keep dining + coffee under $300/month",
+    category: GoalCategory.GENERAL, goalType: GoalType.SPENDING_LIMIT,
+    status: GoalStatus.ACTIVE, targetAmount: 300, spendingCategory: "Dining",
+  });
+  const goalJohnCCElim = await goalCreate({
+    workspaceId: debtWorkspace.id, createdByUserId: john.id,
+    name: "Beacon CC Elimination",  description: "Pay off Beacon Credit Card ($5,800 at 22.99% APR) — highest priority debt",
+    category: GoalCategory.DEBT_PAYOFF, goalType: GoalType.DEBT_REDUCTION,
+    status: GoalStatus.ACTIVE, targetAmount: 5800, currentAmount: 3200,
+    linkedAccountId: jnCreditCard.id, snapshotBalance: 5800, targetReductionAmount: 5800,
+  });
+  const goalJohnAutoLoan = await goalCreate({
+    workspaceId: debtWorkspace.id, createdByUserId: john.id,
+    name: "Auto Loan Payoff", description: "Accelerate payoff of $11,200 auto loan (6.49% APR)",
+    category: GoalCategory.DEBT_PAYOFF, goalType: GoalType.DEBT_REDUCTION,
+    status: GoalStatus.ACTIVE, targetAmount: 11200, currentAmount: 4000,
+    linkedAccountId: jnAutoLoan.id, snapshotBalance: 11200, targetReductionAmount: 11200,
+    targetDate: new Date("2028-06-01"),
+  });
+  const goalJohnRothMax = await goalCreate({
+    workspaceId: investmentWorkspace.id, createdByUserId: john.id,
+    name: "Max Roth IRA 2026", description: "Contribute full $7,000 to Roth IRA this calendar year",
+    category: GoalCategory.INVESTMENT, goalType: GoalType.FINANCIAL,
+    status: GoalStatus.ACTIVE, targetAmount: 7000, currentAmount: 2332,
+    targetDate: new Date("2026-12-31"),
+  });
+  const _goalJohnRenovation = await goalCreate({
+    workspaceId: propertyWorkspace.id, createdByUserId: john.id,
+    name: "Home Renovation Fund", description: "Kitchen + master bath renovation — paused pending CC payoff",
+    category: GoalCategory.HOME_PURCHASE, goalType: GoalType.FINANCIAL,
+    status: GoalStatus.PAUSED, targetAmount: 25000, currentAmount: 0,
+    targetDate: new Date("2028-01-01"),
+  });
+  // Completed goal — earlier Japan research fund
+  const _goalJaneCompleted = await goalCreate({
+    workspaceId: janeWorkspace.id, createdByUserId: jane.id,
+    name: "Japan Research Budget", description: "Fund for Japan trip research and flight booking deposit",
+    category: GoalCategory.TRIP, goalType: GoalType.FINANCIAL,
+    status: GoalStatus.COMPLETED, targetAmount: 1000, currentAmount: 1000,
+    targetDate: new Date("2026-03-01"), completedAt: D(45),
+  });
+  console.log("   ✓ WorkspaceGoals: 10");
+
+  // ── Goal Contributions ────────────────────────────────────────────────────────
+  await prisma.goalContribution.createMany({
+    data: [
+      { goalId: goalJaneEmergencyFund.id, financialAccountId: jDemoHysa.id,     includeBalance: true },
+      { goalId: goalJaneEmergencyFund.id, financialAccountId: jnSavings.id,     includeBalance: true },
+      { goalId: goalJaneJapan.id,         financialAccountId: jJapanSavings.id, includeBalance: true },
+      { goalId: goalJaneCCPayoff.id,      financialAccountId: jCreditCard.id,   includeBalance: true },
+      { goalId: goalJohnCCElim.id,        financialAccountId: jnCreditCard.id,  includeBalance: true },
+      { goalId: goalJohnAutoLoan.id,      financialAccountId: jnAutoLoan.id,    includeBalance: true },
+      { goalId: goalJohnRothMax.id,       financialAccountId: jnRothIra.id,     includeBalance: false },
+    ],
+  });
+  console.log("   ✓ GoalContributions: 7");
+
+  // ── Audit Log ─────────────────────────────────────────────────────────────────
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const log = (userId: string, workspaceId: string | null, action: string, metadata?: any, createdAt?: Date) =>
+    ({ userId, workspaceId, action, metadata: metadata ?? {}, ...(createdAt ? { createdAt } : {}) });
+
+  // Helper: minutes-ago offset so events within the same day are ordered properly.
+  // Larger offset = older event. Events are listed oldest → newest, each 5 min apart.
+  const T = (daysAgo: number, minutesAgo = 0) => {
+    const d = D(daysAgo);
+    d.setMinutes(d.getMinutes() - minutesAgo);
+    return d;
+  };
+
+  await prisma.auditLog.createMany({
+    data: [
+      // ── Workspace creation trails (oldest events get highest offsets) ─────────
+      // Personal workspaces (created ~90 days ago)
+      log(jane.id, janeWorkspace.id,      "WORKSPACE_CREATED",  { name: "Jane's Dashboard",    category: "PERSONAL"   }, T(90)),
+      log(john.id, johnWorkspace.id,      "WORKSPACE_CREATED",  { name: "John's Dashboard",    category: "PERSONAL"   }, T(90)),
+
+      // Household workspace (created ~60 days ago, events staggered 5 min apart)
+      log(jane.id, householdWorkspace.id, "WORKSPACE_CREATED",  { name: "Smith-Doe Household", category: "HOUSEHOLD"  }, T(60, 20)),
+      log(john.id, householdWorkspace.id, "MEMBER_INVITED",     { invitedEmail: "john@example.com", role: "MEMBER" },    T(60, 15)),
+      log(john.id, householdWorkspace.id, "MEMBER_JOINED",      { role: "MEMBER" },                                     T(60, 10)),
+      log(jane.id, householdWorkspace.id, "ACCOUNT_SHARED",     { accountName: "Demo Bank Checking",           visibility: "FULL"         }, T(60, 5)),
+      log(jane.id, householdWorkspace.id, "ACCOUNT_SHARED",     { accountName: "Demo Bank High Yield Savings", visibility: "BALANCE_ONLY" }, T(60, 4)),
+      log(john.id, householdWorkspace.id, "ACCOUNT_SHARED",     { accountName: "Beacon Bank Checking",         visibility: "FULL"         }, T(60, 3)),
+      log(john.id, householdWorkspace.id, "ACCOUNT_SHARED",     { accountName: "Beacon Mortgage",              visibility: "FULL"         }, T(60, 2)),
+
+      // Debt Payoff Tracker (created ~30 days ago)
+      log(john.id, debtWorkspace.id,      "WORKSPACE_CREATED",  { name: "Debt Payoff Tracker", category: "DEBT_PAYOFF" }, T(30, 20)),
+      log(john.id, debtWorkspace.id,      "MEMBER_INVITED",     { invitedEmail: "jane@example.com", role: "MEMBER" },     T(30, 15)),
+      log(jane.id, debtWorkspace.id,      "MEMBER_JOINED",      { role: "MEMBER" },                                      T(30, 10)),
+      log(john.id, debtWorkspace.id,      "ACCOUNT_SHARED",     { accountName: "Beacon Credit Card",     visibility: "FULL"         }, T(30, 5)),
+      log(john.id, debtWorkspace.id,      "ACCOUNT_SHARED",     { accountName: "Beacon Auto Loan",       visibility: "FULL"         }, T(30, 4)),
+      log(jane.id, debtWorkspace.id,      "ACCOUNT_SHARED",     { accountName: "Example CU Credit Card", visibility: "BALANCE_ONLY" }, T(30, 3)),
+
+      // Japan Trip workspace (created ~20 days ago)
+      log(jane.id, japanWorkspace.id,     "WORKSPACE_CREATED",  { name: "Japan Trip 2027", category: "TRIP"   }, T(20, 15)),
+      log(jane.id, japanWorkspace.id,     "MEMBER_INVITED",     { invitedEmail: "john@example.com", role: "MEMBER" }, T(20, 10)),
+      log(john.id, japanWorkspace.id,     "MEMBER_JOINED",      { role: "MEMBER" },                                  T(20,  5)),
+
+      // Investment Club (created ~14 days ago)
+      log(john.id, investmentWorkspace.id,"WORKSPACE_CREATED",  { name: "Investment Club",  category: "INVESTMENT" }, T(14, 15)),
+      log(john.id, investmentWorkspace.id,"MEMBER_INVITED",     { invitedEmail: "alex@example.com", role: "VIEWER" }, T(14, 10)),
+      log(alex.id, investmentWorkspace.id,"MEMBER_JOINED",      { role: "VIEWER" },                                  T(14,  5)),
+
+      // JD Freelance LLC (created ~7 days ago)
+      log(john.id, businessWorkspace.id,  "WORKSPACE_CREATED",  { name: "JD Freelance LLC", category: "BUSINESS" }, T(7, 15)),
+      log(john.id, businessWorkspace.id,  "MEMBER_INVITED",     { invitedEmail: "alex@example.com", role: "ADMIN" }, T(7, 10)),
+      log(alex.id, businessWorkspace.id,  "MEMBER_JOINED",      { role: "ADMIN" },                                  T(7,  5)),
+
+      // Austin Home (created ~3 days ago)
+      log(john.id, propertyWorkspace.id,  "WORKSPACE_CREATED",  { name: "Austin Home", category: "PROPERTY" }, T(3, 15)),
+      log(john.id, propertyWorkspace.id,  "MEMBER_INVITED",     { invitedEmail: "jane@example.com", role: "ADMIN" }, T(3, 10)),
+      log(jane.id, propertyWorkspace.id,  "MEMBER_JOINED",      { role: "ADMIN" },                                  T(3,  5)),
+
+      // ── Recent activity (today / yesterday) ──────────────────────────────────
+      log(jane.id, janeWorkspace.id,      "GOAL_CREATED",       { goalName: "Pay Off CU Credit Card", category: "DEBT_PAYOFF" }, T(2)),
+      log(john.id, debtWorkspace.id,      "GOAL_CREATED",       { goalName: "Beacon CC Elimination",  category: "DEBT_PAYOFF" }, T(1)),
+      log(jane.id, janeWorkspace.id,      "GOAL_COMPLETED",     { goalName: "Japan Research Budget",  completedAt: D(45).toISOString() }, T(0, 30)),
+      log(john.id, null,                  "TOTP_ENABLED",       { method: "authenticator_app" }),
+      log(admin.id,null,                  "SEED",               { note: "Comprehensive demo seed — dev only" }),
+    ],
+  });
+  console.log("   ✓ AuditLog: 32 events");
 
   console.log("\n✅  Seed complete.");
-  console.log("── Jane Smith ─────────────────────────────────────────────────────────────");
+  console.log("─── Jane Smith ──────────────────────────────────────────────────────────────");
   console.log(`   Workspace:  ${janeWorkspace.name} (id: ${janeWorkspace.id})`);
-  console.log("   Net worth:  ~$28,700 (assets $31,900 − debt $3,200)");
-  console.log("   Cash:       $4,200 checking | $8,500 savings");
-  console.log("   Debt:       Demo Credit Card $3,200");
-  console.log("   Crypto:     ~28% of investable assets");
-  console.log("   FICO:       720 | Risk level: low | Play ready: YES");
-  console.log("── John Doe ───────────────────────────────────────────────────────────────");
+  console.log("   Accounts:   9 (checking, HYSA, Japan savings, CU checking, CC, IRA, taxable, crypto, BTC)");
+  console.log("   Net worth:  ~$28,700  |  CC debt: $3,200  |  FICO: 720  |  Play ready: YES");
+  console.log("─── John Doe ────────────────────────────────────────────────────────────────");
   console.log(`   Workspace:  ${johnWorkspace.name} (id: ${johnWorkspace.id})`);
-  console.log("   Net worth:  ~$16,200 (assets $33,200 − debt $17,000)");
-  console.log("   Cash:       $2,100 checking | $5,500 savings");
-  console.log("   Debt:       Beacon Credit Card $5,800 + Auto Loan $11,200");
-  console.log("   Crypto:     ~22% of investable assets");
-  console.log("   FICO:       680 | Risk level: medium | Play ready: NO");
-  console.log("── Shared ─────────────────────────────────────────────────────────────────");
-  console.log(`   Workspace:  ${sharedWorkspace.name} (id: ${sharedWorkspace.id})`);
-  console.log("\n🔑  Demo login credentials (local dev only — change before any real deployment):");
-  console.log(`   jane@example.com   (@janesmith)  /  ${JANE_PASSWORD}`);
-  console.log(`   john@example.com   (@johndoe)    /  ${JANE_PASSWORD}`);
-  console.log(`   admin@example.com  (@admin)       /  ${ADMIN_PASSWORD}`);
+  console.log("   Accounts:   12 (checking, savings, CC, auto, mortgage, Roth, 401k, taxable, crypto, BTC, biz checking, biz CC)");
+  console.log("   Net worth:  ~$77,800  |  Debt: $302k  |  FICO: 680  |  Play ready: NO");
+  console.log("─── Alex Chen ───────────────────────────────────────────────────────────────");
+  console.log(`   No personal accounts — viewer/bookkeeper role only`);
+  console.log("   FICO: 750");
+  console.log("─── Shared Workspaces ───────────────────────────────────────────────────────");
+  console.log(`   ${householdWorkspace.name}  — Jane (OWNER) + John (MEMBER)`);
+  console.log(`   ${debtWorkspace.name}      — John (OWNER) + Jane (MEMBER)`);
+  console.log(`   ${japanWorkspace.name}          — Jane (OWNER) + John (MEMBER)`);
+  console.log(`   ${investmentWorkspace.name}      — John (OWNER) + Jane (MEMBER) + Alex (VIEWER)`);
+  console.log(`   ${businessWorkspace.name}       — John (OWNER) + Alex (ADMIN)`);
+  console.log(`   ${propertyWorkspace.name}             — John (OWNER) + Jane (ADMIN)`);
+  console.log("\n🔑  Demo credentials (⚠️  local dev only — never use in production):");
+  console.log(`   jane@example.com      (@janesmith)  /  ${JANE_PASSWORD}    [USER]`);
+  console.log(`   john@example.com      (@johndoe)    /  ${JANE_PASSWORD}    [USER]`);
+  console.log(`   alex@example.com      (@alexchen)   /  ${JANE_PASSWORD}    [USER]`);
+  console.log(`   sysadmin@example.com  (@sysadmin)   /  ${ADMIN_PASSWORD}   [SYSTEM_ADMIN — DEV ONLY]`);
 }
 
 main()
-  .catch((e) => {
-    console.error("❌  Seed failed:", e);
-    process.exit(1);
-  })
+  .catch((e) => { console.error("❌  Seed failed:", e); process.exit(1); })
   .finally(() => prisma.$disconnect());

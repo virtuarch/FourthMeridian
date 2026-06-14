@@ -3,18 +3,40 @@ import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
   title: "FinTracker",
-  description: "Personal finance dashboard",
+  description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
   manifest: "/manifest.json",
   icons: {
-    icon:     "/logo.png",
-    shortcut: "/logo.png",
+    icon:     "/logo-icon.png",
+    shortcut: "/logo-icon.png",
     apple:    "/icons/apple-touch-icon.png",
   },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
     title: "FinTracker",
+  },
+  openGraph: {
+    title: "FinTracker",
+    description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
+    url: "https://fintracker.app",
+    siteName: "FinTracker",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1536,
+        height: 1024,
+        alt: "FinTracker — Personal Finance Dashboard",
+      },
+    ],
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "FinTracker",
+    description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
+    images: ["/og-image.png"],
   },
 };
 
@@ -32,7 +54,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="h-full">
+    <html lang="en" className="h-full" suppressHydrationWarning>
       <head>
         <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
       </head>

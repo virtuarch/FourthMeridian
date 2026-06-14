@@ -3,23 +3,36 @@
  *
  * Server-only. All functions query Prisma and return plain serialisable objects
  * (no Date instances) so they can be passed safely from Server → Client components.
+ *
+ * getAccounts() now queries via WorkspaceAccountShare → FinancialAccount.
+ * getHoldings() still queries the legacy Account → Holding path until Holding
+ * FKs are migrated to AccountConnection in a future milestone.
  */
 
 import { db } from "@/lib/db";
 import { getWorkspaceContext } from "@/lib/workspace";
 import { Account, Holding } from "@/types";
+import { ShareStatus } from "@prisma/client";
 
-/** All accounts for the current workspace, serialised to the frontend Account type. */
+/** All accounts visible to the current workspace, via WorkspaceAccountShare. */
 export async function getAccounts(): Promise<Account[]> {
   const { workspaceId } = await getWorkspaceContext();
 
-  const rows = await db.account.findMany({
-    where: { workspaceId, deletedAt: null },
-    orderBy: [{ type: "asc" }, { name: "asc" }],
+  const shares = await db.workspaceAccountShare.findMany({
+    where: {
+      workspaceId,
+      status:           ShareStatus.ACTIVE,
+      financialAccount: { deletedAt: null },
+    },
+    include: { financialAccount: true },
+    orderBy: [
+      { financialAccount: { type: "asc" } },
+      { financialAccount: { name: "asc" } },
+    ],
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rows.map((r: any) => ({
+  return shares.map(({ financialAccount: r }: any) => ({
     id:            r.id,
     name:          r.name,
     type:          r.type as Account["type"],
@@ -27,15 +40,22 @@ export async function getAccounts(): Promise<Account[]> {
     balance:       r.balance,
     currency:      r.currency,
     lastUpdated:   r.lastUpdated.toISOString(),
-    creditLimit:   r.creditLimit   ?? undefined,
-    walletAddress: r.walletAddress ?? undefined,
+    creditLimit:    r.creditLimit    ?? undefined,
+    debtSubtype:    r.debtSubtype    ?? undefined,
+    interestRate:   r.interestRate   ?? undefined,
+    minimumPayment: r.minimumPayment ?? undefined,
+    walletAddress:  r.walletAddress  ?? undefined,
     walletChain:   r.walletChain   as Account["walletChain"] ?? undefined,
     nativeBalance: r.nativeBalance ?? undefined,
     syncStatus:    r.syncStatus    as Account["syncStatus"]  ?? undefined,
   }));
 }
 
-/** All holdings across all investment accounts, serialised to the frontend Holding type. */
+/**
+ * All holdings across all investment accounts.
+ * Still queries via the legacy Account → Holding path until Holding FKs are
+ * moved to AccountConnection in a future milestone.
+ */
 export async function getHoldings(): Promise<Holding[]> {
   const { workspaceId } = await getWorkspaceContext();
 

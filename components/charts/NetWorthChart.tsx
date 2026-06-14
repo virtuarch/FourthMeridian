@@ -2,14 +2,16 @@
 import { useMemo } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { Snapshot } from "@/types";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 export type Interval = "7D" | "1M" | "3M" | "6M" | "YTD" | "1Y";
 
 interface Props {
-  snapshots: Snapshot[];
-  interval: Interval;
+  snapshots:        Snapshot[];
+  interval:         Interval;
   onIntervalChange: (i: Interval) => void;
-  cashMode?: boolean;
+  cashMode?:        boolean;
+  fill?:            boolean;
 }
 
 const INTERVALS: { label: Interval; days: number | "ytd" }[] = [
@@ -22,10 +24,10 @@ const INTERVALS: { label: Interval; days: number | "ytd" }[] = [
 ];
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 0 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 0 }).format(n);
 
 const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(n);
 
 export function cutoffForInterval(interval: Interval): string {
   const now = new Date();
@@ -43,7 +45,7 @@ function tickFormat(dateStr: string, interval: Interval): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode = false }: Props) {
+export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode = false, fill = false }: Props) {
   const filtered = useMemo(() => {
     const cutoff = cutoffForInterval(interval);
     return snapshots.filter((s) => s.date >= cutoff);
@@ -58,6 +60,10 @@ export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode 
     const cutoff = cutoffForInterval(label);
     return snapshots.some((s) => s.date >= cutoff);
   });
+
+  // fill=true uses a taller fixed height on desktop; both paths use an explicit
+  // pixel height so ResponsiveContainer never receives -1 from the DOM.
+  const chartHeight = fill ? 260 : 180;
 
   return (
     <div>
@@ -77,29 +83,30 @@ export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode 
         ))}
       </div>
 
-      <ResponsiveContainer width="100%" height={180}>
-        <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-          <defs>
-            <linearGradient id="nwGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <XAxis
-            dataKey="date"
-            tickFormatter={(v) => tickFormat(v, interval)}
-            tick={{ fontSize: 10, fill: "#6b7280" }}
-            tickLine={false}
-            axisLine={false}
-            interval="preserveStartEnd"
-          />
-          <YAxis
-            tickFormatter={fmt}
-            tick={{ fontSize: 10, fill: "#6b7280" }}
-            tickLine={false}
-            axisLine={false}
-            width={56}
-          />
+      <ResponsiveContainer width="100%" height={chartHeight}>
+          <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: -20 }}>
+            <defs>
+              <linearGradient id="nwGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <XAxis
+              dataKey="date"
+              tickFormatter={(v) => tickFormat(v, interval)}
+              tick={{ fontSize: 10, fill: "#6b7280" }}
+              tickLine={false}
+              axisLine={false}
+              interval="preserveStartEnd"
+              padding={{ left: 12, right: 4 }}
+            />
+            <YAxis
+              tickFormatter={fmt}
+              tick={{ fontSize: 10, fill: "#6b7280" }}
+              tickLine={false}
+              axisLine={false}
+              width={44}
+            />
           <Tooltip
             contentStyle={{ background: "#1f2937", border: "1px solid #374151", borderRadius: 8, fontSize: 12 }}
             formatter={(v) => [fmtFull(Number(v)), cashMode ? "Cash" : "Net Worth"]}

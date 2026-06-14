@@ -58,11 +58,51 @@ enum WorkspaceType {
   SHARED
 }
 
+/// Semantic category for a workspace — drives default UI labels, section presets, and AI context.
+enum WorkspaceCategory {
+  PERSONAL
+  HOUSEHOLD
+  FAMILY
+  BUSINESS
+  PROPERTY
+  VEHICLE
+  TRIP
+  INVESTMENT
+  EQUIPMENT
+  GOAL          // legacy — kept for backward compat
+  RETIREMENT
+  DEBT_PAYOFF
+  EMERGENCY_FUND
+  CUSTOM
+  OTHER
+}
+
+/// Tabs available on the workspace planning dashboard.
+/// Each WorkspaceDashboardSection belongs to one tab.
+enum WorkspaceDashboardTab {
+  OVERVIEW
+  GOALS
+  ACCOUNTS
+  DEBT
+  INVESTMENTS
+  RETIREMENT
+  ACTIVITY
+  SETTINGS
+}
+
 enum WorkspaceMemberRole {
   OWNER
   ADMIN
   MEMBER
   VIEWER
+}
+
+/// Soft-membership state. REMOVED = kicked by OWNER/ADMIN. LEFT = self-removed.
+/// Row is never deleted so audit history is preserved.
+enum WorkspaceMemberStatus {
+  ACTIVE
+  REMOVED
+  LEFT
 }
 
 enum InviteStatus {
@@ -71,10 +111,36 @@ enum InviteStatus {
   DECLINED
 }
 
+/// Controls how a FinancialAccount is visible to a workspace it has been shared into.
+/// BALANCE_ONLY added for privacy-sensitive sharing (e.g. a partner sees total but not institution).
+/// FULL replaces the old SHARED value; SHARED kept temporarily for Account (legacy) rows.
 enum VisibilityLevel {
   PRIVATE       // only the owning workspace can see this account
-  SUMMARY_ONLY  // other workspaces see a qualitative summary, no raw numbers
-  SHARED        // fully visible to all workspace members
+  BALANCE_ONLY  // other workspace sees the balance total, no institution or transactions
+  SUMMARY_ONLY  // qualitative summary, no raw numbers
+  SHARED        // legacy — maps to FULL; kept for backward compat with Account model
+  FULL          // fully visible to all workspace members (new canonical value)
+}
+
+/// Whether a WorkspaceAccountShare is currently active or has been revoked.
+enum ShareStatus {
+  ACTIVE
+  REVOKED
+}
+
+/// Lifecycle of a suspected duplicate pair surfaced by the system.
+/// NEVER auto-merged — user must confirm.
+enum DuplicateStatus {
+  PENDING              // flagged, awaiting user review
+  CONFIRMED_DUPLICATE  // user confirmed these are the same real-world account
+  NOT_DUPLICATE        // user confirmed these are different accounts
+  IGNORED              // user dismissed without deciding
+}
+
+/// Whether a FinancialAccount is owned by an individual user or by a workspace entity.
+enum AccountOwnerType {
+  USER       // personal account owned by a single user
+  WORKSPACE  // workspace-level account (e.g. a joint or business account)
 }
 
 enum UserRole {
@@ -98,6 +164,36 @@ enum UseCase {
   OTHER
 }
 
+/// Category of a financial goal — drives default labels and AI context.
+enum GoalCategory {
+  EMERGENCY_FUND
+  DEBT_PAYOFF
+  HOME_PURCHASE
+  VEHICLE_PURCHASE
+  TRIP
+  BUSINESS
+  INVESTMENT
+  EQUIPMENT
+  EDUCATION
+  GENERAL
+}
+
+/// Lifecycle state of a WorkspaceGoal.
+enum GoalStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+/// Governs which fields and tracking mode apply to a WorkspaceGoal.
+enum GoalType {
+  FINANCIAL       // Save $X by a target date
+  HABIT           // Behavioral goal tracked by streak / check-ins
+  SPENDING_LIMIT  // Keep a spending category under $X / month
+  DEBT_REDUCTION  // Pay down a specific debt account by $X or X%
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // User
 // ficoScore removed — now lives in CreditScore for time-series tracking.
@@ -119,18 +215,42 @@ model User {
   totpSecret           String?           // TOTP seed, stored encrypted (used in M3)
   totpEnabled          Boolean           @default(false)
   role                 UserRole          @default(USER)
+  preferredWorkspaceId String?           // soft ref — workspace the user lands on after login
   passwordResetToken   String?           @unique
   passwordResetExpiry  DateTime?
+  forcePasswordReset   Boolean           @default(false) // set true by admin; user must change on next login
+  lastBriefViewedAt    DateTime?                         // set when user views the Daily Brief page
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
 
-  workspaces      WorkspaceMember[]
-  sentInvites     WorkspaceInvite[] @relation("SentInvites")
-  receivedInvites WorkspaceInvite[] @relation("ReceivedInvites")
-  plaidItems      PlaidItem[]
-  ownedAccounts   Account[]         // accounts this user connected/created
-  creditScores    CreditScore[]
-  auditLogs       AuditLog[]
+  workspaces           WorkspaceMember[]
+  sentInvites          WorkspaceInvite[] @relation("SentInvites")
+  receivedInvites      WorkspaceInvite[] @relation("ReceivedInvites")
+  plaidItems           PlaidItem[]
+  ownedAccounts        Account[]         // legacy: accounts this user connected/created
+  creditScores         CreditScore[]
+  auditLogs            AuditLog[]
+
+  // Security
+  recoveryCodes        RecoveryCode[]
+  sessions             UserSession[]
+
+  // New financial account relations
+  financialAccounts    FinancialAccount[]  @relation("UserOwnedFinancialAccounts")
+  accountConnections   AccountConnection[] @relation("UserConnectedAccounts")
+
+  // Member revocation (who revoked whom)
+  revokedMembers       WorkspaceMember[]   @relation("RevokedByUser")
+
+  // Goal creation
+  createdGoals         WorkspaceGoal[]     @relation("GoalCreator")
+
+  // WorkspaceAccountShare — tracks who added/revoked shares
+  addedShares          WorkspaceAccountShare[] @relation("ShareAdder")
+  revokedShares        WorkspaceAccountShare[] @relation("ShareRevoker")
+
+  // DuplicateAccountCandidate — tracks who resolved the review
+  resolvedDuplicates   DuplicateAccountCandidate[] @relation("DuplicateResolver")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,24 +258,32 @@ model User {
 // Container for all financial data. Every user auto-receives one PERSONAL
 // workspace on registration. Additional SHARED workspaces can be created or
 // joined (Hogan Family, Atlanta Duplex LLC, etc.)
+// category provides semantic context for the workspace (e.g. HOUSEHOLD, BUSINESS).
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Workspace {
-  id          String        @id @default(cuid())
+  id          String            @id @default(cuid())
   name        String
   description String?
-  type        WorkspaceType @default(PERSONAL)
-  isPublic    Boolean       @default(false)  // SHARED workspaces can be listed publicly
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  type        WorkspaceType     @default(PERSONAL)
+  category    WorkspaceCategory @default(PERSONAL)
+  isPublic    Boolean           @default(false)  // SHARED workspaces can be listed publicly
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
 
   members       WorkspaceMember[]
   invites       WorkspaceInvite[]
-  accounts      Account[]
+  accounts      Account[]           // legacy account relation
   snapshots     WorkspaceSnapshot[]
   aiAgent       AiAgent?
   adviceHistory AiAdvice[]
   auditLogs     AuditLog[]
+
+  // New financial account relations
+  accountShares         WorkspaceAccountShare[]
+  ownedFinancialAccounts FinancialAccount[]     @relation("WorkspaceOwnedFinancialAccounts")
+  goals                 WorkspaceGoal[]
+  dashboardSections     WorkspaceDashboardSection[]
 
   @@index([type])
   @@index([isPublic])
@@ -163,22 +291,32 @@ model Workspace {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WorkspaceMember
-// Join table linking users to workspaces with roles. One user can belong to
-// many workspaces; one workspace can have many members.
+// Join table linking users to workspaces with roles.
+// status: ACTIVE (normal), REMOVED (kicked), LEFT (self-removed).
+// Rows are never deleted — status update preserves audit history.
+// When status becomes REMOVED or LEFT, all WorkspaceAccountShare records
+// contributed by that user are revoked.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model WorkspaceMember {
-  id          String              @id @default(cuid())
+  id          String                @id @default(cuid())
   workspaceId String
-  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace   Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   userId      String
-  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role        WorkspaceMemberRole @default(MEMBER)
-  joinedAt    DateTime            @default(now())
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        WorkspaceMemberRole   @default(MEMBER)
+  status      WorkspaceMemberStatus @default(ACTIVE)
+  joinedAt    DateTime              @default(now())
+
+  // Populated when status transitions to REMOVED or LEFT
+  revokedAt   DateTime?
+  revokedById String?
+  revokedBy   User?                 @relation("RevokedByUser", fields: [revokedById], references: [id], onDelete: SetNull)
 
   @@unique([workspaceId, userId])
   @@index([workspaceId])
   @@index([userId])
+  @@index([workspaceId, status])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -199,6 +337,7 @@ model WorkspaceInvite {
   status        InviteStatus        @default(PENDING)
   createdAt     DateTime            @default(now())
   expiresAt     DateTime?
+  seenAt        DateTime?           // set when invited user first views the invite
 
   @@unique([workspaceId, invitedUserId])
   @@index([invitedUserId])
@@ -229,7 +368,7 @@ model AiAgent {
 // PlaidItem
 // Stays on User — it is a credential (OAuth token), not a workspace asset.
 // One item per institution; a single token covers all accounts at that bank.
-// The accounts derived from this item are assigned to a workspace.
+// Accounts derived from this item are created as FinancialAccount rows.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model PlaidItem {
@@ -247,16 +386,17 @@ model PlaidItem {
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
-  accounts Account[]
+  accounts    Account[]           // legacy relation
+  connections AccountConnection[] // new relation
 
   @@index([userId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Account
-// Owned by a Workspace, not a User directly. ownerId records who connected
-// the account (for audit and re-auth purposes). visibilityLevel controls
-// how account data is shared across workspace boundaries.
+// Account (LEGACY — kept temporarily during migration)
+// Will be removed once all data is migrated to FinancialAccount +
+// AccountConnection + WorkspaceAccountShare and validated in production.
+// Do not add new features here; use FinancialAccount instead.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Account {
@@ -297,6 +437,286 @@ model Account {
   @@index([workspaceId, type])
   @@index([ownerId])
   @@index([plaidItemDbId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FinancialAccount
+// Canonical representation of a single real-world financial account.
+// One row per real-world account — never duplicated.
+// ownerType / ownerUserId / ownerWorkspaceId track who "owns" the account
+// in the FinTracker sense (not necessarily the legal bank account holder).
+// Balance values here are always canonical — sourced from the isCanonical
+// AccountConnection on each sync cycle.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model FinancialAccount {
+  id               String           @id @default(cuid())
+  ownerType        AccountOwnerType
+  ownerUserId      String?
+  ownerUser        User?            @relation("UserOwnedFinancialAccounts", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  ownerWorkspaceId String?
+  ownerWorkspace   Workspace?       @relation("WorkspaceOwnedFinancialAccounts", fields: [ownerWorkspaceId], references: [id], onDelete: SetNull)
+
+  // Canonical values — written by the AccountConnection with isCanonical = true
+  name             String
+  type             AccountType
+  institution      String
+  institutionId    String?          // Plaid institution_id (e.g. "ins_3")
+  mask             String?          // last 4 digits of account number
+  balance          Float            @default(0)
+  availableBalance Float?
+  creditLimit      Float?
+  currency         String           @default("USD")
+  lastUpdated      DateTime         @default(now())
+
+  // Plaid deduplication key
+  plaidAccountId   String?          @unique
+
+  // Crypto self-custody fields
+  walletAddress    String?
+  walletChain      String?
+  nativeBalance    Float?
+
+  // Debt-specific fields (optional — populated for credit cards, loans, lines of credit)
+  debtSubtype      String?          // e.g. credit_card, line_of_credit, heloc, auto_loan, mortgage, personal_loan, student_loan
+  interestRate     Float?           // Annual Percentage Rate (APR), e.g. 19.99
+  minimumPayment   Float?           // Minimum monthly payment amount
+
+  syncStatus       String?          @default("pending")
+  deletedAt        DateTime?        // soft delete — preserves history
+
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  connections           AccountConnection[]
+  workspaceShares       WorkspaceAccountShare[]
+  duplicateCandidatesA  DuplicateAccountCandidate[] @relation("DuplicateCandidateA")
+  duplicateCandidatesB  DuplicateAccountCandidate[] @relation("DuplicateCandidateB")
+  goalContributions     GoalContribution[]
+
+  @@index([ownerUserId])
+  @@index([ownerWorkspaceId])
+  @@index([type])
+  @@index([deletedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AccountConnection
+// Represents one user's connection to a FinancialAccount via a specific source
+// (Plaid, manual entry, crypto wallet, etc.).
+// isCanonical = true means this connection is the authoritative source for
+// balance updates written back to FinancialAccount.
+// Multiple connections to the same FinancialAccount are allowed (e.g. two
+// spouses both have Plaid access to the same joint checking account).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AccountConnection {
+  id                 String           @id @default(cuid())
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  connectedByUserId  String
+  connectedByUser    User             @relation("UserConnectedAccounts", fields: [connectedByUserId], references: [id], onDelete: Cascade)
+
+  // Source credentials — exactly one of plaidItemDbId or (walletAddress) will be set
+  plaidItemDbId      String?
+  plaidItem          PlaidItem?       @relation(fields: [plaidItemDbId], references: [id], onDelete: SetNull)
+
+  syncStatus         String           @default("pending")
+  isCanonical        Boolean          @default(true)   // authoritative balance source for this account
+  lastSyncedAt       DateTime?
+  deletedAt          DateTime?        // soft delete on account removal; preserves Holding/Transaction history
+
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@index([financialAccountId])
+  @@index([connectedByUserId])
+  @@index([plaidItemDbId])
+  @@index([financialAccountId, isCanonical])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WorkspaceAccountShare
+// Controls which workspaces can see a FinancialAccount and at what fidelity.
+// One row per (workspace, financialAccount) pair.
+// A REVOKED share means the account is no longer visible to that workspace —
+// typically triggered when the member who shared it is removed or leaves.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WorkspaceAccountShare {
+  id                 String           @id @default(cuid())
+  workspaceId        String
+  workspace          Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  addedByUserId      String
+  addedByUser        User             @relation("ShareAdder", fields: [addedByUserId], references: [id], onDelete: Cascade)
+  visibilityLevel    VisibilityLevel  @default(FULL)
+  status             ShareStatus      @default(ACTIVE)
+  revokedAt          DateTime?
+  revokedByUserId    String?
+  revokedByUser      User?            @relation("ShareRevoker", fields: [revokedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@unique([workspaceId, financialAccountId])
+  @@index([workspaceId, status])
+  @@index([financialAccountId, status])
+  @@index([addedByUserId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DuplicateAccountCandidate
+// Passive infrastructure for surfacing potentially duplicate FinancialAccounts
+// to the user for manual review. NEVER auto-merges accounts.
+// Created by the sync job when heuristics detect possible duplicates
+// (same institution + mask + type, similar balance, etc.).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model DuplicateAccountCandidate {
+  id                String           @id @default(cuid())
+  workspaceId       String
+  accountAId        String
+  accountA          FinancialAccount @relation("DuplicateCandidateA", fields: [accountAId], references: [id], onDelete: Cascade)
+  accountBId        String
+  accountB          FinancialAccount @relation("DuplicateCandidateB", fields: [accountBId], references: [id], onDelete: Cascade)
+  status            DuplicateStatus  @default(PENDING)
+  detectedAt        DateTime         @default(now())
+  resolvedAt        DateTime?
+  resolvedByUserId  String?
+  resolvedByUser    User?            @relation("DuplicateResolver", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt         DateTime         @default(now())
+
+  @@unique([accountAId, accountBId])
+  @@index([workspaceId, status])
+  @@index([accountAId])
+  @@index([accountBId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WorkspaceGoal
+// A financial goal belonging to a workspace. Members contribute accounts to the
+// goal via GoalContribution. Progress is computed from the sum of contributing
+// account balances (or a subset of those balances).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WorkspaceGoal {
+  id              String        @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdByUserId String
+  createdBy       User          @relation("GoalCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  category        GoalCategory  @default(GENERAL)
+  goalType        GoalType      @default(FINANCIAL)
+  status          GoalStatus    @default(ACTIVE)
+
+  // ── FINANCIAL fields ──────────────────────────────────────────────────────
+  targetAmount    Float?                          // required for FINANCIAL & SPENDING_LIMIT
+  currentAmount   Float         @default(0)       // denormalized — updated by sync job
+  targetDate      DateTime?     @db.Date
+
+  // ── HABIT fields ──────────────────────────────────────────────────────────
+  habitFrequency  String?                         // DAILY | WEEKLY | MONTHLY
+  currentStreak   Int           @default(0)
+  longestStreak   Int           @default(0)
+  lastCheckIn     DateTime?
+
+  // ── SPENDING_LIMIT fields ─────────────────────────────────────────────────
+  spendingCategory String?                        // free-text category label
+
+  // ── DEBT_REDUCTION fields ─────────────────────────────────────────────────
+  linkedAccountId       String?                   // FK to FinancialAccount (soft ref — no cascade)
+  targetReductionAmount Float?                    // pay down by $X
+  targetReductionPct    Float?                    // pay down by X%
+  snapshotBalance       Float?                    // balance at goal creation (for progress calc)
+
+  completedAt     DateTime?
+  archivedAt      DateTime?                     // set when goal is archived
+  deletedAt       DateTime?                     // soft delete — set when moved to trash
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  contributions   GoalContribution[]
+  checkIns        GoalCheckIn[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, category])
+  @@index([workspaceId, goalType])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GoalCheckIn
+// Records each manual check-in for HABIT goals. Used for streak calculation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model GoalCheckIn {
+  id        String        @id @default(cuid())
+  goalId    String
+  goal      WorkspaceGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  note      String?
+  checkedAt DateTime      @default(now())
+
+  @@index([goalId])
+  @@index([goalId, checkedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GoalContribution
+// Links a FinancialAccount to a WorkspaceGoal. includeBalance controls whether
+// the account's balance counts toward the goal's currentAmount.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model GoalContribution {
+  id                 String           @id @default(cuid())
+  goalId             String
+  goal               WorkspaceGoal    @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  includeBalance     Boolean          @default(true)
+
+  createdAt          DateTime         @default(now())
+
+  @@unique([goalId, financialAccountId])
+  @@index([goalId])
+  @@index([financialAccountId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WorkspaceDashboardSection
+// Controls which sections/cards appear on the workspace planning dashboard and
+// in what order. Generated automatically from the workspace category preset on
+// workspace creation. Members with OWNER/ADMIN role can toggle, reorder, or
+// add custom sections.
+// key: machine-readable identifier (e.g. "net_worth", "debt_payoff_tracker")
+// label: display name shown in the UI (overrideable by user)
+// tab: which dashboard tab this section appears under
+// enabled: false hides the section without deleting it
+// order: ascending sort order within the tab
+// config: arbitrary JSON for section-specific settings (e.g. chart type, filters)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WorkspaceDashboardSection {
+  id          String                 @id @default(cuid())
+  workspaceId String
+  workspace   Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  key         String                 // e.g. "net_worth", "goals_progress", "debt_payoff"
+  label       String                 // display label
+  tab         WorkspaceDashboardTab  @default(OVERVIEW)
+  enabled     Boolean                @default(true)
+  order       Int                    @default(0)
+  config      Json?                  // section-specific settings
+
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  @@unique([workspaceId, key])
+  @@index([workspaceId, tab])
+  @@index([workspaceId, enabled])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,16 +854,79 @@ model CreditScore {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model AuditLog {
-  id          String     @id @default(cuid())
-  userId      String?
-  user        User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
-  workspaceId String?
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
-  action      String     // LOGIN | LOGOUT | PLAID_SYNC | WALLET_SYNC | ACCOUNT_ADD | ACCOUNT_REMOVE
-  metadata    Json?      // e.g. { institution: "Chase", accountCount: 3 }
-  ipAddress   String?
-  createdAt   DateTime   @default(now())
+  id                String     @id @default(cuid())
+  userId            String?
+  user              User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  workspaceId       String?
+  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  action            String     // See AuditAction constants in lib/audit-actions.ts
+  metadata          Json?      // e.g. { institution: "Chase", accountCount: 3 }
+  ipAddress         String?
+  userAgent         String?
+  performedByAdminId String?   // set when a SYSTEM_ADMIN performs an action on behalf of another user
+  createdAt         DateTime   @default(now())
 
   @@index([userId, createdAt])
   @@index([workspaceId, createdAt])
+  @@index([action, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RecoveryCode
+// One-time backup codes generated when a user enables or regenerates 2FA.
+// Codes are shown once in plaintext, then stored as bcrypt hashes.
+// Each code can be used once — usedAt is set on redemption.
+// Regenerating codes invalidates all existing unused codes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String    // bcrypt hash (cost 10) of the plaintext code — NEVER stored as plaintext
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+
+  @@index([userId])
+  @@index([userId, usedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UserSession
+// Tracks active sessions for session management UI and admin revocation.
+// Written on login. revokedAt is set when a session is force-terminated.
+// Note: JWT sessions cannot be invalidated mid-token-lifetime without a
+// blocklist or short-lived tokens. This table is informational for now;
+// full revocation requires a token blocklist (see security limitations).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model UserSession {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionToken String    @unique  // random opaque identifier (not the JWT itself)
+  ipAddress    String?
+  userAgent    String?
+  lastActiveAt DateTime  @default(now())
+  revokedAt    DateTime?
+  revokedById  String?   // admin userId who revoked this session
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+  @@index([userId, revokedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PlatformSetting
+// Key-value store for platform-wide security and feature toggles.
+// Managed exclusively by SYSTEM_ADMIN via /admin/security.
+// Keys are defined as constants in lib/platform-settings.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PlatformSetting {
+  key       String   @id  // e.g. "require_totp_system_admin"
+  value     String        // "true" | "false" | numeric string
+  updatedAt DateTime @updatedAt
+  updatedById String?     // userId of last admin who changed this setting
 }

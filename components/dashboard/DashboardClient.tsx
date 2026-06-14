@@ -3,40 +3,62 @@
 import { useState, useMemo, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
-import { FilterBar, FilterSlice } from "./FilterBar";
+import Link from "next/link";
 import { NetWorthCard } from "./NetWorthCard";
 import { CashToPlayCard } from "./CashToPlayCard";
 import { FicoCard } from "./FicoCard";
-import { AdviceBanner } from "./AdviceBanner";
 import { NetWorthChart, Interval, cutoffForInterval } from "@/components/charts/NetWorthChart";
 import { CashChart } from "@/components/charts/CashChart";
 import { BankingChart } from "@/components/charts/BankingChart";
 import { NetWorthChartModal } from "@/components/charts/NetWorthChartModal";
 import { AllocationChart } from "@/components/charts/AllocationChart";
-import { Card, CardTitle } from "@/components/ui/Card";
 import { Account, Holding, Snapshot, AiAdvice, Transaction } from "@/types";
 import {
   ChevronDown,
+  ChevronUp,
   Building2,
   Landmark,
   CreditCard,
   Bitcoin,
   TrendingUp,
   Maximize2,
+  LayoutDashboard,
+  Wallet,
+  Pencil,
+  Check,
+  Loader2,
+  Trash2,
+  Target,
+  Clock,
+  Settings,
+  FolderOpen,
+  ArrowUpRight,
 } from "lucide-react";
 import { CoinIcon } from "@/components/ui/CoinIcon";
 import { DebtCard }  from "@/components/dashboard/DebtCard";
 import { InvestmentsCard } from "@/components/dashboard/InvestmentsCard";
-import { AccountGroupCard } from "@/components/dashboard/AccountGroupCard";
 import { InvestmentsChart } from "@/components/charts/InvestmentsChart";
 import { HoldingsDonutChart } from "@/components/charts/HoldingsDonutChart";
 import { AccountModal } from "@/components/dashboard/AccountModal";
-import { CreditClient } from "@/components/dashboard/CreditClient";
+import { DebtClient } from "@/components/dashboard/DebtClient";
 import { ConnectAccountButton } from "@/components/dashboard/ConnectAccountButton";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
+import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatDate } from "@/lib/format";
+import { classifyAccounts } from "@/lib/account-classifier";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+type PersonalTab =
+  | "dashboard"
+  | "banking"
+  | "investments"
+  | "credit"
+  | "goals"
+  | "activity"
+  | "settings";
+
 interface Props {
   accounts:          Account[];
   holdings:          Holding[];
@@ -47,13 +69,26 @@ interface Props {
   debtTransactions:  Transaction[];
 }
 
+// ── Tab config ────────────────────────────────────────────────────────────────
+const PERSONAL_TABS: { key: PersonalTab; label: string; icon: React.ReactNode }[] = [
+  { key: "dashboard",   label: "Dashboard",   icon: <LayoutDashboard size={14} /> },
+  { key: "banking",     label: "Banking",     icon: <Building2        size={14} /> },
+  { key: "investments", label: "Investments", icon: <TrendingUp       size={14} /> },
+  { key: "credit",      label: "Credit",      icon: <CreditCard       size={14} /> },
+  { key: "goals",       label: "Goals",       icon: <Target           size={14} /> },
+  { key: "activity",    label: "Activity",    icon: <Clock            size={14} /> },
+  { key: "settings",    label: "Settings",    icon: <Settings         size={14} /> },
+];
+
 // ── Filter config ─────────────────────────────────────────────────────────────
-const ACCOUNT_TYPES: Record<FilterSlice, string[]> = {
-  all:         ["checking", "savings", "investment", "crypto", "debt"],
-  cash:        ["checking", "savings"],
+const ACCOUNT_TYPES: Record<PersonalTab, string[]> = {
+  dashboard:   ["checking", "savings", "investment", "crypto", "debt", "other"],
   banking:     ["checking", "savings", "debt"],
   investments: ["investment", "crypto"],
   credit:      ["debt"],
+  goals:       [],
+  activity:    [],
+  settings:    [],
 };
 
 const SECTION_ORDER = [
@@ -62,10 +97,11 @@ const SECTION_ORDER = [
   { label: "Investments", type: "investment" },
   { label: "Crypto",      type: "crypto"     },
   { label: "Debt",        type: "debt"       },
+  { label: "Assets",      type: "other"      },
 ] as const;
 
 // ── Per-type visual config ────────────────────────────────────────────────────
-type AccountType = "checking" | "savings" | "investment" | "crypto" | "debt";
+type AccountType = "checking" | "savings" | "investment" | "crypto" | "debt" | "other";
 
 const TYPE_ICON: Record<AccountType, React.ElementType> = {
   checking:   Building2,
@@ -73,6 +109,7 @@ const TYPE_ICON: Record<AccountType, React.ElementType> = {
   investment: TrendingUp,
   crypto:     Bitcoin,
   debt:       CreditCard,
+  other:      Wallet,
 };
 
 const TYPE_ICON_CLS: Record<AccountType, string> = {
@@ -81,62 +118,77 @@ const TYPE_ICON_CLS: Record<AccountType, string> = {
   investment: "bg-violet-500/10 text-violet-400",
   crypto:     "bg-yellow-500/10 text-yellow-400",
   debt:       "bg-red-500/10 text-red-400",
+  other:      "bg-teal-500/10 text-teal-400",
 };
+
+// ── Section card wrapper ──────────────────────────────────────────────────────
+function PersonalSectionCard({
+  title,
+  children,
+  rightSlot,
+  fill,
+}: {
+  title:      string;
+  children:   React.ReactNode;
+  rightSlot?: React.ReactNode;
+  fill?:      boolean;
+}) {
+  return (
+    <div className={`bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden${fill ? " flex flex-col h-full" : ""}`}>
+      <div className="flex items-center justify-between px-4 pt-3.5 pb-0 shrink-0">
+        <p className="text-sm font-semibold text-white">{title}</p>
+        {rightSlot}
+      </div>
+      <div className={`px-4 pb-4 pt-2${fill ? " flex-1 flex flex-col min-h-0" : ""}`}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const fmtAbs = (n: number) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: "USD", maximumFractionDigits: 2,
+    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2,
   }).format(Math.abs(n));
-
-function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short", day: "numeric", year: "numeric",
-  });
-}
 
 function formatFicoDate(iso: string | null): string {
   if (!iso) return "Never";
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short", day: "numeric", year: "numeric",
-  });
+  return formatDate(iso);
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
-function getGreeting(): string {
-  const h = new Date().getHours();
-  if (h < 12) return "Good morning";
-  if (h < 17) return "Good afternoon";
-  return "Good evening";
-}
-
 export function DashboardClient({
-  accounts, holdings, snapshots, advice, ficoScore, ficoUpdatedAt, debtTransactions,
+  accounts, holdings, snapshots, ficoScore, ficoUpdatedAt, debtTransactions,
 }: Props) {
   const router        = useRouter();
   const searchParams  = useSearchParams();
   const { data: session } = useSession();
-  const [walletOpen, setWalletOpen] = useState(false);
+  const firstName = session?.user?.name?.split(" ")[0] ?? "";
+  const [walletOpen,      setWalletOpen]      = useState(false);
+  const [assetOpen,       setAssetOpen]       = useState(false);
+  const [manageOpen,      setManageOpen]      = useState(false);
+  const [editingAssetId,  setEditingAssetId]  = useState<string | null>(null);
+  const [editingAssetVal, setEditingAssetVal] = useState("");
+  const [savingAsset,     setSavingAsset]     = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deletingAsset,   setDeletingAsset]   = useState(false);
 
-  // Parse first name from session (e.g. "Jane Smith" → "Jane")
-  const firstName = session?.user?.name?.split(" ")[0] ?? session?.user?.username ?? "";
+  const VALID_TABS: PersonalTab[] = ["dashboard", "banking", "investments", "credit", "goals", "activity", "settings"];
+  const initialTab = (searchParams.get("tab") ?? "dashboard") as PersonalTab;
 
-  const VALID_TABS: FilterSlice[] = ["all", "cash", "banking", "investments", "credit"];
-  const initialTab = (searchParams.get("tab") ?? "all") as FilterSlice;
-
-  const [filter, setFilter] = useState<FilterSlice>(
-    VALID_TABS.includes(initialTab) ? initialTab : "all"
+  const [filter, setFilter] = useState<PersonalTab>(
+    VALID_TABS.includes(initialTab) ? initialTab : "dashboard"
   );
   const [chartInterval, setChartInterval] = useState<Interval>("1M");
   const [chartExpanded, setChartExpanded] = useState(false);
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
 
-  const handleFilterChange = useCallback((f: FilterSlice) => {
+  const handleFilterChange = useCallback((f: PersonalTab) => {
     setFilter(f);
     router.replace(`/dashboard?tab=${f}`, { scroll: false });
   }, [router]);
 
-  // All sections start collapsed — tap to open
   const [sectionCollapsed, setSectionCollapsed] = useState<Record<string, boolean>>(() => ({
     ...Object.fromEntries(SECTION_ORDER.map(({ type }) => [type, true])),
     investable: true,
@@ -146,6 +198,39 @@ export function DashboardClient({
     setSectionCollapsed((prev) => ({ ...prev, [type]: !prev[type] }));
   }, []);
 
+  const saveAssetBalance = useCallback(async (accountId: string) => {
+    const parsed = parseFloat(editingAssetVal.replace(/,/g, ""));
+    if (isNaN(parsed) || parsed < 0) return;
+    setSavingAsset(true);
+    try {
+      const res = await fetch(`/api/accounts/manual/${accountId}`, {
+        method:  "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ balance: parsed }),
+      });
+      if (res.ok) {
+        setEditingAssetId(null);
+        setEditingAssetVal("");
+        router.refresh();
+      }
+    } finally {
+      setSavingAsset(false);
+    }
+  }, [editingAssetVal, router]);
+
+  const deleteAsset = useCallback(async (accountId: string) => {
+    setDeletingAsset(true);
+    try {
+      const res = await fetch(`/api/accounts/manual/${accountId}`, { method: "DELETE" });
+      if (res.ok) {
+        setConfirmDeleteId(null);
+        router.refresh();
+      }
+    } finally {
+      setDeletingAsset(false);
+    }
+  }, [router]);
+
   // ── Derived data ─────────────────────────────────────────────────────────
   const allowedTypes = ACCOUNT_TYPES[filter];
 
@@ -154,31 +239,28 @@ export function DashboardClient({
     [accounts, allowedTypes]
   );
 
-  const stats = useMemo(() => {
-    const debtAccts  = filtered.filter((a) => a.type === "debt");
-    const allNonDebt = filtered.filter((a) => a.type !== "debt");
-    const totalNonDebt  = allNonDebt.reduce((s, a) => s + a.balance, 0);
-    // Investments = stocks/funds + crypto only
-    const investments = filtered
-      .filter((a) => a.type === "investment" || a.type === "crypto")
-      .reduce((s, a) => s + a.balance, 0);
-    // Net debt: positive = you owe, negative = credit. Matches Banking page.
-    const debt = Math.max(0, debtAccts.reduce((s, a) => s + a.balance, 0));
-    return { netWorth: totalNonDebt - debt, assets: investments, debt };
-  }, [filtered]);
+  // Full-portfolio classification (all accounts, for allocation donut + cash/investment totals)
+  const classification = useMemo(() => classifyAccounts(accounts), [accounts]);
 
-  // Fresh allocation values from all accounts (bypasses potentially stale snapshots)
-  const allocation = useMemo(() => {
-    const cash        = accounts.filter((a) => ["checking","savings"].includes(a.type)).reduce((s, a) => s + a.balance, 0);
-    const investments = accounts.filter((a) => a.type === "investment").reduce((s, a) => s + a.balance, 0);
-    const crypto      = accounts.filter((a) => a.type === "crypto").reduce((s, a) => s + a.balance, 0);
-    const debt        = accounts.filter((a) => a.type === "debt" && a.balance > 0).reduce((s, a) => s + a.balance, 0);
-    return { cash, investments, crypto, debt };
-  }, [accounts]);
+  // Tab-scoped classification (filtered accounts, for NetWorthCard headline stats)
+  const tabClassification = useMemo(() => classifyAccounts(filtered), [filtered]);
+
+  const stats = useMemo(() => ({
+    netWorth: tabClassification.netWorth,
+    assets:   tabClassification.totalInvestments + tabClassification.totalDigitalAssets,
+    debt:     tabClassification.totalLiabilities,
+  }), [tabClassification]);
+
+  const allocation = {
+    cash:        classification.totalLiquid,
+    investments: classification.totalInvestments,
+    crypto:      classification.totalDigitalAssets,
+    debt:        classification.totalLiabilities,
+    realAssets:  classification.totalRealAssets,
+  };
 
   const latest = snapshots[snapshots.length - 1];
 
-  // Change tied to whatever interval the chart is showing
   const changeForInterval = useMemo(() => {
     if (!latest) return 0;
     const cutoff = cutoffForInterval(chartInterval);
@@ -186,7 +268,6 @@ export function DashboardClient({
     return snap ? latest.netWorth - snap.netWorth : 0;
   }, [snapshots, latest, chartInterval]);
 
-  // Cash-specific change (checking + savings) over selected interval
   const cashChangeForInterval = useMemo(() => {
     if (!latest) return 0;
     const cutoff = cutoffForInterval(chartInterval);
@@ -195,7 +276,6 @@ export function DashboardClient({
     return (latest.totalCash + latest.totalSavings) - (snap.totalCash + snap.totalSavings);
   }, [snapshots, latest, chartInterval]);
 
-  // Investments change (stocks + crypto) over selected interval
   const investmentsChangeForInterval = useMemo(() => {
     if (!latest) return 0;
     const cutoff = cutoffForInterval(chartInterval);
@@ -204,32 +284,23 @@ export function DashboardClient({
     return (latest.totalInvestments + latest.totalCrypto) - (snap.totalInvestments + snap.totalCrypto);
   }, [snapshots, latest, chartInterval]);
 
-  const cashChecking = useMemo(
-    () => accounts.filter((a) => a.type === "checking").reduce((s, a) => s + a.balance, 0),
-    [accounts]
-  );
-  const cashSavings = useMemo(
-    () => accounts.filter((a) => a.type === "savings").reduce((s, a) => s + a.balance, 0),
-    [accounts]
-  );
-  // Cash sitting inside investment accounts (e.g. Schwab settlement, Robinhood)
+  const cashChecking = classification.totalChecking;
+  const cashSavings  = classification.totalSavings;
+
   const investmentCash = useMemo(() => {
-    const ids = new Set(accounts.filter((a) => a.type === "investment").map((a) => a.id));
+    const ids = new Set(classification.investments.map((a) => a.id));
     return holdings.filter((h) => h.isCash && ids.has(h.accountId)).reduce((s, h) => s + h.value, 0);
-  }, [accounts, holdings]);
+  }, [classification.investments, holdings]);
 
-  // Cash sitting inside crypto accounts (e.g. Coinbase USD idle)
   const cryptoCash = useMemo(() => {
-    const ids = new Set(accounts.filter((a) => a.type === "crypto").map((a) => a.id));
+    const ids = new Set(classification.digitalAssets.map((a) => a.id));
     return holdings.filter((h) => h.isCash && ids.has(h.accountId)).reduce((s, h) => s + h.value, 0);
-  }, [accounts, holdings]);
+  }, [classification.digitalAssets, holdings]);
 
-  // Total investable cash across all investment/crypto accounts
   const investableAccountCash = investmentCash + cryptoCash;
 
-  // Accounts that hold uninvested cash — shown in Cash tab's Investable section
   const investableAccounts = useMemo(() => {
-    const candidates = accounts.filter((a) => a.type === "investment" || a.type === "crypto");
+    const candidates = [...classification.investments, ...classification.digitalAssets];
     return candidates
       .map((a) => ({
         account:     a,
@@ -237,432 +308,130 @@ export function DashboardClient({
       }))
       .filter(({ cashAmount }) => cashAmount > 0)
       .sort((a, b) => b.cashAmount - a.cashAmount);
-  }, [accounts, holdings]);
+  }, [classification.investments, classification.digitalAssets, holdings]);
 
-  // Dates for summary cards
   const newestAccountDate = accounts.length
     ? accounts.reduce((best, a) => (a.lastUpdated > best ? a.lastUpdated : best), accounts[0].lastUpdated)
     : null;
-  const fmtAccountDate = newestAccountDate ? fmtDate(newestAccountDate) : undefined;
-  const snapshotDate   = latest?.date
-    ? new Date(latest.date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-    : undefined;
+  const fmtAccountDate = newestAccountDate ? formatDate(newestAccountDate) : undefined;
 
-  const isCash         = filter === "cash";
-  const isBanking      = filter === "banking";
-  const isInvestments  = filter === "investments";
-  const isCredit       = filter === "credit";
-  const showChart      = filter === "all" || isCash || isBanking || isInvestments;
-  const showAllocation = filter === "all";
+  const isBanking     = filter === "banking";
+  const isInvestments = filter === "investments";
+  const isCredit      = filter === "credit";
+  const isGoals       = filter === "goals";
+  const isActivity    = filter === "activity";
+  const isSettings    = filter === "settings";
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  const isStaticTab = isGoals || isActivity || isSettings;
 
-  // Credit tab — full CreditClient with its own layout
-  if (isCredit) {
-    return (
-      <div className="space-y-5">
-        {advice && <AdviceBanner advice={advice} />}
-        <FilterBar active={filter} onChange={handleFilterChange} />
-        <CreditClient
-          initialFico={ficoScore}
-          lastUpdatedAt={ficoUpdatedAt}
-          accounts={accounts.filter((a) => a.type === "debt")}
-          transactions={debtTransactions}
-        />
-      </div>
-    );
-  }
+  // ── Account section rows (shared across tabs) ─────────────────────────────
+  const accountSections = (
+    <div className="space-y-3">
+      {SECTION_ORDER.filter(({ type }) => allowedTypes.includes(type)).map(({ label, type }) => {
+        const accts   = filtered.filter((a) => a.type === type).sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
+        const isEmpty = accts.length === 0;
+        const isOpen  = !sectionCollapsed[type];
+        const isDebt  = type === "debt";
+        const Icon    = TYPE_ICON[type as AccountType] ?? Building2;
+        const iconCls = TYPE_ICON_CLS[type as AccountType] ?? "bg-gray-500/10 text-gray-400";
 
-  return (
-    <div className="space-y-5">
-      {/* ── Welcome header ── */}
-      <div>
-        {firstName && (
-          <h1 className="text-xl font-bold text-white leading-tight">
-            {`${getGreeting()}, ${firstName}`}
-          </h1>
-        )}
-      </div>
-      {walletOpen && (
-        <AddWalletModal onClose={() => setWalletOpen(false)} />
-      )}
+        const sectionTotal = accts.reduce((s, a) => s + a.balance, 0);
+        const newestSync   = !isEmpty
+          ? accts.reduce((best, a) => (a.lastUpdated > best ? a.lastUpdated : best), accts[0].lastUpdated)
+          : null;
 
-      {/* AI Advice always visible */}
-      {advice && <AdviceBanner advice={advice} />}
-
-      <FilterBar active={filter} onChange={handleFilterChange} />
-
-      {/* ── Summary cards ── */}
-      {isCash ? (
-        /* Cash view: Cash on Hand is the hero full-width card */
-        <div className="grid grid-cols-2 gap-3">
-          <div className="col-span-2">
-            <CashToPlayCard
-              hero
-              checking={cashChecking}
-              savings={cashSavings}
-              debt={allocation.debt}
-              playReady={(cashChecking + cashSavings + investableAccountCash) > 0}
-              investable={investableAccountCash}
-              change={cashChangeForInterval}
-              changeLabel={chartInterval}
-              lastUpdated={fmtAccountDate}
-            />
-          </div>
-        </div>
-      ) : isInvestments ? (
-        /* Investments view */
-        <div className="grid grid-cols-2 gap-3">
-          <div className="col-span-2">
-            <InvestmentsCard
-              stocks={allocation.investments - investmentCash}
-              crypto={allocation.crypto - cryptoCash}
-              cash={investableAccountCash}
-              change={investmentsChangeForInterval}
-              changeLabel={chartInterval}
-              lastUpdated={fmtAccountDate}
-            />
-          </div>
-          <AccountGroupCard
-            compact
-            title={investmentCash > 0 ? "Stocks, Cash & Funds" : "Stocks & Funds"}
-            accounts={accounts.filter((a) => a.type === "investment")}
-            color="text-violet-400"
-            maxItems={5}
-          />
-          <AccountGroupCard
-            compact
-            title="Crypto"
-            accounts={accounts.filter((a) => a.type === "crypto")}
-            color="text-yellow-400"
-            maxItems={3}
-          />
-        </div>
-      ) : isBanking ? (
-        /* Banking view */
-        <div className="grid grid-cols-2 gap-3">
-          <div className="col-span-2">
-            <NetWorthCard
-              title="Banking"
-              hideInvestments
-              netWorth={stats.netWorth}
-              totalAssets={stats.assets}
-              totalDebt={stats.debt}
-              liquid={cashChecking + cashSavings}
-              change30d={0}
-              changeLabel={chartInterval}
-              lastUpdated={fmtAccountDate}
-            />
-          </div>
-          <CashToPlayCard
-            checking={cashChecking}
-            savings={cashSavings}
-            debt={allocation.debt}
-            playReady={(cashChecking + cashSavings + investableAccountCash) > 0}
-            change={cashChangeForInterval}
-            changeLabel={chartInterval}
-            lastUpdated={fmtAccountDate}
-          />
-          <DebtCard
-            accounts={accounts.filter((a) => a.type === "debt")}
-            lastUpdated={fmtAccountDate}
-          />
-        </div>
-      ) : (
-        /* All / other tabs */
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <NetWorthCard
-            netWorth={stats.netWorth}
-            totalAssets={stats.assets}
-            totalDebt={stats.debt}
-            liquid={cashChecking + cashSavings}
-            change30d={filter === "all" ? changeForInterval : 0}
-            changeLabel={chartInterval}
-            lastUpdated={fmtAccountDate}
-          />
-          {filter === "all" && (
-            <CashToPlayCard
-              checking={cashChecking}
-              savings={cashSavings}
-              debt={allocation.debt}
-              playReady={(cashChecking + cashSavings + investableAccountCash) > 0}
-              investable={investableAccountCash}
-              change={cashChangeForInterval}
-              changeLabel={chartInterval}
-              lastUpdated={fmtAccountDate}
-            />
-          )}
-          {filter === "all" && (
-            <FicoCard score={ficoScore} lastUpdated={formatFicoDate(ficoUpdatedAt)} />
-          )}
-        </div>
-      )}
-
-      {/* ── Charts ── */}
-      <div className={`grid gap-4 ${(showChart && showAllocation) || isInvestments ? "lg:grid-cols-2" : "grid-cols-1"}`}>
-        {showChart && (
-          <Card>
-            {isCash ? (
-              <CashChart
-                snapshots={snapshots}
-                interval={chartInterval}
-                onIntervalChange={setChartInterval}
-                investableCash={investableAccountCash}
-              />
-            ) : isInvestments ? (
-              <>
-                <CardTitle>Portfolio History</CardTitle>
-                <div className="mt-3">
-                  <InvestmentsChart
-                    snapshots={snapshots}
-                    interval={chartInterval}
-                    onIntervalChange={setChartInterval}
-                  />
-                </div>
-              </>
-            ) : isBanking ? (
-              <>
-                <CardTitle>Banking History</CardTitle>
-                <BankingChart
-                  snapshots={snapshots}
-                  interval={chartInterval}
-                  onIntervalChange={setChartInterval}
-                />
-              </>
-            ) : (
-              <>
-                <div className="flex items-center justify-between">
-                  <CardTitle>Net Worth</CardTitle>
-                  <button
-                    onClick={() => setChartExpanded(true)}
-                    className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:text-white hover:bg-gray-800 transition-colors touch-manipulation"
-                  >
-                    <Maximize2 size={14} />
-                  </button>
-                </div>
-                <div className="mt-3">
-                  <NetWorthChart
-                    snapshots={snapshots}
-                    interval={chartInterval}
-                    onIntervalChange={setChartInterval}
-                  />
-                </div>
-              </>
-            )}
-          </Card>
-        )}
-
-        {isInvestments && (
-          <Card>
-            <CardTitle>Holdings</CardTitle>
-            <div className="mt-3">
-              <HoldingsDonutChart
-                holdings={holdings}
-                cryptoAccounts={accounts.filter((a) =>
-                  a.type === "crypto" &&
-                  !holdings.some((h) => h.accountId === a.id && !h.isCash)
-                )}
-                accountTotal={allocation.investments + allocation.crypto}
-              />
-            </div>
-          </Card>
-        )}
-
-        {chartExpanded && (
-          <NetWorthChartModal
-            snapshots={snapshots}
-            initialInterval={chartInterval}
-            onClose={() => setChartExpanded(false)}
-          />
-        )}
-        {showAllocation && (
-          <Card>
-            <CardTitle>Allocation</CardTitle>
-            <AllocationChart
-              cash={allocation.cash}
-              investments={allocation.investments}
-              crypto={allocation.crypto}
-              debt={allocation.debt}
-            />
-          </Card>
-        )}
-      </div>
-
-      {/* ── Account sections — banking-style collapsible ── */}
-      <div className="space-y-3">
-        {SECTION_ORDER.filter(({ type }) => allowedTypes.includes(type)).map(({ label, type }) => {
-          const accts    = filtered.filter((a) => a.type === type).sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
-          const isEmpty  = accts.length === 0;
-          const isOpen   = !sectionCollapsed[type];
-          const isDebt   = type === "debt";
-          const Icon     = TYPE_ICON[type as AccountType] ?? Building2;
-          const iconCls  = TYPE_ICON_CLS[type as AccountType] ?? "bg-gray-500/10 text-gray-400";
-
-          const sectionTotal = accts.reduce((s, a) => s + a.balance, 0);
-          const newestSync   = !isEmpty
-            ? accts.reduce((best, a) => (a.lastUpdated > best ? a.lastUpdated : best), accts[0].lastUpdated)
-            : null;
-
-          return (
+        return (
+          <div
+            key={type}
+            className="rounded-2xl border border-gray-800 bg-gray-900 overflow-hidden"
+          >
+            {/*
+              Section header — a <div> rather than <button> so we can embed
+              a real <button> (Add Asset) without violating the HTML spec
+              (button-in-button is invalid). Role + keyboard handler preserves
+              full keyboard accessibility for the expand/collapse action.
+            */}
             <div
-              key={type}
-              className="rounded-2xl border border-gray-800 bg-gray-900/60 overflow-hidden"
+              role={isEmpty ? undefined : "button"}
+              tabIndex={isEmpty ? undefined : 0}
+              onClick={() => !isEmpty && toggleSection(type)}
+              onKeyDown={(e) => {
+                if (!isEmpty && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  toggleSection(type);
+                }
+              }}
+              className={`w-full flex items-center justify-between px-4 py-3.5 transition-colors touch-manipulation select-none ${
+                isEmpty
+                  ? "cursor-default"
+                  : "hover:bg-gray-800/70 active:bg-gray-800 cursor-pointer"
+              }`}
             >
-              {/* Section header — tap to expand/collapse */}
-              <button
-                onClick={() => !isEmpty && toggleSection(type)}
-                className={`w-full flex items-center justify-between px-4 py-3.5 transition-colors touch-manipulation select-none ${
-                  isEmpty
-                    ? "cursor-default"
-                    : "hover:bg-gray-800/70 active:bg-gray-800"
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${iconCls}`}>
-                    <Icon size={15} />
-                  </div>
-                  <div className="text-left">
-                    <p className="text-sm font-semibold text-white leading-tight">{label}</p>
-                    <p className="text-xs text-gray-500 leading-tight mt-0.5">
-                      {isEmpty
-                        ? "No accounts linked yet"
-                        : `${accts.length} account${accts.length !== 1 ? "s" : ""} · Updated ${fmtDate(newestSync!)}`
-                      }
-                    </p>
-                  </div>
+              <div className="flex items-center gap-3">
+                <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${iconCls}`}>
+                  <Icon size={15} />
                 </div>
-
-                <div className="flex items-center gap-3">
-                  {!isEmpty && (
-                    <p className={`text-sm font-semibold tabular-nums ${
-                      isDebt
-                        ? sectionTotal > 0 ? "text-red-400" : "text-emerald-400"
-                        : "text-white"
-                    }`}>
-                      {fmtAbs(Math.abs(sectionTotal))}
-                    </p>
-                  )}
-                  {!isEmpty && (
-                    <ChevronDown
-                      size={16}
-                      className={`text-gray-500 transition-transform duration-200 shrink-0 ${isOpen ? "rotate-180" : "rotate-0"}`}
-                    />
-                  )}
-                </div>
-              </button>
-
-              {/* Empty-state CTA — only shown when no accounts exist */}
-              {isEmpty && (
-                <div className="border-t border-gray-800/60 px-4 py-3 flex flex-wrap items-center gap-2">
-                  <ConnectAccountButton />
-                  {type === "crypto" && (
-                    <button
-                      onClick={() => setWalletOpen(true)}
-                      className="flex items-center gap-1.5 text-xs font-semibold text-gray-300 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-gray-600 px-3 py-2 rounded-xl transition-colors"
-                    >
-                      + Add Wallet
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* Sliding account rows — only rendered when accounts exist */}
-              {!isEmpty && (
-                <div
-                  style={{
-                    display:          "grid",
-                    gridTemplateRows: isOpen ? "1fr" : "0fr",
-                    transition:       "grid-template-rows 0.2s ease",
-                  }}
-                >
-                  {/* minHeight:0 required for grid-template-rows:0fr to collapse in Safari */}
-                  <div className="overflow-hidden" style={{ minHeight: 0 }}>
-                    <div className="border-t border-gray-700/60 bg-gray-950/60">
-                      {accts.map((a, idx) => {
-                        const coinSymbol = a.walletChain ?? exchangeSymbol(a.institution);
-                        return (
-                          <button
-                            key={a.id}
-                            onClick={() => setSelectedAccount(a)}
-                            className={`w-full flex items-center justify-between pl-6 pr-4 py-3.5 hover:bg-gray-800/40 active:bg-gray-800 transition-colors touch-manipulation text-left ${
-                              idx < accts.length - 1 ? "border-b border-gray-800/50" : ""
-                            }`}
-                          >
-                            {/* Left: icon + name + institution */}
-                            <div className="flex items-center gap-3">
-                              {type === "crypto" ? (
-                                <CoinIcon symbol={coinSymbol} size={28} />
-                              ) : (
-                                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${iconCls}`}>
-                                  <Icon size={13} />
-                                </div>
-                              )}
-                              <div>
-                                <p className="text-sm font-medium text-white leading-tight">{a.name}</p>
-                                <p className="text-xs text-gray-500 leading-tight mt-0.5">{a.institution}</p>
-                              </div>
-                            </div>
-
-                            {/* Right: balance + date */}
-                            <div className="text-right shrink-0 ml-3">
-                              <p className={`text-sm font-semibold tabular-nums ${
-                                isDebt
-                                  ? a.balance > 0 ? "text-red-400" : "text-emerald-400"
-                                  : "text-white"
-                              }`}>
-                                {fmtAbs(Math.abs(a.balance))}
-                              </p>
-                              <p className="text-xs text-gray-600 mt-0.5">{fmtDate(a.lastUpdated)}</p>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {/* ── Investable section (Cash tab only) ── */}
-        {isCash && investableAccounts.length > 0 && (() => {
-          const sectionKey  = "investable";
-          const isOpen      = !sectionCollapsed[sectionKey];
-          const sectionTotal = investableAccounts.reduce((s, { cashAmount }) => s + cashAmount, 0);
-          const newestSync   = investableAccounts.reduce(
-            (best, { account: a }) => (a.lastUpdated > best ? a.lastUpdated : best),
-            investableAccounts[0].account.lastUpdated
-          );
-
-          return (
-            <div className="rounded-2xl border border-gray-800 bg-gray-900/60 overflow-hidden">
-              <button
-                onClick={() => toggleSection(sectionKey)}
-                className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-gray-800/70 active:bg-gray-800 transition-colors touch-manipulation select-none"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 bg-violet-500/10">
-                    <TrendingUp size={15} className="text-violet-400" />
-                  </div>
-                  <div className="text-left">
-                    <p className="text-sm font-semibold text-white leading-tight">Brokerage Cash</p>
-                    <p className="text-xs text-gray-500 leading-tight mt-0.5">
-                      {investableAccounts.length} account{investableAccounts.length !== 1 ? "s" : ""} · Updated {fmtDate(newestSync)}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <p className="text-sm font-semibold tabular-nums text-violet-400">
-                    {fmtAbs(sectionTotal)}
+                <div className="text-left">
+                  <p className="text-sm font-semibold text-white leading-tight">{label}</p>
+                  <p className="text-xs text-gray-500 leading-tight mt-0.5">
+                    {isEmpty
+                      ? "No accounts linked yet"
+                      : `${accts.length} account${accts.length !== 1 ? "s" : ""} · Updated ${formatDate(newestSync!)}`
+                    }
                   </p>
-                  <ChevronDown
-                    size={16}
-                    className={`text-gray-500 transition-transform duration-200 shrink-0 ${isOpen ? "rotate-180" : "rotate-0"}`}
-                  />
                 </div>
-              </button>
+              </div>
 
+              <div className="flex items-center gap-2">
+                {!isEmpty && (
+                  <p className={`text-sm font-semibold tabular-nums ${
+                    isDebt
+                      ? sectionTotal > 0 ? "text-red-400" : "text-emerald-400"
+                      : "text-white"
+                  }`}>
+                    {fmtAbs(Math.abs(sectionTotal))}
+                  </p>
+                )}
+                {/* Real <button> — valid here because the parent is a <div>, not a <button> */}
+                {type === "other" && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setAssetOpen(true); }}
+                    className="text-[11px] font-semibold text-teal-400 hover:text-teal-300 bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/20 hover:border-teal-500/40 px-2 py-1 rounded-lg transition-colors leading-none"
+                  >
+                    + Add
+                  </button>
+                )}
+                {!isEmpty && (
+                  isOpen
+                    ? <ChevronUp   size={16} className="text-gray-500 shrink-0" />
+                    : <ChevronDown size={16} className="text-gray-500 shrink-0" />
+                )}
+              </div>
+            </div>
+
+            {isEmpty && (
+              <div className="border-t border-gray-800/60 px-4 py-3 flex flex-wrap items-center gap-2">
+                {type !== "other" && <ConnectAccountButton />}
+                {type === "crypto" && (
+                  <button
+                    onClick={() => setWalletOpen(true)}
+                    className="flex items-center gap-1.5 text-xs font-semibold text-gray-300 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-gray-600 px-3 py-2 rounded-xl transition-colors"
+                  >
+                    + Add Wallet
+                  </button>
+                )}
+                {type === "other" && (
+                  <button
+                    onClick={() => setAssetOpen(true)}
+                    className="flex items-center gap-1.5 text-xs font-semibold text-teal-300 bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/30 hover:border-teal-500/50 px-3 py-2 rounded-xl transition-colors"
+                  >
+                    + Add Asset
+                  </button>
+                )}
+              </div>
+            )}
+
+            {!isEmpty && (
               <div
                 style={{
                   display:          "grid",
@@ -672,22 +441,117 @@ export function DashboardClient({
               >
                 <div className="overflow-hidden" style={{ minHeight: 0 }}>
                   <div className="border-t border-gray-700/60 bg-gray-950/60">
-                    {investableAccounts.map(({ account: a, cashAmount }, idx) => {
-                      const coinSymbol = a.walletChain ?? exchangeSymbol(a.institution);
+                    {accts.map((a, idx) => {
+                      const coinSymbol  = a.walletChain ?? exchangeSymbol(a.institution);
+                      const isManual    = a.syncStatus === "manual";
+                      const isEditing   = editingAssetId === a.id;
+                      const borderCls   = idx < accts.length - 1 ? "border-b border-gray-800/50" : "";
+
+                      // Manual asset row — shows inline "Update value" editor instead of AccountModal
+                      if (isManual) {
+                        const isConfirmingDelete = confirmDeleteId === a.id;
+                        return (
+                          <div key={a.id} className={`pl-6 pr-4 ${borderCls}`}>
+                            {/* Normal row — click pencil to edit, trash to delete */}
+                            <div className="flex items-center justify-between py-3.5">
+                              <div className="flex items-center gap-3">
+                                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${iconCls}`}>
+                                  <Icon size={13} />
+                                </div>
+                                <div>
+                                  <p className="text-sm font-medium text-white leading-tight">{a.name}</p>
+                                  <p className="text-xs text-gray-500 leading-tight mt-0.5">Manual · Updated {formatDate(a.lastUpdated)}</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0 ml-3">
+                                {!isEditing && !isConfirmingDelete && (
+                                  <>
+                                    <p className="text-sm font-semibold tabular-nums text-white mr-1">{fmtAbs(a.balance)}</p>
+                                    <button
+                                      onClick={() => { setEditingAssetId(a.id); setEditingAssetVal(String(a.balance)); }}
+                                      className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:text-teal-400 hover:bg-teal-500/10 transition-colors"
+                                      title="Update value"
+                                    >
+                                      <Pencil size={13} />
+                                    </button>
+                                    <button
+                                      onClick={() => setConfirmDeleteId(a.id)}
+                                      className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                      title="Delete asset"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                            {/* Inline balance edit row */}
+                            {isEditing && (
+                              <div className="pb-3.5 flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={editingAssetVal}
+                                  onChange={(e) => setEditingAssetVal(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === "Enter") saveAssetBalance(a.id); if (e.key === "Escape") { setEditingAssetId(null); } }}
+                                  className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/30"
+                                  placeholder="New value"
+                                  autoFocus
+                                />
+                                <button
+                                  onClick={() => saveAssetBalance(a.id)}
+                                  disabled={savingAsset}
+                                  className="w-8 h-8 flex items-center justify-center rounded-xl bg-teal-600 hover:bg-teal-500 text-white transition-colors disabled:opacity-50"
+                                >
+                                  {savingAsset ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                                </button>
+                                <button
+                                  onClick={() => setEditingAssetId(null)}
+                                  className="text-xs text-gray-500 hover:text-gray-400 px-2"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            )}
+                            {/* Inline delete confirmation row */}
+                            {isConfirmingDelete && (
+                              <div className="pb-3.5 flex items-center justify-between gap-3">
+                                <p className="text-xs text-gray-400">Archive <span className="text-white font-medium">{a.name}</span>? You can restore it from <span className="text-gray-300">Settings → Archived Assets</span>.</p>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <button
+                                    onClick={() => setConfirmDeleteId(null)}
+                                    disabled={deletingAsset}
+                                    className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-50"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    onClick={() => deleteAsset(a.id)}
+                                    disabled={deletingAsset}
+                                    className="flex items-center gap-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                                  >
+                                    {deletingAsset ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+                                    {deletingAsset ? "Archiving…" : "Archive"}
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
+                      // Standard Plaid-synced account row
                       return (
                         <button
                           key={a.id}
                           onClick={() => setSelectedAccount(a)}
-                          className={`w-full flex items-center justify-between pl-6 pr-4 py-3.5 hover:bg-gray-800/40 active:bg-gray-800 transition-colors touch-manipulation text-left ${
-                            idx < investableAccounts.length - 1 ? "border-b border-gray-800/50" : ""
-                          }`}
+                          className={`w-full flex items-center justify-between pl-6 pr-4 py-3.5 hover:bg-gray-800/40 active:bg-gray-800 transition-colors touch-manipulation text-left ${borderCls}`}
                         >
                           <div className="flex items-center gap-3">
-                            {a.type === "crypto" ? (
+                            {type === "crypto" ? (
                               <CoinIcon symbol={coinSymbol} size={28} />
                             ) : (
-                              <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-violet-500/10">
-                                <TrendingUp size={13} className="text-violet-400" />
+                              <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${iconCls}`}>
+                                <Icon size={13} />
                               </div>
                             )}
                             <div>
@@ -696,10 +560,14 @@ export function DashboardClient({
                             </div>
                           </div>
                           <div className="text-right shrink-0 ml-3">
-                            <p className="text-sm font-semibold tabular-nums text-violet-400">
-                              {fmtAbs(cashAmount)}
+                            <p className={`text-sm font-semibold tabular-nums ${
+                              isDebt
+                                ? a.balance > 0 ? "text-red-400" : "text-emerald-400"
+                                : "text-white"
+                            }`}>
+                              {fmtAbs(Math.abs(a.balance))}
                             </p>
-                            <p className="text-xs text-gray-600 mt-0.5">{fmtDate(a.lastUpdated)}</p>
+                            <p className="text-xs text-gray-600 mt-0.5">{formatDate(a.lastUpdated)}</p>
                           </div>
                         </button>
                       );
@@ -707,10 +575,414 @@ export function DashboardClient({
                   </div>
                 </div>
               </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Investable brokerage cash section (Banking tab) */}
+      {isBanking && investableAccounts.length > 0 && (() => {
+        const sectionKey   = "investable";
+        const isOpen       = !sectionCollapsed[sectionKey];
+        const sectionTotal = investableAccounts.reduce((s, { cashAmount }) => s + cashAmount, 0);
+        const newestSync   = investableAccounts.reduce(
+          (best, { account: a }) => (a.lastUpdated > best ? a.lastUpdated : best),
+          investableAccounts[0].account.lastUpdated
+        );
+
+        return (
+          <div className="rounded-2xl border border-gray-800 bg-gray-900 overflow-hidden">
+            <button
+              onClick={() => toggleSection(sectionKey)}
+              className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-gray-800/70 active:bg-gray-800 transition-colors touch-manipulation select-none"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 bg-violet-500/10">
+                  <TrendingUp size={15} className="text-violet-400" />
+                </div>
+                <div className="text-left">
+                  <p className="text-sm font-semibold text-white leading-tight">Brokerage Cash</p>
+                  <p className="text-xs text-gray-500 leading-tight mt-0.5">
+                    {investableAccounts.length} account{investableAccounts.length !== 1 ? "s" : ""} · Updated {formatDate(newestSync)}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <p className="text-sm font-semibold tabular-nums text-violet-400">
+                  {fmtAbs(sectionTotal)}
+                </p>
+                {isOpen
+                  ? <ChevronUp   size={16} className="text-gray-500 shrink-0" />
+                  : <ChevronDown size={16} className="text-gray-500 shrink-0" />
+                }
+              </div>
+            </button>
+
+            <div
+              style={{
+                display:          "grid",
+                gridTemplateRows: isOpen ? "1fr" : "0fr",
+                transition:       "grid-template-rows 0.2s ease",
+              }}
+            >
+              <div className="overflow-hidden" style={{ minHeight: 0 }}>
+                <div className="border-t border-gray-700/60 bg-gray-950/60">
+                  {investableAccounts.map(({ account: a, cashAmount }, idx) => {
+                    const coinSymbol = a.walletChain ?? exchangeSymbol(a.institution);
+                    return (
+                      <button
+                        key={a.id}
+                        onClick={() => setSelectedAccount(a)}
+                        className={`w-full flex items-center justify-between pl-6 pr-4 py-3.5 hover:bg-gray-800/40 active:bg-gray-800 transition-colors touch-manipulation text-left ${
+                          idx < investableAccounts.length - 1 ? "border-b border-gray-800/50" : ""
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          {a.type === "crypto" ? (
+                            <CoinIcon symbol={coinSymbol} size={28} />
+                          ) : (
+                            <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-violet-500/10">
+                              <TrendingUp size={13} className="text-violet-400" />
+                            </div>
+                          )}
+                          <div>
+                            <p className="text-sm font-medium text-white leading-tight">{a.name}</p>
+                            <p className="text-xs text-gray-500 leading-tight mt-0.5">{a.institution}</p>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0 ml-3">
+                          <p className="text-sm font-semibold tabular-nums text-violet-400">
+                            {fmtAbs(cashAmount)}
+                          </p>
+                          <p className="text-xs text-gray-600 mt-0.5">{formatDate(a.lastUpdated)}</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
-          );
-        })()}
+          </div>
+        );
+      })()}
+    </div>
+  );
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  return (
+    <div className="max-w-5xl mx-auto space-y-5">
+
+      {/* Header */}
+      <div className="flex items-start justify-between mb-0">
+        <div>
+          <h1 className="text-xl font-bold text-white">
+            {firstName ? `${firstName}'s Dashboard` : "My Dashboard"}
+          </h1>
+          <p className="text-sm text-gray-500">Personal</p>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0 ml-3">
+          <div className="relative">
+            <button
+              onClick={() => setManageOpen((o) => !o)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-white hover:bg-gray-800 transition-colors border border-gray-800 hover:border-gray-700"
+            >
+              <FolderOpen size={13} />
+              Manage
+            </button>
+
+          {manageOpen && (
+            <>
+              {/* Backdrop */}
+              <div className="fixed inset-0 z-30" onClick={() => setManageOpen(false)} />
+              {/* Dropdown */}
+              <div className="absolute right-0 top-full mt-1.5 z-40 w-56 bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden">
+                <Link
+                  href="/dashboard/accounts"
+                  onClick={() => setManageOpen(false)}
+                  className="flex items-center justify-between px-4 py-3 hover:bg-gray-800 transition-colors"
+                >
+                  <div>
+                    <p className="text-sm font-medium text-white">Accounts</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Manage linked accounts</p>
+                  </div>
+                  <ArrowUpRight size={14} className="text-gray-500 shrink-0" />
+                </Link>
+                <div className="border-t border-gray-800">
+                  <button
+                    onClick={() => { setManageOpen(false); setAssetOpen(true); }}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-800 transition-colors"
+                  >
+                    <div className="text-left">
+                      <p className="text-sm font-medium text-white">Add Manual Asset</p>
+                      <p className="text-xs text-gray-500 mt-0.5">Real estate, vehicles, etc.</p>
+                    </div>
+                    <ArrowUpRight size={14} className="text-gray-500 shrink-0" />
+                  </button>
+                </div>
+                <div className="border-t border-gray-800">
+                  <Link
+                    href="/dashboard/settings/archived-assets"
+                    onClick={() => setManageOpen(false)}
+                    className="flex items-center justify-between px-4 py-3 hover:bg-gray-800 transition-colors"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-white">Archived Assets</p>
+                      <p className="text-xs text-gray-500 mt-0.5">Restore or delete</p>
+                    </div>
+                    <ArrowUpRight size={14} className="text-gray-500 shrink-0" />
+                  </Link>
+                </div>
+              </div>
+            </>
+          )}
+          </div>
+        </div>
       </div>
+
+      {/* Tab navigation */}
+      <div className="flex gap-1 overflow-x-auto bg-gray-900 border border-gray-800 rounded-2xl p-1 scrollbar-hide">
+        {PERSONAL_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => handleFilterChange(tab.key)}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium whitespace-nowrap transition-colors shrink-0 touch-manipulation ${
+              filter === tab.key
+                ? "bg-gray-700 text-white"
+                : "text-gray-500 hover:text-gray-300"
+            }`}
+          >
+            {tab.icon}
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {walletOpen && <AddWalletModal onClose={() => setWalletOpen(false)} />}
+      {assetOpen  && <AddManualAssetModal onClose={() => setAssetOpen(false)} />}
+
+      {/* Credit tab — full DebtClient */}
+      {isCredit && (
+        <DebtClient
+          initialFico={ficoScore}
+          lastUpdatedAt={ficoUpdatedAt}
+          accounts={accounts.filter((a) => a.type === "debt")}
+          transactions={debtTransactions}
+        />
+      )}
+
+      {/* Goals tab */}
+      {isGoals && (
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
+          <div className="w-12 h-12 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mx-auto mb-4">
+            <Target size={20} className="text-blue-400" />
+          </div>
+          <p className="text-sm font-semibold text-white mb-1">Goals</p>
+          <p className="text-sm text-gray-400">Financial goals are coming soon.</p>
+        </div>
+      )}
+
+      {/* Activity tab */}
+      {isActivity && (
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
+          <div className="w-12 h-12 rounded-2xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center mx-auto mb-4">
+            <Clock size={20} className="text-teal-400" />
+          </div>
+          <p className="text-sm font-semibold text-white mb-1">Activity</p>
+          <p className="text-sm text-gray-400">Personal activity feed coming soon.</p>
+        </div>
+      )}
+
+      {/* Settings tab */}
+      {isSettings && (
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden divide-y divide-gray-800">
+          {[
+            { href: "/dashboard/settings", label: "Settings",  sub: "Profile, password, and account preferences" },
+            { href: "/dashboard/advice",   label: "AI Advice", sub: "View your latest financial insights" },
+          ].map(({ href, label, sub }) => (
+            <Link
+              key={href}
+              href={href}
+              className="flex items-center justify-between px-4 py-3.5 hover:bg-gray-800/60 active:bg-gray-800 transition-colors"
+            >
+              <div>
+                <p className="text-sm font-medium text-white">{label}</p>
+                <p className="text-xs text-gray-500 mt-0.5">{sub}</p>
+              </div>
+              <ArrowUpRight size={15} className="text-gray-500 shrink-0" />
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {/* Overview / Banking / Investments */}
+      {!isCredit && !isStaticTab && (
+        <div className="space-y-3">
+
+          {/* ── Dashboard (Overview) ── */}
+          {filter === "dashboard" && (
+            <>
+              <PersonalSectionCard title="Overview">
+                <div className="space-y-3">
+                  <NetWorthCard
+                    netWorth={stats.netWorth}
+                    totalAssets={stats.assets}
+                    totalDebt={stats.debt}
+                    liquid={cashChecking + cashSavings}
+                    change30d={changeForInterval}
+                    changeLabel={chartInterval}
+                    lastUpdated={fmtAccountDate}
+                  />
+                  <div className="grid grid-cols-2 gap-3">
+                    <CashToPlayCard
+                      checking={cashChecking}
+                      savings={cashSavings}
+                      debt={allocation.debt}
+                      playReady={(cashChecking + cashSavings + investableAccountCash) > 0}
+                      investable={investableAccountCash}
+                      change={cashChangeForInterval}
+                      changeLabel={chartInterval}
+                      lastUpdated={fmtAccountDate}
+                    />
+                    <FicoCard score={ficoScore} lastUpdated={formatFicoDate(ficoUpdatedAt)} compact />
+                  </div>
+                </div>
+              </PersonalSectionCard>
+
+              <div className="md:grid md:grid-cols-2 md:gap-3 space-y-3 md:space-y-0">
+                <PersonalSectionCard
+                  title="Net Worth"
+                  rightSlot={
+                    <button
+                      onClick={() => setChartExpanded(true)}
+                      className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:text-white hover:bg-gray-800 transition-colors touch-manipulation"
+                    >
+                      <Maximize2 size={14} />
+                    </button>
+                  }
+                >
+                  <NetWorthChart
+                    snapshots={snapshots}
+                    interval={chartInterval}
+                    onIntervalChange={setChartInterval}
+                    fill
+                  />
+                </PersonalSectionCard>
+
+                <PersonalSectionCard title="Allocation">
+                  <AllocationChart
+                    cash={allocation.cash}
+                    investments={allocation.investments}
+                    crypto={allocation.crypto}
+                    debt={allocation.debt}
+                    realAssets={allocation.realAssets}
+                  />
+                </PersonalSectionCard>
+              </div>
+            </>
+          )}
+
+          {/* ── Banking (absorbs Cash) ── */}
+          {isBanking && (
+            <>
+              <PersonalSectionCard title="Banking">
+                <div className="space-y-3">
+                  <NetWorthCard
+                    title="Banking"
+                    hideInvestments
+                    netWorth={stats.netWorth}
+                    totalAssets={stats.assets}
+                    totalDebt={stats.debt}
+                    liquid={cashChecking + cashSavings}
+                    change30d={0}
+                    changeLabel={chartInterval}
+                    lastUpdated={fmtAccountDate}
+                  />
+                  <div className="grid grid-cols-2 gap-3">
+                    <CashToPlayCard
+                      checking={cashChecking}
+                      savings={cashSavings}
+                      debt={allocation.debt}
+                      playReady={(cashChecking + cashSavings + investableAccountCash) > 0}
+                      change={cashChangeForInterval}
+                      changeLabel={chartInterval}
+                      lastUpdated={fmtAccountDate}
+                    />
+                    <DebtCard
+                      accounts={accounts.filter((a) => a.type === "debt")}
+                      lastUpdated={fmtAccountDate}
+                    />
+                  </div>
+                </div>
+              </PersonalSectionCard>
+
+              <PersonalSectionCard title="Cash History">
+                <CashChart
+                  snapshots={snapshots}
+                  interval={chartInterval}
+                  onIntervalChange={setChartInterval}
+                  investableCash={investableAccountCash}
+                />
+              </PersonalSectionCard>
+
+              <PersonalSectionCard title="Banking History">
+                <BankingChart
+                  snapshots={snapshots}
+                  interval={chartInterval}
+                  onIntervalChange={setChartInterval}
+                />
+              </PersonalSectionCard>
+            </>
+          )}
+
+          {/* ── Investments ── */}
+          {isInvestments && (
+            <>
+              <PersonalSectionCard title="Portfolio">
+                <InvestmentsCard
+                  stocks={allocation.investments - investmentCash}
+                  crypto={allocation.crypto - cryptoCash}
+                  cash={investableAccountCash}
+                  change={investmentsChangeForInterval}
+                  changeLabel={chartInterval}
+                  lastUpdated={fmtAccountDate}
+                />
+              </PersonalSectionCard>
+
+              <PersonalSectionCard title="Portfolio History">
+                <InvestmentsChart
+                  snapshots={snapshots}
+                  interval={chartInterval}
+                  onIntervalChange={setChartInterval}
+                />
+              </PersonalSectionCard>
+
+              <PersonalSectionCard title="Holdings">
+                <HoldingsDonutChart
+                  holdings={holdings}
+                  cryptoAccounts={accounts.filter((a) =>
+                    a.type === "crypto" &&
+                    !holdings.some((h) => h.accountId === a.id && !h.isCash)
+                  )}
+                  accountTotal={allocation.investments + allocation.crypto}
+                />
+              </PersonalSectionCard>
+            </>
+          )}
+
+          {/* Account sections */}
+          {accountSections}
+        </div>
+      )}
+
+      {/* Net Worth chart modal */}
+      {chartExpanded && (
+        <NetWorthChartModal
+          snapshots={snapshots}
+          initialInterval={chartInterval}
+          onClose={() => setChartExpanded(false)}
+        />
+      )}
 
       {/* Account detail modal */}
       {selectedAccount && (

@@ -18,7 +18,12 @@
 import { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
+import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
+import { decrypt } from "@/lib/plaid/encryption";
+import { verifyRecoveryCode } from "@/lib/recovery-codes";
+import { AuditAction } from "@/lib/audit-actions";
+import { verifyTOTP } from "@/lib/totp";
 import { UserRole } from "@prisma/client";
 
 export const authOptions: NextAuthOptions = {
@@ -26,12 +31,19 @@ export const authOptions: NextAuthOptions = {
     CredentialsProvider({
       name: "credentials",
       credentials: {
-        identifier: { label: "Email or Username", type: "text"     },
-        password:   { label: "Password",          type: "password" },
+        identifier:   { label: "Email or Username", type: "text"     },
+        password:     { label: "Password",          type: "password" },
+        totpCode:     { label: "TOTP Code",         type: "text"     },
+        recoveryCode: { label: "Recovery Code",     type: "text"     },
       },
 
-      async authorize(credentials) {
+      async authorize(credentials, req) {
         if (!credentials?.identifier || !credentials?.password) return null;
+
+        const ipAddress = (req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim()
+          ?? (req?.headers?.["x-real-ip"] as string | undefined)
+          ?? null;
+        const userAgent = (req?.headers?.["user-agent"] as string | undefined) ?? null;
 
         const identifier = credentials.identifier.toLowerCase().trim();
 
@@ -48,7 +60,7 @@ export const authOptions: NextAuthOptions = {
               { username: identifier },
             ],
           },
-          select: { id: true, email: true, name: true, username: true, passwordHash: true, role: true, totpEnabled: true },
+          select: { id: true, email: true, name: true, username: true, passwordHash: true, role: true, totpEnabled: true, totpSecret: true },
         });
 
         if (!user || !user.passwordHash) {
@@ -87,34 +99,119 @@ export const authOptions: NextAuthOptions = {
           return null;
         }
 
-        // ── M3-TOTP guard (uncomment after TOTP milestone is complete) ────────
-        // if (user.role === UserRole.SYSTEM_ADMIN && !user.totpEnabled) {
-        //   await db.auditLog.create({
-        //     data: {
-        //       userId:   user.id,
-        //       action:   "LOGIN_FAILED",
-        //       metadata: { reason: "admin_totp_required", role: user.role },
-        //     },
-        //   });
-        //   throw new Error("AdminTOTPRequired");
-        // }
+        // ── Platform TOTP requirement check ───────────────────────────────────
+        // Check if the platform requires TOTP for this user's role.
+        // If required but not yet enrolled, we still allow login but mark the
+        // session with requireTotpSetup = true. Middleware redirects those
+        // sessions to /settings?setup2fa=true for forced enrollment.
+        let requireTotpSetup = false;
+        if (!user.totpEnabled) {
+          const roleKey =
+            user.role === UserRole.SYSTEM_ADMIN ? "require_totp_system_admin" :
+                                                  "require_totp_all_users";
 
-        // ── Log successful login ──────────────────────────────────────────────
-        await db.auditLog.create({
-          data: {
-            userId:   user.id,
-            action:   "LOGIN",
-            metadata: { role: user.role },
-          },
-        });
+          const [roleRequired, allRequired] = await Promise.all([
+            db.platformSetting.findUnique({ where: { key: roleKey },             select: { value: true } }),
+            db.platformSetting.findUnique({ where: { key: "require_totp_all_users" }, select: { value: true } }),
+          ]);
+
+          if (roleRequired?.value === "true" || allRequired?.value === "true") {
+            requireTotpSetup = true;
+          }
+        }
+
+        // ── TOTP enforcement ──────────────────────────────────────────────────
+        // If the user has 2FA enabled, they must provide either a valid TOTP
+        // code or a valid recovery code to complete login.
+        // The login page sends these via the two-step flow (pre-login → TOTP screen).
+        if (user.totpEnabled && user.totpSecret) {
+          const totpCode     = (credentials as Record<string, string>).totpCode?.replace(/\s/g, "");
+          const recoveryCode = (credentials as Record<string, string>).recoveryCode?.trim();
+
+          if (!totpCode && !recoveryCode) {
+            // No second factor provided — block login
+            await db.auditLog.create({
+              data: {
+                userId:   user.id,
+                action:   AuditAction.LOGIN_FAILED,
+                ipAddress,
+                userAgent,
+                metadata: { reason: "totp_required", identifier },
+              },
+            });
+            return null;
+          }
+
+          if (totpCode) {
+            // Verify TOTP code
+            let secret: string;
+            try { secret = decrypt(user.totpSecret); }
+            catch {
+              return null; // corrupted secret — fail safe
+            }
+            if (!verifyTOTP(totpCode, secret, 1)) {
+              await db.auditLog.create({
+                data: {
+                  userId:   user.id,
+                  action:   AuditAction.LOGIN_FAILED,
+                  ipAddress,
+                  userAgent,
+                  metadata: { reason: "totp_invalid", identifier },
+                },
+              });
+              return null;
+            }
+          } else if (recoveryCode) {
+            // Verify and consume a recovery code
+            const used = await verifyRecoveryCode(user.id, recoveryCode);
+            if (!used) {
+              await db.auditLog.create({
+                data: {
+                  userId:   user.id,
+                  action:   AuditAction.LOGIN_FAILED,
+                  ipAddress,
+                  userAgent,
+                  metadata: { reason: "recovery_code_invalid", identifier },
+                },
+              });
+              return null;
+            }
+            // verifyRecoveryCode marks the code used; write the login event below
+          }
+        }
+
+        // ── Create session record + audit log ─────────────────────────────────
+        const sessionToken = randomUUID();
+
+        await db.$transaction([
+          db.userSession.create({
+            data: {
+              userId: user.id,
+              sessionToken,
+              ipAddress,
+              userAgent,
+            },
+          }),
+          db.auditLog.create({
+            data: {
+              userId:    user.id,
+              action:    "LOGIN",
+              ipAddress,
+              userAgent,
+              metadata:  { role: user.role },
+            },
+          }),
+        ]);
 
         return {
-          id:       user.id,
-          email:    user.email,
-          name:     user.name     ?? undefined,
-          username: user.username ?? null,
-          role:     user.role,
-        };
+          id:               user.id,
+          email:            user.email,
+          name:             user.name     ?? undefined,
+          username:         user.username ?? null,
+          role:             user.role,
+          sessionToken,
+          requireTotpSetup: requireTotpSetup || null,
+        } as never; // extra fields flow to JWT via jwt callback
       },
     }),
   ],
@@ -123,36 +220,73 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user, trigger, session }) {
       // `user` is only present on first sign-in — persist to JWT
       if (user) {
-        token.id       = user.id;
-        token.role     = (user as { role: UserRole }).role;
-        token.username = (user as { username?: string | null }).username ?? null;
+        const u = user as { role: UserRole; username?: string | null; sessionToken?: string; requireTotpSetup?: boolean | null };
+        token.id               = user.id;
+        token.role             = u.role;
+        token.username         = u.username         ?? null;
+        token.sessionToken     = u.sessionToken     ?? null;
+        token.requireTotpSetup = u.requireTotpSetup ?? null;
       }
-      // `trigger === "update"` fires when client calls useSession().update({ username })
-      if (trigger === "update" && session?.username !== undefined) {
-        token.username = session.username;
+      // `trigger === "update"` fires when client calls useSession().update(...)
+      if (trigger === "update") {
+        if (session?.username !== undefined)         token.username         = session.username;
+        if (session?.requireTotpSetup !== undefined) token.requireTotpSetup = session.requireTotpSetup;
       }
       return token;
     },
 
     async session({ session, token }) {
-      session.user.id       = token.id       as string;
-      session.user.role     = token.role     as UserRole;
-      session.user.username = token.username as string | null | undefined;
+      const sessionToken = token.sessionToken as string | null | undefined;
+
+      // ── Revocation check ───────────────────────────────────────────────────
+      // JWT tokens are stateless — revoking a UserSession row doesn't invalidate
+      // the cookie automatically. We check the DB on every session access so
+      // revoked sessions are rejected immediately across all devices.
+      if (sessionToken) {
+        const dbSession = await db.userSession.findFirst({
+          where:  { sessionToken, revokedAt: null },
+          select: { id: true },
+        });
+
+        if (!dbSession) {
+          // Return a bare expired session — middleware will redirect to /login
+          return { ...session, user: undefined as never, expires: new Date(0).toISOString() };
+        }
+
+        // Bump lastActiveAt (fire-and-forget — don't block the response)
+        db.userSession.updateMany({
+          where: { sessionToken },
+          data:  { lastActiveAt: new Date() },
+        }).catch(() => {});
+      }
+
+      session.user.id        = token.id               as string;
+      session.user.role      = token.role             as UserRole;
+      session.user.username  = token.username         as string | null | undefined;
+      session.sessionToken   = sessionToken           ?? null;
+      session.requireTotpSetup = (token.requireTotpSetup as boolean | null | undefined) ?? null;
       return session;
     },
   },
 
   events: {
-    // Append-only audit log on sign-out (client-triggered)
     async signOut({ token }) {
-      if (token?.id) {
-        await db.auditLog.create({
-          data: {
-            userId: token.id as string,
-            action: "LOGOUT",
-          },
-        }).catch(() => { /* non-fatal */ });
-      }
+      if (!token?.id) return;
+      const userId       = token.id           as string;
+      const sessionToken = token.sessionToken as string | null | undefined;
+
+      await Promise.all([
+        // Mark the specific session revoked
+        sessionToken
+          ? db.userSession.updateMany({
+              where: { userId, sessionToken, revokedAt: null },
+              data:  { revokedAt: new Date() },
+            }).catch(() => {})
+          : Promise.resolve(),
+        db.auditLog.create({
+          data: { userId, action: "LOGOUT" },
+        }).catch(() => {}),
+      ]);
     },
   },
 

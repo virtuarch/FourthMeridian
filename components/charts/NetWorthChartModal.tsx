@@ -1,11 +1,12 @@
 "use client";
 import { useMemo, useState } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { X } from "lucide-react";
 import { Snapshot } from "@/types";
 import { Interval, cutoffForInterval } from "./NetWorthChart";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 interface Props {
   snapshots: Snapshot[];
@@ -32,12 +33,12 @@ type SeriesKey = (typeof SERIES)[number]["key"];
 
 const fmt = (n: number) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 0,
+    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 0,
   }).format(n);
 
 const fmtFull = (n: number) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: "USD", maximumFractionDigits: 0,
+    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0,
   }).format(n);
 
 // X-axis: "09 Jun"
@@ -90,7 +91,7 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose }: Prop
     setActive((prev) => {
       if (prev.has(key) && prev.size === 1) return prev; // keep at least one
       const next = new Set(prev);
-      next.has(key) ? next.delete(key) : next.add(key);
+      if (next.has(key)) { next.delete(key); } else { next.add(key); }
       return next;
     });
   }

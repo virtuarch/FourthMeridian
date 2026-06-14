@@ -10,13 +10,22 @@ export interface Account {
   balance: number;
   currency: string;
   lastUpdated: string;
-  // Credit card fields
-  creditLimit?: number;     // populated from Plaid balances.limit or manual entry
+  // Debt fields
+  creditLimit?:    number;  // populated from Plaid balances.limit or manual entry
+  debtSubtype?:    string;  // credit_card | line_of_credit | heloc | auto_loan | mortgage | personal_loan | student_loan
+  interestRate?:   number;  // Annual Percentage Rate (APR), e.g. 19.99
+  minimumPayment?: number;  // Minimum monthly payment amount
   // Crypto wallet fields
   walletAddress?: string;
   walletChain?: WalletChain;
   nativeBalance?: number;   // amount in native token (e.g. 0.085 BTC)
-  syncStatus?: 'synced' | 'pending' | 'error';
+  /**
+   * 'manual'  = user-entered asset (AccountType.other, no Plaid connection)
+   * 'synced'  = Plaid sync successful
+   * 'pending' = sync in progress
+   * 'error'   = last sync failed
+   */
+  syncStatus?: 'synced' | 'pending' | 'error' | 'manual';
 }
 
 export interface Holding {

@@ -6,14 +6,21 @@
  * access_token, encrypts it, and imports all accounts + investment holdings
  * into the user's personal workspace.
  *
+ * Data model:
+ *   PlaidItem  — credential, belongs to User (not workspace)
+ *   FinancialAccount  — canonical account row, ownerType=USER
+ *   AccountConnection — links FinancialAccount ↔ PlaidItem ↔ User
+ *   WorkspaceAccountShare — makes the account visible in the active workspace
+ *
  * Body: { public_token: string, institution_id: string, institution_name: string }
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { plaidClient } from "@/lib/plaid/client";
 import { encrypt } from "@/lib/plaid/encryption";
+import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
-import { AccountType, PlaidItemStatus } from "@prisma/client";
+import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
 import { getWorkspaceContext } from "@/lib/workspace";
 
 // ── Map Plaid account type/subtype → our AccountType enum ────────────────────
@@ -35,11 +42,6 @@ function mapAccountType(type: string, subtype: string | null | undefined): Accou
   }
 }
 
-// ── Balance convention ────────────────────────────────────────────────────────
-function normalizeBalance(balance: number | null, _type: AccountType): number {
-  return balance ?? 0;
-}
-
 export async function POST(req: NextRequest) {
   try {
     const { public_token, institution_id, institution_name } = await req.json();
@@ -48,17 +50,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // 1. Exchange public_token for access_token
-    const exchangeRes = await plaidClient.itemPublicTokenExchange({ public_token });
-    const { access_token, item_id } = exchangeRes.data;
-
-    // 2. Encrypt the access_token before it ever touches the DB
-    const encryptedToken = encrypt(access_token);
-
-    // 3. Resolve workspace context (demo user → personal workspace)
+    // 1. Resolve workspace context early so we can check for duplicates
     const { userId, workspaceId } = await getWorkspaceContext();
 
-    // 4. Upsert PlaidItem — PlaidItem stays on User (credential, not workspace asset)
+    // 2. Duplicate institution check — warn but still allow re-link (upsert handles it)
+    const existingItem = await db.plaidItem.findFirst({
+      where: { userId, institutionId: institution_id, status: PlaidItemStatus.ACTIVE },
+    });
+    if (existingItem) {
+      console.log(
+        `[plaid] re-linking existing institution "${institution_name}" (${institution_id}) for user ${userId} — will refresh token`
+      );
+    }
+
+    // 3. Exchange public_token for access_token
+    console.log(`[plaid] exchanging public token for institution "${institution_name}" (${institution_id})`);
+    const exchangeRes = await plaidClient.itemPublicTokenExchange({ public_token });
+    const { access_token, item_id } = exchangeRes.data;
+    console.log(`[plaid] public token exchanged — item_id: ${item_id}`);
+
+    // 4. Encrypt the access_token before it ever touches the DB
+    const encryptedToken = encrypt(access_token);
+
+    // 5. Upsert PlaidItem — credential belongs to User, not workspace
     const plaidItem = await db.plaidItem.upsert({
       where:  { plaidItemId: item_id },
       update: { encryptedToken, status: PlaidItemStatus.ACTIVE, errorCode: null },
@@ -72,20 +86,23 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // 5. Fetch accounts from Plaid
+    // 6. Fetch accounts from Plaid
     const accountsRes = await plaidClient.accountsGet({ access_token });
     const plaidAccounts = accountsRes.data.accounts;
+    console.log(`[plaid] institution "${institution_name}" connected — ${plaidAccounts.length} account(s) found`);
 
-    // 6. Upsert each account — now workspace-owned, ownerId = connecting user
+    // 7. Upsert each account as FinancialAccount + AccountConnection + WorkspaceAccountShare
     let imported = 0;
+    const importedIds: string[] = [];
+
     for (const acct of plaidAccounts) {
       const type             = mapAccountType(acct.type, acct.subtype);
-      const balance          = normalizeBalance(acct.balances.current, type);
+      const balance          = acct.balances.current ?? 0;
       const availableBalance = acct.balances.available ?? undefined;
       const creditLimit      = acct.balances.limit ?? undefined;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (db.account.upsert as any)({
+      // ── Upsert FinancialAccount ──────────────────────────────────────────────
+      const fa = await db.financialAccount.upsert({
         where:  { plaidAccountId: acct.account_id },
         update: {
           balance,
@@ -95,13 +112,14 @@ export async function POST(req: NextRequest) {
           syncStatus:  "synced",
         },
         create: {
-          workspaceId,           // account belongs to the workspace
-          ownerId:      userId,  // connected by this user
-          plaidItemDbId:   plaidItem.id,
+          ownerType:       AccountOwnerType.USER,
+          ownerUserId:     userId,
           plaidAccountId:  acct.account_id,
           name:            acct.name,
           type,
           institution:     institution_name,
+          institutionId:   institution_id,
+          mask:            acct.mask ?? undefined,
           balance,
           availableBalance,
           creditLimit,
@@ -109,10 +127,52 @@ export async function POST(req: NextRequest) {
           syncStatus:      "synced",
         },
       });
+
+      // ── Upsert AccountConnection ─────────────────────────────────────────────
+      const existingConn = await db.accountConnection.findFirst({
+        where: {
+          financialAccountId: fa.id,
+          connectedByUserId:  userId,
+          plaidItemDbId:      plaidItem.id,
+        },
+      });
+
+      if (!existingConn) {
+        await db.accountConnection.create({
+          data: {
+            financialAccountId: fa.id,
+            connectedByUserId:  userId,
+            plaidItemDbId:      plaidItem.id,
+            syncStatus:         "synced",
+            isCanonical:        true,
+          },
+        });
+      } else {
+        await db.accountConnection.update({
+          where: { id: existingConn.id },
+          data:  { syncStatus: "synced", lastSyncedAt: new Date() },
+        });
+      }
+
+      // ── Upsert WorkspaceAccountShare ─────────────────────────────────────────
+      await db.workspaceAccountShare.upsert({
+        where:  { workspaceId_financialAccountId: { workspaceId, financialAccountId: fa.id } },
+        update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
+        create: {
+          workspaceId,
+          financialAccountId: fa.id,
+          addedByUserId:      userId,
+          visibilityLevel:    VisibilityLevel.FULL,
+          status:             ShareStatus.ACTIVE,
+        },
+      });
+
+      importedIds.push(fa.id);
       imported++;
     }
 
-    // 7. Investment holdings
+    // 8. Investment holdings — still write to legacy Account via plaidAccountId cross-ref
+    //    TODO: move to AccountConnection once Holding FKs are migrated
     const investmentPlaidAccounts = plaidAccounts.filter(
       (a) => mapAccountType(a.type, a.subtype) === AccountType.investment
     );
@@ -123,13 +183,13 @@ export async function POST(req: NextRequest) {
       try {
         const holdingsRes = await plaidClient.investmentsHoldingsGet({ access_token });
         const { holdings, securities } = holdingsRes.data;
-
         const secById = Object.fromEntries(securities.map((s) => [s.security_id, s]));
 
         for (const plaidAcct of investmentPlaidAccounts) {
           const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
           if (!acctHoldings.length) continue;
 
+          // Look up the legacy Account row by plaidAccountId (still exists for Holding FK)
           const dbAcct = await db.account.findUnique({
             where:  { plaidAccountId: plaidAcct.account_id },
             select: { id: true },
@@ -168,7 +228,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 8. Audit log — includes workspaceId context
+    // 9. Audit log
     await db.auditLog.create({
       data: {
         userId,
@@ -178,12 +238,13 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    console.log(
+      `[plaid] import complete — ${imported} account(s), ${holdingsImported} holding(s) for institution "${institution_name}"`
+    );
     return NextResponse.json({ success: true, imported, holdingsImported });
   } catch (err: unknown) {
-    console.error("[plaid] exchange-token error:", err);
-    return NextResponse.json(
-      { error: "Failed to connect account" },
-      { status: 500 }
-    );
+    const { message, status, code } = parsePlaidError(err, "Failed to connect account");
+    console.error(`[plaid] exchange-token error (code: ${code ?? "unknown"}):`, message);
+    return NextResponse.json({ error: message }, { status });
   }
 }

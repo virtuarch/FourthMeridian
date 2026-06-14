@@ -1,4 +1,5 @@
 import { Card, CardTitle } from "@/components/ui/Card";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { AlertTriangle, CheckCircle, MinusCircle } from "lucide-react";
 import { Account } from "@/types";
 
@@ -15,10 +16,10 @@ function getStatus(total: number): { label: string; cls: string; icon: React.Ele
 }
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(n));
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(n));
 
 const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(Math.abs(n));
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(Math.abs(n));
 
 export function DebtCard({ accounts, lastUpdated }: Props) {
   // Net debt: positive = you owe, negative = bank owes you
@@ -41,13 +42,29 @@ export function DebtCard({ accounts, lastUpdated }: Props) {
       </p>
 
       {/* Per-account breakdown */}
-      <div className="flex flex-col gap-1.5 mt-2">
+      <div className="flex flex-col gap-2 mt-2">
         {accounts.map((a) => (
-          <div key={a.id} className="flex items-center justify-between">
-            <p className="text-xs text-gray-500 truncate">{a.name}</p>
-            <p className={`text-xs font-semibold tabular-nums shrink-0 ml-2 ${a.balance > 0 ? "text-red-400" : "text-emerald-400"}`}>
-              {a.balance > 0 ? "-" : "+"}{fmtFull(a.balance)}
-            </p>
+          <div key={a.id}>
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-gray-500 truncate">{a.name}</p>
+              <p className={`text-xs font-semibold tabular-nums shrink-0 ml-2 ${a.balance > 0 ? "text-red-400" : "text-emerald-400"}`}>
+                {a.balance > 0 ? "-" : "+"}{fmtFull(a.balance)}
+              </p>
+            </div>
+            {(a.interestRate != null || a.minimumPayment != null) && (
+              <div className="flex gap-3 mt-0.5">
+                {a.interestRate != null && (
+                  <span className="text-[10px] text-gray-600">
+                    {a.interestRate.toFixed(2)}% APR
+                  </span>
+                )}
+                {a.minimumPayment != null && (
+                  <span className="text-[10px] text-gray-600">
+                    {fmtFull(a.minimumPayment)}/mo min
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>

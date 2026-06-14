@@ -1,7 +1,7 @@
 # FinTracker — Project State
 **Last updated:** 2026-06-11  
-**Version tag:** v1.0  
-**Status:** Platform foundation complete. Repo cleaned for public v1 push. Data sync, AI engine, and Cloudflare tunnel are next.
+**Version tag:** v1.0 (post-commit polish)  
+**Status:** v1 committed to GitHub. Post-commit: branding finalized, workplaces → workspaces refactor complete. Next: background sync jobs (Milestone 2).
 
 ---
 
@@ -138,7 +138,24 @@ No pending migrations as of v1.
 - [x] All personal identifiers removed from committed code
 - [x] Real secrets in gitignored `.env` / `.env.local` only
 - [x] `.env.example` checked in with placeholder values
-- [x] GitHub: https://github.com/virtuarch
+- [x] GitHub: https://github.com/virtuarch/fintracker
+- [x] v1.0 committed and pushed
+
+### Branding (post-v1 commit)
+- [x] `public/logo-icon.png` — new square icon (used in sidebar, mobile header, PWA icons)
+- [x] `public/logo-full.png` — wide wordmark (used on all auth pages)
+- [x] All auth pages (login, register, forgot-password, reset-password) use `logo-full.png` wordmark; login shows it at 100px height
+- [x] Desktop sidebar and mobile header both use `logo-icon.png` + "FinTracker" text at `gap-1.5`
+- [x] PWA icons (apple-touch-icon 180px, icon-192, icon-512) regenerated from new `logo-icon.png`
+- [x] Stale source files (`full logo.png`, `icon logo.png`) removed from repo root
+- [x] README `docs/images/` screenshots section added (dashboard, workspaces, ai-advice)
+
+### Naming Refactor (post-v1 commit)
+- [x] `app/dashboard/workplaces/` renamed to `app/dashboard/workspaces/`
+- [x] `WorkplacesClient.tsx` renamed to `WorkspacesClient.tsx`; export updated
+- [x] All nav hrefs updated: `/dashboard/workplaces` → `/dashboard/workspaces`
+- [x] `PROJECT_STATE.md` stale path and known-issue note removed
+- [x] Zero remaining `workplace` references in active codebase (verified)
 
 ---
 
@@ -208,7 +225,7 @@ ANTHROPIC_API_KEY=  # for AI advice engine (future)
 app/
   (auth)/login, register         — auth pages
   dashboard/                     — main dashboard
-  dashboard/workplaces/          — workspaces page
+  dashboard/workspaces/          — workspaces page
   admin/                         — admin panel
   api/
     auth/                        — register, [...nextauth]
@@ -243,7 +260,6 @@ prisma/
 - **2FA/TOTP** — model and schema exist; setup screen and login verification flow not yet built
 - **Crypto wallet balances** — not refreshed automatically; shows "Pending Sync" until Milestone 2 cron jobs are built
 - **`prisma migrate dev && prisma generate`** must be run after cloning before the app compiles
-- **Route vs label mismatch** — route is `/dashboard/workplaces` but nav label says "Workspaces". Renaming cascades through proxy.ts, nav components, and all links — deferred post-v1. Safe as-is.
 - **`UserRole.SYSTEM_ADMIN`** is the schema name for the platform admin role. Used consistently throughout. Renaming requires a DB migration — deferred.
 - **`getDemoContext()`** in `lib/workspace.ts` is a dev/cron helper; resolves to `jane@example.com` to match seed data. Do not use in routes or Server Components.
 - **Admin has no workspace** — `admin@example.com` intentionally has no workspace memberships. The proxy redirects SYSTEM_ADMIN away from `/dashboard`. If an admin session somehow reaches a dashboard route, `resolveWorkspaceContext` will throw. This is expected behavior, not a bug.

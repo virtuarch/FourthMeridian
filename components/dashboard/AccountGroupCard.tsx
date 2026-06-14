@@ -1,4 +1,5 @@
 import { Card, CardTitle } from "@/components/ui/Card";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { Account } from "@/types";
 import { CoinIcon } from "@/components/ui/CoinIcon";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
@@ -13,10 +14,10 @@ interface Props {
 }
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(n);
 
 const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(n);
 
 export function AccountGroupCard({ title, accounts, color, lastUpdated, maxItems, compact }: Props) {
   const total    = accounts.reduce((s, a) => s + a.balance, 0);

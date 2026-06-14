@@ -12,11 +12,10 @@ import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import Link from "next/link";
 import { Users, Building2, CreditCard, ScrollText, ChevronRight } from "lucide-react";
+import { formatDate, formatNumber } from "@/lib/format";
 
 function fmtDate(iso: string | Date) {
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short", day: "numeric", year: "numeric",
-  });
+  return formatDate(typeof iso === "string" ? iso : iso.toISOString());
 }
 
 const ROLE_PILL: Record<string, string> = {
@@ -80,7 +79,7 @@ export default async function AdminOverviewPage() {
               <Icon size={18} className={color} />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white tabular-nums">{value.toLocaleString()}</p>
+              <p className="text-2xl font-bold text-white tabular-nums">{formatNumber(value)}</p>
               <p className="text-xs text-gray-400">{label}</p>
             </div>
           </div>

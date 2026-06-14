@@ -1,9 +1,9 @@
 "use client";
 import { useState } from "react";
 import { AiAdvice } from "@/types";
+import { formatDate, formatDateTime } from "@/lib/format";
 import {
   AlertTriangle, CheckCircle, ChevronRight, X, Brain,
-  TrendingUp, TrendingDown, Shield, Zap,
 } from "lucide-react";
 
 interface Props {
@@ -50,9 +50,7 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
   const context = extractSection(advice.adviceText, "**Market Context");
   const riskFlag = extractRiskFlag(advice.adviceText);
 
-  const dateStr = new Date(advice.generatedAt).toLocaleDateString("en-US", {
-    month: "long", day: "numeric", year: "numeric",
-  });
+  const dateStr = formatDate(advice.generatedAt);
 
   return (
     <div
@@ -81,7 +79,7 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
           {/* Masthead strip */}
           <div className={`h-0.5 w-full ${risk.bar}`} />
           <div className="flex items-center justify-between px-4 py-2.5 bg-gray-900/60 border-b border-gray-800/60">
-            <span className="text-[11px] text-gray-500" suppressHydrationWarning>{dateStr}</span>
+            <span className="text-[11px] text-gray-500">{dateStr}</span>
             <div className="flex items-center gap-2">
               <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${risk.badge}`}>
                 {risk.label} Risk
@@ -176,9 +174,7 @@ export function AdviceBanner({ advice }: Props) {
   const risk = RISK_CONFIG[advice.riskLevel];
   const Icon = risk.icon;
 
-  const dateStr = new Date(advice.generatedAt).toLocaleDateString("en-US", {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  });
+  const dateStr = formatDateTime(advice.generatedAt);
 
   return (
     <>
@@ -193,7 +189,7 @@ export function AdviceBanner({ advice }: Props) {
           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${risk.badge}`}>
             {risk.label} Risk
           </span>
-          <span className="text-[11px] text-gray-600 ml-auto shrink-0" suppressHydrationWarning>{dateStr}</span>
+          <span className="text-[11px] text-gray-600 ml-auto shrink-0">{dateStr}</span>
           <ChevronRight size={13} className="text-gray-600 shrink-0" />
         </div>
 

@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { Snapshot } from "@/types";
 import { Interval, cutoffForInterval } from "./NetWorthChart";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 interface Props {
   snapshots: Snapshot[];
@@ -25,10 +26,10 @@ const SERIES = [
 ] as const;
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(n);
 
 const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(n);
 
 function tickFormat(dateStr: string, interval: Interval): string {
   const d = new Date(dateStr + "T12:00:00");

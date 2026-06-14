@@ -11,12 +11,14 @@ import { UserRole } from "@prisma/client";
 declare module "next-auth" {
   interface Session {
     user: {
-      id:       string;
-      email:    string;
-      name?:    string | null;
-      username?: string | null;
-      role:     UserRole;
+      id:           string;
+      email:        string;
+      name?:        string | null;
+      username?:    string | null;
+      role:         UserRole;
     };
+    sessionToken?:     string | null; // opaque id matching UserSession.sessionToken — used to identify current session
+    requireTotpSetup?: boolean | null; // set when platform requires TOTP but user hasn't enrolled yet — middleware redirects to /settings
   }
 
   interface User {
@@ -28,8 +30,10 @@ declare module "next-auth" {
 
 declare module "next-auth/jwt" {
   interface JWT {
-    id:       string;
-    role:     UserRole;
-    username?: string | null;
+    id:                string;
+    role:              UserRole;
+    username?:         string | null;
+    sessionToken?:     string | null;
+    requireTotpSetup?: boolean | null;
   }
 }

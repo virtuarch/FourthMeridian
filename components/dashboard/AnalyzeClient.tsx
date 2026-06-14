@@ -144,8 +144,8 @@ export function AnalyzeClient({ advice, ficoScore, latestSnapshot, snapshotCount
             <CardTitle>What the Engine Reviews</CardTitle>
             <div className="mt-3 grid grid-cols-2 gap-2">
               {[
-                { label: "Cash Position", value: latestSnapshot ? `$${latestSnapshot.totalCash.toLocaleString()}` : "—" },
-                { label: "Debt Load", value: latestSnapshot ? `-$${latestSnapshot.totalDebt.toLocaleString()}` : "—" },
+                { label: "Cash Position", value: latestSnapshot ? `$${latestSnapshot.totalCash.toLocaleString("en-US")}` : "—" },
+                { label: "Debt Load", value: latestSnapshot ? `-$${latestSnapshot.totalDebt.toLocaleString("en-US")}` : "—" },
                 { label: "Portfolio Allocation", value: assetClassCount > 0 ? `${assetClassCount} asset class${assetClassCount === 1 ? "" : "es"}` : "—" },
                 { label: "Crypto Exposure", value: cryptoPct !== null ? `${cryptoPct.toFixed(1)}% of portfolio` : "—" },
                 { label: "30-day Snapshots", value: snapshotCount > 0 ? `${snapshotCount} data point${snapshotCount === 1 ? "" : "s"}` : "—" },

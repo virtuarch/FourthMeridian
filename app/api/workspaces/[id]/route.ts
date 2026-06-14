@@ -5,30 +5,24 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { requireUser, requireWorkspaceRole } from "@/lib/session";
+import { WorkspaceMemberRole } from "@prisma/client";
 import { db } from "@/lib/db";
+import { withApiHandler, getClientIp } from "@/lib/api";
 
-async function getMembership(workspaceId: string, userId: string) {
-  return db.workspaceMember.findUnique({
-    where: { workspaceId_userId: { workspaceId, userId } },
-  });
-}
-
-export async function GET(
-  _req: Request,
+export const GET = withApiHandler(async (
+  _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
-) {
+) => {
   const { id } = await params;
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const [user, err] = await requireUser();
+  if (err) return err;
 
   const workspace = await db.workspace.findUnique({
     where: { id },
     include: {
       members: {
+        where: { status: "ACTIVE" },
         include: { user: { select: { id: true, name: true, username: true, email: true } } },
         orderBy: { joinedAt: "asc" },
       },
@@ -37,57 +31,66 @@ export async function GET(
 
   if (!workspace) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const membership = await getMembership(id, session.user.id);
-  if (!workspace.isPublic && !membership) {
+  const membership = await db.workspaceMember.findUnique({ where: { workspaceId_userId: { workspaceId: id, userId: user.id } } });
+  const isActiveMember = membership?.status === "ACTIVE";
+  if (!workspace.isPublic && !isActiveMember) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  return NextResponse.json({ ...workspace, myRole: membership?.role ?? null });
-}
+  return NextResponse.json({ ...workspace, myRole: isActiveMember ? membership!.role : null });
+}, "GET /api/workspaces/[id]");
 
-export async function PATCH(
+export const PATCH = withApiHandler(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
-) {
+) => {
   const { id } = await params;
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const membership = await getMembership(id, session.user.id);
-  if (!membership || !["OWNER", "ADMIN"].includes(membership.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const [patchAuth, patchErr] = await requireWorkspaceRole(id, WorkspaceMemberRole.ADMIN);
+  if (patchErr) return patchErr;
+  const { user } = patchAuth;
 
   const body = await req.json();
-  const { name, description, isPublic } = body as {
+  const { name, description, isPublic, category } = body as {
     name?:        string;
     description?: string;
     isPublic?:    boolean;
+    category?:    string;
   };
 
   const workspace = await db.workspace.update({
     where: { id },
     data: {
       ...(name        !== undefined && { name: name.trim() }),
-      ...(description !== undefined && { description: description.trim() || null }),
+      ...(description !== undefined && { description: description?.trim() || null }),
       ...(isPublic    !== undefined && { isPublic }),
+      ...(category    !== undefined && { category: category as never }),
+    },
+  });
+
+  await db.auditLog.create({
+    data: {
+      userId:      user.id,
+      workspaceId: id,
+      action:      "WORKSPACE_UPDATE",
+      metadata:    { name: workspace.name, isPublic: workspace.isPublic, category },
+      ipAddress:   getClientIp(req),
     },
   });
 
   return NextResponse.json(workspace);
-}
+}, "PATCH /api/workspaces/[id]");
 
-export async function DELETE(
+export const DELETE = withApiHandler(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
-) {
+) => {
   const { id } = await params;
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+
+  // requireWorkspaceRole enforces both ACTIVE status and OWNER role —
+  // a LEFT or REMOVED owner cannot delete.
+  const [auth, err] = await requireWorkspaceRole(id, WorkspaceMemberRole.OWNER);
+  if (err) return err;
+  const { user } = auth;
 
   const workspace = await db.workspace.findUnique({ where: { id } });
   if (!workspace) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -95,21 +98,16 @@ export async function DELETE(
     return NextResponse.json({ error: "Cannot delete your personal workspace" }, { status: 400 });
   }
 
-  const membership = await getMembership(id, session.user.id);
-  if (membership?.role !== "OWNER") {
-    return NextResponse.json({ error: "Only the owner can delete this workspace" }, { status: 403 });
-  }
-
   await db.workspace.delete({ where: { id } });
 
   await db.auditLog.create({
     data: {
-      userId:    session.user.id,
+      userId:    user.id,
       action:    "WORKSPACE_DELETE",
       metadata:  { name: workspace.name },
-      ipAddress: req.headers.get("x-forwarded-for") ?? "unknown",
+      ipAddress: getClientIp(req),
     },
   });
 
   return NextResponse.json({ ok: true });
-}
+}, "DELETE /api/workspaces/[id]");

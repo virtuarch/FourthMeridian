@@ -109,6 +109,12 @@ export async function POST(req: NextRequest) {
         },
       });
 
+      // Set the personal workspace as the user's default landing workspace.
+      await tx.user.update({
+        where: { id: newUser.id },
+        data:  { preferredWorkspaceId: workspace.id },
+      });
+
       await tx.aiAgent.create({
         data: {
           workspaceId: workspace.id,

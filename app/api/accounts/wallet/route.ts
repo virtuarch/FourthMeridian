@@ -4,6 +4,11 @@
  * Manually adds a self-custodied crypto wallet to the user's workspace.
  * Balance starts at 0 — the sync job will populate it on next run.
  *
+ * Creates:
+ *   FinancialAccount   — canonical account row (ownerType=USER, no plaidAccountId)
+ *   AccountConnection  — manual/wallet connection (no plaidItemDbId)
+ *   WorkspaceAccountShare — makes the account visible in the active workspace
+ *
  * Body: {
  *   name:          string   // display name, e.g. "Ledger BTC"
  *   walletAddress: string   // public wallet address
@@ -12,17 +17,16 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getWorkspaceContext } from "@/lib/workspace";
-import { AccountType } from "@prisma/client";
+import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
+import { requireUser } from "@/lib/session";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const [, err] = await requireUser();
+  if (err) return err;
 
   const { name, walletAddress, walletChain } = await req.json();
 
@@ -35,21 +39,41 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Unsupported chain. Use: ${SUPPORTED_CHAINS.join(", ")}` }, { status: 400 });
   }
 
-  // Prevent duplicate wallet address in this workspace
   const { workspaceId, userId } = await getWorkspaceContext();
 
-  const existing = await db.account.findFirst({
-    where: { workspaceId, walletAddress: walletAddress.trim() },
+  // Prevent duplicate wallet address across all FinancialAccounts owned by this user
+  const existingFa = await db.financialAccount.findFirst({
+    where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: null },
     select: { id: true },
   });
-  if (existing) {
-    return NextResponse.json({ error: "That wallet address is already connected." }, { status: 409 });
+  if (existingFa) {
+    // Check if it is already shared into this workspace
+    const existingShare = await db.workspaceAccountShare.findFirst({
+      where: { workspaceId, financialAccountId: existingFa.id, status: ShareStatus.ACTIVE },
+    });
+    if (existingShare) {
+      return NextResponse.json({ error: "That wallet address is already connected." }, { status: 409 });
+    }
+    // Wallet exists but not in this workspace — re-share it rather than duplicating
+    await db.workspaceAccountShare.upsert({
+      where:  { workspaceId_financialAccountId: { workspaceId, financialAccountId: existingFa.id } },
+      update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
+      create: {
+        workspaceId,
+        financialAccountId: existingFa.id,
+        addedByUserId:      userId,
+        visibilityLevel:    VisibilityLevel.FULL,
+        status:             ShareStatus.ACTIVE,
+      },
+    });
+    return NextResponse.json({ success: true, accountId: existingFa.id }, { status: 200 });
   }
 
-  const account = await db.account.create({
+  // ── Create new FinancialAccount ────────────────────────────────────────────
+  const fa = await db.financialAccount.create({
     data: {
-      workspaceId,
-      ownerId:       userId,
+      ownerType:     AccountOwnerType.USER,
+      ownerUserId:   userId,
       name:          name.trim(),
       type:          AccountType.crypto,
       institution:   "Self-custodied",
@@ -62,14 +86,35 @@ export async function POST(req: NextRequest) {
     },
   });
 
+  // ── Create AccountConnection (manual, no PlaidItem) ────────────────────────
+  await db.accountConnection.create({
+    data: {
+      financialAccountId: fa.id,
+      connectedByUserId:  userId,
+      syncStatus:         "pending",
+      isCanonical:        true,
+    },
+  });
+
+  // ── Create WorkspaceAccountShare ───────────────────────────────────────────
+  await db.workspaceAccountShare.create({
+    data: {
+      workspaceId,
+      financialAccountId: fa.id,
+      addedByUserId:      userId,
+      visibilityLevel:    VisibilityLevel.FULL,
+      status:             ShareStatus.ACTIVE,
+    },
+  });
+
   await db.auditLog.create({
     data: {
       userId,
       workspaceId,
       action:   "WALLET_ADD",
-      metadata: { name: account.name, chain, address: walletAddress.trim() },
+      metadata: { name: fa.name, chain, address: walletAddress.trim() },
     },
   });
 
-  return NextResponse.json({ success: true, accountId: account.id }, { status: 201 });
+  return NextResponse.json({ success: true, accountId: fa.id }, { status: 201 });
 }

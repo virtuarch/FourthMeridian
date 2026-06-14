@@ -1,4 +1,6 @@
-import { Card, CardTitle } from "@/components/ui/Card";
+import { Card } from "@/components/ui/Card";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatDate } from "@/lib/format";
 import { Account } from "@/types";
 import { Building2, TrendingUp, Bitcoin, CreditCard, PiggyBank } from "lucide-react";
 
@@ -29,7 +31,7 @@ export function AccountCard({ account }: Props) {
   const color = colors[account.type] ?? "text-gray-400";
   const isDebt = account.type === "debt";
   const fmt = (n: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Math.abs(n));
+    new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
 
   return (
     <Card className="flex flex-col gap-2">
@@ -46,7 +48,7 @@ export function AccountCard({ account }: Props) {
         {isDebt ? "-" : ""}{fmt(account.balance)}
       </p>
       <p className="text-xs text-gray-500">
-        Updated {new Date(account.lastUpdated).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+        Updated {formatDate(account.lastUpdated)}
       </p>
     </Card>
   );

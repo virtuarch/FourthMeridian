@@ -51,8 +51,29 @@ node_modules/.prisma
 # macOS
 .DS_Store
 **/.DS_Store
+# macOS temp files created by some editors when saving (e.g. vim on APFS mounts)
+**/.fuse_hidden*
+
+# Working / design artefacts — not part of the source distribution
+# Root-level copies that couldn't be deleted (APFS volume restriction in sandbox)
+*.sketch
+Daily Brief Dashboard Mock Up.png
+Oval World Image*.png
+QA_PASS_*.md
+WIDGET_META_ANALYSIS.md
+WORKSPACE_STATUS.md
+WORKSPACE_TYPE_SPEC.md
+
+# Archive folder — local working notes and design assets, never publish
+docs/archive/
 
 # Cloudflare tunnel credentials (contain real cert/token)
 cloudflared/*.json
 cloudflared/*.pem
 cloudflared/cert.pem
+
+# Deprecated stub files (superseded by lib/plaid/ and lib/db.ts)
+lib/plaid.ts
+lib/encryption.ts
+lib/prisma.ts
+app/api/plaid/create-link-token/

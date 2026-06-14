@@ -1,9 +1,9 @@
 "use client";
 import { useRef, useState } from "react";
 import { X, Eye, EyeOff, LayoutGrid, Activity } from "lucide-react";
-import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import { Holding, Account } from "@/types";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 interface Props {
   holdings:       Holding[];
@@ -74,9 +74,9 @@ function heatFg(change: number): string {
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(n);
 const fmtCompact = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(n);
 function fmtQty(q: number) {
   if (q === 0) return "—";
   return q % 1 === 0 ? q.toFixed(0) : q < 0.01 ? q.toFixed(6) : q.toFixed(4);
@@ -210,7 +210,6 @@ function HoldingsPopup({ sorted, total, onClose }: { sorted: Seg[]; total: numbe
                   const bg   = heatBg(tile.change24h);
                   const fg   = heatFg(tile.change24h);
                   const sign = tile.change24h > 0 ? "+" : "";
-                  const pct  = total > 0 ? (tile.value / total) * 100 : 0;
                   const isSmall = tile.w < 18 || tile.h < 14;
                   return (
                     <div
@@ -325,49 +324,94 @@ export function HoldingsDonutChart({ holdings, cryptoAccounts, accountTotal }: P
 
   const legendData = donutData.slice(0, 4);
 
+  // ── SVG donut geometry (matches DebtBreakdownCard) ──────────────────────────
+  const D_SIZE   = 180;
+  const D_CX     = D_SIZE / 2;
+  const D_CY     = D_SIZE / 2;
+  const D_MID_R  = 62;
+  const D_STROKE = 22;
+  const D_CIRC   = 2 * Math.PI * D_MID_R;
+  const gapDash  = donutData.length > 1 ? (1.5 / 360) * D_CIRC : 0;
+
+  const svgSegments = donutData.reduce(
+    (acc, d, i) => {
+      const pct   = total > 0 ? d.value / total : 0;
+      const dash  = Math.max(0, pct * D_CIRC - gapDash);
+      const gap   = D_CIRC - dash;
+      const angle = -90 + 360 * acc.cumulative;
+      return {
+        cumulative: acc.cumulative + pct,
+        items: [...acc.items, { d, i, pct, dash, gap, angle, color: getColor(i) }],
+      };
+    },
+    { cumulative: 0, items: [] as Array<{ d: Seg; i: number; pct: number; dash: number; gap: number; angle: number; color: string }> },
+  ).items;
+
   return (
     <>
       <div onClick={deselect}>
         {/* ── Donut ── */}
-        <div style={{ position: "relative", height: 200 }}>
-          <ResponsiveContainer width="100%" height={200}>
-            <PieChart onClick={() => { if (sliceClickedRef.current) { sliceClickedRef.current = false; return; } deselect(); }}>
-              <Pie
-                data={donutData}
-                cx="50%" cy="42%"
-                innerRadius={50} outerRadius={74}
-                paddingAngle={2}
-                dataKey="value"
-                onMouseEnter={(_, i) => setHoveredIndex(i)}
-                onMouseLeave={() => setHoveredIndex(null)}
-                onClick={(_, i) => { sliceClickedRef.current = true; setLockedIndex((p) => p === i ? null : i); }}
-                style={{ cursor: "pointer", outline: "none" }}
-              >
-                {donutData.map((_, i) => (
-                  <Cell
-                    key={i}
-                    fill={getColor(i)}
-                    opacity={activeIndex === null || activeIndex === i ? 1 : 0.3}
-                    style={{ transition: "opacity 0.15s" }}
+        <div className="flex justify-center">
+          <div className="relative" style={{ width: D_SIZE, height: D_SIZE }}>
+            <svg
+              width={D_SIZE}
+              height={D_SIZE}
+              viewBox={`0 0 ${D_SIZE} ${D_SIZE}`}
+              onMouseLeave={() => setHoveredIndex(null)}
+            >
+              {/* Background track */}
+              <circle
+                cx={D_CX} cy={D_CY} r={D_MID_R}
+                fill="none"
+                stroke="#1f2937"
+                strokeWidth={D_STROKE}
+              />
+              {/* Segments */}
+              {svgSegments.map(({ d: seg, i, dash, gap, angle, color }) => {
+                const isHov    = activeIndex === i;
+                const isDimmed = activeIndex !== null && !isHov;
+                return (
+                  <circle
+                    key={`${seg.symbol}-${i}`}
+                    cx={D_CX} cy={D_CY} r={D_MID_R}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth={isHov ? D_STROKE + 5 : D_STROKE}
+                    strokeDasharray={`${dash} ${gap}`}
+                    transform={`rotate(${angle}, ${D_CX}, ${D_CY})`}
+                    strokeLinecap="butt"
+                    opacity={isDimmed ? 0.25 : 1}
+                    style={{ cursor: "pointer", transition: "opacity 0.15s, stroke-width 0.15s" }}
+                    onMouseEnter={() => { setHoveredIndex(i); }}
+                    onClick={() => { sliceClickedRef.current = true; setLockedIndex((p) => p === i ? null : i); }}
                   />
-                ))}
-              </Pie>
-            </PieChart>
-          </ResponsiveContainer>
+                );
+              })}
+            </svg>
 
-          <div style={{ position: "absolute", top: "42%", left: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center", lineHeight: 1.3 }}>
-            {active ? (
-              <>
-                <div style={{ color: "#9ca3af", fontSize: 10 }}>{active.symbol}</div>
-                <div style={{ color: "#ffffff", fontSize: 15, fontWeight: 700 }}>{fmtCompact(active.value)}</div>
-                <div style={{ color: "#6b7280", fontSize: 10, fontWeight: 600 }}>{activePct.toFixed(1)}%</div>
-              </>
-            ) : (
-              <>
-                <div style={{ color: "#6b7280", fontSize: 10 }}>Total</div>
-                <div style={{ color: "#ffffff", fontSize: 15, fontWeight: 700 }}>{fmtCompact(total)}</div>
-              </>
-            )}
+            {/* Center label */}
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-4 text-center">
+              {active ? (
+                <>
+                  <p className="text-[10px] text-gray-400 leading-tight truncate w-full text-center">
+                    {active.symbol}
+                  </p>
+                  <p className="text-base font-bold leading-tight mt-0.5 text-white">
+                    {fmtCompact(active.value)}
+                  </p>
+                  <p className="text-[10px] text-gray-500 leading-tight mt-0.5 font-semibold">
+                    {activePct.toFixed(1)}%
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-[10px] text-gray-500 leading-tight">Total</p>
+                  <p className="text-base font-bold leading-tight mt-0.5 text-white">
+                    {fmtCompact(total)}
+                  </p>
+                </>
+              )}
+            </div>
           </div>
         </div>
 

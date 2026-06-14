@@ -1,24 +1,34 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { useSession } from "next-auth/react";
-import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User } from "lucide-react";
+import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight } from "lucide-react";
 import { Card, CardTitle } from "@/components/ui/Card";
+import { TotpSection } from "@/components/dashboard/TotpSection";
+import Link from "next/link";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface Profile {
-  email:            string;
-  username:         string;
-  firstName:        string;
-  lastName:         string;
-  employmentStatus: string;
-  useCase:          string;
-  hasDob:           boolean;
+  email:                string;
+  username:             string;
+  firstName:            string;
+  lastName:             string;
+  employmentStatus:     string;
+  useCase:              string;
+  hasDob:               boolean;
+  preferredWorkspaceId: string | null;
+}
+
+interface WorkspaceOption {
+  id:   string;
+  name: string;
+  type: string;
 }
 
 interface Props {
   initialProfile: Profile;
+  workspaces:     WorkspaceOption[];
 }
 
 interface SelectOption { value: string; label: string; }
@@ -175,9 +185,92 @@ function InlineField({
   );
 }
 
+// ── Preferred workspace card ─────────────────────────────────────────────────
+
+function PreferredWorkspaceCard({
+  workspaces,
+  initialPreferredId,
+  saveField,
+}: {
+  workspaces:          WorkspaceOption[];
+  initialPreferredId:  string | null;
+  saveField:           (payload: Record<string, string>) => Promise<string | null>;
+}) {
+  const [preferredId, setPreferredId] = useState(initialPreferredId ?? "");
+  const [saving,      setSaving]      = useState(false);
+  const [error,       setError]       = useState("");
+  const [flash,       setFlash]       = useState(false);
+
+  const currentName = workspaces.find((w) => w.id === preferredId)?.name ?? "";
+
+  async function handleSave(newId: string) {
+    setSaving(true);
+    setError("");
+    const err = await saveField({ preferredWorkspaceId: newId || "" });
+    setSaving(false);
+    if (err) {
+      setError(err);
+    } else {
+      setPreferredId(newId);
+      setFlash(true);
+      setTimeout(() => setFlash(false), 2500);
+    }
+  }
+
+  const selectCls =
+    "w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm " +
+    "focus:outline-none focus:border-blue-500 transition-colors appearance-none";
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-1">
+        <LayoutDashboard size={15} className="text-gray-400" />
+        <CardTitle>Default Workspace</CardTitle>
+      </div>
+      <p className="text-xs text-gray-600 mb-4">
+        The workspace you land on after every login. Defaults to your Personal workspace if not set.
+      </p>
+
+      {error && (
+        <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2 text-sm text-red-400 mb-3">
+          {error}
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        <select
+          value={preferredId}
+          onChange={(e) => handleSave(e.target.value)}
+          disabled={saving}
+          className={selectCls + " flex-1"}
+        >
+          <option value="">Personal workspace (default)</option>
+          {workspaces.filter((w) => w.type !== "PERSONAL").map((w) => (
+            <option key={w.id} value={w.id}>{w.name}</option>
+          ))}
+        </select>
+        {saving && <Loader2 size={14} className="animate-spin text-gray-500 shrink-0" />}
+        {flash   && <span className="text-xs text-emerald-400 shrink-0">Saved ✓</span>}
+      </div>
+
+      {preferredId && currentName && (
+        <p className="text-xs text-gray-600 mt-2">
+          Landing on <span className="text-gray-400">{currentName}</span> after login.{" "}
+          <button
+            onClick={() => handleSave("")}
+            className="text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            Reset to default
+          </button>
+        </p>
+      )}
+    </Card>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function SettingsClient({ initialProfile }: Props) {
+export function SettingsClient({ initialProfile, workspaces }: Props) {
   const { update: updateSession } = useSession();
 
   async function saveField(payload: Record<string, string>): Promise<string | null> {
@@ -300,6 +393,13 @@ export function SettingsClient({ initialProfile }: Props) {
         />
       </Card>
 
+      {/* ── Preferred workspace ── */}
+      <PreferredWorkspaceCard
+        workspaces={workspaces}
+        initialPreferredId={initialProfile.preferredWorkspaceId}
+        saveField={saveField}
+      />
+
       {/* ── Security ── */}
       <Card>
         <div className="flex items-center gap-2 mb-4">
@@ -380,6 +480,44 @@ export function SettingsClient({ initialProfile }: Props) {
             Update Password
           </button>
         </form>
+      </Card>
+
+      {/* ── Two-factor authentication ── */}
+      <Card>
+        <div className="flex items-center gap-2 mb-4">
+          <ShieldCheck size={15} className="text-gray-400" />
+          <CardTitle>Two-Factor Authentication</CardTitle>
+        </div>
+        <Suspense fallback={<div className="h-16 rounded-xl bg-gray-800 animate-pulse" />}>
+          <TotpSection />
+        </Suspense>
+      </Card>
+
+      {/* ── Data & Archive ── */}
+      <Card>
+        <div className="flex items-center gap-2 mb-1">
+          <Archive size={15} className="text-gray-400" />
+          <CardTitle>Data & Archive</CardTitle>
+        </div>
+        <p className="text-xs text-gray-600 mb-4">
+          Manage archived data. Restore items you deleted, or remove them permanently.
+        </p>
+
+        <Link
+          href="/dashboard/settings/archived-assets"
+          className="flex items-center justify-between px-4 py-3 rounded-xl bg-gray-800/50 border border-gray-700 hover:bg-gray-800 hover:border-gray-600 transition-colors group"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-gray-700 flex items-center justify-center">
+              <Archive size={14} className="text-gray-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-white">Archived Assets</p>
+              <p className="text-xs text-gray-500">Manually-entered assets you&apos;ve deleted</p>
+            </div>
+          </div>
+          <ChevronRight size={15} className="text-gray-600 group-hover:text-gray-400 transition-colors" />
+        </Link>
       </Card>
     </div>
   );

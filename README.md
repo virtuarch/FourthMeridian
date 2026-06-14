@@ -1,42 +1,48 @@
 # FinTracker
 
-A local-first personal finance dashboard. Runs on your laptop, accessible from your iPhone and any device via a Cloudflare tunnel. Installable as a PWA from the iPhone home screen.
+A local-first personal finance intelligence platform. Runs on your laptop via Docker Compose, accessible from any device via a Cloudflare tunnel, and installable as a PWA from your iPhone home screen.
 
 ---
 
-## 🚧 Project Status
+## Project Status
 
-FinTracker is an actively developed personal project and long-term financial intelligence platform.
+**v2.0** — Workspace Platform
 
-The current public release (v1) represents the foundational architecture and is under active development. Features, APIs, database schemas, and user interfaces may evolve significantly between versions as the platform grows.
-
-While the project is functional, it should currently be considered a development build rather than a finished product.
+FinTracker is an actively developed personal project. The v2.0 release introduces the full multi-user workspace architecture on top of the v1.0 financial foundation. Features, APIs, and schemas evolve between versions.
 
 ---
 
-## 🎯 Vision
+## Major Features
 
-The long-term goal of FinTracker is to become an AI-native financial intelligence platform built around private personal workspaces and collaborative shared workspaces.
+### Multi-Workspace Architecture
+Every user gets a personal workspace on signup. Additional shared workspaces can be created for households, investment clubs, advisory relationships, or any collaborative finance context — each with its own dashboard, goals, and account visibility rules.
 
-Rather than acting solely as a budgeting application, the platform is being designed to combine financial aggregation, portfolio analysis, debt tracking, historical net worth analysis, AI-assisted financial guidance, collaborative workspaces, and privacy-preserving financial sharing.
+### Roles and Permissions
+Each workspace has four roles: **Owner**, **Admin**, **Member**, and **Viewer**. Role enforcement runs at both the API and UI layer. Owners can manage members, configure sections, and control what each participant can see.
 
-Future versions are planned to include persistent AI memory, workspace-based intelligence, automated financial insights, and advanced collaboration features — while maintaining strong security and user privacy.
+### Account Sharing
+Accounts are explicitly shared into workspaces rather than duplicated. Each share grants either **Full Access** (balance, transactions, holdings) or **Balance Only** visibility. Shares are revocable at any time and the underlying account data remains private to its owner.
 
----
+### Personal Dashboard
+The personal workspace dashboard covers net worth, checking and savings, investments, crypto wallets, debt, and cash-to-play — all in a single mobile-first view. Accounts are grouped by institution with asset drawers for detailed breakdowns.
 
-## 📸 Screenshots
+### Plaid Integration
+Connect banks and brokerages via Plaid Link. Transactions sync incrementally using a cursor-based approach. OAuth institutions (Chase, Bank of America, etc.) are supported via `/plaid-oauth-return`. Access tokens are encrypted at rest with AES-256-GCM before DB storage.
 
-<p align="center">
-  <img src="docs/images/dashboard.png" alt="Dashboard" width="900" />
-</p>
+### Crypto Wallets
+Track public wallet addresses across seven chains — BTC, ETH, SOL, BNB, MATIC, ADA, XRP — without storing private keys. Exchange accounts show a holdings breakdown with a TradingView chart via the asset drawer.
 
-<p align="center">
-  <img src="docs/images/workspaces.png" alt="Workspaces" width="900" />
-</p>
+### Manual Assets
+Any tangible asset — property, vehicle, equipment — can be added as a manual account. The workspace dashboard renders a live value widget showing current estimate, purchase price, gain/loss, and acquisition date.
 
-<p align="center">
-  <img src="docs/images/ai-advice.png" alt="AI Advice" width="900" />
-</p>
+### Daily Brief
+A full-screen ambient view that summarises net worth movement, upcoming attention items, and financial insights since the last visit. Designed for morning review. Accessible from the bottom nav.
+
+### 2FA / TOTP
+Two-factor authentication is fully implemented: setup flow, authenticator QR code, login verification, recovery codes, and an admin reset flow. Platform-level enforcement (require 2FA for all system admins, or all users) is configurable via the admin security panel.
+
+### Admin Panel
+Available at `/admin` to system admin accounts. Covers user management, workspace oversight, platform-wide audit log, session revocation, TOTP enforcement settings, and live security status.
 
 ---
 
@@ -45,39 +51,16 @@ Future versions are planned to include persistent AI memory, workspace-based int
 | Layer | Technology |
 |---|---|
 | Framework | Next.js 16 (App Router) |
-| Language | TypeScript |
+| Language | TypeScript (strict) |
 | Styling | Tailwind CSS v4 |
 | Database | PostgreSQL |
 | ORM | Prisma v5 |
 | Auth | NextAuth v4 (JWT sessions) |
-| Encryption | AES-256-GCM (custom, `lib/encryption.ts`) |
+| Encryption | AES-256-GCM (`lib/plaid/encryption.ts`) |
 | Bank data | Plaid |
 | Crypto data | Public blockchain APIs |
 | Hosting | Docker Compose (local) |
-| External access | Cloudflare Tunnel (planned) |
-
----
-
-## Core Features
-
-- **Net worth dashboard** — checking, savings, investments, crypto, debt, and cash-to-play in one view
-- **Plaid integration** — connect banks and brokerages via Plaid Link; incremental transaction sync
-- **Crypto wallets** — track public wallet addresses (BTC, ETH, SOL, BNB, MATIC, ADA, XRP) without storing private keys
-- **Asset drawer** — TradingView chart for single-asset wallets; holdings breakdown for exchange accounts
-- **Workspaces** — collaborate on shared finances; public/private workspaces, invite by username, role-based access
-- **Admin panel** — user management, audit log, platform-wide stats at `/admin`
-- **PWA-ready** — mobile-first layout, bottom nav, installable from iPhone Safari
-
----
-
-## Security
-
-- Passwords hashed with bcrypt (cost 12)
-- Plaid access tokens encrypted at rest with AES-256-GCM before DB storage
-- Route protection via `proxy.ts` (Next.js 16) — all `/dashboard/*` and `/admin/*` routes require a valid JWT session
-- Audit log on every login, account change, and workspace event
-- Database never exposed publicly — only accessible inside the Docker network
-- 2FA/TOTP model is in the schema; UI flow is a planned milestone
+| External access | Cloudflare Tunnel |
 
 ---
 
@@ -97,43 +80,48 @@ cd fintracker
 npm install
 ```
 
-### 2. Set environment variables
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-Then fill in `.env` with your real values (see [Environment Variables](#environment-variables) below). **Never commit `.env`.**
+Edit `.env` with your values. **Never commit `.env`.**
 
-### 3. Start PostgreSQL
+```bash
+openssl rand -base64 32   # → NEXTAUTH_SECRET
+openssl rand -hex 32      # → ENCRYPTION_KEY
+```
+
+### 3. Start the database
 
 ```bash
 docker compose up -d db
 ```
 
-### 4. Run migrations and generate Prisma client
+### 4. Run migrations and generate client
 
 ```bash
 npx prisma migrate dev
 npx prisma generate
 ```
 
-### 5. (Optional) Seed demo data
+### 5. Seed demo data (optional)
 
 ```bash
 npm run db:seed
 ```
 
-This creates two fictional demo users with sample accounts, holdings, and transactions. All data is entirely made up — no real names, balances, or institutions.
-
-**Demo credentials (local dev only — change before any real deployment):**
+Creates two fictional demo users with sample accounts, holdings, and transactions.
 
 | User | Email | Username | Password |
 |---|---|---|---|
-| Jane Smith (primary) | `jane@example.com` | `janesmith` | `ChangeMe123!` |
-| John Doe (secondary) | `john@example.com` | `johndoe` | `ChangeMe123!` |
+| Jane Smith | `jane@example.com` | `janesmith` | `ChangeMe123!` |
+| John Doe | `john@example.com` | `johndoe` | `ChangeMe123!` |
+| Alex Chen | `alex@example.com` | `alexchen` | `ChangeMe123!` |
 | System Admin | `admin@example.com` | `admin` | `ChangeMe123!` |
 
+> Change these before any real deployment.
 
 ### 6. Start the app
 
@@ -145,46 +133,6 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
-## Environment Variables
-
-Copy `.env.example` to `.env` and replace every `change_me` value.
-
-```env
-# PostgreSQL
-POSTGRES_USER=fintracker
-POSTGRES_PASSWORD=your_strong_password
-POSTGRES_DB=fintracker
-DATABASE_URL="postgresql://fintracker:your_strong_password@localhost:5432/fintracker?schema=public"
-
-# NextAuth
-NEXTAUTH_SECRET=        # openssl rand -base64 32
-NEXTAUTH_URL=http://localhost:3000
-
-# Token encryption (AES-256-GCM)
-ENCRYPTION_KEY=         # openssl rand -hex 32
-
-# Plaid
-PLAID_CLIENT_ID=your_plaid_client_id
-PLAID_SECRET=your_plaid_secret
-PLAID_ENV=sandbox       # sandbox | development | production
-
-# AI advice engine (future)
-ANTHROPIC_API_KEY=
-
-# Crypto wallet sync (future)
-ETHERSCAN_API_KEY=
-HELIUS_API_KEY=
-```
-
-Generate secrets:
-
-```bash
-openssl rand -base64 32   # NEXTAUTH_SECRET
-openssl rand -hex 32      # ENCRYPTION_KEY
-```
-
----
-
 ## Useful Commands
 
 ```bash
@@ -193,30 +141,36 @@ npm run build         # Production build
 npm run lint          # ESLint
 npm run db:migrate    # Run pending Prisma migrations
 npm run db:seed       # Seed demo data
-npm run db:studio     # Open Prisma Studio (DB browser)
+npm run db:studio     # Open Prisma Studio
 npm run db:reset      # Reset DB and re-run migrations (destroys data)
 ```
 
 ---
 
-## Known Limitations
+## Security
 
-- Background sync jobs are not yet running — data refreshes are manual (the Refresh button triggers a Plaid sync; crypto wallet balances update on each sync run)
-- 2FA/TOTP model exists in the schema but the setup and login-verification UI is not built yet
-- Cloudflare tunnel setup is documented but not configured — the app is local-only until that step
-- Historical net worth chart UI is not built yet (snapshots are being written to the DB already)
-- AI advice engine is not yet implemented
+- Passwords hashed with bcrypt (cost 12)
+- Plaid access tokens encrypted at rest (AES-256-GCM)
+- Route protection via `proxy.ts` — all `/dashboard/*` and `/admin/*` routes require a valid JWT session
+- TOTP/2FA fully implemented with platform-level enforcement
+- Audit log on every login, account change, session event, and workspace action
+- System admin kill switch via `DISABLE_SYSTEM_ADMIN` env var
+- Database never exposed publicly — accessible only inside the Docker network
 
 ---
 
 ## Roadmap
 
-See [ROADMAP.md](./ROADMAP.md) for the full milestone plan.
+| Version | Theme |
+|---|---|
+| **v2.0** | Workspace Platform *(current)* |
+| **v2.0.1** | Cloud Staging — Vercel + Supabase |
+| **v2.1** | Collaborative Workspace Experience |
+| **v2.2** | Ambient Intelligence Foundation |
+| **v2.3** | Adaptive Dashboards & Specialized Workspace Intelligence |
 
-Next up: background sync jobs → historical charts → FICO/manual entry → AI advice → Cloudflare tunnel.
+---
 
 ## License
 
-No license has been granted for this project at this time.
-
-The source code is published publicly for reference and portfolio purposes. All rights are reserved unless otherwise stated.
+No license has been granted for this project at this time. The source code is published publicly for reference and portfolio purposes. All rights reserved unless otherwise stated.

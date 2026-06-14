@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   X, Search, ChevronLeft, ChevronRight, Loader2,
@@ -9,6 +9,7 @@ import {
 import { Account, Holding, Transaction, TransactionCategory, AccountType } from "@/types";
 import { CoinIcon } from "@/components/ui/CoinIcon";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 // ── Stock / crypto logo ───────────────────────────────────────────────────────
 function AssetLogo({
@@ -52,12 +53,12 @@ function AssetLogo({
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtUSD = (n: number) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: "USD", maximumFractionDigits: 2,
+    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2,
   }).format(Math.abs(n));
 
 const fmtCompact = (n: number) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1,
+    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1,
   }).format(Math.abs(n));
 
 // ── Category colors ───────────────────────────────────────────────────────────
@@ -239,12 +240,12 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
   const iconCls = TYPE_ICON_CLS[account.type as AccountType] ?? "bg-gray-500/10 text-gray-400";
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center px-4 pt-4 pb-40 sm:p-4">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
       {/* Panel */}
-      <div className="relative bg-gray-900 border border-gray-700 rounded-3xl w-full sm:max-w-2xl max-h-[calc(100dvh-180px)] sm:max-h-[85vh] flex flex-col shadow-2xl">
+      <div className="relative bg-gray-900 border border-gray-700 rounded-3xl w-full sm:max-w-2xl max-h-[88dvh] flex flex-col shadow-2xl">
 
         {/* ── Header ── */}
         <div className="flex items-center gap-3 px-5 pt-5 pb-4 border-b border-gray-800 shrink-0">

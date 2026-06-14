@@ -9,7 +9,7 @@ import {
 
 const nav = [
   { label: "Dashboard",  href: "/dashboard",            icon: LayoutDashboard },
-  { label: "Workspaces", href: "/dashboard/workplaces", icon: Building2 },
+  { label: "Workspaces", href: "/dashboard/workspaces", icon: Building2 },
   { label: "AI",         href: "/dashboard/analyze",    icon: Brain },
 ];
 

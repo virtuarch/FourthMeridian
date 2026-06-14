@@ -1,6 +1,7 @@
 "use client";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { TrendingUp, TrendingDown } from "lucide-react";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 interface Props {
   netWorth:          number;
@@ -16,7 +17,7 @@ interface Props {
 
 export function NetWorthCard({ netWorth, totalAssets, totalDebt, liquid, change30d, changeLabel, lastUpdated, title = "Net Worth", hideInvestments = false }: Props) {
   const fmt = (n: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+    new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(n);
   const positive = change30d >= 0;
   const prevWorth = netWorth - change30d;
   const pct = prevWorth !== 0 ? (change30d / Math.abs(prevWorth)) * 100 : 0;

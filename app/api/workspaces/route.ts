@@ -1,27 +1,36 @@
 /**
  * GET  /api/workspaces  — list workspaces the user belongs to + all public workspaces
  * POST /api/workspaces  — create a new SHARED workspace (user becomes OWNER)
+ *                         Accepts optional `category` (WorkspaceCategory) and
+ *                         generates default WorkspaceDashboardSection rows.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { Prisma } from "@prisma/client";
+// WorkspaceCategory imported from workspace-presets so this file compiles
+// before `prisma generate` has been re-run with the new schema values.
+// The string values are identical to what Prisma generates.
+import { requireUser } from "@/lib/session";
+import {
+  WorkspaceCategory,
+  getPresetsForCategory,
+} from "@/lib/workspace-presets";
+import { withApiHandler, getClientIp } from "@/lib/api";
 
-export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  const userId = session.user.id;
+export const GET = withApiHandler(async () => {
+  const [user, err] = await requireUser();
+  if (err) return err;
+  const userId = user.id;
 
   // My workspaces (all types including PERSONAL)
   const myMemberships = await db.workspaceMember.findMany({
-    where: { userId },
+    where: { userId, status: "ACTIVE" },
     include: {
       workspace: {
         include: {
           members: {
+            where: { status: "ACTIVE" },
             include: { user: { select: { id: true, name: true, username: true } } },
           },
         },
@@ -63,51 +72,73 @@ export async function GET() {
     public:  publicWorkspaces,
     invites: pendingInvites,
   });
-}
+}, "GET /api/workspaces");
 
-export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+export const POST = withApiHandler(async (req: NextRequest) => {
+  const [user, err] = await requireUser();
+  if (err) return err;
 
   const body = await req.json();
-  const { name, description, isPublic } = body as {
+  const { name, description, isPublic, category } = body as {
     name:         string;
     description?: string;
     isPublic?:    boolean;
+    category?:    WorkspaceCategory;
   };
 
   if (!name?.trim()) {
     return NextResponse.json({ error: "Name is required" }, { status: 400 });
   }
 
+  // Validate category if provided
+  const resolvedCategory: WorkspaceCategory =
+    category && Object.values(WorkspaceCategory).includes(category)
+      ? category
+      : WorkspaceCategory.OTHER;
+
+  // Build default section rows for this category
+  const sectionPresets = getPresetsForCategory(resolvedCategory);
+
   const workspace = await db.workspace.create({
     data: {
       name:        name.trim(),
       description: description?.trim() || null,
       type:        "SHARED",
+      category:    resolvedCategory,
       isPublic:    !!isPublic,
       members: {
-        create: { userId: session.user.id, role: "OWNER" },
+        create: { userId: user.id, role: "OWNER" },
+      },
+      dashboardSections: {
+        create: sectionPresets.map((s) => ({
+          key:     s.key,
+          label:   s.label,
+          tab:     s.tab,
+          enabled: s.enabled,
+          order:   s.order,
+          config:  s.config == null ? Prisma.DbNull : s.config as Prisma.InputJsonValue,
+        })),
       },
     },
     include: {
       members: {
         include: { user: { select: { id: true, name: true, username: true } } },
       },
+      dashboardSections: {
+        orderBy: [{ tab: "asc" }, { order: "asc" }],
+      },
     },
   });
 
   await db.auditLog.create({
     data: {
-      userId:      session.user.id,
+      userId:      user.id,
       workspaceId: workspace.id,
       action:      "WORKSPACE_CREATE",
-      metadata:    { name: workspace.name, isPublic: workspace.isPublic },
-      ipAddress:   req.headers.get("x-forwarded-for") ?? "unknown",
+      metadata:    { name: workspace.name, isPublic: workspace.isPublic, category: resolvedCategory as string },
+      ipAddress:   getClientIp(req),
     },
   });
 
   return NextResponse.json(workspace, { status: 201 });
-}
+}, "POST /api/workspaces");

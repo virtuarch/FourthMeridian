@@ -10,6 +10,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 export interface ChartSeries {
   key: string;
@@ -40,7 +41,7 @@ const INTERVALS = [
 const fmtCompact = (n: number) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: "USD",
+    currency: DEFAULT_DISPLAY_CURRENCY,
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(n);
@@ -48,7 +49,7 @@ const fmtCompact = (n: number) =>
 const fmtFull = (n: number) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: "USD",
+    currency: DEFAULT_DISPLAY_CURRENCY,
     maximumFractionDigits: 0,
   }).format(n);
 

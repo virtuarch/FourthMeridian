@@ -8,15 +8,13 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { db }                       from "@/lib/db";
+import { WorkspaceMemberStatus }    from "@prisma/client";
+import { requireUser }              from "@/lib/session";
 
 export async function GET(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const [user, err] = await requireUser();
+  if (err) return err;
 
   const { searchParams } = new URL(req.url);
   const q           = searchParams.get("q")?.trim() ?? "";
@@ -24,11 +22,13 @@ export async function GET(req: NextRequest) {
 
   if (q.length < 1) return NextResponse.json([]);
 
-  // Build list of user IDs to exclude (self + existing members)
-  const excludeIds: string[] = [session.user.id];
+  // Build list of user IDs to exclude (self + ACTIVE members only).
+  // REMOVED and LEFT rows are excluded from this list so that previously-removed
+  // users appear in search results and can be re-invited.
+  const excludeIds: string[] = [user.id];
   if (workspaceId) {
     const members = await db.workspaceMember.findMany({
-      where: { workspaceId },
+      where: { workspaceId, status: WorkspaceMemberStatus.ACTIVE },
       select: { userId: true },
     });
     excludeIds.push(...members.map((m) => m.userId));

@@ -54,8 +54,8 @@ export function AddWalletModal({ onClose, onAdd }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center px-4 pt-4 pb-40 sm:p-4 bg-black/60 backdrop-blur-sm">
-      <div className="flex flex-col w-full max-h-[calc(100dvh-180px)] sm:max-h-[85vh] sm:h-auto sm:max-w-md bg-gray-900 border border-gray-700 rounded-3xl sm:rounded-2xl shadow-2xl">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <div className="flex flex-col w-full max-h-[88dvh] sm:h-auto sm:max-w-md bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl">
         {/* Header — always visible */}
         <div className="flex items-center justify-between p-5 border-b border-gray-800 shrink-0">
           <div className="flex items-center gap-2.5">

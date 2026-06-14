@@ -9,14 +9,14 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import bcrypt from "bcryptjs";
+import { requireUser } from "@/lib/session";
+import { withApiHandler } from "@/lib/api";
 
-export async function PATCH(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+export const PATCH = withApiHandler(async (req: NextRequest) => {
+  const [user, err] = await requireUser();
+  if (err) return err;
 
   const { currentPassword, newPassword } = await req.json();
 
@@ -30,20 +30,20 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "New password must be different from current password." }, { status: 400 });
   }
 
-  const user = await db.user.findUnique({
-    where:  { id: session.user.id },
+  const dbUser = await db.user.findUnique({
+    where:  { id: user.id },
     select: { passwordHash: true },
   });
 
-  if (!user?.passwordHash) {
+  if (!dbUser?.passwordHash) {
     return NextResponse.json({ error: "Account has no password set." }, { status: 400 });
   }
 
-  const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+  const valid = await bcrypt.compare(currentPassword, dbUser.passwordHash);
   if (!valid) {
     await db.auditLog.create({
       data: {
-        userId: session.user.id,
+        userId: user.id,
         action: "PASSWORD_CHANGE_FAILED",
         metadata: { reason: "wrong_current_password" },
       },
@@ -54,16 +54,16 @@ export async function PATCH(req: NextRequest) {
   const newHash = await bcrypt.hash(newPassword, 12);
 
   await db.user.update({
-    where: { id: session.user.id },
+    where: { id: user.id },
     data:  { passwordHash: newHash },
   });
 
   await db.auditLog.create({
     data: {
-      userId: session.user.id,
+      userId: user.id,
       action: "PASSWORD_CHANGED",
     },
   });
 
   return NextResponse.json({ success: true });
-}
+}, "PATCH /api/user/password");

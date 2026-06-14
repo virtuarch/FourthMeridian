@@ -1,48 +1,77 @@
 /**
  * app/api/accounts/[id]/route.ts
  *
- * DELETE — soft-deletes an account (sets deletedAt). Row preserved for history.
- *          If the account was linked via Plaid and it was the last account on
- *          that PlaidItem, calls plaidClient.itemRemove() to revoke access and
- *          marks the PlaidItem as REVOKED.
+ * id refers to a FinancialAccount.id.
+ *
+ * DELETE — soft-deletes the FinancialAccount (sets deletedAt) and revokes all
+ *          active WorkspaceAccountShare rows for the account.
+ *          If the account was linked via Plaid and its AccountConnection was the
+ *          last non-deleted connection on that PlaidItem, calls
+ *          plaidClient.itemRemove() and marks the PlaidItem as REVOKED.
+ *          Row preserved for history.
  *
  * PATCH  — updates mutable fields: creditLimit (manual entry).
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { plaidClient } from "@/lib/plaid/client";
 import { decrypt } from "@/lib/plaid/encryption";
+import { ShareStatus } from "@prisma/client";
+import { withApiHandler, getClientIp } from "@/lib/api";
 
-export async function PATCH(
+export const PATCH = withApiHandler(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
-) {
+) => {
   const { id } = await params;
   if (!id) return NextResponse.json({ error: "Missing account id" }, { status: 400 });
 
+  const [user, err] = await requireUser();
+  if (err) return err;
+
   try {
     const body = await req.json();
-    // Only allow updating creditLimit for now
-    const { creditLimit } = body;
-    // Allow null (clears limit back to charge-card mode) or a positive number
-    if (
-      creditLimit !== undefined &&
-      creditLimit !== null &&
-      (typeof creditLimit !== "number" || creditLimit <= 0)
-    ) {
+    const { creditLimit, debtSubtype, interestRate, minimumPayment } = body as {
+      creditLimit?:    number | null;
+      debtSubtype?:    string | null;
+      interestRate?:   number | null;
+      minimumPayment?: number | null;
+    };
+
+    // Validate creditLimit
+    if (creditLimit !== undefined && creditLimit !== null &&
+        (typeof creditLimit !== "number" || creditLimit <= 0)) {
       return NextResponse.json({ error: "Invalid creditLimit" }, { status: 400 });
     }
+    // Validate interestRate (0–100 as a percentage)
+    if (interestRate !== undefined && interestRate !== null &&
+        (typeof interestRate !== "number" || interestRate < 0 || interestRate > 100)) {
+      return NextResponse.json({ error: "Invalid interestRate — must be 0–100" }, { status: 400 });
+    }
+    // Validate minimumPayment
+    if (minimumPayment !== undefined && minimumPayment !== null &&
+        (typeof minimumPayment !== "number" || minimumPayment < 0)) {
+      return NextResponse.json({ error: "Invalid minimumPayment" }, { status: 400 });
+    }
 
-    const account = await db.account.findUnique({ where: { id } });
-    if (!account) return NextResponse.json({ error: "Account not found" }, { status: 404 });
+    const fa = await db.financialAccount.findUnique({ where: { id } });
+    if (!fa) return NextResponse.json({ error: "Account not found" }, { status: 404 });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (db.account.update as any)({
+    // Verify ownership: caller must own this account (ownerUserId)
+    if (fa.ownerUserId !== user.id) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    await db.financialAccount.update({
       where: { id },
-      data: { ...(creditLimit !== undefined && { creditLimit }) },
+      data: {
+        ...(creditLimit    !== undefined && { creditLimit }),
+        ...(debtSubtype    !== undefined && { debtSubtype }),
+        ...(interestRate   !== undefined && { interestRate }),
+        ...(minimumPayment !== undefined && { minimumPayment }),
+      },
     });
 
     return NextResponse.json({ ok: true });
@@ -50,85 +79,100 @@ export async function PATCH(
     console.error("[PATCH /api/accounts/:id]", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
-}
+}, "PATCH /api/accounts/[id]");
 
-export async function DELETE(
-  req: Request,
+export const DELETE = withApiHandler(async (
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
-) {
+) => {
   const { id } = await params;
   if (!id) return NextResponse.json({ error: "Missing account id" }, { status: 400 });
 
-  // Auth guard — user must own this account's workspace
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const [user, err] = await requireUser();
+  if (err) return err;
 
   try {
-    // Fetch account with its PlaidItem so we can revoke if needed
-    const account = await db.account.findUnique({
-      where: { id },
-      include: { plaidItem: true },
+    // Fetch FinancialAccount with its connections so we can revoke Plaid if needed
+    const fa = await db.financialAccount.findUnique({
+      where:   { id },
+      include: {
+        connections: {
+          where: { deletedAt: null },
+          include: { plaidItem: true },
+        },
+        workspaceShares: {
+          where: { status: ShareStatus.ACTIVE },
+        },
+      },
     });
 
-    if (!account) {
+    if (!fa) {
       return NextResponse.json({ error: "Account not found" }, { status: 404 });
     }
 
-    // Verify the account belongs to the session user's workspace
-    const membership = await db.workspaceMember.findFirst({
-      where: {
-        userId: session.user.id,
-        workspaceId: account.workspaceId,
-      },
-    });
-    if (!membership) {
+    // Verify the session user has an active share for this account (owns it or added it)
+    const userShare = fa.workspaceShares.find(
+      (s) => s.addedByUserId === user.id
+    );
+    if (!userShare) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // ── 1. Soft-delete the account ────────────────────────────────────────────
-    await db.account.update({
+    const now = new Date();
+
+    // ── 1. Soft-delete the FinancialAccount ───────────────────────────────────
+    await db.financialAccount.update({
       where: { id },
-      data: { deletedAt: new Date() },
+      data:  { deletedAt: now },
     });
 
-    // ── 2. If this was a Plaid account, check whether we should revoke ────────
-    if (account.plaidItemDbId && account.plaidItem) {
-      const remaining = await db.account.count({
+    // ── 2. Soft-delete all AccountConnections ─────────────────────────────────
+    await db.accountConnection.updateMany({
+      where: { financialAccountId: id, deletedAt: null },
+      data:  { deletedAt: now },
+    });
+
+    // ── 3. Revoke all active WorkspaceAccountShare rows ───────────────────────
+    await db.workspaceAccountShare.updateMany({
+      where: { financialAccountId: id, status: ShareStatus.ACTIVE },
+      data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: user.id },
+    });
+
+    // ── 4. If this was a Plaid account, check whether we should revoke the item ──
+    const plaidConnections = fa.connections.filter((c) => c.plaidItemDbId);
+
+    for (const conn of plaidConnections) {
+      // Count remaining non-deleted connections on this PlaidItem
+      const remaining = await db.accountConnection.count({
         where: {
-          plaidItemDbId: account.plaidItemDbId,
-          deletedAt: null,              // only non-deleted accounts
+          plaidItemDbId: conn.plaidItemDbId,
+          deletedAt:     null,
         },
       });
 
-      if (remaining === 0) {
-        // Last account on this PlaidItem — revoke with Plaid and mark REVOKED
+      if (remaining === 0 && conn.plaidItem) {
         try {
-          const accessToken = decrypt(account.plaidItem.encryptedToken);
+          const accessToken = decrypt(conn.plaidItem.encryptedToken);
           await plaidClient.itemRemove({ access_token: accessToken });
         } catch (plaidErr) {
-          // Log but don't fail the request — the account is already soft-deleted.
-          // Plaid will also expire unused tokens eventually.
           console.error("[DELETE /api/accounts/:id] Plaid itemRemove failed:", plaidErr);
         }
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (db.plaidItem.update as any)({
-          where: { id: account.plaidItemDbId },
-          data: { status: "REVOKED" },
+        await db.plaidItem.update({
+          where: { id: conn.plaidItemDbId! },
+          data:  { status: "REVOKED" },
         });
       }
     }
 
-    // ── 3. Audit log ──────────────────────────────────────────────────────────
+    // ── 5. Audit log ──────────────────────────────────────────────────────────
     await db.auditLog.create({
       data: {
-        userId:      session.user.id,
-        workspaceId: account.workspaceId,
+        userId:      user.id,
+        workspaceId: userShare.workspaceId,
         action:      "ACCOUNT_REMOVE",
-        metadata:    { accountName: account.name, accountType: account.type },
-        ipAddress:   (req as NextRequest).headers?.get("x-forwarded-for") ?? "unknown",
+        metadata:    { accountName: fa.name, accountType: fa.type },
+        ipAddress:   getClientIp(req),
       },
     });
 
@@ -137,4 +181,4 @@ export async function DELETE(
     console.error("[DELETE /api/accounts/:id]", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
-}
+}, "DELETE /api/accounts/[id]");

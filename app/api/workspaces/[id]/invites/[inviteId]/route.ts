@@ -7,26 +7,24 @@
  * Cancel a pending invite. Only OWNER/ADMIN of the workspace can call this.
  */
 
-import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { NextRequest, NextResponse }              from "next/server";
+import { db }                                     from "@/lib/db";
+import { requireUser, requireWorkspaceRole }      from "@/lib/session";
+import { WorkspaceMemberRole, WorkspaceMemberStatus } from "@prisma/client";
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; inviteId: string }> }
 ) {
   const { id: workspaceId, inviteId } = await params;
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const [user, err] = await requireUser();
+  if (err) return err;
 
   const invite = await db.workspaceInvite.findUnique({ where: { id: inviteId } });
   if (!invite || invite.workspaceId !== workspaceId) {
     return NextResponse.json({ error: "Invite not found" }, { status: 404 });
   }
-  if (invite.invitedUserId !== session.user.id) {
+  if (invite.invitedUserId !== user.id) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   if (invite.status !== "PENDING") {
@@ -36,9 +34,20 @@ export async function PATCH(
   const { action } = (await req.json()) as { action: "accept" | "decline" };
 
   if (action === "accept") {
+    // Use upsert to handle re-joins: if the user previously left or was removed,
+    // a stale WorkspaceMember row (status REMOVED/LEFT) already exists with a
+    // unique constraint on [workspaceId, userId]. A plain create() would fail.
     await db.$transaction([
-      db.workspaceMember.create({
-        data: { workspaceId, userId: session.user.id, role: invite.role },
+      db.workspaceMember.upsert({
+        where:  { workspaceId_userId: { workspaceId, userId: user.id } },
+        create: { workspaceId, userId: user.id, role: invite.role as WorkspaceMemberRole },
+        update: {
+          role:        invite.role as WorkspaceMemberRole,
+          status:      WorkspaceMemberStatus.ACTIVE,
+          revokedAt:   null,
+          revokedById: null,
+          joinedAt:    new Date(),
+        },
       }),
       db.workspaceInvite.update({
         where: { id: inviteId },
@@ -64,17 +73,10 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string; inviteId: string }> }
 ) {
   const { id: workspaceId, inviteId } = await params;
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
 
-  const membership = await db.workspaceMember.findUnique({
-    where: { workspaceId_userId: { workspaceId, userId: session.user.id } },
-  });
-  if (!membership || !["OWNER", "ADMIN"].includes(membership.role)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  // requireWorkspaceRole enforces ACTIVE status — REMOVED/LEFT admins cannot cancel invites.
+  const [, err] = await requireWorkspaceRole(workspaceId, WorkspaceMemberRole.ADMIN);
+  if (err) return err;
 
   await db.workspaceInvite.deleteMany({ where: { id: inviteId, workspaceId } });
   return NextResponse.json({ ok: true });

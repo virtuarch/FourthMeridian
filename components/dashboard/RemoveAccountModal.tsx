@@ -12,6 +12,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account } from "@/types";
 import { X, AlertTriangle, Trash2, Loader2 } from "lucide-react";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 interface Props {
   accounts: Account[];
@@ -60,8 +61,8 @@ export function RemoveAccountModal({ accounts, onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center px-4 pt-4 pb-40 sm:p-4 bg-black/70 backdrop-blur-sm">
-      <div className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-3xl shadow-2xl overflow-hidden max-h-[calc(100dvh-180px)] sm:max-h-[85vh] flex flex-col">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+      <div className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-3xl shadow-2xl overflow-hidden max-h-[88dvh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
           <div>
@@ -137,7 +138,7 @@ export function RemoveAccountModal({ accounts, onClose }: Props) {
                             <span className="tabular-nums">
                               {new Intl.NumberFormat("en-US", {
                                 style: "currency",
-                                currency: "USD",
+                                currency: DEFAULT_DISPLAY_CURRENCY,
                                 maximumFractionDigits: 0,
                               }).format(Math.abs(a.balance))}
                             </span>

@@ -115,7 +115,7 @@ export default function RegisterPage() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form onSubmit={handleSubmit} className="space-y-5" suppressHydrationWarning>
 
           {/* ── Personal ── */}
           <div>
@@ -129,6 +129,7 @@ export default function RegisterPage() {
                     value={form.firstName}
                     onChange={(e) => set("firstName", e.target.value)}
                     required
+                    suppressHydrationWarning
                     className={inputClass}
                     placeholder="Jane"
                     autoComplete="given-name"
@@ -141,6 +142,7 @@ export default function RegisterPage() {
                     value={form.lastName}
                     onChange={(e) => set("lastName", e.target.value)}
                     required
+                    suppressHydrationWarning
                     className={inputClass}
                     placeholder="Smith"
                     autoComplete="family-name"
@@ -157,6 +159,7 @@ export default function RegisterPage() {
                   type="date"
                   value={form.dateOfBirth}
                   onChange={(e) => set("dateOfBirth", e.target.value)}
+                  suppressHydrationWarning
                   className={inputClass + " [color-scheme:dark]"}
                   max={new Date().toISOString().split("T")[0]}
                 />
@@ -219,6 +222,7 @@ export default function RegisterPage() {
                   value={form.email}
                   onChange={(e) => set("email", e.target.value)}
                   required
+                  suppressHydrationWarning
                   className={inputClass}
                   placeholder="you@example.com"
                   autoComplete="email"
@@ -232,6 +236,7 @@ export default function RegisterPage() {
                   value={form.username}
                   onChange={(e) => set("username", e.target.value)}
                   required
+                  suppressHydrationWarning
                   className={inputClass}
                   placeholder="e.g. janesmith"
                   autoComplete="username"
@@ -250,6 +255,7 @@ export default function RegisterPage() {
                     onChange={(e) => set("password", e.target.value)}
                     required
                     minLength={8}
+                    suppressHydrationWarning
                     className={inputClass + " pr-11"}
                     placeholder="Min. 8 characters"
                     autoComplete="new-password"
@@ -273,6 +279,7 @@ export default function RegisterPage() {
                     value={form.confirmPassword}
                     onChange={(e) => set("confirmPassword", e.target.value)}
                     required
+                    suppressHydrationWarning
                     className={inputClass + " pr-11"}
                     placeholder="Repeat password"
                     autoComplete="new-password"

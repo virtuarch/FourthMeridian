@@ -5,6 +5,7 @@ import { X, TrendingUp, TrendingDown } from "lucide-react";
 import { TradingViewChart } from "@/components/charts/TradingViewChart";
 import { CoinIcon } from "@/components/ui/CoinIcon";
 import { Holding } from "@/types";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
 interface AssetInfo {
   symbol:       string;
@@ -26,7 +27,7 @@ interface Props {
 }
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(n);
 
 export function AssetDrawer({ asset, onClose }: Props) {
   useEffect(() => {
@@ -40,16 +41,14 @@ export function AssetDrawer({ asset, onClose }: Props) {
   const positive      = (asset.change24h ?? 0) >= 0;
   // Show portfolio breakdown when exchange account has known holdings
   const isExchange    = Array.isArray(asset.holdings) && asset.holdings.length > 0;
-  // Show chart only for single-asset wallets (has walletAddress or not an exchange)
-  const showChart     = !isExchange;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center px-4 pt-4 pb-40 sm:p-4">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
       {/* Drawer */}
-      <div className="relative w-full sm:max-w-2xl bg-gray-900 border border-gray-700 rounded-3xl shadow-2xl max-h-[calc(100dvh-180px)] sm:max-h-[85vh] flex flex-col">
+      <div className="relative w-full sm:max-w-2xl bg-gray-900 border border-gray-700 rounded-3xl shadow-2xl max-h-[88dvh] flex flex-col">
         {/* Handle bar (mobile) */}
         <div className="sm:hidden flex justify-center pt-3 pb-1">
           <div className="w-10 h-1 rounded-full bg-gray-700" />

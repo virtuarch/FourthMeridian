@@ -4,6 +4,7 @@ import { ShieldCheck, PlusCircle } from "lucide-react";
 interface Props {
   score:       number | null;
   lastUpdated: string;
+  compact?:    boolean;
 }
 
 function getScoreColor(score: number) {
@@ -13,9 +14,30 @@ function getScoreColor(score: number) {
   return             { text: "text-red-400",            bar: "bg-red-400",     label: "Poor" };
 }
 
-export function FicoCard({ score, lastUpdated }: Props) {
+export function FicoCard({ score, lastUpdated, compact }: Props) {
   // ── Empty state ───────────────────────────────────────────────────────────
   if (score === null) {
+    if (compact) {
+      return (
+        <Card>
+          <div className="flex items-center justify-between">
+            <CardTitle>FICO</CardTitle>
+            <ShieldCheck size={12} className="text-gray-600" />
+          </div>
+          <div className="mt-2 flex flex-col items-center text-center gap-1.5">
+            <PlusCircle size={20} className="text-gray-600" />
+            <p className="text-xs text-gray-500 leading-snug">No score on file</p>
+            <a
+              href="/dashboard/credit"
+              className="text-[11px] font-semibold text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              Add score
+            </a>
+          </div>
+        </Card>
+      );
+    }
+
     return (
       <Card>
         <div className="flex items-center justify-between">
@@ -44,6 +66,31 @@ export function FicoCard({ score, lastUpdated }: Props) {
   const { text, bar, label } = getScoreColor(score);
   const pct = ((score - 300) / (850 - 300)) * 100;
 
+  // ── Compact variant ───────────────────────────────────────────────────────
+  if (compact) {
+    return (
+      <Card>
+        <div className="flex items-center justify-between">
+          <CardTitle>FICO</CardTitle>
+          <ShieldCheck size={12} className="text-gray-500" />
+        </div>
+        <div className="flex items-baseline gap-1.5 mt-1">
+          <p className={`text-2xl font-bold ${text}`}>{score}</p>
+          <p className={`text-[11px] font-semibold ${text}`}>{label}</p>
+        </div>
+        <div className="w-full bg-gray-700 rounded-full h-1.5 mt-2">
+          <div className={`h-1.5 rounded-full ${bar}`} style={{ width: `${pct}%` }} />
+        </div>
+        <div className="flex justify-between mt-0.5">
+          <p className="text-[10px] text-gray-600">300</p>
+          <p className="text-[10px] text-gray-600">850</p>
+        </div>
+        <p className="text-[10px] text-gray-600 mt-1.5">Updated {lastUpdated}</p>
+      </Card>
+    );
+  }
+
+  // ── Full variant ──────────────────────────────────────────────────────────
   return (
     <Card>
       <div className="flex items-center justify-between">

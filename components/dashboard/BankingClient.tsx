@@ -2,21 +2,22 @@
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { Account, Transaction, TransactionCategory } from "@/types";
-import { AccountCard } from "@/components/dashboard/AccountCard";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { PortfolioHistoryChart, ChartSeries } from "@/components/charts/PortfolioHistoryChart";
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
 import { Search, X, Check, Building2, Landmark, CreditCard, ChevronDown, Trash2 } from "lucide-react";
 import { RemoveAccountModal } from "@/components/dashboard/RemoveAccountModal";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatDate } from "@/lib/format";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtAbs = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Math.abs(n));
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
 const fmtTx = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Math.abs(n));
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
 // Compact formatter for summary card headlines — keeps 6–8-figure numbers on one line
 const fmtCompact = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(n));
+  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(n));
 
 // ── Chart config ──────────────────────────────────────────────────────────────
 type BankingSlice = "cash" | "savings" | "debt" | "netLiquid";
@@ -172,7 +173,7 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
         return true;
       })
       .sort((a, b) => b.date.localeCompare(a.date));
-  }, [selectedAccountId, catFilter, cutoff, search]);
+  }, [selectedAccountId, catFilter, cutoff, search, transactions]);
 
   const totalSpend = filteredTxs
     .filter((t) => t.amount < 0 && t.category !== "Payment" && t.category !== "Transfer")
@@ -204,15 +205,6 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
       {s === "netLiquid" ? "Net Liquid" : s.charAt(0).toUpperCase() + s.slice(1)}
     </button>
   );
-
-  const cardClass = (id: string) => {
-    const active = selectedAccountId === id;
-    return `rounded-2xl border-2 transition-all cursor-pointer ${
-      active
-        ? "border-blue-500 bg-blue-500/5"
-        : "border-transparent hover:border-gray-600"
-    }`;
-  };
 
   const timeBtn = (t: TimeFilter) => (
     <button
@@ -297,7 +289,7 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
           const instTotal = accts.reduce((s, a) => s + a.balance, 0);
           const netPos    = instTotal >= 0;
           const newestSync = accts.reduce((best, a) => (a.lastUpdated > best ? a.lastUpdated : best), accts[0].lastUpdated);
-          const syncLabel  = new Date(newestSync).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+          const syncLabel  = formatDate(newestSync);
 
           return (
             <div key={institution} className="rounded-2xl border border-gray-800 bg-gray-900/60 overflow-hidden">
@@ -383,7 +375,7 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
                             </p>
                             {isSelected
                               ? <p className="text-xs text-blue-400 flex items-center gap-1 justify-end mt-0.5"><Check size={9} /> active</p>
-                              : <p className="text-xs text-gray-600 mt-0.5">{new Date(a.lastUpdated).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
+                              : <p className="text-xs text-gray-600 mt-0.5">{formatDate(a.lastUpdated)}</p>
                             }
                           </div>
                         </button>
@@ -500,7 +492,7 @@ function TxRow({
 }) {
   const isCredit = tx.amount > 0;
   const fmt = (n: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Math.abs(n));
+    new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
 
   const dateObj = new Date(tx.date + "T12:00:00");
 

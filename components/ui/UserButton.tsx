@@ -78,7 +78,7 @@ export function UserButton() {
                 Settings
               </Link>
               <button
-                onClick={() => signOut({ callbackUrl: "/login" })}
+                onClick={async () => { await signOut({ redirect: false }); window.location.href = "/login"; }}
                 className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-colors"
               >
                 <LogOut size={14} />

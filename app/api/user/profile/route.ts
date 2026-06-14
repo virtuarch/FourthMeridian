@@ -7,48 +7,53 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/plaid/encryption";
 import { EmploymentStatus, UseCase } from "@prisma/client";
+import { requireUser } from "@/lib/session";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
 
 export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const [user, err] = await requireUser();
+  if (err) return err;
 
-  const user = await db.user.findUnique({
-    where:  { id: session.user.id },
+  const dbUser = await db.user.findUnique({
+    where:  { id: user.id },
     select: {
       email: true, username: true,
       firstName: true, lastName: true,
       employmentStatus: true, useCase: true,
       // DOB is encrypted — return a flag so the client knows if it's set
       dateOfBirthEncrypted: true,
+      preferredWorkspaceId: true,
     },
-  });
+  }) as {
+    email: string; username: string | null; firstName: string | null;
+    lastName: string | null; employmentStatus: string | null; useCase: string | null;
+    dateOfBirthEncrypted: string | null; preferredWorkspaceId: string | null;
+  } | null;
 
-  if (!user) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   return NextResponse.json({
-    email:            user.email,
-    username:         user.username         ?? "",
-    firstName:        user.firstName        ?? "",
-    lastName:         user.lastName         ?? "",
-    employmentStatus: user.employmentStatus ?? "",
-    useCase:          user.useCase          ?? "",
-    hasDob:           !!user.dateOfBirthEncrypted,
+    email:                dbUser.email,
+    username:             dbUser.username             ?? "",
+    firstName:            dbUser.firstName            ?? "",
+    lastName:             dbUser.lastName             ?? "",
+    employmentStatus:     dbUser.employmentStatus     ?? "",
+    useCase:              dbUser.useCase              ?? "",
+    hasDob:               !!dbUser.dateOfBirthEncrypted,
+    preferredWorkspaceId: dbUser.preferredWorkspaceId ?? null,
   });
 }
 
 export async function PATCH(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const [user, err] = await requireUser();
+  if (err) return err;
 
   const body = await req.json();
-  const { username, firstName, lastName, employmentStatus, useCase, dateOfBirth } = body;
+  const { username, firstName, lastName, employmentStatus, useCase, dateOfBirth, preferredWorkspaceId } = body;
 
   // ── Validate username if provided ─────────────────────────────────────────
   if (username !== undefined) {
@@ -60,7 +65,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     const taken = await db.user.findFirst({
-      where: { username: username.toLowerCase(), NOT: { id: session.user.id } },
+      where: { username: username.toLowerCase(), NOT: { id: user.id } },
       select: { id: true },
     });
     if (taken) return NextResponse.json({ error: "That username is already taken." }, { status: 409 });
@@ -70,19 +75,32 @@ export async function PATCH(req: NextRequest) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data: Record<string, any> = {};
 
-  if (username         !== undefined) data.username         = username.toLowerCase().trim();
-  if (firstName        !== undefined) data.firstName        = firstName.trim();
-  if (lastName         !== undefined) data.lastName         = lastName.trim();
-  if (employmentStatus !== undefined) data.employmentStatus = employmentStatus as EmploymentStatus || null;
-  if (useCase          !== undefined) data.useCase          = useCase as UseCase || null;
-  if (dateOfBirth      !== undefined) data.dateOfBirthEncrypted = dateOfBirth ? encrypt(dateOfBirth) : null;
+  if (username              !== undefined) data.username              = username.toLowerCase().trim();
+  if (firstName             !== undefined) data.firstName             = firstName.trim();
+  if (lastName              !== undefined) data.lastName              = lastName.trim();
+  if (employmentStatus      !== undefined) data.employmentStatus      = employmentStatus as EmploymentStatus || null;
+  if (useCase               !== undefined) data.useCase               = useCase as UseCase || null;
+  if (dateOfBirth           !== undefined) data.dateOfBirthEncrypted  = dateOfBirth ? encrypt(dateOfBirth) : null;
+  if (preferredWorkspaceId  !== undefined) {
+    // Validate that user is actually a member of this workspace (or null to clear)
+    if (preferredWorkspaceId !== null) {
+      const membership = await db.workspaceMember.findUnique({
+        where: { workspaceId_userId: { workspaceId: preferredWorkspaceId, userId: user.id } },
+        select: { status: true },
+      });
+      if (!membership || membership.status !== "ACTIVE") {
+        return NextResponse.json({ error: "Not a member of that workspace" }, { status: 403 });
+      }
+    }
+    data.preferredWorkspaceId = preferredWorkspaceId;
+  }
 
   // Keep display name in sync
   const firstForName = firstName ?? undefined;
   const lastForName  = lastName  ?? undefined;
   if (firstForName || lastForName) {
     const current = await db.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: user.id },
       select: { firstName: true, lastName: true },
     });
     const newFirst = (firstForName ?? current?.firstName ?? "").trim();
@@ -91,14 +109,14 @@ export async function PATCH(req: NextRequest) {
   }
 
   const updated = await db.user.update({
-    where: { id: session.user.id },
+    where: { id: user.id },
     data,
     select: { username: true, firstName: true, lastName: true, name: true },
-  });
+  }) as { username: string | null; firstName: string | null; lastName: string | null; name: string | null };
 
   await db.auditLog.create({
     data: {
-      userId: session.user.id,
+      userId: user.id,
       action: "PROFILE_UPDATE",
       metadata: { fields: Object.keys(data).filter((k) => k !== "dateOfBirthEncrypted") },
     },
