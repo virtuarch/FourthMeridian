@@ -21,6 +21,7 @@ import { db } from "@/lib/db";
 import { getWorkspaceContext } from "@/lib/workspace";
 import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
 import { requireUser } from "@/lib/session";
+import { AuditAction } from "@/lib/audit-actions";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -41,32 +42,70 @@ export async function POST(req: NextRequest) {
 
   const { workspaceId, userId } = await getWorkspaceContext();
 
-  // Prevent duplicate wallet address across all FinancialAccounts owned by this user
-  const existingFa = await db.financialAccount.findFirst({
+  // ── Automatic duplicate reconciliation ────────────────────────────────────
+  // Same provider-identity check as Plaid reconnect: never create a second
+  // visible row for a wallet address that already has one, and never show
+  // the user a conflict — just reuse/reactivate the existing account.
+  const activeFa = await db.financialAccount.findFirst({
     where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: null },
     select: { id: true },
   });
-  if (existingFa) {
-    // Check if it is already shared into this workspace
-    const existingShare = await db.workspaceAccountShare.findFirst({
-      where: { workspaceId, financialAccountId: existingFa.id, status: ShareStatus.ACTIVE },
-    });
-    if (existingShare) {
-      return NextResponse.json({ error: "That wallet address is already connected." }, { status: 409 });
-    }
-    // Wallet exists but not in this workspace — re-share it rather than duplicating
+
+  if (activeFa) {
+    // Already exists and active — re-share into this workspace if needed and
+    // return success silently. No 409, no "already connected" message.
     await db.workspaceAccountShare.upsert({
-      where:  { workspaceId_financialAccountId: { workspaceId, financialAccountId: existingFa.id } },
+      where:  { workspaceId_financialAccountId: { workspaceId, financialAccountId: activeFa.id } },
       update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
       create: {
         workspaceId,
-        financialAccountId: existingFa.id,
+        financialAccountId: activeFa.id,
         addedByUserId:      userId,
         visibilityLevel:    VisibilityLevel.FULL,
         status:             ShareStatus.ACTIVE,
       },
     });
-    return NextResponse.json({ success: true, accountId: existingFa.id }, { status: 200 });
+    return NextResponse.json({ success: true, accountId: activeFa.id }, { status: 200 });
+  }
+
+  // No active match — but a previously soft-deleted wallet with this address
+  // would otherwise fall through to create() below and become a genuine
+  // second row (walletAddress has no DB-level unique constraint). Reactivate
+  // it instead of creating a duplicate.
+  const archivedFa = await db.financialAccount.findFirst({
+    where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: { not: null } },
+    select: { id: true },
+  });
+
+  if (archivedFa) {
+    await db.financialAccount.update({
+      where: { id: archivedFa.id },
+      data:  { deletedAt: null, syncStatus: "pending" },
+    });
+    await db.accountConnection.updateMany({
+      where: { financialAccountId: archivedFa.id, deletedAt: { not: null } },
+      data:  { deletedAt: null },
+    });
+    await db.workspaceAccountShare.upsert({
+      where:  { workspaceId_financialAccountId: { workspaceId, financialAccountId: archivedFa.id } },
+      update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
+      create: {
+        workspaceId,
+        financialAccountId: archivedFa.id,
+        addedByUserId:      userId,
+        visibilityLevel:    VisibilityLevel.FULL,
+        status:             ShareStatus.ACTIVE,
+      },
+    });
+    await db.auditLog.create({
+      data: {
+        userId,
+        workspaceId,
+        action:   AuditAction.ACCOUNT_RESTORE,
+        metadata: { name: name.trim(), chain, address: walletAddress.trim() },
+      },
+    });
+    return NextResponse.json({ success: true, accountId: archivedFa.id }, { status: 200 });
   }
 
   // ── Create new FinancialAccount ────────────────────────────────────────────

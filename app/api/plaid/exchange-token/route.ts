@@ -12,11 +12,18 @@
  *   AccountConnection — links FinancialAccount ↔ PlaidItem ↔ User
  *   WorkspaceAccountShare — makes the account visible in the active workspace
  *
- * Relinking the same institution upserts on plaidAccountId (FinancialAccount)
+ * Relinking the same institution matches on plaidAccountId (FinancialAccount)
  * and restores deletedAt → null on both FinancialAccount and AccountConnection
  * if the account had previously been removed (see app/api/accounts/[id]/route.ts
  * DELETE) — reconnecting an account brings it back instead of leaving a
  * reactivated WorkspaceAccountShare pointing at a still-hidden account.
+ *
+ * Plaid does not guarantee plaidAccountId is stable forever — it can reissue
+ * a new account_id for the same real-world account on reconnect. When no
+ * exact plaidAccountId match is found, we fall back to a conservative
+ * fingerprint match (institutionId + mask + type + officialName/plaidName)
+ * against archived accounts before creating a new row — see
+ * lib/accounts/reconcile.ts.
  *
  * Body: { public_token: string, institution_id: string, institution_name: string }
  */
@@ -30,6 +37,7 @@ import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, Visibility
 import { getWorkspaceContext } from "@/lib/workspace";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { AuditAction } from "@/lib/audit-actions";
+import { findArchivedAccountByFingerprint } from "@/lib/accounts/reconcile";
 
 // ── Map Plaid account type/subtype → our AccountType enum ────────────────────
 function mapAccountType(type: string, subtype: string | null | undefined): AccountType {
@@ -109,44 +117,85 @@ export async function POST(req: NextRequest) {
       const availableBalance = acct.balances.available ?? undefined;
       const creditLimit      = acct.balances.limit ?? undefined;
 
-      // ── Upsert FinancialAccount ──────────────────────────────────────────────
-      const fa = await db.financialAccount.upsert({
-        where:  { plaidAccountId: acct.account_id },
-        update: {
-          balance,
-          availableBalance,
-          ...(creditLimit !== undefined && { creditLimit }),
-          lastUpdated: new Date(),
-          syncStatus:  "synced",
-          // Relinking the same plaidAccountId after the account was removed
-          // (FinancialAccount.deletedAt set — see app/api/accounts/[id]/route.ts
-          // DELETE) should restore it, not leave it hidden. Always safe to set
-          // null here even if the account wasn't deleted.
-          deletedAt:   null,
-        },
-        create: {
-          ownerType:       AccountOwnerType.USER,
-          ownerUserId:     userId,
-          plaidAccountId:  acct.account_id,
-          name:            acct.name,
-          // Frozen at import — never written to again on resync (see update
-          // block above, which intentionally omits these two fields and
-          // `displayName`). This preserves the "never overwrite Plaid
-          // metadata" rule and lets the user rename the account afterward
-          // without that rename being clobbered by a later sync.
-          plaidName:       acct.name,
-          officialName:    acct.official_name ?? undefined,
+      // ── Resolve FinancialAccount ──────────────────────────────────────────────
+      // 1. Exact match on plaidAccountId (the common case).
+      // 2. If no exact match, Plaid may have reissued a new account_id for an
+      //    account we already have archived (observed directly — same
+      //    institutionId/mask/officialName/type, different plaidAccountId).
+      //    Fall back to a fingerprint match against soft-deleted accounts; if
+      //    exactly one candidate fits, reuse that row and update its
+      //    plaidAccountId rather than creating a second visible account. See
+      //    lib/accounts/reconcile.ts for the matching rules.
+      // 3. Only create a new row if neither lookup finds anything.
+      let fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
+
+      if (fa) {
+        fa = await db.financialAccount.update({
+          where: { id: fa.id },
+          data: {
+            balance,
+            availableBalance,
+            ...(creditLimit !== undefined && { creditLimit }),
+            lastUpdated: new Date(),
+            syncStatus:  "synced",
+            // Relinking the same plaidAccountId after the account was removed
+            // (FinancialAccount.deletedAt set — see app/api/accounts/[id]/route.ts
+            // DELETE) should restore it, not leave it hidden. Always safe to
+            // set null here even if the account wasn't deleted.
+            deletedAt:   null,
+          },
+        });
+      } else {
+        const archivedMatch = await findArchivedAccountByFingerprint({
+          ownerUserId:   userId,
+          institutionId: institution_id,
+          mask:          acct.mask ?? null,
+          officialName:  acct.official_name ?? null,
+          plaidName:     acct.name,
           type,
-          institution:     institution_name,
-          institutionId:   institution_id,
-          mask:            acct.mask ?? undefined,
-          balance,
-          availableBalance,
-          creditLimit,
-          currency:        acct.balances.iso_currency_code ?? "USD",
-          syncStatus:      "synced",
-        },
-      });
+        });
+
+        if (archivedMatch) {
+          fa = await db.financialAccount.update({
+            where: { id: archivedMatch.id },
+            data: {
+              plaidAccountId:  acct.account_id,
+              balance,
+              availableBalance,
+              ...(creditLimit !== undefined && { creditLimit }),
+              lastUpdated: new Date(),
+              syncStatus:  "synced",
+              deletedAt:   null,
+            },
+          });
+        } else {
+          fa = await db.financialAccount.create({
+            data: {
+              ownerType:       AccountOwnerType.USER,
+              ownerUserId:     userId,
+              plaidAccountId:  acct.account_id,
+              name:            acct.name,
+              // Frozen at import — never written to again on resync (see
+              // update blocks above, which intentionally omit these two
+              // fields and `displayName`). This preserves the "never
+              // overwrite Plaid metadata" rule and lets the user rename the
+              // account afterward without that rename being clobbered by a
+              // later sync.
+              plaidName:       acct.name,
+              officialName:    acct.official_name ?? undefined,
+              type,
+              institution:     institution_name,
+              institutionId:   institution_id,
+              mask:            acct.mask ?? undefined,
+              balance,
+              availableBalance,
+              creditLimit,
+              currency:        acct.balances.iso_currency_code ?? "USD",
+              syncStatus:      "synced",
+            },
+          });
+        }
+      }
 
       // ── Upsert AccountConnection ─────────────────────────────────────────────
       const existingConn = await db.accountConnection.findFirst({

@@ -18,6 +18,7 @@ import { NextRequest, NextResponse }   from "next/server";
 import { db }                          from "@/lib/db";
 import { requireUser }                 from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { providerIdentityOf, findActiveAccountByIdentity, mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -33,7 +34,10 @@ export const POST = withApiHandler(async (
   // ── Fetch + validate ──────────────────────────────────────────────────────
   const fa = await db.financialAccount.findUnique({
     where:  { id },
-    select: { id: true, name: true, ownerUserId: true, type: true, syncStatus: true, deletedAt: true },
+    select: {
+      id: true, name: true, ownerUserId: true, type: true, syncStatus: true, deletedAt: true,
+      plaidAccountId: true, walletAddress: true,
+    },
   });
 
   if (!fa) {
@@ -47,6 +51,28 @@ export const POST = withApiHandler(async (
   }
   if (fa.type !== "other" || fa.syncStatus !== "manual") {
     return NextResponse.json({ error: "Only manually-entered asset accounts can be restored." }, { status: 400 });
+  }
+
+  // ── Automatic duplicate reconciliation ────────────────────────────────────
+  // Manual assets normally have no provider identity, so this is a no-op for
+  // them — kept for consistency with the generic restore route in case a
+  // record ever does carry one.
+  const identity  = providerIdentityOf(fa);
+  const canonical = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
+
+  if (canonical) {
+    await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id);
+
+    await db.auditLog.create({
+      data: {
+        userId,
+        action:    "MANUAL_ASSET_RESTORE",
+        metadata:  { accountId: fa.id, name: fa.name, reconciledIntoAccountId: canonical.id },
+        ipAddress: getClientIp(req),
+      },
+    });
+
+    return NextResponse.json({ ok: true, accountId: canonical.id });
   }
 
   // ── Restore in parallel ───────────────────────────────────────────────────

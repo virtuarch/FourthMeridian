@@ -14,11 +14,22 @@
  * Actions:
  *   1. Verify caller owns the account (ownerUserId) and it is currently
  *      soft-deleted (deletedAt set).
- *   2. Restore FinancialAccount: deletedAt → null.
- *   3. Restore AccountConnection rows: deletedAt → null.
- *   4. Reactivate WorkspaceAccountShare rows: status → ACTIVE, revokedAt →
- *      null, revokedByUserId → null.
- *   5. Audit log.
+ *   2. Check whether another ACTIVE account already exists with the same
+ *      provider identity (plaidAccountId / walletAddress). If so, this is a
+ *      duplicate — fold this account's history into the active one (see
+ *      lib/accounts/reconcile.ts) and return success pointing at the
+ *      active account instead of restoring a second visible row. No
+ *      conflict is ever shown to the user. If no exact identity match is
+ *      found (Plaid can reissue plaidAccountId for the same real-world
+ *      account), fall back to a conservative fingerprint match
+ *      (institutionId + mask + type + officialName/plaidName) before
+ *      assuming this account is genuinely unique.
+ *   3. Otherwise, restore normally:
+ *      - FinancialAccount: deletedAt → null.
+ *      - AccountConnection rows: deletedAt → null.
+ *      - WorkspaceAccountShare rows: status → ACTIVE, revokedAt → null,
+ *        revokedByUserId → null.
+ *   4. Audit log.
  *
  * Does NOT re-establish a revoked PlaidItem at the provider — if the
  * PlaidItem itself was revoked (status REVOKED, itemRemove() already called),
@@ -36,6 +47,12 @@ import { db } from "@/lib/db";
 import { ShareStatus } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
+import {
+  providerIdentityOf,
+  findActiveAccountByIdentity,
+  findActiveAccountByFingerprint,
+  mergeArchivedDuplicateIntoCanonical,
+} from "@/lib/accounts/reconcile";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -50,7 +67,11 @@ export const POST = withApiHandler(async (
   try {
     const fa = await db.financialAccount.findUnique({
       where:  { id },
-      select: { id: true, name: true, type: true, ownerUserId: true, deletedAt: true },
+      select: {
+        id: true, name: true, type: true, ownerUserId: true, deletedAt: true,
+        plaidAccountId: true, walletAddress: true,
+        institutionId: true, mask: true, officialName: true, plaidName: true,
+      },
     });
 
     if (!fa) {
@@ -62,6 +83,43 @@ export const POST = withApiHandler(async (
     // Verify ownership: caller must own this account (same check PATCH uses)
     if (fa.ownerUserId !== user.id) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    // ── Automatic duplicate reconciliation ──────────────────────────────────
+    // If an active account already exists for the same provider identity,
+    // this restore would create a visible duplicate. Silently fold this
+    // account's history into the active one instead — no conflict shown.
+    const identity = providerIdentityOf(fa);
+    let canonical = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
+
+    // No exact identity match — Plaid can reissue plaidAccountId for the
+    // same real-world account, so an active row may already exist under a
+    // different plaidAccountId than this archived one. Fall back to a
+    // fingerprint match before assuming this account is genuinely unique.
+    if (!canonical) {
+      canonical = await findActiveAccountByFingerprint({
+        ownerUserId:   fa.ownerUserId,
+        institutionId: fa.institutionId,
+        mask:          fa.mask,
+        officialName:  fa.officialName,
+        plaidName:     fa.plaidName,
+        type:          fa.type,
+      });
+    }
+
+    if (canonical) {
+      await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id);
+
+      await db.auditLog.create({
+        data: {
+          userId:    user.id,
+          action:    AuditAction.ACCOUNT_RESTORE,
+          metadata:  { accountId: fa.id, name: fa.name, accountType: fa.type, reconciledIntoAccountId: canonical.id },
+          ipAddress: getClientIp(req),
+        },
+      });
+
+      return NextResponse.json({ ok: true, accountId: canonical.id });
     }
 
     // ── Restore in parallel ─────────────────────────────────────────────────
