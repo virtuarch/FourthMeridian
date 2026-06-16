@@ -40,8 +40,8 @@ export async function getTransactions(): Promise<Transaction[]> {
 }
 
 /** Transactions for debt accounts only (credit card activity), newest first. */
-export async function getDebtTransactions(): Promise<Transaction[]> {
-  const { workspaceId } = await getWorkspaceContext();
+export async function getDebtTransactions(ctx?: { workspaceId: string }): Promise<Transaction[]> {
+  const { workspaceId } = ctx ?? (await getWorkspaceContext());
 
   const rows = await db.transaction.findMany({
     where: {

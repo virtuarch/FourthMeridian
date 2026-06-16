@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 /** GET /api/workspaces/invites/pending
  *  Returns the count of UNSEEN pending invites for the current user.
  *  seenAt IS NULL = user hasn't opened the Invites tab yet.

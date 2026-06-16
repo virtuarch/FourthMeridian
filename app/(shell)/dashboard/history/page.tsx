@@ -3,6 +3,9 @@ import { formatDate } from "@/lib/format";
 import { NetWorthChart } from "@/components/charts/NetWorthChart";
 import { Card, CardTitle } from "@/components/ui/Card";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 const fmt = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
 

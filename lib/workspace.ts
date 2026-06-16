@@ -19,6 +19,7 @@
  *                          Do not use this in routes or Server Components.
  */
 
+import { cache }              from "react";
 import { getServerSession }   from "next-auth";
 import { cookies }            from "next/headers";
 import { authOptions }        from "@/lib/auth";
@@ -79,15 +80,18 @@ function derivePermissions(role: WorkspaceMemberRole): WorkspacePermissions {
 // ── Diagnostic instrumentation (temporary — perf audit) ──────────────────────
 // getWorkspaceContext() is called many times per page render (every Server
 // Component / API route that needs the active workspace calls it
-// independently — it is NOT wrapped in React's cache(), so each call re-runs
-// getServerSession() + up to two more uncached Prisma queries). This counter
-// + per-call id makes that fan-out visible in the logs instead of guessed at:
-// grep for a single "[wsctx]" id and you'll see every query that one logical
-// call triggered; grep for "[wsctx] ENTER" alone and count the lines within
-// one request's time window to see how many times this ran for one page.
+// independently). It is now wrapped in React's cache() below, so within a
+// single request all calls after the first hit the in-memory cache instead
+// of re-running getServerSession() + Prisma queries — but the counter + lap
+// instrumentation is kept so the fan-out (and the cache savings) stay visible
+// in the logs: grep for a single "[wsctx]" id to see every query that one
+// logical call triggered; grep for "[wsctx] ENTER" alone and count the lines
+// within one request's time window — after this fix there should be exactly
+// ONE "ENTER" per request that actually calls getWorkspaceContext(), instead
+// of 7.
 let __wsctxCallCounter = 0;
 
-export async function getWorkspaceContext(): Promise<WorkspaceContext> {
+async function getWorkspaceContextUncached(): Promise<WorkspaceContext> {
   const callId = `${++__wsctxCallCounter}-${Math.random().toString(36).slice(2, 6)}`;
   const t0 = Date.now();
   const lap = (label: string, from: number) => {
@@ -140,6 +144,14 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
   console.log(`[wsctx ${callId}] EXIT getWorkspaceContext: ${Date.now() - t0}ms total`);
   return ctx;
 }
+
+// React's cache() memoizes per-request (per render pass of the RSC tree) for
+// the exact same arguments — getWorkspaceContext() takes none, so every call
+// within one request now resolves to a single shared in-flight/resolved
+// promise instead of re-running session lookup + Prisma queries. This does
+// NOT cache across requests/users — cache() scope is reset for each new
+// request, so there is no cross-user leakage risk.
+export const getWorkspaceContext = cache(getWorkspaceContextUncached);
 
 // ── Shared resolver ───────────────────────────────────────────────────────────
 

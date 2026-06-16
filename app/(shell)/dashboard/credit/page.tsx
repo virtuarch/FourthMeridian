@@ -2,6 +2,9 @@ import { DebtClient } from "@/components/dashboard/DebtClient";
 import { getFicoData, getAccounts } from "@/lib/data/accounts";
 import { getDebtTransactions } from "@/lib/data/transactions";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 export default async function CreditPage() {
   const t0 = Date.now();
   const time = <T,>(label: string, p: Promise<T>): Promise<T> => {

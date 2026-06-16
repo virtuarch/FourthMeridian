@@ -18,6 +18,9 @@ import {
 } from "@/lib/workspace-presets";
 import { withApiHandler, getClientIp } from "@/lib/api";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 // GET is consumed by two call sites only (Sidebar's workspace switcher and
 // AddManualAssetModal's share-target picker) — both read only
 // `data.mine[].{id,name,type,myRole}`. It previously also queried public

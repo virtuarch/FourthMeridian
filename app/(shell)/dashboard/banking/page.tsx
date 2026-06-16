@@ -3,6 +3,9 @@ import { getAccounts } from "@/lib/data/accounts";
 import { getTransactions } from "@/lib/data/transactions";
 import { getPortfolioHistory } from "@/lib/data/snapshots";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 interface PageProps {
   searchParams: Promise<{ account?: string }>;
 }

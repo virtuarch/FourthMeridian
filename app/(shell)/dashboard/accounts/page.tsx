@@ -2,6 +2,9 @@ import { getAccounts } from "@/lib/data/accounts";
 import { AccountCard } from "@/components/dashboard/AccountCard";
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 const sections = [
   { label: "Checking", type: "checking" },
   { label: "Savings", type: "savings" },

@@ -5,6 +5,9 @@ import { getFicoScore } from "@/lib/data/accounts";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { AnalyzeClient } from "@/components/dashboard/AnalyzeClient";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 export default async function AnalyzePage() {
   const t0 = Date.now();
   const time = <T,>(label: string, p: Promise<T>): Promise<T> => {

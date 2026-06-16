@@ -3,6 +3,12 @@ import { BottomNav } from "@/components/ui/BottomNav";
 import { UserButton } from "@/components/ui/UserButton";
 import { ReactNode } from "react";
 
+// Applies to every page nested under this layout (all /dashboard/* tabs) —
+// kept explicit per-page too since route-segment config inheritance for
+// route handlers vs. pages isn't relied upon here.
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen bg-gray-950">

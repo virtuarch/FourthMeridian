@@ -2,6 +2,9 @@ import { getAccounts, getHoldings } from "@/lib/data/accounts";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { TrendingUp, TrendingDown } from "lucide-react";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 const fmt = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
 
