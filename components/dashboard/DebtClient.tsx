@@ -12,6 +12,7 @@ import {
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate as formatDateUTC } from "@/lib/format";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/workspace/widgets/debt-adapters";
+import { estimateMinimumPayment } from "@/lib/debt";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtUSD = (n: number) =>
@@ -79,6 +80,25 @@ function utilColor(pct: number) {
   return "bg-emerald-400";
 }
 
+// ── Day-of-month ordinal (1st, 2nd, 3rd, 15th, ...) ───────────────────────────
+function ordinal(n: number): string {
+  const suffixes = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return `${n}${suffixes[(v - 20) % 10] ?? suffixes[v] ?? suffixes[0]}`;
+}
+
+// Local shape for an in-flight DebtProfile edit. Uses `null` (not undefined)
+// to mean "explicitly cleared" so it's distinguishable from "no override yet,
+// fall back to the server-provided account".
+type DebtProfileOverride = {
+  apr: number | null;
+  minimumPayment: number | null;
+  dueDay: number | null;
+  statementCloseDay: number | null;
+  promoAprEndDate: string | null;
+  notes: string | null;
+};
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 interface Props {
   initialFico:   number | null;
@@ -115,6 +135,16 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
   const [savingSubtype,    setSavingSubtype]    = useState(false);
   const [subtypeError,     setSubtypeError]     = useState<string | null>(null);
   const [subtypeOverrides, setSubtypeOverrides] = useState<Record<string, string>>({});
+
+  // Card state — debt profile editing (APR, minimum payment, due day,
+  // statement close day, promo APR end date, notes)
+  const [editingDebtId,        setEditingDebtId]        = useState<string | null>(null);
+  const [debtForm,             setDebtForm]             = useState({
+    apr: "", minimumPayment: "", dueDay: "", statementCloseDay: "", promoAprEndDate: "", notes: "",
+  });
+  const [savingDebt,           setSavingDebt]           = useState(false);
+  const [debtError,            setDebtError]            = useState<string | null>(null);
+  const [debtProfileOverrides, setDebtProfileOverrides] = useState<Record<string, DebtProfileOverride>>({});
 
   // Selected card for transaction filtering
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
@@ -232,12 +262,123 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
     }
   }
 
+  // ── Debt profile save ─────────────────────────────────────────────────────
+  function openDebtEditor(card: Account) {
+    const dp = debtProfileOverrides[card.id] ?? card.debtProfile ?? {};
+    setDebtForm({
+      apr:               dp.apr               != null ? String(dp.apr)            : "",
+      minimumPayment:    dp.minimumPayment     != null ? String(dp.minimumPayment) : "",
+      dueDay:            dp.dueDay             != null ? String(dp.dueDay)         : "",
+      statementCloseDay: dp.statementCloseDay  != null ? String(dp.statementCloseDay) : "",
+      promoAprEndDate:   dp.promoAprEndDate    ?? "",
+      notes:             dp.notes              ?? "",
+    });
+    setDebtError(null);
+    setEditingDebtId(card.id);
+  }
+
+  async function handleSaveDebtProfile(accountId: string) {
+    setSavingDebt(true);
+    setDebtError(null);
+
+    // Blank field → explicit clear (null). Non-blank → must parse cleanly.
+    const parseFloatOrNull = (raw: string): number | null | undefined => {
+      const t = raw.trim();
+      if (t === "") return null;
+      const n = parseFloat(t.replace(/[^0-9.]/g, ""));
+      return isNaN(n) ? undefined : n;
+    };
+    const parseDayOrNull = (raw: string): number | null | undefined => {
+      const t = raw.trim();
+      if (t === "") return null;
+      const n = parseInt(t, 10);
+      return isNaN(n) ? undefined : n;
+    };
+
+    const apr               = parseFloatOrNull(debtForm.apr);
+    const minimumPayment    = parseFloatOrNull(debtForm.minimumPayment);
+    const dueDay             = parseDayOrNull(debtForm.dueDay);
+    const statementCloseDay = parseDayOrNull(debtForm.statementCloseDay);
+    const promoAprEndDate   = debtForm.promoAprEndDate.trim() === "" ? null : debtForm.promoAprEndDate.trim();
+    const notes              = debtForm.notes.trim() === "" ? null : debtForm.notes.trim();
+
+    if (apr === undefined || minimumPayment === undefined || dueDay === undefined || statementCloseDay === undefined) {
+      setDebtError("Please enter valid numbers.");
+      setSavingDebt(false);
+      return;
+    }
+    if (apr !== null && (apr < 0 || apr > 100)) {
+      setDebtError("APR must be between 0 and 100.");
+      setSavingDebt(false);
+      return;
+    }
+    if ((dueDay !== null && (dueDay < 1 || dueDay > 31)) || (statementCloseDay !== null && (statementCloseDay < 1 || statementCloseDay > 31))) {
+      setDebtError("Day fields must be between 1 and 31.");
+      setSavingDebt(false);
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/accounts/${accountId}/debt-profile`, {
+        method:  "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ apr, minimumPayment, dueDay, statementCloseDay, promoAprEndDate, notes }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setDebtError(d.error ?? "Failed to save — try again");
+        setSavingDebt(false);
+        return;
+      }
+      setDebtProfileOverrides((prev) => ({
+        ...prev,
+        [accountId]: { apr, minimumPayment, dueDay, statementCloseDay, promoAprEndDate, notes },
+      }));
+      setEditingDebtId(null);
+      router.refresh();
+    } catch {
+      setDebtError("Network error — try again");
+    } finally {
+      setSavingDebt(false);
+    }
+  }
+
   // ── Derived totals ────────────────────────────────────────────────────────
-  const cards = accounts.map((a) => ({
-    ...a,
-    creditLimit: limitOverrides[a.id]  ?? a.creditLimit,
-    debtSubtype: subtypeOverrides[a.id] ?? a.debtSubtype,
-  }));
+  const cards = accounts.map((a) => {
+    const dpOverride = debtProfileOverrides[a.id];
+
+    // APR: prefer the in-flight override, else whatever the server resolved
+    // (DebtProfile.apr ?? legacy interestRate column).
+    const apr = dpOverride ? (dpOverride.apr ?? undefined) : a.interestRate;
+
+    // Minimum payment: prefer override, else server value. If the override
+    // cleared the manual minimum but an APR is set, recompute the same
+    // "Estimated minimum payment" heuristic the server uses so the UI doesn't
+    // show a stale/blank value until the next refresh lands.
+    let minimumPayment = dpOverride ? (dpOverride.minimumPayment ?? undefined) : a.minimumPayment;
+    let minimumPaymentIsEstimated = dpOverride ? false : (a.minimumPaymentIsEstimated ?? false);
+    if (dpOverride && dpOverride.minimumPayment == null && apr != null && a.balance) {
+      minimumPayment = estimateMinimumPayment(Math.abs(a.balance), apr);
+      minimumPaymentIsEstimated = true;
+    }
+
+    return {
+      ...a,
+      creditLimit: limitOverrides[a.id]  ?? a.creditLimit,
+      debtSubtype: subtypeOverrides[a.id] ?? a.debtSubtype,
+      interestRate: apr,
+      minimumPayment,
+      minimumPaymentIsEstimated,
+      debtProfile: dpOverride ? {
+        apr:               dpOverride.apr               ?? undefined,
+        minimumPayment:    dpOverride.minimumPayment     ?? undefined,
+        dueDay:            dpOverride.dueDay             ?? undefined,
+        statementCloseDay: dpOverride.statementCloseDay  ?? undefined,
+        promoAprEndDate:   dpOverride.promoAprEndDate    ?? undefined,
+        notes:             dpOverride.notes               ?? undefined,
+      } : a.debtProfile,
+    };
+  });
 
   // Only revolving accounts (credit cards, LOC, HELOC) factor into utilization
   const limitedCards   = cards.filter((c) => isRevolving(c.debtSubtype) && c.creditLimit && c.creditLimit > 0);
@@ -547,9 +688,9 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                       </div>
                     )}
 
-                    {/* APR + minimum payment */}
-                    {(card.interestRate != null || card.minimumPayment != null) && (
-                      <div className="flex items-center gap-4">
+                    {/* APR + minimum payment + due/statement days */}
+                    {(card.interestRate != null || card.minimumPayment != null || card.debtProfile?.dueDay || card.debtProfile?.statementCloseDay) && (
+                      <div className="flex items-center gap-4 flex-wrap">
                         {card.interestRate != null && (
                           <div>
                             <p className="text-[10px] text-gray-600 uppercase tracking-widest">APR</p>
@@ -558,11 +699,38 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                         )}
                         {card.minimumPayment != null && (
                           <div>
-                            <p className="text-[10px] text-gray-600 uppercase tracking-widest">Min Payment</p>
-                            <p className="text-sm font-semibold text-white">{fmtUSD(card.minimumPayment)}/mo</p>
+                            <p className="text-[10px] text-gray-600 uppercase tracking-widest">
+                              {card.minimumPaymentIsEstimated ? "Est. Min Payment" : "Min Payment"}
+                            </p>
+                            <p className="text-sm font-semibold text-white">
+                              {fmtUSD(card.minimumPayment)}/mo
+                            </p>
+                          </div>
+                        )}
+                        {card.debtProfile?.dueDay && (
+                          <div>
+                            <p className="text-[10px] text-gray-600 uppercase tracking-widest">Due</p>
+                            <p className="text-sm font-semibold text-gray-300">{ordinal(card.debtProfile.dueDay)}</p>
+                          </div>
+                        )}
+                        {card.debtProfile?.statementCloseDay && (
+                          <div>
+                            <p className="text-[10px] text-gray-600 uppercase tracking-widest">Statement Close</p>
+                            <p className="text-sm font-semibold text-gray-300">{ordinal(card.debtProfile.statementCloseDay)}</p>
                           </div>
                         )}
                       </div>
+                    )}
+                    {card.minimumPaymentIsEstimated && card.minimumPayment != null && (
+                      <p className="text-xs text-gray-500">
+                        Estimated minimum payment — not provided by your issuer. Enter an exact amount in debt details for accuracy.
+                      </p>
+                    )}
+                    {card.debtProfile?.promoAprEndDate && (
+                      <p className="text-xs text-yellow-400">Promo APR ends {formatDate(card.debtProfile.promoAprEndDate)}</p>
+                    )}
+                    {card.debtProfile?.notes && (
+                      <p className="text-xs text-gray-500 italic truncate">&quot;{card.debtProfile.notes}&quot;</p>
                     )}
 
                     {/* Limit edit row — revolving only */}
@@ -608,6 +776,101 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                         )}
                       </div>
                     )}
+
+                    {/* Debt profile editor — APR, minimum payment, due day, statement
+                        close day, promo APR end date, notes (Goal 2). Lives on a
+                        separate DebtProfile row, edited via its own sub-resource. */}
+                    <div className="flex flex-col gap-1.5">
+                      {editingDebtId === card.id ? (
+                        <div
+                          className="space-y-2 bg-gray-800/40 border border-gray-700 rounded-xl p-3"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-1">APR %</label>
+                              <input
+                                type="text" inputMode="decimal" placeholder="e.g. 24.99"
+                                value={debtForm.apr}
+                                onChange={(e) => setDebtForm((f) => ({ ...f, apr: e.target.value }))}
+                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-1">Min Payment $</label>
+                              <input
+                                type="text" inputMode="decimal" placeholder="Auto-estimated if blank"
+                                value={debtForm.minimumPayment}
+                                onChange={(e) => setDebtForm((f) => ({ ...f, minimumPayment: e.target.value }))}
+                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-1">Due Day (1–31)</label>
+                              <input
+                                type="text" inputMode="numeric" placeholder="e.g. 15"
+                                value={debtForm.dueDay}
+                                onChange={(e) => setDebtForm((f) => ({ ...f, dueDay: e.target.value }))}
+                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-1">Statement Close Day</label>
+                              <input
+                                type="text" inputMode="numeric" placeholder="e.g. 28"
+                                value={debtForm.statementCloseDay}
+                                onChange={(e) => setDebtForm((f) => ({ ...f, statementCloseDay: e.target.value }))}
+                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 mb-1">Promo APR Ends</label>
+                              <input
+                                type="date"
+                                value={debtForm.promoAprEndDate}
+                                onChange={(e) => setDebtForm((f) => ({ ...f, promoAprEndDate: e.target.value }))}
+                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors"
+                              />
+                            </div>
+                            <div className="col-span-2">
+                              <label className="block text-[10px] text-gray-500 mb-1">Notes</label>
+                              <input
+                                type="text" placeholder="Optional"
+                                value={debtForm.notes}
+                                onChange={(e) => setDebtForm((f) => ({ ...f, notes: e.target.value }))}
+                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                              />
+                            </div>
+                          </div>
+                          {debtError && <p className="text-xs text-red-400">{debtError}</p>}
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleSaveDebtProfile(card.id)}
+                              disabled={savingDebt}
+                              className="flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60 px-3 py-2 rounded-xl transition-colors"
+                            >
+                              {savingDebt ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                              Save
+                            </button>
+                            <button
+                              onClick={() => { setEditingDebtId(null); setDebtError(null); }}
+                              disabled={savingDebt}
+                              className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-xl transition-colors"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openDebtEditor(card); }}
+                          className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-white hover:bg-gray-800 px-2.5 py-1.5 rounded-lg transition-colors self-start"
+                        >
+                          <Pencil size={11} />
+                          {card.debtProfile ? "Edit debt details" : "Add debt details"}
+                        </button>
+                      )}
+                    </div>
 
                     {/* Account type selector */}
                     <div className="flex flex-col gap-1.5">

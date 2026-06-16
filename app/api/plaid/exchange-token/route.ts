@@ -22,6 +22,8 @@ import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
 import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
 import { getWorkspaceContext } from "@/lib/workspace";
+import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { AuditAction } from "@/lib/audit-actions";
 
 // ── Map Plaid account type/subtype → our AccountType enum ────────────────────
 function mapAccountType(type: string, subtype: string | null | undefined): AccountType {
@@ -116,6 +118,13 @@ export async function POST(req: NextRequest) {
           ownerUserId:     userId,
           plaidAccountId:  acct.account_id,
           name:            acct.name,
+          // Frozen at import — never written to again on resync (see update
+          // block above, which intentionally omits these two fields and
+          // `displayName`). This preserves the "never overwrite Plaid
+          // metadata" rule and lets the user rename the account afterward
+          // without that rename being clobbered by a later sync.
+          plaidName:       acct.name,
+          officialName:    acct.official_name ?? undefined,
           type,
           institution:     institution_name,
           institutionId:   institution_id,
@@ -228,20 +237,45 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 9. Audit log
+    // 9. Initial transaction sync — best-effort, non-fatal. Runs immediately
+    //    after accounts are imported so the dashboard has transaction history
+    //    on first load instead of waiting for some future sync trigger.
+    //    Same function the manual "Sync Now" endpoint (app/api/plaid/sync)
+    //    and the sync-banks job call — see lib/plaid/syncTransactions.ts.
+    let txSync: { added: number; modified: number; removed: number } | null = null;
+    try {
+      txSync = await syncTransactionsForItem(plaidItem.id);
+      console.log(
+        `[plaid] initial transaction sync — ${txSync.added} added, ${txSync.modified} modified, ${txSync.removed} removed`
+      );
+    } catch (syncErr) {
+      console.warn("[plaid] initial transaction sync failed (non-fatal):", syncErr);
+    }
+
+    // 10. Audit log
     await db.auditLog.create({
       data: {
         userId,
         workspaceId,
-        action:   "ACCOUNT_ADD",
-        metadata: { institution: institution_name, accountCount: imported, holdingsImported },
+        action:   AuditAction.ACCOUNT_ADD,
+        metadata: {
+          institution:      institution_name,
+          accountCount:     imported,
+          holdingsImported,
+          transactionsAdded: txSync?.added ?? 0,
+        },
       },
     });
 
     console.log(
       `[plaid] import complete — ${imported} account(s), ${holdingsImported} holding(s) for institution "${institution_name}"`
     );
-    return NextResponse.json({ success: true, imported, holdingsImported });
+    return NextResponse.json({
+      success: true,
+      imported,
+      holdingsImported,
+      transactionsSynced: txSync?.added ?? 0,
+    });
   } catch (err: unknown) {
     const { message, status, code } = parsePlaidError(err, "Failed to connect account");
     console.error(`[plaid] exchange-token error (code: ${code ?? "unknown"}):`, message);

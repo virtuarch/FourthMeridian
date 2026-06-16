@@ -42,6 +42,8 @@ export const AuditAction = {
   // ── Accounts ─────────────────────────────────────────────────────────────────
   ACCOUNT_SHARED:           "ACCOUNT_SHARED",
   ACCOUNT_REVOKED:          "ACCOUNT_REVOKED",
+  ACCOUNT_RENAMED:          "ACCOUNT_RENAMED",
+  DEBT_PROFILE_UPDATED:     "DEBT_PROFILE_UPDATED",
 
   // ── Members ──────────────────────────────────────────────────────────────────
   MEMBER_INVITED:           "MEMBER_INVITED",

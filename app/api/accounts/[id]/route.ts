@@ -10,7 +10,10 @@
  *          plaidClient.itemRemove() and marks the PlaidItem as REVOKED.
  *          Row preserved for history.
  *
- * PATCH  — updates mutable fields: creditLimit (manual entry).
+ * PATCH  — updates mutable fields: creditLimit, debtSubtype, interestRate,
+ *          minimumPayment (manual entry), and displayName (user-editable
+ *          rename — never touches plaidName/officialName, which stay frozen
+ *          at whatever Plaid returned at import time).
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -20,6 +23,7 @@ import { plaidClient } from "@/lib/plaid/client";
 import { decrypt } from "@/lib/plaid/encryption";
 import { ShareStatus } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { AuditAction } from "@/lib/audit-actions";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -33,11 +37,12 @@ export const PATCH = withApiHandler(async (
 
   try {
     const body = await req.json();
-    const { creditLimit, debtSubtype, interestRate, minimumPayment } = body as {
+    const { creditLimit, debtSubtype, interestRate, minimumPayment, displayName } = body as {
       creditLimit?:    number | null;
       debtSubtype?:    string | null;
       interestRate?:   number | null;
       minimumPayment?: number | null;
+      displayName?:    string | null;
     };
 
     // Validate creditLimit
@@ -55,6 +60,16 @@ export const PATCH = withApiHandler(async (
         (typeof minimumPayment !== "number" || minimumPayment < 0)) {
       return NextResponse.json({ error: "Invalid minimumPayment" }, { status: 400 });
     }
+    // Validate displayName — empty string means "clear the override" (fall back
+    // to officialName/plaidName), so normalize "" to null rather than rejecting it.
+    let normalizedDisplayName = displayName;
+    if (typeof displayName === "string") {
+      const trimmed = displayName.trim();
+      if (trimmed.length > 120) {
+        return NextResponse.json({ error: "Display name must be 120 characters or fewer" }, { status: 400 });
+      }
+      normalizedDisplayName = trimmed.length > 0 ? trimmed : null;
+    }
 
     const fa = await db.financialAccount.findUnique({ where: { id } });
     if (!fa) return NextResponse.json({ error: "Account not found" }, { status: 404 });
@@ -71,8 +86,20 @@ export const PATCH = withApiHandler(async (
         ...(debtSubtype    !== undefined && { debtSubtype }),
         ...(interestRate   !== undefined && { interestRate }),
         ...(minimumPayment !== undefined && { minimumPayment }),
+        ...(displayName    !== undefined && { displayName: normalizedDisplayName }),
       },
     });
+
+    if (displayName !== undefined) {
+      await db.auditLog.create({
+        data: {
+          userId:    user.id,
+          action:    AuditAction.ACCOUNT_RENAMED,
+          metadata:  { accountId: id, displayName: normalizedDisplayName },
+          ipAddress: getClientIp(req),
+        },
+      });
+    }
 
     return NextResponse.json({ ok: true });
   } catch (err) {

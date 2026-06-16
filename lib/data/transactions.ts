@@ -2,12 +2,22 @@
  * lib/data/transactions.ts
  *
  * Server-only transaction queries.
- * Filters by workspaceId via the account relation (account.workspaceId).
+ *
+ * Transactions reach a workspace via two paths (see Transaction model comment
+ * in prisma/schema.prisma):
+ *  - legacy rows: account.workspaceId (the old Account model)
+ *  - Plaid-synced rows: financialAccount.workspaceShares (the canonical
+ *    FinancialAccount + WorkspaceAccountShare model)
+ * Every query below matches both so newly-synced Plaid transactions show up
+ * alongside legacy/manual ones. `accountId` on the returned objects is
+ * normalized to whichever FK is actually set, since callers (e.g. AccountModal)
+ * match transactions to an account by this single id field.
  */
 
 import { db } from "@/lib/db";
 import { getWorkspaceContext } from "@/lib/workspace";
 import { Transaction, InvestmentTransaction } from "@/types";
+import { ShareStatus } from "@prisma/client";
 
 const BANKING_CATEGORIES = [
   "Income","Transfer","Groceries","Dining","Shopping","Travel",
@@ -20,7 +30,10 @@ export async function getTransactions(): Promise<Transaction[]> {
 
   const rows = await db.transaction.findMany({
     where: {
-      account:  { workspaceId },
+      OR: [
+        { account:          { workspaceId } },
+        { financialAccount: { workspaceShares: { some: { workspaceId, status: ShareStatus.ACTIVE } } } },
+      ],
       category: { in: BANKING_CATEGORIES as never[] },
     },
     orderBy: { date: "desc" },
@@ -29,7 +42,7 @@ export async function getTransactions(): Promise<Transaction[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return rows.map((r: any) => ({
     id:          r.id,
-    accountId:   r.accountId,
+    accountId:   r.accountId ?? r.financialAccountId,
     date:        r.date.toISOString().split("T")[0],
     merchant:    r.merchant,
     description: r.description ?? undefined,
@@ -45,7 +58,10 @@ export async function getDebtTransactions(ctx?: { workspaceId: string }): Promis
 
   const rows = await db.transaction.findMany({
     where: {
-      account:  { workspaceId, type: "debt" },
+      OR: [
+        { account:          { workspaceId, type: "debt" } },
+        { financialAccount: { type: "debt", workspaceShares: { some: { workspaceId, status: ShareStatus.ACTIVE } } } },
+      ],
       category: { in: BANKING_CATEGORIES as never[] },
     },
     orderBy: { date: "desc" },
@@ -54,7 +70,7 @@ export async function getDebtTransactions(ctx?: { workspaceId: string }): Promis
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return rows.map((r: any) => ({
     id:          r.id,
-    accountId:   r.accountId,
+    accountId:   r.accountId ?? r.financialAccountId,
     date:        r.date.toISOString().split("T")[0],
     merchant:    r.merchant,
     description: r.description ?? undefined,
@@ -70,7 +86,10 @@ export async function getInvestmentTransactions(): Promise<InvestmentTransaction
 
   const rows = await db.transaction.findMany({
     where: {
-      account:  { workspaceId },
+      OR: [
+        { account:          { workspaceId } },
+        { financialAccount: { workspaceShares: { some: { workspaceId, status: ShareStatus.ACTIVE } } } },
+      ],
       category: { in: ["Buy","Sell","Dividend","Split","Fee"] as never[] },
     },
     orderBy: { date: "desc" },
@@ -79,7 +98,7 @@ export async function getInvestmentTransactions(): Promise<InvestmentTransaction
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return rows.map((r: any) => ({
     id:          r.id,
-    accountId:   r.accountId,
+    accountId:   r.accountId ?? r.financialAccountId,
     date:        r.date.toISOString().split("T")[0],
     ticker:      r.merchant,
     description: r.description ?? "",

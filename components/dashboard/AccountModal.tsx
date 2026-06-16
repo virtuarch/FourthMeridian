@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   X, Search, ChevronLeft, ChevronRight, Loader2,
   Building2, Landmark, TrendingUp, Bitcoin, CreditCard, ExternalLink, Trash2,
+  Pencil, Check,
 } from "lucide-react";
 import { Account, Holding, Transaction, TransactionCategory, AccountType } from "@/types";
 import { CoinIcon } from "@/components/ui/CoinIcon";
@@ -157,6 +158,18 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
   const [page,            setPage]            = useState(0);
   const [chartHolding,    setChartHolding]    = useState<Holding | null>(null);
 
+  // Display-name rename (Goal 1) — `localName` tracks the resolved name shown
+  // in the header so the UI updates instantly on save, without waiting for a
+  // full router.refresh() of the parent's account list to land.
+  const [localName,    setLocalName]    = useState(account.name);
+  const [editingName,  setEditingName]  = useState(false);
+  const [nameInput,    setNameInput]    = useState("");
+  const [nameSaving,   setNameSaving]   = useState(false);
+  const [nameError,    setNameError]    = useState("");
+  const originalName = account.officialName ?? account.plaidName; // frozen Plaid value, for the "originally ..." hint
+
+  useEffect(() => { setLocalName(account.name); }, [account.id, account.name]);
+
   // Account-level holdings
   const accountHoldings = useMemo(
     () => holdings.filter((h) => h.accountId === account.id && !h.isCash)
@@ -216,6 +229,34 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
   // Reset to page 0 on any filter change
   function resetPage() { setPage(0); }
 
+  async function handleSaveName() {
+    const trimmed = nameInput.trim();
+    setNameSaving(true);
+    setNameError("");
+    try {
+      const res = await fetch(`/api/accounts/${account.id}`, {
+        method:  "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ displayName: trimmed }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setNameError(d.error ?? "Failed to rename account.");
+        setNameSaving(false);
+        return;
+      }
+      // Empty input clears the override — fall back to officialName/plaidName/name,
+      // mirroring the server's resolution order so the header updates correctly.
+      setLocalName(trimmed.length > 0 ? trimmed : (originalName ?? account.name));
+      setEditingName(false);
+      setNameSaving(false);
+      router.refresh();
+    } catch {
+      setNameError("Network error. Please try again.");
+      setNameSaving(false);
+    }
+  }
+
   async function handleRemove() {
     setRemoving(true);
     setRemoveError("");
@@ -260,8 +301,53 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
             </div>
           )}
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-white leading-tight truncate">{account.name}</p>
-            <p className="text-xs text-gray-500 leading-tight mt-0.5">{account.institution}</p>
+            {editingName ? (
+              <form
+                onSubmit={(e) => { e.preventDefault(); handleSaveName(); }}
+                className="flex items-center gap-1"
+              >
+                <input
+                  autoFocus
+                  type="text"
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Escape") { setEditingName(false); setNameError(""); } }}
+                  maxLength={120}
+                  placeholder={originalName ?? account.name}
+                  className="flex-1 min-w-0 bg-gray-800 border border-blue-500 rounded-lg px-2 py-1 text-sm font-bold text-white placeholder-gray-600 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={nameSaving}
+                  className="p-1 text-emerald-400 hover:text-emerald-300 disabled:opacity-50 shrink-0"
+                >
+                  {nameSaving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setEditingName(false); setNameError(""); }}
+                  disabled={nameSaving}
+                  className="p-1 text-gray-500 hover:text-white shrink-0"
+                >
+                  <X size={13} />
+                </button>
+              </form>
+            ) : (
+              <button
+                onClick={() => { setNameInput(account.displayName ?? ""); setNameError(""); setEditingName(true); }}
+                className="group flex items-center gap-1.5 max-w-full text-left"
+              >
+                <p className="text-sm font-bold text-white leading-tight truncate">{localName}</p>
+                <Pencil size={11} className="text-gray-600 group-hover:text-gray-400 shrink-0" />
+              </button>
+            )}
+            <p className="text-xs text-gray-500 leading-tight mt-0.5 truncate">
+              {account.institution}
+              {originalName && localName !== originalName && (
+                <span className="text-gray-600"> · originally &quot;{originalName}&quot;</span>
+              )}
+            </p>
+            {nameError && <p className="text-xs text-red-400 leading-tight mt-0.5">{nameError}</p>}
           </div>
           <div className="text-right shrink-0 mr-2">
             <p className={`text-sm font-bold tabular-nums ${isDebt && account.balance > 0 ? "text-red-400" : "text-white"}`}>

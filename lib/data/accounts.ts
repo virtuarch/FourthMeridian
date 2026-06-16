@@ -13,6 +13,7 @@ import { db } from "@/lib/db";
 import { getWorkspaceContext } from "@/lib/workspace";
 import { Account, Holding } from "@/types";
 import { ShareStatus } from "@prisma/client";
+import { estimateMinimumPayment } from "@/lib/debt";
 
 /**
  * All accounts visible to the current workspace, via WorkspaceAccountShare.
@@ -32,7 +33,7 @@ export async function getAccounts(ctx?: { workspaceId: string }): Promise<Accoun
       status:           ShareStatus.ACTIVE,
       financialAccount: { deletedAt: null },
     },
-    include: { financialAccount: true },
+    include: { financialAccount: { include: { debtProfile: true } } },
     orderBy: [
       { financialAccount: { type: "asc" } },
       { financialAccount: { name: "asc" } },
@@ -40,23 +41,56 @@ export async function getAccounts(ctx?: { workspaceId: string }): Promise<Accoun
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return shares.map(({ financialAccount: r }: any) => ({
-    id:            r.id,
-    name:          r.name,
-    type:          r.type as Account["type"],
-    institution:   r.institution,
-    balance:       r.balance,
-    currency:      r.currency,
-    lastUpdated:   r.lastUpdated.toISOString(),
-    creditLimit:    r.creditLimit    ?? undefined,
-    debtSubtype:    r.debtSubtype    ?? undefined,
-    interestRate:   r.interestRate   ?? undefined,
-    minimumPayment: r.minimumPayment ?? undefined,
-    walletAddress:  r.walletAddress  ?? undefined,
-    walletChain:   r.walletChain   as Account["walletChain"] ?? undefined,
-    nativeBalance: r.nativeBalance ?? undefined,
-    syncStatus:    r.syncStatus    as Account["syncStatus"]  ?? undefined,
-  }));
+  return shares.map(({ financialAccount: r }: any) => {
+    const profile = r.debtProfile ?? null;
+
+    // Effective APR/minimum payment: DebtProfile (new, richer source) takes
+    // precedence over the legacy flat columns when present.
+    const effectiveApr = profile?.apr ?? r.interestRate ?? undefined;
+    const manualMinimumPayment = profile?.minimumPayment ?? r.minimumPayment ?? undefined;
+
+    let minimumPayment = manualMinimumPayment;
+    let minimumPaymentIsEstimated = false;
+
+    // Only estimate when the user gave us an APR but no real minimum payment —
+    // never overrides a manually-entered or issuer-provided value.
+    if (minimumPayment === undefined && effectiveApr !== undefined && r.balance) {
+      minimumPayment = estimateMinimumPayment(Math.abs(r.balance), effectiveApr);
+      minimumPaymentIsEstimated = true;
+    }
+
+    return {
+      id:            r.id,
+      // Resolution order: user override > Plaid's official name > Plaid's raw
+      // name > whatever was already in `name` (covers manual/legacy accounts).
+      name:          r.displayName ?? r.officialName ?? r.plaidName ?? r.name,
+      type:          r.type as Account["type"],
+      institution:   r.institution,
+      balance:       r.balance,
+      currency:      r.currency,
+      lastUpdated:   r.lastUpdated.toISOString(),
+      plaidName:     r.plaidName    ?? undefined,
+      officialName:  r.officialName ?? undefined,
+      displayName:   r.displayName  ?? undefined,
+      creditLimit:    r.creditLimit ?? undefined,
+      debtSubtype:    r.debtSubtype ?? undefined,
+      interestRate:   effectiveApr,
+      minimumPayment,
+      minimumPaymentIsEstimated: minimumPaymentIsEstimated || undefined,
+      debtProfile: profile ? {
+        apr:               profile.apr               ?? undefined,
+        minimumPayment:    profile.minimumPayment     ?? undefined,
+        dueDay:            profile.dueDay             ?? undefined,
+        statementCloseDay: profile.statementCloseDay  ?? undefined,
+        promoAprEndDate:   profile.promoAprEndDate ? profile.promoAprEndDate.toISOString().split("T")[0] : undefined,
+        notes:             profile.notes              ?? undefined,
+      } : undefined,
+      walletAddress:  r.walletAddress  ?? undefined,
+      walletChain:   r.walletChain   as Account["walletChain"] ?? undefined,
+      nativeBalance: r.nativeBalance ?? undefined,
+      syncStatus:    r.syncStatus    as Account["syncStatus"]  ?? undefined,
+    };
+  });
 }
 
 /**
