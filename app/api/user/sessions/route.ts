@@ -9,7 +9,8 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { parseUserAgent } from "@/lib/ua-parser";
-import { requireUser } from "@/lib/session";
+import { requireUser, requireFreshUser } from "@/lib/session";
+import { clearAllSessions } from "@/lib/session-cache";
 
 export async function GET() {
   const [user, err] = await requireUser();
@@ -34,7 +35,8 @@ export async function GET() {
 }
 
 export async function DELETE() {
-  const [user, err] = await requireUser();
+  // Sensitive action — always a live revocation check, never the cache.
+  const [user, err] = await requireFreshUser();
   if (err) return err;
 
   const userId       = user.id;
@@ -49,6 +51,11 @@ export async function DELETE() {
     },
     data: { revokedAt: new Date() },
   });
+
+  // We don't have the individual revoked tokens in hand here, so clear the
+  // whole cache rather than leaving stale "valid" entries for the revoked
+  // sessions on this instance.
+  clearAllSessions();
 
   await db.auditLog.create({
     data: {

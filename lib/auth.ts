@@ -25,6 +25,7 @@ import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
 import { verifyTOTP } from "@/lib/totp";
 import { UserRole } from "@prisma/client";
+import { getCachedRevocation, setCachedRevocation, invalidateSession } from "@/lib/session-cache";
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -238,37 +239,57 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       const sessionToken = token.sessionToken as string | null | undefined;
 
-      // ── Revocation check ───────────────────────────────────────────────────
+      // ── Revocation check (cached, short TTL) ────────────────────────────────
       // JWT tokens are stateless — revoking a UserSession row doesn't invalidate
-      // the cookie automatically. We check the DB on every session access so
-      // revoked sessions are rejected immediately across all devices.
+      // the cookie automatically, so we still must check the DB to reject
+      // revoked sessions. But this callback runs on EVERY
+      // getServerSession()/requireUser() call — every Server Component render
+      // and every API route that checks auth — and production logs showed
+      // this single query costing 1.1-2.4s each time, the dominant cost behind
+      // the multi-second /dashboard/workspaces latency (a trivial count()
+      // query elsewhere still took 5+ seconds once wrapped in this check).
       //
-      // This callback runs on EVERY getServerSession()/requireUser() call —
-      // every Server Component render and every API route that checks auth —
-      // each paying its own DB round trip here. Timed explicitly because this
-      // is the leading suspect for the multi-second latency seen on
-      // /dashboard/workspaces and its sibling API routes: even a trivial
-      // count() query (api/workspaces/invites/pending) took 5+ seconds, which
-      // only makes sense if the auth check wrapping it — not the query itself
-      // — is the dominant cost.
+      // Fix: cache the verified result per sessionToken for
+      // SESSION_CACHE_TTL_MS (lib/session-cache.ts, currently 30s). Ordinary
+      // page loads/navigation read the cache and skip the DB entirely on a
+      // hit. Sensitive actions (password change, disabling 2FA, regenerating
+      // recovery codes, revoking sessions, admin security actions) must NOT
+      // rely on this — they call requireFreshUser()/requireFreshSystemAdmin()
+      // (lib/session.ts) instead, which always bypasses this cache and hits
+      // the DB live. Revocation is NOT removed — only the polling frequency
+      // for low-stakes requests is throttled.
       if (sessionToken) {
         const tRevoke = Date.now();
-        const dbSession = await db.userSession.findFirst({
-          where:  { sessionToken, revokedAt: null },
-          select: { id: true },
-        });
-        console.log(`[auth] session callback revocation check: ${Date.now() - tRevoke}ms`);
+        const cached = getCachedRevocation(sessionToken);
+        let valid: boolean;
 
-        if (!dbSession) {
+        if (cached !== null) {
+          valid = cached;
+          console.log(`[auth] session callback revocation check: CACHE HIT, ${Date.now() - tRevoke}ms, valid=${valid}`);
+        } else {
+          const dbSession = await db.userSession.findFirst({
+            where:  { sessionToken, revokedAt: null },
+            select: { id: true },
+          });
+          valid = !!dbSession;
+          setCachedRevocation(sessionToken, valid);
+          console.log(`[auth] session callback revocation check: LIVE DB, ${Date.now() - tRevoke}ms, valid=${valid}`);
+
+          if (valid) {
+            // Bump lastActiveAt (fire-and-forget — don't block the response).
+            // Only happens on a live check now (at most once per TTL window
+            // per session), not on every single call as before.
+            db.userSession.updateMany({
+              where: { sessionToken },
+              data:  { lastActiveAt: new Date() },
+            }).catch(() => {});
+          }
+        }
+
+        if (!valid) {
           // Return a bare expired session — middleware will redirect to /login
           return { ...session, user: undefined as never, expires: new Date(0).toISOString() };
         }
-
-        // Bump lastActiveAt (fire-and-forget — don't block the response)
-        db.userSession.updateMany({
-          where: { sessionToken },
-          data:  { lastActiveAt: new Date() },
-        }).catch(() => {});
       }
 
       session.user.id        = token.id               as string;
@@ -285,6 +306,11 @@ export const authOptions: NextAuthOptions = {
       if (!token?.id) return;
       const userId       = token.id           as string;
       const sessionToken = token.sessionToken as string | null | undefined;
+
+      // Invalidate the cached revocation result immediately so this instance
+      // doesn't keep serving "valid" from cache for the rest of the TTL
+      // window after sign-out revokes the row.
+      if (sessionToken) invalidateSession(sessionToken);
 
       await Promise.all([
         // Mark the specific session revoked

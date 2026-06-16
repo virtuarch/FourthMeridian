@@ -22,10 +22,11 @@ import { db } from "@/lib/db";
 import { decrypt } from "@/lib/plaid/encryption";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { verifyTOTP } from "@/lib/totp";
-import { requireUser } from "@/lib/session";
+import { requireFreshUser } from "@/lib/session";
 
 export async function POST(req: NextRequest) {
-  const [user, err] = await requireUser();
+  // Sensitive action (regenerates recovery codes) — always a live check.
+  const [user, err] = await requireFreshUser();
   if (err) return err;
 
   const body     = await req.json();

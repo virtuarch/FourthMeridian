@@ -50,6 +50,7 @@ import { getServerSession }      from "next-auth";
 import { NextResponse }          from "next/server";
 import { authOptions }           from "@/lib/auth";
 import { db }                    from "@/lib/db";
+import { setCachedRevocation }   from "@/lib/session-cache";
 import { UserRole,
          WorkspaceMemberRole }   from "@prisma/client";
 
@@ -107,6 +108,42 @@ export async function requireUser(): Promise<
   return [user, null];
 }
 
+// ── requireFreshUser ──────────────────────────────────────────────────────────
+
+/**
+ * Like requireUser(), but never trusts the short-TTL revocation cache
+ * (lib/session-cache.ts) — it always re-checks UserSession against the DB
+ * directly, no matter how recently this session was last verified.
+ *
+ * Use this for sensitive, state-changing actions where a cached "still
+ * valid" answer up to SESSION_CACHE_TTL_MS (30s) stale is not an acceptable
+ * risk: changing the password, disabling 2FA, regenerating recovery codes,
+ * revoking sessions, anything destructive or security-relevant. Ordinary
+ * page loads and read-only requests should keep using requireUser().
+ */
+export async function requireFreshUser(): Promise<
+  [SessionUser, null] | [null, NextResponse]
+> {
+  const user = await resolveUser();
+  if (!user) return [null, unauthorized()];
+  if (!user.sessionToken) return [null, unauthorized()];
+
+  const t0 = Date.now();
+  const dbSession = await db.userSession.findFirst({
+    where:  { sessionToken: user.sessionToken, revokedAt: null },
+    select: { id: true },
+  });
+  console.log(`[session] requireFreshUser live revocation check: ${Date.now() - t0}ms, valid=${!!dbSession}`);
+
+  if (!dbSession) return [null, unauthorized()];
+
+  // Refresh the cache with this authoritative result so any cached reads
+  // within the TTL window right after this reflect it too.
+  setCachedRevocation(user.sessionToken, true);
+
+  return [user, null];
+}
+
 // ── requireSystemAdmin ────────────────────────────────────────────────────────
 
 /**
@@ -120,6 +157,36 @@ export async function requireSystemAdmin(): Promise<
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
   if (user.role !== UserRole.SYSTEM_ADMIN) return [null, forbidden()];
+  return [user, null];
+}
+
+// ── requireFreshSystemAdmin ───────────────────────────────────────────────────
+
+/**
+ * Like requireSystemAdmin(), but bypasses the revocation cache the same way
+ * requireFreshUser() does. Use for admin security actions (e.g. revoking a
+ * user's sessions) where a stale cached "still valid" result is not
+ * acceptable.
+ */
+export async function requireFreshSystemAdmin(): Promise<
+  [SessionUser, null] | [null, NextResponse]
+> {
+  const user = await resolveUser();
+  if (!user) return [null, unauthorized()];
+  if (user.role !== UserRole.SYSTEM_ADMIN) return [null, forbidden()];
+  if (!user.sessionToken) return [null, unauthorized()];
+
+  const t0 = Date.now();
+  const dbSession = await db.userSession.findFirst({
+    where:  { sessionToken: user.sessionToken, revokedAt: null },
+    select: { id: true },
+  });
+  console.log(`[session] requireFreshSystemAdmin live revocation check: ${Date.now() - t0}ms, valid=${!!dbSession}`);
+
+  if (!dbSession) return [null, unauthorized()];
+
+  setCachedRevocation(user.sessionToken, true);
+
   return [user, null];
 }
 
