@@ -21,6 +21,11 @@
  *     model, not FinancialAccount).
  *  3. Transactions, via the existing syncTransactionsForItem() — untouched,
  *     reused as-is so sync logic is never duplicated.
+ *  4. WorkspaceSnapshot regeneration for every workspace this item's
+ *     accounts are shared into (lib/snapshots/regenerate.ts). This is the
+ *     fix for the Cash History / Banking History charts: they read
+ *     WorkspaceSnapshot exclusively, and nothing in production wrote that
+ *     table before this step existed — only prisma/seed.ts did.
  *
  * Does not create AccountConnection or WorkspaceAccountShare rows — those
  * are established once at Link time and are not part of a refresh.
@@ -31,6 +36,7 @@ import { decrypt } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import { AccountType, PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 
 // Mirrors app/api/plaid/exchange-token/route.ts's mapAccountType — kept as a
 // private copy here (not exported/shared) since refresh only needs it to
@@ -62,6 +68,8 @@ export interface RefreshItemResult {
   transactionsAdded:      number;
   transactionsModified:   number;
   transactionsRemoved:    number;
+  /** Workspace ids whose WorkspaceSnapshot row was regenerated (today's date). */
+  workspacesSnapshotted:  string[];
   error?:                 string;
 }
 
@@ -83,6 +91,7 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
 
   // ── 1. Balances / account metadata ────────────────────────────────────────
   let accountsUpdated = 0;
+  const updatedAccountIds: string[] = [];
   const accountsRes   = await plaidClient.accountsGet({ access_token: accessToken });
   const plaidAccounts = accountsRes.data.accounts;
 
@@ -108,6 +117,7 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
       },
     });
     accountsUpdated++;
+    updatedAccountIds.push(fa.id);
   }
 
   // ── 2. Investment holdings ──────────────────────────────────────────────
@@ -175,6 +185,13 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
   // Reuses the existing cursor-based sync as-is — no duplicated logic.
   const txSync = await syncTransactionsForItem(plaidItemDbId);
 
+  // ── 4. WorkspaceSnapshot regeneration ───────────────────────────────────
+  // Recomputes today's snapshot row for every workspace these accounts are
+  // shared into, from the now-fresh FinancialAccount balances. This is what
+  // the Cash History / Banking History / Net Worth charts actually read —
+  // see lib/snapshots/regenerate.ts for why this step exists.
+  const workspacesSnapshotted = await regenerateSnapshotsForAccounts(updatedAccountIds);
+
   return {
     plaidItemId:          plaidItemDbId,
     institution:          item.institutionName,
@@ -184,6 +201,7 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
     transactionsAdded:    txSync.added,
     transactionsModified: txSync.modified,
     transactionsRemoved:  txSync.removed,
+    workspacesSnapshotted,
   };
 }
 
@@ -195,6 +213,8 @@ export interface RefreshSummary {
   totalTransactionsAdded:     number;
   totalTransactionsModified:  number;
   totalTransactionsRemoved:   number;
+  /** Distinct workspace ids whose WorkspaceSnapshot row was regenerated. */
+  workspacesSnapshotted:      string[];
 }
 
 /**
@@ -214,6 +234,7 @@ export async function refreshAllActiveItemsForUser(userId: string): Promise<Refr
   let totalTransactionsAdded    = 0;
   let totalTransactionsModified = 0;
   let totalTransactionsRemoved  = 0;
+  const snapshottedWorkspaceIds = new Set<string>();
 
   for (const item of items) {
     try {
@@ -224,6 +245,7 @@ export async function refreshAllActiveItemsForUser(userId: string): Promise<Refr
       totalTransactionsAdded    += r.transactionsAdded;
       totalTransactionsModified += r.transactionsModified;
       totalTransactionsRemoved  += r.transactionsRemoved;
+      r.workspacesSnapshotted.forEach((id) => snapshottedWorkspaceIds.add(id));
     } catch (e) {
       console.error(`[refreshAllActiveItemsForUser] refresh failed for PlaidItem ${item.id}:`, e);
       results.push({
@@ -235,6 +257,7 @@ export async function refreshAllActiveItemsForUser(userId: string): Promise<Refr
         transactionsAdded:    0,
         transactionsModified: 0,
         transactionsRemoved:  0,
+        workspacesSnapshotted: [],
         error: e instanceof Error ? e.message : "Unknown error",
       });
     }
@@ -248,5 +271,6 @@ export async function refreshAllActiveItemsForUser(userId: string): Promise<Refr
     totalTransactionsAdded,
     totalTransactionsModified,
     totalTransactionsRemoved,
+    workspacesSnapshotted: [...snapshottedWorkspaceIds],
   };
 }
