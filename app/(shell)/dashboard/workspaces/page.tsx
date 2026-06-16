@@ -16,42 +16,53 @@ export default async function WorkspacesPage() {
   const jar               = await cookies();
   const activeWorkspaceId = jar.get(ACTIVE_WORKSPACE_COOKIE)?.value ?? null;
 
-  // ── Preferred workspace ────────────────────────────────────────────────────
-  let preferredWorkspaceId: string | null = null;
-  try {
+  // ── Preferred workspace, my memberships, pending invites ──────────────────
+  // These three queries are independent of each other — run them concurrently
+  // instead of as sequential round trips (each round trip to Supabase adds
+  // real latency on serverless, and this page was previously firing 4+ awaits
+  // back to back).
+  const [preferredWorkspaceRow, myMemberships, pendingInvites] = await Promise.all([
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const userRow = await (db as any).user.findUnique({
-      where:  { id: userId },
-      select: { preferredWorkspaceId: true },
-    });
-    preferredWorkspaceId = userRow?.preferredWorkspaceId ?? null;
-  } catch { /* migration not yet applied — ignore */ }
+    (db as any).user
+      .findUnique({ where: { id: userId }, select: { preferredWorkspaceId: true } })
+      .catch(() => null), // migration not yet applied — ignore
 
-  // ── My memberships ────────────────────────────────────────────────────────
-  const myMemberships = await db.workspaceMember.findMany({
-    where: { userId, status: "ACTIVE" },
-    include: {
-      workspace: {
-        include: {
-          members: {
-            where: { status: "ACTIVE" },
-            include: {
-              user: { select: { id: true, name: true, username: true } },
+    db.workspaceMember.findMany({
+      where: { userId, status: "ACTIVE" },
+      include: {
+        workspace: {
+          include: {
+            members: {
+              where: { status: "ACTIVE" },
+              include: {
+                user: { select: { id: true, name: true, username: true } },
+              },
+              orderBy: { joinedAt: "asc" },
             },
-            orderBy: { joinedAt: "asc" },
-          },
-          _count: {
-            select: { accounts: { where: { deletedAt: null } } },
+            _count: {
+              select: { accounts: { where: { deletedAt: null } } },
+            },
           },
         },
       },
-    },
-    orderBy: { joinedAt: "asc" },
-  });
+      orderBy: { joinedAt: "asc" },
+    }),
 
+    db.workspaceInvite.findMany({
+      where: { invitedUserId: userId, status: "PENDING" },
+      include: {
+        workspace: { select: { id: true, name: true, description: true, isPublic: true } },
+        invitedBy: { select: { id: true, name: true, username: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
+
+  const preferredWorkspaceId: string | null = preferredWorkspaceRow?.preferredWorkspaceId ?? null;
   const myWorkspaceIds = myMemberships.map((m) => m.workspaceId);
 
   // ── Public SHARED workspaces the user hasn't joined ───────────────────────
+  // Depends on myWorkspaceIds above, so this one stays a separate await.
   const publicWorkspaces = await db.workspace.findMany({
     where: {
       isPublic: true,
@@ -72,16 +83,6 @@ export default async function WorkspacesPage() {
     },
     orderBy: { createdAt: "desc" },
     take: 50,
-  });
-
-  // ── Pending invites for this user ─────────────────────────────────────────
-  const pendingInvites = await db.workspaceInvite.findMany({
-    where: { invitedUserId: userId, status: "PENDING" },
-    include: {
-      workspace: { select: { id: true, name: true, description: true, isPublic: true } },
-      invitedBy: { select: { id: true, name: true, username: true } },
-    },
-    orderBy: { createdAt: "desc" },
   });
 
   // ── Serialization helpers ─────────────────────────────────────────────────
