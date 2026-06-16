@@ -11,6 +11,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { ChartFirstDayPlaceholder } from "./ChartFirstDayPlaceholder";
 
 export interface ChartSeries {
   key: string;
@@ -82,6 +83,23 @@ export function PortfolioHistoryChart({ data, series, activeKeys, title }: Props
   /* eslint-enable react-hooks/preserve-manual-memoization */
 
   const activeSeries = series.filter((s) => activeKeys.includes(s.key));
+
+  // Only one data point exists yet (e.g. right after a workspace's first
+  // refresh) — a single point can't draw a trend line, so show the day-one
+  // explainer instead of a near-empty chart. Headline sums the active
+  // series' values for that one point (e.g. just "cash", or "total").
+  if (data.length === 1) {
+    const point = data[0];
+    const value = activeSeries.reduce((sum, s) => sum + (Number(point[s.key]) || 0), 0);
+    return (
+      <div className="rounded-2xl border border-gray-700 bg-gray-900 p-5">
+        {title && (
+          <p className="text-sm font-semibold text-gray-300 shrink-0 mb-4">{title}</p>
+        )}
+        <ChartFirstDayPlaceholder value={value} date={point.date} height={220} />
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-2xl border border-gray-700 bg-gray-900 p-5">

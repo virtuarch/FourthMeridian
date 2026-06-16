@@ -268,14 +268,6 @@ export function DashboardClient({
     return snap ? latest.netWorth - snap.netWorth : 0;
   }, [snapshots, latest, chartInterval]);
 
-  const cashChangeForInterval = useMemo(() => {
-    if (!latest) return 0;
-    const cutoff = cutoffForInterval(chartInterval);
-    const snap = snapshots.find((s) => s.date >= cutoff) ?? snapshots[0];
-    if (!snap) return 0;
-    return (latest.totalCash + latest.totalSavings) - (snap.totalCash + snap.totalSavings);
-  }, [snapshots, latest, chartInterval]);
-
   const investmentsChangeForInterval = useMemo(() => {
     if (!latest) return 0;
     const cutoff = cutoffForInterval(chartInterval);
@@ -286,6 +278,12 @@ export function DashboardClient({
 
   const cashChecking = classification.totalChecking;
   const cashSavings  = classification.totalSavings;
+
+  // Checking + savings accounts, for the Cash on Hand card's per-account rows.
+  const cashAccounts = useMemo(
+    () => accounts.filter((a) => a.type === "checking" || a.type === "savings"),
+    [accounts]
+  );
 
   const investmentCash = useMemo(() => {
     const ids = new Set(classification.investments.map((a) => a.id));
@@ -835,13 +833,8 @@ export function DashboardClient({
                   />
                   <div className="grid grid-cols-2 gap-3">
                     <CashToPlayCard
-                      checking={cashChecking}
-                      savings={cashSavings}
-                      debt={allocation.debt}
-                      playReady={(cashChecking + cashSavings + investableAccountCash) > 0}
+                      accounts={cashAccounts}
                       investable={investableAccountCash}
-                      change={cashChangeForInterval}
-                      changeLabel={chartInterval}
                       lastUpdated={fmtAccountDate}
                     />
                     <FicoCard score={ficoScore} lastUpdated={formatFicoDate(ficoUpdatedAt)} compact />
@@ -900,12 +893,7 @@ export function DashboardClient({
                   />
                   <div className="grid grid-cols-2 gap-3">
                     <CashToPlayCard
-                      checking={cashChecking}
-                      savings={cashSavings}
-                      debt={allocation.debt}
-                      playReady={(cashChecking + cashSavings + investableAccountCash) > 0}
-                      change={cashChangeForInterval}
-                      changeLabel={chartInterval}
+                      accounts={cashAccounts}
                       lastUpdated={fmtAccountDate}
                     />
                     <DebtCard

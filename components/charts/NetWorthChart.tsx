@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { Snapshot } from "@/types";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { ChartFirstDayPlaceholder } from "./ChartFirstDayPlaceholder";
 
 export type Interval = "7D" | "1M" | "3M" | "6M" | "YTD" | "1Y";
 
@@ -64,6 +65,19 @@ export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode 
   // fill=true uses a taller fixed height on desktop; both paths use an explicit
   // pixel height so ResponsiveContainer never receives -1 from the DOM.
   const chartHeight = fill ? 260 : 180;
+
+  // Only one snapshot exists yet — show the day-one explainer instead of a
+  // near-empty chart.
+  if (snapshots.length === 1) {
+    const s = snapshots[0];
+    return (
+      <ChartFirstDayPlaceholder
+        value={cashMode ? s.totalCash : s.netWorth}
+        date={s.date}
+        height={chartHeight}
+      />
+    );
+  }
 
   return (
     <div>
