@@ -2,6 +2,7 @@
 
 import { useState, useTransition, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   Building2, Globe, Lock, Plus, Users, Crown,
   Shield, Eye, UserMinus, X, Check, ChevronRight,
@@ -20,8 +21,15 @@ import {
   getPresetsForCategory,
   WorkspaceCategory,
 } from "@/lib/workspace-presets";
-import { ManageWorkspaceModal } from "@/components/dashboard/ManageWorkspaceModal";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+
+// Only opened from the "Manage" action inside an already-open workspace card —
+// not needed for the initial render, so split it out of the main client
+// bundle for this route instead of bundling it for every visitor.
+const ManageWorkspaceModal = dynamic(
+  () => import("@/components/dashboard/ManageWorkspaceModal").then((m) => m.ManageWorkspaceModal),
+  { ssr: false }
+);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
