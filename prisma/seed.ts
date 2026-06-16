@@ -413,10 +413,10 @@ async function main() {
 
   const janePlaidItems = await prisma.plaidItem.createManyAndReturn({
     data: [
-      { userId: jane.id, plaidItemId: "demo_item_demobank",         institutionId: "demo_ins_001", institutionName: "Demo Bank",                encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: jane.id, plaidItemId: "demo_item_examplecu",        institutionId: "demo_ins_002", institutionName: "Example Credit Union",     encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: jane.id, plaidItemId: "demo_item_samplebrokerage",  institutionId: "demo_ins_003", institutionName: "Sample Brokerage",         encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: jane.id, plaidItemId: "demo_item_fictionalcrypto",  institutionId: "demo_ins_004", institutionName: "Fictional Crypto Exchange", encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, externalItemId: "demo_item_demobank",         institutionId: "demo_ins_001", institutionName: "Demo Bank",                encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, externalItemId: "demo_item_examplecu",        institutionId: "demo_ins_002", institutionName: "Example Credit Union",     encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, externalItemId: "demo_item_samplebrokerage",  institutionId: "demo_ins_003", institutionName: "Sample Brokerage",         encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, externalItemId: "demo_item_fictionalcrypto",  institutionId: "demo_ins_004", institutionName: "Fictional Crypto Exchange", encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
     ],
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -755,11 +755,11 @@ async function main() {
 
   const johnPlaidItems = await prisma.plaidItem.createManyAndReturn({
     data: [
-      { userId: john.id, plaidItemId: "demo_item_beaconbank",     institutionId: "demo_ins_005", institutionName: "Beacon Bank",           encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: john.id, plaidItemId: "demo_item_alphabrokerage", institutionId: "demo_ins_006", institutionName: "Alpha Brokerage",       encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: john.id, plaidItemId: "demo_item_alphacrypto",    institutionId: "demo_ins_007", institutionName: "Alpha Crypto Exchange", encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: john.id, plaidItemId: "demo_item_summitbusiness", institutionId: "demo_ins_008", institutionName: "Summit Business Bank",  encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: john.id, plaidItemId: "demo_item_manual_john",    institutionId: "manual_entry", institutionName: "Manual Entry",           encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, externalItemId: "demo_item_beaconbank",     institutionId: "demo_ins_005", institutionName: "Beacon Bank",           encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, externalItemId: "demo_item_alphabrokerage", institutionId: "demo_ins_006", institutionName: "Alpha Brokerage",       encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, externalItemId: "demo_item_alphacrypto",    institutionId: "demo_ins_007", institutionName: "Alpha Crypto Exchange", encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, externalItemId: "demo_item_summitbusiness", institutionId: "demo_ins_008", institutionName: "Summit Business Bank",  encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, externalItemId: "demo_item_manual_john",    institutionId: "manual_entry", institutionName: "Manual Entry",           encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
     ],
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

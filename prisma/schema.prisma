@@ -380,7 +380,7 @@ model PlaidItem {
   id              String          @id @default(cuid())
   userId          String
   user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  plaidItemId     String          @unique  // Plaid's item_id
+  externalItemId  String          @unique  // provider's item/connection id (Plaid item_id today)
   institutionId   String                   // Plaid's institution_id (e.g. "ins_3")
   institutionName String                   // human-readable (e.g. "Chase")
   encryptedToken  String                   // AES-256-GCM encrypted access token — NEVER plaintext

@@ -90,11 +90,11 @@ export async function POST(req: NextRequest) {
 
     // 5. Upsert PlaidItem — credential belongs to User, not workspace
     const plaidItem = await db.plaidItem.upsert({
-      where:  { plaidItemId: item_id },
+      where:  { externalItemId: item_id },
       update: { encryptedToken, status: PlaidItemStatus.ACTIVE, errorCode: null },
       create: {
         userId,
-        plaidItemId:     item_id,
+        externalItemId:  item_id,
         institutionId:   institution_id,
         institutionName: institution_name,
         encryptedToken,
