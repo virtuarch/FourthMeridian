@@ -242,11 +242,22 @@ export const authOptions: NextAuthOptions = {
       // JWT tokens are stateless — revoking a UserSession row doesn't invalidate
       // the cookie automatically. We check the DB on every session access so
       // revoked sessions are rejected immediately across all devices.
+      //
+      // This callback runs on EVERY getServerSession()/requireUser() call —
+      // every Server Component render and every API route that checks auth —
+      // each paying its own DB round trip here. Timed explicitly because this
+      // is the leading suspect for the multi-second latency seen on
+      // /dashboard/workspaces and its sibling API routes: even a trivial
+      // count() query (api/workspaces/invites/pending) took 5+ seconds, which
+      // only makes sense if the auth check wrapping it — not the query itself
+      // — is the dominant cost.
       if (sessionToken) {
+        const tRevoke = Date.now();
         const dbSession = await db.userSession.findFirst({
           where:  { sessionToken, revokedAt: null },
           select: { id: true },
         });
+        console.log(`[auth] session callback revocation check: ${Date.now() - tRevoke}ms`);
 
         if (!dbSession) {
           // Return a bare expired session — middleware will redirect to /login
