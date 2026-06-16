@@ -6,9 +6,9 @@
  * DELETE — soft-deletes the FinancialAccount (sets deletedAt) and revokes all
  *          active WorkspaceAccountShare rows for the account.
  *          If the account was linked via Plaid and its AccountConnection was the
- *          last non-deleted connection on that PlaidItem, calls
- *          plaidClient.itemRemove() and marks the PlaidItem as REVOKED.
- *          Row preserved for history.
+ *          last non-deleted connection on that PlaidItem, disconnects the item
+ *          (see lib/plaid/disconnect.ts) and marks the PlaidItem as REVOKED.
+ *          Row preserved for history. See ./restore/route.ts to undo this.
  *
  * PATCH  — updates mutable fields: creditLimit, debtSubtype, interestRate,
  *          minimumPayment (manual entry), and displayName (user-editable
@@ -19,11 +19,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
-import { plaidClient } from "@/lib/plaid/client";
-import { decrypt } from "@/lib/plaid/encryption";
 import { ShareStatus } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
+import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -166,30 +165,14 @@ export const DELETE = withApiHandler(async (
     });
 
     // ── 4. If this was a Plaid account, check whether we should revoke the item ──
-    const plaidConnections = fa.connections.filter((c) => c.plaidItemDbId);
+    //    (see lib/plaid/disconnect.ts — extracted seam for future provider-agnostic
+    //    disconnect dispatch; same count-then-itemRemove logic as before.)
+    const plaidItemDbIds = fa.connections
+      .filter((c) => c.plaidItemDbId)
+      .map((c) => c.plaidItemDbId!);
 
-    for (const conn of plaidConnections) {
-      // Count remaining non-deleted connections on this PlaidItem
-      const remaining = await db.accountConnection.count({
-        where: {
-          plaidItemDbId: conn.plaidItemDbId,
-          deletedAt:     null,
-        },
-      });
-
-      if (remaining === 0 && conn.plaidItem) {
-        try {
-          const accessToken = decrypt(conn.plaidItem.encryptedToken);
-          await plaidClient.itemRemove({ access_token: accessToken });
-        } catch (plaidErr) {
-          console.error("[DELETE /api/accounts/:id] Plaid itemRemove failed:", plaidErr);
-        }
-
-        await db.plaidItem.update({
-          where: { id: conn.plaidItemDbId! },
-          data:  { status: "REVOKED" },
-        });
-      }
+    for (const plaidItemDbId of plaidItemDbIds) {
+      await disconnectPlaidItemIfOrphaned(plaidItemDbId);
     }
 
     // ── 5. Audit log ──────────────────────────────────────────────────────────

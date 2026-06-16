@@ -12,6 +12,12 @@
  *   AccountConnection — links FinancialAccount ↔ PlaidItem ↔ User
  *   WorkspaceAccountShare — makes the account visible in the active workspace
  *
+ * Relinking the same institution upserts on plaidAccountId (FinancialAccount)
+ * and restores deletedAt → null on both FinancialAccount and AccountConnection
+ * if the account had previously been removed (see app/api/accounts/[id]/route.ts
+ * DELETE) — reconnecting an account brings it back instead of leaving a
+ * reactivated WorkspaceAccountShare pointing at a still-hidden account.
+ *
  * Body: { public_token: string, institution_id: string, institution_name: string }
  */
 
@@ -112,6 +118,11 @@ export async function POST(req: NextRequest) {
           ...(creditLimit !== undefined && { creditLimit }),
           lastUpdated: new Date(),
           syncStatus:  "synced",
+          // Relinking the same plaidAccountId after the account was removed
+          // (FinancialAccount.deletedAt set — see app/api/accounts/[id]/route.ts
+          // DELETE) should restore it, not leave it hidden. Always safe to set
+          // null here even if the account wasn't deleted.
+          deletedAt:   null,
         },
         create: {
           ownerType:       AccountOwnerType.USER,
@@ -159,7 +170,9 @@ export async function POST(req: NextRequest) {
       } else {
         await db.accountConnection.update({
           where: { id: existingConn.id },
-          data:  { syncStatus: "synced", lastSyncedAt: new Date() },
+          // Same reasoning as the FinancialAccount update above — restore a
+          // soft-deleted connection on relink rather than leaving it orphaned.
+          data:  { syncStatus: "synced", lastSyncedAt: new Date(), deletedAt: null },
         });
       }
 

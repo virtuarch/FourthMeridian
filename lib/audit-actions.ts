@@ -43,6 +43,7 @@ export const AuditAction = {
   ACCOUNT_SHARED:           "ACCOUNT_SHARED",
   ACCOUNT_REVOKED:          "ACCOUNT_REVOKED",
   ACCOUNT_RENAMED:          "ACCOUNT_RENAMED",
+  ACCOUNT_RESTORE:          "ACCOUNT_RESTORE",
   DEBT_PROFILE_UPDATED:     "DEBT_PROFILE_UPDATED",
 
   // ── Members ──────────────────────────────────────────────────────────────────
