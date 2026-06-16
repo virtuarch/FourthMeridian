@@ -53,6 +53,7 @@ export const AuditAction = {
 
   // ── Sync / Platform ──────────────────────────────────────────────────────────
   PLAID_SYNC:               "PLAID_SYNC",
+  PLAID_REFRESH:            "PLAID_REFRESH",
   WALLET_SYNC:              "WALLET_SYNC",
   ACCOUNT_ADD:              "ACCOUNT_ADD",
   ACCOUNT_REMOVE:           "ACCOUNT_REMOVE",
