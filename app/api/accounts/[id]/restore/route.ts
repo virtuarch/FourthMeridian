@@ -50,7 +50,7 @@ import { AuditAction } from "@/lib/audit-actions";
 import {
   providerIdentityOf,
   findActiveAccountByIdentity,
-  findActiveAccountByFingerprint,
+  resolveAccountByFingerprint,
   mergeArchivedDuplicateIntoCanonical,
 } from "@/lib/accounts/reconcile";
 
@@ -70,7 +70,7 @@ export const POST = withApiHandler(async (
       select: {
         id: true, name: true, type: true, ownerUserId: true, deletedAt: true,
         plaidAccountId: true, walletAddress: true,
-        institutionId: true, mask: true, officialName: true, plaidName: true,
+        institutionId: true, institution: true, mask: true, officialName: true, plaidName: true,
       },
     });
 
@@ -90,21 +90,33 @@ export const POST = withApiHandler(async (
     // this restore would create a visible duplicate. Silently fold this
     // account's history into the active one instead — no conflict shown.
     const identity = providerIdentityOf(fa);
-    let canonical = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
+    let canonical: { id: string } | null = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
 
     // No exact identity match — Plaid can reissue plaidAccountId for the
-    // same real-world account, so an active row may already exist under a
-    // different plaidAccountId than this archived one. Fall back to a
-    // fingerprint match before assuming this account is genuinely unique.
+    // same real-world account, so an active row (or other archived
+    // siblings) may already exist under different plaidAccountId values.
+    // Fall back to a fingerprint match before assuming this account is
+    // genuinely unique. Only act here when an active row is found — that's
+    // the case this restore would otherwise duplicate. (Other archived
+    // siblings, if any, get consolidated the next time the account is
+    // reconnected via Plaid — see app/api/plaid/exchange-token/route.ts.)
     if (!canonical) {
-      canonical = await findActiveAccountByFingerprint({
-        ownerUserId:   fa.ownerUserId,
-        institutionId: fa.institutionId,
-        mask:          fa.mask,
-        officialName:  fa.officialName,
-        plaidName:     fa.plaidName,
-        type:          fa.type,
-      });
+      const resolution = await resolveAccountByFingerprint(
+        {
+          ownerUserId:   fa.ownerUserId,
+          institutionId: fa.institutionId,
+          institution:   fa.institution,
+          mask:          fa.mask,
+          officialName:  fa.officialName,
+          plaidName:     fa.plaidName,
+          name:          fa.name,
+          type:          fa.type,
+        },
+        fa.id
+      );
+      if (resolution?.matchedActive) {
+        canonical = resolution.canonical;
+      }
     }
 
     if (canonical) {

@@ -37,7 +37,7 @@ import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, Visibility
 import { getWorkspaceContext } from "@/lib/workspace";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { AuditAction } from "@/lib/audit-actions";
-import { findArchivedAccountByFingerprint } from "@/lib/accounts/reconcile";
+import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
 
 // ── Map Plaid account type/subtype → our AccountType enum ────────────────────
 function mapAccountType(type: string, subtype: string | null | undefined): AccountType {
@@ -146,18 +146,33 @@ export async function POST(req: NextRequest) {
           },
         });
       } else {
-        const archivedMatch = await findArchivedAccountByFingerprint({
+        const fingerprint = {
           ownerUserId:   userId,
           institutionId: institution_id,
+          institution:   institution_name,
           mask:          acct.mask ?? null,
           officialName:  acct.official_name ?? null,
           plaidName:     acct.name,
+          name:          acct.name,
           type,
+        };
+        const resolution = await resolveAccountByFingerprint(fingerprint);
+
+        console.log("[plaid] fingerprint lookup", {
+          institutionId:      institution_id,
+          mask:                acct.mask ?? null,
+          type,
+          officialName:       acct.official_name ?? null,
+          plaidName:          acct.name,
+          activeCandidates:   resolution?.activeCandidateCount ?? 0,
+          archivedCandidates: resolution?.archivedCandidateCount ?? 0,
+          canonicalAccountId: resolution?.canonical.id ?? null,
+          outcome:            resolution ? "reused" : "created",
         });
 
-        if (archivedMatch) {
+        if (resolution) {
           fa = await db.financialAccount.update({
-            where: { id: archivedMatch.id },
+            where: { id: resolution.canonical.id },
             data: {
               plaidAccountId:  acct.account_id,
               balance,

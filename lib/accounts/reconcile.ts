@@ -28,16 +28,23 @@
  * FINGERPRINT FALLBACK
  * ---------------------
  * plaidAccountId is not actually permanent in every case — Plaid can
- * reissue a new account_id for the same real-world account on reconnect
- * (observed directly: two FinancialAccount rows for the same Robinhood
- * account, same institutionId/mask/officialName/type, different
- * plaidAccountId). When an exact provider-identity match fails, callers
- * should fall back to findArchivedAccountByFingerprint /
- * findActiveAccountByFingerprint, which match on fields that don't change
- * across a reissued id: institutionId, mask, type, and officialName-or-
- * plaidName. Deliberately conservative — returns a match only when exactly
- * one candidate fits; zero or multiple candidates return null so the
- * caller falls back to creating a new row rather than guessing.
+ * reissue a new account_id for the same real-world account on every
+ * reconnect (observed directly: three FinancialAccount rows for the same
+ * Robinhood account over time, same institution/mask/officialName/type,
+ * three different plaidAccountId values). When an exact provider-identity
+ * match fails, callers fall back to resolveAccountByFingerprint, which
+ * matches on fields that don't change across a reissued id: institutionId
+ * OR institution, mask, type, and officialName OR plaidName OR name — all
+ * compared case-insensitively and trimmed.
+ *
+ * Unlike a single exact-match lookup, this fallback must tolerate *more
+ * than one* stale archived row matching the same fingerprint (every past
+ * relink leaves one behind), and the rare case where more than one row is
+ * simultaneously active. It picks a single canonical row (most linked
+ * transaction history, tie-broken by oldest createdAt), folds every other
+ * matching row's history into it, and returns that one row — so repeated
+ * relinks converge on a single canonical account no matter how many stale
+ * rows accumulated before the fix landed.
  */
 
 import { db } from "@/lib/db";
@@ -77,58 +84,165 @@ export async function findActiveAccountByIdentity(identity: ProviderIdentity, ex
 }
 
 export type AccountFingerprint = {
-  ownerUserId:   string | null;
-  institutionId: string | null;
-  mask:          string | null;
-  officialName?: string | null;
-  plaidName?:    string | null;
-  type:          AccountType;
+  ownerUserId:    string | null;
+  institutionId?: string | null;
+  institution?:   string | null;
+  mask:           string | null;
+  officialName?:  string | null;
+  plaidName?:     string | null;
+  name?:          string | null;
+  type:           AccountType;
 };
 
-async function findAccountByFingerprint(fp: AccountFingerprint, deletedAt: null | { not: null }) {
-  // institutionId + mask are required — without both, matching is too loose
-  // to trust automatically.
-  if (!fp.institutionId || !fp.mask) return null;
+type FingerprintCandidate = {
+  id:             string;
+  createdAt:      Date;
+  deletedAt:      Date | null;
+  plaidAccountId: string | null;
+};
+
+const CANDIDATE_SELECT = { id: true, createdAt: true, deletedAt: true, plaidAccountId: true } as const;
+
+function cleanStr(s: string | null | undefined): string | null {
+  if (!s) return null;
+  const t = s.trim();
+  return t.length ? t : null;
+}
+
+/**
+ * Finds all FinancialAccount rows matching a fingerprint (institutionId-or-
+ * institution + mask + type + officialName-or-plaidName-or-name, all
+ * case-insensitive/trimmed). Requires mask, at least one institution field,
+ * and at least one name field — without those this would match too loosely.
+ * Returns every match (zero, one, or many) rather than enforcing uniqueness
+ * itself; callers decide how to reduce multiple matches to one canonical row.
+ */
+async function findCandidatesByFingerprint(
+  fp: AccountFingerprint,
+  deletedAt: null | { not: null },
+  excludeId?: string
+): Promise<FingerprintCandidate[]> {
+  const mask = cleanStr(fp.mask);
+  if (!mask) return [];
+
+  const institutionOr = [
+    ...(cleanStr(fp.institutionId) ? [{ institutionId: { equals: cleanStr(fp.institutionId)!, mode: "insensitive" as const } }] : []),
+    ...(cleanStr(fp.institution)   ? [{ institution:   { equals: cleanStr(fp.institution)!,   mode: "insensitive" as const } }] : []),
+  ];
+  if (institutionOr.length === 0) return [];
 
   const nameOr = [
-    ...(fp.officialName ? [{ officialName: fp.officialName }] : []),
-    ...(fp.plaidName    ? [{ plaidName: fp.plaidName }]       : []),
+    ...(cleanStr(fp.officialName) ? [{ officialName: { equals: cleanStr(fp.officialName)!, mode: "insensitive" as const } }] : []),
+    ...(cleanStr(fp.plaidName)    ? [{ plaidName:     { equals: cleanStr(fp.plaidName)!,    mode: "insensitive" as const } }] : []),
+    ...(cleanStr(fp.name)         ? [{ name:          { equals: cleanStr(fp.name)!,         mode: "insensitive" as const } }] : []),
   ];
-  if (nameOr.length === 0) return null;
+  if (nameOr.length === 0) return [];
 
-  const candidates = await db.financialAccount.findMany({
+  return db.financialAccount.findMany({
     where: {
       ...(fp.ownerUserId ? { ownerUserId: fp.ownerUserId } : {}),
-      institutionId: fp.institutionId,
-      mask:          fp.mask,
-      type:          fp.type,
+      type: fp.type,
       deletedAt,
-      OR: nameOr,
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+      mask: { equals: mask, mode: "insensitive" },
+      AND: [{ OR: institutionOr }, { OR: nameOr }],
     },
+    select: CANDIDATE_SELECT,
+    orderBy: { createdAt: "asc" },
   });
-
-  // Conservative: only act when exactly one candidate matches. Zero or
-  // multiple matches return null so the caller creates a new row / restores
-  // normally instead of guessing which account is the "real" match.
-  return candidates.length === 1 ? candidates[0] : null;
 }
 
 /**
- * Fallback for Plaid reconnect when plaidAccountId has no exact match:
- * finds a soft-deleted account that is almost certainly the same real-world
- * account under a reissued plaidAccountId.
+ * Reduces a list of fingerprint-matched rows to one canonical row: the one
+ * with the most linked transaction history, tie-broken by oldest createdAt
+ * (candidates arrive pre-sorted oldest-first, so the first row encountered
+ * at the max count wins ties). Every other row's history is folded into the
+ * winner via mergeArchivedDuplicateIntoCanonical. If a losing row happens to
+ * still be active (deletedAt null) — possible if more than one row was
+ * simultaneously active under different plaidAccountIds — it is archived
+ * after its history is migrated so it stops appearing as a second visible
+ * account. No row is ever hard-deleted.
  */
-export async function findArchivedAccountByFingerprint(fp: AccountFingerprint) {
-  return findAccountByFingerprint(fp, { not: null });
+async function pickCanonicalAndMerge(candidates: FingerprintCandidate[]): Promise<FingerprintCandidate | null> {
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  let canonical = candidates[0];
+  let canonicalCount = -1;
+  const counts = new Map<string, number>();
+
+  for (const c of candidates) {
+    const count = await db.transaction.count({ where: { financialAccountId: c.id } });
+    counts.set(c.id, count);
+    if (count > canonicalCount) {
+      canonical = c;
+      canonicalCount = count;
+    }
+  }
+
+  for (const c of candidates) {
+    if (c.id === canonical.id) continue;
+    await mergeArchivedDuplicateIntoCanonical(c.id, canonical.id);
+    if (!c.deletedAt) {
+      // Was active under a different plaidAccountId — its history now lives
+      // on the canonical row, so archive it to remove the duplicate from view.
+      await db.financialAccount.update({ where: { id: c.id }, data: { deletedAt: new Date() } });
+    }
+  }
+
+  return canonical;
 }
 
+export type FingerprintResolution = {
+  canonical:              FingerprintCandidate;
+  matchedActive:          boolean;
+  activeCandidateCount:   number;
+  archivedCandidateCount: number;
+};
+
 /**
- * Fallback for restore when no exact provider-identity match is active:
- * finds an active account that is almost certainly the same real-world
- * account as the archived row being restored.
+ * Resolves a fingerprint to a single canonical account across however many
+ * stale archived rows and/or simultaneously-active rows currently match it.
+ *
+ *  - If any active row matches, it (or the most-historical active match, if
+ *    several do) is canonical — every archived match is folded into it.
+ *  - Otherwise, if archived rows match, the most-historical one is canonical
+ *    — every other archived match is folded into it.
+ *  - If nothing matches, returns null and the caller should create a new row.
  */
-export async function findActiveAccountByFingerprint(fp: AccountFingerprint) {
-  return findAccountByFingerprint(fp, null);
+export async function resolveAccountByFingerprint(
+  fp: AccountFingerprint,
+  excludeId?: string
+): Promise<FingerprintResolution | null> {
+  const [activeCandidates, archivedCandidates] = await Promise.all([
+    findCandidatesByFingerprint(fp, null, excludeId),
+    findCandidatesByFingerprint(fp, { not: null }, excludeId),
+  ]);
+
+  if (activeCandidates.length > 0) {
+    const canonical = await pickCanonicalAndMerge(activeCandidates);
+    for (const a of archivedCandidates) {
+      await mergeArchivedDuplicateIntoCanonical(a.id, canonical!.id);
+    }
+    return {
+      canonical:              canonical!,
+      matchedActive:          true,
+      activeCandidateCount:   activeCandidates.length,
+      archivedCandidateCount: archivedCandidates.length,
+    };
+  }
+
+  if (archivedCandidates.length > 0) {
+    const canonical = await pickCanonicalAndMerge(archivedCandidates);
+    return {
+      canonical:              canonical!,
+      matchedActive:          false,
+      activeCandidateCount:   0,
+      archivedCandidateCount: archivedCandidates.length,
+    };
+  }
+
+  return null;
 }
 
 /**
