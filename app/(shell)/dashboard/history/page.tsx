@@ -7,7 +7,9 @@ const fmt = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
 
 export default async function HistoryPage() {
+  const t0 = Date.now();
   const snapshots = await getRecentSnapshots(30);
+  console.log(`[page:history] total: ${Date.now() - t0}ms`);
   const latest = snapshots[snapshots.length - 1];
   const oldest = snapshots[0];
   const change = latest.netWorth - oldest.netWorth;

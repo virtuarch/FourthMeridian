@@ -76,8 +76,28 @@ function derivePermissions(role: WorkspaceMemberRole): WorkspacePermissions {
  *
  * Use in all route handlers and Server Components.
  */
+// ── Diagnostic instrumentation (temporary — perf audit) ──────────────────────
+// getWorkspaceContext() is called many times per page render (every Server
+// Component / API route that needs the active workspace calls it
+// independently — it is NOT wrapped in React's cache(), so each call re-runs
+// getServerSession() + up to two more uncached Prisma queries). This counter
+// + per-call id makes that fan-out visible in the logs instead of guessed at:
+// grep for a single "[wsctx]" id and you'll see every query that one logical
+// call triggered; grep for "[wsctx] ENTER" alone and count the lines within
+// one request's time window to see how many times this ran for one page.
+let __wsctxCallCounter = 0;
+
 export async function getWorkspaceContext(): Promise<WorkspaceContext> {
+  const callId = `${++__wsctxCallCounter}-${Math.random().toString(36).slice(2, 6)}`;
+  const t0 = Date.now();
+  const lap = (label: string, from: number) => {
+    console.log(`[wsctx ${callId}] ${label}: ${Date.now() - from}ms`);
+    return Date.now();
+  };
+  console.log(`[wsctx ${callId}] ENTER getWorkspaceContext`);
+
   const session = await getServerSession(authOptions);
+  let t = lap("getServerSession", t0);
 
   if (!session?.user?.id) {
     throw new Error("Not authenticated — no active session");
@@ -94,6 +114,7 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
     // If called outside a request context (e.g., from a cron job that
     // accidentally calls this) — ignore and fall back to personal workspace.
   }
+  t = lap("cookies()", t);
 
   // When no active-workspace cookie is set, honour the user's preferred
   // workspace (set in profile settings). This makes it the effective default
@@ -111,9 +132,13 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
     } catch {
       // Column not yet in DB (migration pending) — fall through to personal workspace.
     }
+    t = lap("user.findUnique [preferredWorkspaceId]", t);
   }
 
-  return resolveWorkspaceContext(session.user.id, requestedId);
+  const ctx = await resolveWorkspaceContext(session.user.id, requestedId, callId);
+  lap("resolveWorkspaceContext (total)", t);
+  console.log(`[wsctx ${callId}] EXIT getWorkspaceContext: ${Date.now() - t0}ms total`);
+  return ctx;
 }
 
 // ── Shared resolver ───────────────────────────────────────────────────────────
@@ -131,7 +156,14 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
 export async function resolveWorkspaceContext(
   userId:              string,
   activeWorkspaceId?:  string | null,
+  callId?:             string,
 ): Promise<WorkspaceContext> {
+  const id = callId ?? `direct-${Math.random().toString(36).slice(2, 6)}`;
+  const t0 = Date.now();
+  const lap = (label: string, from: number) => {
+    console.log(`[wsctx ${id}] ${label}: ${Date.now() - from}ms`);
+    return Date.now();
+  };
 
   // ── Try the requested workspace first ────────────────────────────────────
   if (activeWorkspaceId) {
@@ -139,6 +171,7 @@ export async function resolveWorkspaceContext(
       where:   { workspaceId_userId: { workspaceId: activeWorkspaceId, userId } },
       include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
     });
+    lap("workspaceMember.findUnique [requested]", t0);
 
     // Only treat the membership as valid if the user is still ACTIVE.
     // REMOVED / LEFT rows must not restore access to the workspace.
@@ -155,10 +188,12 @@ export async function resolveWorkspaceContext(
   }
 
   // ── Fall back to PERSONAL workspace ──────────────────────────────────────
+  let t = Date.now();
   const personal = await db.workspaceMember.findFirst({
     where:   { userId, status: "ACTIVE", workspace: { type: "PERSONAL" } },
     include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
   });
+  lap("workspaceMember.findFirst [personal fallback]", t);
 
   if (personal) {
     return {
@@ -172,11 +207,13 @@ export async function resolveWorkspaceContext(
 
   // ── Last resort: any ACTIVE membership ───────────────────────────────────
   // Handles edge cases (e.g., personal workspace was somehow deleted).
+  t = Date.now();
   const any = await db.workspaceMember.findFirstOrThrow({
     where:   { userId, status: "ACTIVE" },
     orderBy: { joinedAt: "asc" },
     include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
   });
+  lap("workspaceMember.findFirstOrThrow [any membership]", t);
 
   return {
     userId,

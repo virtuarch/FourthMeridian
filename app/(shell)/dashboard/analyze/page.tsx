@@ -6,12 +6,18 @@ import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { AnalyzeClient } from "@/components/dashboard/AnalyzeClient";
 
 export default async function AnalyzePage() {
+  const t0 = Date.now();
+  const time = <T,>(label: string, p: Promise<T>): Promise<T> => {
+    const s = Date.now();
+    return p.then((r) => { console.log(`[page:analyze]   ${label}: ${Date.now() - s}ms`); return r; });
+  };
   const [advice, ficoScore, snapshots, session] = await Promise.all([
-    getLatestAdvice(),
-    getFicoScore(),
-    getRecentSnapshots(30),
-    getServerSession(authOptions),
+    time("getLatestAdvice", getLatestAdvice()),
+    time("getFicoScore", getFicoScore()),
+    time("getRecentSnapshots(30)", getRecentSnapshots(30)),
+    time("getServerSession", getServerSession(authOptions)),
   ]);
+  console.log(`[page:analyze] Promise.all (wall clock): ${Date.now() - t0}ms`);
 
   const latestSnapshot = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
 
@@ -35,6 +41,7 @@ export default async function AnalyzePage() {
   const fullName = session?.user?.name ?? "";
   const userName = fullName.split(" ")[0] || "there";
 
+  console.log(`[page:analyze] total: ${Date.now() - t0}ms`);
   return (
     <AnalyzeClient
       advice={advice}
