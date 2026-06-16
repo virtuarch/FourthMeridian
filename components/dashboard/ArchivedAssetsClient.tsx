@@ -3,31 +3,57 @@
 /**
  * ArchivedAssetsClient
  *
- * Table of soft-deleted manually-entered assets.
- * Actions: Restore (reactivates account + workspace shares) or Delete Permanently.
+ * Table of every soft-deleted account the user owns — manual assets, Plaid
+ * accounts, and self-custody wallets alike (see archived-assets/page.tsx,
+ * which now queries all deletedAt-set FinancialAccount rows instead of just
+ * type=other/syncStatus=manual).
+ *
+ * Actions differ by source:
+ *   - manual: Restore → POST /api/accounts/manual/[id]/restore
+ *             Delete permanently → DELETE /api/accounts/manual/[id]/permanent
+ *   - plaid/wallet: Restore → POST /api/accounts/[id]/restore (generic route)
+ *             No permanent-delete action yet — there is no hard-delete route
+ *             for non-manual accounts, and the project rules for this pass
+ *             explicitly disallow adding one. Restore is the only action shown.
  */
 
 import { useState, useCallback } from "react";
 import { useRouter }             from "next/navigation";
 import {
-  RotateCcw, Trash2, Loader2, Archive, ChevronLeft, AlertTriangle,
+  RotateCcw, Trash2, Loader2, Archive, ChevronLeft, AlertTriangle, Landmark, Wallet,
 } from "lucide-react";
 import Link from "next/link";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export type ArchivedAssetSource = "manual" | "plaid" | "wallet";
+
 export interface ArchivedAsset {
-  id:        string;
-  name:      string;
-  balance:   number;
-  currency:  string;
-  deletedAt: string;
+  id:          string;
+  name:        string;
+  balance:     number;
+  currency:    string;
+  deletedAt:   string;
+  institution: string;
+  source:      ArchivedAssetSource;
   workspaces: { id: string; name: string }[];
 }
 
 interface Props {
   assets: ArchivedAsset[];
 }
+
+const SOURCE_LABEL: Record<ArchivedAssetSource, string> = {
+  manual: "Manual",
+  plaid:  "Plaid",
+  wallet: "Wallet",
+};
+
+const SOURCE_ICON: Record<ArchivedAssetSource, React.ElementType> = {
+  manual: Archive,
+  plaid:  Landmark,
+  wallet: Wallet,
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -65,11 +91,19 @@ function AssetRow({
   const [deleting,         setDeleting]         = useState(false);
   const [error,            setError]            = useState<string | null>(null);
 
+  const isManual = asset.source === "manual";
+
   const handleRestore = useCallback(async () => {
     setRestoring(true);
     setError(null);
     try {
-      const res = await fetch(`/api/accounts/manual/${asset.id}/restore`, { method: "POST" });
+      // Manual assets keep the dedicated manual restore route; everything
+      // else (Plaid, wallet) uses the generic restore route added alongside
+      // the reconnect fix in app/api/accounts/[id]/restore/route.ts.
+      const url = isManual
+        ? `/api/accounts/manual/${asset.id}/restore`
+        : `/api/accounts/${asset.id}/restore`;
+      const res = await fetch(url, { method: "POST" });
       if (res.ok) {
         onRestored(asset.id);
       } else {
@@ -79,7 +113,7 @@ function AssetRow({
     } finally {
       setRestoring(false);
     }
-  }, [asset.id, onRestored]);
+  }, [asset.id, isManual, onRestored]);
 
   const handlePermanentDelete = useCallback(async () => {
     setDeleting(true);
@@ -104,13 +138,22 @@ function AssetRow({
       <div className="flex items-start gap-4 px-5 py-4">
         {/* Icon */}
         <div className="w-9 h-9 rounded-xl bg-gray-800 flex items-center justify-center shrink-0 mt-0.5">
-          <Archive size={16} className="text-gray-500" />
+          {(() => {
+            const SourceIcon = SOURCE_ICON[asset.source];
+            return <SourceIcon size={16} className="text-gray-500" />;
+          })()}
         </div>
 
         {/* Info */}
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-white truncate">{asset.name}</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-semibold text-white truncate">{asset.name}</p>
+            <span className="inline-flex items-center text-[10px] font-semibold uppercase tracking-wide text-gray-400 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded-md shrink-0">
+              {SOURCE_LABEL[asset.source]}
+            </span>
+          </div>
           <p className="text-xs text-gray-500 mt-0.5">
+            {asset.institution ? `${asset.institution} · ` : ""}
             {fmtCurrency(asset.balance, asset.currency)} · Archived {timeAgo(asset.deletedAt)}
           </p>
           {asset.workspaces.length > 0 && (
@@ -143,19 +186,22 @@ function AssetRow({
               {restoring ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
               {restoring ? "Restoring…" : "Restore"}
             </button>
-            <button
-              onClick={() => setConfirmingDelete(true)}
-              className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-red-400 hover:bg-red-500/10 border border-gray-700 hover:border-red-500/30 px-3 py-1.5 rounded-lg transition-colors"
-            >
-              <Trash2 size={11} />
-              Delete
-            </button>
+            {isManual && (
+              <button
+                onClick={() => setConfirmingDelete(true)}
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-red-400 hover:bg-red-500/10 border border-gray-700 hover:border-red-500/30 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                <Trash2 size={11} />
+                Delete
+              </button>
+            )}
           </div>
         )}
       </div>
 
-      {/* Permanent delete confirmation strip */}
-      {confirmingDelete && (
+      {/* Permanent delete confirmation strip — manual assets only; the route
+          itself also rejects non-manual ids, this is a defense-in-depth UI gate */}
+      {confirmingDelete && isManual && (
         <div className="px-5 pb-4 flex items-center justify-between gap-3 border-t border-gray-800 pt-3 mt-1">
           <p className="text-xs text-gray-400">
             Permanently delete <span className="text-white font-medium">{asset.name}</span>?
@@ -213,7 +259,7 @@ export function ArchivedAssetsClient({ assets: initialAssets }: Props) {
         <div>
           <h1 className="text-xl font-bold text-white">Archived Assets</h1>
           <p className="text-xs text-gray-500 mt-0.5">
-            Restore to bring an asset back, or delete permanently to remove it forever.
+            Restore any account to bring it back. Manual assets can also be deleted permanently.
           </p>
         </div>
       </div>
@@ -224,9 +270,9 @@ export function ArchivedAssetsClient({ assets: initialAssets }: Props) {
           <div className="w-14 h-14 rounded-2xl bg-gray-800/60 flex items-center justify-center mb-4">
             <Archive size={24} className="text-gray-600" />
           </div>
-          <p className="text-sm font-medium text-gray-400">No archived assets</p>
+          <p className="text-sm font-medium text-gray-400">No archived accounts</p>
           <p className="text-xs text-gray-600 mt-1 max-w-xs">
-            When you delete a manual asset it appears here. You can restore it or remove it permanently.
+            When you remove an account — manual, Plaid, or wallet — it appears here so you can restore it.
           </p>
           <Link
             href="/dashboard/settings"

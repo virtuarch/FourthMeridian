@@ -36,7 +36,6 @@ import {
   DollarSign,
 } from "lucide-react";
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
-import { RemoveAccountModal } from "@/components/dashboard/RemoveAccountModal";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
@@ -314,7 +313,6 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [holdingsExpanded, setHoldingsExpanded] = useState(false);
   const [showAddModal, setShowAddModal]         = useState(false);
-  const [showRemoveModal, setShowRemoveModal]   = useState(false);
   const [extraWallets] = useState<Account[]>([]);
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
@@ -415,13 +413,6 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
         />
       )}
 
-      {showRemoveModal && (
-        <RemoveAccountModal
-          accounts={accounts}
-          onClose={() => setShowRemoveModal(false)}
-        />
-      )}
-
       {selectedAsset && (
         <AssetDrawer
           asset={{
@@ -442,15 +433,6 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Investments</h1>
         <div className="flex items-center gap-2">
-          {accounts.length > 0 && (
-            <button
-              onClick={() => setShowRemoveModal(true)}
-              className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-400 border border-gray-700 hover:border-red-500/40 bg-gray-900 hover:bg-red-500/10 px-3 py-2 rounded-xl transition-colors"
-            >
-              <Trash2 size={13} />
-              Remove
-            </button>
-          )}
           <PlaidLinkButton label="Add Account" />
         </div>
       </div>
