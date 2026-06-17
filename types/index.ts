@@ -4,17 +4,34 @@ export type WalletChain = 'BTC' | 'ETH' | 'SOL' | 'BNB' | 'MATIC' | 'ADA' | 'XRP
 
 export interface Account {
   id: string;
+  /** Resolved display name: displayName ?? officialName ?? plaidName ?? raw name. */
   name: string;
   type: AccountType;
   institution: string;
   balance: number;
   currency: string;
   lastUpdated: string;
-  // Debt fields
+  // Display-name metadata (Plaid values are never overwritten after import).
+  plaidName?:    string;  // raw value Plaid returned for this account, frozen at import
+  officialName?: string;  // Plaid's official_name, if provided, frozen at import
+  displayName?:  string;  // user-editable override; undefined until the user renames the account
+  // Debt fields — effective values prefer the DebtProfile when present and fall
+  // back to the legacy flat columns otherwise.
   creditLimit?:    number;  // populated from Plaid balances.limit or manual entry
   debtSubtype?:    string;  // credit_card | line_of_credit | heloc | auto_loan | mortgage | personal_loan | student_loan
   interestRate?:   number;  // Annual Percentage Rate (APR), e.g. 19.99
-  minimumPayment?: number;  // Minimum monthly payment amount
+  minimumPayment?: number;  // Minimum monthly payment amount — manual entry, or an estimate (see minimumPaymentIsEstimated)
+  /** True when minimumPayment was computed from APR/balance, not entered by the user or provided by the issuer. */
+  minimumPaymentIsEstimated?: boolean;
+  /** Full debt profile, when one exists, for editing in the UI. */
+  debtProfile?: {
+    apr?:               number;
+    minimumPayment?:    number;
+    dueDay?:             number;
+    statementCloseDay?: number;
+    promoAprEndDate?:   string;  // ISO date (YYYY-MM-DD)
+    notes?:             string;
+  };
   // Crypto wallet fields
   walletAddress?: string;
   walletChain?: WalletChain;
@@ -50,7 +67,7 @@ export interface Snapshot {
   totalSavings: number;   // savings only
   totalInvestments: number;
   totalCrypto: number;
-  cashToPlay: number;
+  cashOnHand: number;
 }
 
 export type TransactionCategory =
@@ -98,6 +115,6 @@ export interface AiAdvice {
   summary: string;
   adviceText: string;
   riskLevel: 'low' | 'medium' | 'high';
-  playReady: boolean;
+  actionReady: boolean;
   generatedAt: string;
 }

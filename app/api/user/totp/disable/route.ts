@@ -24,10 +24,11 @@ import { decrypt } from "@/lib/plaid/encryption";
 import { AuditAction } from "@/lib/audit-actions";
 import { verifyTOTP } from "@/lib/totp";
 import bcrypt from "bcryptjs";
-import { requireUser } from "@/lib/session";
+import { requireFreshUser } from "@/lib/session";
 
 export async function POST(req: NextRequest) {
-  const [user, err] = await requireUser();
+  // Sensitive action (disables 2FA) — always a live revocation check.
+  const [user, err] = await requireFreshUser();
   if (err) return err;
 
   const body         = await req.json();

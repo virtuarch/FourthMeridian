@@ -2,10 +2,11 @@
 
 import { useState, useTransition, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   Building2, Globe, Lock, Plus, Users, Crown,
   Shield, Eye, UserMinus, X, Check, ChevronRight,
-  Mail, Loader2, Trash2, Search, Layers, ArrowRightLeft,
+  Mail, Loader2, Search, Layers, ArrowRightLeft,
   Landmark, Home, Briefcase, Car, Plane, TrendingUp,
   Wrench, CreditCard, Target, LayoutDashboard,
   MoreHorizontal, Sunset, ArrowLeft, ArrowRight,
@@ -20,8 +21,15 @@ import {
   getPresetsForCategory,
   WorkspaceCategory,
 } from "@/lib/workspace-presets";
-import { ManageWorkspaceModal } from "@/components/dashboard/ManageWorkspaceModal";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+
+// Only opened from the "Manage" action inside an already-open workspace card —
+// not needed for the initial render, so split it out of the main client
+// bundle for this route instead of bundling it for every visitor.
+const ManageWorkspaceModal = dynamic(
+  () => import("@/components/dashboard/ManageWorkspaceModal").then((m) => m.ManageWorkspaceModal),
+  { ssr: false }
+);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -863,8 +871,6 @@ function WorkspaceDetail({
   const [inviteError,   setInviteError]   = useState("");
   const [inviteBusy,    setInviteBusy]    = useState(false);
   const [inviteOk,      setInviteOk]      = useState("");
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleteBusy,    setDeleteBusy]    = useState(false);
   const [inviteQueue,   setInviteQueue]   = useState<QueuedInvite[]>([]);
   const [queueLoading,  setQueueLoading]  = useState(false);
   const [rescindingId,  setRescindingId]  = useState<string | null>(null);
@@ -923,13 +929,6 @@ function WorkspaceDetail({
   async function handleRemoveMember(userId: string) {
     const res = await fetch(`/api/workspaces/${ws.id}/members/${userId}`, { method: "DELETE" });
     if (res.ok) onRefresh();
-  }
-
-  async function handleDelete() {
-    setDeleteBusy(true);
-    await fetch(`/api/workspaces/${ws.id}`, { method: "DELETE" });
-    onRefresh();
-    onClose();
   }
 
   async function handleLeave() {
@@ -1132,46 +1131,29 @@ function WorkspaceDetail({
                 </div>
               )}
 
-              {/* Danger zone */}
-              {ws.type !== "PERSONAL" && (
+              {/* Danger zone — Leave is the only action surfaced here. Archive,
+                  trash, and permanent delete now live exclusively in
+                  Manage → Danger Zone (ManageWorkspaceModal/DangerZoneTab) so
+                  there's a single, consistent place owners go for those
+                  actions instead of two modals with diverging delete UIs. */}
+              {ws.type !== "PERSONAL" && !isOwner && (
                 <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
                   <p className="text-xs font-semibold text-red-400 uppercase tracking-widest">Danger Zone</p>
-                  {!isOwner && (
-                    <button
-                      onClick={handleLeave}
-                      className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-colors"
-                    >
-                      <UserMinus size={14} />
-                      Leave workspace
-                    </button>
-                  )}
-                  {isOwner && !confirmDelete && (
-                    <button
-                      onClick={() => setConfirmDelete(true)}
-                      className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-colors"
-                    >
-                      <Trash2 size={14} />
-                      Delete workspace
-                    </button>
-                  )}
-                  {isOwner && confirmDelete && (
-                    <div className="space-y-2">
-                      <p className="text-xs text-gray-400">
-                        Delete <span className="text-white font-medium">{ws.name}</span>? This cannot be undone.
-                      </p>
-                      <div className="flex gap-2">
-                        <button onClick={() => setConfirmDelete(false)}
-                          className="flex-1 px-3 py-2 rounded-xl border border-gray-700 text-xs text-gray-400 hover:text-white transition-colors">
-                          Cancel
-                        </button>
-                        <button onClick={handleDelete} disabled={deleteBusy}
-                          className="flex-1 px-3 py-2 rounded-xl bg-red-600 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5">
-                          {deleteBusy ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                  <button
+                    onClick={handleLeave}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-colors"
+                  >
+                    <UserMinus size={14} />
+                    Leave workspace
+                  </button>
+                </div>
+              )}
+              {ws.type !== "PERSONAL" && isOwner && (
+                <div className="rounded-2xl border border-gray-800 bg-gray-800/30 p-4">
+                  <p className="text-xs text-gray-500">
+                    Archive, move to trash, and other owner actions are in{" "}
+                    <span className="text-gray-300 font-medium">Manage → Danger Zone</span>.
+                  </p>
                 </div>
               )}
             </>

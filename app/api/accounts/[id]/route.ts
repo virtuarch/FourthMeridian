@@ -6,20 +6,23 @@
  * DELETE — soft-deletes the FinancialAccount (sets deletedAt) and revokes all
  *          active WorkspaceAccountShare rows for the account.
  *          If the account was linked via Plaid and its AccountConnection was the
- *          last non-deleted connection on that PlaidItem, calls
- *          plaidClient.itemRemove() and marks the PlaidItem as REVOKED.
- *          Row preserved for history.
+ *          last non-deleted connection on that PlaidItem, disconnects the item
+ *          (see lib/plaid/disconnect.ts) and marks the PlaidItem as REVOKED.
+ *          Row preserved for history. See ./restore/route.ts to undo this.
  *
- * PATCH  — updates mutable fields: creditLimit (manual entry).
+ * PATCH  — updates mutable fields: creditLimit, debtSubtype, interestRate,
+ *          minimumPayment (manual entry), and displayName (user-editable
+ *          rename — never touches plaidName/officialName, which stay frozen
+ *          at whatever Plaid returned at import time).
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
-import { plaidClient } from "@/lib/plaid/client";
-import { decrypt } from "@/lib/plaid/encryption";
 import { ShareStatus } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { AuditAction } from "@/lib/audit-actions";
+import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -33,11 +36,12 @@ export const PATCH = withApiHandler(async (
 
   try {
     const body = await req.json();
-    const { creditLimit, debtSubtype, interestRate, minimumPayment } = body as {
+    const { creditLimit, debtSubtype, interestRate, minimumPayment, displayName } = body as {
       creditLimit?:    number | null;
       debtSubtype?:    string | null;
       interestRate?:   number | null;
       minimumPayment?: number | null;
+      displayName?:    string | null;
     };
 
     // Validate creditLimit
@@ -55,6 +59,16 @@ export const PATCH = withApiHandler(async (
         (typeof minimumPayment !== "number" || minimumPayment < 0)) {
       return NextResponse.json({ error: "Invalid minimumPayment" }, { status: 400 });
     }
+    // Validate displayName — empty string means "clear the override" (fall back
+    // to officialName/plaidName), so normalize "" to null rather than rejecting it.
+    let normalizedDisplayName = displayName;
+    if (typeof displayName === "string") {
+      const trimmed = displayName.trim();
+      if (trimmed.length > 120) {
+        return NextResponse.json({ error: "Display name must be 120 characters or fewer" }, { status: 400 });
+      }
+      normalizedDisplayName = trimmed.length > 0 ? trimmed : null;
+    }
 
     const fa = await db.financialAccount.findUnique({ where: { id } });
     if (!fa) return NextResponse.json({ error: "Account not found" }, { status: 404 });
@@ -71,8 +85,20 @@ export const PATCH = withApiHandler(async (
         ...(debtSubtype    !== undefined && { debtSubtype }),
         ...(interestRate   !== undefined && { interestRate }),
         ...(minimumPayment !== undefined && { minimumPayment }),
+        ...(displayName    !== undefined && { displayName: normalizedDisplayName }),
       },
     });
+
+    if (displayName !== undefined) {
+      await db.auditLog.create({
+        data: {
+          userId:    user.id,
+          action:    AuditAction.ACCOUNT_RENAMED,
+          metadata:  { accountId: id, displayName: normalizedDisplayName },
+          ipAddress: getClientIp(req),
+        },
+      });
+    }
 
     return NextResponse.json({ ok: true });
   } catch (err) {
@@ -139,30 +165,14 @@ export const DELETE = withApiHandler(async (
     });
 
     // ── 4. If this was a Plaid account, check whether we should revoke the item ──
-    const plaidConnections = fa.connections.filter((c) => c.plaidItemDbId);
+    //    (see lib/plaid/disconnect.ts — extracted seam for future provider-agnostic
+    //    disconnect dispatch; same count-then-itemRemove logic as before.)
+    const plaidItemDbIds = fa.connections
+      .filter((c) => c.plaidItemDbId)
+      .map((c) => c.plaidItemDbId!);
 
-    for (const conn of plaidConnections) {
-      // Count remaining non-deleted connections on this PlaidItem
-      const remaining = await db.accountConnection.count({
-        where: {
-          plaidItemDbId: conn.plaidItemDbId,
-          deletedAt:     null,
-        },
-      });
-
-      if (remaining === 0 && conn.plaidItem) {
-        try {
-          const accessToken = decrypt(conn.plaidItem.encryptedToken);
-          await plaidClient.itemRemove({ access_token: accessToken });
-        } catch (plaidErr) {
-          console.error("[DELETE /api/accounts/:id] Plaid itemRemove failed:", plaidErr);
-        }
-
-        await db.plaidItem.update({
-          where: { id: conn.plaidItemDbId! },
-          data:  { status: "REVOKED" },
-        });
-      }
+    for (const plaidItemDbId of plaidItemDbIds) {
+      await disconnectPlaidItemIfOrphaned(plaidItemDbId);
     }
 
     // ── 5. Audit log ──────────────────────────────────────────────────────────

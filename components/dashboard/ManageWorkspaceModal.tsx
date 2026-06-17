@@ -4,7 +4,11 @@
  * ManageWorkspaceModal
  *
  * Full workspace management panel. Opens as a modal overlay.
- * Tabs: General · Members · Goals · Finances · Dashboard · Delete
+ * Tabs: General · Members · Goals · Finances · Dashboard · Danger Zone
+ *
+ * Danger Zone is the single entry point for owner-initiated archive/trash
+ * actions (see DangerZoneTab below) — WorkspacesClient's separate
+ * WorkspaceDetail modal no longer duplicates a delete control.
  *
  * Permission gating mirrors the server:
  *   OWNER  — all tabs + actions
@@ -19,7 +23,7 @@ import {
   AlertTriangle, Loader2, Crown, Shield, Eye, EyeOff,
   UserMinus, Trash2, Mail, Plus, Check, Globe, Lock,
   Share2, Search, ChevronRight, AlertCircle, Calendar,
-  CheckCircle2, Circle, Pencil, Save,
+  CheckCircle2, Circle, Pencil, Save, Archive,
 } from "lucide-react";
 import {
   CATEGORY_LABELS, CATEGORY_ICONS,
@@ -1224,7 +1228,17 @@ function DashboardTab({
 }
 
 // ─── Tab: Danger Zone ─────────────────────────────────────────────────────────
-
+//
+// Archive and Move to trash are the only destructive-ish actions surfaced
+// here, and both are reversible. A real, irreversible delete
+// (db.workspace.delete) only exists at app/api/workspaces/[id]/permanent —
+// and that route only accepts workspaces that are already trashed, so it is
+// intentionally not reachable from this modal. It's only ever offered from
+// the Archive & Trash page (/dashboard/settings/archive), once a workspace
+// is already sitting in trash. This is also the single entry point for
+// owner-initiated destructive actions — the old per-card "Delete workspace"
+// shortcut in WorkspacesClient's WorkspaceDetail modal has been removed so
+// there's exactly one place owners go for this.
 function DangerZoneTab({
   workspace,
   myRole,
@@ -1240,9 +1254,11 @@ function DangerZoneTab({
   onRefresh:     () => void;
   onDeleted?:    () => void;
 }) {
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleteBusy,    setDeleteBusy]    = useState(false);
-  const [leaveBusy,     setLeaveBusy]     = useState(false);
+  const [confirmTrash, setConfirmTrash] = useState(false);
+  const [archiveBusy,  setArchiveBusy]  = useState(false);
+  const [trashBusy,    setTrashBusy]    = useState(false);
+  const [leaveBusy,    setLeaveBusy]    = useState(false);
+  const [error,        setError]        = useState<string | null>(null);
 
   const isOwner = myRole === "OWNER";
 
@@ -1253,12 +1269,45 @@ function DangerZoneTab({
     onClose();
   }
 
-  async function handleDelete() {
-    setDeleteBusy(true);
-    await fetch(`/api/workspaces/${workspace.id}`, { method: "DELETE" });
-    onDeleted?.();
-    onRefresh();
-    onClose();
+  async function handleArchive() {
+    setArchiveBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/workspaces/${workspace.id}`, {
+        method:  "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ archivedAt: new Date().toISOString() }),
+      });
+      if (res.ok) {
+        onDeleted?.(); // it leaves the active list the same way a trashed workspace does
+        onRefresh();
+        onClose();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to archive workspace.");
+      }
+    } finally {
+      setArchiveBusy(false);
+    }
+  }
+
+  async function handleTrash() {
+    setTrashBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/workspaces/${workspace.id}`, { method: "DELETE" });
+      if (res.ok) {
+        onDeleted?.();
+        onRefresh();
+        onClose();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to move workspace to trash.");
+        setConfirmTrash(false);
+      }
+    } finally {
+      setTrashBusy(false);
+    }
   }
 
   return (
@@ -1292,33 +1341,57 @@ function DangerZoneTab({
       )}
 
       {isOwner && (
-        <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
-          <p className="text-xs font-semibold text-red-400 uppercase tracking-widest">Delete workspace</p>
-          <p className="text-xs text-gray-400">
-            Permanently delete <span className="text-white font-medium">{workspace.name}</span>. All shared data, goals, and sections will be removed. This cannot be undone.
-          </p>
-          {!confirmDelete ? (
-            <button onClick={() => setConfirmDelete(true)}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-colors">
-              <Trash2 size={14} /> Delete workspace
+        <>
+          <div className="rounded-2xl border border-gray-700 bg-gray-800/40 p-4 space-y-3">
+            <p className="text-xs font-semibold text-gray-300 uppercase tracking-widest">Archive workspace</p>
+            <p className="text-xs text-gray-400">
+              Hide <span className="text-white font-medium">{workspace.name}</span> from your active workspace list. Members, shared accounts, and history all stay intact — unarchive it any time from the Archive &amp; Trash page.
+            </p>
+            <button onClick={handleArchive} disabled={archiveBusy}
+              className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-gray-300 hover:bg-gray-700/60 transition-colors disabled:opacity-50">
+              {archiveBusy ? <Loader2 size={14} className="animate-spin" /> : <Archive size={14} />}
+              Archive workspace
             </button>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-xs text-gray-300">Are you sure? This action is permanent.</p>
-              <div className="flex gap-2">
-                <button onClick={() => setConfirmDelete(false)}
-                  className="flex-1 px-3 py-2 rounded-xl border border-gray-700 text-xs text-gray-400 hover:text-white transition-colors">
-                  Cancel
-                </button>
-                <button onClick={handleDelete} disabled={deleteBusy}
-                  className="flex-1 px-3 py-2 rounded-xl bg-red-600 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5">
-                  {deleteBusy ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                  Delete
-                </button>
+          </div>
+
+          <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
+            <p className="text-xs font-semibold text-red-400 uppercase tracking-widest">Move to trash</p>
+            <p className="text-xs text-gray-400">
+              Move <span className="text-white font-medium">{workspace.name}</span> to trash. It's hidden from active use but can still be restored from the Archive &amp; Trash page until it's permanently deleted there.
+            </p>
+            {!confirmTrash ? (
+              <button onClick={() => setConfirmTrash(true)}
+                className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-colors">
+                <Trash2 size={14} /> Move to trash
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs text-gray-300">Move this workspace to trash?</p>
+                <div className="flex gap-2">
+                  <button onClick={() => setConfirmTrash(false)}
+                    className="flex-1 px-3 py-2 rounded-xl border border-gray-700 text-xs text-gray-400 hover:text-white transition-colors">
+                    Cancel
+                  </button>
+                  <button onClick={handleTrash} disabled={trashBusy}
+                    className="flex-1 px-3 py-2 rounded-xl bg-red-600 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5">
+                    {trashBusy ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                    Move to trash
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+
+          <p className="text-[11px] text-gray-600 px-1">
+            Permanent deletion is only available from the Archive &amp; Trash page, and only once this workspace is already in trash.
+          </p>
+        </>
+      )}
+
+      {error && (
+        <p className="text-xs text-red-400 flex items-center gap-1.5 px-1">
+          <AlertTriangle size={11} /> {error}
+        </p>
       )}
     </div>
   );
@@ -1369,7 +1442,7 @@ export function ManageWorkspaceModal({
     { id: "goals",     label: "Goals",       icon: <Target      size={14} />, show: false },
     { id: "finances",  label: "Add Accounts", icon: <Landmark    size={14} />, show: true },
     { id: "dashboard", label: "Dashboard",   icon: <LayoutDashboard size={14} />, show: canManage },
-    { id: "danger",    label: isOwner ? "Delete" : "Leave", icon: <AlertTriangle size={14} />, show: true },
+    { id: "danger",    label: isOwner ? "Danger Zone" : "Leave", icon: <AlertTriangle size={14} />, show: true },
   ];
   const tabs = allTabs.filter((t) => t.show);
 

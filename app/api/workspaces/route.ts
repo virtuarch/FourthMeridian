@@ -17,60 +17,41 @@ import {
   getPresetsForCategory,
 } from "@/lib/workspace-presets";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { AuditAction } from "@/lib/audit-actions";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
+// GET is consumed by two call sites only (Sidebar's workspace switcher and
+// AddManualAssetModal's share-target picker) — both read only
+// `data.mine[].{id,name,type,myRole}`. It previously also queried public
+// workspaces and pending invites and returned full nested member rows, none
+// of which either caller used; that's the real "duplicate work" between this
+// endpoint and the already-optimized /dashboard/workspaces Server Component,
+// which is the one place that DOES need the public/invites/members data.
+// Trimmed to exactly what's read, which also drops 2 of the original 3
+// sequential (non-parallel) Prisma round trips entirely.
 export const GET = withApiHandler(async () => {
+  const t0 = Date.now();
   const [user, err] = await requireUser();
   if (err) return err;
-  const userId = user.id;
+  console.log(`[api/workspaces] requireUser: ${Date.now() - t0}ms`);
 
-  // My workspaces (all types including PERSONAL)
+  const t1 = Date.now();
   const myMemberships = await db.workspaceMember.findMany({
-    where: { userId, status: "ACTIVE" },
-    include: {
-      workspace: {
-        include: {
-          members: {
-            where: { status: "ACTIVE" },
-            include: { user: { select: { id: true, name: true, username: true } } },
-          },
-        },
-      },
+    // Exclude archived/trashed workspaces from the default switcher list —
+    // they're only reachable via the Archive/Bin page from here on.
+    where: { userId: user.id, status: "ACTIVE", workspace: { archivedAt: null, deletedAt: null } },
+    select: {
+      role: true,
+      workspace: { select: { id: true, name: true, type: true } },
     },
     orderBy: { joinedAt: "asc" },
   });
-
-  const myWorkspaceIds = myMemberships.map((m) => m.workspaceId);
-
-  // Public SHARED workspaces the user is NOT already a member of
-  const publicWorkspaces = await db.workspace.findMany({
-    where: {
-      isPublic: true,
-      type:     "SHARED",
-      id:       { notIn: myWorkspaceIds },
-    },
-    include: {
-      members: {
-        include: { user: { select: { id: true, name: true, username: true } } },
-      },
-    },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
-
-  // Pending invites for this user
-  const pendingInvites = await db.workspaceInvite.findMany({
-    where: { invitedUserId: userId, status: "PENDING" },
-    include: {
-      workspace: { select: { id: true, name: true, description: true } },
-      invitedBy: { select: { id: true, name: true, username: true } },
-    },
-    orderBy: { createdAt: "desc" },
-  });
+  console.log(`[api/workspaces] myMemberships: ${Date.now() - t1}ms, total: ${Date.now() - t0}ms`);
 
   return NextResponse.json({
-    mine:    myMemberships.map((m) => ({ ...m.workspace, myRole: m.role })),
-    public:  publicWorkspaces,
-    invites: pendingInvites,
+    mine: myMemberships.map((m) => ({ ...m.workspace, myRole: m.role })),
   });
 }, "GET /api/workspaces");
 
@@ -134,7 +115,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     data: {
       userId:      user.id,
       workspaceId: workspace.id,
-      action:      "WORKSPACE_CREATE",
+      action:      AuditAction.WORKSPACE_CREATE,
       metadata:    { name: workspace.name, isPublic: workspace.isPublic, category: resolvedCategory as string },
       ipAddress:   getClientIp(req),
     },

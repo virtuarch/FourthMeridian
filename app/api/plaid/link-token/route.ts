@@ -48,8 +48,22 @@ export async function GET() {
 
     return NextResponse.json({ link_token: token });
   } catch (err: unknown) {
-    const { message, status } = parsePlaidError(err, "Failed to create link token");
-    console.error("[plaid] link-token error:", message);
+    const { message, status, code } = parsePlaidError(err, "Failed to create link token");
+
+    // ── Raw diagnostic log (safe fields only — no secrets) ───────────────────
+    // The client-facing `message` is intentionally generic. Without this, a
+    // misconfigured PLAID_CLIENT_ID/PLAID_SECRET/PLAID_ENV pairing in Vercel
+    // just shows up as "Failed to create link token" with no way to tell why
+    // from the Vercel function logs. Log the underlying Plaid error shape here.
+    const raw = (err as { response?: { data?: unknown; status?: number } })?.response;
+    console.error("[plaid] link-token error:", {
+      client_message: message,
+      error_code:      code ?? null,
+      plaid_status:     raw?.status ?? null,
+      plaid_error_data: raw?.data   ?? null,
+      env:              PLAID_ENV,
+    });
+
     return NextResponse.json({ error: message }, { status });
   }
 }

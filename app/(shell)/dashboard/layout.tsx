@@ -1,7 +1,14 @@
 import { Sidebar } from "@/components/ui/Sidebar";
 import { BottomNav } from "@/components/ui/BottomNav";
 import { UserButton } from "@/components/ui/UserButton";
+import { RefreshButton } from "@/components/dashboard/RefreshButton";
 import { ReactNode } from "react";
+
+// Applies to every page nested under this layout (all /dashboard/* tabs) —
+// kept explicit per-page too since route-segment config inheritance for
+// route handlers vs. pages isn't relied upon here.
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   return (
@@ -19,9 +26,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               <span className="font-bold text-white text-lg">FinTracker</span>
             </div>
             <div className="flex items-center gap-2">
-              <button className="text-xs text-gray-400 border border-gray-700 rounded-lg px-3 py-1.5 hover:text-white hover:border-gray-500 transition-colors">
-                Refresh
-              </button>
+              <RefreshButton label="Refresh" />
               <UserButton />
             </div>
           </div>
@@ -30,9 +35,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         {/* Desktop top bar */}
         <header className="hidden lg:flex items-center justify-between px-8 h-14 border-b border-gray-800">
           <div /> {/* spacer */}
-          <button className="flex items-center gap-2 text-xs text-gray-400 border border-gray-700 rounded-lg px-3 py-1.5 hover:text-white hover:border-gray-500 transition-colors">
-            <span>Refresh Data</span>
-          </button>
+          <RefreshButton label="Refresh Data" />
         </header>
 
         {/* Page content */}

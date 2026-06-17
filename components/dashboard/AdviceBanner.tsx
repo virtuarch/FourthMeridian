@@ -85,9 +85,9 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
                 {risk.label} Risk
               </span>
               <div className="flex items-center gap-1.5">
-                <div className={`w-1.5 h-1.5 rounded-full ${advice.playReady ? "bg-emerald-400" : "bg-red-400"} animate-pulse`} />
-                <span className={`text-[11px] font-semibold ${advice.playReady ? "text-emerald-400" : "text-red-400"}`}>
-                  {advice.playReady ? "Play Ready" : "Not Ready"}
+                <div className={`w-1.5 h-1.5 rounded-full ${advice.actionReady ? "bg-emerald-400" : "bg-red-400"} animate-pulse`} />
+                <span className={`text-[11px] font-semibold ${advice.actionReady ? "text-emerald-400" : "text-red-400"}`}>
+                  {advice.actionReady ? "Action Ready" : "Not Ready"}
                 </span>
               </div>
             </div>
@@ -96,8 +96,8 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
           {/* Summary */}
           <div className="px-4 py-4 border-b border-gray-800/60">
             <div className="flex items-start gap-2.5">
-              <div className={`mt-0.5 shrink-0 ${advice.playReady ? "text-emerald-400" : "text-yellow-400"}`}>
-                {advice.playReady ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
+              <div className={`mt-0.5 shrink-0 ${advice.actionReady ? "text-emerald-400" : "text-yellow-400"}`}>
+                {advice.actionReady ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
               </div>
               <p className="text-[15px] font-semibold text-white leading-snug">{advice.summary}</p>
             </div>

@@ -5,8 +5,7 @@ import { Account, Transaction, TransactionCategory } from "@/types";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { PortfolioHistoryChart, ChartSeries } from "@/components/charts/PortfolioHistoryChart";
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
-import { Search, X, Check, Building2, Landmark, CreditCard, ChevronDown, Trash2 } from "lucide-react";
-import { RemoveAccountModal } from "@/components/dashboard/RemoveAccountModal";
+import { Search, X, Check, Building2, Landmark, CreditCard, ChevronDown } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate } from "@/lib/format";
 
@@ -101,7 +100,6 @@ interface Props {
 export function BankingClient({ accounts, transactions, portfolioHistory, preselectedId }: Props) {
   const [chartSlice, setChartSlice]               = useState<BankingSlice>("cash");
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(preselectedId);
-  const [showRemoveModal, setShowRemoveModal]      = useState(false);
   const [timeFilter, setTimeFilter]               = useState<TimeFilter>("all");
   const [search, setSearch]                       = useState("");
   const [catFilter, setCatFilter]                 = useState<TransactionCategory | null>(null);
@@ -222,25 +220,9 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
 
   return (
     <div className="space-y-6">
-      {showRemoveModal && (
-        <RemoveAccountModal
-          accounts={accounts}
-          onClose={() => setShowRemoveModal(false)}
-        />
-      )}
-
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Banking</h1>
         <div className="flex items-center gap-2">
-          {accounts.length > 0 && (
-            <button
-              onClick={() => setShowRemoveModal(true)}
-              className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-400 border border-gray-700 hover:border-red-500/40 bg-gray-900 hover:bg-red-500/10 px-3 py-2 rounded-xl transition-colors"
-            >
-              <Trash2 size={13} />
-              Remove
-            </button>
-          )}
           <PlaidLinkButton label="Add Account" />
         </div>
       </div>

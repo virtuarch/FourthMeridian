@@ -3,11 +3,31 @@ import { formatDate } from "@/lib/format";
 import { NetWorthChart } from "@/components/charts/NetWorthChart";
 import { Card, CardTitle } from "@/components/ui/Card";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 const fmt = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
 
 export default async function HistoryPage() {
+  const t0 = Date.now();
   const snapshots = await getRecentSnapshots(30);
+  console.log(`[page:history] total: ${Date.now() - t0}ms`);
+
+  if (snapshots.length === 0) {
+    return (
+      <div className="space-y-4 pb-4">
+        <h1 className="text-xl font-bold text-white">History</h1>
+        <Card>
+          <CardTitle>Net Worth — 30 Days</CardTitle>
+          <p className="text-sm text-gray-500 mt-2">
+            No history yet. Click Refresh to generate today&apos;s snapshot.
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
   const latest = snapshots[snapshots.length - 1];
   const oldest = snapshots[0];
   const change = latest.netWorth - oldest.netWorth;

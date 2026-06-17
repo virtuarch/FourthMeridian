@@ -8,13 +8,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
-import { requireUser } from "@/lib/session";
+import { requireFreshUser } from "@/lib/session";
+import { invalidateSession } from "@/lib/session-cache";
 
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
-  const [user, err] = await requireUser();
+  // Sensitive action — always a live revocation check, never the cache.
+  const [user, err] = await requireFreshUser();
   if (err) return err;
 
   const { sessionId }  = await params;
@@ -52,6 +54,10 @@ export async function DELETE(
       },
     }),
   ]);
+
+  // We have the exact token that was just revoked — targeted invalidation
+  // instead of clearing the whole cache.
+  invalidateSession(target.sessionToken);
 
   return NextResponse.json({ success: true, isCurrent: !!isCurrent });
 }

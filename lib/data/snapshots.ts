@@ -13,8 +13,8 @@ import { Snapshot } from "@/types";
  * Last N days of snapshots — used by the 30-day net-worth chart on the dashboard.
  * Returns newest-last so chart renders left→right in time order.
  */
-export async function getRecentSnapshots(days = 30): Promise<Snapshot[]> {
-  const { workspaceId } = await getWorkspaceContext();
+export async function getRecentSnapshots(days = 30, ctx?: { workspaceId: string }): Promise<Snapshot[]> {
+  const { workspaceId } = ctx ?? (await getWorkspaceContext());
 
   const rows = await db.workspaceSnapshot.findMany({
     where:   { workspaceId },
@@ -32,7 +32,7 @@ export async function getRecentSnapshots(days = 30): Promise<Snapshot[]> {
     totalSavings:     r.savings,
     totalInvestments: r.stocks,
     totalCrypto:      r.crypto,
-    cashToPlay:       r.cashToPlay,
+    cashOnHand:       r.cashOnHand,
   }));
 }
 

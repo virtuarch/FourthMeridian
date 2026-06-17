@@ -12,13 +12,9 @@
  * resolveWorkspaceContext(userId, activeWorkspaceId?) — shared implementation.
  *                          Verifies membership. Returns full context including
  *                          role and permissions. Falls back to Personal workspace.
- *
- * getDemoContext()       — dev/script path: resolves by looking up the demo
- *                          user's email directly. Kept for cron jobs and seed
- *                          scripts that run outside an HTTP request context.
- *                          Do not use this in routes or Server Components.
  */
 
+import { cache }              from "react";
 import { getServerSession }   from "next-auth";
 import { cookies }            from "next/headers";
 import { authOptions }        from "@/lib/auth";
@@ -76,8 +72,31 @@ function derivePermissions(role: WorkspaceMemberRole): WorkspacePermissions {
  *
  * Use in all route handlers and Server Components.
  */
-export async function getWorkspaceContext(): Promise<WorkspaceContext> {
+// ── Diagnostic instrumentation (temporary — perf audit) ──────────────────────
+// getWorkspaceContext() is called many times per page render (every Server
+// Component / API route that needs the active workspace calls it
+// independently). It is now wrapped in React's cache() below, so within a
+// single request all calls after the first hit the in-memory cache instead
+// of re-running getServerSession() + Prisma queries — but the counter + lap
+// instrumentation is kept so the fan-out (and the cache savings) stay visible
+// in the logs: grep for a single "[wsctx]" id to see every query that one
+// logical call triggered; grep for "[wsctx] ENTER" alone and count the lines
+// within one request's time window — after this fix there should be exactly
+// ONE "ENTER" per request that actually calls getWorkspaceContext(), instead
+// of 7.
+let __wsctxCallCounter = 0;
+
+async function getWorkspaceContextUncached(): Promise<WorkspaceContext> {
+  const callId = `${++__wsctxCallCounter}-${Math.random().toString(36).slice(2, 6)}`;
+  const t0 = Date.now();
+  const lap = (label: string, from: number) => {
+    console.log(`[wsctx ${callId}] ${label}: ${Date.now() - from}ms`);
+    return Date.now();
+  };
+  console.log(`[wsctx ${callId}] ENTER getWorkspaceContext`);
+
   const session = await getServerSession(authOptions);
+  let t = lap("getServerSession", t0);
 
   if (!session?.user?.id) {
     throw new Error("Not authenticated — no active session");
@@ -94,6 +113,7 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
     // If called outside a request context (e.g., from a cron job that
     // accidentally calls this) — ignore and fall back to personal workspace.
   }
+  t = lap("cookies()", t);
 
   // When no active-workspace cookie is set, honour the user's preferred
   // workspace (set in profile settings). This makes it the effective default
@@ -111,10 +131,22 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
     } catch {
       // Column not yet in DB (migration pending) — fall through to personal workspace.
     }
+    t = lap("user.findUnique [preferredWorkspaceId]", t);
   }
 
-  return resolveWorkspaceContext(session.user.id, requestedId);
+  const ctx = await resolveWorkspaceContext(session.user.id, requestedId, callId);
+  lap("resolveWorkspaceContext (total)", t);
+  console.log(`[wsctx ${callId}] EXIT getWorkspaceContext: ${Date.now() - t0}ms total`);
+  return ctx;
 }
+
+// React's cache() memoizes per-request (per render pass of the RSC tree) for
+// the exact same arguments — getWorkspaceContext() takes none, so every call
+// within one request now resolves to a single shared in-flight/resolved
+// promise instead of re-running session lookup + Prisma queries. This does
+// NOT cache across requests/users — cache() scope is reset for each new
+// request, so there is no cross-user leakage risk.
+export const getWorkspaceContext = cache(getWorkspaceContextUncached);
 
 // ── Shared resolver ───────────────────────────────────────────────────────────
 
@@ -131,18 +163,28 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
 export async function resolveWorkspaceContext(
   userId:              string,
   activeWorkspaceId?:  string | null,
+  callId?:             string,
 ): Promise<WorkspaceContext> {
+  const id = callId ?? `direct-${Math.random().toString(36).slice(2, 6)}`;
+  const t0 = Date.now();
+  const lap = (label: string, from: number) => {
+    console.log(`[wsctx ${id}] ${label}: ${Date.now() - from}ms`);
+    return Date.now();
+  };
 
   // ── Try the requested workspace first ────────────────────────────────────
   if (activeWorkspaceId) {
     const membership = await db.workspaceMember.findUnique({
       where:   { workspaceId_userId: { workspaceId: activeWorkspaceId, userId } },
-      include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
+      include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true, archivedAt: true, deletedAt: true } } },
     });
+    lap("workspaceMember.findUnique [requested]", t0);
 
-    // Only treat the membership as valid if the user is still ACTIVE.
-    // REMOVED / LEFT rows must not restore access to the workspace.
-    if (membership && membership.status === "ACTIVE") {
+    // Only treat the membership as valid if the user is still ACTIVE, and
+    // the workspace itself is neither archived nor trashed — an archived/
+    // trashed workspace must never silently become the "active" context;
+    // fall through to the personal workspace fallback instead.
+    if (membership && membership.status === "ACTIVE" && !membership.workspace.archivedAt && !membership.workspace.deletedAt) {
       return {
         userId,
         workspaceId:  membership.workspaceId,
@@ -155,10 +197,14 @@ export async function resolveWorkspaceContext(
   }
 
   // ── Fall back to PERSONAL workspace ──────────────────────────────────────
+  // PERSONAL workspaces can never be archived/trashed (enforced in the API
+  // layer), but the filter is kept here too as defense in depth.
+  let t = Date.now();
   const personal = await db.workspaceMember.findFirst({
-    where:   { userId, status: "ACTIVE", workspace: { type: "PERSONAL" } },
+    where:   { userId, status: "ACTIVE", workspace: { type: "PERSONAL", archivedAt: null, deletedAt: null } },
     include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
   });
+  lap("workspaceMember.findFirst [personal fallback]", t);
 
   if (personal) {
     return {
@@ -172,11 +218,20 @@ export async function resolveWorkspaceContext(
 
   // ── Last resort: any ACTIVE membership ───────────────────────────────────
   // Handles edge cases (e.g., personal workspace was somehow deleted).
-  const any = await db.workspaceMember.findFirstOrThrow({
+  // Still prefers a non-archived/non-trashed workspace where one exists;
+  // only falls through to an archived/trashed one if that's truly all the
+  // user has left, so the app never hard-fails with no context at all.
+  t = Date.now();
+  const any = await db.workspaceMember.findFirst({
+    where:   { userId, status: "ACTIVE", workspace: { archivedAt: null, deletedAt: null } },
+    orderBy: { joinedAt: "asc" },
+    include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
+  }) ?? await db.workspaceMember.findFirstOrThrow({
     where:   { userId, status: "ACTIVE" },
     orderBy: { joinedAt: "asc" },
     include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
   });
+  lap("workspaceMember.findFirstOrThrow [any membership]", t);
 
   return {
     userId,
@@ -185,20 +240,4 @@ export async function resolveWorkspaceContext(
     permissions:  derivePermissions(any.role),
     workspace:    any.workspace,
   };
-}
-
-// ── Dev / script path (no HTTP context) ──────────────────────────────────────
-
-const DEMO_USER_EMAIL = "jane@example.com";
-
-/**
- * @deprecated — for cron jobs and scripts only.
- * Use getWorkspaceContext() in all Next.js routes and Server Components.
- */
-export async function getDemoContext(): Promise<WorkspaceContext> {
-  const user = await db.user.findUniqueOrThrow({
-    where:  { email: DEMO_USER_EMAIL },
-    select: { id: true },
-  });
-  return resolveWorkspaceContext(user.id);
 }

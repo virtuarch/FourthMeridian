@@ -11,11 +11,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import bcrypt from "bcryptjs";
-import { requireUser } from "@/lib/session";
+import { requireFreshUser } from "@/lib/session";
 import { withApiHandler } from "@/lib/api";
 
 export const PATCH = withApiHandler(async (req: NextRequest) => {
-  const [user, err] = await requireUser();
+  // Sensitive action — always a live revocation check, never the cache.
+  const [user, err] = await requireFreshUser();
   if (err) return err;
 
   const { currentPassword, newPassword } = await req.json();

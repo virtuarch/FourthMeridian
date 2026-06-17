@@ -4,6 +4,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "rec
 import { Snapshot } from "@/types";
 import { Interval, cutoffForInterval } from "./NetWorthChart";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { ChartFirstDayPlaceholder } from "./ChartFirstDayPlaceholder";
 
 interface Props {
   snapshots: Snapshot[];
@@ -45,6 +46,18 @@ export function BankingChart({ snapshots, interval, onIntervalChange }: Props) {
     const cutoff = cutoffForInterval(interval);
     return snapshots.filter((s) => s.date >= cutoff);
   }, [snapshots, interval]);
+
+  // Only one snapshot exists yet — show the day-one explainer instead of a
+  // near-empty chart. Headline = net banking balance (cash + savings - debt).
+  if (snapshots.length === 1) {
+    const s = snapshots[0];
+    return (
+      <ChartFirstDayPlaceholder
+        value={s.totalCash + s.totalSavings - Math.max(0, s.totalDebt)}
+        date={s.date}
+      />
+    );
+  }
 
   const data = filtered.map((s) => ({
     date:     s.date,

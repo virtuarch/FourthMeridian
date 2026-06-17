@@ -2,11 +2,23 @@ import { getAccounts, getHoldings } from "@/lib/data/accounts";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { TrendingUp, TrendingDown } from "lucide-react";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 const fmt = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
 
 export default async function HoldingsPage() {
-  const [allAccounts, allHoldings] = await Promise.all([getAccounts(), getHoldings()]);
+  const t0 = Date.now();
+  const time = <T,>(label: string, p: Promise<T>): Promise<T> => {
+    const s = Date.now();
+    return p.then((r) => { console.log(`[page:holdings]   ${label}: ${Date.now() - s}ms`); return r; });
+  };
+  const [allAccounts, allHoldings] = await Promise.all([
+    time("getAccounts", getAccounts()),
+    time("getHoldings", getHoldings()),
+  ]);
+  console.log(`[page:holdings] total: ${Date.now() - t0}ms`);
 
   const investmentAccountIds = allAccounts
     .filter((a) => a.type === "investment" || a.type === "crypto")

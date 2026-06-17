@@ -6,6 +6,7 @@ import {
 import { Snapshot } from "@/types";
 import { Interval, cutoffForInterval } from "./NetWorthChart";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { ChartFirstDayPlaceholder } from "./ChartFirstDayPlaceholder";
 
 interface Props {
   snapshots:        Snapshot[];
@@ -46,6 +47,19 @@ export function CashChart({ snapshots, interval, onIntervalChange, investableCas
   }, [snapshots, interval]);
 
   const hasInvestable = investableCash > 0;
+
+  // Only one snapshot exists yet (e.g. right after a workspace's first
+  // refresh) — a single point can't draw a trend line, so show the day-one
+  // explainer instead of a near-empty chart.
+  if (snapshots.length === 1) {
+    const s = snapshots[0];
+    return (
+      <ChartFirstDayPlaceholder
+        value={s.totalCash + s.totalSavings + (hasInvestable ? investableCash : 0)}
+        date={s.date}
+      />
+    );
+  }
 
   const data = filtered.map((s) => ({
     date:       s.date,

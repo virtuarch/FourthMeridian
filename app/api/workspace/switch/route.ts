@@ -21,6 +21,9 @@ import { ACTIVE_WORKSPACE_COOKIE }    from "@/lib/workspace";
 import { requireUser } from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;

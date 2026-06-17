@@ -10,8 +10,8 @@ import { getWorkspaceContext } from "@/lib/workspace";
 import { AiAdvice } from "@/types";
 
 /** The most recent advice record for the current workspace, or null if none exists yet. */
-export async function getLatestAdvice(): Promise<AiAdvice | null> {
-  const { workspaceId } = await getWorkspaceContext();
+export async function getLatestAdvice(ctx?: { workspaceId: string }): Promise<AiAdvice | null> {
+  const { workspaceId } = ctx ?? (await getWorkspaceContext());
 
   const row = await db.aiAdvice.findFirst({
     where:   { workspaceId },
@@ -25,7 +25,7 @@ export async function getLatestAdvice(): Promise<AiAdvice | null> {
     summary:     row.summary,
     adviceText:  row.adviceText,
     riskLevel:   row.riskLevel as AiAdvice["riskLevel"],
-    playReady:   row.playReady,
+    actionReady: row.actionReady,
     generatedAt: row.generatedAt.toISOString(),
   };
 }

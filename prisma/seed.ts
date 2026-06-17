@@ -73,8 +73,8 @@ function buildHistory(workspaceId: string) {
     const totalAssets = stocks + crypto + cash + savings;
     const netWorth    = totalAssets - debt;
     const netLiquid   = cash + savings - debt;
-    const cashToPlay  = cash + Math.max(savings - 6000, 0);
-    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashToPlay };
+    const cashOnHand  = cash + Math.max(savings - 6000, 0);
+    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
   });
 }
 
@@ -91,8 +91,8 @@ function buildJohnHistory(workspaceId: string) {
     const totalAssets = stocks + crypto + cash + savings;
     const netWorth    = totalAssets - debt;
     const netLiquid   = cash + savings - debt;
-    const cashToPlay  = Math.max(cash + Math.max(savings - 8000, 0), 0);
-    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashToPlay };
+    const cashOnHand  = Math.max(cash + Math.max(savings - 8000, 0), 0);
+    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
   });
 }
 
@@ -109,8 +109,8 @@ function buildHouseholdHistory(workspaceId: string) {
     const totalAssets = stocks + crypto + cash + savings;
     const netWorth    = totalAssets - debt;
     const netLiquid   = cash + savings - debt;
-    const cashToPlay  = cash + Math.max(savings - 15000, 0);
-    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashToPlay };
+    const cashOnHand  = cash + Math.max(savings - 15000, 0);
+    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
   });
 }
 
@@ -125,8 +125,8 @@ function buildDebtHistory(workspaceId: string) {
     const totalAssets = cash + savings;
     const netWorth  = totalAssets - debt;
     const netLiquid = cash + savings - debt;
-    const cashToPlay = 0;
-    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashToPlay };
+    const cashOnHand = 0;
+    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
   });
 }
 
@@ -413,10 +413,10 @@ async function main() {
 
   const janePlaidItems = await prisma.plaidItem.createManyAndReturn({
     data: [
-      { userId: jane.id, plaidItemId: "demo_item_demobank",         institutionId: "demo_ins_001", institutionName: "Demo Bank",                encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: jane.id, plaidItemId: "demo_item_examplecu",        institutionId: "demo_ins_002", institutionName: "Example Credit Union",     encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: jane.id, plaidItemId: "demo_item_samplebrokerage",  institutionId: "demo_ins_003", institutionName: "Sample Brokerage",         encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: jane.id, plaidItemId: "demo_item_fictionalcrypto",  institutionId: "demo_ins_004", institutionName: "Fictional Crypto Exchange", encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, externalItemId: "demo_item_demobank",         institutionId: "demo_ins_001", institutionName: "Demo Bank",                encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, externalItemId: "demo_item_examplecu",        institutionId: "demo_ins_002", institutionName: "Example Credit Union",     encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, externalItemId: "demo_item_samplebrokerage",  institutionId: "demo_ins_003", institutionName: "Sample Brokerage",         encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: jane.id, externalItemId: "demo_item_fictionalcrypto",  institutionId: "demo_ins_004", institutionName: "Fictional Crypto Exchange", encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
     ],
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -740,8 +740,8 @@ async function main() {
 3. Hit $12,000 emergency fund milestone
 4. Japan Trip on track — keep $500/mo transfers
 
-**Risk Level: Low-Medium** | **Play Ready: Yes**`,
-      riskLevel: "low", playReady: true, generatedAt: new Date("2026-06-09T09:00:00Z"),
+**Risk Level: Low-Medium** | **Action Ready: Yes**`,
+      riskLevel: "low", actionReady: true, generatedAt: new Date("2026-06-09T09:00:00Z"),
     },
   });
 
@@ -755,11 +755,11 @@ async function main() {
 
   const johnPlaidItems = await prisma.plaidItem.createManyAndReturn({
     data: [
-      { userId: john.id, plaidItemId: "demo_item_beaconbank",     institutionId: "demo_ins_005", institutionName: "Beacon Bank",           encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: john.id, plaidItemId: "demo_item_alphabrokerage", institutionId: "demo_ins_006", institutionName: "Alpha Brokerage",       encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: john.id, plaidItemId: "demo_item_alphacrypto",    institutionId: "demo_ins_007", institutionName: "Alpha Crypto Exchange", encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: john.id, plaidItemId: "demo_item_summitbusiness", institutionId: "demo_ins_008", institutionName: "Summit Business Bank",  encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
-      { userId: john.id, plaidItemId: "demo_item_manual_john",    institutionId: "manual_entry", institutionName: "Manual Entry",           encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, externalItemId: "demo_item_beaconbank",     institutionId: "demo_ins_005", institutionName: "Beacon Bank",           encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, externalItemId: "demo_item_alphabrokerage", institutionId: "demo_ins_006", institutionName: "Alpha Brokerage",       encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, externalItemId: "demo_item_alphacrypto",    institutionId: "demo_ins_007", institutionName: "Alpha Crypto Exchange", encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, externalItemId: "demo_item_summitbusiness", institutionId: "demo_ins_008", institutionName: "Summit Business Bank",  encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
+      { userId: john.id, externalItemId: "demo_item_manual_john",    institutionId: "manual_entry", institutionName: "Manual Entry",           encryptedToken: "[demo-placeholder-not-a-real-token]", status: PlaidItemStatus.ACTIVE },
     ],
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1219,8 +1219,8 @@ async function main() {
 4. Mortgage is low rate (3.875%) — don't overpay while CC exists
 5. Business revenue strong — keep profit draws consistent
 
-**Risk Level: Medium-High** | **Play Ready: No**`,
-      riskLevel: "medium", playReady: false, generatedAt: new Date("2026-06-09T09:00:00Z"),
+**Risk Level: Medium-High** | **Action Ready: No**`,
+      riskLevel: "medium", actionReady: false, generatedAt: new Date("2026-06-09T09:00:00Z"),
     },
   });
 
@@ -1395,11 +1395,11 @@ async function main() {
   console.log("─── Jane Smith ──────────────────────────────────────────────────────────────");
   console.log(`   Workspace:  ${janeWorkspace.name} (id: ${janeWorkspace.id})`);
   console.log("   Accounts:   9 (checking, HYSA, Japan savings, CU checking, CC, IRA, taxable, crypto, BTC)");
-  console.log("   Net worth:  ~$28,700  |  CC debt: $3,200  |  FICO: 720  |  Play ready: YES");
+  console.log("   Net worth:  ~$28,700  |  CC debt: $3,200  |  FICO: 720  |  Action ready: YES");
   console.log("─── John Doe ────────────────────────────────────────────────────────────────");
   console.log(`   Workspace:  ${johnWorkspace.name} (id: ${johnWorkspace.id})`);
   console.log("   Accounts:   12 (checking, savings, CC, auto, mortgage, Roth, 401k, taxable, crypto, BTC, biz checking, biz CC)");
-  console.log("   Net worth:  ~$77,800  |  Debt: $302k  |  FICO: 680  |  Play ready: NO");
+  console.log("   Net worth:  ~$77,800  |  Debt: $302k  |  FICO: 680  |  Action ready: NO");
   console.log("─── Alex Chen ───────────────────────────────────────────────────────────────");
   console.log(`   No personal accounts — viewer/bookkeeper role only`);
   console.log("   FICO: 750");

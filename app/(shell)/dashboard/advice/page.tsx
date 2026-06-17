@@ -3,8 +3,13 @@ import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
 import { Card } from "@/components/ui/Card";
 import { Clock } from "lucide-react";
 
+export const preferredRegion = "sin1";
+export const runtime = "nodejs";
+
 export default async function AdvicePage() {
+  const t0 = Date.now();
   const advice = await getLatestAdvice();
+  console.log(`[page:advice] total: ${Date.now() - t0}ms`);
   const adviceHistory = advice ? [advice] : [];
 
   return (

@@ -3,8 +3,13 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // In production/staging (Supabase), set DATABASE_URL to the Transaction Pooler URL
+  // (port 6543, ?pgbouncer=true) for Vercel serverless compatibility.
+  // Set DIRECT_URL to the direct connection URL (port 5432) for migrations.
+  // In local dev both can point to the same Docker Postgres URL.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,6 +273,17 @@ model Workspace {
   type        WorkspaceType     @default(PERSONAL)
   category    WorkspaceCategory @default(PERSONAL)
   isPublic    Boolean           @default(false)  // SHARED workspaces can be listed publicly
+
+  // ── Lifecycle (mirrors WorkspaceGoal's archive/trash pattern) ─────────────
+  // archivedAt: hidden from normal nav, fully intact, restorable any time.
+  // deletedAt:  moved to trash, hidden from normal nav, restorable until
+  //             permanently deleted. Trashing always clears archivedAt so a
+  //             workspace is never in both states at once. PERSONAL
+  //             workspaces cannot be archived, trashed, or permanently
+  //             deleted (enforced in the API layer, not the schema).
+  archivedAt  DateTime?
+  deletedAt   DateTime?
+
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
 
@@ -287,6 +303,8 @@ model Workspace {
 
   @@index([type])
   @@index([isPublic])
+  @@index([archivedAt])
+  @@index([deletedAt])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -375,7 +393,7 @@ model PlaidItem {
   id              String          @id @default(cuid())
   userId          String
   user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  plaidItemId     String          @unique  // Plaid's item_id
+  externalItemId  String          @unique  // provider's item/connection id (Plaid item_id today)
   institutionId   String                   // Plaid's institution_id (e.g. "ins_3")
   institutionName String                   // human-readable (e.g. "Chase")
   encryptedToken  String                   // AES-256-GCM encrypted access token — NEVER plaintext
@@ -472,12 +490,24 @@ model FinancialAccount {
   // Plaid deduplication key
   plaidAccountId   String?          @unique
 
+  // Display name metadata (additive — never overwritten by Plaid sync after creation).
+  // Resolution order for what to show the user: displayName ?? officialName ?? plaidName ?? name.
+  // `institution` (above) already serves as the human-readable institution name
+  // (e.g. "Chase"), so no separate institutionName column was added.
+  plaidName        String?          // raw Plaid `name` value, captured once at import — never updated on resync
+  officialName     String?          // Plaid `official_name`, captured once at import — never updated on resync
+  displayName      String?          // user-editable override; null until the user renames the account
+
   // Crypto self-custody fields
   walletAddress    String?
   walletChain      String?
   nativeBalance    Float?
 
   // Debt-specific fields (optional — populated for credit cards, loans, lines of credit)
+  // Legacy flat fields — kept for backward compatibility with existing UI/queries.
+  // New debt-profile data (APR, due date, statement close day, promo APR, notes)
+  // lives on the DebtProfile relation below; effective values prefer DebtProfile
+  // when present and fall back to these flat columns otherwise.
   debtSubtype      String?          // e.g. credit_card, line_of_credit, heloc, auto_loan, mortgage, personal_loan, student_loan
   interestRate     Float?           // Annual Percentage Rate (APR), e.g. 19.99
   minimumPayment   Float?           // Minimum monthly payment amount
@@ -493,11 +523,40 @@ model FinancialAccount {
   duplicateCandidatesA  DuplicateAccountCandidate[] @relation("DuplicateCandidateA")
   duplicateCandidatesB  DuplicateAccountCandidate[] @relation("DuplicateCandidateB")
   goalContributions     GoalContribution[]
+  debtProfile           DebtProfile?
+  transactions          Transaction[]               @relation("FinancialAccountTransactions")
 
   @@index([ownerUserId])
   @@index([ownerWorkspaceId])
   @@index([type])
   @@index([deletedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DebtProfile
+// Additive, optional 1:1 extension of FinancialAccount for debt details Plaid
+// does not reliably provide (APR, minimum payment, due date, statement close
+// day, promotional APR expiration). Kept as a separate model rather than more
+// columns on FinancialAccount per the "dedicated debt profile" design — every
+// field is nullable; creating this table does not touch any existing column.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model DebtProfile {
+  id                 String           @id @default(cuid())
+  financialAccountId String           @unique
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+
+  apr               Float?           // user-entered APR, e.g. 24.99 — preferred over FinancialAccount.interestRate when set
+  minimumPayment    Float?           // user-entered minimum payment — preferred over FinancialAccount.minimumPayment when set
+  dueDay            Int?             // day of month payment is due (1-31)
+  statementCloseDay Int?             // day of month the statement closes (1-31)
+  promoAprEndDate   DateTime?        @db.Date // when a promotional/intro APR expires
+  notes             String?          @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([financialAccountId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -748,13 +807,24 @@ model Holding {
 // ─────────────────────────────────────────────────────────────────────────────
 // Transaction
 // Pulled from Plaid or entered manually. Positive = money in, negative = out.
-// Unchanged — anchored to accountId.
+//
+// accountId (legacy Account FK) and financialAccountId (canonical FK) are both
+// optional; exactly one is expected to be set per row. Legacy/seed-created rows
+// keep accountId. Transactions synced for real Plaid-linked accounts (which only
+// ever have a FinancialAccount, not a legacy Account) set financialAccountId
+// instead. accountId was loosened from required to optional to allow this —
+// no existing data is affected, every pre-existing row already has accountId set.
+// Data-layer code normalizes both back to a single accountId field on read.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Transaction {
   id          String              @id @default(cuid())
-  accountId   String
-  account     Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  accountId   String?
+  account     Account?            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  financialAccountId String?
+  financialAccount   FinancialAccount? @relation("FinancialAccountTransactions", fields: [financialAccountId], references: [id], onDelete: Cascade)
+
   date        DateTime            @db.Date
   merchant    String
   description String?
@@ -769,6 +839,8 @@ model Transaction {
 
   @@index([accountId])
   @@index([accountId, date])
+  @@index([financialAccountId])
+  @@index([financialAccountId, date])
   @@index([date])
 }
 
@@ -797,7 +869,7 @@ model WorkspaceSnapshot {
   // Derived — pre-computed for fast chart queries
   netWorth    Float @default(0) // stocks + crypto + cash + savings − debt
   totalAssets Float @default(0) // stocks + crypto + cash + savings
-  cashToPlay  Float @default(0) // max(cash − expense_buffer, 0)
+  cashOnHand  Float @default(0) // max(cash − expense_buffer, 0) — renamed from cashToPlay (legacy "play cash" language)
   netLiquid   Float @default(0) // cash + savings − debt
 
   createdAt DateTime @default(now())
@@ -821,7 +893,7 @@ model AiAdvice {
   summary     String
   adviceText  String    @db.Text
   riskLevel   RiskLevel
-  playReady   Boolean   @default(false)
+  actionReady Boolean   @default(false) // renamed from playReady (legacy "play cash" language)
   generatedAt DateTime  @default(now())
   createdAt   DateTime  @default(now())
 

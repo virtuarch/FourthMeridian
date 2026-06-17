@@ -8,7 +8,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { parseUserAgent } from "@/lib/ua-parser";
-import { requireSystemAdmin } from "@/lib/session";
+import { requireSystemAdmin, requireFreshSystemAdmin } from "@/lib/session";
+import { clearAllSessions } from "@/lib/session-cache";
 
 export async function GET(
   _req: NextRequest,
@@ -37,7 +38,8 @@ export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ userId: string }> },
 ) {
-  const [admin, err] = await requireSystemAdmin();
+  // Sensitive admin action — always a live revocation check, never the cache.
+  const [admin, err] = await requireFreshSystemAdmin();
   if (err) return err;
 
   const { userId } = await params;
@@ -78,6 +80,10 @@ export async function DELETE(
       },
     });
   }
+
+  // Admin revokes by id/userId, not by token — clear the whole cache rather
+  // than leaving stale "valid" entries behind for whatever was just revoked.
+  clearAllSessions();
 
   return NextResponse.json({ success: true });
 }

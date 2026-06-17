@@ -12,6 +12,19 @@
  *   AccountConnection — links FinancialAccount ↔ PlaidItem ↔ User
  *   WorkspaceAccountShare — makes the account visible in the active workspace
  *
+ * Relinking the same institution matches on plaidAccountId (FinancialAccount)
+ * and restores deletedAt → null on both FinancialAccount and AccountConnection
+ * if the account had previously been removed (see app/api/accounts/[id]/route.ts
+ * DELETE) — reconnecting an account brings it back instead of leaving a
+ * reactivated WorkspaceAccountShare pointing at a still-hidden account.
+ *
+ * Plaid does not guarantee plaidAccountId is stable forever — it can reissue
+ * a new account_id for the same real-world account on reconnect. When no
+ * exact plaidAccountId match is found, we fall back to a conservative
+ * fingerprint match (institutionId + mask + type + officialName/plaidName)
+ * against archived accounts before creating a new row — see
+ * lib/accounts/reconcile.ts.
+ *
  * Body: { public_token: string, institution_id: string, institution_name: string }
  */
 
@@ -22,6 +35,10 @@ import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
 import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
 import { getWorkspaceContext } from "@/lib/workspace";
+import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { AuditAction } from "@/lib/audit-actions";
+import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
 
 // ── Map Plaid account type/subtype → our AccountType enum ────────────────────
 function mapAccountType(type: string, subtype: string | null | undefined): AccountType {
@@ -74,11 +91,11 @@ export async function POST(req: NextRequest) {
 
     // 5. Upsert PlaidItem — credential belongs to User, not workspace
     const plaidItem = await db.plaidItem.upsert({
-      where:  { plaidItemId: item_id },
+      where:  { externalItemId: item_id },
       update: { encryptedToken, status: PlaidItemStatus.ACTIVE, errorCode: null },
       create: {
         userId,
-        plaidItemId:     item_id,
+        externalItemId:  item_id,
         institutionId:   institution_id,
         institutionName: institution_name,
         encryptedToken,
@@ -101,32 +118,100 @@ export async function POST(req: NextRequest) {
       const availableBalance = acct.balances.available ?? undefined;
       const creditLimit      = acct.balances.limit ?? undefined;
 
-      // ── Upsert FinancialAccount ──────────────────────────────────────────────
-      const fa = await db.financialAccount.upsert({
-        where:  { plaidAccountId: acct.account_id },
-        update: {
-          balance,
-          availableBalance,
-          ...(creditLimit !== undefined && { creditLimit }),
-          lastUpdated: new Date(),
-          syncStatus:  "synced",
-        },
-        create: {
-          ownerType:       AccountOwnerType.USER,
-          ownerUserId:     userId,
-          plaidAccountId:  acct.account_id,
-          name:            acct.name,
+      // ── Resolve FinancialAccount ──────────────────────────────────────────────
+      // 1. Exact match on plaidAccountId (the common case).
+      // 2. If no exact match, Plaid may have reissued a new account_id for an
+      //    account we already have archived (observed directly — same
+      //    institutionId/mask/officialName/type, different plaidAccountId).
+      //    Fall back to a fingerprint match against soft-deleted accounts; if
+      //    exactly one candidate fits, reuse that row and update its
+      //    plaidAccountId rather than creating a second visible account. See
+      //    lib/accounts/reconcile.ts for the matching rules.
+      // 3. Only create a new row if neither lookup finds anything.
+      let fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
+
+      if (fa) {
+        fa = await db.financialAccount.update({
+          where: { id: fa.id },
+          data: {
+            balance,
+            availableBalance,
+            ...(creditLimit !== undefined && { creditLimit }),
+            lastUpdated: new Date(),
+            syncStatus:  "synced",
+            // Relinking the same plaidAccountId after the account was removed
+            // (FinancialAccount.deletedAt set — see app/api/accounts/[id]/route.ts
+            // DELETE) should restore it, not leave it hidden. Always safe to
+            // set null here even if the account wasn't deleted.
+            deletedAt:   null,
+          },
+        });
+      } else {
+        const fingerprint = {
+          ownerUserId:   userId,
+          institutionId: institution_id,
+          institution:   institution_name,
+          mask:          acct.mask ?? null,
+          officialName:  acct.official_name ?? null,
+          plaidName:     acct.name,
+          name:          acct.name,
           type,
-          institution:     institution_name,
-          institutionId:   institution_id,
-          mask:            acct.mask ?? undefined,
-          balance,
-          availableBalance,
-          creditLimit,
-          currency:        acct.balances.iso_currency_code ?? "USD",
-          syncStatus:      "synced",
-        },
-      });
+        };
+        const resolution = await resolveAccountByFingerprint(fingerprint);
+
+        console.log("[plaid] fingerprint lookup", {
+          institutionId:      institution_id,
+          mask:                acct.mask ?? null,
+          type,
+          officialName:       acct.official_name ?? null,
+          plaidName:          acct.name,
+          activeCandidates:   resolution?.activeCandidateCount ?? 0,
+          archivedCandidates: resolution?.archivedCandidateCount ?? 0,
+          canonicalAccountId: resolution?.canonical.id ?? null,
+          outcome:            resolution ? "reused" : "created",
+        });
+
+        if (resolution) {
+          fa = await db.financialAccount.update({
+            where: { id: resolution.canonical.id },
+            data: {
+              plaidAccountId:  acct.account_id,
+              balance,
+              availableBalance,
+              ...(creditLimit !== undefined && { creditLimit }),
+              lastUpdated: new Date(),
+              syncStatus:  "synced",
+              deletedAt:   null,
+            },
+          });
+        } else {
+          fa = await db.financialAccount.create({
+            data: {
+              ownerType:       AccountOwnerType.USER,
+              ownerUserId:     userId,
+              plaidAccountId:  acct.account_id,
+              name:            acct.name,
+              // Frozen at import — never written to again on resync (see
+              // update blocks above, which intentionally omit these two
+              // fields and `displayName`). This preserves the "never
+              // overwrite Plaid metadata" rule and lets the user rename the
+              // account afterward without that rename being clobbered by a
+              // later sync.
+              plaidName:       acct.name,
+              officialName:    acct.official_name ?? undefined,
+              type,
+              institution:     institution_name,
+              institutionId:   institution_id,
+              mask:            acct.mask ?? undefined,
+              balance,
+              availableBalance,
+              creditLimit,
+              currency:        acct.balances.iso_currency_code ?? "USD",
+              syncStatus:      "synced",
+            },
+          });
+        }
+      }
 
       // ── Upsert AccountConnection ─────────────────────────────────────────────
       const existingConn = await db.accountConnection.findFirst({
@@ -150,7 +235,9 @@ export async function POST(req: NextRequest) {
       } else {
         await db.accountConnection.update({
           where: { id: existingConn.id },
-          data:  { syncStatus: "synced", lastSyncedAt: new Date() },
+          // Same reasoning as the FinancialAccount update above — restore a
+          // soft-deleted connection on relink rather than leaving it orphaned.
+          data:  { syncStatus: "synced", lastSyncedAt: new Date(), deletedAt: null },
         });
       }
 
@@ -228,20 +315,61 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 9. Audit log
+    // 9. Initial transaction sync — best-effort, non-fatal. Runs immediately
+    //    after accounts are imported so the dashboard has transaction history
+    //    on first load instead of waiting for some future sync trigger.
+    //    Same function the manual "Sync Now" endpoint (app/api/plaid/sync)
+    //    and the sync-banks job call — see lib/plaid/syncTransactions.ts.
+    let txSync: { added: number; modified: number; removed: number } | null = null;
+    try {
+      txSync = await syncTransactionsForItem(plaidItem.id);
+      console.log(
+        `[plaid] initial transaction sync — ${txSync.added} added, ${txSync.modified} modified, ${txSync.removed} removed`
+      );
+    } catch (syncErr) {
+      console.warn("[plaid] initial transaction sync failed (non-fatal):", syncErr);
+    }
+
+    // 9b. WorkspaceSnapshot regeneration — best-effort, non-fatal. Without
+    //     this, a brand-new workspace has zero WorkspaceSnapshot rows right
+    //     after Link, and the chart components' "first day" placeholder only
+    //     renders at exactly one row — so charts stayed blank until the user
+    //     manually clicked Refresh once. Reuses the same helper the manual
+    //     Refresh pipeline calls (lib/plaid/refresh.ts) so no regen logic is
+    //     duplicated. Scoped to every workspace the imported accounts are
+    //     actively shared into (importedIds), not just the current workspace.
+    let workspacesSnapshotted: string[] = [];
+    try {
+      workspacesSnapshotted = await regenerateSnapshotsForAccounts(importedIds);
+    } catch (snapshotErr) {
+      console.warn("[plaid] initial snapshot regeneration failed (non-fatal):", snapshotErr);
+    }
+
+    // 10. Audit log
     await db.auditLog.create({
       data: {
         userId,
         workspaceId,
-        action:   "ACCOUNT_ADD",
-        metadata: { institution: institution_name, accountCount: imported, holdingsImported },
+        action:   AuditAction.ACCOUNT_ADD,
+        metadata: {
+          institution:      institution_name,
+          accountCount:     imported,
+          holdingsImported,
+          transactionsAdded: txSync?.added ?? 0,
+          workspacesSnapshotted: workspacesSnapshotted.length,
+        },
       },
     });
 
     console.log(
       `[plaid] import complete — ${imported} account(s), ${holdingsImported} holding(s) for institution "${institution_name}"`
     );
-    return NextResponse.json({ success: true, imported, holdingsImported });
+    return NextResponse.json({
+      success: true,
+      imported,
+      holdingsImported,
+      transactionsSynced: txSync?.added ?? 0,
+    });
   } catch (err: unknown) {
     const { message, status, code } = parsePlaidError(err, "Failed to connect account");
     console.error(`[plaid] exchange-token error (code: ${code ?? "unknown"}):`, message);
