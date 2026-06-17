@@ -181,13 +181,15 @@ export async function resolveWorkspaceContext(
   if (activeWorkspaceId) {
     const membership = await db.workspaceMember.findUnique({
       where:   { workspaceId_userId: { workspaceId: activeWorkspaceId, userId } },
-      include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
+      include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true, archivedAt: true, deletedAt: true } } },
     });
     lap("workspaceMember.findUnique [requested]", t0);
 
-    // Only treat the membership as valid if the user is still ACTIVE.
-    // REMOVED / LEFT rows must not restore access to the workspace.
-    if (membership && membership.status === "ACTIVE") {
+    // Only treat the membership as valid if the user is still ACTIVE, and
+    // the workspace itself is neither archived nor trashed — an archived/
+    // trashed workspace must never silently become the "active" context;
+    // fall through to the personal workspace fallback instead.
+    if (membership && membership.status === "ACTIVE" && !membership.workspace.archivedAt && !membership.workspace.deletedAt) {
       return {
         userId,
         workspaceId:  membership.workspaceId,
@@ -200,9 +202,11 @@ export async function resolveWorkspaceContext(
   }
 
   // ── Fall back to PERSONAL workspace ──────────────────────────────────────
+  // PERSONAL workspaces can never be archived/trashed (enforced in the API
+  // layer), but the filter is kept here too as defense in depth.
   let t = Date.now();
   const personal = await db.workspaceMember.findFirst({
-    where:   { userId, status: "ACTIVE", workspace: { type: "PERSONAL" } },
+    where:   { userId, status: "ACTIVE", workspace: { type: "PERSONAL", archivedAt: null, deletedAt: null } },
     include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
   });
   lap("workspaceMember.findFirst [personal fallback]", t);
@@ -219,8 +223,15 @@ export async function resolveWorkspaceContext(
 
   // ── Last resort: any ACTIVE membership ───────────────────────────────────
   // Handles edge cases (e.g., personal workspace was somehow deleted).
+  // Still prefers a non-archived/non-trashed workspace where one exists;
+  // only falls through to an archived/trashed one if that's truly all the
+  // user has left, so the app never hard-fails with no context at all.
   t = Date.now();
-  const any = await db.workspaceMember.findFirstOrThrow({
+  const any = await db.workspaceMember.findFirst({
+    where:   { userId, status: "ACTIVE", workspace: { archivedAt: null, deletedAt: null } },
+    orderBy: { joinedAt: "asc" },
+    include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
+  }) ?? await db.workspaceMember.findFirstOrThrow({
     where:   { userId, status: "ACTIVE" },
     orderBy: { joinedAt: "asc" },
     include: { workspace: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },

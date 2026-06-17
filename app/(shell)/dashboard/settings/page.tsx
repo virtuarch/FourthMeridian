@@ -28,7 +28,9 @@ export default async function SettingsPage() {
       dateOfBirthEncrypted: string | null; preferredWorkspaceId: string | null;
     } | null>,
     db.workspaceMember.findMany({
-      where:   { userId: session.user.id, status: "ACTIVE" },
+      // Archived/trashed workspaces can't be set as the default landing
+      // workspace — exclude them from this picker.
+      where:   { userId: session.user.id, status: "ACTIVE", workspace: { archivedAt: null, deletedAt: null } },
       include: { workspace: { select: { id: true, name: true, type: true } } },
       orderBy: { joinedAt: "asc" },
     }),

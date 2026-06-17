@@ -17,6 +17,7 @@ import {
   getPresetsForCategory,
 } from "@/lib/workspace-presets";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { AuditAction } from "@/lib/audit-actions";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
@@ -38,7 +39,9 @@ export const GET = withApiHandler(async () => {
 
   const t1 = Date.now();
   const myMemberships = await db.workspaceMember.findMany({
-    where: { userId: user.id, status: "ACTIVE" },
+    // Exclude archived/trashed workspaces from the default switcher list —
+    // they're only reachable via the Archive/Bin page from here on.
+    where: { userId: user.id, status: "ACTIVE", workspace: { archivedAt: null, deletedAt: null } },
     select: {
       role: true,
       workspace: { select: { id: true, name: true, type: true } },
@@ -112,7 +115,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     data: {
       userId:      user.id,
       workspaceId: workspace.id,
-      action:      "WORKSPACE_CREATE",
+      action:      AuditAction.WORKSPACE_CREATE,
       metadata:    { name: workspace.name, isPublic: workspace.isPublic, category: resolvedCategory as string },
       ipAddress:   getClientIp(req),
     },

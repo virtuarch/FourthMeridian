@@ -45,7 +45,9 @@ export default async function WorkspacesPage() {
       .catch(() => null), // migration not yet applied — ignore
 
     db.workspaceMember.findMany({
-      where: { userId, status: "ACTIVE" },
+      // Archived/trashed workspaces are excluded from this default list —
+      // they're only reachable from here on via the Archive & Trash page.
+      where: { userId, status: "ACTIVE", workspace: { archivedAt: null, deletedAt: null } },
       include: {
         workspace: {
           include: {
@@ -88,9 +90,11 @@ export default async function WorkspacesPage() {
   // Depends on myWorkspaceIds above, so this one stays a separate await.
   const publicWorkspaces = await db.workspace.findMany({
     where: {
-      isPublic: true,
-      type:     "SHARED",
-      id:       { notIn: myWorkspaceIds },
+      isPublic:   true,
+      type:       "SHARED",
+      id:         { notIn: myWorkspaceIds },
+      archivedAt: null,
+      deletedAt:  null,
     },
     include: {
       members: {

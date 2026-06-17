@@ -39,6 +39,15 @@ export const AuditAction = {
   GOAL_TRASHED:             "GOAL_TRASHED",
   GOAL_RESTORED:            "GOAL_RESTORED",
 
+  // ── Workspaces (lifecycle) ──────────────────────────────────────────────────
+  WORKSPACE_CREATE:         "WORKSPACE_CREATE",
+  WORKSPACE_UPDATE:         "WORKSPACE_UPDATE",
+  WORKSPACE_ARCHIVED:       "WORKSPACE_ARCHIVED",
+  WORKSPACE_UNARCHIVED:     "WORKSPACE_UNARCHIVED",
+  WORKSPACE_TRASHED:        "WORKSPACE_TRASHED",
+  WORKSPACE_RESTORED:       "WORKSPACE_RESTORED",
+  WORKSPACE_PERMANENT_DELETE: "WORKSPACE_PERMANENT_DELETE",
+
   // ── Accounts ─────────────────────────────────────────────────────────────────
   ACCOUNT_SHARED:           "ACCOUNT_SHARED",
   ACCOUNT_REVOKED:          "ACCOUNT_REVOKED",
@@ -109,6 +118,18 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
       AuditAction.GOAL_ARCHIVED,
       AuditAction.GOAL_TRASHED,
       AuditAction.GOAL_RESTORED,
+    ],
+  },
+  {
+    label: "Workspaces",
+    actions: [
+      AuditAction.WORKSPACE_CREATE,
+      AuditAction.WORKSPACE_UPDATE,
+      AuditAction.WORKSPACE_ARCHIVED,
+      AuditAction.WORKSPACE_UNARCHIVED,
+      AuditAction.WORKSPACE_TRASHED,
+      AuditAction.WORKSPACE_RESTORED,
+      AuditAction.WORKSPACE_PERMANENT_DELETE,
     ],
   },
   {

@@ -500,7 +500,7 @@ export function SettingsClient({ initialProfile, workspaces }: Props) {
           <CardTitle>Data & Archive</CardTitle>
         </div>
         <p className="text-xs text-gray-600 mb-4">
-          Manage archived data. Restore items you deleted, or remove them permanently.
+          Manage archived accounts and workspaces. Restore them, or remove them permanently.
         </p>
 
         <Link
@@ -512,8 +512,8 @@ export function SettingsClient({ initialProfile, workspaces }: Props) {
               <Archive size={14} className="text-gray-400" />
             </div>
             <div>
-              <p className="text-sm font-medium text-white">Archived Assets</p>
-              <p className="text-xs text-gray-500">Manually-entered assets you&apos;ve deleted</p>
+              <p className="text-sm font-medium text-white">Archive &amp; Trash</p>
+              <p className="text-xs text-gray-500">Archived accounts, archived workspaces, and trash</p>
             </div>
           </div>
           <ChevronRight size={15} className="text-gray-600 group-hover:text-gray-400 transition-colors" />

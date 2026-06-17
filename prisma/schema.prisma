@@ -273,6 +273,17 @@ model Workspace {
   type        WorkspaceType     @default(PERSONAL)
   category    WorkspaceCategory @default(PERSONAL)
   isPublic    Boolean           @default(false)  // SHARED workspaces can be listed publicly
+
+  // ── Lifecycle (mirrors WorkspaceGoal's archive/trash pattern) ─────────────
+  // archivedAt: hidden from normal nav, fully intact, restorable any time.
+  // deletedAt:  moved to trash, hidden from normal nav, restorable until
+  //             permanently deleted. Trashing always clears archivedAt so a
+  //             workspace is never in both states at once. PERSONAL
+  //             workspaces cannot be archived, trashed, or permanently
+  //             deleted (enforced in the API layer, not the schema).
+  archivedAt  DateTime?
+  deletedAt   DateTime?
+
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
 
@@ -292,6 +303,8 @@ model Workspace {
 
   @@index([type])
   @@index([isPublic])
+  @@index([archivedAt])
+  @@index([deletedAt])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
