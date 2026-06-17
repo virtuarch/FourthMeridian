@@ -36,6 +36,7 @@ import { db } from "@/lib/db";
 import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
 import { getWorkspaceContext } from "@/lib/workspace";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { AuditAction } from "@/lib/audit-actions";
 import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
 
@@ -329,6 +330,21 @@ export async function POST(req: NextRequest) {
       console.warn("[plaid] initial transaction sync failed (non-fatal):", syncErr);
     }
 
+    // 9b. WorkspaceSnapshot regeneration — best-effort, non-fatal. Without
+    //     this, a brand-new workspace has zero WorkspaceSnapshot rows right
+    //     after Link, and the chart components' "first day" placeholder only
+    //     renders at exactly one row — so charts stayed blank until the user
+    //     manually clicked Refresh once. Reuses the same helper the manual
+    //     Refresh pipeline calls (lib/plaid/refresh.ts) so no regen logic is
+    //     duplicated. Scoped to every workspace the imported accounts are
+    //     actively shared into (importedIds), not just the current workspace.
+    let workspacesSnapshotted: string[] = [];
+    try {
+      workspacesSnapshotted = await regenerateSnapshotsForAccounts(importedIds);
+    } catch (snapshotErr) {
+      console.warn("[plaid] initial snapshot regeneration failed (non-fatal):", snapshotErr);
+    }
+
     // 10. Audit log
     await db.auditLog.create({
       data: {
@@ -340,6 +356,7 @@ export async function POST(req: NextRequest) {
           accountCount:     imported,
           holdingsImported,
           transactionsAdded: txSync?.added ?? 0,
+          workspacesSnapshotted: workspacesSnapshotted.length,
         },
       },
     });
