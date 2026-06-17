@@ -38,7 +38,7 @@ function getMockResponse(input: string, ficoScore: number | null): string {
     crypto: "Your crypto allocation is within a conservative 5-10% band. No immediate action needed, but avoid adding more until cash reserves are fully built up.",
     stocks: "Your stock portfolio has some tech concentration. Consider whether you want to rebalance toward more sectors for diversification.",
     "net worth": "Your net worth has grown steadily over the past 30 days. Keep building cash reserves and paying down high-interest debt to continue the trend.",
-    "cash to play": "Your 'cash to play' is discretionary capital after reserving 3 months of estimated expenses. The AI recommends building reserves before deploying capital.",
+    "cash on hand": "Your 'cash on hand' is discretionary capital after reserving 3 months of estimated expenses. The AI recommends building reserves before deploying capital.",
     fico: ficoScore != null
       ? `Your FICO score is ${ficoScore}, which gives you access to favorable loan rates. Keep paying on time and keep utilization below 30%.`
       : "No FICO score on file yet. Add one in the Credit tab to get personalized credit advice.",
@@ -159,22 +159,22 @@ export function AnalyzeClient({ advice, ficoScore, latestSnapshot, snapshotCount
             </div>
           </Card>
 
-          {/* Play readiness */}
+          {/* Action readiness */}
           <Card>
-            <CardTitle>Play Readiness</CardTitle>
+            <CardTitle>Action Readiness</CardTitle>
             <div className="flex items-center gap-3 mt-3">
               {advice ? (
                 <>
                   <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
-                    advice.playReady
+                    advice.actionReady
                       ? "bg-green-500/10 border border-green-500/30"
                       : "bg-red-500/10 border border-red-500/30"
                   }`}>
-                    <Zap size={22} className={advice.playReady ? "text-green-400" : "text-red-400"} fill="currentColor" />
+                    <Zap size={22} className={advice.actionReady ? "text-green-400" : "text-red-400"} fill="currentColor" />
                   </div>
                   <div>
-                    <p className={`text-lg font-bold ${advice.playReady ? "text-green-400" : "text-red-400"}`}>
-                      {advice.playReady ? "Ready to Play" : "No Play — Hold"}
+                    <p className={`text-lg font-bold ${advice.actionReady ? "text-green-400" : "text-red-400"}`}>
+                      {advice.actionReady ? "Ready for Action" : "Hold / Not Ready"}
                     </p>
                     <p className="text-xs text-gray-400">{advice.summary}</p>
                   </div>

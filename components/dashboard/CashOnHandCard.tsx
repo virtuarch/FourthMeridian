@@ -9,7 +9,7 @@ interface Props {
   lastUpdated?: string;
 }
 
-export function CashToPlayCard({ accounts, investable = 0, lastUpdated }: Props) {
+export function CashOnHandCard({ accounts, investable = 0, lastUpdated }: Props) {
   const bankCash      = accounts.reduce((s, a) => s + a.balance, 0);
   const hasInvestable = investable > 0;
   const totalCash      = bankCash + investable;

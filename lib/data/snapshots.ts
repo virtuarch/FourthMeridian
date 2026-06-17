@@ -32,7 +32,7 @@ export async function getRecentSnapshots(days = 30, ctx?: { workspaceId: string 
     totalSavings:     r.savings,
     totalInvestments: r.stocks,
     totalCrypto:      r.crypto,
-    cashToPlay:       r.cashToPlay,
+    cashOnHand:       r.cashOnHand,
   }));
 }
 

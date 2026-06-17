@@ -67,7 +67,7 @@ export interface Snapshot {
   totalSavings: number;   // savings only
   totalInvestments: number;
   totalCrypto: number;
-  cashToPlay: number;
+  cashOnHand: number;
 }
 
 export type TransactionCategory =
@@ -115,6 +115,6 @@ export interface AiAdvice {
   summary: string;
   adviceText: string;
   riskLevel: 'low' | 'medium' | 'high';
-  playReady: boolean;
+  actionReady: boolean;
   generatedAt: string;
 }

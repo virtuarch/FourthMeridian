@@ -112,7 +112,7 @@ export const mockSnapshots: Snapshot[] = mockPortfolioHistory.slice(-30).map((h)
   totalSavings:     h.savings,
   totalInvestments: h.stocks,
   totalCrypto:      h.crypto,
-  cashToPlay:       Math.max(h.cash - 6000, 0),
+  cashOnHand:       Math.max(h.cash - 6000, 0),
 }));
 
 // ── AI Advice ─────────────────────────────────────────────────────────────────
@@ -136,9 +136,8 @@ export const mockAdvice: AiAdvice = {
 
 **Risk Level: Low-Medium**`,
   riskLevel: 'low',
-  playReady: true,
+  actionReady: true,
   generatedAt: '2026-06-09T09:00:00Z',
 };
 
 export const mockFico = 720;
-export const mockCashToPlay = 2500;

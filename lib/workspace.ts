@@ -12,11 +12,6 @@
  * resolveWorkspaceContext(userId, activeWorkspaceId?) — shared implementation.
  *                          Verifies membership. Returns full context including
  *                          role and permissions. Falls back to Personal workspace.
- *
- * getDemoContext()       — dev/script path: resolves by looking up the demo
- *                          user's email directly. Kept for cron jobs and seed
- *                          scripts that run outside an HTTP request context.
- *                          Do not use this in routes or Server Components.
  */
 
 import { cache }              from "react";
@@ -245,20 +240,4 @@ export async function resolveWorkspaceContext(
     permissions:  derivePermissions(any.role),
     workspace:    any.workspace,
   };
-}
-
-// ── Dev / script path (no HTTP context) ──────────────────────────────────────
-
-const DEMO_USER_EMAIL = "jane@example.com";
-
-/**
- * @deprecated — for cron jobs and scripts only.
- * Use getWorkspaceContext() in all Next.js routes and Server Components.
- */
-export async function getDemoContext(): Promise<WorkspaceContext> {
-  const user = await db.user.findUniqueOrThrow({
-    where:  { email: DEMO_USER_EMAIL },
-    select: { id: true },
-  });
-  return resolveWorkspaceContext(user.id);
 }

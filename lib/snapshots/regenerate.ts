@@ -60,20 +60,20 @@ export async function regenerateWorkspaceSnapshot(
   const netWorth    = totalAssets - debt;
   const netLiquid   = cash + savings - debt;
   // No "expense buffer" setting exists yet (schema comment: max(cash -
-  // expense_buffer, 0)) — until one is added, cashToPlay is plain checking
+  // expense_buffer, 0)) — until one is added, cashOnHand is plain checking
   // cash rather than an invented buffer amount.
-  const cashToPlay  = Math.max(cash, 0);
+  const cashOnHand  = Math.max(cash, 0);
 
   await db.workspaceSnapshot.upsert({
     where: { workspaceId_date: { workspaceId, date } },
     create: {
       workspaceId, date,
       stocks, crypto, total, cash, savings, debt,
-      netWorth, totalAssets, netLiquid, cashToPlay,
+      netWorth, totalAssets, netLiquid, cashOnHand,
     },
     update: {
       stocks, crypto, total, cash, savings, debt,
-      netWorth, totalAssets, netLiquid, cashToPlay,
+      netWorth, totalAssets, netLiquid, cashOnHand,
     },
   });
 }

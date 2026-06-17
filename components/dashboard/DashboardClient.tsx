@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { NetWorthCard } from "./NetWorthCard";
-import { CashToPlayCard } from "./CashToPlayCard";
+import { CashOnHandCard } from "./CashOnHandCard";
 import { FicoCard } from "./FicoCard";
 import { NetWorthChart, Interval, cutoffForInterval } from "@/components/charts/NetWorthChart";
 import { CashChart } from "@/components/charts/CashChart";
@@ -832,7 +832,7 @@ export function DashboardClient({
                     lastUpdated={fmtAccountDate}
                   />
                   <div className="grid grid-cols-2 gap-3">
-                    <CashToPlayCard
+                    <CashOnHandCard
                       accounts={cashAccounts}
                       investable={investableAccountCash}
                       lastUpdated={fmtAccountDate}
@@ -892,7 +892,7 @@ export function DashboardClient({
                     lastUpdated={fmtAccountDate}
                   />
                   <div className="grid grid-cols-2 gap-3">
-                    <CashToPlayCard
+                    <CashOnHandCard
                       accounts={cashAccounts}
                       lastUpdated={fmtAccountDate}
                     />

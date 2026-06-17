@@ -40,7 +40,7 @@ A local-first personal finance dashboard. Runs on your laptop via Docker Compose
 - **Transaction** — Plaid-synced transactions with category, merchant, amount, pending flag
 - **Holding** — individual positions inside investment/crypto accounts
 - **WorkspaceSnapshot** — daily net worth snapshots per workspace for historical charting
-- **AiAdvice** — AI-generated advice records with playReady signal and risk level
+- **AiAdvice** — AI-generated advice records with actionReady signal and risk level
 - **AiAgent** — one agent per workspace; advice records are linked to it
 - **CreditScore** — manual FICO score snapshots per user (dated)
 - **AuditLog** — every sensitive action logged with actor, IP, and metadata
@@ -76,7 +76,7 @@ No pending migrations as of v1.
 - [x] Investment accounts with holdings (symbol, quantity, price, 24h change)
 - [x] Crypto — exchange accounts (with holdings breakdown) and self-custody wallets
 - [x] Debt balances
-- [x] Cash available to play
+- [x] Cash on hand
 - [x] FICO score card
 - [x] AssetDrawer — TradingView chart for single-asset wallets; holdings breakdown + allocation bar for exchange accounts
 - [x] Collapsible institution groups — child rows visually distinct from parent header
@@ -97,7 +97,7 @@ No pending migrations as of v1.
 - [ ] Crypto wallet balance refresh jobs (Blockstream/Etherscan/Helius)
 
 ### AI Advice Tab
-- [x] ML Review tab — advice banner, schedule info, "What the Engine Reviews" grid (all 6 cells pull real workspace data), Play Readiness wired to `advice.playReady`
+- [x] ML Review tab — advice banner, schedule info, "What the Engine Reviews" grid (all 6 cells pull real workspace data), Action Readiness wired to `advice.actionReady`
 - [x] AI Chat tab — mock responses keyed to topic; greeting uses session user's first name
 - [ ] Live LLM integration (Milestone 5)
 
@@ -129,8 +129,8 @@ No pending migrations as of v1.
 - [x] PWA manifest + service worker (configured, not yet tested on device)
 
 ### Seed Data
-- [x] Jane Smith — low-risk profile: $28,700 net worth, Demo Bank / Example CU / Sample Brokerage / Fictional Crypto Exchange, FICO 720, play ready
-- [x] John Doe — medium-risk profile: $16,200 net worth, Beacon Bank / Alpha Brokerage / Alpha Crypto Exchange, FICO 680, high debt, not play ready
+- [x] Jane Smith — low-risk profile: $28,700 net worth, Demo Bank / Example CU / Sample Brokerage / Fictional Crypto Exchange, FICO 720, action ready
+- [x] John Doe — medium-risk profile: $16,200 net worth, Beacon Bank / Alpha Brokerage / Alpha Crypto Exchange, FICO 680, high debt, not action ready
 - [x] Both users have 365-day snapshot history, holdings, transactions, and AI advice records
 - [x] All data is entirely fictional — no real names, balances, wallet addresses, or institution identifiers
 
@@ -188,7 +188,7 @@ No pending migrations as of v1.
 ### Milestone 5 — AI Advice Engine
 - Schedule: 2×/day on trading days (9am + 4pm ET), 1×/day on weekends
 - Inputs: cash, debt, allocation, crypto exposure, recent snapshots, market movement
-- Output: conservative suggestions, risk warnings, play/no-play readiness signal
+- Output: conservative suggestions, risk warnings, action-ready readiness signal
 - Stored in `AiAdvice` table; replaces mock data in the AI tab
 - Advisory only — no auto-trading
 
@@ -261,5 +261,5 @@ prisma/
 - **Crypto wallet balances** — not refreshed automatically; shows "Pending Sync" until Milestone 2 cron jobs are built
 - **`prisma migrate dev && prisma generate`** must be run after cloning before the app compiles
 - **`UserRole.SYSTEM_ADMIN`** is the schema name for the platform admin role. Used consistently throughout. Renaming requires a DB migration — deferred.
-- **`getDemoContext()`** in `lib/workspace.ts` is a dev/cron helper; resolves to `jane@example.com` to match seed data. Do not use in routes or Server Components.
+- **`getDemoContext()`** in `lib/workspace.ts` has been removed (2026-06-17 naming cleanup) — it had zero call sites anywhere in the codebase. `getWorkspaceContext()`/`resolveWorkspaceContext()` are unaffected.
 - **Admin has no workspace** — `admin@example.com` intentionally has no workspace memberships. The proxy redirects SYSTEM_ADMIN away from `/dashboard`. If an admin session somehow reaches a dashboard route, `resolveWorkspaceContext` will throw. This is expected behavior, not a bug.

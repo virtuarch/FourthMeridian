@@ -869,7 +869,7 @@ model WorkspaceSnapshot {
   // Derived — pre-computed for fast chart queries
   netWorth    Float @default(0) // stocks + crypto + cash + savings − debt
   totalAssets Float @default(0) // stocks + crypto + cash + savings
-  cashToPlay  Float @default(0) // max(cash − expense_buffer, 0)
+  cashOnHand  Float @default(0) // max(cash − expense_buffer, 0) — renamed from cashToPlay (legacy "play cash" language)
   netLiquid   Float @default(0) // cash + savings − debt
 
   createdAt DateTime @default(now())
@@ -893,7 +893,7 @@ model AiAdvice {
   summary     String
   adviceText  String    @db.Text
   riskLevel   RiskLevel
-  playReady   Boolean   @default(false)
+  actionReady Boolean   @default(false) // renamed from playReady (legacy "play cash" language)
   generatedAt DateTime  @default(now())
   createdAt   DateTime  @default(now())
 

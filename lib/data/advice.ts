@@ -25,7 +25,7 @@ export async function getLatestAdvice(ctx?: { workspaceId: string }): Promise<Ai
     summary:     row.summary,
     adviceText:  row.adviceText,
     riskLevel:   row.riskLevel as AiAdvice["riskLevel"],
-    playReady:   row.playReady,
+    actionReady: row.actionReady,
     generatedAt: row.generatedAt.toISOString(),
   };
 }
