@@ -38,7 +38,19 @@
  *    prisma/schema.prisma Transaction model comment) is the opposite:
  *    positive = money in (credit), negative = money out (debit).
  *  - Upserts on the unique `plaidTransactionId` field so re-running a sync
- *    (e.g. retried webhook delivery) never creates duplicates.
+ *    (e.g. retried webhook delivery) never creates duplicates — but Plaid's
+ *    transaction_id is NOT always stable for the same real-world posted
+ *    transaction across separate sync runs (observed directly: two rows,
+ *    same financialAccountId/date/amount/merchant, both pending:false,
+ *    different plaidTransactionId, created on different sync runs — see
+ *    docs/TRANSACTION_DUPLICATION_INVESTIGATION.md). When no row matches by
+ *    plaidTransactionId, a fingerprint fallback (financialAccountId, date,
+ *    amount, normalized merchant, pending) looks for an existing row before
+ *    creating a new one — same shape as the account-level fallback in
+ *    lib/accounts/reconcile.ts, applied at the transaction level. This is a
+ *    heuristic reuse of an existing row, not a uniqueness constraint:
+ *    genuinely repeated same-day/same-amount/same-merchant transactions are
+ *    valid data and are never blocked from being created.
  *  - Writes `financialAccountId`, never the legacy `accountId` — Plaid-synced
  *    transactions only ever belong to a FinancialAccount.
  */
@@ -50,10 +62,71 @@ import { TransactionCategory } from "@prisma/client";
 import type { Transaction as PlaidTransaction } from "plaid";
 
 export interface SyncTransactionsResult {
+  /** Count of transactions Plaid reported in its `added` array this run (Plaid's own count, unchanged semantics). */
   added:    number;
+  /** Count of transactions Plaid reported in its `modified` array this run (Plaid's own count, unchanged semantics). */
   modified: number;
+  /** Count of rows actually deleted via Plaid's `removed` array. */
   removed:  number;
   cursor:   string | null;
+
+  /** Of the added+modified transactions processed this run: brand-new rows inserted (no plaidTransactionId or fingerprint match found). */
+  created:              number;
+  /** Of the added+modified transactions processed this run: existing rows updated via an exact plaidTransactionId match. */
+  updatedByPlaidId:      number;
+  /** Of the added+modified transactions processed this run: existing rows updated via the fingerprint fallback (plaidTransactionId had no match, but financialAccountId+date+amount+merchant+pending did) — plaidTransactionId on that row is replaced with the new one. */
+  updatedByFingerprint:  number;
+  /** Transactions dropped because no FinancialAccount matched the Plaid account_id. */
+  skippedMissingAccount: number;
+}
+
+/**
+ * Normalizes a merchant/description string for fingerprint comparison —
+ * trims, collapses internal whitespace, uppercases. Deliberately
+ * conservative: it does not strip reference/trace numbers, so two distinct
+ * real transactions that merely share a date and amount but differ in their
+ * merchant text are never merged.
+ */
+function normalizeMerchantKey(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toUpperCase();
+}
+
+/**
+ * Fingerprint fallback for the case plaidTransactionId alone misses: the
+ * same real-world transaction reappearing with a brand-new transaction_id on
+ * a later sync run. Scoped first by (financialAccountId, date, amount,
+ * pending) — financialAccountId+date is already indexed
+ * (@@index([financialAccountId, date])) — then narrowed by normalized
+ * merchant in memory, since the DB doesn't store a normalized column.
+ * Candidate sets here are always small (a handful of same-day transactions
+ * per account at most).
+ *
+ * Returns the first match, logging a warning if more than one candidate
+ * matches (unexpected, but handled deterministically rather than erroring).
+ */
+async function findByFingerprint(
+  financialAccountId: string,
+  date: Date,
+  amount: number,
+  merchant: string,
+  pending: boolean
+): Promise<{ id: string; plaidTransactionId: string | null } | null> {
+  const candidates = await db.transaction.findMany({
+    where:  { financialAccountId, date, amount, pending },
+    select: { id: true, merchant: true, plaidTransactionId: true },
+  });
+  if (candidates.length === 0) return null;
+
+  const target  = normalizeMerchantKey(merchant);
+  const matches = candidates.filter((c) => normalizeMerchantKey(c.merchant) === target);
+  if (matches.length === 0) return null;
+
+  if (matches.length > 1) {
+    console.warn(
+      `[plaid sync] fingerprint match ambiguous — ${matches.length} existing rows match financialAccountId=${financialAccountId} date=${date.toISOString().slice(0, 10)} amount=${amount} merchant="${merchant}"; using the first (id=${matches[0].id})`
+    );
+  }
+  return matches[0];
 }
 
 /**
@@ -121,6 +194,11 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   let removed = 0;
   let hasMore = true;
 
+  let created               = 0;
+  let updatedByPlaidId      = 0;
+  let updatedByFingerprint  = 0;
+  let skippedMissingAccount = 0;
+
   // Cache plaidAccountId -> FinancialAccount.id within this run — avoids a
   // query per transaction when many transactions share a handful of accounts.
   const accountIdCache = new Map<string, string | null>();
@@ -145,6 +223,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
     for (const txn of [...addedTxns, ...modifiedTxns]) {
       const financialAccountId = await resolveFinancialAccountId(txn.account_id);
       if (!financialAccountId) {
+        skippedMissingAccount++;
         console.warn(
           `[plaid sync] no FinancialAccount for plaidAccountId ${txn.account_id} — skipping transaction ${txn.transaction_id}`
         );
@@ -153,32 +232,47 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
 
       // Plaid: positive = debit (money out), negative = credit (money in).
       // FinTracker: positive = credit (money in), negative = debit (money out).
-      const amount   = -txn.amount;
-      const category = mapPlaidCategory(txn);
+      const amount      = -txn.amount;
+      const category    = mapPlaidCategory(txn);
+      const date         = new Date(txn.date);
+      const merchant     = txn.merchant_name ?? txn.name;
+      const description  = txn.name;
+
+      const fields = { financialAccountId, date, merchant, description, category, amount, pending: txn.pending };
 
       try {
-        await db.transaction.upsert({
-          where: { plaidTransactionId: txn.transaction_id },
-          update: {
-            financialAccountId,
-            date:        new Date(txn.date),
-            merchant:    txn.merchant_name ?? txn.name,
-            description: txn.name,
-            category,
-            amount,
-            pending:     txn.pending,
-          },
-          create: {
-            financialAccountId,
-            plaidTransactionId: txn.transaction_id,
-            date:        new Date(txn.date),
-            merchant:    txn.merchant_name ?? txn.name,
-            description: txn.name,
-            category,
-            amount,
-            pending:     txn.pending,
-          },
+        // 1. Exact match — same row Plaid is telling us about.
+        const existingByPlaidId = await db.transaction.findUnique({
+          where:  { plaidTransactionId: txn.transaction_id },
+          select: { id: true },
         });
+
+        if (existingByPlaidId) {
+          await db.transaction.update({ where: { id: existingByPlaidId.id }, data: fields });
+          updatedByPlaidId++;
+          continue;
+        }
+
+        // 2. No plaidTransactionId match — check the fingerprint fallback
+        // before assuming this is a genuinely new transaction (see module
+        // header + findByFingerprint for why).
+        const fingerprintMatch = await findByFingerprint(financialAccountId, date, amount, merchant, txn.pending);
+
+        if (fingerprintMatch) {
+          await db.transaction.update({
+            where: { id: fingerprintMatch.id },
+            data:  { ...fields, plaidTransactionId: txn.transaction_id },
+          });
+          updatedByFingerprint++;
+          console.warn(
+            `[plaid sync] fingerprint match — reusing existing transaction ${fingerprintMatch.id} for new plaidTransactionId ${txn.transaction_id} (previously ${fingerprintMatch.plaidTransactionId ?? "null"})`
+          );
+          continue;
+        }
+
+        // 3. Genuinely new transaction.
+        await db.transaction.create({ data: { ...fields, plaidTransactionId: txn.transaction_id } });
+        created++;
       } catch (e) {
         console.error(`[plaid sync] failed to upsert transaction ${txn.transaction_id}:`, e);
       }
@@ -201,5 +295,18 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
     data:  { cursor: cursor ?? null, lastSyncedAt: new Date() },
   });
 
-  return { added, modified, removed, cursor: cursor ?? null };
+  console.log(
+    `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, skippedMissingAccount ${skippedMissingAccount}, removed ${removed}`
+  );
+
+  return {
+    added,
+    modified,
+    removed,
+    cursor: cursor ?? null,
+    created,
+    updatedByPlaidId,
+    updatedByFingerprint,
+    skippedMissingAccount,
+  };
 }
