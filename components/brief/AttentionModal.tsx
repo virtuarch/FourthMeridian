@@ -18,6 +18,7 @@
 
 import Link from "next/link";
 import { BriefModal } from "./BriefModal";
+import { TONE_TEXT, TONE_VALUE, TONE_CHIP_BG } from "@/components/atlas/tones";
 import type { BriefSection, BriefItem, BriefTone } from "@/lib/brief-types";
 import {
   ShieldCheck,
@@ -27,74 +28,56 @@ import {
   ArrowRight,
 } from "lucide-react";
 
-// ── Tone helpers ──────────────────────────────────────────────────────────────
-
-const CHIP_BORDER: Record<BriefTone, string> = {
-  positive: "border-emerald-500/20",
-  warning:  "border-amber-500/20",
-  danger:   "border-red-500/25",
-  info:     "border-blue-500/20",
-  neutral:  "border-white/[0.08]",
-};
-
-const CHIP_LABEL: Record<BriefTone, string> = {
-  positive: "text-emerald-300",
-  warning:  "text-amber-300",
-  danger:   "text-red-300",
-  info:     "text-blue-300",
-  neutral:  "text-gray-300",
-};
-
-const CHIP_VALUE: Record<BriefTone, string> = {
-  positive: "text-emerald-400 font-semibold",
-  warning:  "text-amber-400  font-semibold",
-  danger:   "text-red-400    font-semibold",
-  info:     "text-blue-400   font-semibold",
-  neutral:  "text-white      font-semibold",
-};
-
 function ToneIcon({ tone }: { tone: BriefTone }) {
-  const cls = "w-4 h-4 shrink-0";
+  const cls = `w-4 h-4 shrink-0 ${TONE_TEXT[tone]}`;
   switch (tone) {
-    case "danger":   return <AlertCircle   className={`${cls} text-red-400`}     />;
-    case "warning":  return <AlertTriangle className={`${cls} text-amber-400`}   />;
-    case "info":     return <Info          className={`${cls} text-blue-400`}    />;
-    case "positive": return <ShieldCheck   className={`${cls} text-emerald-400`} />;
-    default:         return <Info          className={`${cls} text-gray-400`}    />;
+    case "danger":   return <AlertCircle   className={cls} />;
+    case "warning":  return <AlertTriangle className={cls} />;
+    case "info":     return <Info          className={cls} />;
+    case "positive": return <ShieldCheck   className={cls} />;
+    default:         return <Info          className={cls} />;
   }
 }
 
+// Semantic icon chip — circular tone-tinted glass background behind the
+// tone icon, matching the chip language used across the rest of the brief.
+function ToneIconChip({ tone }: { tone: BriefTone }) {
+  return (
+    <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 border ${TONE_CHIP_BG[tone]}`}>
+      <ToneIcon tone={tone} />
+    </div>
+  );
+}
+
 // ── Alert row ─────────────────────────────────────────────────────────────────
+// Lives directly on the modal's own glass surface — no card, no border, no
+// divider. Severity reads from the tone-tinted icon chip and tone-colored
+// text alone; rows are separated purely by vertical rhythm (py-3.5).
 
 function AlertRow({ item }: { item: BriefItem }) {
   const tone = item.tone ?? "warning";
   return (
-    <div
-      className={`rounded-xl border px-4 py-4 ${CHIP_BORDER[tone]}`}
-      style={{ background: "rgba(255,255,255,0.02)" }}
-    >
-      <div className="flex items-start gap-3">
-        <ToneIcon tone={tone} />
-        <div className="flex-1 min-w-0">
-          <p className={`text-sm font-medium leading-snug ${CHIP_LABEL[tone]}`}>
-            {item.label}
-          </p>
-          {item.detail && (
-            <p className="text-xs text-gray-500 mt-1 leading-relaxed">{item.detail}</p>
-          )}
-          {item.value && (
-            <p className={`text-sm mt-1.5 tabular-nums ${CHIP_VALUE[tone]}`}>{item.value}</p>
-          )}
-        </div>
-        {item.href && (
-          <Link
-            href={item.href}
-            className="shrink-0 flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
-          >
-            Fix <ArrowRight className="w-3 h-3" />
-          </Link>
+    <div className="flex items-start gap-3 py-3.5">
+      <ToneIconChip tone={tone} />
+      <div className="flex-1 min-w-0 pt-0.5">
+        <p className={`text-sm font-medium leading-snug ${TONE_TEXT[tone]}`}>
+          {item.label}
+        </p>
+        {item.detail && (
+          <p className="text-xs text-[var(--text-muted)] mt-1 leading-relaxed">{item.detail}</p>
+        )}
+        {item.value && (
+          <p className={`text-sm mt-1.5 tabular-nums ${TONE_VALUE[tone]}`}>{item.value}</p>
         )}
       </div>
+      {item.href && (
+        <Link
+          href={item.href}
+          className="shrink-0 flex items-center gap-1 text-xs text-[var(--meridian-400)] hover:text-[var(--meridian-300)] transition-colors pt-0.5"
+        >
+          Fix <ArrowRight className="w-3 h-3" />
+        </Link>
+      )}
     </div>
   );
 }
@@ -104,14 +87,14 @@ function AlertRow({ item }: { item: BriefItem }) {
 function HealthyState() {
   return (
     <div className="flex flex-col items-center text-center py-6 gap-4">
-      <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
-        <ShieldCheck className="w-6 h-6 text-emerald-400" />
+      <div className="w-12 h-12 rounded-full bg-[var(--emerald-500)]/10 border border-[var(--emerald-500)]/20 flex items-center justify-center">
+        <ShieldCheck className="w-6 h-6 text-[var(--emerald-400)]" />
       </div>
       <div>
-        <p className="text-base font-semibold text-emerald-300 mb-1">
+        <p className="text-base font-semibold text-[var(--emerald-300)] mb-1">
           Everything looks healthy today.
         </p>
-        <p className="text-sm text-gray-500 max-w-xs mx-auto">
+        <p className="text-sm text-[var(--text-muted)] max-w-xs mx-auto">
           No issues detected across your accounts and assets.
         </p>
       </div>
@@ -135,25 +118,27 @@ export function AttentionModal({ open, onClose, section }: AttentionModalProps) 
   const hasItems = items.length > 0;
 
   return (
-    <BriefModal open={open} onClose={onClose} title="Needs Attention">
-      {/* Attention items or healthy state */}
+    <BriefModal open={open} onClose={onClose} title={hasItems ? "Needs Attention" : "All Clear"}>
+      {/* Attention items or healthy state — rows sit directly on the modal's
+          glass, no nested card */}
       {hasItems ? (
-        <div className="flex flex-col gap-3 mb-6">
+        <div className="flex flex-col mb-8">
           {items.map(item => <AlertRow key={item.id} item={item} />)}
         </div>
       ) : (
-        <div className="mb-6">
+        <div className="mb-8">
           <HealthyState />
         </div>
       )}
 
-      {/* Footer: Attention Center CTA */}
-      <div className="pt-4 border-t border-white/[0.06]">
+      {/* Footer: Attention Center CTA — separated from the list by spacing
+          alone, no divider line. */}
+      <div>
         {ATTENTION_CENTER_LIVE ? (
           <Link
             href="/dashboard/attention"
             onClick={onClose}
-            className="w-full flex items-center justify-center gap-2 py-3 px-6 rounded-xl bg-white/[0.06] hover:bg-white/[0.10] text-gray-300 hover:text-white text-sm font-medium transition-colors border border-white/[0.09]"
+            className="w-full flex items-center justify-center gap-2 py-3 px-6 rounded-[var(--radius-sm)] bg-[var(--surface-hover)] hover:bg-[var(--surface-hover-strong)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-sm font-medium transition-colors border border-[var(--border-hairline-strong)]"
           >
             Open Attention Center
             <ArrowRight className="w-4 h-4" />
@@ -161,7 +146,7 @@ export function AttentionModal({ open, onClose, section }: AttentionModalProps) 
         ) : (
           <button
             disabled
-            className="w-full flex items-center justify-center gap-2 py-3 px-6 rounded-xl bg-white/[0.03] text-gray-700 text-sm font-medium border border-white/[0.05] cursor-not-allowed"
+            className="w-full flex items-center justify-center gap-2 py-3 px-6 rounded-[var(--radius-sm)] bg-[var(--surface-muted)] text-[var(--text-muted)]/60 text-sm font-medium border border-[var(--border-hairline)] cursor-not-allowed"
             title="Attention Center coming soon"
           >
             Open Attention Center

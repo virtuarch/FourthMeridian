@@ -341,7 +341,7 @@ function LoginForm() {
       {step === "credentials" && (
         <>
           <p className="text-center text-sm text-gray-500">
-            New to FinTracker?{" "}
+            New to Fourth Meridian?{" "}
             <Link href="/register" className="text-blue-400 hover:text-blue-300 transition-colors">
               Create an account
             </Link>
@@ -360,7 +360,7 @@ export default function LoginPage() {
     <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
-          <img src="/logo-full.png" alt="FinTracker" className="h-[100px] w-auto object-contain mx-auto mb-4" />
+          <img src="/logo-full.png" alt="Fourth Meridian" className="h-[100px] w-auto object-contain mx-auto mb-4" />
           <p className="text-gray-400 text-sm mt-1">Sign in to your dashboard</p>
         </div>
 

@@ -136,7 +136,7 @@ export default function ResetPasswordPage() {
     <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
-          <img src="/logo-full.png" alt="FinTracker" className="h-10 w-auto object-contain mx-auto mb-4" />
+          <img src="/logo-full.png" alt="Fourth Meridian" className="h-10 w-auto object-contain mx-auto mb-4" />
           <h1 className="text-2xl font-bold text-white">Set new password</h1>
           <p className="text-gray-400 text-sm mt-1">Choose a strong password for your account</p>
         </div>

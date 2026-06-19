@@ -10,11 +10,14 @@
 
 import { SessionProvider } from "next-auth/react";
 import { PlaidProvider } from "@/context/PlaidContext";
+import { ThemeProvider } from "@/components/theme/ThemeProvider";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <SessionProvider>
-      <PlaidProvider>{children}</PlaidProvider>
-    </SessionProvider>
+    <ThemeProvider>
+      <SessionProvider>
+        <PlaidProvider>{children}</PlaidProvider>
+      </SessionProvider>
+    </ThemeProvider>
   );
 }

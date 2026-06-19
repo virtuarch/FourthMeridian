@@ -7,10 +7,13 @@ export const metadata: Metadata = {
   title: "FinTracker",
   description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
   manifest: "/manifest.json",
+  // Favicon/browser-tab icon is wired via the Next.js App Router file
+  // convention (app/favicon.ico + app/icon.png — the new black 4M mark),
+  // which takes priority over this field. `apple` stays here since the
+  // home-screen icon is a separate concern from the browser-tab favicon
+  // and isn't part of this change.
   icons: {
-    icon:     "/logo-icon.png",
-    shortcut: "/logo-icon.png",
-    apple:    "/icons/apple-touch-icon.png",
+    apple: "/icons/apple-touch-icon.png",
   },
   appleWebApp: {
     capable: true,

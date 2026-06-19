@@ -42,16 +42,18 @@ import type { BriefPayload, BriefSection } from "@/lib/brief-types";
 function BriefSkeleton() {
   return (
     <div className="animate-pulse">
-      {/* Hero */}
+      {/* Hero — height scales with BriefHero's own clamp() (currently
+          480px/72vh/820px) so the skeleton doesn't visibly "pop" taller
+          once the real hero mounts. */}
       <div
-        className="w-full bg-gray-800/40"
-        style={{ minHeight: "clamp(380px, 52vh, 600px)" }}
+        className="w-full"
+        style={{ minHeight: "clamp(440px, 65vh, 740px)", background: "var(--ink-800)" }}
       />
       {/* Cards */}
       <div className="px-6 md:px-10 xl:px-16 max-w-[1400px] mx-auto mt-8 space-y-4">
-        <div className="h-36  rounded-2xl bg-white/[0.05]" />
-        <div className="h-32  rounded-2xl bg-white/[0.04]" />
-        <div className="h-20  rounded-2xl bg-white/[0.03]" />
+        <div className="h-36" style={{ borderRadius: "var(--radius-lg)", background: "var(--glass-thin)" }} />
+        <div className="h-32" style={{ borderRadius: "var(--radius-lg)", background: "var(--glass-ultrathin)" }} />
+        <div className="h-20" style={{ borderRadius: "var(--radius-lg)", background: "var(--glass-ultrathin)" }} />
       </div>
     </div>
   );
@@ -62,10 +64,10 @@ function BriefSkeleton() {
 function BriefError({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center px-4">
-      <p className="text-sm text-gray-400">Couldn&apos;t load your brief.</p>
+      <p className="text-sm text-[var(--text-muted)]">Couldn&apos;t load your brief.</p>
       <button
         onClick={onRetry}
-        className="text-xs text-blue-400 hover:text-blue-300 underline transition-colors"
+        className="text-xs text-[var(--meridian-400)] hover:text-[var(--meridian-300)] underline transition-colors"
       >
         Try again
       </button>
@@ -199,7 +201,7 @@ export function DailyBriefClient() {
         .briefSection {
           opacity: 0;
           transform: translateY(12px);
-          transition: opacity 0.45s ease, transform 0.45s ease;
+          transition: opacity var(--dur-slow) var(--ease-standard), transform var(--dur-slow) var(--ease-standard);
         }
       `}</style>
 

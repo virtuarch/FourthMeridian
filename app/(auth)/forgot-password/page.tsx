@@ -42,7 +42,7 @@ export default function ForgotPasswordPage() {
 
         {/* Logo */}
         <div className="text-center">
-          <img src="/logo-full.png" alt="FinTracker" className="h-10 w-auto object-contain mx-auto mb-4" />
+          <img src="/logo-full.png" alt="Fourth Meridian" className="h-10 w-auto object-contain mx-auto mb-4" />
           <h1 className="text-2xl font-bold text-white">Reset your password</h1>
           <p className="text-gray-400 text-sm mt-1">Enter your email or username</p>
         </div>
