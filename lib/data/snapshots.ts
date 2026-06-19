@@ -37,6 +37,48 @@ export async function getRecentSnapshots(days = 30, ctx?: { workspaceId: string 
 }
 
 /**
+ * Net worth + sparkline trend per workspace — used by the Spaces landing
+ * page's cards. Pure read against the existing WorkspaceSnapshot model, no
+ * schema/business-logic changes. One query covers every workspace card on
+ * the page instead of N round trips.
+ *
+ * Returns a map keyed by workspaceId. Workspaces with no snapshot history
+ * yet (brand new) resolve to netWorth: 0, trend: [], asOf: null — the card
+ * renders its "no history yet" state from that.
+ */
+export async function getWorkspaceNetWorthSummaries(
+  workspaceIds: string[]
+): Promise<Record<string, { netWorth: number; trend: number[]; asOf: string | null }>> {
+  if (workspaceIds.length === 0) return {};
+
+  const rows = await db.workspaceSnapshot.findMany({
+    where:   { workspaceId: { in: workspaceIds } },
+    orderBy: { date: "asc" },
+    select:  { workspaceId: true, date: true, netWorth: true },
+  });
+
+  const byWorkspace = new Map<string, { date: Date; netWorth: number }[]>();
+  for (const r of rows) {
+    const list = byWorkspace.get(r.workspaceId) ?? [];
+    list.push({ date: r.date, netWorth: r.netWorth });
+    byWorkspace.set(r.workspaceId, list);
+  }
+
+  const result: Record<string, { netWorth: number; trend: number[]; asOf: string | null }> = {};
+  for (const id of workspaceIds) {
+    const series = byWorkspace.get(id) ?? [];
+    const recent = series.slice(-14); // last ~2 weeks for the card sparkline
+    const latest = series[series.length - 1];
+    result[id] = {
+      netWorth: latest?.netWorth ?? 0,
+      trend:    recent.map((s) => s.netWorth),
+      asOf:     latest?.date.toISOString() ?? null,
+    };
+  }
+  return result;
+}
+
+/**
  * Full portfolio history — used by the area charts on Banking and Investments.
  * Returns all rows oldest-first.
  */

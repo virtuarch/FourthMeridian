@@ -121,7 +121,7 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
     ],
   },
   {
-    label: "Workspaces",
+    label: "Spaces",
     actions: [
       AuditAction.WORKSPACE_CREATE,
       AuditAction.WORKSPACE_UPDATE,

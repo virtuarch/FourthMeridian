@@ -10,7 +10,14 @@
  *   Good afternoon, Jane.
  *   You're up to date.
  *   Here's what changed since your last visit.
- *   [Continue to Dashboard]  [View AI Analysis]   ← primary CTAs live here
+ *   [Continue to Spaces]  [View AI Analysis]   ← primary CTAs live here
+ *
+ *   "Continue to Spaces" is the user's portal into the rest of the Fourth
+ *   Meridian ecosystem (see /dashboard/spaces — SpacesClient). Users do not
+ *   land on Spaces after login; they land here, on the Brief, and choose
+ *   when to continue in. Once "Since Your Last Visit" aggregates updates
+ *   across every active Space (future backend work), this CTA's label can
+ *   stay the same — the destination already is the full Spaces picture.
  *
  * CTAs are placed directly under the hero status line so users who
  * already know their intent don't need to scroll past the brief cards.
@@ -43,7 +50,7 @@
  */
 
 import Link from "next/link";
-import { LayoutDashboard, Brain, ArrowRight } from "lucide-react";
+import { LayoutGrid, Brain, ArrowRight } from "lucide-react";
 import { EarthBackground } from "./EarthBackground";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { useTheme } from "@/components/theme/ThemeProvider";
@@ -63,7 +70,7 @@ function formatTimestamp(iso: string): string {
 }
 
 function greetVerb(state: VisitState): string {
-  if (state === "new_user") return "Welcome to FinTracker";
+  if (state === "new_user") return "Welcome to Fourth Meridian";
   const h = new Date().getHours();
   if (h < 12) return "Good morning,";
   if (h < 17) return "Good afternoon,";
@@ -121,7 +128,7 @@ function HeroCTAs() {
           the secondary's e1) carries "this is primary" — no neon outer glow. */}
       <GlassPanel
         as={Link}
-        href="/dashboard"
+        href="/dashboard/spaces"
         depth="thin"
         radius="sm"
         elevation="e2"
@@ -137,8 +144,8 @@ function HeroCTAs() {
             row so they lay out horizontally regardless (same fix as the
             secondary CTA below). */}
         <span className="relative z-10 inline-flex items-center justify-center gap-2">
-          <LayoutDashboard className="w-4 h-4 shrink-0" />
-          <span>Continue to Dashboard</span>
+          <LayoutGrid className="w-4 h-4 shrink-0" />
+          <span>Continue to Spaces</span>
           <ArrowRight className="w-3.5 h-3.5 shrink-0 transition-transform duration-[var(--dur-base)] ease-[var(--ease-standard)] group-hover:translate-x-0.5" />
         </span>
       </GlassPanel>
@@ -216,7 +223,7 @@ export function BriefHero({ visitState, contextLine, generatedAt }: BriefHeroPro
           {isNewUser ? (
             <h1 className="text-5xl md:text-6xl lg:text-7xl font-bold leading-none tracking-tight mb-4">
               <span className="text-[var(--text-primary)]">Welcome to </span>
-              <span className="text-[var(--brass-300)]">FinTracker</span>
+              <span className="text-[var(--brass-300)]">Fourth Meridian</span>
             </h1>
           ) : (
             <h1 className="text-5xl md:text-6xl lg:text-7xl font-bold leading-none tracking-tight mb-4">

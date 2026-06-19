@@ -72,7 +72,7 @@ export function AddWalletModal({ onClose, onAdd }: Props) {
         {/* Form — scrollable if content overflows */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           <p className="text-xs text-gray-400">
-            Enter a public wallet address. FinTracker will query the blockchain for your balance — no private keys needed, ever.
+            Enter a public wallet address. Fourth Meridian will query the blockchain for your balance — no private keys needed, ever.
           </p>
 
           {/* Wallet name */}

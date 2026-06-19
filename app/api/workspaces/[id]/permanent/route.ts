@@ -50,11 +50,11 @@ export const DELETE = withApiHandler(async (
   const workspace = await db.workspace.findUnique({ where: { id } });
   if (!workspace) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (workspace.type === "PERSONAL") {
-    return NextResponse.json({ error: "Cannot delete your personal workspace" }, { status: 400 });
+    return NextResponse.json({ error: "Cannot delete your Personal Space" }, { status: 400 });
   }
   if (!workspace.deletedAt) {
     return NextResponse.json(
-      { error: "Move workspace to trash before permanently deleting it" },
+      { error: "Move Space to trash before permanently deleting it" },
       { status: 400 }
     );
   }
@@ -65,7 +65,7 @@ export const DELETE = withApiHandler(async (
   if (ownedAccountCount > 0) {
     return NextResponse.json(
       {
-        error: `This workspace owns ${ownedAccountCount} account${ownedAccountCount === 1 ? "" : "s"}. Reassign or remove ${ownedAccountCount === 1 ? "it" : "them"} before permanently deleting the workspace.`,
+        error: `This Space owns ${ownedAccountCount} account${ownedAccountCount === 1 ? "" : "s"}. Reassign or remove ${ownedAccountCount === 1 ? "it" : "them"} before permanently deleting the Space.`,
         ownedAccountCount,
       },
       { status: 400 }

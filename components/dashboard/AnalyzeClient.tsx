@@ -57,7 +57,7 @@ export function AnalyzeClient({ advice, ficoScore, latestSnapshot, snapshotCount
     {
       role: "assistant",
       content:
-        `Hi ${userName} — I'm your FinTracker AI advisor. I've been trained on your financial snapshot. Ask me anything about your portfolio, debt, cash position, or whether now is a good time to make a move.`,
+        `Hi ${userName} — I'm your Fourth Meridian AI advisor. I've been trained on your financial snapshot. Ask me anything about your portfolio, debt, cash position, or whether now is a good time to make a move.`,
     },
   ]);
   const [input, setInput] = useState("");

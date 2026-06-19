@@ -81,16 +81,16 @@ export const PATCH = withApiHandler(async (
   if (archivedAt !== undefined) {
     if (membership.role !== WorkspaceMemberRole.OWNER) {
       return NextResponse.json(
-        { error: "Only the workspace owner can archive or unarchive this workspace" },
+        { error: "Only the Space owner can archive or unarchive this Space" },
         { status: 403 }
       );
     }
     if (existing.type === "PERSONAL") {
-      return NextResponse.json({ error: "Cannot archive your personal workspace" }, { status: 400 });
+      return NextResponse.json({ error: "Cannot archive your Personal Space" }, { status: 400 });
     }
     if (existing.deletedAt) {
       return NextResponse.json(
-        { error: "Workspace is in trash — restore it before archiving" },
+        { error: "Space is in trash — restore it before archiving" },
         { status: 400 }
       );
     }
@@ -137,10 +137,10 @@ export const DELETE = withApiHandler(async (
   const workspace = await db.workspace.findUnique({ where: { id } });
   if (!workspace) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (workspace.type === "PERSONAL") {
-    return NextResponse.json({ error: "Cannot delete your personal workspace" }, { status: 400 });
+    return NextResponse.json({ error: "Cannot delete your Personal Space" }, { status: 400 });
   }
   if (workspace.deletedAt) {
-    return NextResponse.json({ error: "Workspace is already in trash" }, { status: 400 });
+    return NextResponse.json({ error: "Space is already in trash" }, { status: 400 });
   }
 
   // Soft-delete only: move to trash. Does NOT cascade-delete members,

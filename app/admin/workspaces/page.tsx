@@ -80,9 +80,9 @@ export default function AdminWorkspacesPage() {
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Workspaces</h1>
+          <h1 className="text-2xl font-bold text-white">Spaces</h1>
           <p className="text-sm text-gray-400 mt-0.5">
-            {loading ? "Loading…" : `${filtered.length} of ${workspaces.length} workspace${workspaces.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
+            {loading ? "Loading…" : `${filtered.length} of ${workspaces.length} Space${workspaces.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
           </p>
         </div>
         <button
@@ -106,7 +106,7 @@ export default function AdminWorkspacesPage() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by workspace name…"
+            placeholder="Search by Space name…"
             className="w-full bg-gray-900/60 border border-gray-800 rounded-xl pl-9 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600"
           />
           {search && (
@@ -175,7 +175,7 @@ export default function AdminWorkspacesPage() {
         <div className="text-center text-sm text-gray-600 py-10">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="text-center text-sm text-gray-600 py-10">
-          {hasFilters ? "No workspaces match the current filters." : "No workspaces yet."}
+          {hasFilters ? "No Spaces match the current filters." : "No Spaces yet."}
         </div>
       ) : (
         <div className="space-y-4">

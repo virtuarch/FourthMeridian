@@ -312,10 +312,10 @@ export function AddManualAssetModal({ onClose, onAdd }: Props) {
       {loadingWs ? (
         <div className="flex items-center gap-2 text-xs text-gray-500">
           <Loader2 size={12} className="animate-spin" />
-          Loading workspaces…
+          Loading Spaces…
         </div>
       ) : workspaces.length > 0 ? (
-        <Field label="Share into workspaces (optional)">
+        <Field label="Share into Spaces (optional)">
           <div className="space-y-2">
             {workspaces.map((ws) => {
               const checked = selectedWsIds.includes(ws.id);
@@ -343,7 +343,7 @@ export function AddManualAssetModal({ onClose, onAdd }: Props) {
           </div>
         </Field>
       ) : (
-        <p className="text-xs text-gray-600">No shared workspaces found. The asset will be added to your personal dashboard.</p>
+        <p className="text-xs text-gray-600">No shared Spaces found. The asset will be added to your personal dashboard.</p>
       )}
     </div>
   );

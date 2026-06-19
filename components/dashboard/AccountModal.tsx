@@ -619,7 +619,7 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
               <p className="text-sm font-semibold text-white">Remove this account?</p>
               <p className="text-xs text-gray-400">
                 {account.institution === "Self-custodied"
-                  ? "This wallet will be removed from your workspace. No on-chain data is affected."
+                  ? "This wallet will be removed from your Space. No on-chain data is affected."
                   : "This account will be disconnected. Transaction history is preserved but the account won't refresh."}
               </p>
               {removeError && <p className="text-xs text-red-400">{removeError}</p>}

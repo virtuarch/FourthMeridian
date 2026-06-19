@@ -478,7 +478,7 @@ const registry: WidgetRegistryEntry[] = [
     meta: {
       key:         "goals_progress",
       label:       "Goals",
-      description: "Active, completed, and archived goals for this workspace.",
+      description: "Active, completed, and archived goals for this space.",
       tab:         WorkspaceDashboardTab.GOALS,
       icon:        "Target",
       dataTier:    "goals",
@@ -494,7 +494,7 @@ const registry: WidgetRegistryEntry[] = [
     meta: {
       key:         "recent_activity",
       label:       "Recent Activity",
-      description: "Member actions and account updates for this workspace.",
+      description: "Member actions and account updates for this space.",
       tab:         WorkspaceDashboardTab.ACTIVITY,
       icon:        "Clock",
       dataTier:    "activity",   // fetches GET /api/workspaces/[id]/activity internally

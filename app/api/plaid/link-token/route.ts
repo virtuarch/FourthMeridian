@@ -28,7 +28,7 @@ export async function GET() {
     // ── Server-side config log (safe fields only) ─────────────────────────────
     console.log("[plaid] link-token config:", {
       env:           PLAID_ENV,
-      client_name:   "FinTracker",
+      client_name:   "Fourth Meridian",
       products:      products.map(String),
       country_codes: country_codes.map(String),
       redirect_uri:  redirectUri ? "set" : "NOT SET (OAuth institutions will fail)",
@@ -36,7 +36,7 @@ export async function GET() {
 
     const response = await plaidClient.linkTokenCreate({
       user:          { client_user_id: user.id },
-      client_name:   "FinTracker",
+      client_name:   "Fourth Meridian",
       products,
       country_codes,
       language:      "en",

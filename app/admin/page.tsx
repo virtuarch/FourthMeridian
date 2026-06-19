@@ -59,7 +59,7 @@ export default async function AdminOverviewPage() {
 
   const STAT_CARDS = [
     { label: "Users",      value: users.length,      icon: Users,      color: "text-blue-400",    bg: "bg-blue-500/10"    },
-    { label: "Workspaces", value: workspaces.length,  icon: Building2,  color: "text-violet-400",  bg: "bg-violet-500/10"  },
+    { label: "Spaces",     value: workspaces.length,  icon: Building2,  color: "text-violet-400",  bg: "bg-violet-500/10"  },
     { label: "Accounts",   value: totalAccounts,      icon: CreditCard, color: "text-emerald-400", bg: "bg-emerald-500/10" },
     { label: "Audit Logs", value: totalAuditLogs,     icon: ScrollText, color: "text-amber-400",   bg: "bg-amber-500/10"   },
   ];
@@ -68,7 +68,7 @@ export default async function AdminOverviewPage() {
     <div className="space-y-8 max-w-6xl">
       <div>
         <h1 className="text-2xl font-bold text-white">Overview</h1>
-        <p className="text-sm text-gray-400 mt-0.5">System-wide snapshot of all users, workspaces, and activity.</p>
+        <p className="text-sm text-gray-400 mt-0.5">System-wide snapshot of all users, Spaces, and activity.</p>
       </div>
 
       {/* ── Stat cards ── */}
@@ -101,7 +101,7 @@ export default async function AdminOverviewPage() {
                 <tr className="border-b border-gray-800 text-xs text-gray-500 text-left">
                   <th className="px-4 py-3 font-medium">User</th>
                   <th className="px-4 py-3 font-medium">Role</th>
-                  <th className="px-4 py-3 font-medium hidden sm:table-cell">Workspace</th>
+                  <th className="px-4 py-3 font-medium hidden sm:table-cell">Space</th>
                   <th className="px-4 py-3 font-medium hidden md:table-cell">Joined</th>
                 </tr>
               </thead>
@@ -150,7 +150,7 @@ export default async function AdminOverviewPage() {
       {/* ── Workspaces table ── */}
       <section>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-base font-semibold text-white">Workspaces</h2>
+          <h2 className="text-base font-semibold text-white">Spaces</h2>
           <Link href="/admin/workspaces" className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors">
             View all <ChevronRight size={13} />
           </Link>

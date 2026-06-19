@@ -89,7 +89,7 @@ export async function PATCH(req: NextRequest) {
         select: { status: true },
       });
       if (!membership || membership.status !== "ACTIVE") {
-        return NextResponse.json({ error: "Not a member of that workspace" }, { status: 403 });
+        return NextResponse.json({ error: "Not a member of that Space" }, { status: 403 });
       }
     }
     data.preferredWorkspaceId = preferredWorkspaceId;

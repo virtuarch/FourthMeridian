@@ -117,7 +117,7 @@ export const DELETE = withApiHandler(async (
 
   // Can't remove the OWNER (transfer ownership first)
   if (targetMembership.role === "OWNER" && !isSelf) {
-    return NextResponse.json({ error: "Cannot remove the workspace owner" }, { status: 403 });
+    return NextResponse.json({ error: "Cannot remove the Space owner" }, { status: 403 });
   }
 
   // Must be self or an admin/owner

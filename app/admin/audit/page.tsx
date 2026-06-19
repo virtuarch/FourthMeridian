@@ -215,7 +215,7 @@ function LogRow({ log, isLast }: { log: LogEntry; isLast: boolean }) {
               <div className="flex flex-wrap gap-4 text-xs text-gray-600">
                 <span>ID: <span className="font-mono text-gray-500">{log.id}</span></span>
                 {log.userId && <span>User ID: <span className="font-mono text-gray-500">{log.userId}</span></span>}
-                {log.workspaceId && <span>Workspace ID: <span className="font-mono text-gray-500">{log.workspaceId}</span></span>}
+                {log.workspaceId && <span>Space ID: <span className="font-mono text-gray-500">{log.workspaceId}</span></span>}
                 {log.performedByAdminId && <span>Admin ID: <span className="font-mono text-gray-500">{log.performedByAdminId}</span></span>}
               </div>
             </div>
@@ -437,13 +437,13 @@ export default function AdminAuditPage() {
             {/* Workspace ID */}
             <div className="space-y-1">
               <label className="flex items-center gap-1.5 text-xs text-gray-500 font-medium">
-                <Building2 size={11} /> Workspace ID
+                <Building2 size={11} /> Space ID
               </label>
               <input
                 type="text"
                 value={workspaceId}
                 onChange={(e) => setWorkspaceId(e.target.value)}
-                placeholder="Workspace ID"
+                placeholder="Space ID"
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 font-mono"
               />
             </div>
@@ -497,7 +497,7 @@ export default function AdminAuditPage() {
                 <th className="px-4 py-3 font-medium">Timestamp</th>
                 <th className="px-4 py-3 font-medium hidden sm:table-cell">User</th>
                 <th className="px-4 py-3 font-medium">Action</th>
-                <th className="px-4 py-3 font-medium hidden lg:table-cell">Workspace</th>
+                <th className="px-4 py-3 font-medium hidden lg:table-cell">Space</th>
                 <th className="px-4 py-3 font-medium hidden md:table-cell">IP / Device</th>
                 <th className="px-4 py-3 font-medium hidden xl:table-cell">Details</th>
               </tr>

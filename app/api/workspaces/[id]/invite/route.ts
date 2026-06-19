@@ -39,7 +39,7 @@ export async function POST(
 
   // Can't invite yourself
   if (targetUser.id === user.id) {
-    return NextResponse.json({ error: "You're already in this workspace" }, { status: 400 });
+    return NextResponse.json({ error: "You're already in this Space" }, { status: 400 });
   }
 
   // Already an ACTIVE member? (H1 fix: REMOVED/LEFT rows don't count)

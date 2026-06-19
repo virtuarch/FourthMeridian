@@ -79,7 +79,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       }))?.workspaceId;
 
   if (!personalWorkspaceId) {
-    return NextResponse.json({ error: "Personal workspace not found." }, { status: 500 });
+    return NextResponse.json({ error: "Personal Space not found." }, { status: 500 });
   }
 
   // ── Validate additional workspace IDs (must be member of each) ────────────
@@ -96,7 +96,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     const validIds = new Set(memberships.map((m) => m.workspaceId));
     const invalid  = additionalIds.filter((id) => !validIds.has(id));
     if (invalid.length > 0) {
-      return NextResponse.json({ error: "Not a member of one or more requested workspaces." }, { status: 403 });
+      return NextResponse.json({ error: "Not a member of one or more requested Spaces." }, { status: 403 });
     }
   }
 

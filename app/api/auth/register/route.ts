@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
 
       const workspace = await tx.workspace.create({
         data: {
-          name: `${firstName.trim()}'s Dashboard`,
+          name: `${firstName.trim()}'s Space`,
           type: "PERSONAL",
         },
       });

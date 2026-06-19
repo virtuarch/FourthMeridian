@@ -674,7 +674,7 @@ export function DashboardClient({
       <div className="flex items-start justify-between mb-0">
         <div>
           <h1 className="text-xl font-bold text-white">
-            {firstName ? `${firstName}'s Dashboard` : "My Dashboard"}
+            {firstName ? `${firstName}'s Space` : "My Space"}
           </h1>
           <p className="text-sm text-gray-500">Personal</p>
         </div>

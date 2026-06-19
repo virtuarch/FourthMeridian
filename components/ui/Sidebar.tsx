@@ -1,136 +1,158 @@
 "use client";
 
+/**
+ * Sidebar
+ *
+ * Spaces-first navigation, restyled with Atlas Glass (Fourth Meridian
+ * Design Language v1). Replaces the old flat Dashboard/Workspaces/Analyze
+ * list with the platform-shaped tree from the redesign brief:
+ *
+ *   Daily Brief
+ *   ───────────
+ *   Spaces
+ *     • Personal
+ *     • Chris & Rawan
+ *     • Fourth Meridian LLC
+ *     ...
+ *     + Create Space
+ *   ───────────
+ *   AI
+ *   Messages        (Soon)
+ *   Market Intel    (Soon)
+ *   Marketplace     (Soon)
+ *   ───────────
+ *   Settings
+ *
+ * There is no standalone "Dashboard" entry — a Space's dashboard is reached
+ * by selecting that Space below, not via a separate nav item. There is also
+ * no standalone "Workspaces" entry — Spaces are inline here, with
+ * /dashboard/spaces (SpacesClient) as the full landing page for managing,
+ * creating, and exploring them.
+ *
+ * Backend note: this component still reads the existing `fintracker_workspace`
+ * cookie and calls the existing /api/workspaces, /api/workspace/switch and
+ * /api/workspaces/invites/pending routes verbatim — no API or schema changes.
+ * The lightweight GET /api/workspaces used here only selects {id,name,type},
+ * so per-category icons (used on the Spaces cards) aren't available at this
+ * call site; rows use a Personal/Shared icon distinction instead. Future
+ * enhancement: add `category` to that route's select if per-Space icons in
+ * the sidebar are wanted.
+ */
+
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
-  LayoutDashboard,
+  Sparkles,
+  Home,
   Building2,
   Brain,
+  MessageSquare,
+  LineChart,
+  Store,
+  Settings as SettingsIcon,
   RefreshCw,
   LogOut,
   Pencil,
-  ChevronDown,
-  Crown,
-  Shield,
-  Users,
-  Eye,
+  Plus,
   Check,
   Loader2,
+  AlertTriangle,
+  type LucideIcon,
 } from "lucide-react";
+import { AppLogo } from "@/components/ui/AppLogo";
 
-const nav = [
-  { label: "Dashboard",       href: "/dashboard",            icon: LayoutDashboard },
-  { label: "Workspaces",      href: "/dashboard/workspaces", icon: Building2 },
-  { label: "Analyze with AI", href: "/dashboard/analyze",    icon: Brain },
-];
+const COOKIE_NAME = "fintracker_workspace";
+const INLINE_SPACE_LIMIT = 6;
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+function readSpaceCookie(): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${COOKIE_NAME}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
 
-type WorkspaceItem = {
+type SpaceItem = {
   id:      string;
   name:    string;
   type:    string;
   myRole?: string | null;
 };
 
-const ROLE_ICONS: Record<string, React.ReactNode> = {
-  OWNER:  <Crown  size={10} className="text-yellow-400" />,
-  ADMIN:  <Shield size={10} className="text-blue-400"   />,
-  MEMBER: <Users  size={10} className="text-gray-400"   />,
-  VIEWER: <Eye    size={10} className="text-gray-500"   />,
-};
+// ── Spaces nav section ──────────────────────────────────────────────────────
+// Inline, always-expanded list (not a dropdown) — Spaces are a first-class
+// nav concept now, not a page you have to go manage elsewhere. Caps at
+// INLINE_SPACE_LIMIT rows so this scales from 1 Space to 50+ without the
+// sidebar growing unbounded; the rest are one click away on /dashboard/spaces.
 
-const COOKIE_NAME = "fintracker_workspace";
-
-function readWorkspaceCookie(): string | null {
-  if (typeof document === "undefined") return null;
-  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${COOKIE_NAME}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-// ── Workspace Switcher ────────────────────────────────────────────────────────
-
-function WorkspaceSwitcher() {
+function SpacesNavSection({ pathname }: { pathname: string }) {
   const router = useRouter();
-  const [open,         setOpen]         = useState(false);
-  const [workspaces,   setWorkspaces]   = useState<WorkspaceItem[]>([]);
-  const [activeId,     setActiveId]     = useState<string | null>(null);
-  const [switching,    setSwitching]    = useState<string | null>(null);
-  const [loaded,       setLoaded]       = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [spaces,         setSpaces]         = useState<SpaceItem[]>([]);
+  const [activeId,       setActiveId]       = useState<string | null>(null);
+  const [switching,      setSwitching]      = useState<string | null>(null);
+  const [pendingInvites, setPendingInvites] = useState(0);
+  const [loaded,         setLoaded]         = useState(false);
 
-  // Close on outside click
-  useEffect(() => {
-    function handler(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  const loadWorkspaces = useCallback(async () => {
+  const loadSpaces = useCallback(async () => {
     try {
       const res = await fetch("/api/workspaces");
-      if (!res.ok) return;
-      const data = await res.json();
-
-      // mine includes PERSONAL + SHARED workspaces with myRole
-      const mine: WorkspaceItem[] = (data.mine ?? []).map((w: WorkspaceItem & { members?: unknown[] }) => ({
-        id:     w.id,
-        name:   w.name,
-        type:   w.type,
-        myRole: w.myRole,
-      }));
-
-      setWorkspaces(mine);
-
-      // Determine active workspace from cookie
-      const cookieId = readWorkspaceCookie();
-      if (cookieId && mine.some((w) => w.id === cookieId)) {
-        setActiveId(cookieId);
-      } else {
-        // Default to personal
-        const personal = mine.find((w) => w.type === "PERSONAL");
-        if (personal) setActiveId(personal.id);
+      if (res.ok) {
+        const data = await res.json();
+        const mine: SpaceItem[] = (data.mine ?? []).map((w: SpaceItem) => ({
+          id: w.id, name: w.name, type: w.type, myRole: w.myRole,
+        }));
+        setSpaces(mine);
+        const cookieId = readSpaceCookie();
+        if (cookieId && mine.some((w) => w.id === cookieId)) {
+          setActiveId(cookieId);
+        } else {
+          setActiveId(mine.find((w) => w.type === "PERSONAL")?.id ?? null);
+        }
       }
-      setLoaded(true);
     } catch {
-      // Non-fatal — UI falls back gracefully
+      // non-fatal — section just renders empty
+    }
+    setLoaded(true);
+  }, []);
+
+  const loadInvites = useCallback(async () => {
+    try {
+      const res = await fetch("/api/workspaces/invites/pending");
+      if (res.ok) {
+        const data = await res.json();
+        setPendingInvites(data.count ?? 0);
+      }
+    } catch {
+      // non-fatal
     }
   }, []);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { loadWorkspaces(); }, [loadWorkspaces]);
+  useEffect(() => { loadSpaces(); loadInvites(); }, [loadSpaces, loadInvites]);
 
-  // Reload whenever the dropdown opens (catches newly created workspaces)
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (open) loadWorkspaces();
-  }, [open, loadWorkspaces]);
+    function handle() { loadSpaces(); loadInvites(); }
+    window.addEventListener("workspace-list-changed", handle);
+    window.addEventListener("workspace-invites-changed", handle);
+    return () => {
+      window.removeEventListener("workspace-list-changed", handle);
+      window.removeEventListener("workspace-invites-changed", handle);
+    };
+  }, [loadSpaces, loadInvites]);
 
-  // Listen for workspace-list-changed events dispatched after creation/deletion
-  useEffect(() => {
-    function handleChange() { loadWorkspaces(); }
-    window.addEventListener("workspace-list-changed", handleChange);
-    return () => window.removeEventListener("workspace-list-changed", handleChange);
-  }, [loadWorkspaces]);
-
-  async function handleSwitch(workspaceId: string) {
-    if (workspaceId === activeId) { setOpen(false); return; }
-    setSwitching(workspaceId);
+  async function handleSwitch(id: string) {
+    if (id === activeId) { router.push("/dashboard"); return; }
+    setSwitching(id);
     try {
       const res = await fetch("/api/workspace/switch", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ workspaceId }),
+        body:    JSON.stringify({ workspaceId: id }),
       });
       if (res.ok) {
-        setActiveId(workspaceId);
-        setOpen(false);
-        router.refresh(); // re-run server components with new cookie
-        // Navigate to dashboard to show the new workspace context
+        setActiveId(id);
+        window.dispatchEvent(new CustomEvent("workspace-list-changed"));
+        router.refresh();
         router.push("/dashboard");
       }
     } finally {
@@ -138,209 +160,289 @@ function WorkspaceSwitcher() {
     }
   }
 
-  const activeWs = workspaces.find((w) => w.id === activeId);
-  const isPersonal = activeWs?.type === "PERSONAL";
-
-  if (!loaded) {
-    return (
-      <div className="flex items-center gap-2 px-4 py-2.5 mx-2 rounded-xl bg-gray-800/60">
-        <div className="w-6 h-6 rounded-lg bg-gray-700 shrink-0" />
-        <div className="flex-1 h-3 bg-gray-700 rounded animate-pulse" />
-      </div>
-    );
-  }
+  const personal  = spaces.find((s) => s.type === "PERSONAL");
+  const others    = spaces.filter((s) => s.id !== personal?.id);
+  const ordered   = personal ? [personal, ...others] : others;
+  const inline    = ordered.slice(0, INLINE_SPACE_LIMIT);
+  const overflow  = ordered.length - inline.length;
+  const onSpaces  = pathname.startsWith("/dashboard/spaces");
 
   return (
-    <div ref={ref} className="relative mx-2">
-      <button
-        onClick={() => setOpen((p) => !p)}
-        className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl transition-colors text-left ${
-          open ? "bg-gray-700" : "bg-gray-800/60 hover:bg-gray-800"
-        }`}
+    <div className="px-3">
+      <Link
+        href="/dashboard/spaces"
+        className={[
+          "flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-semibold uppercase tracking-wider transition-colors",
+          onSpaces ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
+        ].join(" ")}
       >
-        <div className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 ${
-          isPersonal ? "bg-blue-600/30" : "bg-gray-600"
-        }`}>
-          <Building2 size={12} className={isPersonal ? "text-blue-400" : "text-gray-400"} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-xs font-medium text-white truncate">
-            {activeWs?.name ?? "Loading…"}
-          </p>
-          <p className="text-[10px] text-gray-500">
-            {isPersonal ? "Personal" : "Shared workspace"}
-          </p>
-        </div>
-        <ChevronDown size={13} className={`text-gray-500 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
+        <span className="flex-1">Spaces</span>
+        {pendingInvites > 0 && (
+          <span
+            className="min-w-[16px] h-[16px] px-1 rounded-full text-white text-[9px] font-bold flex items-center justify-center"
+            style={{ background: "var(--coral-500)" }}
+          >
+            {pendingInvites > 9 ? "9+" : pendingInvites}
+          </span>
+        )}
+      </Link>
 
-      {open && (
-        <div className="absolute left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden">
-          <div className="px-3 pt-2.5 pb-1">
-            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest">
-              Switch Workspace
-            </p>
-          </div>
-          {workspaces.map((ws) => {
-            const isActive  = ws.id === activeId;
-            const personal  = ws.type === "PERSONAL";
-            const isBusy    = switching === ws.id;
+      <div className="mt-0.5 space-y-0.5">
+        {!loaded ? (
+          <div className="h-8 mx-2 rounded-lg animate-pulse" style={{ background: "var(--surface-muted)" }} />
+        ) : (
+          inline.map((space) => {
+            const isActive   = space.id === activeId;
+            const isBusy     = switching === space.id;
+            const isPersonal = space.id === personal?.id;
             return (
               <button
-                key={ws.id}
-                onClick={() => handleSwitch(ws.id)}
+                key={space.id}
+                onClick={() => handleSwitch(space.id)}
                 disabled={!!switching}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 transition-colors disabled:opacity-50 ${
-                  isActive ? "bg-blue-600/15" : "hover:bg-gray-700/60"
-                }`}
+                className={[
+                  "w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left text-[13px] border transition-[background-color,border-color,color] disabled:opacity-60",
+                  isActive
+                    ? "text-[var(--text-primary)] bg-[rgba(59,130,246,.06)] border-[rgba(125,168,255,.16)]"
+                    : "text-[var(--text-secondary)] border-transparent hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]",
+                ].join(" ")}
               >
-                <div className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 ${
-                  personal ? "bg-blue-600/25" : "bg-gray-600/60"
-                }`}>
+                <span className="shrink-0" style={{ color: isActive ? "var(--meridian-400)" : "var(--text-muted)" }}>
                   {isBusy
-                    ? <Loader2 size={11} className="animate-spin text-gray-400" />
-                    : <Building2 size={11} className={personal ? "text-blue-400" : "text-gray-400"} />
+                    ? <Loader2 size={13} className="animate-spin" />
+                    : isPersonal ? <Home size={13} /> : <Building2 size={13} />
                   }
-                </div>
-                <div className="flex-1 min-w-0 text-left">
-                  <p className="text-xs text-white truncate">{ws.name}</p>
-                  {ws.myRole && (
-                    <span className="flex items-center gap-0.5 text-[10px] text-gray-500">
-                      {ROLE_ICONS[ws.myRole] ?? null}
-                      <span className="ml-0.5">{ws.myRole.charAt(0) + ws.myRole.slice(1).toLowerCase()}</span>
-                    </span>
+                </span>
+                {/* Name + presence dot grouped together so the dot reads as
+                    a marker beside the Space's name, not an unrelated status
+                    light pinned to the row's far edge. */}
+                <span className="flex-1 min-w-0 flex items-center gap-1.5">
+                  <span className="truncate">{space.name}</span>
+                  {isActive && (
+                    <span
+                      className="presence-dot w-[6px] h-[6px] rounded-full shrink-0"
+                      style={{ background: "var(--emerald-400)" }}
+                      aria-hidden
+                    />
                   )}
-                </div>
-                {isActive && <Check size={13} className="text-blue-400 shrink-0" />}
+                </span>
               </button>
             );
-          })}
-          <div className="px-3 py-2 border-t border-gray-700/60">
-            <Link
-              href="/dashboard/workspaces"
-              onClick={() => setOpen(false)}
-              className="block text-xs text-gray-500 hover:text-gray-300 transition-colors"
-            >
-              Manage workspaces →
-            </Link>
-          </div>
-        </div>
-      )}
+          })
+        )}
+
+        {overflow > 0 && (
+          <Link
+            href="/dashboard/spaces"
+            className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-[13px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
+          >
+            <span className="w-[13px] shrink-0" />
+            +{overflow} more Space{overflow === 1 ? "" : "s"}
+          </Link>
+        )}
+
+        <Link
+          href="/dashboard/spaces"
+          className="mt-1 flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-[13px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--glass-ultrathin)] hover:bg-[var(--surface-hover-strong)] border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:-translate-y-[1px] active:scale-[0.97] transition-[transform,background-color,border-color,color] duration-[var(--dur-base)] ease-[var(--ease-standard)]"
+        >
+          <Plus size={13} className="shrink-0" />
+          Create Space
+        </Link>
+      </div>
     </div>
   );
 }
 
-// ── Main Sidebar ──────────────────────────────────────────────────────────────
+// ── Coming-soon platform row ────────────────────────────────────────────────
+// Messages / Market Intel / Marketplace have no backing functionality yet.
+// Presented inline (per the redesign brief) so the platform shape reads
+// correctly today, without linking anywhere that 404s.
+
+function ComingSoonRow({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
+  return (
+    <div
+      className="flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium cursor-default"
+      style={{ color: "var(--text-muted)", opacity: 0.55 }}
+    >
+      <Icon size={17} strokeWidth={1.75} />
+      <span className="flex-1">{label}</span>
+      <span
+        className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full"
+        style={{ background: "var(--surface-muted)", color: "var(--text-muted)" }}
+      >
+        Soon
+      </span>
+    </div>
+  );
+}
+
+// ── Refresh Data row ────────────────────────────────────────────────────────
+// Wires to the same POST /api/plaid/refresh pipeline RefreshButton.tsx already
+// calls from the topbar — this row previously rendered with no onClick at all.
+// Reuses existing functionality only; no new backend surface.
+
+function SidebarRefreshButton() {
+  const router = useRouter();
+  const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+
+  async function handleClick() {
+    if (status === "loading") return;
+    setStatus("loading");
+    try {
+      const res = await fetch("/api/plaid/refresh", { method: "POST" });
+      if (!res.ok) throw new Error("Refresh failed");
+      setStatus("done");
+      router.refresh();
+    } catch {
+      setStatus("error");
+    } finally {
+      setTimeout(() => setStatus("idle"), 2500);
+    }
+  }
+
+  const isError = status === "error";
+  const isDone  = status === "done";
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={status === "loading"}
+      className={[
+        "flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium border",
+        "backdrop-blur-xl transition-[transform,background-color,border-color,color] duration-[var(--dur-base)] ease-[var(--ease-standard)]",
+        "active:scale-[0.97] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:active:scale-100",
+        isError
+          ? "text-[var(--coral-400)] bg-[rgba(237,82,71,.08)] hover:bg-[rgba(237,82,71,.14)] border-[rgba(237,82,71,.3)]"
+          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--glass-ultrathin)] hover:bg-[var(--surface-hover-strong)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:-translate-y-[1px]",
+      ].join(" ")}
+    >
+      {status === "loading" && <Loader2 size={17} className="animate-spin shrink-0" />}
+      {isDone && <Check size={17} className="shrink-0 text-[var(--emerald-400)]" />}
+      {isError && <AlertTriangle size={17} className="shrink-0" />}
+      {status === "idle" && <RefreshCw size={17} strokeWidth={1.75} className="shrink-0" />}
+      {status === "loading" ? "Refreshing…" : isDone ? "Synced" : isError ? "Failed — retry" : "Refresh Data"}
+    </button>
+  );
+}
+
+// ── Main Sidebar ─────────────────────────────────────────────────────────────
 
 export function Sidebar() {
-  const path              = usePathname();
-  const { data: session } = useSession();
-  const [pendingInvites, setPendingInvites] = useState(0);
-
-  // Fetch pending invite count
-  const loadPendingInvites = useCallback(async () => {
-    try {
-      const res = await fetch("/api/workspaces/invites/pending");
-      if (!res.ok) return;
-      const data = await res.json();
-      setPendingInvites(data.count ?? 0);
-    } catch {
-      // non-fatal
-    }
-  }, []);
-
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { loadPendingInvites(); }, [loadPendingInvites]);
-
-  // Re-fetch when invites change (accept/decline/new invite)
-  useEffect(() => {
-    function handle() { loadPendingInvites(); }
-    window.addEventListener("workspace-invites-changed", handle);
-    window.addEventListener("workspace-list-changed",   handle);
-    return () => {
-      window.removeEventListener("workspace-invites-changed", handle);
-      window.removeEventListener("workspace-list-changed",   handle);
-    };
-  }, [loadPendingInvites]);
+  const path               = usePathname();
+  const { data: session }  = useSession();
 
   const user     = session?.user;
   const initial  = (user?.name ?? user?.email ?? "?")[0].toUpperCase();
   const username = user?.username ? `@${user.username}` : null;
 
-  return (
-    <aside className="hidden lg:flex flex-col w-60 shrink-0 border-r border-gray-800 bg-gray-950 min-h-screen sticky top-0">
-      {/* Logo */}
-      <div className="flex items-center gap-1.5 px-5 h-14 border-b border-gray-800">
-        <img src="/logo-icon.png" alt="FinTracker" className="w-8 h-8 rounded-xl shrink-0 object-contain" />
-        <span className="font-bold text-white text-lg">FinTracker</span>
-      </div>
+  const isBrief    = path === "/dashboard/brief";
+  const isAI       = path.startsWith("/dashboard/analyze");
+  const isSettings = path.startsWith("/dashboard/settings");
 
-      {/* Workspace switcher */}
-      <div className="py-2 border-b border-gray-800">
-        <WorkspaceSwitcher />
+  return (
+    <aside
+      className="hidden lg:flex flex-col w-64 shrink-0 min-h-screen sticky top-0"
+      style={{
+        borderRight:     "1px solid var(--border-hairline)",
+        background:      "var(--glass-ultrathin)",
+        backdropFilter:  "blur(30px) saturate(160%)",
+      }}
+    >
+      {/* Logo */}
+      <div
+        className="flex items-center gap-2 px-5 h-14 shrink-0"
+        style={{ borderBottom: "1px solid var(--border-hairline)" }}
+      >
+        <AppLogo size={32} withWordmark wordmarkClassName="text-[var(--text-primary)] text-lg" priority />
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-3 py-4 space-y-0.5">
-        {nav.map(({ label, href, icon: Icon }) => {
-          const active =
-            href === "/dashboard"
-              ? path === "/dashboard"
-              : path.startsWith(href);
-          const badge = label === "Workspaces" && pendingInvites > 0 ? pendingInvites : null;
-          return (
-            <Link
-              key={href}
-              href={href}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
-                active
-                  ? "bg-blue-600/20 text-blue-400"
-                  : "text-gray-400 hover:text-white hover:bg-gray-800"
-              }`}
-            >
-              <Icon size={18} strokeWidth={active ? 2.5 : 1.75} />
-              <span className="flex-1">{label}</span>
-              {badge !== null && (
-                <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
-                  {badge > 9 ? "9+" : badge}
-                </span>
-              )}
-            </Link>
-          );
-        })}
+      <nav className="flex-1 overflow-y-auto py-4 space-y-5">
+        <div className="px-3">
+          <Link
+            href="/dashboard/brief"
+            className={[
+              "flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium border transition-[background-color,border-color,color]",
+              isBrief
+                ? "text-[var(--meridian-400)] bg-[rgba(59,130,246,.06)] border-[rgba(125,168,255,.16)]"
+                : "text-[var(--text-secondary)] border-transparent hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]",
+            ].join(" ")}
+          >
+            <Sparkles size={17} strokeWidth={isBrief ? 2.5 : 1.75} />
+            Daily Brief
+          </Link>
+        </div>
+
+        <div className="mx-5 h-px" style={{ background: "var(--border-hairline)" }} />
+
+        <SpacesNavSection pathname={path} />
+
+        <div className="mx-5 h-px" style={{ background: "var(--border-hairline)" }} />
+
+        <div className="px-3 space-y-0.5">
+          <Link
+            href="/dashboard/analyze"
+            className={[
+              "flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium border transition-[background-color,border-color,color]",
+              isAI
+                ? "text-[var(--meridian-400)] bg-[rgba(59,130,246,.06)] border-[rgba(125,168,255,.16)]"
+                : "text-[var(--text-secondary)] border-transparent hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]",
+            ].join(" ")}
+          >
+            <Brain size={17} strokeWidth={isAI ? 2.5 : 1.75} />
+            AI
+          </Link>
+          <ComingSoonRow icon={MessageSquare} label="Messages" />
+          <ComingSoonRow icon={LineChart} label="Market Intel" />
+          <ComingSoonRow icon={Store} label="Marketplace" />
+        </div>
+
+        <div className="mx-5 h-px" style={{ background: "var(--border-hairline)" }} />
+
+        <div className="px-3">
+          <Link
+            href="/dashboard/settings"
+            className={[
+              "flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium border transition-[background-color,border-color,color]",
+              isSettings
+                ? "text-[var(--meridian-400)] bg-[rgba(59,130,246,.06)] border-[rgba(125,168,255,.16)]"
+                : "text-[var(--text-secondary)] border-transparent hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]",
+            ].join(" ")}
+          >
+            <SettingsIcon size={17} strokeWidth={isSettings ? 2.5 : 1.75} />
+            Settings
+          </Link>
+        </div>
       </nav>
 
       {/* Bottom */}
-      <div className="px-3 pb-5 space-y-1">
-        <button className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium text-gray-400 hover:text-white hover:bg-gray-800 transition-colors">
-          <RefreshCw size={18} strokeWidth={1.75} />
-          Refresh Data
-        </button>
+      <div className="px-3 pb-5 pt-3 space-y-1" style={{ borderTop: "1px solid var(--border-hairline)" }}>
+        <SidebarRefreshButton />
 
         <button
           onClick={async () => { await signOut({ redirect: false }); window.location.href = "/login"; }}
-          className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+          className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors"
         >
-          <LogOut size={18} strokeWidth={1.75} />
+          <LogOut size={17} strokeWidth={1.75} />
           Sign Out
         </button>
 
         {/* User identity */}
         <div className="flex items-center gap-2.5 px-3 py-2.5">
-          <div className="w-7 h-7 rounded-full bg-blue-600/20 border border-blue-500/30 flex items-center justify-center shrink-0">
-            <span className="text-blue-400 text-xs font-semibold">{initial}</span>
+          <div
+            className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: "rgba(59,130,246,.16)", border: "1px solid rgba(125,168,255,.3)" }}
+          >
+            <span className="text-xs font-semibold" style={{ color: "var(--meridian-400)" }}>{initial}</span>
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-medium text-white truncate">{user?.name ?? "—"}</p>
-            {username ? (
-              <p className="text-xs text-gray-500 truncate">{username}</p>
-            ) : (
-              <p className="text-xs text-gray-600 truncate">{user?.email}</p>
-            )}
+            <p className="text-xs font-medium text-[var(--text-primary)] truncate">{user?.name ?? "—"}</p>
+            <p className="text-xs text-[var(--text-muted)] truncate">{username ?? user?.email}</p>
           </div>
           <Link
             href="/dashboard/settings"
-            className="p-1.5 rounded-lg text-gray-600 hover:text-gray-300 hover:bg-gray-800 transition-colors shrink-0"
+            className="p-1.5 rounded-lg transition-colors shrink-0"
+            style={{ color: "var(--text-muted)" }}
             title="Edit profile"
           >
             <Pencil size={12} />

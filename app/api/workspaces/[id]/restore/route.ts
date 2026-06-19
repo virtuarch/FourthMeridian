@@ -36,7 +36,7 @@ export const POST = withApiHandler(async (
   const workspace = await db.workspace.findUnique({ where: { id } });
   if (!workspace) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (!workspace.deletedAt) {
-    return NextResponse.json({ error: "Workspace is not in trash" }, { status: 400 });
+    return NextResponse.json({ error: "Space is not in trash" }, { status: 400 });
   }
 
   await db.workspace.update({

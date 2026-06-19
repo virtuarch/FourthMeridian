@@ -308,10 +308,10 @@ async function main() {
 
   // ── Workspaces (8) ──────────────────────────────────────────────────────────
   const janeWorkspace = await prisma.workspace.create({
-    data: { name: "Jane's Dashboard", type: "PERSONAL", category: "PERSONAL" },
+    data: { name: "Jane's Space", type: "PERSONAL", category: "PERSONAL" },
   });
   const johnWorkspace = await prisma.workspace.create({
-    data: { name: "John's Dashboard", type: "PERSONAL", category: "PERSONAL" },
+    data: { name: "John's Space", type: "PERSONAL", category: "PERSONAL" },
   });
   const householdWorkspace = await prisma.workspace.create({
     data: { name: "Smith-Doe Household", type: "SHARED", category: "HOUSEHOLD", isPublic: false, description: "Shared household finances for Jane & John" },
@@ -1341,8 +1341,8 @@ async function main() {
     data: [
       // ── Workspace creation trails (oldest events get highest offsets) ─────────
       // Personal workspaces (created ~90 days ago)
-      log(jane.id, janeWorkspace.id,      "WORKSPACE_CREATED",  { name: "Jane's Dashboard",    category: "PERSONAL"   }, T(90)),
-      log(john.id, johnWorkspace.id,      "WORKSPACE_CREATED",  { name: "John's Dashboard",    category: "PERSONAL"   }, T(90)),
+      log(jane.id, janeWorkspace.id,      "WORKSPACE_CREATED",  { name: "Jane's Space",    category: "PERSONAL"   }, T(90)),
+      log(john.id, johnWorkspace.id,      "WORKSPACE_CREATED",  { name: "John's Space",    category: "PERSONAL"   }, T(90)),
 
       // Household workspace (created ~60 days ago, events staggered 5 min apart)
       log(jane.id, householdWorkspace.id, "WORKSPACE_CREATED",  { name: "Smith-Doe Household", category: "HOUSEHOLD"  }, T(60, 20)),

@@ -63,7 +63,7 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
         <div className="flex items-center justify-between px-4 pt-5 pb-3 border-b border-gray-800 shrink-0">
           <div className="flex items-center gap-2">
             <Brain size={16} className="text-gray-400" />
-            <span className="text-sm font-bold tracking-wide text-white">FinTracker Intelligence</span>
+            <span className="text-sm font-bold tracking-wide text-white">Fourth Meridian Intelligence</span>
           </div>
           <button
             onClick={onClose}

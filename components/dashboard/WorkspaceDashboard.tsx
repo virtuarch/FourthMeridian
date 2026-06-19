@@ -162,7 +162,7 @@ function AccountsCard({ accounts }: { accounts: WorkspaceAccount[] }) {
       <div className="text-center py-4">
         <Landmark size={22} className="text-gray-700 mx-auto mb-2" />
         <p className="text-sm text-gray-500">No accounts shared yet</p>
-        <p className="text-xs text-gray-600 mt-0.5">Share accounts from the Workspaces page.</p>
+        <p className="text-xs text-gray-600 mt-0.5">Share accounts from the Spaces page.</p>
       </div>
     );
   }
@@ -850,7 +850,7 @@ const renderNetWorth = (p: SectionRenderProps): React.ReactElement => {
         { label: "Total debt",   value: formatBalance(debt),   accent: "red"   },
       ] : undefined}
       emptyHeadline="No accounts shared yet"
-      emptySubline="Share accounts on the Workspaces page to see net worth."
+      emptySubline="Share accounts on the Spaces page to see net worth."
       emptyIcon={<LayoutDashboard size={22} className="text-gray-700" />}
     />
   );
@@ -875,7 +875,7 @@ const renderDebtSummary = (p: SectionRenderProps): React.ReactElement => {
         valueColor: "red" as const,
       }))}
       emptyHeadline="No debt accounts shared"
-      emptySubline="Share debt accounts from the Workspaces page."
+      emptySubline="Share debt accounts from the Spaces page."
       emptyIcon={<CreditCard size={22} className="text-gray-700" />}
     />
   );
@@ -900,7 +900,7 @@ const renderInvestmentSummary = (p: SectionRenderProps): React.ReactElement => {
         valueColor: "blue" as const,
       }))}
       emptyHeadline="No investment accounts shared"
-      emptySubline="Share investment accounts from the Workspaces page."
+      emptySubline="Share investment accounts from the Spaces page."
       emptyIcon={<TrendingUp size={22} className="text-gray-700" />}
     />
   );
@@ -1325,7 +1325,7 @@ function SettingsTab({
   return (
     <div className="space-y-5">
       <p className="text-xs text-gray-500">
-        Toggle sections to show or hide them on this workspace&apos;s dashboard. Changes apply to all members.
+        Toggle sections to show or hide them on this Space&apos;s dashboard. Changes apply to all members.
       </p>
       {Object.entries(byTab).map(([tab, items]) => (
         <div key={tab}>
@@ -1652,7 +1652,7 @@ function AddGoalModal({
               <>
                 {debtAccounts.length === 0 ? (
                   <p className="text-xs text-gray-500 bg-gray-800 rounded-xl px-3 py-3">
-                    No debt accounts found in this workspace. Add a debt account first.
+                    No debt accounts found in this Space. Add a debt account first.
                   </p>
                 ) : (
                   <div>
@@ -1871,7 +1871,7 @@ export function WorkspaceDashboard({
                 Leave {workspaceName}?
               </h2>
               <p className="text-sm text-gray-400 leading-relaxed">
-                You&apos;ll lose access to this workspace and all of its shared data.
+                You&apos;ll lose access to this Space and all of its shared data.
                 To rejoin, an <span className="text-white font-medium">Owner</span> or{" "}
                 <span className="text-white font-medium">Admin</span> will need to manually
                 re-add you.
@@ -1895,7 +1895,7 @@ export function WorkspaceDashboard({
                 {leaveBusy
                   ? <Loader2 size={14} className="animate-spin" />
                   : <LogOut size={14} />}
-                Leave workspace
+                Leave Space
               </button>
             </div>
           </div>
@@ -1907,7 +1907,7 @@ export function WorkspaceDashboard({
         <div className="flex items-start justify-between mb-5">
           <div>
             <h1 className="text-xl font-bold text-white">{workspaceName}</h1>
-            <p className="text-sm text-gray-500">{catLabel} workspace</p>
+            <p className="text-sm text-gray-500">{catLabel} Space</p>
           </div>
 
           <div className="flex items-center gap-2 shrink-0 ml-3">
@@ -2000,7 +2000,7 @@ export function WorkspaceDashboard({
             <LayoutDashboard size={30} className="text-gray-700 mx-auto mb-3" />
             <p className="text-sm text-gray-500">No dashboard sections configured</p>
             {canManage && (
-              <p className="text-xs text-gray-600 mt-1">This workspace was created without a template.</p>
+              <p className="text-xs text-gray-600 mt-1">This Space was created without a template.</p>
             )}
           </div>
         )}

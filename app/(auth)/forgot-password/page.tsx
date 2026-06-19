@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Loader2, ArrowLeft } from "lucide-react";
+import { AppLogo } from "@/components/ui/AppLogo";
 
 export default function ForgotPasswordPage() {
   const [identifier, setIdentifier] = useState("");
@@ -42,7 +43,9 @@ export default function ForgotPasswordPage() {
 
         {/* Logo */}
         <div className="text-center">
-          <img src="/logo-full.png" alt="Fourth Meridian" className="h-10 w-auto object-contain mx-auto mb-4" />
+          <div className="flex items-center justify-center mb-4">
+            <AppLogo size={32} withWordmark wordmarkClassName="text-white text-lg" forceTheme="dark" priority />
+          </div>
           <h1 className="text-2xl font-bold text-white">Reset your password</h1>
           <p className="text-gray-400 text-sm mt-1">Enter your email or username</p>
         </div>

@@ -200,6 +200,115 @@ body {
 .no-scrollbar { scrollbar-width: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 
+/* ---------- Atlas Field — ambient page background ----------
+   Phase G update: swapped from the generic Earth photography the Daily
+   Brief hero falls back to (oval-world.png / earth-europe-light.png) to the
+   dedicated Fourth Meridian Atlas artwork (fourth-meridian-dark.png /
+   fourth-meridian-light.png — brand globe, baked-in meridian lines, brass
+   horizon glow). Because this art is deliberate brand identity rather than
+   stock photography, it now runs lighter blur/darken than the old "disguise
+   a wallpaper photo" treatment — it's meant to be recognized, not hidden.
+   Positioned `absolute` rather than `fixed` so it fills its nearest
+   `position: relative` ancestor instead of the whole viewport. As of Phase
+   G that ancestor is the dashboard shell's content column (see
+   DashboardChrome.tsx), not just the page's own content wrapper — this is
+   what lets the field paint behind the header strip too, not only below it.
+   See components/atlas/AtlasField.tsx. */
+.atlas-field {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background: radial-gradient(ellipse 120% 80% at 50% -10%, var(--bg-deep), var(--bg-base) 60%);
+  /* Fades the whole field toward every edge so the globe/lines read as
+     atmospheric light bleeding into the page rather than a painted
+     rectangle — this mask, not the layers themselves, is what makes the
+     field feel infinite instead of contained/clipped. */
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 16%, black 30%, transparent 90%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 16%, black 30%, transparent 90%);
+}
+
+/* Subtle top-down dark overlay — re-darkens just the first quarter of the
+   field so header text/buttons stay legible now that the field extends up
+   behind the header strip (Phase G #2), then fades out before the title /
+   card canvas so the art still reads clearly through the rest of the page. */
+.atlas-field::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, var(--bg-deep) 0%, transparent 26%);
+  opacity: .8;
+  pointer-events: none;
+}
+
+/* Fourth Meridian Atlas artwork — brand globe with baked-in meridian grid
+   and brass horizon glow (Phase G #3, swapped in from the project's own
+   fourth-meridian-dark/light.png test assets). Lighter touch than the old
+   stock-photo disguise: less blur, a touch more brightness so the horizon
+   glow and city-light texture stay visible as "distant brand atlas," not
+   mush. Dark/light swap is pure CSS so AtlasField.tsx stays hook-free and
+   server-renderable. */
+.atlas-globe {
+  position: absolute;
+  top: -34%;
+  left: 50%;
+  width: 92vw;
+  max-width: 1500px;
+  aspect-ratio: 1.57;
+  transform: translateX(-50%);
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: center 22%;
+  filter: blur(2px) brightness(.52) saturate(1.15);
+  opacity: .6;
+  animation: atlas-globe-drift 70s var(--ease-standard) infinite alternate;
+  will-change: transform;
+}
+.atlas-globe-dark  { background-image: url("/fourth-meridian-dark.png"); }
+.atlas-globe-light { background-image: url("/fourth-meridian-light.png"); display: none; }
+html[data-theme="light"] .atlas-globe-dark  { display: none; }
+html[data-theme="light"] .atlas-globe-light {
+  display: block;
+  opacity: .32;
+  filter: blur(2px) brightness(.94) saturate(1.05);
+}
+@keyframes atlas-globe-drift {
+  0%   { transform: translateX(-50%) translateY(0)    scale(1);    }
+  100% { transform: translateX(-50%) translateY(1.2%) scale(1.04); }
+}
+
+/* Meridian / latitude line art — faint globe-grid geometry (see the inline
+   <svg> in AtlasField.tsx), not a new image asset. Kept extremely subtle —
+   this should read as "structure in the distance," never compete with the
+   card canvas it sits behind. */
+.atlas-meridians {
+  position: absolute;
+  top: -4%;
+  left: 50%;
+  width: 108%;
+  height: 62%;
+  transform: translateX(-50%);
+  color: var(--ink-100);
+  opacity: .14;
+}
+html[data-theme="light"] .atlas-meridians {
+  color: var(--ink-500);
+  opacity: .20;
+}
+
+/* ---------- Presence pulse — small "active" status dot ----------
+   Very subtle breathing opacity/scale, no glow/box-shadow ring — the
+   emphasis is presence, not status-bar urgency. Used by the Spaces header
+   and the Sidebar's active-Space row. */
+@keyframes presence-pulse {
+  0%, 100% { opacity: 1;  transform: scale(1); }
+  50%      { opacity: .5; transform: scale(0.82); }
+}
+.presence-dot {
+  animation: presence-pulse 2.6s var(--ease-standard) infinite;
+}
+
 /* ---------- AI shimmer — soft Meridian→Brass sweep, AI surfaces only ---------- */
 @keyframes meridian-shimmer {
   0%   { transform: translateX(-40%); opacity: 0; }
@@ -238,4 +347,6 @@ body {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+  .atlas-globe { animation: none; }
+  .presence-dot { animation: none; }
 }

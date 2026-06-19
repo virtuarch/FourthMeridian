@@ -176,7 +176,7 @@ export default function AdminUsersPage() {
                 <th className="px-4 py-3 font-medium">Role</th>
                 <th className="px-4 py-3 font-medium hidden sm:table-cell">2FA</th>
                 <th className="px-4 py-3 font-medium hidden md:table-cell">Details</th>
-                <th className="px-4 py-3 font-medium hidden sm:table-cell">Workspaces</th>
+                <th className="px-4 py-3 font-medium hidden sm:table-cell">Spaces</th>
                 <th className="px-4 py-3 font-medium hidden lg:table-cell">Joined</th>
               </tr>
             </thead>
@@ -263,7 +263,7 @@ export default function AdminUsersPage() {
                     {/* Workspaces */}
                     <td className="px-4 py-3.5 hidden sm:table-cell">
                       {u.workspaces.length === 0 ? (
-                        <span className="text-xs text-gray-600">No workspaces</span>
+                        <span className="text-xs text-gray-600">No Spaces</span>
                       ) : (
                         <div className="space-y-1.5">
                           {u.workspaces.map((m) => (

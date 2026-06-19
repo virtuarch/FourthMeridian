@@ -334,7 +334,7 @@ function ArchivedWorkspaceRow({
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-semibold text-white truncate">{ws.name}</p>
             <span className="inline-flex items-center text-[10px] font-semibold uppercase tracking-wide text-gray-400 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded-md shrink-0">
-              Workspace
+              Space
             </span>
           </div>
           <p className="text-xs text-gray-500 mt-0.5">
@@ -342,7 +342,7 @@ function ArchivedWorkspaceRow({
             {!isOwner && ` · ${ws.myRole}`}
           </p>
           {!isOwner && (
-            <p className="text-xs text-gray-600 mt-1.5">Only the owner can restore or trash this workspace.</p>
+            <p className="text-xs text-gray-600 mt-1.5">Only the owner can restore or trash this Space.</p>
           )}
           {error && (
             <p className="text-xs text-red-400 mt-2 flex items-center gap-1.5">
@@ -472,7 +472,7 @@ function TrashedWorkspaceRow({
             {!isOwner && ` · ${ws.myRole}`}
           </p>
           {!isOwner && (
-            <p className="text-xs text-gray-600 mt-1.5">Only the owner can restore or permanently delete this workspace.</p>
+            <p className="text-xs text-gray-600 mt-1.5">Only the owner can restore or permanently delete this Space.</p>
           )}
           {error && (
             <p className="text-xs text-red-400 mt-2 flex items-center gap-1.5">
@@ -588,7 +588,7 @@ export function ArchiveBinClient({
 
   const tabs: { id: BinTab; label: string; count: number }[] = [
     { id: "accounts",   label: "Archived Accounts",   count: assets.length },
-    { id: "workspaces", label: "Archived Workspaces", count: archivedWs.length },
+    { id: "workspaces", label: "Archived Spaces", count: archivedWs.length },
     { id: "trash",      label: "Trash",               count: trashedWs.length },
   ];
 
@@ -606,7 +606,7 @@ export function ArchiveBinClient({
         <div>
           <h1 className="text-xl font-bold text-white">Archive &amp; Trash</h1>
           <p className="text-xs text-gray-500 mt-0.5">
-            Restore anything here to bring it back. Trashed workspaces and manual assets can also be deleted permanently.
+            Restore anything here to bring it back. Trashed Spaces and manual assets can also be deleted permanently.
           </p>
         </div>
       </div>
@@ -657,8 +657,8 @@ export function ArchiveBinClient({
         archivedWs.length === 0 ? (
           <EmptyState
             icon={Building2}
-            title="No archived workspaces"
-            body="Archiving a workspace hides it from your active list without touching members, shared accounts, or history. Archive one from its Manage → Danger Zone tab."
+            title="No archived Spaces"
+            body="Archiving a Space hides it from your active list without touching members, shared accounts, or history. Archive one from its Manage → Danger Zone tab."
           />
         ) : (
           <div className="space-y-3">
@@ -671,7 +671,7 @@ export function ArchiveBinClient({
               />
             ))}
             <p className="text-xs text-gray-600 text-center pt-2">
-              {archivedWs.length} archived {archivedWs.length === 1 ? "workspace" : "workspaces"}
+              {archivedWs.length} archived {archivedWs.length === 1 ? "Space" : "Spaces"}
             </p>
           </div>
         )
@@ -682,7 +682,7 @@ export function ArchiveBinClient({
           <EmptyState
             icon={Inbox}
             title="Trash is empty"
-            body="Workspaces moved to trash from Manage → Danger Zone appear here. Restore them, or delete them permanently once you're sure."
+            body="Spaces moved to trash from Manage → Danger Zone appear here. Restore them, or delete them permanently once you're sure."
           />
         ) : (
           <div className="space-y-3">
@@ -695,7 +695,7 @@ export function ArchiveBinClient({
               />
             ))}
             <p className="text-xs text-gray-600 text-center pt-2">
-              {trashedWs.length} trashed {trashedWs.length === 1 ? "workspace" : "workspaces"}
+              {trashedWs.length} trashed {trashedWs.length === 1 ? "Space" : "Spaces"}
             </p>
           </div>
         )

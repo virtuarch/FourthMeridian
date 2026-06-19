@@ -464,7 +464,7 @@ export const CATEGORY_DESCRIPTIONS: Record<WorkspaceCategory, string> = {
   [WorkspaceCategory.EMERGENCY_FUND]: "Build and protect your emergency savings buffer.",
   [WorkspaceCategory.GOAL]:           "Track progress toward a specific financial goal.",
   [WorkspaceCategory.CUSTOM]:         "Start from a blank slate and add sections yourself.",
-  [WorkspaceCategory.OTHER]:          "General-purpose financial workspace.",
+  [WorkspaceCategory.OTHER]:          "General-purpose financial space.",
 };
 
 /**

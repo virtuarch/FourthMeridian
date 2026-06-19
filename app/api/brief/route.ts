@@ -49,7 +49,7 @@ function visitState(lastViewedAt: Date | null, hasData: boolean): VisitState {
 function contextLine(state: VisitState, name: string | null): string {
   const displayName = name ? `, ${name.split(" ")[0]}` : "";
   switch (state) {
-    case "new_user":   return `Welcome to FinTracker${displayName}. Let's build your financial picture.`;
+    case "new_user":   return `Welcome to Fourth Meridian${displayName}. Let's build your financial picture.`;
     case "immediate":  return `You're up to date${displayName}.`;
     case "short":      return `Here's where things stand${displayName}.`;
     case "day":        return `Good to see you${displayName}. Here's your daily check-in.`;
@@ -100,10 +100,10 @@ function buildSinceLastVisit(
   if (pendingInvites > 0) {
     items.push({
       id:    "pending_invites",
-      label: pendingInvites === 1 ? "Workspace invite" : "Workspace invites",
+      label: pendingInvites === 1 ? "Space invite" : "Space invites",
       value: String(pendingInvites),
       tone:  "info",
-      href:  "/dashboard/workspaces",
+      href:  "/dashboard/spaces",
     });
   }
 

@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
-  title: "FinTracker",
+  title: "Fourth Meridian",
   description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
   manifest: "/manifest.json",
   // Favicon/browser-tab icon is wired via the Next.js App Router file
@@ -18,26 +18,30 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "FinTracker",
+    title: "Fourth Meridian",
   },
   openGraph: {
-    title: "FinTracker",
+    title: "Fourth Meridian",
     description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
+    // NOTE: url/images still point at the old fintracker.app domain and
+    // og-image.png asset — left untouched since this pass is UI-branding
+    // only and doesn't cover infrastructure (domain) or regenerating the
+    // social-preview image. Flagged as a future enhancement.
     url: "https://fintracker.app",
-    siteName: "FinTracker",
+    siteName: "Fourth Meridian",
     images: [
       {
         url: "/og-image.png",
         width: 1536,
         height: 1024,
-        alt: "FinTracker — Personal Finance Dashboard",
+        alt: "Fourth Meridian — Personal Finance Dashboard",
       },
     ],
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "FinTracker",
+    title: "Fourth Meridian",
     description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
     images: ["/og-image.png"],
   },

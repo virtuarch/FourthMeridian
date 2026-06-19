@@ -318,7 +318,7 @@ function GeneralTab({
     <div className="space-y-5">
       {/* Name */}
       <div>
-        <label className="text-xs font-medium text-gray-400 block mb-1.5">Workspace name</label>
+        <label className="text-xs font-medium text-gray-400 block mb-1.5">Space name</label>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -335,7 +335,7 @@ function GeneralTab({
           rows={2}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="What is this workspace for?"
+          placeholder="What is this Space for?"
           className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors resize-none"
         />
       </div>
@@ -1063,7 +1063,7 @@ function FinancesTab({
                   </button>
                   {isSelected && (
                     <div className="px-3 pb-3 space-y-2.5 border-t border-gray-700/50">
-                      <p className="text-xs text-gray-500 pt-2">Visibility for workspace members:</p>
+                      <p className="text-xs text-gray-500 pt-2">Visibility for Space members:</p>
                       {(["FULL", "BALANCE_ONLY"] as const).map((vis) => (
                         <button key={vis} type="button" onClick={() => setShareVis(vis)}
                           className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-left transition-colors ${shareVis === vis ? "border-blue-500/40 bg-blue-600/10" : "border-gray-700 hover:border-gray-600"}`}>
@@ -1078,7 +1078,7 @@ function FinancesTab({
                       <button onClick={() => handleShare(a.id)} disabled={shareBusy}
                         className="w-full px-3 py-2 rounded-xl bg-blue-600 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5">
                         {shareBusy ? <Loader2 size={12} className="animate-spin" /> : <Share2 size={12} />}
-                        Share into workspace
+                        Share into Space
                       </button>
                     </div>
                   )}
@@ -1102,7 +1102,7 @@ function FinancesTab({
         <div className="text-center py-6">
           <Landmark size={28} className="text-gray-700 mx-auto mb-2" />
           <p className="text-sm text-gray-500">No accounts shared</p>
-          {canShare && <p className="text-xs text-gray-600 mt-1">Share an account to include it in this workspace.</p>}
+          {canShare && <p className="text-xs text-gray-600 mt-1">Share an account to include it in this Space.</p>}
         </div>
       ) : (
         <div className="space-y-3">
@@ -1122,7 +1122,7 @@ function FinancesTab({
                     {canShare && (
                       <button onClick={() => handleRevoke(a.id)} disabled={revokingId === a.id}
                         className="p-1 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 disabled:opacity-50 transition-all"
-                        title="Remove from workspace">
+                        title="Remove from Space">
                         {revokingId === a.id ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
                       </button>
                     )}
@@ -1184,7 +1184,7 @@ function DashboardTab({
       <div className="text-center py-8">
         <LayoutDashboard size={28} className="text-gray-700 mx-auto mb-2" />
         <p className="text-sm text-gray-500">No dashboard sections</p>
-        <p className="text-xs text-gray-600 mt-1">This workspace was created without a template.</p>
+        <p className="text-xs text-gray-600 mt-1">This Space was created without a template.</p>
       </div>
     );
   }
@@ -1284,7 +1284,7 @@ function DangerZoneTab({
         onClose();
       } else {
         const data = await res.json().catch(() => ({}));
-        setError(data.error ?? "Failed to archive workspace.");
+        setError(data.error ?? "Failed to archive Space.");
       }
     } finally {
       setArchiveBusy(false);
@@ -1302,7 +1302,7 @@ function DangerZoneTab({
         onClose();
       } else {
         const data = await res.json().catch(() => ({}));
-        setError(data.error ?? "Failed to move workspace to trash.");
+        setError(data.error ?? "Failed to move Space to trash.");
         setConfirmTrash(false);
       }
     } finally {
@@ -1314,15 +1314,15 @@ function DangerZoneTab({
     <div className="space-y-3">
       {!isOwner && (
         <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
-          <p className="text-xs font-semibold text-red-400 uppercase tracking-widest">Leave workspace</p>
+          <p className="text-xs font-semibold text-red-400 uppercase tracking-widest">Leave Space</p>
           <div className="space-y-1.5">
             <p className="text-xs text-gray-400">
               You will be removed from <span className="text-white font-medium">{workspace.name}</span> and lose access immediately.
             </p>
             <ul className="space-y-1">
               {[
-                "You won't see this workspace in your sidebar or switcher.",
-                "Any accounts you shared here remain — the workspace owner still has access to them.",
+                "You won't see this Space in your sidebar.",
+                "Any accounts you shared here remain — the Space owner still has access to them.",
                 "You can only rejoin if an owner sends you a new invite.",
               ].map((line) => (
                 <li key={line} className="flex items-start gap-1.5 text-xs text-gray-500">
@@ -1335,7 +1335,7 @@ function DangerZoneTab({
           <button onClick={handleLeave} disabled={leaveBusy}
             className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50">
             {leaveBusy ? <Loader2 size={14} className="animate-spin" /> : <UserMinus size={14} />}
-            Leave workspace
+            Leave Space
           </button>
         </div>
       )}
@@ -1343,21 +1343,21 @@ function DangerZoneTab({
       {isOwner && (
         <>
           <div className="rounded-2xl border border-gray-700 bg-gray-800/40 p-4 space-y-3">
-            <p className="text-xs font-semibold text-gray-300 uppercase tracking-widest">Archive workspace</p>
+            <p className="text-xs font-semibold text-gray-300 uppercase tracking-widest">Archive Space</p>
             <p className="text-xs text-gray-400">
-              Hide <span className="text-white font-medium">{workspace.name}</span> from your active workspace list. Members, shared accounts, and history all stay intact — unarchive it any time from the Archive &amp; Trash page.
+              Hide <span className="text-white font-medium">{workspace.name}</span> from your active Space list. Members, shared accounts, and history all stay intact — unarchive it any time from the Archive &amp; Trash page.
             </p>
             <button onClick={handleArchive} disabled={archiveBusy}
               className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-gray-300 hover:bg-gray-700/60 transition-colors disabled:opacity-50">
               {archiveBusy ? <Loader2 size={14} className="animate-spin" /> : <Archive size={14} />}
-              Archive workspace
+              Archive Space
             </button>
           </div>
 
           <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
             <p className="text-xs font-semibold text-red-400 uppercase tracking-widest">Move to trash</p>
             <p className="text-xs text-gray-400">
-              Move <span className="text-white font-medium">{workspace.name}</span> to trash. It's hidden from active use but can still be restored from the Archive &amp; Trash page until it's permanently deleted there.
+              Move <span className="text-white font-medium">{workspace.name}</span> to trash. It&apos;s hidden from active use but can still be restored from the Archive &amp; Trash page until it&apos;s permanently deleted there.
             </p>
             {!confirmTrash ? (
               <button onClick={() => setConfirmTrash(true)}
@@ -1366,7 +1366,7 @@ function DangerZoneTab({
               </button>
             ) : (
               <div className="space-y-2">
-                <p className="text-xs text-gray-300">Move this workspace to trash?</p>
+                <p className="text-xs text-gray-300">Move this Space to trash?</p>
                 <div className="flex gap-2">
                   <button onClick={() => setConfirmTrash(false)}
                     className="flex-1 px-3 py-2 rounded-xl border border-gray-700 text-xs text-gray-400 hover:text-white transition-colors">
@@ -1383,7 +1383,7 @@ function DangerZoneTab({
           </div>
 
           <p className="text-[11px] text-gray-600 px-1">
-            Permanent deletion is only available from the Archive &amp; Trash page, and only once this workspace is already in trash.
+            Permanent deletion is only available from the Archive &amp; Trash page, and only once this Space is already in trash.
           </p>
         </>
       )}
@@ -1457,7 +1457,7 @@ export function ManageWorkspaceModal({
           <div>
             <p className="text-base font-semibold text-white truncate">{workspaceName}</p>
             <p className="text-xs text-gray-500 mt-0.5">
-              {ROLE_LABELS[myRole] ?? myRole} · Manage workspace
+              {ROLE_LABELS[myRole] ?? myRole} · Manage Space
             </p>
           </div>
           <button
@@ -1498,7 +1498,7 @@ export function ManageWorkspaceModal({
             </div>
           ) : !workspace ? (
             <div className="text-center py-12">
-              <p className="text-sm text-gray-500">Could not load workspace</p>
+              <p className="text-sm text-gray-500">Could not load Space</p>
             </div>
           ) : (
             <>

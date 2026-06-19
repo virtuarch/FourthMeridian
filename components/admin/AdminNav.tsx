@@ -7,7 +7,7 @@ import { LayoutDashboard, Users, Building2, ScrollText, ShieldAlert } from "luci
 const NAV = [
   { label: "Overview",   href: "/admin",           icon: LayoutDashboard },
   { label: "Users",      href: "/admin/users",      icon: Users           },
-  { label: "Workspaces", href: "/admin/workspaces", icon: Building2       },
+  { label: "Spaces",     href: "/admin/workspaces", icon: Building2       },
   { label: "Audit Log",  href: "/admin/audit",      icon: ScrollText      },
   { label: "Security",   href: "/admin/security",   icon: ShieldAlert     },
 ];

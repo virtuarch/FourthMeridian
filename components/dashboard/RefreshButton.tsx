@@ -47,14 +47,14 @@ export function RefreshButton({ label = "Refresh", className = "" }: Props) {
     <button
       onClick={handleClick}
       disabled={status === "loading"}
-      className={`flex items-center gap-1.5 text-xs border rounded-lg px-3 py-1.5 transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+      className={`flex items-center gap-1.5 text-xs border rounded-[var(--radius-sm)] px-3 py-1.5 backdrop-blur-xl transition-[transform,background-color,border-color] duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:-translate-y-[1px] active:scale-[0.97] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:active:scale-100 ${
         isError
-          ? "text-red-400 border-red-700/50 hover:border-red-500"
-          : "text-gray-400 border-gray-700 hover:text-white hover:border-gray-500"
+          ? "text-[var(--coral-400)] border-[rgba(237,82,71,.3)] bg-[rgba(237,82,71,.08)] hover:bg-[rgba(237,82,71,.14)]"
+          : "text-[var(--text-secondary)] border-[var(--border-hairline)] bg-[var(--glass-ultrathin)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] hover:border-[var(--border-hairline-strong)]"
       } ${className}`}
     >
       {status === "loading" && <Loader2 size={13} className="animate-spin shrink-0" />}
-      {status === "done" && <Check size={13} className="shrink-0 text-green-400" />}
+      {status === "done" && <Check size={13} className="shrink-0 text-[var(--emerald-400)]" />}
       {status === "error" && <AlertTriangle size={13} className="shrink-0" />}
       {status === "idle" && <RefreshCw size={13} className="shrink-0" />}
       <span>

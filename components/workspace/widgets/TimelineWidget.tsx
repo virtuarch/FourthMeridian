@@ -149,7 +149,7 @@ function EmptyState() {
       </div>
       <p className="text-sm text-gray-500 font-medium">No activity yet</p>
       <p className="text-xs text-gray-600 mt-1 max-w-[200px]">
-        Workspace actions will appear here as they happen.
+        Space actions will appear here as they happen.
       </p>
     </div>
   );

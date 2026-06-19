@@ -225,10 +225,10 @@ function PreferredWorkspaceCard({
     <Card>
       <div className="flex items-center gap-2 mb-1">
         <LayoutDashboard size={15} className="text-gray-400" />
-        <CardTitle>Default Workspace</CardTitle>
+        <CardTitle>Default Space</CardTitle>
       </div>
       <p className="text-xs text-gray-600 mb-4">
-        The workspace you land on after every login. Defaults to your Personal workspace if not set.
+        The Space that&apos;s active by default when you continue in from your Daily Brief. Defaults to your Personal Space if not set.
       </p>
 
       {error && (
@@ -244,7 +244,7 @@ function PreferredWorkspaceCard({
           disabled={saving}
           className={selectCls + " flex-1"}
         >
-          <option value="">Personal workspace (default)</option>
+          <option value="">Personal Space (default)</option>
           {workspaces.filter((w) => w.type !== "PERSONAL").map((w) => (
             <option key={w.id} value={w.id}>{w.name}</option>
           ))}
@@ -500,7 +500,7 @@ export function SettingsClient({ initialProfile, workspaces }: Props) {
           <CardTitle>Data & Archive</CardTitle>
         </div>
         <p className="text-xs text-gray-600 mb-4">
-          Manage archived accounts and workspaces. Restore them, or remove them permanently.
+          Manage archived accounts and Spaces. Restore them, or remove them permanently.
         </p>
 
         <Link
@@ -513,7 +513,7 @@ export function SettingsClient({ initialProfile, workspaces }: Props) {
             </div>
             <div>
               <p className="text-sm font-medium text-white">Archive &amp; Trash</p>
-              <p className="text-xs text-gray-500">Archived accounts, archived workspaces, and trash</p>
+              <p className="text-xs text-gray-500">Archived accounts, archived Spaces, and trash</p>
             </div>
           </div>
           <ChevronRight size={15} className="text-gray-600 group-hover:text-gray-400 transition-colors" />

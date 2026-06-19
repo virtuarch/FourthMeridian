@@ -112,7 +112,7 @@ export function verifyTOTP(token: string, secret: string, window = 1): boolean {
  * Build the otpauth:// URI that authenticator apps parse from QR codes.
  * Format: otpauth://totp/Issuer:account?secret=SECRET&issuer=Issuer&...
  */
-export function otpauthUri(account: string, secret: string, issuer = "FinTracker"): string {
+export function otpauthUri(account: string, secret: string, issuer = "Fourth Meridian"): string {
   const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(account)}`;
   const params = new URLSearchParams({
     secret,
