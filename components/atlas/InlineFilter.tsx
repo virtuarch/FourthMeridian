@@ -47,6 +47,13 @@ interface InlineFilterProps<T extends string> {
   onChange: (id: T) => void;
   "aria-label"?: string;
   className?: string;
+  /**
+   * Desktop row alignment. "end" (default) is the original "sits quietly
+   * opposite a modal title" placement. "start" reads as a left-aligned
+   * sub-nav row continuing a primary nav above it — e.g. Perspectives/
+   * Timeline group chips under the Spaces dashboard's tab rail.
+   */
+  align?: "start" | "end";
 }
 
 export function InlineFilter<T extends string>({
@@ -54,6 +61,7 @@ export function InlineFilter<T extends string>({
   value,
   onChange,
   className = "",
+  align = "end",
   ...rest
 }: InlineFilterProps<T>) {
   const ariaLabel = rest["aria-label"];
@@ -85,7 +93,11 @@ export function InlineFilter<T extends string>({
       <div
         role="tablist"
         aria-label={ariaLabel}
-        className={["hidden sm:flex items-center gap-2 flex-wrap justify-end", className].join(" ")}
+        className={[
+          "hidden sm:flex items-center gap-2 flex-wrap",
+          align === "start" ? "justify-start" : "justify-end",
+          className,
+        ].join(" ")}
       >
         {options.map((opt, i) => {
           const isActive = opt.id === value;

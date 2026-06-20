@@ -11,14 +11,15 @@
  * - OWNER/ADMIN can toggle sections via the Settings tab
  */
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   Loader2, LayoutDashboard, Target, Landmark,
-  CreditCard, TrendingUp, Clock, Settings, Plus,
-  Home, Eye, EyeOff, ChevronDown, ChevronUp,
+  CreditCard, TrendingUp, Settings, Plus,
+  Eye, EyeOff, ChevronDown, ChevronUp,
   CheckCircle2, Circle, Calendar, AlertCircle,
   X, MoreHorizontal, Archive, Trash2, RotateCcw, LogOut,
+  Receipt, FileText, Compass, PiggyBank,
 } from "lucide-react";
 import { CATEGORY_LABELS, WorkspaceCategory } from "@/lib/workspace-presets";
 import { getWidgetMeta } from "@/lib/widget-registry";
@@ -32,6 +33,18 @@ import { ManageWorkspaceModal } from "@/components/dashboard/ManageWorkspaceModa
 import { simulatePayoff } from "@/components/workspace/sections/DebtPayoffSection";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/workspace/widgets/debt-adapters";
 import { TimelineWidget } from "@/components/workspace/widgets/TimelineWidget";
+import { SegmentedControl } from "@/components/atlas/SegmentedControl";
+import { SPACE_TAB_ORDER, SPACE_TAB_LABELS } from "@/lib/space-nav";
+import { getPerspectivesForCategory, getCompositionSwitcherItems } from "@/lib/perspectives";
+import { PerspectiveSwitcher, COMPOSITION_ICON_MAP } from "@/components/dashboard/widgets/PerspectiveSwitcher";
+import { FUTURE_TIMELINE_EVENTS } from "@/lib/timeline-placeholder";
+import type { TimelineEvent } from "@/lib/timeline-types";
+import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
+import { SpaceTimelinePanel } from "@/components/dashboard/widgets/SpaceTimelineWidget";
+import { TimelineModal } from "@/components/dashboard/widgets/TimelineModal";
+import { SpaceMembersWidget } from "@/components/dashboard/widgets/SpaceMembersWidget";
+import { SpaceComingSoonPanel } from "@/components/dashboard/widgets/SpaceComingSoonPanel";
+import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -99,17 +112,6 @@ interface Props {
 
 const TAB_ORDER = ["OVERVIEW", "GOALS", "ACCOUNTS", "DEBT", "INVESTMENTS", "RETIREMENT", "ACTIVITY"];
 
-const TAB_ICONS: Record<string, React.ReactNode> = {
-  OVERVIEW:    <LayoutDashboard size={14} />,
-  GOALS:       <Target          size={14} />,
-  ACCOUNTS:    <Landmark        size={14} />,
-  DEBT:        <CreditCard      size={14} />,
-  INVESTMENTS: <TrendingUp      size={14} />,
-  RETIREMENT:  <Home            size={14} />,
-  ACTIVITY:    <Clock           size={14} />,
-  SETTINGS:    <Settings        size={14} />,
-};
-
 const TAB_LABELS: Record<string, string> = {
   OVERVIEW:    "Overview",
   GOALS:       "Goals",
@@ -120,6 +122,41 @@ const TAB_LABELS: Record<string, string> = {
   ACTIVITY:    "Activity",
   SETTINGS:    "Settings",
 };
+
+// ─── Fixed Spaces rail (lib/space-nav.ts) ──────────────────────────────────────
+//
+// The legacy data-driven tabs above (GOALS/ACCOUNTS/DEBT/INVESTMENTS/
+// RETIREMENT/ACTIVITY/SETTINGS) stay exactly as they are — this dashboard is
+// still section-template-driven underneath. What changes is which of them
+// get their own button on the new fixed top rail (OVERVIEW, ACCOUNTS, and
+// SETTINGS keep direct buttons; everything else routes through Perspectives
+// or the new Timeline tab) vs. which become reachable only as a Perspective
+// card, so nothing real is lost, just re-entered through one calm front door.
+
+/** Perspective id -> the existing, unmodified data-tab it routes to. */
+const PERSPECTIVE_TARGET_TAB: Partial<Record<string, string>> = {
+  investments: "INVESTMENTS",
+  debt:        "DEBT",
+  retirement:  "RETIREMENT",
+  goals:       "GOALS",
+};
+
+/** Legacy data-tabs with no button of their own on the fixed rail anymore —
+ *  still fully real, just one click behind the Perspectives tab now, and
+ *  (IA refactor point 5) rendered as a GlassModal instead of a tab swap. */
+const PERSPECTIVE_ROUTED_TABS = ["GOALS", "DEBT", "INVESTMENTS", "RETIREMENT"];
+
+/** Title + icon for each PERSPECTIVE_ROUTED_TABS modal — mirrors the label/
+ *  icon each already has as a Perspective card (lib/perspectives.ts). */
+const PERSPECTIVE_MODAL_META: Record<string, { title: string; icon: React.ElementType }> = {
+  GOALS:       { title: "Goals",       icon: Target },
+  DEBT:        { title: "Debt",        icon: CreditCard },
+  INVESTMENTS: { title: "Investments", icon: TrendingUp },
+  RETIREMENT:  { title: "Retirement",  icon: PiggyBank },
+};
+
+/** New tab ids that live entirely on the fixed rail (not section-driven). */
+const NEW_SPACE_TABS = ["PERSPECTIVES", "TIMELINE", "FINANCES", "TRANSACTIONS", "MEMBERS", "DOCUMENTS"];
 
 const GOAL_CATEGORY_LABELS: Record<string, string> = {
   EMERGENCY_FUND:   "Emergency Fund",
@@ -1739,8 +1776,51 @@ export function WorkspaceDashboard({
   // Track whether we've set the initial tab from real data
   const initialTabSet = useRef(false);
 
+  // Fixed-rail additions — Timeline (real activity + placeholder event
+  // types) and the header member count, both read-only fetches against
+  // existing, unmodified endpoints. See SpaceTimelinePanel / SpaceMembersWidget.
+  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[] | null>(null);
+  const [memberCount,    setMemberCount]    = useState<number | null>(null);
+
+  // Overview composition switcher (IA refactor point 2/3) — which
+  // full-canvas Overview composition is shown. "overview" is the default,
+  // real, always-available composition; any other value is a comingSoon
+  // "Financial"-group lens (Wealth, Cash Flow) with no real composition
+  // built yet, so the host shows a calm SpaceComingSoonPanel instead.
+  const [composition, setComposition] = useState<string>("overview");
+
   const canManage = ["OWNER", "ADMIN"].includes(myRole);
   const canLeave  = !canManage; // MEMBER and VIEWER can leave
+
+  // Fixed rail options — SETTINGS only renders a button for managers,
+  // matching the old tabs.push("SETTINGS") gate below. TIMELINE is excluded
+  // too: it's now a modal launched from Overview's "Recent activity"
+  // preview (IA refactor point 1), not its own rail page — "TIMELINE" stays
+  // a valid activeTab value (NEW_SPACE_TABS, setActiveTab("TIMELINE") below)
+  // that now opens the modal instead of switching rail pages.
+  const railOptions: { id: string; label: string }[] = SPACE_TAB_ORDER
+    .filter((id) => id !== "SETTINGS" || canManage)
+    .filter((id) => id !== "TIMELINE")
+    .map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
+
+  // "overview" is filtered out here, not in lib/perspectives.ts: it's never
+  // a clickable Perspective *card* (see that file's doc comment on the
+  // id) — only the PerspectiveSwitcher dropdown on Overview renders it.
+  const perspectiveItems: PerspectiveCardItem[] = useMemo(
+    () =>
+      getPerspectivesForCategory(category)
+        .filter((p) => p.id !== "overview")
+        .map((p) => {
+          const target = PERSPECTIVE_TARGET_TAB[p.id];
+          return target ? { ...p, onSelect: () => setActiveTab(target) } : p;
+        }),
+    [category]
+  );
+
+  // Overview composition switcher options (IA refactor point 2/3) — see
+  // getCompositionSwitcherItems' doc comment for the inclusion rule.
+  const compositionItems = useMemo(() => getCompositionSwitcherItems(category), [category]);
+  const activeComposition = compositionItems.find((p) => p.id === composition);
 
   async function handleLeave() {
     setLeaveBusy(true);
@@ -1777,6 +1857,34 @@ export function WorkspaceDashboard({
     return () => window.removeEventListener("workspace-accounts-changed", handleAccountsChanged);
   }, [loadAccounts]);
 
+  // Timeline tab data — real events merged with placeholder future event
+  // types (no backend aggregation yet beyond the existing activity route).
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/workspaces/${workspaceId}/activity`)
+      .then((r) => (r.ok ? r.json() : { events: [] }))
+      .then((data) => {
+        if (!active) return;
+        const real: TimelineEvent[] = data?.events ?? [];
+        const merged = [...real, ...FUTURE_TIMELINE_EVENTS].sort(
+          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+        );
+        setTimelineEvents(merged);
+      })
+      .catch(() => { if (active) setTimelineEvents(FUTURE_TIMELINE_EVENTS); });
+    return () => { active = false; };
+  }, [workspaceId]);
+
+  // Header member count — same endpoint SpaceMembersWidget/ManageWorkspaceModal use.
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/workspaces/${workspaceId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (active) setMemberCount(data?.members?.length ?? null); })
+      .catch(() => { if (active) setMemberCount(null); });
+    return () => { active = false; };
+  }, [workspaceId]);
+
   useEffect(() => {
     Promise.all([
       fetch(`/api/workspaces/${workspaceId}/sections`).then((r) => r.ok ? r.json() : []),
@@ -1790,12 +1898,19 @@ export function WorkspaceDashboard({
       if (!initialTabSet.current) {
         initialTabSet.current = true;
         const enabledTabs = new Set(secs.filter((s) => s.enabled).map((s) => s.tab));
-        const firstTab    = TAB_ORDER.find((t) => enabledTabs.has(t));
+        // ACTIVITY no longer has a rail button of its own — the fixed
+        // Timeline tab (real activity feed + placeholder event types)
+        // covers it now, so skip straight past it here.
+        const firstTab = TAB_ORDER.find((t) => t !== "ACTIVITY" && enabledTabs.has(t));
         if (firstTab) {
           setActiveTab(firstTab);
+        } else if (enabledTabs.has("ACTIVITY")) {
+          setActiveTab("TIMELINE");
         } else if (canManage) {
           // CUSTOM workspace with no sections — Settings is fine here
           setActiveTab("SETTINGS");
+        } else {
+          setActiveTab("OVERVIEW");
         }
       }
     });
@@ -1824,6 +1939,20 @@ export function WorkspaceDashboard({
 
   return (
     <>
+      {/* Timeline modal — reuses activeTab === "TIMELINE"/"ACTIVITY" as the
+          open/closed flag (same toggle setActiveTab("TIMELINE") below and
+          deep links already drive), so nothing else about tab state needs
+          to change. No sub-nav filter here yet — unlike DashboardClient.tsx,
+          this dashboard has never had a Timeline filter row, so `filters`
+          is simply omitted (TimelineModal renders with no toolbar). */}
+      {(activeTab === "TIMELINE" || activeTab === "ACTIVITY") && (
+        <TimelineModal
+          events={timelineEvents ?? []}
+          loading={timelineEvents === null}
+          onClose={() => setActiveTab("OVERVIEW")}
+        />
+      )}
+
       {showAddGoal && (
         <AddGoalModal
           workspaceId={workspaceId}
@@ -1907,7 +2036,9 @@ export function WorkspaceDashboard({
         <div className="flex items-start justify-between mb-5">
           <div>
             <h1 className="text-xl font-bold text-white">{displaySpaceName(workspaceName)}</h1>
-            <p className="text-sm text-gray-500">{catLabel} Space</p>
+            <p className="text-sm text-gray-500">
+              {catLabel} Space{memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : ""}
+            </p>
           </div>
 
           <div className="flex items-center gap-2 shrink-0 ml-3">
@@ -1933,25 +2064,16 @@ export function WorkspaceDashboard({
           </div>
         </div>
 
-        {/* Tab bar */}
-        {tabs.length > 0 && (
-          <div className="flex gap-1 overflow-x-auto bg-gray-900 border border-gray-800 rounded-2xl p-1 mb-5 scrollbar-hide">
-            {tabs.map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium whitespace-nowrap transition-colors shrink-0 ${
-                  activeTab === tab
-                    ? "bg-gray-700 text-white"
-                    : "text-gray-500 hover:text-gray-300"
-                }`}
-              >
-                {TAB_ICONS[tab]}
-                {TAB_LABELS[tab] ?? tab}
-              </button>
-            ))}
-          </div>
-        )}
+        {/* Tab navigation — fixed Spaces rail (lib/space-nav.ts), shared
+            order across every Space type. Atlas SegmentedControl, not the
+            old hand-rolled gray pill row. */}
+        <SegmentedControl
+          aria-label="Space section"
+          className="w-full mb-5"
+          options={railOptions}
+          value={activeTab}
+          onChange={setActiveTab}
+        />
 
         {/* Settings tab */}
         {activeTab === "SETTINGS" && (
@@ -1962,8 +2084,122 @@ export function WorkspaceDashboard({
           />
         )}
 
-        {/* Section cards */}
-        {activeTab !== "SETTINGS" && (
+        {/* Perspectives tab — full grid. */}
+        {activeTab === "PERSPECTIVES" && (
+          <PerspectivesWidget items={perspectiveItems} variant="grid" />
+        )}
+
+        {/* Timeline — no longer an inline tab body (IA refactor point 1).
+            activeTab === "TIMELINE"/"ACTIVITY" now just gates the
+            TimelineModal mount near the top of this component, instead of
+            switching what renders in the rail's content area. */}
+
+        {/* Finances tab — placeholder. */}
+        {activeTab === "FINANCES" && (
+          <SpaceComingSoonPanel
+            icon={<Landmark size={20} />}
+            title="Finances"
+            description="A unified budgeting and cash-flow view for this Space is coming soon."
+          />
+        )}
+
+        {/* Transactions tab — placeholder. */}
+        {activeTab === "TRANSACTIONS" && (
+          <SpaceComingSoonPanel
+            icon={<Receipt size={20} />}
+            title="Transactions"
+            description="A unified transaction list across every account in this Space is coming soon."
+          />
+        )}
+
+        {/* Members tab — real data. */}
+        {activeTab === "MEMBERS" && (
+          <SpaceMembersWidget workspaceId={workspaceId} onManage={() => setShowManage(true)} />
+        )}
+
+        {/* Documents tab — placeholder. */}
+        {activeTab === "DOCUMENTS" && (
+          <SpaceComingSoonPanel
+            icon={<FileText size={20} />}
+            title="Documents"
+            description="Statements, receipts, and shared files for this Space are coming soon."
+          />
+        )}
+
+        {/* Goals/Debt/Investments/Retirement — Glass modal (IA refactor
+            points 4 & 5), launched from the matching Perspective card.
+            Same sectionsForTab/SectionCard rendering each tab always had —
+            no widget/business-logic changes, just shown in a floating
+            sheet instead of swapping the whole rail tab. */}
+        {PERSPECTIVE_ROUTED_TABS.includes(activeTab) && (
+          <GlassModal
+            title={PERSPECTIVE_MODAL_META[activeTab]?.title ?? activeTab}
+            icon={PERSPECTIVE_MODAL_META[activeTab]?.icon}
+            size="xl"
+            onClose={() => setActiveTab("OVERVIEW")}
+          >
+            <div className="space-y-3">
+              {sectionsForTab.length === 0 ? (
+                <div className="text-center py-12">
+                  <LayoutDashboard size={30} className="text-gray-700 mx-auto mb-3" />
+                  <p className="text-sm text-gray-500">No sections on this tab</p>
+                  {canManage && (
+                    <button
+                      onClick={() => setActiveTab("SETTINGS")}
+                      className="mt-2 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                    >
+                      Manage sections →
+                    </button>
+                  )}
+                </div>
+              ) : (
+                sectionsForTab.map((s) => (
+                  <SectionCard
+                    key={s.id}
+                    section={s}
+                    accounts={accounts}
+                    workspaceId={workspaceId}
+                    category={category}
+                    canManage={canManage}
+                    onAddGoal={() => setShowAddGoal(true)}
+                  />
+                ))
+              )}
+            </div>
+          </GlassModal>
+        )}
+
+        {/* Composition switcher (IA refactor point 2/3) — Overview only;
+            swaps the canvas below in place. Only renders once there's a
+            second composition to switch to (a comingSoon Financial lens
+            alongside the default "overview"/Atlas one). */}
+        {activeTab === "OVERVIEW" && compositionItems.length > 1 && (
+          <div className="flex items-center px-1 mb-3">
+            <PerspectiveSwitcher items={compositionItems} value={composition} onChange={setComposition} />
+          </div>
+        )}
+
+        {activeTab === "OVERVIEW" && composition !== "overview" && activeComposition && (
+          <SpaceComingSoonPanel
+            icon={(() => {
+              const Icon = COMPOSITION_ICON_MAP[activeComposition.icon] ?? Compass;
+              return <Icon size={20} />;
+            })()}
+            title={activeComposition.label}
+            description={activeComposition.description}
+          />
+        )}
+
+        {/* Section cards — legacy data-driven tabs (Overview/Accounts).
+            Untouched rendering path; just gated off the rail's new ids now
+            that those have their own blocks, off Goals/Debt/Investments/
+            Retirement now that they're GlassModal launches (IA refactor
+            point 5) instead of full tab swaps, and off Overview specifically
+            when a comingSoon composition is active (the ComingSoonPanel
+            above takes its place). */}
+        {activeTab !== "SETTINGS" && activeTab !== "ACTIVITY" && !NEW_SPACE_TABS.includes(activeTab) &&
+         !PERSPECTIVE_ROUTED_TABS.includes(activeTab) &&
+         !(activeTab === "OVERVIEW" && composition !== "overview") && (
           <div className="space-y-3">
             {sectionsForTab.length === 0 ? (
               <div className="text-center py-12">
@@ -1991,11 +2227,44 @@ export function WorkspaceDashboard({
                 />
               ))
             )}
+
+            {/* Overview gets the same Perspectives row + Timeline preview
+                Personal's dashboard has — composition, not duplication:
+                both read from the perspectiveItems/timelineEvents already
+                computed above for the dedicated Perspectives/Timeline tabs. */}
+            {activeTab === "OVERVIEW" && composition === "overview" && (
+              <div className="space-y-3 pt-2">
+                <div>
+                  <div className="flex items-center justify-between px-1 mb-2">
+                    <p className="text-sm font-semibold text-white">Perspectives</p>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("PERSPECTIVES")}
+                      className="text-xs font-medium text-[var(--meridian-400)] hover:text-[var(--meridian-300)] transition-colors"
+                    >
+                      See all
+                    </button>
+                  </div>
+                  <PerspectivesWidget items={perspectiveItems} variant="row" />
+                </div>
+
+                <SpaceTimelinePanel
+                  title="Recent activity"
+                  events={timelineEvents ?? []}
+                  loading={timelineEvents === null}
+                  variant="preview"
+                  previewCount={4}
+                  onViewAll={() => setActiveTab("TIMELINE")}
+                />
+              </div>
+            )}
           </div>
         )}
 
-        {/* No sections at all */}
-        {tabs.length === 0 && !loading && (
+        {/* No sections at all — only meaningful for the legacy data-driven
+            tabs above; the fixed-rail tabs always have their own content. */}
+        {tabs.length === 0 && !loading && activeTab !== "SETTINGS" && activeTab !== "ACTIVITY" &&
+         !NEW_SPACE_TABS.includes(activeTab) && !PERSPECTIVE_ROUTED_TABS.includes(activeTab) && (
           <div className="text-center py-12">
             <LayoutDashboard size={30} className="text-gray-700 mx-auto mb-3" />
             <p className="text-sm text-gray-500">No dashboard sections configured</p>

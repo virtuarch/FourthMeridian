@@ -14,6 +14,11 @@
  * behavior), and a highlight that slides + resizes to the active segment's
  * measured bounds rather than each button owning its own background.
  *
+ * The active highlight uses the same restrained Meridian-tint glass recipe
+ * as GlassButton's `tone="meridian"` (a translucent wash + hairline border +
+ * specular top edge) rather than a flat `var(--meridian-600)` color block —
+ * keeps the "rail" feeling premium/quiet instead of a chunky solid button.
+ *
  * Overflow scrolls horizontally with a hidden scrollbar (.no-scrollbar in
  * globals.css) — used here because Daily Brief's range strip has 9 options,
  * more than a typical 2-5 segment control comfortably fits at once.
@@ -80,7 +85,7 @@ export function SegmentedControl<T extends string>({
       role="tablist"
       aria-label={rest["aria-label"]}
       className={[
-        "relative inline-flex max-w-full overflow-x-auto no-scrollbar p-1 gap-0",
+        "relative inline-flex max-w-full overflow-x-auto no-scrollbar p-1.5 gap-0",
         className,
       ].join(" ")}
       style={{
@@ -91,18 +96,30 @@ export function SegmentedControl<T extends string>({
         WebkitBackdropFilter: "blur(30px) saturate(160%)",
       }}
     >
-      {/* Sliding active-segment highlight */}
+      {/* Sliding active-segment highlight — translucent Meridian wash, not a
+          solid color block (see GlassButton's tone="meridian" recipe). */}
       {highlight && (
         <div
           aria-hidden
-          className="absolute top-1 bottom-1 left-0 rounded-[var(--radius-full)] transition-[transform,width] duration-[var(--dur-base)] ease-[var(--ease-spring)]"
+          className="absolute top-1 bottom-1 left-0 rounded-[var(--radius-full)] overflow-hidden transition-[transform,width] duration-[var(--dur-base)] ease-[var(--ease-spring)]"
           style={{
             width: highlight.width,
             transform: `translateX(${highlight.left}px)`,
-            background: "var(--meridian-600)",
-            boxShadow: "inset 0 1px 0 rgba(255,255,255,.25), 0 2px 10px rgba(37,99,235,.35)",
+            background: "rgba(59,130,246,.14)",
+            border: "1px solid rgba(125,168,255,.32)",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,.10), 0 1px 6px rgba(37,99,235,.16)",
           }}
-        />
+        >
+          {/* Specular top-edge highlight — same signature as GlassPanel/GlassButton */}
+          <span
+            aria-hidden
+            className="pointer-events-none absolute top-0 left-2 right-2 h-px"
+            style={{
+              background: "linear-gradient(90deg, transparent, var(--specular-edge), transparent)",
+              opacity: 0.5,
+            }}
+          />
+        </div>
       )}
 
       {options.map((opt, i) => {
@@ -120,11 +137,11 @@ export function SegmentedControl<T extends string>({
             aria-selected={isActive}
             onClick={() => onChange(opt.id)}
             className={[
-              "relative z-10 shrink-0 whitespace-nowrap rounded-[var(--radius-full)] px-3.5 py-1.5 text-xs font-medium",
+              "relative z-10 shrink-0 whitespace-nowrap rounded-[var(--radius-full)] px-4 py-2 text-xs font-semibold",
               "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]",
               isActive
-                ? "text-[var(--ink-0)]"
+                ? "text-[var(--meridian-400)]"
                 : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
             ].join(" ")}
             style={{

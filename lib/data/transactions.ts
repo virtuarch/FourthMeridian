@@ -25,8 +25,8 @@ const BANKING_CATEGORIES = [
 ];
 
 /** Banking transactions only (excludes investment activity), newest first. */
-export async function getTransactions(): Promise<Transaction[]> {
-  const { workspaceId } = await getWorkspaceContext();
+export async function getTransactions(ctx?: { workspaceId: string }): Promise<Transaction[]> {
+  const { workspaceId } = ctx ?? (await getWorkspaceContext());
 
   const rows = await db.transaction.findMany({
     where: {

@@ -9,6 +9,7 @@
 
 import { usePlaid } from "@/context/PlaidContext";
 import { Loader2, Plus, Building2 } from "lucide-react";
+import { GlassButton } from "@/components/atlas/GlassButton";
 
 interface Props {
   variant?: "button" | "card" | "row";
@@ -26,7 +27,7 @@ export function ConnectAccountButton({ variant = "button", onDone }: Props) {
         <button
           onClick={handleClick}
           disabled={isLoading}
-          className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm text-gray-300 hover:bg-gray-800 transition-colors disabled:opacity-50"
+          className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-[var(--radius-sm)] text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50"
         >
           {isLoading
             ? <Loader2 size={14} className="animate-spin shrink-0" />
@@ -34,7 +35,7 @@ export function ConnectAccountButton({ variant = "button", onDone }: Props) {
           }
           {isLoading ? "Opening Plaid…" : "Connect Account"}
         </button>
-        {error && <p className="text-xs text-red-400 px-3 pb-1">{error}</p>}
+        {error && <p className="text-xs text-[var(--coral-400)] px-3 pb-1">{error}</p>}
       </div>
     );
   }
@@ -44,28 +45,26 @@ export function ConnectAccountButton({ variant = "button", onDone }: Props) {
       <button
         onClick={handleClick}
         disabled={isLoading}
-        className="flex flex-col items-center justify-center gap-2 w-full p-5 rounded-2xl border-2 border-dashed border-gray-700 hover:border-blue-500/50 hover:bg-blue-500/5 transition-colors text-gray-500 hover:text-blue-400 disabled:opacity-50 disabled:cursor-not-allowed"
+        className="group flex flex-col items-center justify-center gap-2 w-full p-5 rounded-[var(--radius-lg)] border-2 border-dashed border-[var(--border-hairline-strong)] hover:border-[rgba(125,168,255,.4)] hover:bg-[rgba(59,130,246,.06)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {isLoading ? <Loader2 size={20} className="animate-spin" /> : <Building2 size={20} />}
-        <span className="text-sm font-medium">
+        <span className="text-[var(--text-muted)] group-hover:text-[var(--meridian-400)] transition-colors">
+          {isLoading ? <Loader2 size={20} className="animate-spin" /> : <Building2 size={20} />}
+        </span>
+        <span className="text-sm font-medium text-[var(--text-muted)] group-hover:text-[var(--meridian-400)] transition-colors">
           {isLoading ? "Opening Plaid…" : "Connect Bank / Brokerage"}
         </span>
-        {error && <p className="text-xs text-red-400 text-center">{error}</p>}
+        {error && <p className="text-xs text-[var(--coral-400)] text-center">{error}</p>}
       </button>
     );
   }
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <button
-        onClick={handleClick}
-        disabled={isLoading}
-        className="flex items-center gap-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-2 rounded-xl transition-colors"
-      >
+      <GlassButton tone="meridian" size="sm" onClick={handleClick} disabled={isLoading}>
         {isLoading ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
         {isLoading ? "Opening…" : "Connect Account"}
-      </button>
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      </GlassButton>
+      {error && <p className="text-xs text-[var(--coral-400)]">{error}</p>}
     </div>
   );
 }
