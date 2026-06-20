@@ -27,7 +27,7 @@ import { ProgressWidget, type ProgressStat } from "@/components/workspace/widget
 import { type BreakdownViewMode } from "@/components/workspace/widgets/BreakdownWidget";
 import { SummaryWidget } from "@/components/workspace/widgets/SummaryWidget";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatDate } from "@/lib/format";
+import { formatDate, displaySpaceName } from "@/lib/format";
 import { ManageWorkspaceModal } from "@/components/dashboard/ManageWorkspaceModal";
 import { simulatePayoff } from "@/components/workspace/sections/DebtPayoffSection";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/workspace/widgets/debt-adapters";
@@ -1868,7 +1868,7 @@ export function WorkspaceDashboard({
                 <LogOut size={20} className="text-red-400" />
               </div>
               <h2 className="text-base font-semibold text-white mb-1">
-                Leave {workspaceName}?
+                Leave {displaySpaceName(workspaceName)}?
               </h2>
               <p className="text-sm text-gray-400 leading-relaxed">
                 You&apos;ll lose access to this Space and all of its shared data.
@@ -1906,7 +1906,7 @@ export function WorkspaceDashboard({
         {/* Header */}
         <div className="flex items-start justify-between mb-5">
           <div>
-            <h1 className="text-xl font-bold text-white">{workspaceName}</h1>
+            <h1 className="text-xl font-bold text-white">{displaySpaceName(workspaceName)}</h1>
             <p className="text-sm text-gray-500">{catLabel} Space</p>
           </div>
 

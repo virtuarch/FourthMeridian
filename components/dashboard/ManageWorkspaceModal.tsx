@@ -3,16 +3,21 @@
 /**
  * ManageWorkspaceModal
  *
- * Full workspace management panel. Opens as a modal overlay.
- * Tabs: General · Members · Goals · Finances · Dashboard · Danger Zone
+ * Full workspace management panel. Opens as a modal overlay, restyled with
+ * Atlas Glass (GlassPanel/GlassButton + theme tokens) to match CreateSpaceModal.
+ * Tabs: General · Members · Goals · Finances · Overview · Delete/Leave Space
  *
- * Danger Zone is the single entry point for owner-initiated archive/trash
- * actions (see DangerZoneTab below) — WorkspacesClient's separate
- * WorkspaceDetail modal no longer duplicates a delete control.
+ * The last tab is the single entry point for owner-initiated archive/trash
+ * actions, or member-initiated leave (see DangerZoneTab below) —
+ * WorkspacesClient's separate WorkspaceDetail modal no longer duplicates a
+ * delete control. Labeled "Delete Space" for owners and "Leave Space" for
+ * everyone else — deliberately plain account-management language, not
+ * security-warning language (the internal tab id/type stays "danger" since
+ * that's just an identifier, not anything user-facing).
  *
  * Permission gating mirrors the server:
  *   OWNER  — all tabs + actions
- *   ADMIN  — Members (invite/remove non-owners), Goals, Finances, Dashboard
+ *   ADMIN  — Members (invite/remove non-owners), Goals, Finances, Overview
  *   MEMBER — Finances (share own accounts only), no management tabs
  *   VIEWER — read only, no management tabs
  */
@@ -23,7 +28,7 @@ import {
   AlertTriangle, Loader2, Crown, Shield, Eye, EyeOff,
   UserMinus, Trash2, Mail, Plus, Check, Globe, Lock,
   Share2, Search, ChevronRight, AlertCircle, Calendar,
-  CheckCircle2, Circle, Pencil, Save, Archive,
+  CheckCircle2, Circle, Pencil, Save, Archive, LogOut,
 } from "lucide-react";
 import {
   CATEGORY_LABELS, CATEGORY_ICONS,
@@ -31,7 +36,9 @@ import {
   WorkspaceCategory,
 } from "@/lib/workspace-presets";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatDate as formatDateUTC } from "@/lib/format";
+import { formatDate as formatDateUTC, displaySpaceName } from "@/lib/format";
+import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { GlassButton } from "@/components/atlas/GlassButton";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -87,7 +94,11 @@ type DashboardSection = {
   order:   number;
 };
 
-type UserResult = {
+// Exported (along with userDisplayName and UserSearchInput below) so the
+// Create Space onboarding flow's Invite step (CreateSpaceModal.tsx) can
+// reuse the exact same search-and-select UI and types instead of
+// duplicating them — same component, two mount points.
+export type UserResult = {
   id: string;
   name: string | null;
   username: string | null;
@@ -117,9 +128,9 @@ interface Props {
 
 const ROLE_ICONS: Record<string, React.ReactNode> = {
   OWNER:  <Crown  size={11} className="text-yellow-400" />,
-  ADMIN:  <Shield size={11} className="text-blue-400"   />,
-  MEMBER: <Users  size={11} className="text-gray-400"   />,
-  VIEWER: <Eye    size={11} className="text-gray-500"   />,
+  ADMIN:  <Shield size={11} className="text-[var(--meridian-400)]"   />,
+  MEMBER: <Users  size={11} className="text-[var(--text-secondary)]"   />,
+  VIEWER: <Eye    size={11} className="text-[var(--text-muted)]"   />,
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -165,7 +176,7 @@ function memberDisplayName(m: { user: { name: string | null; username: string | 
   return m.user.name ?? (m.user.username ? `@${m.user.username}` : "Unknown");
 }
 
-function userDisplayName(u: UserResult) {
+export function userDisplayName(u: UserResult) {
   if (u.name) return u.name;
   const full = [u.firstName, u.lastName].filter(Boolean).join(" ");
   return full || u.username || "Unknown";
@@ -173,7 +184,7 @@ function userDisplayName(u: UserResult) {
 
 // ─── User Search ───────────────────────────────────────────────────────────────
 
-function UserSearchInput({
+export function UserSearchInput({
   workspaceId,
   onSelect,
 }: {
@@ -222,40 +233,62 @@ function UserSearchInput({
   return (
     <div ref={ref} className="relative">
       <div className="relative">
-        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => query.length >= 1 && results.length > 0 && setOpen(true)}
           placeholder="Search by name or @username…"
-          className="w-full bg-gray-800 border border-gray-700 rounded-xl pl-8 pr-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+          className="w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl pl-8 pr-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--meridian-400)] transition-colors"
         />
-        {loading && <Loader2 size={13} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 animate-spin" />}
+        {loading && <Loader2 size={13} className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] animate-spin" />}
       </div>
+      {/* Results popup: deliberately rendered as opaque/"thick" glass rather
+          than the --surface-muted token the search field itself uses —
+          --surface-muted is only a ~5% tint (by design, so inputs read as a
+          subtle recess in the panel behind them), which made this dropdown
+          nearly see-through against the modal's own backdrop. A floating
+          menu needs to read as solid above everything behind it, so this
+          uses GlassPanel's "thick" depth (the same opaque recipe the modal
+          sheets themselves use) plus a stronger hairline and elevated
+          shadow, lifted to z-30 to clear any sibling content in this
+          modal's stacking context. */}
       {open && results.length > 0 && (
-        <div className="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden">
+        <GlassPanel
+          depth="thick"
+          elevation="e3"
+          radius="md"
+          className="absolute z-30 w-full mt-1.5 overflow-hidden"
+          style={{ border: "1px solid var(--border-hairline-strong)" }}
+        >
           {results.map((u) => (
             <button
               key={u.id}
               type="button"
               onMouseDown={(e) => { e.preventDefault(); handleSelect(u); }}
-              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-gray-700 transition-colors text-left"
+              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[var(--surface-hover-strong)] transition-colors text-left"
             >
-              <div className="w-7 h-7 rounded-full bg-gray-600 flex items-center justify-center shrink-0">
-                <span className="text-[10px] font-semibold text-gray-200">{userDisplayName(u)[0].toUpperCase()}</span>
+              <div className="w-7 h-7 rounded-full bg-[var(--surface-hover-strong)] flex items-center justify-center shrink-0">
+                <span className="text-[10px] font-semibold text-[var(--text-primary)]">{userDisplayName(u)[0].toUpperCase()}</span>
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm text-white truncate">{userDisplayName(u)}</p>
-                {u.username && <p className="text-xs text-gray-500">@{u.username}</p>}
+                <p className="text-sm text-[var(--text-primary)] truncate">{userDisplayName(u)}</p>
+                {u.username && <p className="text-xs text-[var(--text-muted)]">@{u.username}</p>}
               </div>
             </button>
           ))}
-        </div>
+        </GlassPanel>
       )}
       {open && !loading && query.length >= 1 && results.length === 0 && (
-        <div className="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-700 rounded-xl shadow-xl px-3 py-3">
-          <p className="text-sm text-gray-500">No users found for &ldquo;{query}&rdquo;</p>
-        </div>
+        <GlassPanel
+          depth="thick"
+          elevation="e3"
+          radius="md"
+          className="absolute z-30 w-full mt-1.5 px-3 py-3"
+          style={{ border: "1px solid var(--border-hairline-strong)" }}
+        >
+          <p className="text-sm text-[var(--text-muted)]">No users found for &ldquo;{query}&rdquo;</p>
+        </GlassPanel>
       )}
     </div>
   );
@@ -301,6 +334,11 @@ function GeneralTab({
         setError(d.error ?? "Failed to save");
       } else {
         onSaved({ name: name.trim(), description: description.trim() || null, isPublic, category });
+        // Sidebar caches its Space list client-side and only refetches on this
+        // event — without it, a rename here (e.g. fixing legacy "X's Dashboard"
+        // grammar) would update the page but leave the sidebar showing the old
+        // stale name until a full reload.
+        window.dispatchEvent(new CustomEvent("workspace-list-changed"));
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
       }
@@ -318,31 +356,31 @@ function GeneralTab({
     <div className="space-y-5">
       {/* Name */}
       <div>
-        <label className="text-xs font-medium text-gray-400 block mb-1.5">Space name</label>
+        <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1.5">Space name</label>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+          className="w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--meridian-400)] transition-colors"
         />
       </div>
 
       {/* Description */}
       <div>
-        <label className="text-xs font-medium text-gray-400 block mb-1.5">
-          Description <span className="text-gray-600">(optional)</span>
+        <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1.5">
+          Description <span className="text-[var(--text-muted)]">(optional)</span>
         </label>
         <textarea
           rows={2}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="What is this Space for?"
-          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors resize-none"
+          className="w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--meridian-400)] transition-colors resize-none"
         />
       </div>
 
       {/* Visibility */}
       <div>
-        <label className="text-xs font-medium text-gray-400 block mb-1.5">Visibility</label>
+        <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1.5">Visibility</label>
         <div className="grid grid-cols-2 gap-2">
           {([false, true] as const).map((pub) => (
             <button
@@ -351,19 +389,19 @@ function GeneralTab({
               onClick={() => setIsPublic(pub)}
               className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl border text-left transition-colors ${
                 isPublic === pub
-                  ? "border-blue-500/40 bg-blue-600/10"
-                  : "border-gray-700 hover:border-gray-600"
+                  ? "border-[rgba(125,168,255,.4)] bg-[rgba(59,130,246,.10)]"
+                  : "border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"
               }`}
             >
               <div className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 transition-colors ${
-                isPublic === pub ? "border-blue-500 bg-blue-500" : "border-gray-600"
+                isPublic === pub ? "border-[var(--meridian-400)] bg-[var(--meridian-400)]" : "border-[var(--border-hairline-strong)]"
               }`} />
               <div>
-                <p className="text-xs font-medium text-white flex items-center gap-1.5">
+                <p className="text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5">
                   {pub ? <Globe size={11} /> : <Lock size={11} />}
                   {pub ? "Public" : "Private"}
                 </p>
-                <p className="text-[10px] text-gray-500">
+                <p className="text-[10px] text-[var(--text-muted)]">
                   {pub ? "Anyone can view" : "Invite only"}
                 </p>
               </div>
@@ -374,15 +412,15 @@ function GeneralTab({
 
       {/* Category */}
       <div>
-        <label className="text-xs font-medium text-gray-400 block mb-1.5">Category</label>
+        <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1.5">Category</label>
         <button
           type="button"
           onClick={() => setShowCatPicker((p) => !p)}
-          className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl border border-gray-700 hover:border-gray-600 bg-gray-800 text-left transition-colors"
+          className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] bg-[var(--surface-muted)] text-left transition-colors"
         >
-          <span className="text-gray-500">{ICON_MAP[CATEGORY_ICONS[category as WorkspaceCategory]] ?? <Settings size={16} />}</span>
-          <span className="text-sm text-white flex-1">{CATEGORY_LABELS[category as WorkspaceCategory] ?? category}</span>
-          <ChevronRight size={13} className={`text-gray-600 transition-transform ${showCatPicker ? "rotate-90" : ""}`} />
+          <span className="text-[var(--text-muted)]">{ICON_MAP[CATEGORY_ICONS[category as WorkspaceCategory]] ?? <Settings size={16} />}</span>
+          <span className="text-sm text-[var(--text-primary)] flex-1">{CATEGORY_LABELS[category as WorkspaceCategory] ?? category}</span>
+          <ChevronRight size={13} className={`text-[var(--text-muted)] transition-transform ${showCatPicker ? "rotate-90" : ""}`} />
         </button>
 
         {showCatPicker && (
@@ -394,24 +432,25 @@ function GeneralTab({
                 onClick={() => { setCategory(cat); setShowCatPicker(false); }}
                 className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-left transition-colors ${
                   category === cat
-                    ? "border-blue-500/40 bg-blue-600/10"
-                    : "border-gray-700 hover:border-gray-600 bg-gray-800/40"
+                    ? "border-[rgba(125,168,255,.4)] bg-[rgba(59,130,246,.10)]"
+                    : "border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] bg-[var(--surface-muted)]"
                 }`}
               >
-                <span className="text-gray-500 shrink-0">{ICON_MAP[CATEGORY_ICONS[cat]] ?? <Settings size={14} />}</span>
-                <span className="text-xs text-white truncate">{CATEGORY_LABELS[cat]}</span>
+                <span className="text-[var(--text-muted)] shrink-0">{ICON_MAP[CATEGORY_ICONS[cat]] ?? <Settings size={14} />}</span>
+                <span className="text-xs text-[var(--text-primary)] truncate">{CATEGORY_LABELS[cat]}</span>
               </button>
             ))}
           </div>
         )}
       </div>
 
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {error && <p className="text-xs text-[var(--coral-400)]">{error}</p>}
 
-      <button
+      <GlassButton
         onClick={handleSave}
         disabled={busy || !isDirty}
-        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        tone="meridian"
+        fullWidth
       >
         {busy
           ? <Loader2 size={14} className="animate-spin" />
@@ -419,7 +458,7 @@ function GeneralTab({
             ? <Check size={14} />
             : <Save size={14} />}
         {saved ? "Saved!" : "Save changes"}
-      </button>
+      </GlassButton>
     </div>
   );
 }
@@ -537,7 +576,7 @@ function MembersTab({
     <div className="space-y-5">
       {/* Member list */}
       <div>
-        <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-2">
+        <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-2">
           Members · {activeMembers.length}
         </p>
         <div className="space-y-1">
@@ -548,19 +587,19 @@ function MembersTab({
             const canRole   = isOwner && !isTarget && !isSelf;
 
             return (
-              <div key={m.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-gray-800/40">
-                <div className="w-7 h-7 rounded-full bg-gray-700 flex items-center justify-center shrink-0">
-                  <span className="text-[10px] font-semibold text-gray-300">
+              <div key={m.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--surface-muted)]">
+                <div className="w-7 h-7 rounded-full bg-[var(--surface-hover-strong)] flex items-center justify-center shrink-0">
+                  <span className="text-[10px] font-semibold text-[var(--text-secondary)]">
                     {memberDisplayName(m)[0].toUpperCase()}
                   </span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white truncate">
+                  <p className="text-sm text-[var(--text-primary)] truncate">
                     {memberDisplayName(m)}
-                    {isSelf && <span className="text-[10px] text-gray-500 ml-1">(you)</span>}
+                    {isSelf && <span className="text-[10px] text-[var(--text-muted)] ml-1">(you)</span>}
                   </p>
                   {m.user.username && (
-                    <p className="text-[10px] text-gray-500">@{m.user.username}</p>
+                    <p className="text-[10px] text-[var(--text-muted)]">@{m.user.username}</p>
                   )}
                 </div>
 
@@ -570,14 +609,14 @@ function MembersTab({
                     value={m.role}
                     disabled={changingRoleId === m.user.id}
                     onChange={(e) => handleRoleChange(m.user.id, e.target.value)}
-                    className="bg-gray-700 border-0 rounded-lg text-xs text-gray-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+                    className="bg-[var(--surface-hover-strong)] border-0 rounded-lg text-xs text-[var(--text-secondary)] px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[var(--meridian-400)] disabled:opacity-50"
                   >
                     <option value="ADMIN">Admin</option>
                     <option value="MEMBER">Member</option>
                     <option value="VIEWER">Viewer</option>
                   </select>
                 ) : (
-                  <span className="flex items-center gap-1 text-[10px] text-gray-400 shrink-0">
+                  <span className="flex items-center gap-1 text-[10px] text-[var(--text-secondary)] shrink-0">
                     {ROLE_ICONS[m.role] ?? null}
                     {ROLE_LABELS[m.role] ?? m.role}
                   </span>
@@ -587,7 +626,7 @@ function MembersTab({
                   <button
                     onClick={() => handleRemove(m.user.id)}
                     disabled={removingId === m.user.id}
-                    className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-50 transition-colors"
+                    className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] disabled:opacity-50 transition-colors"
                     title="Remove member"
                   >
                     {removingId === m.user.id
@@ -604,39 +643,40 @@ function MembersTab({
       {/* Invite */}
       {canInvite && (
         <div>
-          <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-2">Invite</p>
+          <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-2">Invite</p>
           <div className="space-y-2">
             {selectedUser ? (
               <div className="flex items-center gap-2">
-                <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-xl bg-gray-800 border border-blue-500/30">
-                  <div className="w-6 h-6 rounded-full bg-blue-600/20 flex items-center justify-center shrink-0">
-                    <span className="text-[10px] font-semibold text-blue-400">
+                <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-xl bg-[var(--surface-muted)] border border-[rgba(125,168,255,.3)]">
+                  <div className="w-6 h-6 rounded-full bg-[rgba(59,130,246,.20)] flex items-center justify-center shrink-0">
+                    <span className="text-[10px] font-semibold text-[var(--meridian-400)]">
                       {userDisplayName(selectedUser)[0].toUpperCase()}
                     </span>
                   </div>
-                  <p className="text-sm text-white flex-1 truncate">{userDisplayName(selectedUser)}</p>
+                  <p className="text-sm text-[var(--text-primary)] flex-1 truncate">{userDisplayName(selectedUser)}</p>
                   <button onClick={() => { setSelectedUser(null); setInviteError(""); setInviteOk(""); }}
-                    className="p-0.5 text-gray-500 hover:text-white">
+                    className="p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
                     <X size={13} />
                   </button>
                 </div>
                 <select
                   value={inviteRole}
                   onChange={(e) => setInviteRole(e.target.value)}
-                  className="bg-gray-800 border border-gray-700 rounded-xl text-xs text-gray-300 px-2 py-2.5 focus:outline-none"
+                  className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl text-xs text-[var(--text-secondary)] px-2 py-2.5 focus:outline-none"
                 >
                   <option value="ADMIN">Admin</option>
                   <option value="MEMBER">Member</option>
                   <option value="VIEWER">Viewer</option>
                 </select>
-                <button
+                <GlassButton
                   onClick={handleInvite}
                   disabled={inviteBusy}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
+                  tone="meridian"
+                  size="sm"
                 >
                   {inviteBusy ? <Loader2 size={12} className="animate-spin" /> : <Mail size={12} />}
                   Send
-                </button>
+                </GlassButton>
               </div>
             ) : (
               <UserSearchInput
@@ -644,8 +684,8 @@ function MembersTab({
                 onSelect={(u) => { setSelectedUser(u); setInviteError(""); setInviteOk(""); }}
               />
             )}
-            {inviteError && <p className="text-xs text-red-400">{inviteError}</p>}
-            {inviteOk    && <p className="text-xs text-green-400">{inviteOk}</p>}
+            {inviteError && <p className="text-xs text-[var(--coral-400)]">{inviteError}</p>}
+            {inviteOk    && <p className="text-xs text-[var(--emerald-400)]">{inviteOk}</p>}
           </div>
         </div>
       )}
@@ -653,23 +693,23 @@ function MembersTab({
       {/* Pending invites */}
       {canInvite && (
         <div>
-          <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-2">
+          <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-2">
             Pending invites {queueLoading && <Loader2 size={9} className="inline animate-spin ml-1" />}
           </p>
           {inviteQueue.length === 0 ? (
-            <p className="text-xs text-gray-600 px-1">No pending invites</p>
+            <p className="text-xs text-[var(--text-muted)] px-1">No pending invites</p>
           ) : (
             <div className="space-y-1">
               {inviteQueue.map((inv) => (
-                <div key={inv.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-gray-800/40">
+                <div key={inv.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-[var(--surface-muted)]">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm text-white truncate">{userDisplayName(inv.invitedUser as UserResult)}</p>
-                    <p className="text-[10px] text-gray-500">{ROLE_LABELS[inv.role] ?? inv.role} · sent {formatDate(inv.createdAt)}</p>
+                    <p className="text-sm text-[var(--text-primary)] truncate">{userDisplayName(inv.invitedUser as UserResult)}</p>
+                    <p className="text-[10px] text-[var(--text-muted)]">{ROLE_LABELS[inv.role] ?? inv.role} · sent {formatDate(inv.createdAt)}</p>
                   </div>
                   <button
                     onClick={() => handleRescind(inv.id)}
                     disabled={rescindingId === inv.id}
-                    className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-50 transition-colors"
+                    className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] disabled:opacity-50 transition-colors"
                     title="Rescind invite"
                   >
                     {rescindingId === inv.id ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
@@ -786,57 +826,56 @@ function GoalsTab({
   }
 
   if (loading) {
-    return <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin text-gray-600" /></div>;
+    return <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin text-[var(--text-muted)]" /></div>;
   }
 
   if (showForm) {
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-2 mb-1">
-          <button onClick={() => setShowForm(false)} className="p-1 rounded-lg text-gray-500 hover:text-white hover:bg-gray-800 transition-colors">
+          <button onClick={() => setShowForm(false)} className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-muted)] transition-colors">
             <X size={15} />
           </button>
-          <p className="text-sm font-semibold text-white">{editingGoal ? "Edit goal" : "New goal"}</p>
+          <p className="text-sm font-semibold text-[var(--text-primary)]">{editingGoal ? "Edit goal" : "New goal"}</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="text-xs font-medium text-gray-400 block mb-1">Name</label>
+            <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Name</label>
             <input value={fName} onChange={(e) => setFName(e.target.value)}
-              placeholder="Emergency fund" className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
+              placeholder="Emergency fund" className="w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--meridian-400)]" />
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-400 block mb-1">Category</label>
+            <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Category</label>
             <select value={fCategory} onChange={(e) => setFCategory(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500">
+              className="w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--meridian-400)]">
               {Object.entries(GOAL_CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-400 block mb-1">Target amount</label>
+            <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Target amount</label>
             <input type="number" min="1" step="1" value={fAmount} onChange={(e) => setFAmount(e.target.value)}
-              placeholder="10000" className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
+              placeholder="10000" className="w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--meridian-400)]" />
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-400 block mb-1">Target date <span className="text-gray-600">(optional)</span></label>
+            <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Target date <span className="text-[var(--text-muted)]">(optional)</span></label>
             <input type="date" value={fDate} onChange={(e) => setFDate(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500" />
+              className="w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--meridian-400)]" />
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-400 block mb-1">Description <span className="text-gray-600">(optional)</span></label>
+            <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Description <span className="text-[var(--text-muted)]">(optional)</span></label>
             <textarea rows={2} value={fDescription} onChange={(e) => setFDescription(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 resize-none" />
+              className="w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--meridian-400)] resize-none" />
           </div>
-          {fError && <p className="text-xs text-red-400">{fError}</p>}
+          {fError && <p className="text-xs text-[var(--coral-400)]">{fError}</p>}
           <div className="flex gap-2">
             <button type="button" onClick={() => setShowForm(false)}
-              className="flex-1 px-4 py-2.5 rounded-xl border border-gray-700 text-sm text-gray-400 hover:text-white transition-colors">
+              className="flex-1 px-4 py-2.5 rounded-xl border border-[var(--border-hairline)] text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
               Cancel
             </button>
-            <button type="submit" disabled={fBusy}
-              className="flex-1 px-4 py-2.5 rounded-xl bg-blue-600 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
+            <GlassButton type="submit" disabled={fBusy} tone="meridian" fullWidth>
               {fBusy ? <Loader2 size={14} className="animate-spin" /> : null}
               {editingGoal ? "Save" : "Create goal"}
-            </button>
+            </GlassButton>
           </div>
         </form>
       </div>
@@ -850,9 +889,9 @@ function GoalsTab({
     <div className="space-y-4">
       {goals.length === 0 ? (
         <div className="text-center py-8">
-          <Target size={28} className="text-gray-700 mx-auto mb-2" />
-          <p className="text-sm text-gray-500">No goals yet</p>
-          {canManage && <p className="text-xs text-gray-600 mt-1">Add a financial goal to start tracking progress.</p>}
+          <Target size={28} className="text-[var(--text-muted)] mx-auto mb-2" />
+          <p className="text-sm text-[var(--text-muted)]">No goals yet</p>
+          {canManage && <p className="text-xs text-[var(--text-muted)] mt-1">Add a financial goal to start tracking progress.</p>}
         </div>
       ) : (
         <>
@@ -862,43 +901,43 @@ function GoalsTab({
                 const pct      = Math.min(100, g.targetAmount > 0 ? (g.currentAmount / g.targetAmount) * 100 : 0);
                 const isOverdue = g.targetDate && new Date(g.targetDate) < new Date();
                 return (
-                  <div key={g.id} className="bg-gray-800/40 rounded-xl px-3 py-3 space-y-2">
+                  <div key={g.id} className="bg-[var(--surface-muted)] rounded-xl px-3 py-3 space-y-2">
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <button onClick={() => markComplete(g)} title="Mark complete" className="shrink-0">
-                          <Circle size={14} className="text-blue-400" />
+                          <Circle size={14} className="text-[var(--meridian-400)]" />
                         </button>
-                        <p className="text-sm font-medium text-white truncate">{g.name}</p>
-                        {isOverdue && <AlertCircle size={12} className="text-red-400 shrink-0" />}
+                        <p className="text-sm font-medium text-[var(--text-primary)] truncate">{g.name}</p>
+                        {isOverdue && <AlertCircle size={12} className="text-[var(--coral-400)] shrink-0" />}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         {canManage && (
                           <>
                             <button onClick={() => openEdit(g)}
-                              className="p-1 rounded-lg text-gray-600 hover:text-gray-300 hover:bg-gray-700 transition-colors">
+                              className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover-strong)] transition-colors">
                               <Pencil size={12} />
                             </button>
                             <button onClick={() => handleDelete(g.id)} disabled={deletingId === g.id}
-                              className="p-1 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-50 transition-colors">
+                              className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] disabled:opacity-50 transition-colors">
                               {deletingId === g.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                             </button>
                           </>
                         )}
                       </div>
                     </div>
-                    <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${pct >= 100 ? "bg-green-500" : isOverdue ? "bg-red-500" : "bg-blue-500"}`}
+                    <div className="h-1.5 bg-[var(--surface-hover-strong)] rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${pct >= 100 ? "bg-[var(--emerald-500)]" : isOverdue ? "bg-[var(--coral-500)]" : "bg-[var(--meridian-400)]"}`}
                         style={{ width: `${pct}%` }} />
                     </div>
                     <div className="flex items-center justify-between">
-                      <p className="text-[10px] text-gray-500">{formatBalance(g.currentAmount)} of {formatBalance(g.targetAmount)}</p>
+                      <p className="text-[10px] text-[var(--text-muted)]">{formatBalance(g.currentAmount)} of {formatBalance(g.targetAmount)}</p>
                       <div className="flex items-center gap-2">
                         {g.targetDate && (
-                          <p className={`text-[10px] flex items-center gap-1 ${isOverdue ? "text-red-400" : "text-gray-500"}`}>
+                          <p className={`text-[10px] flex items-center gap-1 ${isOverdue ? "text-[var(--coral-400)]" : "text-[var(--text-muted)]"}`}>
                             <Calendar size={9} />{formatDate(g.targetDate)}
                           </p>
                         )}
-                        <p className="text-[10px] text-gray-600">{pct.toFixed(0)}%</p>
+                        <p className="text-[10px] text-[var(--text-muted)]">{pct.toFixed(0)}%</p>
                       </div>
                     </div>
                   </div>
@@ -909,18 +948,18 @@ function GoalsTab({
 
           {completed.length > 0 && (
             <div>
-              <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-2">Completed</p>
+              <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-2">Completed</p>
               <div className="space-y-1">
                 {completed.map((g) => (
-                  <div key={g.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-gray-800/30">
+                  <div key={g.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-[var(--surface-muted)]">
                     <button onClick={() => markComplete(g)} title="Mark active" className="shrink-0">
-                      <CheckCircle2 size={14} className="text-green-500" />
+                      <CheckCircle2 size={14} className="text-[var(--emerald-500)]" />
                     </button>
-                    <p className="text-sm text-gray-400 flex-1 truncate">{g.name}</p>
-                    <p className="text-xs text-green-400 shrink-0">{formatBalance(g.targetAmount)}</p>
+                    <p className="text-sm text-[var(--text-secondary)] flex-1 truncate">{g.name}</p>
+                    <p className="text-xs text-[var(--emerald-400)] shrink-0">{formatBalance(g.targetAmount)}</p>
                     {canManage && (
                       <button onClick={() => handleDelete(g.id)} disabled={deletingId === g.id}
-                        className="p-1 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-50 transition-colors">
+                        className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] disabled:opacity-50 transition-colors">
                         {deletingId === g.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                       </button>
                     )}
@@ -934,7 +973,7 @@ function GoalsTab({
 
       {canManage && (
         <button onClick={openCreate}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-dashed border-gray-700 text-sm text-gray-500 hover:text-white hover:border-gray-500 transition-colors">
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-dashed border-[var(--border-hairline)] text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--border-hairline-strong)] transition-colors">
           <Plus size={14} /> Add a goal
         </button>
       )}
@@ -943,6 +982,129 @@ function GoalsTab({
 }
 
 // ─── Tab: Finances (account sharing) ─────────────────────────────────────────
+
+/**
+ * ShareExistingAccountsPanel
+ *
+ * Lets a member move/share an account they already own (from their global
+ * `/api/accounts` list) into a given Space. This is the single source of
+ * truth for "add an existing account to this Space" — it backs both the
+ * Finances tab's "Share an account" panel below AND the Create Space
+ * onboarding flow's "Add existing accounts" step (CreateSpaceModal.tsx).
+ * Fetches its own "already shared" exclusion list so it's drop-in reusable
+ * with nothing but a workspaceId — no duplicated account-sharing logic.
+ */
+export function ShareExistingAccountsPanel({
+  workspaceId,
+  onShared,
+}: {
+  workspaceId: string;
+  onShared?: (accountId: string) => void;
+}) {
+  const [myAccounts, setMyAccounts] = useState<UserAccount[]>([]);
+  const [sharedIds,  setSharedIds]  = useState<Set<string>>(new Set());
+  const [loading,    setLoading]    = useState(true);
+  const [sharingId,  setSharingId]  = useState<string | null>(null);
+  const [shareVis,   setShareVis]   = useState<"FULL" | "BALANCE_ONLY">("FULL");
+  const [shareBusy,  setShareBusy]  = useState(false);
+  const [shareError, setShareError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [mineRes, sharedRes] = await Promise.all([
+        fetch("/api/accounts"),
+        fetch(`/api/workspaces/${workspaceId}/accounts`),
+      ]);
+      if (mineRes.ok) setMyAccounts(await mineRes.json());
+      if (sharedRes.ok) {
+        const shared: SharedAccount[] = await sharedRes.json();
+        setSharedIds(new Set(shared.map((a) => a.id)));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceId]);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { load(); }, [load]);
+
+  async function handleShare(accountId: string) {
+    setShareBusy(true);
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/accounts/share`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ financialAccountId: accountId, visibilityLevel: shareVis }),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); setShareError(d.error ?? "Failed"); }
+      else {
+        setSharingId(null);
+        setShareVis("FULL");
+        setShareError("");
+        setSharedIds((prev) => new Set(prev).add(accountId));
+        // Notify WorkspaceDashboard (and any other listeners) to refresh its account list
+        window.dispatchEvent(new CustomEvent("workspace-accounts-changed"));
+        onShared?.(accountId);
+      }
+    } catch { setShareError("Network error"); }
+    finally { setShareBusy(false); }
+  }
+
+  const available = myAccounts.filter((a) => !sharedIds.has(a.id));
+
+  if (loading) return <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin text-[var(--text-muted)]" /></div>;
+
+  if (available.length === 0) {
+    return (
+      <div className="text-center py-8">
+        <Landmark size={26} className="text-[var(--text-muted)] mx-auto mb-2" />
+        <p className="text-sm text-[var(--text-muted)]">No accounts available to add</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {available.map((a) => {
+        const isSelected = sharingId === a.id;
+        return (
+          <div key={a.id} className={`rounded-xl border transition-colors ${isSelected ? "border-[rgba(125,168,255,.4)] bg-[rgba(59,130,246,.05)]" : "border-[var(--border-hairline)] bg-[var(--surface-muted)]"}`}>
+            <button type="button" onClick={() => setSharingId(isSelected ? null : a.id)}
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-left">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-[var(--text-primary)] truncate">{a.name}</p>
+                <p className="text-xs text-[var(--text-muted)] truncate">{a.institution}{a.mask ? ` ···${a.mask}` : ""}</p>
+              </div>
+              <p className="text-sm font-medium text-[var(--text-primary)] shrink-0 mr-1">{formatBalance(a.balance, a.currency)}</p>
+              <ChevronRight size={13} className={`text-[var(--text-muted)] shrink-0 transition-transform ${isSelected ? "rotate-90" : ""}`} />
+            </button>
+            {isSelected && (
+              <div className="px-3 pb-3 space-y-2.5 border-t border-[var(--border-hairline)]">
+                <p className="text-xs text-[var(--text-muted)] pt-2">Visibility for Space members:</p>
+                {(["FULL", "BALANCE_ONLY"] as const).map((vis) => (
+                  <button key={vis} type="button" onClick={() => setShareVis(vis)}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-left transition-colors ${shareVis === vis ? "border-[rgba(125,168,255,.4)] bg-[rgba(59,130,246,.10)]" : "border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"}`}>
+                    <div className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 ${shareVis === vis ? "border-[var(--meridian-400)] bg-[var(--meridian-400)]" : "border-[var(--border-hairline-strong)]"}`} />
+                    <div>
+                      <p className="text-xs font-medium text-[var(--text-primary)]">{vis === "FULL" ? "Full access" : "Balance only"}</p>
+                      <p className="text-[10px] text-[var(--text-muted)]">{vis === "FULL" ? "Name, institution, and balance" : "Balance total only"}</p>
+                    </div>
+                  </button>
+                ))}
+                {shareError && <p className="text-xs text-[var(--coral-400)]">{shareError}</p>}
+                <GlassButton onClick={() => handleShare(a.id)} disabled={shareBusy} tone="meridian" size="sm" fullWidth>
+                  {shareBusy ? <Loader2 size={12} className="animate-spin" /> : <Share2 size={12} />}
+                  Share into Space
+                </GlassButton>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function FinancesTab({
   workspaceId,
@@ -954,12 +1116,6 @@ function FinancesTab({
   const [accounts,       setAccounts]       = useState<SharedAccount[]>([]);
   const [loading,        setLoading]        = useState(true);
   const [showPanel,      setShowPanel]      = useState(false);
-  const [myAccounts,     setMyAccounts]     = useState<UserAccount[]>([]);
-  const [myAccLoading,   setMyAccLoading]   = useState(false);
-  const [sharingId,      setSharingId]      = useState<string | null>(null);
-  const [shareVis,       setShareVis]       = useState<"FULL" | "BALANCE_ONLY">("FULL");
-  const [shareBusy,      setShareBusy]      = useState(false);
-  const [shareError,     setShareError]     = useState("");
   const [revokingId,     setRevokingId]     = useState<string | null>(null);
 
   const canShare = ["OWNER", "ADMIN", "MEMBER"].includes(myRole);
@@ -974,41 +1130,6 @@ function FinancesTab({
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { loadAccounts(); }, [loadAccounts]);
-
-  async function openSharePanel() {
-    setShowPanel(true);
-    setSharingId(null);
-    setShareError("");
-    setMyAccLoading(true);
-    try {
-      const res = await fetch("/api/accounts");
-      if (res.ok) setMyAccounts(await res.json());
-    } finally {
-      setMyAccLoading(false);
-    }
-  }
-
-  async function handleShare(accountId: string) {
-    setShareBusy(true);
-    try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/accounts/share`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ financialAccountId: accountId, visibilityLevel: shareVis }),
-      });
-      if (!res.ok) { const d = await res.json(); setShareError(d.error ?? "Failed"); }
-      else {
-        // Stay on the share panel — reset to a fresh state so the next account starts clean
-        setSharingId(null);
-        setShareVis("FULL");
-        setShareError("");
-        loadAccounts();
-        // Notify WorkspaceDashboard to refresh its account list
-        window.dispatchEvent(new CustomEvent("workspace-accounts-changed"));
-      }
-    } catch { setShareError("Network error"); }
-    finally { setShareBusy(false); }
-  }
 
   async function handleRevoke(accountId: string) {
     setRevokingId(accountId);
@@ -1025,68 +1146,18 @@ function FinancesTab({
     }
   }
 
-  const sharedIds = new Set(accounts.map((a) => a.id));
-
-  if (loading) return <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin text-gray-600" /></div>;
+  if (loading) return <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin text-[var(--text-muted)]" /></div>;
 
   if (showPanel) {
-    const available = myAccounts.filter((a) => !sharedIds.has(a.id));
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowPanel(false)} className="p-1 rounded-lg text-gray-500 hover:text-white hover:bg-gray-800 transition-colors">
+          <button onClick={() => setShowPanel(false)} className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-muted)] transition-colors">
             <X size={15} />
           </button>
-          <p className="text-sm font-semibold text-white">Share an account</p>
+          <p className="text-sm font-semibold text-[var(--text-primary)]">Share an account</p>
         </div>
-        {myAccLoading ? (
-          <div className="flex justify-center py-6"><Loader2 size={16} className="animate-spin text-gray-600" /></div>
-        ) : available.length === 0 ? (
-          <div className="text-center py-8">
-            <Landmark size={26} className="text-gray-700 mx-auto mb-2" />
-            <p className="text-sm text-gray-500">No accounts available to share</p>
-          </div>
-        ) : (
-          <div className="space-y-1.5">
-            {available.map((a) => {
-              const isSelected = sharingId === a.id;
-              return (
-                <div key={a.id} className={`rounded-xl border transition-colors ${isSelected ? "border-blue-500/40 bg-blue-600/5" : "border-gray-700 bg-gray-800/40"}`}>
-                  <button type="button" onClick={() => setSharingId(isSelected ? null : a.id)}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 text-left">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-white truncate">{a.name}</p>
-                      <p className="text-xs text-gray-500 truncate">{a.institution}{(a as UserAccount).mask ? ` ···${(a as UserAccount).mask}` : ""}</p>
-                    </div>
-                    <p className="text-sm font-medium text-white shrink-0 mr-1">{formatBalance(a.balance, a.currency)}</p>
-                    <ChevronRight size={13} className={`text-gray-600 shrink-0 transition-transform ${isSelected ? "rotate-90" : ""}`} />
-                  </button>
-                  {isSelected && (
-                    <div className="px-3 pb-3 space-y-2.5 border-t border-gray-700/50">
-                      <p className="text-xs text-gray-500 pt-2">Visibility for Space members:</p>
-                      {(["FULL", "BALANCE_ONLY"] as const).map((vis) => (
-                        <button key={vis} type="button" onClick={() => setShareVis(vis)}
-                          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-left transition-colors ${shareVis === vis ? "border-blue-500/40 bg-blue-600/10" : "border-gray-700 hover:border-gray-600"}`}>
-                          <div className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 ${shareVis === vis ? "border-blue-500 bg-blue-500" : "border-gray-600"}`} />
-                          <div>
-                            <p className="text-xs font-medium text-white">{vis === "FULL" ? "Full access" : "Balance only"}</p>
-                            <p className="text-[10px] text-gray-500">{vis === "FULL" ? "Name, institution, and balance" : "Balance total only"}</p>
-                          </div>
-                        </button>
-                      ))}
-                      {shareError && <p className="text-xs text-red-400">{shareError}</p>}
-                      <button onClick={() => handleShare(a.id)} disabled={shareBusy}
-                        className="w-full px-3 py-2 rounded-xl bg-blue-600 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5">
-                        {shareBusy ? <Loader2 size={12} className="animate-spin" /> : <Share2 size={12} />}
-                        Share into Space
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+        <ShareExistingAccountsPanel workspaceId={workspaceId} onShared={loadAccounts} />
       </div>
     );
   }
@@ -1100,28 +1171,28 @@ function FinancesTab({
     <div className="space-y-4">
       {accounts.length === 0 ? (
         <div className="text-center py-6">
-          <Landmark size={28} className="text-gray-700 mx-auto mb-2" />
-          <p className="text-sm text-gray-500">No accounts shared</p>
-          {canShare && <p className="text-xs text-gray-600 mt-1">Share an account to include it in this Space.</p>}
+          <Landmark size={28} className="text-[var(--text-muted)] mx-auto mb-2" />
+          <p className="text-sm text-[var(--text-muted)]">No accounts shared</p>
+          {canShare && <p className="text-xs text-[var(--text-muted)] mt-1">Share an account to include it in this Space.</p>}
         </div>
       ) : (
         <div className="space-y-3">
           {Object.entries(grouped).map(([type, items]) => (
             <div key={type}>
-              <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-1.5">
+              <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-1.5">
                 {ACCOUNT_TYPE_LABELS[type] ?? type}
               </p>
               <div className="space-y-1">
                 {items.map((a) => (
-                  <div key={a.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-gray-800/40 group">
+                  <div key={a.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-[var(--surface-muted)] group">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-white truncate">{a.name}</p>
-                      <p className="text-xs text-gray-500 truncate">{a.institution}</p>
+                      <p className="text-sm text-[var(--text-primary)] truncate">{a.name}</p>
+                      <p className="text-xs text-[var(--text-muted)] truncate">{a.institution}</p>
                     </div>
-                    <p className="text-sm font-medium text-white shrink-0">{formatBalance(a.balance, a.currency)}</p>
+                    <p className="text-sm font-medium text-[var(--text-primary)] shrink-0">{formatBalance(a.balance, a.currency)}</p>
                     {canShare && (
                       <button onClick={() => handleRevoke(a.id)} disabled={revokingId === a.id}
-                        className="p-1 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 disabled:opacity-50 transition-all"
+                        className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] opacity-0 group-hover:opacity-100 disabled:opacity-50 transition-all"
                         title="Remove from Space">
                         {revokingId === a.id ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
                       </button>
@@ -1134,8 +1205,8 @@ function FinancesTab({
         </div>
       )}
       {canShare && (
-        <button onClick={openSharePanel}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-dashed border-gray-700 text-sm text-gray-500 hover:text-white hover:border-gray-500 transition-colors">
+        <button onClick={() => setShowPanel(true)}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-dashed border-[var(--border-hairline)] text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--border-hairline-strong)] transition-colors">
           <Share2 size={14} /> Share an account
         </button>
       )}
@@ -1177,14 +1248,14 @@ function DashboardTab({
     }
   }
 
-  if (loading) return <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin text-gray-600" /></div>;
+  if (loading) return <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin text-[var(--text-muted)]" /></div>;
 
   if (sections.length === 0) {
     return (
       <div className="text-center py-8">
-        <LayoutDashboard size={28} className="text-gray-700 mx-auto mb-2" />
-        <p className="text-sm text-gray-500">No dashboard sections</p>
-        <p className="text-xs text-gray-600 mt-1">This Space was created without a template.</p>
+        <LayoutDashboard size={28} className="text-[var(--text-muted)] mx-auto mb-2" />
+        <p className="text-sm text-[var(--text-muted)]">No dashboard sections</p>
+        <p className="text-xs text-[var(--text-muted)] mt-1">This Space was created without a template.</p>
       </div>
     );
   }
@@ -1196,23 +1267,23 @@ function DashboardTab({
 
   return (
     <div className="space-y-5">
-      <p className="text-xs text-gray-500">Toggle sections to show or hide them. Changes apply to all members.</p>
+      <p className="text-xs text-[var(--text-muted)]">Toggle sections to show or hide them. Changes apply to all members.</p>
       {Object.entries(byTab).map(([tab, items]) => (
         <div key={tab}>
-          <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-2">
+          <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-2">
             {TAB_LABELS_SECTION[tab] ?? tab}
           </p>
           <div className="space-y-1">
             {items.map((s) => (
-              <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-gray-800/40">
+              <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--surface-muted)]">
                 <div className="flex-1 min-w-0">
-                  <p className={`text-sm truncate ${s.enabled ? "text-white" : "text-gray-500"}`}>{s.label}</p>
+                  <p className={`text-sm truncate ${s.enabled ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>{s.label}</p>
                 </div>
                 <button onClick={() => toggle(s)} disabled={togglingId === s.id}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
                     s.enabled
-                      ? "bg-blue-600/20 text-blue-400 hover:bg-blue-600/30"
-                      : "bg-gray-700 text-gray-500 hover:bg-gray-600"
+                      ? "bg-[rgba(59,130,246,.20)] text-[var(--meridian-400)] hover:bg-[rgba(59,130,246,.30)]"
+                      : "bg-[var(--surface-hover-strong)] text-[var(--text-muted)] hover:bg-[var(--surface-hover-strong)]"
                   }`}>
                   {togglingId === s.id
                     ? <Loader2 size={11} className="animate-spin" />
@@ -1313,83 +1384,84 @@ function DangerZoneTab({
   return (
     <div className="space-y-3">
       {!isOwner && (
-        <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
-          <p className="text-xs font-semibold text-red-400 uppercase tracking-widest">Leave Space</p>
-          <div className="space-y-1.5">
-            <p className="text-xs text-gray-400">
-              You will be removed from <span className="text-white font-medium">{workspace.name}</span> and lose access immediately.
-            </p>
-            <ul className="space-y-1">
-              {[
-                "You won't see this Space in your sidebar.",
-                "Any accounts you shared here remain — the Space owner still has access to them.",
-                "You can only rejoin if an owner sends you a new invite.",
-              ].map((line) => (
-                <li key={line} className="flex items-start gap-1.5 text-xs text-gray-500">
-                  <span className="mt-0.5 shrink-0 w-1 h-1 rounded-full bg-gray-600 translate-y-1" />
-                  {line}
-                </li>
-              ))}
-            </ul>
+        <GlassPanel depth="thin" elevation="e1" radius="lg" glow="coral" className="block">
+          <div className="p-4 space-y-3">
+            <p className="text-xs font-semibold text-[var(--coral-400)] uppercase tracking-widest">Leave Space</p>
+            <div className="space-y-1.5">
+              <p className="text-xs text-[var(--text-secondary)]">
+                You will be removed from <span className="text-[var(--text-primary)] font-medium">{displaySpaceName(workspace.name)}</span> and lose access immediately.
+              </p>
+              <ul className="space-y-1">
+                {[
+                  "You won't see this Space in your sidebar.",
+                  "Any accounts you shared here remain — the Space owner still has access to them.",
+                  "You can only rejoin if an owner sends you a new invite.",
+                ].map((line) => (
+                  <li key={line} className="flex items-start gap-1.5 text-xs text-[var(--text-muted)]">
+                    <span className="mt-0.5 shrink-0 w-1 h-1 rounded-full bg-[var(--surface-hover-strong)] translate-y-1" />
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <GlassButton onClick={handleLeave} disabled={leaveBusy} tone="danger" size="sm">
+              {leaveBusy ? <Loader2 size={14} className="animate-spin" /> : <UserMinus size={14} />}
+              Leave Space
+            </GlassButton>
           </div>
-          <button onClick={handleLeave} disabled={leaveBusy}
-            className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50">
-            {leaveBusy ? <Loader2 size={14} className="animate-spin" /> : <UserMinus size={14} />}
-            Leave Space
-          </button>
-        </div>
+        </GlassPanel>
       )}
 
       {isOwner && (
         <>
-          <div className="rounded-2xl border border-gray-700 bg-gray-800/40 p-4 space-y-3">
-            <p className="text-xs font-semibold text-gray-300 uppercase tracking-widest">Archive Space</p>
-            <p className="text-xs text-gray-400">
-              Hide <span className="text-white font-medium">{workspace.name}</span> from your active Space list. Members, shared accounts, and history all stay intact — unarchive it any time from the Archive &amp; Trash page.
-            </p>
-            <button onClick={handleArchive} disabled={archiveBusy}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-gray-300 hover:bg-gray-700/60 transition-colors disabled:opacity-50">
-              {archiveBusy ? <Loader2 size={14} className="animate-spin" /> : <Archive size={14} />}
-              Archive Space
-            </button>
-          </div>
+          <GlassPanel depth="thin" elevation="e1" radius="lg" className="block">
+            <div className="p-4 space-y-3">
+              <p className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-widest">Archive Space</p>
+              <p className="text-xs text-[var(--text-secondary)]">
+                Hide <span className="text-[var(--text-primary)] font-medium">{displaySpaceName(workspace.name)}</span> from your active Space list. Members, shared accounts, and history all stay intact — unarchive it any time from the Archive &amp; Trash page.
+              </p>
+              <GlassButton onClick={handleArchive} disabled={archiveBusy} tone="neutral" size="sm">
+                {archiveBusy ? <Loader2 size={14} className="animate-spin" /> : <Archive size={14} />}
+                Archive Space
+              </GlassButton>
+            </div>
+          </GlassPanel>
 
-          <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
-            <p className="text-xs font-semibold text-red-400 uppercase tracking-widest">Move to trash</p>
-            <p className="text-xs text-gray-400">
-              Move <span className="text-white font-medium">{workspace.name}</span> to trash. It&apos;s hidden from active use but can still be restored from the Archive &amp; Trash page until it&apos;s permanently deleted there.
-            </p>
-            {!confirmTrash ? (
-              <button onClick={() => setConfirmTrash(true)}
-                className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-colors">
-                <Trash2 size={14} /> Move to trash
-              </button>
-            ) : (
-              <div className="space-y-2">
-                <p className="text-xs text-gray-300">Move this Space to trash?</p>
-                <div className="flex gap-2">
-                  <button onClick={() => setConfirmTrash(false)}
-                    className="flex-1 px-3 py-2 rounded-xl border border-gray-700 text-xs text-gray-400 hover:text-white transition-colors">
-                    Cancel
-                  </button>
-                  <button onClick={handleTrash} disabled={trashBusy}
-                    className="flex-1 px-3 py-2 rounded-xl bg-red-600 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5">
-                    {trashBusy ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                    Move to trash
-                  </button>
+          <GlassPanel depth="thin" elevation="e1" radius="lg" glow="coral" className="block">
+            <div className="p-4 space-y-3">
+              <p className="text-xs font-semibold text-[var(--coral-400)] uppercase tracking-widest">Delete Space</p>
+              <p className="text-xs text-[var(--text-secondary)]">
+                Move <span className="text-[var(--text-primary)] font-medium">{displaySpaceName(workspace.name)}</span> to trash. It&apos;s hidden from active use but can still be restored from the Archive &amp; Trash page until it&apos;s permanently deleted there.
+              </p>
+              {!confirmTrash ? (
+                <GlassButton onClick={() => setConfirmTrash(true)} tone="danger" size="sm">
+                  <Trash2 size={14} /> Move to trash
+                </GlassButton>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs text-[var(--text-secondary)]">Move this Space to trash?</p>
+                  <div className="flex gap-2">
+                    <GlassButton onClick={() => setConfirmTrash(false)} tone="neutral" size="sm" fullWidth>
+                      Cancel
+                    </GlassButton>
+                    <GlassButton onClick={handleTrash} disabled={trashBusy} tone="danger" size="sm" fullWidth>
+                      {trashBusy ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      Move to trash
+                    </GlassButton>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          </GlassPanel>
 
-          <p className="text-[11px] text-gray-600 px-1">
+          <p className="text-[11px] text-[var(--text-muted)] px-1">
             Permanent deletion is only available from the Archive &amp; Trash page, and only once this Space is already in trash.
           </p>
         </>
       )}
 
       {error && (
-        <p className="text-xs text-red-400 flex items-center gap-1.5 px-1">
+        <p className="text-xs text-[var(--coral-400)] flex items-center gap-1.5 px-1">
           <AlertTriangle size={11} /> {error}
         </p>
       )}
@@ -1441,64 +1513,79 @@ export function ManageWorkspaceModal({
     { id: "members",   label: "Members",     icon: <Users       size={14} />, show: true },
     { id: "goals",     label: "Goals",       icon: <Target      size={14} />, show: false },
     { id: "finances",  label: "Add Accounts", icon: <Landmark    size={14} />, show: true },
-    { id: "dashboard", label: "Dashboard",   icon: <LayoutDashboard size={14} />, show: canManage },
-    { id: "danger",    label: isOwner ? "Danger Zone" : "Leave", icon: <AlertTriangle size={14} />, show: true },
+    { id: "dashboard", label: "Overview",    icon: <LayoutDashboard size={14} />, show: canManage },
+    { id: "danger",    label: isOwner ? "Delete Space" : "Leave Space", icon: isOwner ? <Trash2 size={14} /> : <LogOut size={14} />, show: true },
   ];
   const tabs = allTabs.filter((t) => t.show);
 
   return (
     <div
-      className="fixed inset-0 z-[200] flex items-center justify-center px-4 bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4 sm:p-6"
+      style={{
+        background: "rgba(0,0,0,0.55)",
+        backdropFilter: "blur(8px)",
+        WebkitBackdropFilter: "blur(8px)",
+      }}
       onClick={handleBackdrop}
     >
-      <div className="w-full sm:max-w-lg bg-gray-900 border border-gray-700 rounded-3xl shadow-2xl flex flex-col max-h-[88dvh]">
-        {/* Modal header */}
-        <div className="flex items-center justify-between px-5 pt-5 pb-4 border-b border-gray-800 shrink-0">
-          <div>
-            <p className="text-base font-semibold text-white truncate">{workspaceName}</p>
-            <p className="text-xs text-gray-500 mt-0.5">
-              {ROLE_LABELS[myRole] ?? myRole} · Manage Space
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-xl text-gray-500 hover:text-white hover:bg-gray-800 transition-colors shrink-0"
+      <GlassPanel depth="thick" elevation="e4" radius="xl" className="w-full sm:max-w-lg">
+        {/* Height/scroll management lives on this inner div rather than the
+            GlassPanel root — see CreateSpaceModal for the same pattern. */}
+        <div className="flex flex-col max-h-[calc(100dvh-2rem)] sm:max-h-[88dvh]">
+          {/* Modal header */}
+          <div
+            className="flex items-center justify-between px-5 pt-5 pb-4 shrink-0"
+            style={{ borderBottom: "1px solid var(--border-hairline)" }}
           >
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* Tab bar */}
-        <div className="flex gap-0.5 px-4 py-2 border-b border-gray-800 overflow-x-auto scrollbar-hide shrink-0">
-          {tabs.map((t) => (
+            <div className="min-w-0">
+              <p className="text-base font-semibold text-[var(--text-primary)] truncate">{displaySpaceName(workspaceName)}</p>
+              <p className="text-xs text-[var(--text-muted)] mt-0.5">
+                {ROLE_LABELS[myRole] ?? myRole} · Manage Space
+              </p>
+            </div>
             <button
-              key={t.id}
-              onClick={() => setActiveTab(t.id)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-colors shrink-0 ${
-                activeTab === t.id
-                  ? t.id === "danger"
-                    ? "bg-red-600/20 text-red-400"
-                    : "bg-gray-700 text-white"
-                  : t.id === "danger"
-                    ? "text-red-500/60 hover:text-red-400"
-                    : "text-gray-500 hover:text-gray-300"
-              }`}
+              onClick={onClose}
+              aria-label="Close"
+              className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
             >
-              {t.icon}
-              {t.label}
+              <X size={16} />
             </button>
-          ))}
-        </div>
+          </div>
 
-        {/* Tab content */}
-        <div className="flex-1 overflow-y-auto p-5">
+          {/* Tab bar */}
+          <div
+            className="flex gap-0.5 px-4 py-2 overflow-x-auto scrollbar-hide shrink-0"
+            style={{ borderBottom: "1px solid var(--border-hairline)" }}
+          >
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setActiveTab(t.id)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium whitespace-nowrap transition-colors shrink-0 ${
+                  activeTab === t.id
+                    ? t.id === "danger"
+                      ? "bg-[rgba(237,82,71,.16)] text-[var(--coral-400)]"
+                      : "bg-[var(--surface-hover-strong)] text-[var(--text-primary)]"
+                    : t.id === "danger"
+                      ? "text-[rgba(237,82,71,.6)] hover:text-[var(--coral-400)]"
+                      : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                }`}
+              >
+                {t.icon}
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab content */}
+          <div className="flex-1 overflow-y-auto p-5 min-h-0">
           {loading ? (
             <div className="flex justify-center py-12">
-              <Loader2 size={22} className="animate-spin text-gray-600" />
+              <Loader2 size={22} className="animate-spin text-[var(--text-muted)]" />
             </div>
           ) : !workspace ? (
             <div className="text-center py-12">
-              <p className="text-sm text-gray-500">Could not load Space</p>
+              <p className="text-sm text-[var(--text-muted)]">Could not load Space</p>
             </div>
           ) : (
             <>
@@ -1540,8 +1627,9 @@ export function ManageWorkspaceModal({
               )}
             </>
           )}
+          </div>
         </div>
-      </div>
+      </GlassPanel>
     </div>
   );
 }

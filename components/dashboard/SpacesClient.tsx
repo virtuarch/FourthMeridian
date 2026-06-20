@@ -53,11 +53,10 @@ import { GlassButton } from "@/components/atlas/GlassButton";
 import {
   CATEGORY_LABELS,
   CATEGORY_ICONS,
-  PRIMARY_CATEGORIES,
-  SECONDARY_CATEGORIES,
   WorkspaceCategory,
 } from "@/lib/workspace-presets";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { displaySpaceName, formatDate } from "@/lib/format";
 
 // Manage Space (deep settings) is only opened from a card's hover action —
 // split out of the initial bundle for this route.
@@ -133,7 +132,10 @@ const ICON_MAP: Record<string, React.ReactNode> = {
   Shield:          <Shield     size={18} />,
 };
 
-function CategoryIcon({ name }: { name: string }) {
+// Exported so CreateSpaceModal.tsx (mounted from DashboardChrome.tsx, not
+// this file) can reuse the exact same icon-name → glyph mapping for its
+// Space Type chips instead of duplicating ICON_MAP in two places.
+export function CategoryIcon({ name }: { name: string }) {
   return <>{ICON_MAP[name] ?? <LayoutDashboard size={18} />}</>;
 }
 
@@ -163,17 +165,6 @@ function categoryTile(category: string): string {
   return CATEGORY_TILE[category] ?? CATEGORY_TILE.OTHER;
 }
 
-// Shared selected/unselected tint for the Create Space panel's option-chip
-// grids (Space Type + Privacy) — both grids used this identical two-state
-// class recipe inline; extracted once so they can't drift out of sync.
-// Pure class-string return, no markup change — output is byte-identical to
-// the previous inline ternaries.
-function chipTone(selected: boolean): string {
-  return selected
-    ? "border-[rgba(125,168,255,.4)] bg-[rgba(59,130,246,.10)]"
-    : "border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:bg-[var(--surface-hover)]";
-}
-
 // "Net Worth" is the one real number every workspace already has (from
 // WorkspaceSnapshot). The label changes per Space type so the same number
 // reads correctly in context — no new aggregation, just relabeling.
@@ -182,6 +173,7 @@ function metricLabelForCategory(category: string): string {
   if (category === "PROPERTY" || category === "VEHICLE" || category === "EQUIPMENT") return "Equity";
   if (category === "DEBT_PAYOFF") return "Balance";
   if (category === "TRIP") return "Budget";
+  if (category === "CUSTOM" || category === "OTHER") return "Value";
   return "Net Worth";
 }
 
@@ -369,26 +361,25 @@ function SpaceCard({
           <CategoryIcon name={CATEGORY_ICONS[category] ?? "LayoutDashboard"} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <p className="text-sm font-semibold text-[var(--text-primary)] truncate">{space.name}</p>
+          <div className="flex items-start gap-1.5">
+            {/* Name scales down slightly before it wraps to a second line,
+                and only ever ellipsizes as a last resort (line-clamp-2's
+                native overflow behavior) — long Space names stay readable
+                instead of getting cut off after a few characters. */}
+            <p
+              className="font-semibold text-[var(--text-primary)] leading-snug line-clamp-2 break-words"
+              style={{ fontSize: "clamp(0.8125rem, 0.75rem + 0.3vw, 0.875rem)" }}
+            >
+              {displaySpaceName(space.name)}
+            </p>
             {space.isPublic
-              ? <Globe size={11} className="text-[var(--text-muted)] shrink-0" />
-              : !isPersonal && <Lock size={11} className="text-[var(--text-muted)] shrink-0" />}
+              ? <Globe size={11} className="text-[var(--text-muted)] shrink-0 mt-1" />
+              : !isPersonal && <Lock size={11} className="text-[var(--text-muted)] shrink-0 mt-1" />}
           </div>
           <p className="text-xs text-[var(--text-muted)] mt-0.5 truncate">
             {CATEGORY_LABELS[category] ?? "Space"}
           </p>
         </div>
-        {isActive && (
-          <span className="flex items-center gap-1.5 shrink-0" title="Active Space">
-            <span
-              className="presence-dot w-[6px] h-[6px] rounded-full shrink-0"
-              style={{ background: "var(--emerald-400)" }}
-              aria-hidden
-            />
-            <span className="text-[10px] font-medium text-[var(--text-muted)]">Active</span>
-          </span>
-        )}
         {!interactive && (
           <span className="text-[9px] font-medium text-[var(--text-muted)] shrink-0">Not joined</span>
         )}
@@ -446,6 +437,192 @@ function SpaceCard({
   );
 }
 
+// ─── Public Space card (compact) + detail modal ──────────────────────────────
+//
+// Public Spaces the user hasn't joined get their own compact preview card —
+// visibly smaller than the full SpaceCard above (tighter padding, smaller
+// icon tile and type, no sparkline, no member stack, no hover actions): these
+// are previews, not active workspaces, so the card's job is to communicate
+// just enough — name, type, the one financial metric, last activity — to
+// decide whether to look closer. Clicking one opens PublicSpaceDetailModal
+// for the fuller read-only view rather than switching into the Space.
+
+function PublicSpaceCard({ space, onOpen }: { space: SpaceItem; onOpen: () => void }) {
+  const category = space.category as WorkspaceCategory;
+
+  return (
+    <div
+      className={[
+        "group relative overflow-hidden rounded-[var(--radius-md)] border p-3 flex flex-col gap-2 cursor-pointer",
+        "bg-[var(--surface-muted)] hover:bg-[var(--surface-hover)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]",
+        "transition-[transform,background-color,border-color,box-shadow] duration-[var(--dur-base)] ease-[var(--ease-standard)]",
+        "hover:-translate-y-[2px] hover:shadow-[var(--shadow-e2)]",
+      ].join(" ")}
+      onClick={onOpen}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Enter") onOpen(); }}
+    >
+      <span
+        aria-hidden
+        className="pointer-events-none absolute top-0 left-2.5 right-2.5 h-px opacity-30 group-hover:opacity-100 transition-opacity duration-[var(--dur-base)] ease-[var(--ease-standard)]"
+        style={{ background: "linear-gradient(90deg, transparent, var(--specular-edge), transparent)" }}
+      />
+
+      <div className="flex items-start justify-between gap-2">
+        <div
+          className="w-7 h-7 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0 text-white"
+          style={{ background: categoryTile(category), boxShadow: "inset 0 1px 0 rgba(255,255,255,.2), 0 1px 3px rgba(0,0,0,.25)" }}
+        >
+          <CategoryIcon name={CATEGORY_ICONS[category] ?? "LayoutDashboard"} />
+        </div>
+        <Globe size={10} className="text-[var(--text-muted)] shrink-0 mt-1" />
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold text-[var(--text-primary)] text-[13px] leading-snug line-clamp-2 break-words">
+          {displaySpaceName(space.name)}
+        </p>
+        <p className="text-[10px] text-[var(--text-muted)] mt-0.5 truncate">
+          {CATEGORY_LABELS[category] ?? "Space"}
+        </p>
+      </div>
+
+      <div className="pt-2" style={{ borderTop: "1px solid var(--border-hairline)" }}>
+        <p className="text-[8px] uppercase tracking-wide text-[var(--text-muted)] mb-0.5">
+          {metricLabelForCategory(category)}
+        </p>
+        <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums truncate">
+          {space.trend.length > 0 ? formatCurrency(space.netWorth) : "—"}
+        </p>
+        <p className="text-[9px] text-[var(--text-muted)] mt-0.5 truncate">
+          {formatActivity(space.lastUpdated, space.createdAt)}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// Read-only detail view for a public Space the viewer hasn't joined. Mirrors
+// ManageWorkspaceModal's shell (fixed backdrop + GlassPanel depth="thick", same
+// header/close-button recipe) so it reads as the same family of surface, but
+// has no tabs and no mutation — just the fuller picture the compact card can't
+// fit. "Join Space" is intentionally inert: public join permissions,
+// viewer-only membership, audit logs, invite rules, and abuse controls are a
+// dedicated backend pass of their own, so this only previews the action.
+function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose: () => void }) {
+  const category = space.category as WorkspaceCategory;
+  const owner = space.members.find((m) => m.role === "OWNER");
+  const tone: "positive" | "danger" | "neutral" =
+    space.trend.length >= 2
+      ? space.trend[space.trend.length - 1] >= space.trend[0] ? "positive" : "danger"
+      : "neutral";
+
+  function handleBackdrop(e: React.MouseEvent<HTMLDivElement>) {
+    if (e.target === e.currentTarget) onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4 sm:p-6"
+      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
+      onClick={handleBackdrop}
+    >
+      <GlassPanel depth="thick" elevation="e4" radius="xl" className="w-full sm:max-w-md">
+        <div className="flex flex-col max-h-[calc(100dvh-2rem)] sm:max-h-[88dvh]">
+          {/* Header */}
+          <div
+            className="flex items-start justify-between gap-3 px-5 pt-5 pb-4"
+            style={{ borderBottom: "1px solid var(--border-hairline)" }}
+          >
+            <div className="flex items-start gap-3 min-w-0">
+              <div
+                className="w-11 h-11 rounded-[var(--radius-md)] flex items-center justify-center shrink-0 text-white"
+                style={{ background: categoryTile(category), boxShadow: "inset 0 1px 0 rgba(255,255,255,.2), 0 1px 3px rgba(0,0,0,.25)" }}
+              >
+                <CategoryIcon name={CATEGORY_ICONS[category] ?? "LayoutDashboard"} />
+              </div>
+              <div className="min-w-0">
+                <p className="text-base font-semibold text-[var(--text-primary)] truncate">{displaySpaceName(space.name)}</p>
+                <p className="text-xs text-[var(--text-muted)] mt-0.5 flex items-center gap-1">
+                  {CATEGORY_LABELS[category] ?? "Space"} · <Globe size={10} className="shrink-0" /> Public
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="flex-1 overflow-y-auto p-5 space-y-5 min-h-0">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">
+                  {metricLabelForCategory(category)}
+                </p>
+                <p className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">
+                  {space.trend.length > 0 ? formatCurrency(space.netWorth) : "—"}
+                </p>
+              </div>
+              <Sparkline values={space.trend} tone={tone} />
+            </div>
+
+            {space.description && (
+              <p className="text-sm text-[var(--text-secondary)] leading-relaxed">{space.description}</p>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-[var(--radius-md)] p-3" style={{ background: "var(--surface-muted)" }}>
+                <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Created</p>
+                <p className="text-sm text-[var(--text-primary)]">{formatDate(space.createdAt)}</p>
+              </div>
+              <div className="rounded-[var(--radius-md)] p-3" style={{ background: "var(--surface-muted)" }}>
+                <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Updated</p>
+                <p className="text-sm text-[var(--text-primary)]">
+                  {space.lastUpdated ? formatDate(space.lastUpdated) : "—"}
+                </p>
+              </div>
+              {owner && (
+                <div className="rounded-[var(--radius-md)] p-3" style={{ background: "var(--surface-muted)" }}>
+                  <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Owner</p>
+                  <p className="text-sm text-[var(--text-primary)] truncate">
+                    {owner.user.name ?? `@${owner.user.username}`}
+                  </p>
+                </div>
+              )}
+              <div className="rounded-[var(--radius-md)] p-3" style={{ background: "var(--surface-muted)" }}>
+                <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Members</p>
+                <p className="text-sm text-[var(--text-primary)] flex items-center gap-1.5">
+                  <Users size={12} className="text-[var(--text-muted)]" /> {space.members.length}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer — "Join Space" is intentionally disabled. See file-level
+              comment: public join backend (permissions, viewer-only
+              membership, audit logs, invite rules, abuse controls) is a
+              dedicated future pass, not part of this presentation redesign. */}
+          <div className="px-5 py-4 shrink-0" style={{ borderTop: "1px solid var(--border-hairline)" }}>
+            <GlassButton tone="meridian" fullWidth disabled title="Public Space joining is coming soon">
+              <Users size={13} />
+              Join Space
+            </GlassButton>
+            <p className="text-[11px] text-[var(--text-muted)] text-center mt-2">
+              Public joining is coming soon.
+            </p>
+          </div>
+        </div>
+      </GlassPanel>
+    </div>
+  );
+}
+
 // ─── Pending invite row + banner ──────────────────────────────────────────────
 
 function InviteRow({ invite, onAction }: { invite: Invite; onAction: () => void }) {
@@ -471,7 +648,7 @@ function InviteRow({ invite, onAction }: { invite: Invite; onAction: () => void 
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 rounded-[var(--radius-md)]" style={{ background: "var(--surface-muted)" }}>
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-[var(--text-primary)] truncate">{invite.workspace.name}</p>
+        <p className="text-sm text-[var(--text-primary)] truncate">{displaySpaceName(invite.workspace.name)}</p>
         <p className="text-xs text-[var(--text-muted)] truncate">
           Invited by {invite.invitedBy.name ?? `@${invite.invitedBy.username}`} · {ROLE_LABELS[invite.role] ?? invite.role}
         </p>
@@ -534,197 +711,35 @@ function InviteBanner({ invites, onAction }: { invites: Invite[]; onAction: () =
   );
 }
 
-// ─── Create Space panel ───────────────────────────────────────────────────────
-
-function CreateSpacePanel({ onCreated }: { onCreated: () => void }) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [isPublic, setIsPublic] = useState(false);
-  const [category, setCategory] = useState<WorkspaceCategory | null>(null);
-  const [showAll, setShowAll] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  const visibleCategories = showAll ? [...PRIMARY_CATEGORIES, ...SECONDARY_CATEGORIES] : PRIMARY_CATEGORIES;
-
-  async function handleCreate() {
-    if (!name.trim()) { setError("Name is required"); return; }
-    setBusy(true);
-    setError("");
-    try {
-      const res = await fetch("/api/workspaces", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name:        name.trim(),
-          description: description.trim() || undefined,
-          isPublic,
-          category:    category ?? WorkspaceCategory.OTHER,
-        }),
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        setError(d.error ?? "Failed to create");
-      } else {
-        window.dispatchEvent(new CustomEvent("workspace-list-changed"));
-        setName(""); setDescription(""); setIsPublic(false); setCategory(null);
-        onCreated();
-      }
-    } catch {
-      setError("Network error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-6 flex flex-col gap-5">
-      <div>
-        <h2 className="text-base font-semibold text-[var(--text-primary)]">Create Space</h2>
-        <p className="text-xs text-[var(--text-muted)] mt-1 leading-relaxed">
-          A new Space for a family, business, property, or anything else you want to track separately.
-        </p>
-      </div>
-
-      <div>
-        <label className="text-xs font-medium text-[var(--text-secondary)] mb-2 block">Space Type</label>
-        <div className="grid grid-cols-2 gap-2">
-          {visibleCategories.map((cat) => {
-            const selected = category === cat;
-            return (
-              <button
-                key={cat}
-                type="button"
-                onClick={() => setCategory(selected ? null : cat)}
-                className={[
-                  "flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-sm)] border text-left transition-[transform,background-color,border-color] active:scale-[0.97]",
-                  chipTone(selected),
-                ].join(" ")}
-              >
-                <span className={selected ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)]"}>
-                  <CategoryIcon name={CATEGORY_ICONS[cat]} />
-                </span>
-                <span className={`text-xs truncate ${selected ? "text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)]"}`}>
-                  {CATEGORY_LABELS[cat]}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <button
-          type="button"
-          onClick={() => setShowAll((p) => !p)}
-          className="w-full text-left text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] py-1.5 transition-colors"
-        >
-          {showAll ? "Show fewer types" : "Show more types →"}
-        </button>
-      </div>
-
-      <div>
-        <label className="text-xs font-medium text-[var(--text-secondary)] mb-1.5 block">Space Name</label>
-        <input
-          value={name}
-          onChange={(e) => { setName(e.target.value); setError(""); }}
-          onKeyDown={(e) => e.key === "Enter" && handleCreate()}
-          placeholder="e.g. Smith Family, Atlanta Duplex"
-          maxLength={60}
-          className="w-full rounded-[var(--radius-sm)] px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none transition-colors"
-          style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
-        />
-      </div>
-
-      <div>
-        <label className="text-xs font-medium text-[var(--text-secondary)] mb-1.5 block">
-          Description <span className="text-[var(--text-muted)]">(optional)</span>
-        </label>
-        <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="What is this Space for?"
-          rows={2}
-          maxLength={200}
-          className="w-full rounded-[var(--radius-sm)] px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none transition-colors resize-none"
-          style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
-        />
-      </div>
-
-      {/* Bottom decision zone — deliberately more generous spacing (gap-7)
-          than the form fields above (gap-5): this is where the user commits,
-          so it should feel relaxed and premium, not crowded against the
-          fields right above it. */}
-      <div className="flex flex-col gap-7">
-        <div>
-          <label className="text-xs font-medium text-[var(--text-secondary)] mb-2 block">Privacy</label>
-          <div className="grid grid-cols-2 gap-2">
-            {[false, true].map((pub) => {
-              const selected = isPublic === pub;
-              return (
-                <button
-                  key={String(pub)}
-                  type="button"
-                  onClick={() => setIsPublic(pub)}
-                  className={[
-                    "flex items-center justify-center gap-2 px-3 py-2.5 rounded-[var(--radius-sm)] border transition-[transform,background-color,border-color] active:scale-[0.97]",
-                    chipTone(selected),
-                  ].join(" ")}
-                >
-                  {pub ? <Globe size={13} /> : <Lock size={13} />}
-                  <span className="text-xs text-[var(--text-secondary)]">{pub ? "Public" : "Private"}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {error && <p className="text-xs text-[var(--coral-400)]">{error}</p>}
-
-        <GlassButton
-          onClick={handleCreate}
-          disabled={busy || !name.trim()}
-          tone="meridian"
-          fullWidth
-          className="py-3 text-sm"
-        >
-          {busy ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
-          Create Space
-        </GlassButton>
-      </div>
-    </GlassPanel>
-  );
-}
-
 // ─── Header ───────────────────────────────────────────────────────────────────
 //
 // Deliberately not a GlassPanel — a large boxed-in hero reads heavy and
 // "admin dashboard"; floating the title directly over the Atlas Field is
-// the lighter, breathable, visionOS-style treatment this page wants. The
-// "current Space" indicator is no longer a glass pill — just a softly
-// pulsing presence dot and a line of text. Presence over status: nothing to
-// read as chrome, nothing to read as a badge.
+// the lighter, breathable, visionOS-style treatment this page wants. No
+// "current Space" status line under the title anymore — which Space is
+// active is already obvious from the card grid below (tinted tile + no
+// "Active" badge needed) and from the sidebar, so the hero just goes
+// straight from headline to subtitle.
 
-function SpacesHeader({ currentName }: { currentName: string | null }) {
+function SpacesHeader({ onCreateSpace }: { onCreateSpace: () => void }) {
   return (
-    <div className="pt-2 pb-8 md:pb-10">
-      <h1 className="text-3xl md:text-[2.5rem] font-semibold tracking-tight text-[var(--text-primary)] mb-2">
-        Spaces
-      </h1>
-      {/* Active-Space presence line — sits directly under the title, reading
-          as a status line rather than a detached badge floating above it. */}
-      {currentName && (
-        <div className="flex items-center gap-1.5 mb-2">
-          <span
-            className="presence-dot w-[6px] h-[6px] rounded-full shrink-0"
-            style={{ background: "var(--emerald-400)" }}
-            aria-hidden
-          />
-          <span className="text-xs font-medium text-[var(--text-muted)]">
-            Active in <span className="text-[var(--text-secondary)]">{currentName}</span>
-          </span>
-        </div>
-      )}
-      <p className="text-sm md:text-base text-[var(--text-muted)] max-w-xl leading-relaxed">
-        Everything you build, manage, and share lives here.
-      </p>
+    <div className="pt-2 pb-8 md:pb-10 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-5">
+      <div>
+        <h1 className="text-3xl md:text-[2.5rem] font-semibold tracking-tight text-[var(--text-primary)] mb-2">
+          Spaces
+        </h1>
+        <p className="text-sm md:text-base text-[var(--text-muted)] max-w-xl leading-relaxed">
+          Everything you build, manage, and share lives here.
+        </p>
+      </div>
+      {/* Replaces the old permanently-visible inline Create Space panel —
+          the form now lives in CreateSpaceModal (mounted once from
+          DashboardChrome.tsx), opened via the same "open-create-space"
+          window event the Sidebar's own Create Space row also dispatches. */}
+      <GlassButton onClick={onCreateSpace} tone="meridian" className="shrink-0 sm:mt-1">
+        <Plus size={15} />
+        Create Space
+      </GlassButton>
     </div>
   );
 }
@@ -748,6 +763,7 @@ export function SpacesClient({
   const [settingDefaultId, setSettingDefaultId] = useState<string | null>(null);
   const [managingSpace, setManagingSpace]      = useState<SpaceItem | null>(null);
   const [showAllSpaces, setShowAllSpaces]      = useState(false);
+  const [viewingPublicSpace, setViewingPublicSpace] = useState<SpaceItem | null>(null);
 
   // Keep managingSpace in sync with the latest server-rendered `mine` list
   // after router.refresh() — same pattern as the old WorkspacesClient.
@@ -809,8 +825,12 @@ export function SpacesClient({
   const visibleSpaces = showAllSpaces ? ordered : ordered.slice(0, CARD_LIMIT);
   const hiddenSpaceCount = ordered.length - visibleSpaces.length;
 
+  // This preview row is intentionally capped, full stop (no "show more" —
+  // that belongs to the future /dashboard/spaces/public page the heading
+  // above links to, not this compact strip on the main Spaces page).
+  const PUBLIC_CARD_LIMIT = 4;
+
   const resolvedActiveId = (activeId && mine.some((w) => w.id === activeId)) ? activeId : personal?.id ?? null;
-  const activeSpace = mine.find((w) => w.id === resolvedActiveId) ?? personal ?? null;
 
   const myIds = new Set(mine.map((w) => w.id));
   const explorePublic = publicSpaces.filter((w) => !myIds.has(w.id));
@@ -829,68 +849,104 @@ export function SpacesClient({
           behind the header strip too, not just this page's own content
           (Phase G #2) — nothing to render here anymore. */}
       <div className="max-w-[1400px] mx-auto pb-16">
-        <SpacesHeader currentName={activeSpace?.name ?? null} />
+        <SpacesHeader onCreateSpace={() => window.dispatchEvent(new CustomEvent("open-create-space"))} />
 
         {pendingInvites.length > 0 && <InviteBanner invites={pendingInvites} onAction={refresh} />}
 
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 lg:gap-8 items-start">
-          <div>
-            {/* One unified Atlas Glass canvas holding every Space card — not
-                a row of separately-boxed panels. */}
-            <GlassPanel depth="thin" elevation="e2" radius="xl" className="p-4 md:p-6">
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-                {visibleSpaces.map((space) => (
-                  <SpaceCard
-                    key={space.id}
-                    space={space}
-                    isActive={resolvedActiveId === space.id}
-                    isDefault={preferredId ? preferredId === space.id : space.id === personal?.id}
-                    isPersonal={space.id === personal?.id}
-                    onOpen={() => handleOpen(space)}
-                    onManage={() => setManagingSpace(space)}
-                    onSetDefault={space.id === personal?.id ? undefined : () => handleSetDefault(space.id)}
-                    switching={switchingId === space.id}
-                    settingDefault={settingDefaultId === space.id}
-                  />
-                ))}
-              </div>
-
-              {hiddenSpaceCount > 0 && (
-                <div className="flex justify-center pt-5">
-                  <GlassButton tone="neutral" size="sm" onClick={() => setShowAllSpaces(true)}>
-                    Show {hiddenSpaceCount} more Space{hiddenSpaceCount === 1 ? "" : "s"}
-                    <ChevronDown size={13} />
-                  </GlassButton>
-                </div>
-              )}
-            </GlassPanel>
-
-            {explorePublic.length > 0 && (
-              <div className="mt-10">
-                <p className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-3">
-                  Explore public Spaces
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
-                  {explorePublic.map((space) => (
-                    <SpaceCard key={space.id} space={space} interactive={false} />
-                  ))}
-                </div>
-              </div>
-            )}
+        {/* One unified Atlas Glass canvas holding every Space card — not
+            a row of separately-boxed panels. No more right-column Create
+            Space panel: that form now lives in a modal (see
+            CreateSpaceModal.tsx), so the page content is just the card
+            grid. */}
+        <GlassPanel depth="thin" elevation="e2" radius="xl" className="p-4 md:p-6">
+          {/* auto-fit + minmax sizes columns off the actual width of this
+              GlassPanel, not the viewport — so once the content column
+              (viewport minus sidebar) can't fit two 280px-min cards side by
+              side, it drops to one column instead of squeezing both.
+              min(280px,100%) keeps the floor from ever exceeding the
+              container on very narrow screens, which would otherwise force
+              horizontal scroll. */}
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-4">
+            {visibleSpaces.map((space) => (
+              <SpaceCard
+                key={space.id}
+                space={space}
+                isActive={resolvedActiveId === space.id}
+                isDefault={preferredId ? preferredId === space.id : space.id === personal?.id}
+                isPersonal={space.id === personal?.id}
+                onOpen={() => handleOpen(space)}
+                onManage={() => setManagingSpace(space)}
+                onSetDefault={space.id === personal?.id ? undefined : () => handleSetDefault(space.id)}
+                switching={switchingId === space.id}
+                settingDefault={settingDefaultId === space.id}
+              />
+            ))}
           </div>
 
-          <CreateSpacePanel onCreated={refresh} />
-        </div>
+          {hiddenSpaceCount > 0 && (
+            <div className="flex justify-center pt-5">
+              <GlassButton tone="neutral" size="sm" onClick={() => setShowAllSpaces(true)}>
+                Show {hiddenSpaceCount} more Space{hiddenSpaceCount === 1 ? "" : "s"}
+                <ChevronDown size={13} />
+              </GlassButton>
+            </div>
+          )}
+        </GlassPanel>
+
+        {explorePublic.length > 0 && (
+          <div className="mt-10">
+            {/* Clickable heading -> /dashboard/spaces/public. That route
+                doesn't exist yet (see TODO below) — this is the main
+                Spaces page's compact preview row, not the full public
+                directory, so the heading itself is the entry point into a
+                future dedicated browsing page. Title-case + text-primary
+                matches the platform's other sub-section headings (see
+                "Add existing accounts" / "Invite Users" in
+                CreateSpaceModal.tsx) rather than the old all-caps muted
+                label style. */}
+            <button
+              type="button"
+              onClick={() => router.push("/dashboard/spaces/public")}
+              className="group flex items-center gap-1.5 mb-3 text-sm font-semibold text-[var(--text-primary)] hover:text-[var(--meridian-400)] transition-colors"
+            >
+              Explore Public Spaces
+              <ChevronRight size={14} className="text-[var(--text-muted)] group-hover:text-[var(--meridian-400)] group-hover:translate-x-0.5 transition-[color,transform]" />
+            </button>
+            {/* TODO(backend/future pass): /dashboard/spaces/public doesn't
+                exist yet — this click currently 404s. Build a dedicated
+                public-Spaces browsing page there (full directory, search,
+                filters) rather than cramming it into this compact preview
+                row. Capped at PUBLIC_CARD_LIMIT here intentionally; that
+                future page is where "see all public Spaces" belongs. */}
+
+            {/* Roughly half the column width of the "My Spaces" grid above
+                (150px floor vs. 280px) — compact, near-square previews
+                rather than full-width panels. Capped to PUBLIC_CARD_LIMIT so
+                this stays a quiet preview row, not a second full grid. */}
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(min(140px,100%),1fr))] gap-3">
+              {explorePublic.slice(0, PUBLIC_CARD_LIMIT).map((space) => (
+                <PublicSpaceCard key={space.id} space={space} onOpen={() => setViewingPublicSpace(space)} />
+              ))}
+            </div>
+          </div>
+        )}
 
         {managingSpace && (
           <ManageWorkspaceModal
             workspaceId={managingSpace.id}
-            workspaceName={managingSpace.name}
+            workspaceName={displaySpaceName(managingSpace.name)}
             myRole={managingSpace.myRole ?? "MEMBER"}
             currentUserId={currentUserId}
             onClose={() => setManagingSpace(null)}
             onRefresh={refresh}
             onDeleted={() => setManagingSpace(null)}
+          />
+        )}
+
+        {viewingPublicSpace && (
+          <PublicSpaceDetailModal
+            space={viewingPublicSpace}
+            onClose={() => setViewingPublicSpace(null)}
           />
         )}
       </div>

@@ -46,7 +46,7 @@ import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatDate } from "@/lib/format";
+import { formatDate, possessive } from "@/lib/format";
 import { classifyAccounts } from "@/lib/account-classifier";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -71,7 +71,7 @@ interface Props {
 
 // ── Tab config ────────────────────────────────────────────────────────────────
 const PERSONAL_TABS: { key: PersonalTab; label: string; icon: React.ReactNode }[] = [
-  { key: "dashboard",   label: "Dashboard",   icon: <LayoutDashboard size={14} /> },
+  { key: "dashboard",   label: "Overview",    icon: <LayoutDashboard size={14} /> },
   { key: "banking",     label: "Banking",     icon: <Building2        size={14} /> },
   { key: "investments", label: "Investments", icon: <TrendingUp       size={14} /> },
   { key: "credit",      label: "Credit",      icon: <CreditCard       size={14} /> },
@@ -674,7 +674,7 @@ export function DashboardClient({
       <div className="flex items-start justify-between mb-0">
         <div>
           <h1 className="text-xl font-bold text-white">
-            {firstName ? `${firstName}'s Space` : "My Space"}
+            {firstName ? `${possessive(firstName)} Space` : "My Space"}
           </h1>
           <p className="text-sm text-gray-500">Personal</p>
         </div>

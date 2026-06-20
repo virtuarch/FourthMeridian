@@ -39,6 +39,7 @@ import {
   Landmark, Wallet, Building2, Inbox,
 } from "lucide-react";
 import Link from "next/link";
+import { displaySpaceName } from "@/lib/format";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -201,7 +202,7 @@ function AssetRow({
                   key={ws.id}
                   className="inline-flex items-center text-[11px] font-medium text-gray-400 bg-gray-800 border border-gray-700 px-2 py-0.5 rounded-md"
                 >
-                  {ws.name}
+                  {displaySpaceName(ws.name)}
                 </span>
               ))}
             </div>
@@ -332,7 +333,7 @@ function ArchivedWorkspaceRow({
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-sm font-semibold text-white truncate">{ws.name}</p>
+            <p className="text-sm font-semibold text-white truncate">{displaySpaceName(ws.name)}</p>
             <span className="inline-flex items-center text-[10px] font-semibold uppercase tracking-wide text-gray-400 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded-md shrink-0">
               Space
             </span>
@@ -375,7 +376,7 @@ function ArchivedWorkspaceRow({
       {isOwner && confirmingTrash && (
         <div className="px-5 pb-4 flex items-center justify-between gap-3 border-t border-gray-800 pt-3 mt-1">
           <p className="text-xs text-gray-400">
-            Move <span className="text-white font-medium">{ws.name}</span> to trash?
+            Move <span className="text-white font-medium">{displaySpaceName(ws.name)}</span> to trash?
           </p>
           <div className="flex items-center gap-2 shrink-0">
             <button
@@ -462,7 +463,7 @@ function TrashedWorkspaceRow({
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-sm font-semibold text-white truncate">{ws.name}</p>
+            <p className="text-sm font-semibold text-white truncate">{displaySpaceName(ws.name)}</p>
             <span className="inline-flex items-center text-[10px] font-semibold uppercase tracking-wide text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded-md shrink-0">
               Trashed
             </span>
@@ -505,7 +506,7 @@ function TrashedWorkspaceRow({
       {isOwner && confirmingDelete && (
         <div className="px-5 pb-4 flex items-center justify-between gap-3 border-t border-gray-800 pt-3 mt-1">
           <p className="text-xs text-gray-400">
-            Permanently delete <span className="text-white font-medium">{ws.name}</span>?
+            Permanently delete <span className="text-white font-medium">{displaySpaceName(ws.name)}</span>?
             <span className="text-red-400"> This cannot be undone.</span>
           </p>
           <div className="flex items-center gap-2 shrink-0">
@@ -658,7 +659,7 @@ export function ArchiveBinClient({
           <EmptyState
             icon={Building2}
             title="No archived Spaces"
-            body="Archiving a Space hides it from your active list without touching members, shared accounts, or history. Archive one from its Manage → Danger Zone tab."
+            body="Archiving a Space hides it from your active list without touching members, shared accounts, or history. Archive one from its Manage → Delete Space tab."
           />
         ) : (
           <div className="space-y-3">
@@ -682,7 +683,7 @@ export function ArchiveBinClient({
           <EmptyState
             icon={Inbox}
             title="Trash is empty"
-            body="Spaces moved to trash from Manage → Danger Zone appear here. Restore them, or delete them permanently once you're sure."
+            body="Spaces moved to trash from Manage → Delete Space appear here. Restore them, or delete them permanently once you're sure."
           />
         ) : (
           <div className="space-y-3">

@@ -22,20 +22,42 @@
  * z-index to this column's own stacking context, so it can't be painted
  * over by the Sidebar or bleed past the Refresh Data button, which stays
  * exactly where it was (still its own `<header>`, just no longer opaque).
+ *
+ * Create Space modal: this is also the actual common ancestor of the
+ * Sidebar and every dashboard page (including the Spaces page), so it owns
+ * the single mounted CreateSpaceModal instance + its open state. Both the
+ * Sidebar's "Create Space" row and the Spaces page's own "Create Space"
+ * button dispatch a window CustomEvent ("open-create-space") rather than
+ * holding a reference to this component — the same decoupled pattern this
+ * codebase already uses for "workspace-list-changed" /
+ * "workspace-invites-changed" (see Sidebar.tsx, SpacesClient.tsx). On a
+ * successful create, `router.refresh()` re-fetches the Spaces page's
+ * server-provided `mine`/`publicSpaces` props so the card grid picks up
+ * the new Space immediately.
  */
 
-import { usePathname } from "next/navigation";
-import { ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { ReactNode, useEffect, useState } from "react";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { BottomNav } from "@/components/ui/BottomNav";
 import { UserButton } from "@/components/ui/UserButton";
 import { RefreshButton } from "@/components/dashboard/RefreshButton";
 import { AtlasField } from "@/components/atlas/AtlasField";
 import { AppLogo } from "@/components/ui/AppLogo";
+import { CreateSpaceModal } from "@/components/dashboard/CreateSpaceModal";
 
 export function DashboardChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const isSpaces = pathname.startsWith("/dashboard/spaces");
+
+  const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
+
+  useEffect(() => {
+    function handleOpen() { setCreateSpaceOpen(true); }
+    window.addEventListener("open-create-space", handleOpen);
+    return () => window.removeEventListener("open-create-space", handleOpen);
+  }, []);
 
   return (
     <div className="flex min-h-screen bg-[var(--bg-base)]">
@@ -46,12 +68,22 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
       <div className={["flex-1 flex flex-col min-w-0", isSpaces ? "relative isolate" : ""].join(" ")}>
         {isSpaces && <AtlasField />}
 
-        {/* Mobile header */}
+        {/* Mobile header — sticky + glass (restored: this used to be a
+            plain opaque bar that scrolled away with the page; it now stays
+            pinned via `sticky top-0` like every other floating surface in
+            this system, with a backdrop blur so content scrolls underneath
+            it instead of behind a hard edge). isSpaces keeps zero tint so it
+            blends into that page's own Atlas Field rather than drawing a
+            seam across it; every other page gets a faint `--glass-ultrathin`
+            tint + hairline border so it still reads as a bar over busy
+            content. Hardcoded bg-gray-950/border-gray-800 replaced with
+            theme tokens so this also respects Light Glass, not just dark. */}
         <header
           className={[
-            "lg:hidden sticky top-0 z-40 backdrop-blur-sm",
-            isSpaces ? "" : "border-b border-gray-800 bg-gray-950/95",
+            "lg:hidden sticky top-0 z-40 backdrop-blur-md shrink-0",
+            isSpaces ? "" : "border-b border-[var(--border-hairline)]",
           ].join(" ")}
+          style={{ background: isSpaces ? "transparent" : "var(--glass-ultrathin)" }}
         >
           <div className="flex items-center justify-between px-4 h-14">
             <div className="flex items-center gap-1.5">
@@ -64,16 +96,32 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        {/* Desktop top bar — Refresh Data stays pinned top-right; on Spaces
-            it now sits directly on the page's own glass/Atlas background
-            instead of its own bordered strip. */}
+        {/* Desktop top bar — Refresh Data stays pinned top-right within this
+            bar. Same sticky/glass restoration as the mobile header above:
+            `sticky top-0 z-40` so it stays put while the page content
+            scrolls underneath it, plus a backdrop blur instead of the old
+            flat opaque strip.
+
+            No brand mark here: the Sidebar's own header row (`<aside
+            className="... self-start ... sticky top-0">` in Sidebar.tsx)
+            pins the Fourth Meridian logo+wordmark to the far left at the
+            same h-14 height with the same bottom hairline. (The `self-start`
+            is required — without it, the aside gets flex-stretched to the
+            main column's full page height and `sticky` has no room to take
+            effect, so the brand row would scroll away instead of pinning.)
+            With that in place, the Sidebar's logo row and this bar's
+            Refresh button now scroll-lock together as one continuous glass
+            strip across the top of the screen — this bar is just that
+            strip's right end. Rendering AppLogo here too would put two
+            brand marks on screen at once, which is exactly the duplicate
+            this bar previously had. */}
         <header
           className={[
-            "hidden lg:flex items-center justify-between px-8 h-14",
-            isSpaces ? "" : "border-b border-gray-800",
+            "hidden lg:flex items-center justify-end px-8 h-14 sticky top-0 z-40 backdrop-blur-md shrink-0",
+            isSpaces ? "" : "border-b border-[var(--border-hairline)]",
           ].join(" ")}
+          style={{ background: isSpaces ? "transparent" : "var(--glass-ultrathin)" }}
         >
-          <div /> {/* spacer */}
           <RefreshButton label="Refresh Data" />
         </header>
 
@@ -85,6 +133,12 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
       {/* Mobile bottom nav */}
       <BottomNav />
+
+      <CreateSpaceModal
+        open={createSpaceOpen}
+        onClose={() => setCreateSpaceOpen(false)}
+        onCreated={() => router.refresh()}
+      />
     </div>
   );
 }

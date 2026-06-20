@@ -59,9 +59,11 @@ import {
   Check,
   Loader2,
   AlertTriangle,
+  LayoutGrid,
   type LucideIcon,
 } from "lucide-react";
 import { AppLogo } from "@/components/ui/AppLogo";
+import { displaySpaceName } from "@/lib/format";
 
 const COOKIE_NAME = "fintracker_workspace";
 const INLINE_SPACE_LIMIT = 6;
@@ -169,13 +171,23 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
 
   return (
     <div className="px-3">
+      {/* Unlike Daily Brief/AI/Settings below, this top-level row never gets
+          the filled pill/border treatment — only its text+icon color flips
+          when active. The individual Space row beneath it already carries
+          its own selected pill (bg-[rgba(59,130,246,.06)] + border), so
+          giving this row the same pill made two "selected" pills stack on
+          top of each other and compete for attention. Color-only keeps it a
+          clickable nav row without out-competing the actual selected Space. */}
       <Link
         href="/dashboard/spaces"
         className={[
-          "flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-semibold uppercase tracking-wider transition-colors",
-          onSpaces ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
+          "flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium transition-colors",
+          onSpaces
+            ? "text-[var(--meridian-400)]"
+            : "text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]",
         ].join(" ")}
       >
+        <LayoutGrid size={17} strokeWidth={onSpaces ? 2.5 : 1.75} className="shrink-0" />
         <span className="flex-1">Spaces</span>
         {pendingInvites > 0 && (
           <span
@@ -217,7 +229,7 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
                     a marker beside the Space's name, not an unrelated status
                     light pinned to the row's far edge. */}
                 <span className="flex-1 min-w-0 flex items-center gap-1.5">
-                  <span className="truncate">{space.name}</span>
+                  <span className="truncate">{displaySpaceName(space.name)}</span>
                   {isActive && (
                     <span
                       className="presence-dot w-[6px] h-[6px] rounded-full shrink-0"
@@ -241,13 +253,18 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
           </Link>
         )}
 
-        <Link
-          href="/dashboard/spaces"
-          className="mt-1 flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-[13px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--glass-ultrathin)] hover:bg-[var(--surface-hover-strong)] border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:-translate-y-[1px] active:scale-[0.97] transition-[transform,background-color,border-color,color] duration-[var(--dur-base)] ease-[var(--ease-standard)]"
+        {/* Opens the shared CreateSpaceModal (mounted once from
+            DashboardChrome.tsx) instead of navigating to /dashboard/spaces
+            — Create Space is now a modal action reachable from anywhere,
+            not just from the Spaces page. */}
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent("open-create-space"))}
+          className="w-full mt-1 flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-[13px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--glass-ultrathin)] hover:bg-[var(--surface-hover-strong)] border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:-translate-y-[1px] active:scale-[0.97] transition-[transform,background-color,border-color,color] duration-[var(--dur-base)] ease-[var(--ease-standard)]"
         >
           <Plus size={13} className="shrink-0" />
           Create Space
-        </Link>
+        </button>
       </div>
     </div>
   );
@@ -340,15 +357,30 @@ export function Sidebar() {
   const isSettings = path.startsWith("/dashboard/settings");
 
   return (
+    // `self-start` is the load-bearing part of this className: the parent
+    // layout (DashboardChrome.tsx's outer `flex min-h-screen` row) defaults
+    // every flex child to `align-items: stretch`, which silently stretches
+    // this <aside> to match the height of the main content column next to
+    // it — on any page taller than one viewport, that makes the aside's own
+    // box as tall as the whole document. A `position: sticky` element can't
+    // visibly stick once its box is already that tall (there's no room left
+    // for it to "catch up" to the viewport as you scroll), so the logo row
+    // below — and the rest of the rail — would just scroll away with the
+    // page instead of pinning. `self-start` opts this element out of the
+    // stretch, so `min-h-screen` + `sticky top-0` actually pin it at exactly
+    // one viewport height, which is what lets the brand row line up with
+    // and stay locked to DashboardChrome's sticky desktop header as the
+    // page scrolls underneath both.
     <aside
-      className="hidden lg:flex flex-col w-64 shrink-0 min-h-screen sticky top-0"
+      className="hidden lg:flex flex-col w-64 shrink-0 self-start min-h-screen sticky top-0"
       style={{
         borderRight:     "1px solid var(--border-hairline)",
         background:      "var(--glass-ultrathin)",
         backdropFilter:  "blur(30px) saturate(160%)",
       }}
     >
-      {/* Logo */}
+      {/* Logo — exact placement/sizing preserved; only the parent <aside>'s
+          stretch behavior above changed, not this row. */}
       <div
         className="flex items-center gap-2 px-5 h-14 shrink-0"
         style={{ borderBottom: "1px solid var(--border-hairline)" }}

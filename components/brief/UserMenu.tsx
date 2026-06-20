@@ -51,7 +51,7 @@ function getInitials(name?: string | null, email?: string | null): string {
 }
 
 const MENU_ITEMS = [
-  { label: "Dashboard",       href: "/dashboard",          icon: LayoutDashboard },
+  { label: "My Space",        href: "/dashboard",          icon: LayoutDashboard },
   { label: "Analyze with AI", href: "/dashboard/analyze",  icon: Brain },
   { label: "Settings",        href: "/dashboard/settings", icon: Settings },
 ];

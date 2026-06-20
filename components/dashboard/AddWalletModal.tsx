@@ -1,9 +1,19 @@
 "use client";
 
+/**
+ * AddWalletModal
+ *
+ * Ported to Atlas Glass (GlassPanel/GlassButton + theme tokens) to match
+ * CreateSpaceModal/AddManualAssetModal — same backdrop, sheet, header, and
+ * footer recipe. No functional or API changes from the previous version.
+ */
+
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { X, Wallet, ChevronDown, Loader2 } from "lucide-react";
 import { WalletChain } from "@/types";
+import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { GlassButton } from "@/components/atlas/GlassButton";
 
 const CHAINS: { value: WalletChain; label: string; placeholder: string }[] = [
   { value: "BTC",   label: "Bitcoin (BTC)",    placeholder: "bc1q... or 1... or 3..." },
@@ -19,9 +29,13 @@ const CHAINS: { value: WalletChain; label: string; placeholder: string }[] = [
 interface Props {
   onClose: () => void;
   onAdd?: () => void; // optional — called after successful save
+  /** Override the stacking order so this can render above another modal
+   *  (e.g. the Create Space onboarding flow's Add Accounts step). Defaults
+   *  to the standard z-[100] modal layer when omitted. */
+  zIndex?: number;
 }
 
-export function AddWalletModal({ onClose, onAdd }: Props) {
+export function AddWalletModal({ onClose, onAdd, zIndex }: Props) {
   const router = useRouter();
   const [name,    setName]    = useState("");
   const [chain,   setChain]   = useState<WalletChain>("BTC");
@@ -54,96 +68,116 @@ export function AddWalletModal({ onClose, onAdd }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="flex flex-col w-full max-h-[88dvh] sm:h-auto sm:max-w-md bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl">
-        {/* Header — always visible */}
-        <div className="flex items-center justify-between p-5 border-b border-gray-800 shrink-0">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-yellow-500/10 border border-yellow-500/20 flex items-center justify-center">
-              <Wallet size={16} className="text-yellow-400" />
+    <div
+      className="fixed inset-0 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      style={{
+        zIndex: zIndex ?? 100,
+        background: "rgba(0,0,0,0.55)",
+        backdropFilter: "blur(8px)",
+        WebkitBackdropFilter: "blur(8px)",
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget && !loading) onClose(); }}
+    >
+      <GlassPanel depth="thick" elevation="e4" radius="xl" className="w-full sm:max-w-md">
+        <div className="flex flex-col max-h-[92dvh] sm:max-h-[88dvh]">
+
+          {/* Header — always visible */}
+          <div
+            className="flex items-center justify-between gap-3 px-6 pt-5 pb-3 shrink-0"
+            style={{ borderBottom: "1px solid var(--border-hairline)" }}
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-[var(--radius-sm)] bg-[rgba(201,162,39,.12)] border border-[rgba(201,162,39,.25)] flex items-center justify-center">
+                <Wallet size={16} className="text-[var(--brass-400)]" />
+              </div>
+              <h2 className="text-base font-semibold text-[var(--text-primary)]">Track a Wallet</h2>
             </div>
-            <h2 className="text-base font-semibold text-white">Track a Wallet</h2>
-          </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors">
-            <X size={20} />
-          </button>
-        </div>
-
-        {/* Form — scrollable if content overflows */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          <p className="text-xs text-gray-400">
-            Enter a public wallet address. Fourth Meridian will query the blockchain for your balance — no private keys needed, ever.
-          </p>
-
-          {/* Wallet name */}
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Nickname</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => { setName(e.target.value); setError(""); }}
-              placeholder="e.g. My BTC Cold Storage"
-              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
-            />
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={loading}
+              aria-label="Close"
+              className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <X size={16} />
+            </button>
           </div>
 
-          {/* Chain selector */}
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Blockchain</label>
-            <div className="relative">
-              <select
-                value={chain}
-                onChange={(e) => { setChain(e.target.value as WalletChain); setAddress(""); setError(""); }}
-                className="w-full appearance-none bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors pr-10"
-              >
-                {CHAINS.map((c) => (
-                  <option key={c.value} value={c.value}>{c.label}</option>
-                ))}
-              </select>
-              <ChevronDown size={14} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-            </div>
-          </div>
-
-          {/* Wallet address */}
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Public Wallet Address</label>
-            <input
-              type="text"
-              value={address}
-              onChange={(e) => { setAddress(e.target.value); setError(""); }}
-              placeholder={selectedChain.placeholder}
-              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors font-mono"
-            />
-          </div>
-
-          {error && <p className="text-xs text-red-400">{error}</p>}
-
-          <div className="flex items-center gap-2 pt-1">
-            <div className="w-2 h-2 rounded-full bg-yellow-400" />
-            <p className="text-xs text-gray-400">
-              Balance will show as <span className="text-yellow-400 font-medium">Pending Sync</span> until the first data refresh.
+          {/* Form — scrollable if content overflows */}
+          <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4 min-h-0">
+            <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+              Enter a public wallet address. Fourth Meridian will query the blockchain for your balance — no private keys needed, ever.
             </p>
+
+            {/* Wallet name */}
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">Nickname</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => { setName(e.target.value); setError(""); }}
+                placeholder="e.g. My BTC Cold Storage"
+                className="w-full rounded-[var(--radius-sm)] px-3.5 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none transition-colors"
+                style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
+              />
+            </div>
+
+            {/* Chain selector */}
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">Blockchain</label>
+              <div className="relative">
+                <select
+                  value={chain}
+                  onChange={(e) => { setChain(e.target.value as WalletChain); setAddress(""); setError(""); }}
+                  className="w-full appearance-none rounded-[var(--radius-sm)] px-3.5 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none transition-colors pr-10"
+                  style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
+                >
+                  {CHAINS.map((c) => (
+                    <option key={c.value} value={c.value}>{c.label}</option>
+                  ))}
+                </select>
+                <ChevronDown size={14} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
+              </div>
+            </div>
+
+            {/* Wallet address */}
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">Public Wallet Address</label>
+              <input
+                type="text"
+                value={address}
+                onChange={(e) => { setAddress(e.target.value); setError(""); }}
+                placeholder={selectedChain.placeholder}
+                className="w-full rounded-[var(--radius-sm)] px-3.5 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none transition-colors font-mono"
+                style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
+              />
+            </div>
+
+            {error && <p className="text-xs text-[var(--coral-400)]">{error}</p>}
+
+            <div className="flex items-center gap-2 pt-1">
+              <div className="w-2 h-2 rounded-full bg-[var(--brass-400)]" />
+              <p className="text-xs text-[var(--text-muted)]">
+                Balance will show as <span className="text-[var(--brass-400)] font-medium">Pending Sync</span> until the first data refresh.
+              </p>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div
+            className="shrink-0 flex gap-3 px-6 py-5"
+            style={{ borderTop: "1px solid var(--border-hairline)" }}
+          >
+            <GlassButton onClick={onClose} disabled={loading} tone="neutral" fullWidth>
+              Cancel
+            </GlassButton>
+            <GlassButton onClick={handleSubmit} disabled={loading} tone="meridian" fullWidth>
+              {loading && <Loader2 size={14} className="animate-spin" />}
+              {loading ? "Adding…" : "Add Wallet"}
+            </GlassButton>
           </div>
         </div>
-
-        {/* Actions — pinned above the home indicator */}
-        <div className="shrink-0 flex gap-3 px-5 pt-3 pb-8 sm:pb-5 border-t border-gray-800 sm:border-none sm:pt-2">
-          <button
-            onClick={onClose}
-            className="flex-1 py-2.5 rounded-xl text-sm font-medium text-gray-400 border border-gray-700 hover:border-gray-500 hover:text-white transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={loading}
-            className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {loading && <Loader2 size={14} className="animate-spin" />}
-            {loading ? "Adding…" : "Add Wallet"}
-          </button>
-        </div>
-      </div>
+      </GlassPanel>
     </div>
   );
 }

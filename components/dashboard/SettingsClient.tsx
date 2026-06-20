@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight } from "lucide-react";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { TotpSection } from "@/components/dashboard/TotpSection";
+import { displaySpaceName } from "@/lib/format";
 import Link from "next/link";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -246,7 +247,7 @@ function PreferredWorkspaceCard({
         >
           <option value="">Personal Space (default)</option>
           {workspaces.filter((w) => w.type !== "PERSONAL").map((w) => (
-            <option key={w.id} value={w.id}>{w.name}</option>
+            <option key={w.id} value={w.id}>{displaySpaceName(w.name)}</option>
           ))}
         </select>
         {saving && <Loader2 size={14} className="animate-spin text-gray-500 shrink-0" />}

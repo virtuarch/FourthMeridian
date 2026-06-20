@@ -14,6 +14,10 @@
  *   Shares into any additionally selected workspaces.
  *
  * After success: calls onAdd() so the parent can refresh data (router.refresh()).
+ *
+ * Styling: ported to Atlas Glass (GlassPanel/GlassButton + theme tokens) to
+ * match CreateSpaceModal — same backdrop, sheet, header, and footer recipe.
+ * No functional changes from the previous version.
  */
 
 import { useState, useEffect } from "react";
@@ -23,6 +27,9 @@ import {
   Home, Car, Wrench, Package,
 } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { displaySpaceName } from "@/lib/format";
+import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { GlassButton } from "@/components/atlas/GlassButton";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +44,14 @@ interface WorkspaceOption {
 interface Props {
   onClose: () => void;
   onAdd?:  () => void;
+  /** Pre-checks these Space ids in the step-2 sharing picker (e.g. the Space
+   *  a user just created in the onboarding flow), instead of starting empty.
+   *  Purely a default — the picker is still freely editable. */
+  defaultWorkspaceIds?: string[];
+  /** Override the stacking order so this can render above another modal
+   *  (e.g. the Create Space onboarding flow's Add Accounts step). Defaults
+   *  to the standard z-[100] modal layer when omitted. */
+  zIndex?: number;
 }
 
 // ─── Asset kind config ────────────────────────────────────────────────────────
@@ -74,7 +89,7 @@ const KIND_OPTIONS: {
     label:       "Other",
     placeholder: "e.g. Art Collection, Jewelry",
     icon:        Package,
-    iconCls:     "bg-gray-500/15 text-gray-400",
+    iconCls:     "bg-[var(--surface-hover-strong)] text-[var(--text-muted)]",
   },
 ];
 
@@ -91,9 +106,9 @@ function Field({
 }) {
   return (
     <div className="space-y-1.5">
-      <label className="block text-xs font-medium text-gray-400">{label}</label>
+      <label className="block text-xs font-medium text-[var(--text-secondary)]">{label}</label>
       {children}
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {error && <p className="text-xs text-[var(--coral-400)]">{error}</p>}
     </div>
   );
 }
@@ -112,14 +127,23 @@ function TextInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors"
+      className="w-full rounded-[var(--radius-sm)] px-3.5 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none transition-colors"
+      style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
     />
   );
 }
 
+// Selected/unselected tint for chip-style choices (asset kind, Space sharing)
+// — same recipe as CreateSpaceModal's chipTone().
+function chipTone(selected: boolean): string {
+  return selected
+    ? "border-[rgba(125,168,255,.4)] bg-[rgba(59,130,246,.10)]"
+    : "border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:bg-[var(--surface-hover)]";
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function AddManualAssetModal({ onClose, onAdd }: Props) {
+export function AddManualAssetModal({ onClose, onAdd, defaultWorkspaceIds, zIndex }: Props) {
   const router = useRouter();
 
   // ── Step state ─────────────────────────────────────────────────────────────
@@ -136,7 +160,7 @@ export function AddManualAssetModal({ onClose, onAdd }: Props) {
   const [purchaseDate,  setPurchaseDate]  = useState("");
   const [notes,         setNotes]         = useState("");
   const [workspaces,    setWorkspaces]    = useState<WorkspaceOption[]>([]);
-  const [selectedWsIds, setSelectedWsIds] = useState<string[]>([]);
+  const [selectedWsIds, setSelectedWsIds] = useState<string[]>(defaultWorkspaceIds ?? []);
   const [loadingWs,     setLoadingWs]     = useState(false);
 
   // ── Submission state ───────────────────────────────────────────────────────
@@ -224,16 +248,12 @@ export function AddManualAssetModal({ onClose, onAdd }: Props) {
                 key={opt.value}
                 type="button"
                 onClick={() => { setKind(opt.value); setName(""); }}
-                className={`flex items-center gap-2.5 px-3.5 py-3 rounded-xl border text-left transition-all ${
-                  active
-                    ? "border-blue-500 bg-blue-500/10 text-white"
-                    : "border-gray-700 bg-gray-800/50 text-gray-400 hover:border-gray-600 hover:text-gray-300"
-                }`}
+                className={`flex items-center gap-2.5 px-3.5 py-3 rounded-[var(--radius-sm)] border text-left transition-[transform,background-color,border-color] active:scale-[0.97] ${chipTone(active)}`}
               >
-                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${active ? "bg-blue-500/20 text-blue-400" : opt.iconCls}`}>
+                <div className={`w-7 h-7 rounded-[var(--radius-xs)] flex items-center justify-center shrink-0 ${active ? "bg-[rgba(59,130,246,.18)] text-[var(--meridian-400)]" : opt.iconCls}`}>
                   <Icon size={14} />
                 </div>
-                <span className="text-sm font-medium">{opt.label}</span>
+                <span className={`text-sm font-medium ${active ? "text-[var(--text-primary)]" : "text-[var(--text-secondary)]"}`}>{opt.label}</span>
               </button>
             );
           })}
@@ -265,7 +285,8 @@ export function AddManualAssetModal({ onClose, onAdd }: Props) {
           <select
             value={currency}
             onChange={(e) => setCurrency(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors appearance-none"
+            className="w-full rounded-[var(--radius-sm)] px-3 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none transition-colors appearance-none"
+            style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
           >
             {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
@@ -292,7 +313,8 @@ export function AddManualAssetModal({ onClose, onAdd }: Props) {
             type="date"
             value={purchaseDate}
             onChange={(e) => setPurchaseDate(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors [color-scheme:dark]"
+            className="w-full rounded-[var(--radius-sm)] px-3.5 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none transition-colors"
+            style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
           />
         </Field>
       </div>
@@ -304,13 +326,14 @@ export function AddManualAssetModal({ onClose, onAdd }: Props) {
           onChange={(e) => setNotes(e.target.value)}
           rows={2}
           placeholder="e.g. 3BR/2BA primary residence — Austin, TX"
-          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors resize-none"
+          className="w-full rounded-[var(--radius-sm)] px-3.5 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none transition-colors resize-none"
+          style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
         />
       </Field>
 
       {/* Workspace sharing */}
       {loadingWs ? (
-        <div className="flex items-center gap-2 text-xs text-gray-500">
+        <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
           <Loader2 size={12} className="animate-spin" />
           Loading Spaces…
         </div>
@@ -322,11 +345,7 @@ export function AddManualAssetModal({ onClose, onAdd }: Props) {
               return (
                 <label
                   key={ws.id}
-                  className={`flex items-center gap-3 px-3.5 py-3 rounded-xl border cursor-pointer transition-all ${
-                    checked
-                      ? "border-blue-500/60 bg-blue-500/8 text-white"
-                      : "border-gray-700 bg-gray-800/50 text-gray-400 hover:border-gray-600"
-                  }`}
+                  className={`flex items-center gap-3 px-3.5 py-3 rounded-[var(--radius-sm)] border cursor-pointer transition-colors ${chipTone(checked)}`}
                 >
                   <input
                     type="checkbox"
@@ -334,86 +353,104 @@ export function AddManualAssetModal({ onClose, onAdd }: Props) {
                     onChange={() => setSelectedWsIds((prev) =>
                       checked ? prev.filter((id) => id !== ws.id) : [...prev, ws.id]
                     )}
-                    className="rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500/30"
+                    className="rounded border-[var(--border-hairline-strong)] bg-[var(--surface-muted)] text-[var(--meridian-400)] focus:ring-[var(--meridian-400)]/30"
                   />
-                  <span className="text-sm">{ws.name}</span>
+                  <span className={`text-sm ${checked ? "text-[var(--text-primary)]" : "text-[var(--text-secondary)]"}`}>{displaySpaceName(ws.name)}</span>
                 </label>
               );
             })}
           </div>
         </Field>
       ) : (
-        <p className="text-xs text-gray-600">No shared Spaces found. The asset will be added to your personal dashboard.</p>
+        <p className="text-xs text-[var(--text-muted)]">No shared Spaces found. The asset will be added to your personal dashboard.</p>
       )}
     </div>
   );
 
   // ─── Modal shell ──────────────────────────────────────────────────────────
   return (
-    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/60 backdrop-blur-sm">
-      <div className="flex flex-col w-full max-h-[92dvh] sm:h-auto sm:max-w-md bg-gray-900 border border-gray-700 rounded-t-2xl sm:rounded-2xl shadow-2xl">
+    <div
+      className="fixed inset-0 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      style={{
+        zIndex: zIndex ?? 100,
+        background: "rgba(0,0,0,0.55)",
+        backdropFilter: "blur(8px)",
+        WebkitBackdropFilter: "blur(8px)",
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget && !loading) onClose(); }}
+    >
+      <GlassPanel depth="thick" elevation="e4" radius="xl" className="w-full sm:max-w-md">
+        <div className="flex flex-col max-h-[92dvh] sm:max-h-[88dvh]">
 
-        {/* ── Header ────────────────────────────────────────────────────────── */}
-        <div className="flex items-center justify-between p-5 border-b border-gray-800 shrink-0">
-          <div>
-            <p className="text-sm font-semibold text-white">Add Asset</p>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Step {step} of 2 — {step === 1 ? "Basic details" : "Optional details & sharing"}
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:text-white hover:bg-gray-800 transition-colors"
+          {/* ── Header ────────────────────────────────────────────────────────── */}
+          <div
+            className="flex items-center justify-between gap-3 px-6 pt-5 pb-3 shrink-0"
+            style={{ borderBottom: "1px solid var(--border-hairline)" }}
           >
-            <X size={16} />
-          </button>
-        </div>
+            <div>
+              <h2 className="text-base font-semibold text-[var(--text-primary)]">Add Asset</h2>
+              <p className="text-xs text-[var(--text-muted)] mt-0.5">
+                Step {step} of 2 — {step === 1 ? "Basic details" : "Optional details & sharing"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={loading}
+              aria-label="Close"
+              className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <X size={16} />
+            </button>
+          </div>
 
-        {/* ── Body ──────────────────────────────────────────────────────────── */}
-        <div className="flex-1 overflow-y-auto p-5 min-h-0">
-          {step === 1 ? step1 : step2}
-        </div>
+          {/* ── Body ──────────────────────────────────────────────────────────── */}
+          <div className="px-6 py-6 overflow-y-auto flex-1 min-h-0">
+            {step === 1 ? step1 : step2}
+          </div>
 
-        {/* ── Footer ────────────────────────────────────────────────────────── */}
-        <div className="p-5 border-t border-gray-800 shrink-0 space-y-3">
-          {error && (
-            <p className="text-xs text-red-400 text-center">{error}</p>
-          )}
-
-          <div className="flex gap-3">
-            {step === 2 && (
-              <button
-                onClick={() => setStep(1)}
-                disabled={loading}
-                className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-gray-700 text-sm text-gray-400 hover:text-white hover:border-gray-600 transition-colors disabled:opacity-50"
-              >
-                <ChevronLeft size={14} />
-                Back
-              </button>
+          {/* ── Footer ────────────────────────────────────────────────────────── */}
+          <div
+            className="px-6 py-5 shrink-0 space-y-3"
+            style={{ borderTop: "1px solid var(--border-hairline)" }}
+          >
+            {error && (
+              <p className="text-xs text-[var(--coral-400)] text-center">{error}</p>
             )}
 
-            {step === 1 ? (
-              <button
-                onClick={() => { if (step1Valid) setStep(2); }}
-                disabled={!step1Valid}
-                className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-sm font-semibold text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Continue
-                <ChevronRight size={14} />
-              </button>
-            ) : (
-              <button
-                onClick={handleSubmit}
-                disabled={loading || !step1Valid}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-sm font-semibold text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {loading ? <Loader2 size={14} className="animate-spin" /> : null}
-                {loading ? "Adding asset…" : "Add Asset"}
-              </button>
-            )}
+            <div className="flex gap-3">
+              {step === 2 && (
+                <GlassButton onClick={() => setStep(1)} disabled={loading} tone="neutral">
+                  <ChevronLeft size={14} />
+                  Back
+                </GlassButton>
+              )}
+
+              {step === 1 ? (
+                <GlassButton
+                  onClick={() => { if (step1Valid) setStep(2); }}
+                  disabled={!step1Valid}
+                  tone="meridian"
+                  fullWidth
+                >
+                  Continue
+                  <ChevronRight size={14} />
+                </GlassButton>
+              ) : (
+                <GlassButton
+                  onClick={handleSubmit}
+                  disabled={loading || !step1Valid}
+                  tone="meridian"
+                  fullWidth
+                >
+                  {loading ? <Loader2 size={14} className="animate-spin" /> : null}
+                  {loading ? "Adding asset…" : "Add Asset"}
+                </GlassButton>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      </GlassPanel>
     </div>
   );
 }

@@ -32,6 +32,7 @@
 import { NextRequest, NextResponse }    from "next/server";
 import { db }                           from "@/lib/db";
 import { requireUser }                  from "@/lib/session";
+import { possessive }                   from "@/lib/format";
 import { withApiHandler }               from "@/lib/api";
 import { WorkspaceMemberStatus }        from "@prisma/client";
 import type { TimelineEvent, TimelineTone } from "@/lib/timeline-types";
@@ -161,7 +162,7 @@ function normalizeLog(log: RawLog): TimelineEvent | null {
         id, date, type: log.action, icon: "Shield", tone: "neutral",
         actorName: actor,
         title:    "Role changed",
-        subtitle: newRole ? `${targetName}'s role changed to ${newRole}` : `${targetName}'s role was updated`,
+        subtitle: newRole ? `${possessive(targetName)} role changed to ${newRole}` : `${possessive(targetName)} role was updated`,
       };
     }
 

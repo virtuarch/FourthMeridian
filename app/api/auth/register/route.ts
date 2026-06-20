@@ -22,6 +22,7 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/plaid/encryption";
+import { possessive } from "@/lib/format";
 import { EmploymentStatus, UseCase, WorkspaceMemberRole } from "@prisma/client";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest) {
 
       const workspace = await tx.workspace.create({
         data: {
-          name: `${firstName.trim()}'s Space`,
+          name: `${possessive(firstName.trim())} Space`,
           type: "PERSONAL",
         },
       });
@@ -118,7 +119,7 @@ export async function POST(req: NextRequest) {
       await tx.aiAgent.create({
         data: {
           workspaceId: workspace.id,
-          name:        `${firstName.trim()}'s Financial Agent`,
+          name:        `${possessive(firstName.trim())} Financial Agent`,
         },
       });
 

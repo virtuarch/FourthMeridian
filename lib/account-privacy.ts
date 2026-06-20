@@ -27,6 +27,7 @@
  */
 
 import "server-only";
+import { possessive } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -152,7 +153,7 @@ export function genericAccountName({ type, debtSubtype, ownerFirstName }: Accoun
       base = "Other Account";
   }
 
-  return ownerFirstName ? `${ownerFirstName}'s ${base}` : base;
+  return ownerFirstName ? `${possessive(ownerFirstName)} ${base}` : base;
 }
 
 // ── Single-account sanitizer ──────────────────────────────────────────────────
@@ -284,7 +285,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
   const aggregatedRows: NormalizedAccount[] = [];
   for (const [key, g] of groups) {
     const displayBase = g.count > 1 ? pluralizeBase(g.baseLabel) : g.baseLabel;
-    const displayName = g.ownerFirstName ? `${g.ownerFirstName}'s ${displayBase}` : displayBase;
+    const displayName = g.ownerFirstName ? `${possessive(g.ownerFirstName)} ${displayBase}` : displayBase;
 
     aggregatedRows.push({
       id:          `balance-only:${key}`,
