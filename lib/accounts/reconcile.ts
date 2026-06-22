@@ -48,7 +48,7 @@
  */
 
 import { db } from "@/lib/db";
-import { AccountType, ShareStatus } from "@prisma/client";
+import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus } from "@prisma/client";
 
 export type ProviderIdentity =
   | { kind: "plaid"; plaidAccountId: string }
@@ -162,8 +162,17 @@ async function findCandidatesByFingerprint(
  * simultaneously active under different plaidAccountIds — it is archived
  * after its history is migrated so it stops appearing as a second visible
  * account. No row is ever hard-deleted.
+ *
+ * Every merge performed here is tagged DuplicateDetectionSource.
+ * SIBLING_CONSOLIDATION — collapsing this candidate list to one row is the
+ * same operation regardless of how the caller assembled the list (provider-
+ * identity lookup or fingerprint match), so it gets its own source value
+ * rather than inheriting the caller's.
  */
-async function pickCanonicalAndMerge(candidates: FingerprintCandidate[]): Promise<FingerprintCandidate | null> {
+async function pickCanonicalAndMerge(
+  candidates: FingerprintCandidate[],
+  spaceId?: string | null
+): Promise<FingerprintCandidate | null> {
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
 
@@ -182,7 +191,7 @@ async function pickCanonicalAndMerge(candidates: FingerprintCandidate[]): Promis
 
   for (const c of candidates) {
     if (c.id === canonical.id) continue;
-    await mergeArchivedDuplicateIntoCanonical(c.id, canonical.id);
+    await mergeArchivedDuplicateIntoCanonical(c.id, canonical.id, DuplicateDetectionSource.SIBLING_CONSOLIDATION, spaceId);
     if (!c.deletedAt) {
       // Was active under a different plaidAccountId — its history now lives
       // on the canonical row, so archive it to remove the duplicate from view.
@@ -209,10 +218,16 @@ export type FingerprintResolution = {
  *  - Otherwise, if archived rows match, the most-historical one is canonical
  *    — every other archived match is folded into it.
  *  - If nothing matches, returns null and the caller should create a new row.
+ *
+ * `spaceId` is optional and only used to tag any DuplicateAccountCandidate
+ * rows written by the archived→active fold below (DuplicateDetectionSource.
+ * FINGERPRINT_MATCH) and by sibling consolidation; pass it when the caller
+ * has a space in scope (e.g. the Plaid import route), omit it otherwise.
  */
 export async function resolveAccountByFingerprint(
   fp: AccountFingerprint,
-  excludeId?: string
+  excludeId?: string,
+  spaceId?: string | null
 ): Promise<FingerprintResolution | null> {
   const [activeCandidates, archivedCandidates] = await Promise.all([
     findCandidatesByFingerprint(fp, null, excludeId),
@@ -220,9 +235,9 @@ export async function resolveAccountByFingerprint(
   ]);
 
   if (activeCandidates.length > 0) {
-    const canonical = await pickCanonicalAndMerge(activeCandidates);
+    const canonical = await pickCanonicalAndMerge(activeCandidates, spaceId);
     for (const a of archivedCandidates) {
-      await mergeArchivedDuplicateIntoCanonical(a.id, canonical!.id);
+      await mergeArchivedDuplicateIntoCanonical(a.id, canonical!.id, DuplicateDetectionSource.FINGERPRINT_MATCH, spaceId);
     }
     return {
       canonical:              canonical!,
@@ -233,7 +248,7 @@ export async function resolveAccountByFingerprint(
   }
 
   if (archivedCandidates.length > 0) {
-    const canonical = await pickCanonicalAndMerge(archivedCandidates);
+    const canonical = await pickCanonicalAndMerge(archivedCandidates, spaceId);
     return {
       canonical:              canonical!,
       matchedActive:          false,
@@ -262,8 +277,23 @@ export async function resolveAccountByFingerprint(
  *  - WorkspaceAccountShare: every space the loser was shared into gets
  *    an ACTIVE share pointing at the winner instead, so the user keeps
  *    seeing the account wherever they previously added it.
+ *  - DuplicateAccountCandidate: an audit row is upserted on the
+ *    (accountAId=winnerId, accountBId=loserId) unique key — winner/loser map
+ *    directly to accountA/accountB by convention (see schema comment). First
+ *    merge of a given pair creates the row (status CONFIRMED_DUPLICATE,
+ *    detectionSource = `source`, detectedAt/resolvedAt = now, no
+ *    resolvedByUserId — no human reviewed this); a later re-merge of the same
+ *    pair (e.g. a second restore attempt on an already-merged loser) just
+ *    bumps detectedAt rather than erroring on the unique constraint or
+ *    inserting a second row. `spaceId` is optional — null when the caller
+ *    has no space in scope (see schema comment on the field).
  */
-export async function mergeArchivedDuplicateIntoCanonical(loserId: string, winnerId: string) {
+export async function mergeArchivedDuplicateIntoCanonical(
+  loserId: string,
+  winnerId: string,
+  source: DuplicateDetectionSource,
+  spaceId?: string | null
+) {
   if (loserId === winnerId) return;
 
   await db.transaction.updateMany({
@@ -309,4 +339,20 @@ export async function mergeArchivedDuplicateIntoCanonical(loserId: string, winne
       },
     });
   }
+
+  const now = new Date();
+  await db.duplicateAccountCandidate.upsert({
+    where: { accountAId_accountBId: { accountAId: winnerId, accountBId: loserId } },
+    update: { detectedAt: now },
+    create: {
+      accountAId:       winnerId,
+      accountBId:       loserId,
+      status:           DuplicateStatus.CONFIRMED_DUPLICATE,
+      detectionSource:  source,
+      detectedAt:       now,
+      resolvedAt:       now,
+      resolvedByUserId: null,
+      spaceId:          spaceId ?? null,
+    },
+  });
 }

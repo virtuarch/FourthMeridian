@@ -18,6 +18,7 @@ import { NextRequest, NextResponse }   from "next/server";
 import { db }                          from "@/lib/db";
 import { requireUser }                 from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { DuplicateDetectionSource }    from "@prisma/client";
 import { providerIdentityOf, findActiveAccountByIdentity, mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 
 export const POST = withApiHandler(async (
@@ -61,7 +62,10 @@ export const POST = withApiHandler(async (
   const canonical = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
 
   if (canonical) {
-    await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id);
+    // Only reachable via providerIdentityOf/findActiveAccountByIdentity in
+    // this route (no fingerprint fallback here — see comment above), so the
+    // source is always a provider-identity match.
+    await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id, DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH);
 
     await db.auditLog.create({
       data: {

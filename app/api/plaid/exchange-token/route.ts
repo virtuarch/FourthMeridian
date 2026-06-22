@@ -157,7 +157,7 @@ export async function POST(req: NextRequest) {
           name:          acct.name,
           type,
         };
-        const resolution = await resolveAccountByFingerprint(fingerprint);
+        const resolution = await resolveAccountByFingerprint(fingerprint, undefined, spaceId);
 
         console.log("[plaid] fingerprint lookup", {
           institutionId:      institution_id,

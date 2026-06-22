@@ -44,7 +44,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
-import { ShareStatus } from "@prisma/client";
+import { ShareStatus, DuplicateDetectionSource } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import {
@@ -91,6 +91,11 @@ export const POST = withApiHandler(async (
     // account's history into the active one instead — no conflict shown.
     const identity = providerIdentityOf(fa);
     let canonical: { id: string } | null = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
+    // Tracks which match found `canonical`, so the merge below is tagged with
+    // the right DuplicateDetectionSource. Default reflects the identity-match
+    // branch above; overwritten if the fingerprint fallback is the one that
+    // actually finds a match.
+    let mergeSource: DuplicateDetectionSource = DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH;
 
     // No exact identity match — Plaid can reissue plaidAccountId for the
     // same real-world account, so an active row (or other archived
@@ -116,11 +121,12 @@ export const POST = withApiHandler(async (
       );
       if (resolution?.matchedActive) {
         canonical = resolution.canonical;
+        mergeSource = DuplicateDetectionSource.FINGERPRINT_MATCH;
       }
     }
 
     if (canonical) {
-      await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id);
+      await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id, mergeSource);
 
       await db.auditLog.create({
         data: {

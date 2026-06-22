@@ -151,12 +151,25 @@ enum ShareStatus {
 }
 
 /// Lifecycle of a suspected duplicate pair surfaced by the system.
-/// NEVER auto-merged — user must confirm.
+/// CONFIRMED_DUPLICATE is written automatically today by the merge path in
+/// lib/accounts/reconcile.ts (mergeArchivedDuplicateIntoCanonical) — there is
+/// no gate that blocks a merge pending review. PENDING / NOT_DUPLICATE /
+/// IGNORED are not written by any code path today; they're kept, unused, in
+/// case a future manual-review feature is layered on top of this ledger.
 enum DuplicateStatus {
   PENDING              // flagged, awaiting user review
   CONFIRMED_DUPLICATE  // user confirmed these are the same real-world account
   NOT_DUPLICATE        // user confirmed these are different accounts
   IGNORED              // user dismissed without deciding
+}
+
+/// How an automatic merge in lib/accounts/reconcile.ts was detected. Always
+/// populated on rows written by that path — there is no ambiguous/unset case
+/// today.
+enum DuplicateDetectionSource {
+  PROVIDER_IDENTITY_MATCH  // exact plaidAccountId or walletAddress match
+  FINGERPRINT_MATCH        // loose institution + mask + type + name match
+  SIBLING_CONSOLIDATION    // multiple matching rows reduced to one canonical row, independent of the top-level trigger
 }
 
 /// Whether a FinancialAccount is owned by an individual user or by a Space entity.
@@ -686,27 +699,49 @@ model WorkspaceAccountShare {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DuplicateAccountCandidate
-// Passive infrastructure for surfacing potentially duplicate FinancialAccounts
-// to the user for manual review. NEVER auto-merges accounts.
-// Created by the sync job when heuristics detect possible duplicates
-// (same institution + mask + type, similar balance, etc.).
+// Audit ledger of automatic duplicate-account merges performed by
+// lib/accounts/reconcile.ts (mergeArchivedDuplicateIntoCanonical). Rows are
+// written AFTER a merge has already happened — this table does not gate or
+// block any merge, and nothing reads it back yet (no review UI exists).
+// D1 (see docs/D1_DUPLICATE_ACCOUNT_CANDIDATE_DESIGN_REVIEW.md) repurposed
+// this model from an unused human-review-queue design — the original comment
+// here claimed "NEVER auto-merges," which was already false of the running
+// code before D1 — into the audit ledger described above.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model DuplicateAccountCandidate {
-  id                String           @id @default(cuid())
-  spaceId           String           @map("workspaceId")
+  id                String                    @id @default(cuid())
+  // Nullable: mergeArchivedDuplicateIntoCanonical doesn't always have a space
+  // in scope (the restore routes resolve by account ownership, not by Space).
+  // A merge is a fact about an account pair, not inherently scoped to one
+  // Space. Populated when the caller has a space in context (e.g. Plaid
+  // import); null otherwise (e.g. the generic/manual restore routes).
+  spaceId           String?                   @map("workspaceId")
+  // Directional by convention, not by name: accountA is always the
+  // surviving canonical ("winner") row, accountB is always the archived row
+  // whose history was folded into it ("loser"). See
+  // mergeArchivedDuplicateIntoCanonical in lib/accounts/reconcile.ts.
   accountAId        String
-  accountA          FinancialAccount @relation("DuplicateCandidateA", fields: [accountAId], references: [id], onDelete: Cascade)
+  accountA          FinancialAccount          @relation("DuplicateCandidateA", fields: [accountAId], references: [id], onDelete: Cascade)
   accountBId        String
-  accountB          FinancialAccount @relation("DuplicateCandidateB", fields: [accountBId], references: [id], onDelete: Cascade)
-  status            DuplicateStatus  @default(PENDING)
-  detectedAt        DateTime         @default(now())
+  accountB          FinancialAccount          @relation("DuplicateCandidateB", fields: [accountBId], references: [id], onDelete: Cascade)
+  status            DuplicateStatus           @default(PENDING)
+  detectionSource   DuplicateDetectionSource
+  detectedAt        DateTime                  @default(now())
+  // resolvedAt/resolvedByUserId predate D1 and still read as "a human
+  // reviewed this." For every row written by the automatic merge path,
+  // resolvedByUserId is null (no human in the loop) and resolvedAt is set to
+  // the same instant as detectedAt — there is no review gap to measure.
   resolvedAt        DateTime?
   resolvedByUserId  String?
-  resolvedByUser    User?            @relation("DuplicateResolver", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+  resolvedByUser    User?                     @relation("DuplicateResolver", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
 
-  createdAt         DateTime         @default(now())
+  createdAt         DateTime                  @default(now())
 
+  // Kept as a true unique constraint, not relaxed to append-only: a later
+  // re-merge of the same (winner, loser) pair (e.g. a second restore attempt
+  // on an already-merged loser) upserts this row (bumping detectedAt)
+  // instead of inserting a second one. See lib/accounts/reconcile.ts.
   @@unique([accountAId, accountBId])
   @@index([spaceId, status])
   @@index([accountAId])

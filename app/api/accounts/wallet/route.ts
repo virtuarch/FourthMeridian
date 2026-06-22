@@ -19,9 +19,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
+import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource } from "@prisma/client";
 import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
+import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -66,6 +67,26 @@ export async function POST(req: NextRequest) {
         status:             ShareStatus.ACTIVE,
       },
     });
+
+    // walletAddress has no DB-level unique constraint, so an archived row
+    // for this same address can exist alongside the active one (e.g. a
+    // previous soft-delete that never got cleaned up). Before this fix,
+    // that archived row was left permanently orphaned — nothing ever found
+    // or merged it, since this branch returned immediately. Fold it into
+    // the active row now, the same way the restore routes do.
+    const archivedDup = await db.financialAccount.findFirst({
+      where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: { not: null } },
+      select: { id: true },
+    });
+    if (archivedDup) {
+      await mergeArchivedDuplicateIntoCanonical(
+        archivedDup.id,
+        activeFa.id,
+        DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH,
+        spaceId
+      );
+    }
+
     return NextResponse.json({ success: true, accountId: activeFa.id }, { status: 200 });
   }
 
