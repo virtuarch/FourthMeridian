@@ -105,6 +105,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     data: {
       ownerType:   AccountOwnerType.USER,
       ownerUserId: userId,
+      createdByUserId: userId, // D11 — human-accountable creator
       name:        name.trim(),
       type:        AccountType.other,
       institution: "Manual Entry",

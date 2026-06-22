@@ -189,6 +189,11 @@ export async function POST(req: NextRequest) {
             data: {
               ownerType:       AccountOwnerType.USER,
               ownerUserId:     userId,
+              // D11 — human-accountable creator, independent of ownerUserId/
+              // ownerSpaceId visibility. Equal to ownerUserId for USER-owned
+              // accounts today, but recorded separately since ownership can
+              // later move to a space without changing who connected it.
+              createdByUserId: userId,
               plaidAccountId:  acct.account_id,
               name:            acct.name,
               // Frozen at import — never written to again on resync (see
@@ -259,8 +264,9 @@ export async function POST(req: NextRequest) {
       imported++;
     }
 
-    // 8. Investment holdings — still write to legacy Account via plaidAccountId cross-ref
-    //    TODO: move to AccountConnection once Holding FKs are migrated
+    // 8. Investment holdings — written against FinancialAccount directly
+    //    (D11: Holding now has a financialAccountId FK; the old cross-ref
+    //    through the legacy Account table is gone).
     const investmentPlaidAccounts = plaidAccounts.filter(
       (a) => mapAccountType(a.type, a.subtype) === AccountType.investment
     );
@@ -277,14 +283,16 @@ export async function POST(req: NextRequest) {
           const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
           if (!acctHoldings.length) continue;
 
-          // Look up the legacy Account row by plaidAccountId (still exists for Holding FK)
-          const dbAcct = await db.account.findUnique({
+          // Look up the FinancialAccount row created/updated in step 7, by
+          // plaidAccountId — same account, just no longer cross-referenced
+          // through the legacy Account table.
+          const fa = await db.financialAccount.findUnique({
             where:  { plaidAccountId: plaidAcct.account_id },
             select: { id: true },
           });
-          if (!dbAcct) continue;
+          if (!fa) continue;
 
-          await db.holding.deleteMany({ where: { accountId: dbAcct.id } });
+          await db.holding.deleteMany({ where: { financialAccountId: fa.id } });
 
           for (const h of acctHoldings) {
             const sec = secById[h.security_id];
@@ -299,7 +307,7 @@ export async function POST(req: NextRequest) {
 
             await db.holding.create({
               data: {
-                accountId: dbAcct.id,
+                financialAccountId: fa.id,
                 symbol:    sec.ticker_symbol,
                 name:      sec.name ?? sec.ticker_symbol,
                 quantity:  h.quantity,

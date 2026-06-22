@@ -5,8 +5,11 @@
  * (no Date instances) so they can be passed safely from Server → Client components.
  *
  * getAccounts() now queries via WorkspaceAccountShare → FinancialAccount.
- * getHoldings() still queries the legacy Account → Holding path until Holding
- * FKs are migrated to AccountConnection in a future milestone.
+ * getHoldings() reads both Holding anchors during the D11 migration: legacy
+ * rows still pointing at Account (spaceId direct), and current/new rows
+ * pointing at FinancialAccount (visibility via WorkspaceAccountShare, same
+ * join getAccounts() uses). Output is normalized back to a single
+ * `accountId` field so existing UI call sites need no changes.
  */
 
 import { db } from "@/lib/db";
@@ -96,21 +99,42 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
 
 /**
  * All holdings across all investment accounts.
- * Still queries via the legacy Account → Holding path until Holding FKs are
- * moved to AccountConnection in a future milestone.
+ *
+ * D11: Holding now has two possible anchors — legacy Account (accountId) and
+ * FinancialAccount (financialAccountId) — while the migration is in
+ * progress. Queried separately because each anchor resolves space visibility
+ * differently (Account.spaceId is direct; FinancialAccount visibility goes
+ * through an active WorkspaceAccountShare, mirroring getAccounts() above),
+ * then merged. A given row only ever has one of the two FKs set, so there's
+ * no double-counting. Once every Holding is confirmed migrated off Account,
+ * the legacy branch can be deleted — not done here (additive-only for D11).
  */
 export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]> {
   const { spaceId } = ctx ?? (await getSpaceContext());
 
-  const rows = await db.holding.findMany({
-    where: { account: { spaceId } },
-    orderBy: { value: "desc" },
-  });
+  const [legacyRows, financialAccountRows] = await Promise.all([
+    db.holding.findMany({
+      where: { accountId: { not: null }, account: { spaceId } },
+    }),
+    db.holding.findMany({
+      where: {
+        financialAccountId: { not: null },
+        financialAccount: {
+          deletedAt: null,
+          workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } },
+        },
+      },
+    }),
+  ]);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rows.map((r: any) => ({
+  const rows = [...legacyRows, ...financialAccountRows].sort((a, b) => b.value - a.value);
+
+  return rows.map((r) => ({
     id:        r.id,
-    accountId: r.accountId,
+    // Exactly one of accountId/financialAccountId is set per row — normalize
+    // to a single field so downstream UI (which matches holdings to accounts
+    // by this id) needs no changes.
+    accountId: (r.accountId ?? r.financialAccountId) as string,
     symbol:    r.symbol,
     name:      r.name,
     quantity:  r.quantity,

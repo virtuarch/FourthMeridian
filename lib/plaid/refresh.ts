@@ -16,9 +16,9 @@
  *     refresh never touches that path.
  *  2. Investment holdings (investmentsHoldingsGet), for items with any
  *     investment-type accounts — same delete-then-recreate approach as
- *     exchange-token's initial import, cross-referenced via the legacy
- *     Account.plaidAccountId (Holding is still FK'd to the legacy Account
- *     model, not FinancialAccount).
+ *     exchange-token's initial import, cross-referenced via
+ *     FinancialAccount.plaidAccountId (D11: Holding is now FK'd to
+ *     FinancialAccount directly).
  *  3. Transactions, via the existing syncTransactionsForItem() — untouched,
  *     reused as-is so sync logic is never duplicated.
  *  4. SpaceSnapshot regeneration for every space this item's
@@ -138,15 +138,15 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
         const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
         if (!acctHoldings.length) continue;
 
-        // Holding is still FK'd to the legacy Account model — cross-reference
-        // via plaidAccountId, same as exchange-token's initial import.
-        const dbAcct = await db.account.findUnique({
+        // D11 — Holding is now FK'd to FinancialAccount directly; cross-
+        // reference via plaidAccountId, same as exchange-token's initial import.
+        const fa = await db.financialAccount.findUnique({
           where:  { plaidAccountId: plaidAcct.account_id },
           select: { id: true },
         });
-        if (!dbAcct) continue; // never create — refresh only updates known accounts
+        if (!fa) continue; // never create — refresh only updates known accounts
 
-        await db.holding.deleteMany({ where: { accountId: dbAcct.id } });
+        await db.holding.deleteMany({ where: { financialAccountId: fa.id } });
 
         for (const h of acctHoldings) {
           const sec = secById[h.security_id];
@@ -161,7 +161,7 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
 
           await db.holding.create({
             data: {
-              accountId: dbAcct.id,
+              financialAccountId: fa.id,
               symbol:    sec.ticker_symbol,
               name:      sec.name ?? sec.ticker_symbol,
               quantity:  h.quantity,

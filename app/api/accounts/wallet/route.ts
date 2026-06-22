@@ -115,6 +115,7 @@ export async function POST(req: NextRequest) {
     data: {
       ownerType:     AccountOwnerType.USER,
       ownerUserId:   userId,
+      createdByUserId: userId, // D11 — human-accountable creator
       name:          name.trim(),
       type:          AccountType.crypto,
       institution:   "Self-custodied",

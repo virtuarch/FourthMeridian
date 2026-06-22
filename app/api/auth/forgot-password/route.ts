@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { db } from "@/lib/db";
+import { hashResetToken } from "@/lib/password-reset-token";
 
 const TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 
@@ -45,13 +46,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Generate a cryptographically random token
+    // Generate a cryptographically random token. Only the hash is persisted —
+    // rawToken exists solely in this response/email and is never stored.
     const rawToken = crypto.randomBytes(32).toString("hex");
     const expiry   = new Date(Date.now() + TOKEN_TTL_MS);
 
     await db.user.update({
       where: { id: user.id },
-      data:  { passwordResetToken: rawToken, passwordResetExpiry: expiry },
+      data:  { passwordResetToken: hashResetToken(rawToken), passwordResetExpiry: expiry },
     });
 
     await db.auditLog.create({

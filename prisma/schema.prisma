@@ -266,6 +266,7 @@ model User {
   // New financial account relations
   financialAccounts    FinancialAccount[]  @relation("UserOwnedFinancialAccounts")
   accountConnections   AccountConnection[] @relation("UserConnectedAccounts")
+  createdFinancialAccounts FinancialAccount[] @relation("FinancialAccountCreator") // D11 — accounts this user created/connected, independent of ownerType
 
   // Member revocation (who revoked whom)
   revokedMembers       SpaceMember[]       @relation("RevokedByUser")
@@ -509,6 +510,17 @@ model FinancialAccount {
   ownerSpaceId     String?          @map("ownerWorkspaceId")
   ownerSpace       Space?           @relation("SpaceOwnedFinancialAccounts", fields: [ownerSpaceId], references: [id], onDelete: SetNull)
 
+  // D11 (Phase 2 schema modernization): the human-accountable party independent
+  // of the visibility owner. For ownerType=USER this is normally the same
+  // person as ownerUserId; for ownerType=SPACE, ownerUserId is null by design
+  // (visibility, not accountability), so this field is the only required
+  // answer to "who connected this account on behalf of the Space." Additive,
+  // nullable — backfilled from ownerUserId (falling back to the earliest
+  // AccountConnection.connectedByUserId) for existing rows; set at creation
+  // time for every new FinancialAccount going forward.
+  createdByUserId  String?
+  createdByUser    User?            @relation("FinancialAccountCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
   // Canonical values — written by the AccountConnection with isCanonical = true
   name             String
   type             AccountType
@@ -563,9 +575,11 @@ model FinancialAccount {
   goalContributions     GoalContribution[]
   debtProfile           DebtProfile?
   transactions          Transaction[]               @relation("FinancialAccountTransactions")
+  holdings              Holding[]
 
   @@index([ownerUserId])
   @@index([ownerSpaceId])
+  @@index([createdByUserId])
   @@index([type])
   @@index([deletedAt])
 }
@@ -827,13 +841,28 @@ model SpaceDashboardSection {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Holding
-// One row per position (stock / ETF / crypto) per account. Unchanged.
+// One row per position (stock / ETF / crypto) per account.
+//
+// D11 (Phase 2 schema modernization): accountId (legacy Account FK) and
+// financialAccountId (canonical FK) are both optional; exactly one is expected
+// to be set per row — the same dual-FK pattern already used by Transaction
+// (867–892 below). Legacy/seed-created rows keep accountId. Holdings synced
+// for real Plaid-linked investment accounts (which only ever have a
+// FinancialAccount, not a legacy Account) set financialAccountId instead.
+// accountId was loosened from required to optional to allow this — no
+// existing data is affected, every pre-existing row already has accountId set.
+// Read-layer code (lib/data/accounts.ts getHoldings()) normalizes both back
+// to a single accountId field on read, same as Transaction's pattern.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Holding {
-  id        String  @id @default(cuid())
-  accountId String
-  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id        String   @id @default(cuid())
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  financialAccountId String?
+  financialAccount   FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+
   symbol    String
   name      String
   quantity  Float
@@ -847,8 +876,11 @@ model Holding {
   updatedAt DateTime @updatedAt
 
   @@unique([accountId, symbol])
+  @@unique([financialAccountId, symbol])
   @@index([accountId])
   @@index([accountId, isCash])
+  @@index([financialAccountId])
+  @@index([financialAccountId, isCash])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

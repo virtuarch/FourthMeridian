@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
+import { hashResetToken } from "@/lib/password-reset-token";
 
 export async function POST(req: NextRequest) {
   try {
@@ -22,10 +23,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Password must be at least 8 characters." }, { status: 400 });
     }
 
-    // Find user with matching, non-expired token
+    // Find user with matching, non-expired token — token is hashed before
+    // lookup since passwordResetToken is now stored hashed, not plaintext.
     const user = await db.user.findFirst({
       where: {
-        passwordResetToken:  token,
+        passwordResetToken:  hashResetToken(token),
         passwordResetExpiry: { gt: new Date() },
       },
       select: { id: true, email: true },
