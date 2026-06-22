@@ -150,6 +150,18 @@ enum ShareStatus {
   REVOKED
 }
 
+/// D3 (Phase 2): which role a SpaceAccountLink row plays for its account.
+/// Exactly one HOME row should exist per financialAccountId (the account's
+/// primary/owning Space, replacing ownerSpaceId/ownerUserId); any number of
+/// SHARED rows may exist (replacing WorkspaceAccountShare). Not yet enforced
+/// by a DB constraint — Prisma has no partial-unique-index syntax, so this
+/// invariant is application-level only until a raw-SQL partial unique index
+/// is added in the backfill/dual-write step.
+enum SpaceAccountLinkKind {
+  HOME
+  SHARED
+}
+
 /// Lifecycle of a suspected duplicate pair surfaced by the system.
 /// CONFIRMED_DUPLICATE is written automatically today by the merge path in
 /// lib/accounts/reconcile.ts (mergeArchivedDuplicateIntoCanonical) — there is
@@ -294,6 +306,10 @@ model User {
   addedShares          WorkspaceAccountShare[] @relation("ShareAdder")
   revokedShares        WorkspaceAccountShare[] @relation("ShareRevoker")
 
+  // SpaceAccountLink (D3) — additive, not yet read/written by application code.
+  addedSpaceAccountLinks   SpaceAccountLink[] @relation("SpaceAccountLinkAdder")
+  revokedSpaceAccountLinks SpaceAccountLink[] @relation("SpaceAccountLinkRevoker")
+
   // DuplicateAccountCandidate — tracks who resolved the review
   resolvedDuplicates   DuplicateAccountCandidate[] @relation("DuplicateResolver")
 }
@@ -342,6 +358,8 @@ model Space {
   // (Phase 3 will replace it with SpaceAccountLink). The field name itself never
   // contained "workspace" so it's unaffected either way.
   accountShares         WorkspaceAccountShare[]
+  // SpaceAccountLink (D3) — additive, not yet read/written by application code.
+  accountLinks           SpaceAccountLink[]
   ownedFinancialAccounts FinancialAccount[]      @relation("SpaceOwnedFinancialAccounts")
   goals                  SpaceGoal[]
   dashboardSections      SpaceDashboardSection[]
@@ -583,6 +601,8 @@ model FinancialAccount {
   // future replacement (SpaceAccountLink, Phase 3) with different semantics,
   // so the name deliberately stays as-is for now.
   workspaceShares       WorkspaceAccountShare[]
+  // SpaceAccountLink (D3) — additive, not yet read/written by application code.
+  spaceAccountLinks     SpaceAccountLink[]
   duplicateCandidatesA  DuplicateAccountCandidate[] @relation("DuplicateCandidateA")
   duplicateCandidatesB  DuplicateAccountCandidate[] @relation("DuplicateCandidateB")
   goalContributions     GoalContribution[]
@@ -694,6 +714,44 @@ model WorkspaceAccountShare {
   @@unique([workspaceId, financialAccountId])
   @@index([workspaceId, status])
   @@index([financialAccountId, status])
+  @@index([addedByUserId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SpaceAccountLink (D3, Phase 2 — additive, not yet read or written by any
+// application code).
+// Future consolidation of WorkspaceAccountShare and FinancialAccount's
+// ownerSpaceId/ownerUserId into a single polymorphic link: kind=HOME replaces
+// the declared-owner pair, kind=SHARED replaces a WorkspaceAccountShare row.
+// One row per (space, financialAccount) pair, same cardinality
+// WorkspaceAccountShare already has. Table is created empty in this step —
+// no backfill, no dual-write, no read cutover. See
+// docs/D3_SPACE_ACCOUNT_LINK_REVIEW.md for the full migration strategy and
+// open decisions (notably: the HOME/SHARED backfill collision rule) still to
+// be resolved before the next step.
+// ─────────────────────────────────────────────────────────────────────────────
+model SpaceAccountLink {
+  id                 String               @id @default(cuid())
+  spaceId            String
+  space              Space                @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  financialAccountId String
+  financialAccount   FinancialAccount     @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  kind               SpaceAccountLinkKind
+  addedByUserId      String
+  addedByUser        User                 @relation("SpaceAccountLinkAdder", fields: [addedByUserId], references: [id], onDelete: Cascade)
+  visibilityLevel    VisibilityLevel      @default(FULL)
+  status             ShareStatus          @default(ACTIVE)
+  revokedAt          DateTime?
+  revokedByUserId    String?
+  revokedByUser      User?                @relation("SpaceAccountLinkRevoker", fields: [revokedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  @@unique([spaceId, financialAccountId])
+  @@index([spaceId, status])
+  @@index([financialAccountId, status])
+  @@index([financialAccountId, kind])
   @@index([addedByUserId])
 }
 
