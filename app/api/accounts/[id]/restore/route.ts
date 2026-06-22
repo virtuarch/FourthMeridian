@@ -53,6 +53,7 @@ import {
   resolveAccountByFingerprint,
   mergeArchivedDuplicateIntoCanonical,
 } from "@/lib/accounts/reconcile";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -158,6 +159,17 @@ export const POST = withApiHandler(async (
         data:  { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
       }),
     ]);
+
+    // ── Regenerate SpaceSnapshot for every space this account is now active
+    //    in again. Shares were just reactivated above, so the existing
+    //    ACTIVE-share lookup inside regenerateSnapshotsForAccounts() finds the
+    //    right space(s). Best-effort/non-fatal — see
+    //    docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
+    try {
+      await regenerateSnapshotsForAccounts([id]);
+    } catch (snapshotErr) {
+      console.warn(`[POST /api/accounts/:id/restore] snapshot regen failed for account ${id} (non-fatal):`, snapshotErr);
+    }
 
     // ── Audit log ────────────────────────────────────────────────────────────
     await db.auditLog.create({

@@ -20,6 +20,7 @@ import { requireUser }                 from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { DuplicateDetectionSource }    from "@prisma/client";
 import { providerIdentityOf, findActiveAccountByIdentity, mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -101,6 +102,17 @@ export const POST = withApiHandler(async (
       },
     }),
   ]);
+
+  // ── Regenerate SpaceSnapshot for every space this account is now active in
+  //    again. Shares were just reactivated above, so the existing ACTIVE-
+  //    share lookup inside regenerateSnapshotsForAccounts() finds the right
+  //    space(s). Best-effort/non-fatal — see
+  //    docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
+  try {
+    await regenerateSnapshotsForAccounts([id]);
+  } catch (snapshotErr) {
+    console.warn(`[POST /api/accounts/manual/:id/restore] snapshot regen failed for account ${id} (non-fatal):`, snapshotErr);
+  }
 
   // ── Audit log ──────────────────────────────────────────────────────────────
   await db.auditLog.create({

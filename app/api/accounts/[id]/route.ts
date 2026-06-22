@@ -23,6 +23,7 @@ import { ShareStatus } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -163,6 +164,21 @@ export const DELETE = withApiHandler(async (
       where: { financialAccountId: id, status: ShareStatus.ACTIVE },
       data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: user.id },
     });
+
+    // ── 3b. Regenerate SpaceSnapshot for every space this account was active
+    //       in — captured from fa.workspaceShares *before* the revocation
+    //       above, since regenerateSnapshotsForAccounts() (used elsewhere)
+    //       looks up ACTIVE shares and would find none here. Best-effort/
+    //       non-fatal: a snapshot regen failure must never block the archive
+    //       itself. See docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
+    const affectedSpaceIds = [...new Set(fa.workspaceShares.map((s) => s.workspaceId))];
+    for (const spaceId of affectedSpaceIds) {
+      try {
+        await regenerateSpaceSnapshot(spaceId);
+      } catch (snapshotErr) {
+        console.warn(`[DELETE /api/accounts/:id] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
+      }
+    }
 
     // ── 4. If this was a Plaid account, check whether we should revoke the item ──
     //    (see lib/plaid/disconnect.ts — extracted seam for future provider-agnostic

@@ -23,6 +23,7 @@ import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateD
 import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -120,6 +121,15 @@ export async function POST(req: NextRequest) {
         status:             ShareStatus.ACTIVE,
       },
     });
+
+    // Regenerate SpaceSnapshot now that the share is active again — see
+    // docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
+    try {
+      await regenerateSnapshotsForAccounts([archivedFa.id]);
+    } catch (snapshotErr) {
+      console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${archivedFa.id} (non-fatal):`, snapshotErr);
+    }
+
     await db.auditLog.create({
       data: {
         userId,
