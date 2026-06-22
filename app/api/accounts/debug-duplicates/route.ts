@@ -10,14 +10,14 @@
  *
  * Scope: returns FinancialAccount rows the calling session user can see —
  * either because they own it (ownerUserId match) OR because it's shared
- * into a workspace they're an active member of (matches what the dashboard
+ * into a space they're an active member of (matches what the dashboard
  * actually renders via lib/data/accounts.ts getAccounts()). Filters by
  * whether name/displayName/officialName/plaidName/institution/the linked
  * PlaidItem's institutionName contains the `q` query param
  * (case-insensitive), default "robinhood". Returns every field needed to
  * judge true-duplicate-ness per the user's checklist: id, plaidAccountId,
  * institution, name variants, type/subtype, mask, balance, owner, connections,
- * workspace shares, and history counts (transactions, goal contributions,
+ * space shares, and history counts (transactions, goal contributions,
  * debt profile presence).
  */
 
@@ -31,11 +31,11 @@ export async function GET(req: NextRequest) {
 
   const q = req.nextUrl.searchParams.get("q")?.trim() || "robinhood";
 
-  const memberships = await db.workspaceMember.findMany({
+  const memberships = await db.spaceMember.findMany({
     where: { userId: user.id, status: "ACTIVE" },
-    select: { workspaceId: true },
+    select: { spaceId: true },
   });
-  const workspaceIds = memberships.map((m) => m.workspaceId);
+  const spaceIds = memberships.map((m) => m.spaceId);
 
   const accounts = await db.financialAccount.findMany({
     where: {
@@ -43,7 +43,8 @@ export async function GET(req: NextRequest) {
         {
           OR: [
             { ownerUserId: user.id },
-            { workspaceShares: { some: { workspaceId: { in: workspaceIds } } } },
+            // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
+            { workspaceShares: { some: { workspaceId: { in: spaceIds } } } },
           ],
         },
         {
@@ -73,6 +74,7 @@ export async function GET(req: NextRequest) {
         },
       },
       workspaceShares: {
+        // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
         select: { id: true, workspaceId: true, status: true, revokedAt: true, visibilityLevel: true, addedByUserId: true },
       },
       debtProfile: { select: { id: true } },

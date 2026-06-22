@@ -5,7 +5,7 @@
  * API-response level.
  *
  * BALANCE_ONLY
- *   The sharing user has chosen to expose only a balance total to workspace
+ *   The sharing user has chosen to expose only a balance total to space
  *   members.  No identifying information must leak:
  *     - real account name (user-set or institution-derived)
  *     - institution name
@@ -196,7 +196,7 @@ export function sanitizeForBalanceOnly(
 
 /**
  * Converts a raw list of WorkspaceAccountShare rows into a normalised account
- * array safe for every workspace widget to consume.
+ * array safe for every space widget to consume.
  *
  * Rules:
  *  - FULL shares pass through as individual records with all fields intact.

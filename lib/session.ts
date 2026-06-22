@@ -33,14 +33,14 @@
  *   const [user, err] = await requireSystemAdmin();
  *   if (err) return err;
  *
- *   const [auth, err] = await requireWorkspaceRole(workspaceId, "MEMBER");
+ *   const [auth, err] = await requireSpaceRole(spaceId, "MEMBER");
  *   if (err) return err;
  *   const { user, membership } = auth;
  *
  * DO NOT IMPORT from lib/auth.ts in route handlers for session checks — import
  * from here instead.  lib/auth.ts should only be imported by:
  *   - app/api/auth/[...nextauth]/route.ts  (the NextAuth handler)
- *   - lib/workspace.ts                     (getWorkspaceContext needs full options)
+ *   - lib/space.ts                     (getSpaceContext needs full options)
  *   - lib/session.ts                       (this file — one central point)
  */
 
@@ -52,7 +52,7 @@ import { authOptions }           from "@/lib/auth";
 import { db }                    from "@/lib/db";
 import { setCachedRevocation }   from "@/lib/session-cache";
 import { UserRole,
-         WorkspaceMemberRole }   from "@prisma/client";
+         SpaceMemberRole }   from "@prisma/client";
 
 // ── Exported types ────────────────────────────────────────────────────────────
 
@@ -64,11 +64,11 @@ export type SessionUser = {
   sessionToken: string | null;
 };
 
-/** Workspace membership row included with requireWorkspaceRole results. */
-export type WorkspaceMembership = {
-  workspaceId: string;
+/** Space membership row included with requireSpaceRole results. */
+export type SpaceMembership = {
+  spaceId: string;
   userId:      string;
-  role:        WorkspaceMemberRole;
+  role:        SpaceMemberRole;
   status:      string;
 };
 
@@ -190,43 +190,43 @@ export async function requireFreshSystemAdmin(): Promise<
   return [user, null];
 }
 
-// ── requireWorkspaceRole ──────────────────────────────────────────────────────
+// ── requireSpaceRole ──────────────────────────────────────────────────────
 
 /** Role precedence for min-role comparisons. */
-const ROLE_ORDER: WorkspaceMemberRole[] = [
-  WorkspaceMemberRole.VIEWER,
-  WorkspaceMemberRole.MEMBER,
-  WorkspaceMemberRole.ADMIN,
-  WorkspaceMemberRole.OWNER,
+const ROLE_ORDER: SpaceMemberRole[] = [
+  SpaceMemberRole.VIEWER,
+  SpaceMemberRole.MEMBER,
+  SpaceMemberRole.ADMIN,
+  SpaceMemberRole.OWNER,
 ];
 
 function meetsMinRole(
-  actual: WorkspaceMemberRole,
-  min:    WorkspaceMemberRole,
+  actual: SpaceMemberRole,
+  min:    SpaceMemberRole,
 ): boolean {
   return ROLE_ORDER.indexOf(actual) >= ROLE_ORDER.indexOf(min);
 }
 
 /**
  * Verifies the session and checks that the caller is an active member of
- * `workspaceId` with at least `minRole` (defaults to VIEWER).
+ * `spaceId` with at least `minRole` (defaults to VIEWER).
  *
  * Returns `[{ user, membership }, null]` on success, an error response
  * otherwise.  Replaces the repeated local `getMembership()` helpers that
  * previously lived in individual route files.
  */
-export async function requireWorkspaceRole(
-  workspaceId: string,
-  minRole:     WorkspaceMemberRole = WorkspaceMemberRole.VIEWER,
+export async function requireSpaceRole(
+  spaceId: string,
+  minRole:     SpaceMemberRole = SpaceMemberRole.VIEWER,
 ): Promise<
-  [{ user: SessionUser; membership: WorkspaceMembership }, null] | [null, NextResponse]
+  [{ user: SessionUser; membership: SpaceMembership }, null] | [null, NextResponse]
 > {
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
 
-  const membership = await db.workspaceMember.findUnique({
-    where:  { workspaceId_userId: { workspaceId, userId: user.id } },
-    select: { workspaceId: true, userId: true, role: true, status: true },
+  const membership = await db.spaceMember.findUnique({
+    where:  { spaceId_userId: { spaceId, userId: user.id } },
+    select: { spaceId: true, userId: true, role: true, status: true },
   });
 
   if (!membership || membership.status !== "ACTIVE") return [null, forbidden()];

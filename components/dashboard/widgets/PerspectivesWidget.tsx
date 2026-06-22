@@ -7,7 +7,7 @@
  * "different lenses through which the same underlying data is viewed."
  * Pure presenter — reusable across every Space type and across both
  * dashboard implementations (Personal's DashboardClient and the generic
- * WorkspaceDashboard). The host decides which lenses are real for this
+ * SpaceDashboard). The host decides which lenses are real for this
  * Space (via lib/perspectives.ts) and which internal tab each one routes
  * to; this component only knows how to lay cards out and call back.
  *

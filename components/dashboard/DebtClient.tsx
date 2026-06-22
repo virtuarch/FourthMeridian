@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate as formatDateUTC } from "@/lib/format";
-import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/workspace/widgets/debt-adapters";
+import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
 import { estimateMinimumPayment } from "@/lib/debt";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -592,7 +592,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
         </div>
       )}
 
-      {/* ── 4. Debt breakdown donut (shared widget, same as workspace debt dashboard) ── */}
+      {/* ── 4. Debt breakdown donut (shared widget, same as space debt dashboard) ── */}
       {accounts.length > 0 && (
         <section className="space-y-3">
           <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 px-1">Breakdown</p>
@@ -602,7 +602,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
         </section>
       )}
 
-      {/* ── 5. Payoff planner (shared widget, same as workspace debt dashboard) ── */}
+      {/* ── 5. Payoff planner (shared widget, same as space debt dashboard) ── */}
       {accounts.filter((a) => a.balance > 0).length > 0 && (
         <section className="space-y-3">
           <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 px-1">Payoff Planner</p>

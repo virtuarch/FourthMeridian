@@ -34,7 +34,7 @@
  *    don't recognize (e.g. an account type we don't import) are skipped with
  *    a warning, not an error — one unmapped account can't abort the sync.
  *  - Flips the amount sign: Plaid uses positive = money out (debit),
- *    negative = money in (credit). FinTracker's convention (see
+ *    negative = money in (credit). Fourth Meridian's convention (see
  *    prisma/schema.prisma Transaction model comment) is the opposite:
  *    positive = money in (credit), negative = money out (debit).
  *  - Upserts on the unique `plaidTransactionId` field so re-running a sync
@@ -231,7 +231,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       }
 
       // Plaid: positive = debit (money out), negative = credit (money in).
-      // FinTracker: positive = credit (money in), negative = debit (money out).
+      // Fourth Meridian: positive = credit (money in), negative = debit (money out).
       const amount      = -txn.amount;
       const category    = mapPlaidCategory(txn);
       const date         = new Date(txn.date);

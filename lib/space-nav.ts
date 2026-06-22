@@ -3,7 +3,7 @@
  *
  * Canonical top-level tab rail shared by every individual Space dashboard
  * (Personal via DashboardClient.tsx, every other category via
- * WorkspaceDashboard.tsx). Per the Fourth Meridian Spaces redesign: every
+ * SpaceDashboard.tsx). Per the Fourth Meridian Spaces redesign: every
  * Space — regardless of type — is built from the same modular skeleton.
  * Different Space types enable/disable modules; they do not get a
  * different tab order.
@@ -16,7 +16,7 @@
  *
  * This file only owns ORDER + COPY. Icon components stay in the consuming
  * dashboard files (same pattern as the existing TAB_ICONS record in
- * WorkspaceDashboard.tsx) so this stays a plain, framework-agnostic module
+ * SpaceDashboard.tsx) so this stays a plain, framework-agnostic module
  * — consistent with how lib/widget-registry.ts stores icon names as
  * strings rather than importing lucide-react directly.
  */
@@ -67,3 +67,21 @@ export const SPACE_TAB_LABELS: Record<SpaceTabId, string> = {
  * (tab position, styling) is already in place and needs no rework.
  */
 export const PLACEHOLDER_SPACE_TABS: SpaceTabId[] = ["FINANCES", "TRANSACTIONS", "DOCUMENTS"];
+
+/**
+ * Cross-component CustomEvent names (window-level pub/sub between
+ * Sidebar / CreateSpaceModal / ManageSpaceModal / SpacesClient /
+ * SpaceDashboard / DashboardChrome — no shared parent state, so these
+ * events are how one component tells the others "a Space changed").
+ *
+ * Centralized here instead of inline string literals at each dispatch/
+ * listen call site, so a dispatcher and a listener can never silently
+ * drift out of sync — the same class of bug Phase 1 had to hand-fix for
+ * `WorkspaceAccountShare`'s Prisma field name; this is the UI-layer
+ * equivalent guard.
+ */
+export const SPACE_LIST_CHANGED_EVENT     = "space-list-changed";
+export const SPACE_INVITES_CHANGED_EVENT  = "space-invites-changed";
+export const SPACE_ACCOUNTS_CHANGED_EVENT = "space-accounts-changed";
+export const SPACE_GOALS_CHANGED_EVENT    = "space-goals-changed";
+export const OPEN_CREATE_SPACE_EVENT      = "open-create-space";

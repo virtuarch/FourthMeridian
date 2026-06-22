@@ -11,7 +11,7 @@ export const AuditAction = {
   LOGIN:                    "LOGIN",
   LOGIN_FAILED:             "LOGIN_FAILED",
   LOGOUT:                   "LOGOUT",
-  WORKSPACE_SWITCH:         "WORKSPACE_SWITCH",
+  SPACE_SWITCH:         "SPACE_SWITCH",
 
   // ── Password ─────────────────────────────────────────────────────────────────
   PASSWORD_CHANGED:         "PASSWORD_CHANGED",
@@ -39,14 +39,14 @@ export const AuditAction = {
   GOAL_TRASHED:             "GOAL_TRASHED",
   GOAL_RESTORED:            "GOAL_RESTORED",
 
-  // ── Workspaces (lifecycle) ──────────────────────────────────────────────────
-  WORKSPACE_CREATE:         "WORKSPACE_CREATE",
-  WORKSPACE_UPDATE:         "WORKSPACE_UPDATE",
-  WORKSPACE_ARCHIVED:       "WORKSPACE_ARCHIVED",
-  WORKSPACE_UNARCHIVED:     "WORKSPACE_UNARCHIVED",
-  WORKSPACE_TRASHED:        "WORKSPACE_TRASHED",
-  WORKSPACE_RESTORED:       "WORKSPACE_RESTORED",
-  WORKSPACE_PERMANENT_DELETE: "WORKSPACE_PERMANENT_DELETE",
+  // ── Spaces (lifecycle) ──────────────────────────────────────────────────
+  SPACE_CREATE:         "SPACE_CREATE",
+  SPACE_UPDATE:         "SPACE_UPDATE",
+  SPACE_ARCHIVED:       "SPACE_ARCHIVED",
+  SPACE_UNARCHIVED:     "SPACE_UNARCHIVED",
+  SPACE_TRASHED:        "SPACE_TRASHED",
+  SPACE_RESTORED:       "SPACE_RESTORED",
+  SPACE_PERMANENT_DELETE: "SPACE_PERMANENT_DELETE",
 
   // ── Accounts ─────────────────────────────────────────────────────────────────
   ACCOUNT_SHARED:           "ACCOUNT_SHARED",
@@ -82,7 +82,7 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
       AuditAction.LOGIN,
       AuditAction.LOGIN_FAILED,
       AuditAction.LOGOUT,
-      AuditAction.WORKSPACE_SWITCH,
+      AuditAction.SPACE_SWITCH,
     ],
   },
   {
@@ -123,13 +123,13 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
   {
     label: "Spaces",
     actions: [
-      AuditAction.WORKSPACE_CREATE,
-      AuditAction.WORKSPACE_UPDATE,
-      AuditAction.WORKSPACE_ARCHIVED,
-      AuditAction.WORKSPACE_UNARCHIVED,
-      AuditAction.WORKSPACE_TRASHED,
-      AuditAction.WORKSPACE_RESTORED,
-      AuditAction.WORKSPACE_PERMANENT_DELETE,
+      AuditAction.SPACE_CREATE,
+      AuditAction.SPACE_UPDATE,
+      AuditAction.SPACE_ARCHIVED,
+      AuditAction.SPACE_UNARCHIVED,
+      AuditAction.SPACE_TRASHED,
+      AuditAction.SPACE_RESTORED,
+      AuditAction.SPACE_PERMANENT_DELETE,
     ],
   },
   {

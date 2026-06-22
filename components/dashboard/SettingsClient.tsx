@@ -18,10 +18,10 @@ interface Profile {
   employmentStatus:     string;
   useCase:              string;
   hasDob:               boolean;
-  preferredWorkspaceId: string | null;
+  preferredSpaceId: string | null;
 }
 
-interface WorkspaceOption {
+interface SpaceOption {
   id:   string;
   name: string;
   type: string;
@@ -29,7 +29,7 @@ interface WorkspaceOption {
 
 interface Props {
   initialProfile: Profile;
-  workspaces:     WorkspaceOption[];
+  spaces:     SpaceOption[];
 }
 
 interface SelectOption { value: string; label: string; }
@@ -186,14 +186,14 @@ function InlineField({
   );
 }
 
-// ── Preferred workspace card ─────────────────────────────────────────────────
+// ── Preferred space card ─────────────────────────────────────────────────
 
-function PreferredWorkspaceCard({
-  workspaces,
+function PreferredSpaceCard({
+  spaces,
   initialPreferredId,
   saveField,
 }: {
-  workspaces:          WorkspaceOption[];
+  spaces:          SpaceOption[];
   initialPreferredId:  string | null;
   saveField:           (payload: Record<string, string>) => Promise<string | null>;
 }) {
@@ -202,12 +202,12 @@ function PreferredWorkspaceCard({
   const [error,       setError]       = useState("");
   const [flash,       setFlash]       = useState(false);
 
-  const currentName = workspaces.find((w) => w.id === preferredId)?.name ?? "";
+  const currentName = spaces.find((w) => w.id === preferredId)?.name ?? "";
 
   async function handleSave(newId: string) {
     setSaving(true);
     setError("");
-    const err = await saveField({ preferredWorkspaceId: newId || "" });
+    const err = await saveField({ preferredSpaceId: newId || "" });
     setSaving(false);
     if (err) {
       setError(err);
@@ -246,7 +246,7 @@ function PreferredWorkspaceCard({
           className={selectCls + " flex-1"}
         >
           <option value="">Personal Space (default)</option>
-          {workspaces.filter((w) => w.type !== "PERSONAL").map((w) => (
+          {spaces.filter((w) => w.type !== "PERSONAL").map((w) => (
             <option key={w.id} value={w.id}>{displaySpaceName(w.name)}</option>
           ))}
         </select>
@@ -271,7 +271,7 @@ function PreferredWorkspaceCard({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function SettingsClient({ initialProfile, workspaces }: Props) {
+export function SettingsClient({ initialProfile, spaces }: Props) {
   const { update: updateSession } = useSession();
 
   async function saveField(payload: Record<string, string>): Promise<string | null> {
@@ -394,10 +394,10 @@ export function SettingsClient({ initialProfile, workspaces }: Props) {
         />
       </Card>
 
-      {/* ── Preferred workspace ── */}
-      <PreferredWorkspaceCard
-        workspaces={workspaces}
-        initialPreferredId={initialProfile.preferredWorkspaceId}
+      {/* ── Preferred space ── */}
+      <PreferredSpaceCard
+        spaces={spaces}
+        initialPreferredId={initialProfile.preferredSpaceId}
         saveField={saveField}
       />
 

@@ -7,14 +7,14 @@
  * optional onboarding flow:
  *
  *   1. Create Space   — original form (name, type, description, privacy).
- *      Unchanged validation + POST /api/workspaces. On success the modal no
+ *      Unchanged validation + POST /api/spaces. On success the modal no
  *      longer closes — it advances to step 2 with the newly-created Space.
  *   2. Add Accounts   — optional. Reuses existing entry points verbatim:
  *      "Add existing accounts" renders ShareExistingAccountsPanel — the same
- *      account-sharing component ManageWorkspaceModal's Finances tab uses
+ *      account-sharing component ManageSpaceModal's Finances tab uses
  *      (exported from there for this exact reason) — against the new Space,
  *      so moving an account a user already owns into the new Space is the
- *      same POST /api/workspaces/:id/accounts/share call, not a duplicate.
+ *      same POST /api/spaces/:id/accounts/share call, not a duplicate.
  *      The remaining three options are Plaid via PlaidContext/usePlaid()
  *      (ConnectAccountButton's own logic, inlined here since this step
  *      needs the open/loading state directly rather than a pre-built
@@ -23,23 +23,23 @@
  *      everywhere else in the app, just triggerable from inside this flow.
  *      Plaid-linked and wallet accounts still land in the Personal Space
  *      (existing behavior, unchanged — neither flow accepts a target
- *      workspace today); manual assets are the one *new-account* path that
+ *      space today); manual assets are the one *new-account* path that
  *      can target a specific Space, so this step pre-checks the new Space
  *      in AddManualAssetModal's sharing picker via the (new, additive,
- *      optional) `defaultWorkspaceIds` prop. See the "Future enhancement"
+ *      optional) `defaultSpaceIds` prop. See the "Future enhancement"
  *      note below.
- *   3. Invite Users   — optional. Reuses ManageWorkspaceModal's own
+ *   3. Invite Users   — optional. Reuses ManageSpaceModal's own
  *      UserSearchInput component and the exact same
- *      POST /api/workspaces/:id/invite route MembersTab already calls —
+ *      POST /api/spaces/:id/invite route MembersTab already calls —
  *      no new invite API. UserSearchInput/userDisplayName/UserResult are
- *      exported from ManageWorkspaceModal.tsx specifically so this step
+ *      exported from ManageSpaceModal.tsx specifically so this step
  *      could import the real thing instead of recreating it.
  *   4. Done           — confirms creation; "Open Space" calls the existing
- *      POST /api/workspace/switch (same call Sidebar.tsx and
+ *      POST /api/space/switch (same call Sidebar.tsx and
  *      SpacesClient.tsx already make) and navigates to /dashboard.
  *
  * Future enhancement (not implemented — would require backend changes):
- * letting Plaid Link and the wallet-add flow accept a target workspaceId at
+ * letting Plaid Link and the wallet-add flow accept a target spaceId at
  * connect time, the way manual assets already can, so accounts added here
  * land directly in the new Space instead of Personal-by-default. Today the
  * user can still move them in via Manage → Finances → "Share into Space",
@@ -47,18 +47,18 @@
  *
  * Open/close is driven by a tiny window CustomEvent ("open-create-space"),
  * the same decoupled-listener pattern this codebase already uses for
- * "workspace-list-changed" / "workspace-invites-changed" (see Sidebar.tsx,
+ * "space-list-changed" / "space-invites-changed" (see Sidebar.tsx,
  * SpacesClient.tsx) — any trigger just dispatches the event; it doesn't
  * need a reference to this component or to whoever currently mounts it.
  * DashboardChrome.tsx owns the single mounted instance + open state, since
  * it's the actual common ancestor of the Sidebar and every page (including
  * the Spaces page).
  *
- * Step 1's form fields, validation, and the POST /api/workspaces submit
+ * Step 1's form fields, validation, and the POST /api/spaces submit
  * logic are unchanged from the old CreateSpacePanel — only the chrome
  * around them (backdrop, glass sheet, header, close affordances) and the
  * post-success behavior (advance instead of close) are new. The
- * "workspace-list-changed" dispatch on success is preserved verbatim so the
+ * "space-list-changed" dispatch on success is preserved verbatim so the
  * Sidebar's own Spaces list keeps refreshing the same way it always has.
  */
 
@@ -77,15 +77,20 @@ import {
   CATEGORY_ICONS,
   PRIMARY_CATEGORIES,
   SECONDARY_CATEGORIES,
-  WorkspaceCategory,
-} from "@/lib/workspace-presets";
+  SpaceCategory,
+} from "@/lib/space-presets";
 import { CategoryIcon } from "@/components/dashboard/SpacesClient";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
 import {
   UserSearchInput, userDisplayName, type UserResult,
   ShareExistingAccountsPanel,
-} from "@/components/dashboard/ManageWorkspaceModal";
+} from "@/components/dashboard/ManageSpaceModal";
+import {
+  SPACE_LIST_CHANGED_EVENT,
+  SPACE_ACCOUNTS_CHANGED_EVENT,
+  SPACE_INVITES_CHANGED_EVENT,
+} from "@/lib/space-nav";
 
 // Shared selected/unselected tint for this modal's option-chip grids (Space
 // Type + Privacy) — moved verbatim from the old CreateSpacePanel, which is
@@ -172,7 +177,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [isPublic, setIsPublic] = useState(false);
-  const [category, setCategory] = useState<WorkspaceCategory | null>(null);
+  const [category, setCategory] = useState<SpaceCategory | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -243,14 +248,14 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
     setBusy(true);
     setError("");
     try {
-      const res = await fetch("/api/workspaces", {
+      const res = await fetch("/api/spaces", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name:        name.trim(),
           description: description.trim() || undefined,
           isPublic,
-          category:    category ?? WorkspaceCategory.OTHER,
+          category:    category ?? SpaceCategory.OTHER,
         }),
       });
       if (!res.ok) {
@@ -259,7 +264,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
         return;
       }
       const created = await res.json();
-      window.dispatchEvent(new CustomEvent("workspace-list-changed"));
+      window.dispatchEvent(new CustomEvent(SPACE_LIST_CHANGED_EVENT));
       setNewSpace({ id: created.id, name: created.name });
       onCreated?.();
       setStep("accounts");
@@ -274,13 +279,13 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
   function handleConnectBank() {
     openPlaidLink(() => {
       setAccountsAdded((n) => n + 1);
-      window.dispatchEvent(new CustomEvent("workspace-accounts-changed"));
+      window.dispatchEvent(new CustomEvent(SPACE_ACCOUNTS_CHANGED_EVENT));
     });
   }
 
   function handleNestedAdded() {
     setAccountsAdded((n) => n + 1);
-    window.dispatchEvent(new CustomEvent("workspace-accounts-changed"));
+    window.dispatchEvent(new CustomEvent(SPACE_ACCOUNTS_CHANGED_EVENT));
   }
 
   // ── Step 3 actions ───────────────────────────────────────────────────────
@@ -289,7 +294,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
     setInviteBusy(true);
     setInviteError("");
     try {
-      const res = await fetch(`/api/workspaces/${newSpace.id}/invite`, {
+      const res = await fetch(`/api/spaces/${newSpace.id}/invite`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ username: inviteSelectedUser.username ?? inviteSelectedUser.id, role: inviteRole }),
@@ -301,7 +306,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
       }
       setInvitesSent((prev) => [...prev, inviteSelectedUser]);
       setInviteSelectedUser(null);
-      window.dispatchEvent(new CustomEvent("workspace-invites-changed"));
+      window.dispatchEvent(new CustomEvent(SPACE_INVITES_CHANGED_EVENT));
     } catch {
       setInviteError("Network error");
     } finally {
@@ -314,13 +319,13 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
     if (!newSpace) return;
     setSwitching(true);
     try {
-      const res = await fetch("/api/workspace/switch", {
+      const res = await fetch("/api/space/switch", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ workspaceId: newSpace.id }),
+        body:    JSON.stringify({ spaceId: newSpace.id }),
       });
       if (res.ok) {
-        window.dispatchEvent(new CustomEvent("workspace-list-changed"));
+        window.dispatchEvent(new CustomEvent(SPACE_LIST_CHANGED_EVENT));
         resetForm();
         onClose();
         // Order matters here. router.push() starts loading the destination
@@ -330,7 +335,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
         // intermittent "ChunkLoadError: Loading chunk
         // app/(shell)/dashboard/page failed" came from that race, not from a
         // stale chunk or naming issue. Sidebar.tsx's handleSwitch already
-        // does this same workspace-switch + navigate sequence without the
+        // does this same space-switch + navigate sequence without the
         // bug, and it calls refresh() *before* push() — settle the cache
         // invalidation first, then start a clean navigation. Matching that
         // proven order here (rather than inventing a new pattern) fixes it.
@@ -465,7 +470,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
             <h3 className="text-sm font-semibold text-[var(--text-primary)]">Add existing accounts</h3>
           </div>
           {newSpace && (
-            <ShareExistingAccountsPanel workspaceId={newSpace.id} onShared={handleNestedAdded} />
+            <ShareExistingAccountsPanel spaceId={newSpace.id} onShared={handleNestedAdded} />
           )}
         </>
       ) : (
@@ -576,7 +581,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
           </div>
         ) : newSpace ? (
           <UserSearchInput
-            workspaceId={newSpace.id}
+            spaceId={newSpace.id}
             onSelect={(u) => { setInviteSelectedUser(u); setInviteError(""); }}
           />
         ) : null}
@@ -694,7 +699,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
         <AddManualAssetModal
           onClose={() => setNestedModal(null)}
           onAdd={handleNestedAdded}
-          defaultWorkspaceIds={newSpace ? [newSpace.id] : undefined}
+          defaultSpaceIds={newSpace ? [newSpace.id] : undefined}
           zIndex={300}
         />
       )}

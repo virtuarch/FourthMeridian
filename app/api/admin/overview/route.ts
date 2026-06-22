@@ -6,10 +6,10 @@
  *
  * Response shape:
  * {
- *   stats: { totalUsers, totalWorkspaces, totalAccounts, totalAuditLogs }
- *   users: Array<{ id, email, username, name, role, createdAt, workspaces: [{ id, name, role }] }>
- *   workspaces: Array<{ id, name, type, createdAt, members: [{ userId, email, username, name, role }], accountCount }>
- *   recentAudit: Array<{ id, action, userId, userEmail, workspaceId, createdAt, metadata }>
+ *   stats: { totalUsers, totalSpaces, totalAccounts, totalAuditLogs }
+ *   users: Array<{ id, email, username, name, role, createdAt, spaces: [{ id, name, role }] }>
+ *   spaces: Array<{ id, name, type, createdAt, members: [{ userId, email, username, name, role }], accountCount }>
+ *   recentAudit: Array<{ id, action, userId, userEmail, spaceId, createdAt, metadata }>
  * }
  */
 
@@ -21,8 +21,8 @@ export async function GET() {
   const [, err] = await requireSystemAdmin();
   if (err) return err;
 
-  const [users, workspaces, totalAccounts, totalAuditLogs, recentAudit] = await Promise.all([
-    // All users with their workspace memberships
+  const [users, spaces, totalAccounts, totalAuditLogs, recentAudit] = await Promise.all([
+    // All users with their space memberships
     db.user.findMany({
       orderBy: { createdAt: "desc" },
       select: {
@@ -36,10 +36,10 @@ export async function GET() {
         employmentStatus: true,
         useCase:          true,
         createdAt:        true,
-        workspaces: {
+        spaces: {
           select: {
             role: true,
-            workspace: {
+            space: {
               select: { id: true, name: true, type: true },
             },
           },
@@ -47,8 +47,8 @@ export async function GET() {
       },
     }),
 
-    // All workspaces with members + account count
-    db.workspace.findMany({
+    // All spaces with members + account count
+    db.space.findMany({
       orderBy: { createdAt: "desc" },
       select: {
         id:        true,
@@ -81,7 +81,7 @@ export async function GET() {
         id:          true,
         action:      true,
         userId:      true,
-        workspaceId: true,
+        spaceId: true,
         metadata:    true,
         createdAt:   true,
         user: {
@@ -94,7 +94,7 @@ export async function GET() {
   return NextResponse.json({
     stats: {
       totalUsers:      users.length,
-      totalWorkspaces: workspaces.length,
+      totalSpaces: spaces.length,
       totalAccounts,
       totalAuditLogs,
     },
@@ -109,14 +109,14 @@ export async function GET() {
       employmentStatus: u.employmentStatus,
       useCase:          u.useCase,
       createdAt:        u.createdAt,
-      workspaces:       u.workspaces.map((m) => ({
-        id:   m.workspace.id,
-        name: m.workspace.name,
-        type: m.workspace.type,
+      spaces:       u.spaces.map((m) => ({
+        id:   m.space.id,
+        name: m.space.name,
+        type: m.space.type,
         role: m.role,
       })),
     })),
-    workspaces: workspaces.map((w) => ({
+    spaces: spaces.map((w) => ({
       id:           w.id,
       name:         w.name,
       type:         w.type,
@@ -137,7 +137,7 @@ export async function GET() {
       userId:      log.userId,
       userEmail:   log.user?.email ?? null,
       username:    log.user?.username ?? null,
-      workspaceId: log.workspaceId,
+      spaceId: log.spaceId,
       metadata:    log.metadata,
       createdAt:   log.createdAt,
     })),

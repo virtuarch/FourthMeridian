@@ -54,7 +54,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         totalTransactionsAdded:    r.transactionsAdded,
         totalTransactionsModified: r.transactionsModified,
         totalTransactionsRemoved:  r.transactionsRemoved,
-        workspacesSnapshotted:     r.workspacesSnapshotted,
+        spacesSnapshotted:     r.spacesSnapshotted,
       };
     } catch (e) {
       console.error(`[POST /api/plaid/refresh] refresh failed for PlaidItem ${item.id}:`, e);
@@ -75,7 +75,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         totalTransactionsAdded:    summary.totalTransactionsAdded,
         totalTransactionsModified: summary.totalTransactionsModified,
         totalTransactionsRemoved:  summary.totalTransactionsRemoved,
-        workspacesSnapshotted:     summary.workspacesSnapshotted.length,
+        spacesSnapshotted:     summary.spacesSnapshotted.length,
       },
       ipAddress: getClientIp(req),
     },

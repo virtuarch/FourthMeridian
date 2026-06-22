@@ -29,8 +29,8 @@
  * Sidebar's "Create Space" row and the Spaces page's own "Create Space"
  * button dispatch a window CustomEvent ("open-create-space") rather than
  * holding a reference to this component — the same decoupled pattern this
- * codebase already uses for "workspace-list-changed" /
- * "workspace-invites-changed" (see Sidebar.tsx, SpacesClient.tsx). On a
+ * codebase already uses for "space-list-changed" /
+ * "space-invites-changed" (see Sidebar.tsx, SpacesClient.tsx). On a
  * successful create, `router.refresh()` re-fetches the Spaces page's
  * server-provided `mine`/`publicSpaces` props so the card grid picks up
  * the new Space immediately.
@@ -45,6 +45,7 @@ import { RefreshButton } from "@/components/dashboard/RefreshButton";
 import { AtlasField } from "@/components/atlas/AtlasField";
 import { AppLogo } from "@/components/ui/AppLogo";
 import { CreateSpaceModal } from "@/components/dashboard/CreateSpaceModal";
+import { OPEN_CREATE_SPACE_EVENT } from "@/lib/space-nav";
 
 export function DashboardChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -55,8 +56,8 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     function handleOpen() { setCreateSpaceOpen(true); }
-    window.addEventListener("open-create-space", handleOpen);
-    return () => window.removeEventListener("open-create-space", handleOpen);
+    window.addEventListener(OPEN_CREATE_SPACE_EVENT, handleOpen);
+    return () => window.removeEventListener(OPEN_CREATE_SPACE_EVENT, handleOpen);
   }, []);
 
   return (

@@ -2,13 +2,13 @@
  * lib/timeline-types.ts
  *
  * Canonical TimelineEvent contract shared between:
- *   - GET /api/workspaces/[id]/activity  (producer)
+ *   - GET /api/spaces/[id]/activity  (producer)
  *   - TimelineWidget                      (consumer)
  *   - Future: Daily Briefing engine       (consumer)
  *   - Future: Notifications               (consumer)
  *
  * The widget never cares where an event came from — AuditLog,
- * WorkspaceGoal, account sync, or any other source. It only renders
+ * SpaceGoal, account sync, or any other source. It only renders
  * a normalized event list.
  */
 

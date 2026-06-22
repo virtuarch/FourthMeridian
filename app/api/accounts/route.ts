@@ -2,7 +2,7 @@
  * GET /api/accounts
  *
  * Returns the authenticated user's own FinancialAccounts (non-deleted).
- * Used by the workspace account-sharing UI to list accounts available to share.
+ * Used by the space account-sharing UI to list accounts available to share.
  */
 
 import { NextResponse }      from "next/server";

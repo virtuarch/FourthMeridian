@@ -21,10 +21,10 @@
  *     model, not FinancialAccount).
  *  3. Transactions, via the existing syncTransactionsForItem() — untouched,
  *     reused as-is so sync logic is never duplicated.
- *  4. WorkspaceSnapshot regeneration for every workspace this item's
+ *  4. SpaceSnapshot regeneration for every space this item's
  *     accounts are shared into (lib/snapshots/regenerate.ts). This is the
  *     fix for the Cash History / Banking History charts: they read
- *     WorkspaceSnapshot exclusively, and nothing in production wrote that
+ *     SpaceSnapshot exclusively, and nothing in production wrote that
  *     table before this step existed — only prisma/seed.ts did.
  *
  * Does not create AccountConnection or WorkspaceAccountShare rows — those
@@ -68,8 +68,8 @@ export interface RefreshItemResult {
   transactionsAdded:      number;
   transactionsModified:   number;
   transactionsRemoved:    number;
-  /** Workspace ids whose WorkspaceSnapshot row was regenerated (today's date). */
-  workspacesSnapshotted:  string[];
+  /** Space ids whose SpaceSnapshot row was regenerated (today's date). */
+  spacesSnapshotted:  string[];
   error?:                 string;
 }
 
@@ -185,12 +185,12 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
   // Reuses the existing cursor-based sync as-is — no duplicated logic.
   const txSync = await syncTransactionsForItem(plaidItemDbId);
 
-  // ── 4. WorkspaceSnapshot regeneration ───────────────────────────────────
-  // Recomputes today's snapshot row for every workspace these accounts are
+  // ── 4. SpaceSnapshot regeneration ───────────────────────────────────
+  // Recomputes today's snapshot row for every space these accounts are
   // shared into, from the now-fresh FinancialAccount balances. This is what
   // the Cash History / Banking History / Net Worth charts actually read —
   // see lib/snapshots/regenerate.ts for why this step exists.
-  const workspacesSnapshotted = await regenerateSnapshotsForAccounts(updatedAccountIds);
+  const spacesSnapshotted = await regenerateSnapshotsForAccounts(updatedAccountIds);
 
   return {
     plaidItemId:          plaidItemDbId,
@@ -201,7 +201,7 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
     transactionsAdded:    txSync.added,
     transactionsModified: txSync.modified,
     transactionsRemoved:  txSync.removed,
-    workspacesSnapshotted,
+    spacesSnapshotted,
   };
 }
 
@@ -213,8 +213,8 @@ export interface RefreshSummary {
   totalTransactionsAdded:     number;
   totalTransactionsModified:  number;
   totalTransactionsRemoved:   number;
-  /** Distinct workspace ids whose WorkspaceSnapshot row was regenerated. */
-  workspacesSnapshotted:      string[];
+  /** Distinct space ids whose SpaceSnapshot row was regenerated. */
+  spacesSnapshotted:      string[];
 }
 
 /**
@@ -234,7 +234,7 @@ export async function refreshAllActiveItemsForUser(userId: string): Promise<Refr
   let totalTransactionsAdded    = 0;
   let totalTransactionsModified = 0;
   let totalTransactionsRemoved  = 0;
-  const snapshottedWorkspaceIds = new Set<string>();
+  const snapshottedSpaceIds = new Set<string>();
 
   for (const item of items) {
     try {
@@ -245,7 +245,7 @@ export async function refreshAllActiveItemsForUser(userId: string): Promise<Refr
       totalTransactionsAdded    += r.transactionsAdded;
       totalTransactionsModified += r.transactionsModified;
       totalTransactionsRemoved  += r.transactionsRemoved;
-      r.workspacesSnapshotted.forEach((id) => snapshottedWorkspaceIds.add(id));
+      r.spacesSnapshotted.forEach((id) => snapshottedSpaceIds.add(id));
     } catch (e) {
       console.error(`[refreshAllActiveItemsForUser] refresh failed for PlaidItem ${item.id}:`, e);
       results.push({
@@ -257,7 +257,7 @@ export async function refreshAllActiveItemsForUser(userId: string): Promise<Refr
         transactionsAdded:    0,
         transactionsModified: 0,
         transactionsRemoved:  0,
-        workspacesSnapshotted: [],
+        spacesSnapshotted: [],
         error: e instanceof Error ? e.message : "Unknown error",
       });
     }
@@ -271,6 +271,6 @@ export async function refreshAllActiveItemsForUser(userId: string): Promise<Refr
     totalTransactionsAdded,
     totalTransactionsModified,
     totalTransactionsRemoved,
-    workspacesSnapshotted: [...snapshottedWorkspaceIds],
+    spacesSnapshotted: [...snapshottedSpaceIds],
   };
 }

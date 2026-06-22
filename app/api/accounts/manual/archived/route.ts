@@ -2,7 +2,7 @@
  * GET /api/accounts/manual/archived
  *
  * Returns all soft-deleted manually-entered asset accounts owned by the
- * current user, along with the workspaces they were shared into (REVOKED).
+ * current user, along with the spaces they were shared into (REVOKED).
  *
  * Response: { assets: ArchivedAsset[] }
  */
@@ -18,7 +18,7 @@ export interface ArchivedAsset {
   balance:       number;
   currency:      string;
   deletedAt:     string;          // ISO string
-  workspaces: {
+  spaces: {
     id:   string;
     name: string;
   }[];
@@ -45,6 +45,7 @@ export const GET = withApiHandler(async () => {
       workspaceShares: {
         select: {
           status:    true,
+          // WorkspaceAccountShare keeps its own pre-Phase-1 relation name (workspace).
           workspace: { select: { id: true, name: true } },
         },
       },
@@ -58,7 +59,7 @@ export const GET = withApiHandler(async () => {
     balance:   a.balance,
     currency:  a.currency,
     deletedAt: a.deletedAt!.toISOString(),
-    workspaces: a.workspaceShares.map((s) => ({
+    spaces: a.workspaceShares.map((s) => ({
       id:   s.workspace.id,
       name: s.workspace.name,
     })),

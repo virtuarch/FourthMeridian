@@ -7,7 +7,7 @@
  * imported account, and never see a duplicate / 409-conflict message. This
  * module finds an existing account by provider identity and, when an
  * archived row collides with an already-active one, folds the archived
- * row's history (transactions, goal contributions, debt profile, workspace
+ * row's history (transactions, goal contributions, debt profile, space
  * shares) into the active "canonical" row instead of creating or restoring
  * a second visible record.
  *
@@ -259,7 +259,7 @@ export async function resolveAccountByFingerprint(
  *    place, inert, rather than erroring.
  *  - DebtProfile: moved to winner only if winner doesn't already have one
  *    (it's a strict 1:1) — otherwise left on the archived loser, inert.
- *  - WorkspaceAccountShare: every workspace the loser was shared into gets
+ *  - WorkspaceAccountShare: every space the loser was shared into gets
  *    an ACTIVE share pointing at the winner instead, so the user keeps
  *    seeing the account wherever they previously added it.
  */
@@ -297,6 +297,7 @@ export async function mergeArchivedDuplicateIntoCanonical(loserId: string, winne
   const loserShares = await db.workspaceAccountShare.findMany({ where: { financialAccountId: loserId } });
   for (const s of loserShares) {
     await db.workspaceAccountShare.upsert({
+      // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
       where:  { workspaceId_financialAccountId: { workspaceId: s.workspaceId, financialAccountId: winnerId } },
       update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
       create: {

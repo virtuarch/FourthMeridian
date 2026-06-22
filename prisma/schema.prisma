@@ -58,13 +58,19 @@ enum PlaidItemStatus {
   REVOKED       // all accounts removed; itemRemove() was called
 }
 
-enum WorkspaceType {
+/// Renamed from Workspace -> Space (Fourth Meridian Phase 1 naming migration).
+/// @@map keeps the underlying Postgres enum type name unchanged so this is a
+/// code/Prisma-Client-only rename — no DDL required.
+enum SpaceType {
   PERSONAL
   SHARED
+
+  @@map("WorkspaceType")
 }
 
-/// Semantic category for a workspace — drives default UI labels, section presets, and AI context.
-enum WorkspaceCategory {
+/// Semantic category for a Space — drives default UI labels, section presets, and AI context.
+/// Renamed from WorkspaceCategory -> SpaceCategory; @@map preserves the DB type name.
+enum SpaceCategory {
   PERSONAL
   HOUSEHOLD
   FAMILY
@@ -80,11 +86,14 @@ enum WorkspaceCategory {
   EMERGENCY_FUND
   CUSTOM
   OTHER
+
+  @@map("WorkspaceCategory")
 }
 
-/// Tabs available on the workspace planning dashboard.
-/// Each WorkspaceDashboardSection belongs to one tab.
-enum WorkspaceDashboardTab {
+/// Tabs available on the Space planning dashboard.
+/// Each SpaceDashboardSection belongs to one tab.
+/// Renamed from WorkspaceDashboardTab -> SpaceDashboardTab; @@map preserves the DB type name.
+enum SpaceDashboardTab {
   OVERVIEW
   GOALS
   ACCOUNTS
@@ -93,21 +102,29 @@ enum WorkspaceDashboardTab {
   RETIREMENT
   ACTIVITY
   SETTINGS
+
+  @@map("WorkspaceDashboardTab")
 }
 
-enum WorkspaceMemberRole {
+/// Renamed from WorkspaceMemberRole -> SpaceMemberRole; @@map preserves the DB type name.
+enum SpaceMemberRole {
   OWNER
   ADMIN
   MEMBER
   VIEWER
+
+  @@map("WorkspaceMemberRole")
 }
 
 /// Soft-membership state. REMOVED = kicked by OWNER/ADMIN. LEFT = self-removed.
 /// Row is never deleted so audit history is preserved.
-enum WorkspaceMemberStatus {
+/// Renamed from WorkspaceMemberStatus -> SpaceMemberStatus; @@map preserves the DB type name.
+enum SpaceMemberStatus {
   ACTIVE
   REMOVED
   LEFT
+
+  @@map("WorkspaceMemberStatus")
 }
 
 enum InviteStatus {
@@ -116,15 +133,15 @@ enum InviteStatus {
   DECLINED
 }
 
-/// Controls how a FinancialAccount is visible to a workspace it has been shared into.
+/// Controls how a FinancialAccount is visible to a Space it has been shared into.
 /// BALANCE_ONLY added for privacy-sensitive sharing (e.g. a partner sees total but not institution).
 /// FULL replaces the old SHARED value; SHARED kept temporarily for Account (legacy) rows.
 enum VisibilityLevel {
-  PRIVATE       // only the owning workspace can see this account
-  BALANCE_ONLY  // other workspace sees the balance total, no institution or transactions
+  PRIVATE       // only the owning Space can see this account
+  BALANCE_ONLY  // other Space sees the balance total, no institution or transactions
   SUMMARY_ONLY  // qualitative summary, no raw numbers
   SHARED        // legacy — maps to FULL; kept for backward compat with Account model
-  FULL          // fully visible to all workspace members (new canonical value)
+  FULL          // fully visible to all Space members (new canonical value)
 }
 
 /// Whether a WorkspaceAccountShare is currently active or has been revoked.
@@ -142,10 +159,16 @@ enum DuplicateStatus {
   IGNORED              // user dismissed without deciding
 }
 
-/// Whether a FinancialAccount is owned by an individual user or by a workspace entity.
+/// Whether a FinancialAccount is owned by an individual user or by a Space entity.
+/// SPACE was renamed from WORKSPACE in the Fourth Meridian Phase 1 naming migration —
+/// this is a real `ALTER TYPE ... RENAME VALUE` migration (see
+/// prisma/migrations/*_rename_account_owner_type_workspace_to_space/), not a @map,
+/// because the existing label is genuinely renamed end-to-end. The rename is
+/// metadata-only in Postgres: existing rows keep referencing the same enum OID,
+/// so no row data is rewritten and no UPDATE statement is needed.
 enum AccountOwnerType {
-  USER       // personal account owned by a single user
-  WORKSPACE  // workspace-level account (e.g. a joint or business account)
+  USER   // personal account owned by a single user
+  SPACE  // Space-level account (e.g. a joint or business account)
 }
 
 enum UserRole {
@@ -183,7 +206,7 @@ enum GoalCategory {
   GENERAL
 }
 
-/// Lifecycle state of a WorkspaceGoal.
+/// Lifecycle state of a SpaceGoal.
 enum GoalStatus {
   ACTIVE
   PAUSED
@@ -191,7 +214,7 @@ enum GoalStatus {
   CANCELLED
 }
 
-/// Governs which fields and tracking mode apply to a WorkspaceGoal.
+/// Governs which fields and tracking mode apply to a SpaceGoal.
 enum GoalType {
   FINANCIAL       // Save $X by a target date
   HABIT           // Behavioral goal tracked by streak / check-ins
@@ -220,7 +243,7 @@ model User {
   totpSecret           String?           // TOTP seed, stored encrypted (used in M3)
   totpEnabled          Boolean           @default(false)
   role                 UserRole          @default(USER)
-  preferredWorkspaceId String?           // soft ref — workspace the user lands on after login
+  preferredSpaceId     String?           @map("preferredWorkspaceId") // soft ref — Space the user lands on after login
   passwordResetToken   String?           @unique
   passwordResetExpiry  DateTime?
   forcePasswordReset   Boolean           @default(false) // set true by admin; user must change on next login
@@ -228,9 +251,9 @@ model User {
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
 
-  workspaces           WorkspaceMember[]
-  sentInvites          WorkspaceInvite[] @relation("SentInvites")
-  receivedInvites      WorkspaceInvite[] @relation("ReceivedInvites")
+  spaces               SpaceMember[]
+  sentInvites          SpaceInvite[]     @relation("SentInvites")
+  receivedInvites      SpaceInvite[]     @relation("ReceivedInvites")
   plaidItems           PlaidItem[]
   ownedAccounts        Account[]         // legacy: accounts this user connected/created
   creditScores         CreditScore[]
@@ -245,12 +268,15 @@ model User {
   accountConnections   AccountConnection[] @relation("UserConnectedAccounts")
 
   // Member revocation (who revoked whom)
-  revokedMembers       WorkspaceMember[]   @relation("RevokedByUser")
+  revokedMembers       SpaceMember[]       @relation("RevokedByUser")
 
   // Goal creation
-  createdGoals         WorkspaceGoal[]     @relation("GoalCreator")
+  createdGoals         SpaceGoal[]         @relation("GoalCreator")
 
-  // WorkspaceAccountShare — tracks who added/revoked shares
+  // WorkspaceAccountShare — excluded from the Phase 1 Workspace->Space rename; this
+  // model has its own future replacement (SpaceAccountLink, Phase 3) with different
+  // semantics, so it deliberately keeps its current name and field/relation names
+  // here for now. Tracks who added/revoked shares.
   addedShares          WorkspaceAccountShare[] @relation("ShareAdder")
   revokedShares        WorkspaceAccountShare[] @relation("ShareRevoker")
 
@@ -259,119 +285,127 @@ model User {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Workspace
+// Space (renamed from Workspace — Fourth Meridian Phase 1 naming migration)
 // Container for all financial data. Every user auto-receives one PERSONAL
-// workspace on registration. Additional SHARED workspaces can be created or
+// Space on registration. Additional SHARED Spaces can be created or
 // joined (Hogan Family, Atlanta Duplex LLC, etc.)
-// category provides semantic context for the workspace (e.g. HOUSEHOLD, BUSINESS).
+// category provides semantic context for the Space (e.g. HOUSEHOLD, BUSINESS).
+// @@map keeps the underlying "Workspace" table name unchanged — this is a
+// Prisma-Client-only rename, no DDL required.
 // ─────────────────────────────────────────────────────────────────────────────
 
-model Workspace {
-  id          String            @id @default(cuid())
+model Space {
+  id          String        @id @default(cuid())
   name        String
   description String?
-  type        WorkspaceType     @default(PERSONAL)
-  category    WorkspaceCategory @default(PERSONAL)
-  isPublic    Boolean           @default(false)  // SHARED workspaces can be listed publicly
+  type        SpaceType     @default(PERSONAL)
+  category    SpaceCategory @default(PERSONAL)
+  isPublic    Boolean       @default(false)  // SHARED Spaces can be listed publicly
 
-  // ── Lifecycle (mirrors WorkspaceGoal's archive/trash pattern) ─────────────
+  // ── Lifecycle (mirrors SpaceGoal's archive/trash pattern) ─────────────────
   // archivedAt: hidden from normal nav, fully intact, restorable any time.
   // deletedAt:  moved to trash, hidden from normal nav, restorable until
   //             permanently deleted. Trashing always clears archivedAt so a
-  //             workspace is never in both states at once. PERSONAL
-  //             workspaces cannot be archived, trashed, or permanently
+  //             Space is never in both states at once. PERSONAL
+  //             Spaces cannot be archived, trashed, or permanently
   //             deleted (enforced in the API layer, not the schema).
   archivedAt  DateTime?
   deletedAt   DateTime?
 
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
-  members       WorkspaceMember[]
-  invites       WorkspaceInvite[]
-  accounts      Account[]           // legacy account relation
-  snapshots     WorkspaceSnapshot[]
+  members       SpaceMember[]
+  invites       SpaceInvite[]
+  accounts      Account[]       // legacy account relation
+  snapshots     SpaceSnapshot[]
   aiAgent       AiAgent?
   adviceHistory AiAdvice[]
   auditLogs     AuditLog[]
 
   // New financial account relations
+  // accountShares — excluded from this rename; still points at WorkspaceAccountShare
+  // (Phase 3 will replace it with SpaceAccountLink). The field name itself never
+  // contained "workspace" so it's unaffected either way.
   accountShares         WorkspaceAccountShare[]
-  ownedFinancialAccounts FinancialAccount[]     @relation("WorkspaceOwnedFinancialAccounts")
-  goals                 WorkspaceGoal[]
-  dashboardSections     WorkspaceDashboardSection[]
+  ownedFinancialAccounts FinancialAccount[]      @relation("SpaceOwnedFinancialAccounts")
+  goals                  SpaceGoal[]
+  dashboardSections      SpaceDashboardSection[]
 
   @@index([type])
   @@index([isPublic])
   @@index([archivedAt])
   @@index([deletedAt])
+  @@map("Workspace")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceMember
-// Join table linking users to workspaces with roles.
+// SpaceMember (renamed from WorkspaceMember)
+// Join table linking users to Spaces with roles.
 // status: ACTIVE (normal), REMOVED (kicked), LEFT (self-removed).
 // Rows are never deleted — status update preserves audit history.
 // When status becomes REMOVED or LEFT, all WorkspaceAccountShare records
 // contributed by that user are revoked.
 // ─────────────────────────────────────────────────────────────────────────────
 
-model WorkspaceMember {
-  id          String                @id @default(cuid())
-  workspaceId String
-  workspace   Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role        WorkspaceMemberRole   @default(MEMBER)
-  status      WorkspaceMemberStatus @default(ACTIVE)
-  joinedAt    DateTime              @default(now())
+model SpaceMember {
+  id       String           @id @default(cuid())
+  spaceId  String           @map("workspaceId")
+  space    Space            @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     SpaceMemberRole  @default(MEMBER)
+  status   SpaceMemberStatus @default(ACTIVE)
+  joinedAt DateTime         @default(now())
 
   // Populated when status transitions to REMOVED or LEFT
   revokedAt   DateTime?
   revokedById String?
-  revokedBy   User?                 @relation("RevokedByUser", fields: [revokedById], references: [id], onDelete: SetNull)
+  revokedBy   User?         @relation("RevokedByUser", fields: [revokedById], references: [id], onDelete: SetNull)
 
-  @@unique([workspaceId, userId])
-  @@index([workspaceId])
+  @@unique([spaceId, userId])
+  @@index([spaceId])
   @@index([userId])
-  @@index([workspaceId, status])
+  @@index([spaceId, status])
+  @@map("WorkspaceMember")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceInvite
+// SpaceInvite (renamed from WorkspaceInvite)
 // Grant-only access. Only existing members with OWNER or ADMIN role can invite.
 // Users cannot request access — they can only accept or decline an invite.
 // ─────────────────────────────────────────────────────────────────────────────
 
-model WorkspaceInvite {
-  id            String              @id @default(cuid())
-  workspaceId   String
-  workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+model SpaceInvite {
+  id            String          @id @default(cuid())
+  spaceId       String          @map("workspaceId")
+  space         Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   invitedById   String
-  invitedBy     User                @relation("SentInvites",     fields: [invitedById],   references: [id], onDelete: Cascade)
+  invitedBy     User            @relation("SentInvites",     fields: [invitedById],   references: [id], onDelete: Cascade)
   invitedUserId String
-  invitedUser   User                @relation("ReceivedInvites", fields: [invitedUserId], references: [id], onDelete: Cascade)
-  role          WorkspaceMemberRole @default(MEMBER)
-  status        InviteStatus        @default(PENDING)
-  createdAt     DateTime            @default(now())
+  invitedUser   User            @relation("ReceivedInvites", fields: [invitedUserId], references: [id], onDelete: Cascade)
+  role          SpaceMemberRole @default(MEMBER)
+  status        InviteStatus    @default(PENDING)
+  createdAt     DateTime        @default(now())
   expiresAt     DateTime?
-  seenAt        DateTime?           // set when invited user first views the invite
+  seenAt        DateTime?       // set when invited user first views the invite
 
-  @@unique([workspaceId, invitedUserId])
+  @@unique([spaceId, invitedUserId])
   @@index([invitedUserId])
-  @@index([workspaceId])
+  @@index([spaceId])
+  @@map("WorkspaceInvite")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AiAgent
-// One agent per workspace. Owns all advice and (future) memory for that
-// workspace. Created automatically when a workspace is created.
+// One agent per Space. Owns all advice and (future) memory for that
+// Space. Created automatically when a Space is created.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model AiAgent {
   id           String    @id @default(cuid())
-  workspaceId  String    @unique
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  spaceId      String    @unique @map("workspaceId")
+  space        Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   name         String
   lastActiveAt DateTime?
   createdAt    DateTime  @default(now())
@@ -379,12 +413,12 @@ model AiAgent {
 
   adviceHistory AiAdvice[]
 
-  @@index([workspaceId])
+  @@index([spaceId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PlaidItem
-// Stays on User — it is a credential (OAuth token), not a workspace asset.
+// Stays on User — it is a credential (OAuth token), not a Space asset.
 // One item per institution; a single token covers all accounts at that bank.
 // Accounts derived from this item are created as FinancialAccount rows.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -419,8 +453,8 @@ model PlaidItem {
 
 model Account {
   id               String          @id @default(cuid())
-  workspaceId      String
-  workspace        Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  spaceId          String          @map("workspaceId")
+  space            Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   ownerId          String?                          // who connected this account; nullable (SetNull on user delete)
   owner            User?           @relation(fields: [ownerId], references: [id], onDelete: SetNull)
   visibilityLevel  VisibilityLevel @default(PRIVATE)
@@ -451,8 +485,8 @@ model Account {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([workspaceId])
-  @@index([workspaceId, type])
+  @@index([spaceId])
+  @@index([spaceId, type])
   @@index([ownerId])
   @@index([plaidItemDbId])
 }
@@ -461,8 +495,8 @@ model Account {
 // FinancialAccount
 // Canonical representation of a single real-world financial account.
 // One row per real-world account — never duplicated.
-// ownerType / ownerUserId / ownerWorkspaceId track who "owns" the account
-// in the FinTracker sense (not necessarily the legal bank account holder).
+// ownerType / ownerUserId / ownerSpaceId track who "owns" the account
+// in the Fourth Meridian sense (not necessarily the legal bank account holder).
 // Balance values here are always canonical — sourced from the isCanonical
 // AccountConnection on each sync cycle.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -472,8 +506,8 @@ model FinancialAccount {
   ownerType        AccountOwnerType
   ownerUserId      String?
   ownerUser        User?            @relation("UserOwnedFinancialAccounts", fields: [ownerUserId], references: [id], onDelete: SetNull)
-  ownerWorkspaceId String?
-  ownerWorkspace   Workspace?       @relation("WorkspaceOwnedFinancialAccounts", fields: [ownerWorkspaceId], references: [id], onDelete: SetNull)
+  ownerSpaceId     String?          @map("ownerWorkspaceId")
+  ownerSpace       Space?           @relation("SpaceOwnedFinancialAccounts", fields: [ownerSpaceId], references: [id], onDelete: SetNull)
 
   // Canonical values — written by the AccountConnection with isCanonical = true
   name             String
@@ -519,6 +553,10 @@ model FinancialAccount {
   updatedAt        DateTime         @updatedAt
 
   connections           AccountConnection[]
+  // workspaceShares — excluded from the Phase 1 Workspace->Space rename; this
+  // field and the WorkspaceAccountShare model it points to have a separate
+  // future replacement (SpaceAccountLink, Phase 3) with different semantics,
+  // so the name deliberately stays as-is for now.
   workspaceShares       WorkspaceAccountShare[]
   duplicateCandidatesA  DuplicateAccountCandidate[] @relation("DuplicateCandidateA")
   duplicateCandidatesB  DuplicateAccountCandidate[] @relation("DuplicateCandidateB")
@@ -527,7 +565,7 @@ model FinancialAccount {
   transactions          Transaction[]               @relation("FinancialAccountTransactions")
 
   @@index([ownerUserId])
-  @@index([ownerWorkspaceId])
+  @@index([ownerSpaceId])
   @@index([type])
   @@index([deletedAt])
 }
@@ -602,10 +640,17 @@ model AccountConnection {
 // typically triggered when the member who shared it is removed or leaves.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// NOTE: WorkspaceAccountShare is deliberately excluded from the Fourth Meridian
+// Phase 1 Workspace->Space rename — it has its own future replacement
+// (SpaceAccountLink, Phase 3) with different semantics, so its model name,
+// field names (workspaceId/workspace), and Prisma Client accessor all stay
+// exactly as they are. The `workspace` relation field's TYPE annotation below
+// is updated to `Space` purely because the `Workspace` model name no longer
+// exists — this is a mechanical necessity, not a scope change.
 model WorkspaceAccountShare {
   id                 String           @id @default(cuid())
   workspaceId        String
-  workspace          Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace          Space            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   financialAccountId String
   financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
   addedByUserId      String
@@ -635,7 +680,7 @@ model WorkspaceAccountShare {
 
 model DuplicateAccountCandidate {
   id                String           @id @default(cuid())
-  workspaceId       String
+  spaceId           String           @map("workspaceId")
   accountAId        String
   accountA          FinancialAccount @relation("DuplicateCandidateA", fields: [accountAId], references: [id], onDelete: Cascade)
   accountBId        String
@@ -649,22 +694,22 @@ model DuplicateAccountCandidate {
   createdAt         DateTime         @default(now())
 
   @@unique([accountAId, accountBId])
-  @@index([workspaceId, status])
+  @@index([spaceId, status])
   @@index([accountAId])
   @@index([accountBId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceGoal
-// A financial goal belonging to a workspace. Members contribute accounts to the
+// SpaceGoal (renamed from WorkspaceGoal)
+// A financial goal belonging to a Space. Members contribute accounts to the
 // goal via GoalContribution. Progress is computed from the sum of contributing
 // account balances (or a subset of those balances).
 // ─────────────────────────────────────────────────────────────────────────────
 
-model WorkspaceGoal {
+model SpaceGoal {
   id              String        @id @default(cuid())
-  workspaceId     String
-  workspace       Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  spaceId         String        @map("workspaceId")
+  space           Space         @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   createdByUserId String
   createdBy       User          @relation("GoalCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
   name            String
@@ -703,9 +748,10 @@ model WorkspaceGoal {
   contributions   GoalContribution[]
   checkIns        GoalCheckIn[]
 
-  @@index([workspaceId, status])
-  @@index([workspaceId, category])
-  @@index([workspaceId, goalType])
+  @@index([spaceId, status])
+  @@index([spaceId, category])
+  @@index([spaceId, goalType])
+  @@map("WorkspaceGoal")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -714,11 +760,11 @@ model WorkspaceGoal {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model GoalCheckIn {
-  id        String        @id @default(cuid())
+  id        String    @id @default(cuid())
   goalId    String
-  goal      WorkspaceGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  goal      SpaceGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
   note      String?
-  checkedAt DateTime      @default(now())
+  checkedAt DateTime  @default(now())
 
   @@index([goalId])
   @@index([goalId, checkedAt])
@@ -726,14 +772,14 @@ model GoalCheckIn {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GoalContribution
-// Links a FinancialAccount to a WorkspaceGoal. includeBalance controls whether
+// Links a FinancialAccount to a SpaceGoal. includeBalance controls whether
 // the account's balance counts toward the goal's currentAmount.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model GoalContribution {
   id                 String           @id @default(cuid())
   goalId             String
-  goal               WorkspaceGoal    @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  goal               SpaceGoal        @relation(fields: [goalId], references: [id], onDelete: Cascade)
   financialAccountId String
   financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
   includeBalance     Boolean          @default(true)
@@ -746,10 +792,10 @@ model GoalContribution {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceDashboardSection
-// Controls which sections/cards appear on the workspace planning dashboard and
-// in what order. Generated automatically from the workspace category preset on
-// workspace creation. Members with OWNER/ADMIN role can toggle, reorder, or
+// SpaceDashboardSection (renamed from WorkspaceDashboardSection)
+// Controls which sections/cards appear on the Space planning dashboard and
+// in what order. Generated automatically from the Space category preset on
+// Space creation. Members with OWNER/ADMIN role can toggle, reorder, or
 // add custom sections.
 // key: machine-readable identifier (e.g. "net_worth", "debt_payoff_tracker")
 // label: display name shown in the UI (overrideable by user)
@@ -759,23 +805,24 @@ model GoalContribution {
 // config: arbitrary JSON for section-specific settings (e.g. chart type, filters)
 // ─────────────────────────────────────────────────────────────────────────────
 
-model WorkspaceDashboardSection {
-  id          String                 @id @default(cuid())
-  workspaceId String
-  workspace   Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  key         String                 // e.g. "net_worth", "goals_progress", "debt_payoff"
-  label       String                 // display label
-  tab         WorkspaceDashboardTab  @default(OVERVIEW)
-  enabled     Boolean                @default(true)
-  order       Int                    @default(0)
-  config      Json?                  // section-specific settings
+model SpaceDashboardSection {
+  id        String             @id @default(cuid())
+  spaceId   String             @map("workspaceId")
+  space     Space              @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  key       String             // e.g. "net_worth", "goals_progress", "debt_payoff"
+  label     String             // display label
+  tab       SpaceDashboardTab  @default(OVERVIEW)
+  enabled   Boolean            @default(true)
+  order     Int                @default(0)
+  config    Json?              // section-specific settings
 
-  createdAt   DateTime               @default(now())
-  updatedAt   DateTime               @updatedAt
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
 
-  @@unique([workspaceId, key])
-  @@index([workspaceId, tab])
-  @@index([workspaceId, enabled])
+  @@unique([spaceId, key])
+  @@index([spaceId, tab])
+  @@index([spaceId, enabled])
+  @@map("WorkspaceDashboardSection")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -845,16 +892,16 @@ model Transaction {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceSnapshot
-// Renamed from DailySnapshot. Written once per day by the background sync job.
-// workspaceId replaces userId — snapshots belong to the workspace, not the user.
+// SpaceSnapshot (renamed from WorkspaceSnapshot, itself renamed from DailySnapshot)
+// Written once per day by the background sync job.
+// spaceId replaces userId — snapshots belong to the Space, not the user.
 // ─────────────────────────────────────────────────────────────────────────────
 
-model WorkspaceSnapshot {
-  id          String    @id @default(cuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  date        DateTime  @db.Date
+model SpaceSnapshot {
+  id      String   @id @default(cuid())
+  spaceId String   @map("workspaceId")
+  space   Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  date    DateTime @db.Date
 
   // Portfolio breakdown
   stocks Float @default(0) // sum of investment account balances
@@ -874,20 +921,21 @@ model WorkspaceSnapshot {
 
   createdAt DateTime @default(now())
 
-  @@unique([workspaceId, date])
-  @@index([workspaceId, date])
+  @@unique([spaceId, date])
+  @@index([spaceId, date])
+  @@map("WorkspaceSnapshot")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AiAdvice
-// One record per advice engine run. Belongs to a workspace and is attributed
-// to the workspace's AiAgent. userId removed — advice is workspace-scoped.
+// One record per advice engine run. Belongs to a Space and is attributed
+// to the Space's AiAgent. userId removed — advice is Space-scoped.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model AiAdvice {
   id          String    @id @default(cuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  spaceId     String    @map("workspaceId")
+  space       Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   agentId     String
   agent       AiAgent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
   summary     String
@@ -897,7 +945,7 @@ model AiAdvice {
   generatedAt DateTime  @default(now())
   createdAt   DateTime  @default(now())
 
-  @@index([workspaceId, generatedAt])
+  @@index([spaceId, generatedAt])
   @@index([agentId, generatedAt])
 }
 
@@ -922,24 +970,24 @@ model CreditScore {
 // ─────────────────────────────────────────────────────────────────────────────
 // AuditLog
 // Append-only log of security-relevant events. NEVER cascade-deleted when a
-// user or workspace is removed — userId and workspaceId are SET NULL instead.
+// user or Space is removed — userId and spaceId are SET NULL instead.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model AuditLog {
-  id                String     @id @default(cuid())
+  id                String   @id @default(cuid())
   userId            String?
-  user              User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
-  workspaceId       String?
-  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
-  action            String     // See AuditAction constants in lib/audit-actions.ts
-  metadata          Json?      // e.g. { institution: "Chase", accountCount: 3 }
+  user              User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  spaceId           String?  @map("workspaceId")
+  space             Space?   @relation(fields: [spaceId], references: [id], onDelete: SetNull)
+  action            String   // See AuditAction constants in lib/audit-actions.ts
+  metadata          Json?    // e.g. { institution: "Chase", accountCount: 3 }
   ipAddress         String?
   userAgent         String?
-  performedByAdminId String?   // set when a SYSTEM_ADMIN performs an action on behalf of another user
-  createdAt         DateTime   @default(now())
+  performedByAdminId String? // set when a SYSTEM_ADMIN performs an action on behalf of another user
+  createdAt         DateTime @default(now())
 
   @@index([userId, createdAt])
-  @@index([workspaceId, createdAt])
+  @@index([spaceId, createdAt])
   @@index([action, createdAt])
 }
 

@@ -2,22 +2,22 @@
  * lib/data/snapshots.ts
  *
  * Server-only snapshot / history queries.
- * Uses WorkspaceSnapshot (renamed from DailySnapshot) with workspaceId.
+ * Uses SpaceSnapshot (renamed from DailySnapshot) with spaceId.
  */
 
 import { db } from "@/lib/db";
-import { getWorkspaceContext } from "@/lib/workspace";
+import { getSpaceContext } from "@/lib/space";
 import { Snapshot } from "@/types";
 
 /**
  * Last N days of snapshots — used by the 30-day net-worth chart on the dashboard.
  * Returns newest-last so chart renders left→right in time order.
  */
-export async function getRecentSnapshots(days = 30, ctx?: { workspaceId: string }): Promise<Snapshot[]> {
-  const { workspaceId } = ctx ?? (await getWorkspaceContext());
+export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): Promise<Snapshot[]> {
+  const { spaceId } = ctx ?? (await getSpaceContext());
 
-  const rows = await db.workspaceSnapshot.findMany({
-    where:   { workspaceId },
+  const rows = await db.spaceSnapshot.findMany({
+    where:   { spaceId },
     orderBy: { date: "asc" },
     take:    -days, // last N rows
   });
@@ -37,36 +37,36 @@ export async function getRecentSnapshots(days = 30, ctx?: { workspaceId: string 
 }
 
 /**
- * Net worth + sparkline trend per workspace — used by the Spaces landing
- * page's cards. Pure read against the existing WorkspaceSnapshot model, no
- * schema/business-logic changes. One query covers every workspace card on
+ * Net worth + sparkline trend per space — used by the Spaces landing
+ * page's cards. Pure read against the existing SpaceSnapshot model, no
+ * schema/business-logic changes. One query covers every space card on
  * the page instead of N round trips.
  *
- * Returns a map keyed by workspaceId. Workspaces with no snapshot history
+ * Returns a map keyed by spaceId. Spaces with no snapshot history
  * yet (brand new) resolve to netWorth: 0, trend: [], asOf: null — the card
  * renders its "no history yet" state from that.
  */
-export async function getWorkspaceNetWorthSummaries(
-  workspaceIds: string[]
+export async function getSpaceNetWorthSummaries(
+  spaceIds: string[]
 ): Promise<Record<string, { netWorth: number; trend: number[]; asOf: string | null }>> {
-  if (workspaceIds.length === 0) return {};
+  if (spaceIds.length === 0) return {};
 
-  const rows = await db.workspaceSnapshot.findMany({
-    where:   { workspaceId: { in: workspaceIds } },
+  const rows = await db.spaceSnapshot.findMany({
+    where:   { spaceId: { in: spaceIds } },
     orderBy: { date: "asc" },
-    select:  { workspaceId: true, date: true, netWorth: true },
+    select:  { spaceId: true, date: true, netWorth: true },
   });
 
-  const byWorkspace = new Map<string, { date: Date; netWorth: number }[]>();
+  const bySpace = new Map<string, { date: Date; netWorth: number }[]>();
   for (const r of rows) {
-    const list = byWorkspace.get(r.workspaceId) ?? [];
+    const list = bySpace.get(r.spaceId) ?? [];
     list.push({ date: r.date, netWorth: r.netWorth });
-    byWorkspace.set(r.workspaceId, list);
+    bySpace.set(r.spaceId, list);
   }
 
   const result: Record<string, { netWorth: number; trend: number[]; asOf: string | null }> = {};
-  for (const id of workspaceIds) {
-    const series = byWorkspace.get(id) ?? [];
+  for (const id of spaceIds) {
+    const series = bySpace.get(id) ?? [];
     const recent = series.slice(-14); // last ~2 weeks for the card sparkline
     const latest = series[series.length - 1];
     result[id] = {
@@ -94,10 +94,10 @@ export async function getPortfolioHistory(): Promise<
     netLiquid: number;
   }[]
 > {
-  const { workspaceId } = await getWorkspaceContext();
+  const { spaceId } = await getSpaceContext();
 
-  const rows = await db.workspaceSnapshot.findMany({
-    where:   { workspaceId },
+  const rows = await db.spaceSnapshot.findMany({
+    where:   { spaceId },
     orderBy: { date: "asc" },
   });
 

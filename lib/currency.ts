@@ -3,11 +3,11 @@
  *
  * This is the single source of truth for the app's display currency.
  * Currently hardcoded to USD — replace the source here (user preference,
- * workspace preference, or app-wide setting) when multi-currency support
+ * space preference, or app-wide setting) when multi-currency support
  * is added. No changes to individual components should be needed.
  *
  * Future shape:
- *   export const DEFAULT_DISPLAY_CURRENCY = userPreference ?? workspacePreference ?? "USD";
+ *   export const DEFAULT_DISPLAY_CURRENCY = userPreference ?? spacePreference ?? "USD";
  */
 
 export const DEFAULT_DISPLAY_CURRENCY = "USD";

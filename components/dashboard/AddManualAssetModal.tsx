@@ -6,12 +6,12 @@
  * Two-step modal for creating a manually-entered asset account.
  *
  * Step 1 — Core fields: kind, name, current value, currency
- * Step 2 — Optional metadata + workspace sharing
+ * Step 2 — Optional metadata + space sharing
  *
  * On submit:
  *   POST /api/accounts/manual   → creates FinancialAccount (type=other, syncStatus='manual')
- *   Shares into personal workspace automatically.
- *   Shares into any additionally selected workspaces.
+ *   Shares into personal space automatically.
+ *   Shares into any additionally selected spaces.
  *
  * After success: calls onAdd() so the parent can refresh data (router.refresh()).
  *
@@ -35,7 +35,7 @@ import { GlassButton } from "@/components/atlas/GlassButton";
 
 type AssetKind = "real_estate" | "vehicle" | "equipment" | "other";
 
-interface WorkspaceOption {
+interface SpaceOption {
   id:   string;
   name: string;
   type: string;      // "PERSONAL" | "SHARED"
@@ -47,7 +47,7 @@ interface Props {
   /** Pre-checks these Space ids in the step-2 sharing picker (e.g. the Space
    *  a user just created in the onboarding flow), instead of starting empty.
    *  Purely a default — the picker is still freely editable. */
-  defaultWorkspaceIds?: string[];
+  defaultSpaceIds?: string[];
   /** Override the stacking order so this can render above another modal
    *  (e.g. the Create Space onboarding flow's Add Accounts step). Defaults
    *  to the standard z-[100] modal layer when omitted. */
@@ -143,7 +143,7 @@ function chipTone(selected: boolean): string {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function AddManualAssetModal({ onClose, onAdd, defaultWorkspaceIds, zIndex }: Props) {
+export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }: Props) {
   const router = useRouter();
 
   // ── Step state ─────────────────────────────────────────────────────────────
@@ -159,30 +159,30 @@ export function AddManualAssetModal({ onClose, onAdd, defaultWorkspaceIds, zInde
   const [purchasePrice, setPurchasePrice] = useState("");
   const [purchaseDate,  setPurchaseDate]  = useState("");
   const [notes,         setNotes]         = useState("");
-  const [workspaces,    setWorkspaces]    = useState<WorkspaceOption[]>([]);
-  const [selectedWsIds, setSelectedWsIds] = useState<string[]>(defaultWorkspaceIds ?? []);
+  const [spaces,    setSpaces]    = useState<SpaceOption[]>([]);
+  const [selectedWsIds, setSelectedWsIds] = useState<string[]>(defaultSpaceIds ?? []);
   const [loadingWs,     setLoadingWs]     = useState(false);
 
   // ── Submission state ───────────────────────────────────────────────────────
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
 
-  // ── Fetch workspaces for step 2 ───────────────────────────────────────────
+  // ── Fetch spaces for step 2 ───────────────────────────────────────────
   useEffect(() => {
     if (step !== 2) return;
     async function load() {
       setLoadingWs(true);
       try {
-        const r    = await fetch("/api/workspaces");
+        const r    = await fetch("/api/spaces");
         const data = await r.json();
-        const list: WorkspaceOption[] = (data.mine ?? [])
-          .filter((w: WorkspaceOption) => w.type !== "PERSONAL")
+        const list: SpaceOption[] = (data.mine ?? [])
+          .filter((w: SpaceOption) => w.type !== "PERSONAL")
           .map((w: { id: string; name: string; type: string }) => ({
             id:   w.id,
             name: w.name,
             type: w.type,
           }));
-        setWorkspaces(list);
+        setSpaces(list);
       } catch {
         // non-fatal — user can still create without sharing
       } finally {
@@ -215,7 +215,7 @@ export function AddManualAssetModal({ onClose, onAdd, defaultWorkspaceIds, zInde
         purchasePrice: parsedPurchasePrice,
         purchaseDate:  purchaseDate || undefined,
         notes:         notes.trim() || undefined,
-        workspaceIds:  selectedWsIds,
+        spaceIds:  selectedWsIds,
       }),
     });
 
@@ -331,16 +331,16 @@ export function AddManualAssetModal({ onClose, onAdd, defaultWorkspaceIds, zInde
         />
       </Field>
 
-      {/* Workspace sharing */}
+      {/* Space sharing */}
       {loadingWs ? (
         <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
           <Loader2 size={12} className="animate-spin" />
           Loading Spaces…
         </div>
-      ) : workspaces.length > 0 ? (
+      ) : spaces.length > 0 ? (
         <Field label="Share into Spaces (optional)">
           <div className="space-y-2">
-            {workspaces.map((ws) => {
+            {spaces.map((ws) => {
               const checked = selectedWsIds.includes(ws.id);
               return (
                 <label

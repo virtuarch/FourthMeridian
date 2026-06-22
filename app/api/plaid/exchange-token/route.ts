@@ -4,13 +4,13 @@
  * Called after the user completes the Plaid Link flow.
  * Receives the public_token from the frontend, exchanges it for a permanent
  * access_token, encrypts it, and imports all accounts + investment holdings
- * into the user's personal workspace.
+ * into the user's personal space.
  *
  * Data model:
- *   PlaidItem  — credential, belongs to User (not workspace)
+ *   PlaidItem  — credential, belongs to User (not space)
  *   FinancialAccount  — canonical account row, ownerType=USER
  *   AccountConnection — links FinancialAccount ↔ PlaidItem ↔ User
- *   WorkspaceAccountShare — makes the account visible in the active workspace
+ *   WorkspaceAccountShare — makes the account visible in the active space
  *
  * Relinking the same institution matches on plaidAccountId (FinancialAccount)
  * and restores deletedAt → null on both FinancialAccount and AccountConnection
@@ -34,7 +34,7 @@ import { encrypt } from "@/lib/plaid/encryption";
 import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
 import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
-import { getWorkspaceContext } from "@/lib/workspace";
+import { getSpaceContext } from "@/lib/space";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { AuditAction } from "@/lib/audit-actions";
@@ -67,8 +67,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // 1. Resolve workspace context early so we can check for duplicates
-    const { userId, workspaceId } = await getWorkspaceContext();
+    // 1. Resolve space context early so we can check for duplicates
+    const { userId, spaceId } = await getSpaceContext();
 
     // 2. Duplicate institution check — warn but still allow re-link (upsert handles it)
     const existingItem = await db.plaidItem.findFirst({
@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
     // 4. Encrypt the access_token before it ever touches the DB
     const encryptedToken = encrypt(access_token);
 
-    // 5. Upsert PlaidItem — credential belongs to User, not workspace
+    // 5. Upsert PlaidItem — credential belongs to User, not space
     const plaidItem = await db.plaidItem.upsert({
       where:  { externalItemId: item_id },
       update: { encryptedToken, status: PlaidItemStatus.ACTIVE, errorCode: null },
@@ -243,10 +243,11 @@ export async function POST(req: NextRequest) {
 
       // ── Upsert WorkspaceAccountShare ─────────────────────────────────────────
       await db.workspaceAccountShare.upsert({
-        where:  { workspaceId_financialAccountId: { workspaceId, financialAccountId: fa.id } },
+        // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
+        where:  { workspaceId_financialAccountId: { workspaceId: spaceId, financialAccountId: fa.id } },
         update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
         create: {
-          workspaceId,
+          workspaceId: spaceId,
           financialAccountId: fa.id,
           addedByUserId:      userId,
           visibilityLevel:    VisibilityLevel.FULL,
@@ -330,17 +331,17 @@ export async function POST(req: NextRequest) {
       console.warn("[plaid] initial transaction sync failed (non-fatal):", syncErr);
     }
 
-    // 9b. WorkspaceSnapshot regeneration — best-effort, non-fatal. Without
-    //     this, a brand-new workspace has zero WorkspaceSnapshot rows right
+    // 9b. SpaceSnapshot regeneration — best-effort, non-fatal. Without
+    //     this, a brand-new space has zero SpaceSnapshot rows right
     //     after Link, and the chart components' "first day" placeholder only
     //     renders at exactly one row — so charts stayed blank until the user
     //     manually clicked Refresh once. Reuses the same helper the manual
     //     Refresh pipeline calls (lib/plaid/refresh.ts) so no regen logic is
-    //     duplicated. Scoped to every workspace the imported accounts are
-    //     actively shared into (importedIds), not just the current workspace.
-    let workspacesSnapshotted: string[] = [];
+    //     duplicated. Scoped to every space the imported accounts are
+    //     actively shared into (importedIds), not just the current space.
+    let spacesSnapshotted: string[] = [];
     try {
-      workspacesSnapshotted = await regenerateSnapshotsForAccounts(importedIds);
+      spacesSnapshotted = await regenerateSnapshotsForAccounts(importedIds);
     } catch (snapshotErr) {
       console.warn("[plaid] initial snapshot regeneration failed (non-fatal):", snapshotErr);
     }
@@ -349,14 +350,14 @@ export async function POST(req: NextRequest) {
     await db.auditLog.create({
       data: {
         userId,
-        workspaceId,
+        spaceId,
         action:   AuditAction.ACCOUNT_ADD,
         metadata: {
           institution:      institution_name,
           accountCount:     imported,
           holdingsImported,
           transactionsAdded: txSync?.added ?? 0,
-          workspacesSnapshotted: workspacesSnapshotted.length,
+          spacesSnapshotted: spacesSnapshotted.length,
         },
       },
     });

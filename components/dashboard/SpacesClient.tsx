@@ -5,7 +5,7 @@
  *
  * Redesigned Spaces landing page — premium, card-driven, Atlas Glass
  * throughout (Fourth Meridian Design Language v1). Replaces the old
- * WorkspacesClient tab layout with a single card canvas:
+ * SpacesClient tab layout with a single card canvas:
  *
  *   Atlas Field ambient background (renders from DashboardChrome.tsx so it
  *   can extend behind the header strip too — see AtlasField.tsx)
@@ -16,16 +16,16 @@
  *   Create Space — persistent right-side panel (scrolls with the page,
  *   per Phase G — no longer sticky)
  *
- * Backend is untouched: same /api/workspaces, /api/workspace/switch,
- * /api/user/profile endpoints, and the same `workspace-list-changed` /
- * `workspace-invites-changed` events other components (Sidebar) already
- * listen for. Only the presentation layer and the "Workspace" → "Space"
+ * Backend is untouched: same /api/spaces, /api/space/switch,
+ * /api/user/profile endpoints, and the same `space-list-changed` /
+ * `space-invites-changed` events other components (Sidebar) already
+ * listen for. Only the presentation layer and the "Space" → "Space"
  * terminology changed.
  *
  * The deep settings surface (members, goals, shared accounts, danger zone)
- * stays in ManageWorkspaceModal — reused as-is here rather than duplicated.
- * The old standalone "WorkspaceDetail" read-only modal has been retired:
- * its members/accounts views are already covered by ManageWorkspaceModal,
+ * stays in ManageSpaceModal — reused as-is here rather than duplicated.
+ * The old standalone "SpaceDetail" read-only modal has been retired:
+ * its members/accounts views are already covered by ManageSpaceModal,
  * so clicking a card now does the one thing users actually want (switch
  * into that Space), and the Manage (pencil) action opens full settings
  * directly — one fewer click, one fewer modal to maintain.
@@ -53,15 +53,20 @@ import { GlassButton } from "@/components/atlas/GlassButton";
 import {
   CATEGORY_LABELS,
   CATEGORY_ICONS,
-  WorkspaceCategory,
-} from "@/lib/workspace-presets";
+  SpaceCategory,
+} from "@/lib/space-presets";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { displaySpaceName, formatDate } from "@/lib/format";
+import {
+  SPACE_LIST_CHANGED_EVENT,
+  SPACE_INVITES_CHANGED_EVENT,
+  OPEN_CREATE_SPACE_EVENT,
+} from "@/lib/space-nav";
 
 // Manage Space (deep settings) is only opened from a card's hover action —
 // split out of the initial bundle for this route.
-const ManageWorkspaceModal = dynamic(
-  () => import("@/components/dashboard/ManageWorkspaceModal").then((m) => m.ManageWorkspaceModal),
+const ManageSpaceModal = dynamic(
+  () => import("@/components/dashboard/ManageSpaceModal").then((m) => m.ManageSpaceModal),
   { ssr: false }
 );
 
@@ -95,7 +100,7 @@ type Invite = {
   role: string;
   createdAt: string;
   seenAt: string | null;
-  workspace: { id: string; name: string; description: string | null; isPublic: boolean };
+  space: { id: string; name: string; description: string | null; isPublic: boolean };
   invitedBy: { id: string; name: string | null; username: string | null };
 };
 
@@ -165,8 +170,8 @@ function categoryTile(category: string): string {
   return CATEGORY_TILE[category] ?? CATEGORY_TILE.OTHER;
 }
 
-// "Net Worth" is the one real number every workspace already has (from
-// WorkspaceSnapshot). The label changes per Space type so the same number
+// "Net Worth" is the one real number every space already has (from
+// SpaceSnapshot). The label changes per Space type so the same number
 // reads correctly in context — no new aggregation, just relabeling.
 function metricLabelForCategory(category: string): string {
   if (category === "INVESTMENT" || category === "RETIREMENT") return "Portfolio Value";
@@ -302,7 +307,7 @@ function SpaceCard({
     space.trend.length >= 2
       ? space.trend[space.trend.length - 1] >= space.trend[0] ? "positive" : "danger"
       : "neutral";
-  const category = space.category as WorkspaceCategory;
+  const category = space.category as SpaceCategory;
 
   const tile = isActive
     ? "bg-[rgba(59,130,246,.08)] hover:bg-[rgba(59,130,246,.13)] border-[rgba(125,168,255,.32)] hover:border-[rgba(125,168,255,.5)]"
@@ -442,13 +447,13 @@ function SpaceCard({
 // Public Spaces the user hasn't joined get their own compact preview card —
 // visibly smaller than the full SpaceCard above (tighter padding, smaller
 // icon tile and type, no sparkline, no member stack, no hover actions): these
-// are previews, not active workspaces, so the card's job is to communicate
+// are previews, not active spaces, so the card's job is to communicate
 // just enough — name, type, the one financial metric, last activity — to
 // decide whether to look closer. Clicking one opens PublicSpaceDetailModal
 // for the fuller read-only view rather than switching into the Space.
 
 function PublicSpaceCard({ space, onOpen }: { space: SpaceItem; onOpen: () => void }) {
-  const category = space.category as WorkspaceCategory;
+  const category = space.category as SpaceCategory;
 
   return (
     <div
@@ -504,14 +509,14 @@ function PublicSpaceCard({ space, onOpen }: { space: SpaceItem; onOpen: () => vo
 }
 
 // Read-only detail view for a public Space the viewer hasn't joined. Mirrors
-// ManageWorkspaceModal's shell (fixed backdrop + GlassPanel depth="thick", same
+// ManageSpaceModal's shell (fixed backdrop + GlassPanel depth="thick", same
 // header/close-button recipe) so it reads as the same family of surface, but
 // has no tabs and no mutation — just the fuller picture the compact card can't
 // fit. "Join Space" is intentionally inert: public join permissions,
 // viewer-only membership, audit logs, invite rules, and abuse controls are a
 // dedicated backend pass of their own, so this only previews the action.
 function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose: () => void }) {
-  const category = space.category as WorkspaceCategory;
+  const category = space.category as SpaceCategory;
   const owner = space.members.find((m) => m.role === "OWNER");
   const tone: "positive" | "danger" | "neutral" =
     space.trend.length >= 2
@@ -632,7 +637,7 @@ function InviteRow({ invite, onAction }: { invite: Invite; onAction: () => void 
   async function act(action: "accept" | "decline") {
     setBusy(action);
     try {
-      const res = await fetch(`/api/workspaces/${invite.workspace.id}/invites/${invite.id}`, {
+      const res = await fetch(`/api/spaces/${invite.space.id}/invites/${invite.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
@@ -648,7 +653,7 @@ function InviteRow({ invite, onAction }: { invite: Invite; onAction: () => void 
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 rounded-[var(--radius-md)]" style={{ background: "var(--surface-muted)" }}>
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-[var(--text-primary)] truncate">{displaySpaceName(invite.workspace.name)}</p>
+        <p className="text-sm text-[var(--text-primary)] truncate">{displaySpaceName(invite.space.name)}</p>
         <p className="text-xs text-[var(--text-muted)] truncate">
           Invited by {invite.invitedBy.name ?? `@${invite.invitedBy.username}`} · {ROLE_LABELS[invite.role] ?? invite.role}
         </p>
@@ -680,14 +685,14 @@ function InviteBanner({ invites, onAction }: { invites: Invite[]; onAction: () =
   const [expanded, setExpanded] = useState(hasUnseen);
   const seenFired = useRef(false);
 
-  // Mirrors the old WorkspacesClient delay: surfaced immediately, marked
+  // Mirrors the old SpacesClient delay: surfaced immediately, marked
   // seen 1.5s later so the Sidebar badge has time to register before it clears.
   useEffect(() => {
     if (!hasUnseen || seenFired.current) return;
     const t = setTimeout(() => {
       seenFired.current = true;
-      fetch("/api/workspaces/invites/seen", { method: "POST" })
-        .then(() => window.dispatchEvent(new CustomEvent("workspace-invites-changed")))
+      fetch("/api/spaces/invites/seen", { method: "POST" })
+        .then(() => window.dispatchEvent(new CustomEvent(SPACE_INVITES_CHANGED_EVENT)))
         .catch(() => {});
     }, 1500);
     return () => clearTimeout(t);
@@ -766,7 +771,7 @@ export function SpacesClient({
   const [viewingPublicSpace, setViewingPublicSpace] = useState<SpaceItem | null>(null);
 
   // Keep managingSpace in sync with the latest server-rendered `mine` list
-  // after router.refresh() — same pattern as the old WorkspacesClient.
+  // after router.refresh() — same pattern as the old SpacesClient.
   useEffect(() => {
     if (!managingSpace) return;
     const t = setTimeout(() => {
@@ -781,17 +786,17 @@ export function SpacesClient({
     startTransition(() => router.refresh());
   }
 
-  const handleSwitch = useCallback(async (workspaceId: string) => {
-    setSwitchingId(workspaceId);
+  const handleSwitch = useCallback(async (spaceId: string) => {
+    setSwitchingId(spaceId);
     try {
-      const res = await fetch("/api/workspace/switch", {
+      const res = await fetch("/api/space/switch", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ workspaceId }),
+        body:    JSON.stringify({ spaceId }),
       });
       if (res.ok) {
-        setActiveId(workspaceId);
-        window.dispatchEvent(new CustomEvent("workspace-list-changed"));
+        setActiveId(spaceId);
+        window.dispatchEvent(new CustomEvent(SPACE_LIST_CHANGED_EVENT));
         router.push("/dashboard");
       }
     } finally {
@@ -799,14 +804,14 @@ export function SpacesClient({
     }
   }, [router]);
 
-  async function handleSetDefault(workspaceId: string) {
-    const newVal = preferredId === workspaceId ? "" : workspaceId;
-    setSettingDefaultId(workspaceId);
+  async function handleSetDefault(spaceId: string) {
+    const newVal = preferredId === spaceId ? "" : spaceId;
+    setSettingDefaultId(spaceId);
     try {
       const res = await fetch("/api/user/profile", {
         method:  "PATCH",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ preferredWorkspaceId: newVal || null }),
+        body:    JSON.stringify({ preferredSpaceId: newVal || null }),
       });
       if (res.ok) setPreferredId(newVal || null);
     } finally {
@@ -849,7 +854,7 @@ export function SpacesClient({
           behind the header strip too, not just this page's own content
           (Phase G #2) — nothing to render here anymore. */}
       <div className="max-w-[1400px] mx-auto pb-16">
-        <SpacesHeader onCreateSpace={() => window.dispatchEvent(new CustomEvent("open-create-space"))} />
+        <SpacesHeader onCreateSpace={() => window.dispatchEvent(new CustomEvent(OPEN_CREATE_SPACE_EVENT))} />
 
         {pendingInvites.length > 0 && <InviteBanner invites={pendingInvites} onAction={refresh} />}
 
@@ -932,9 +937,9 @@ export function SpacesClient({
         )}
 
         {managingSpace && (
-          <ManageWorkspaceModal
-            workspaceId={managingSpace.id}
-            workspaceName={displaySpaceName(managingSpace.name)}
+          <ManageSpaceModal
+            spaceId={managingSpace.id}
+            spaceName={displaySpaceName(managingSpace.name)}
             myRole={managingSpace.myRole ?? "MEMBER"}
             currentUserId={currentUserId}
             onClose={() => setManagingSpace(null)}

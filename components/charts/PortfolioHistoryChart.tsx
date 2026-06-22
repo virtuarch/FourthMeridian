@@ -84,7 +84,7 @@ export function PortfolioHistoryChart({ data, series, activeKeys, title }: Props
 
   const activeSeries = series.filter((s) => activeKeys.includes(s.key));
 
-  // Only one data point exists yet (e.g. right after a workspace's first
+  // Only one data point exists yet (e.g. right after a space's first
   // refresh) — a single point can't draw a trend line, so show the day-one
   // explainer instead of a near-empty chart. Headline sums the active
   // series' values for that one point (e.g. just "cash", or "total").

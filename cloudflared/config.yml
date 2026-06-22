@@ -3,6 +3,6 @@
 # credentials-file: /etc/cloudflared/credentials.json
 
 # ingress:
-#   - hostname: fintracker.yourdomain.com
+#   - hostname: fourthmeridian.yourdomain.com
 #     service: http://app:3000
 #   - service: http_status:404

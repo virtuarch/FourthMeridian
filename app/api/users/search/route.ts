@@ -1,15 +1,15 @@
 /**
- * GET /api/users/search?q=...&exclude=workspaceId
+ * GET /api/users/search?q=...&exclude=spaceId
  *
  * Search users by username, first name, last name, or full name.
- * Used by the workspace invite flow.
+ * Used by the space invite flow.
  * Returns up to 8 results, excludes the caller and existing members
- * of the given workspaceId (if provided).
+ * of the given spaceId (if provided).
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { db }                       from "@/lib/db";
-import { WorkspaceMemberStatus }    from "@prisma/client";
+import { SpaceMemberStatus }    from "@prisma/client";
 import { requireUser }              from "@/lib/session";
 
 export async function GET(req: NextRequest) {
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const q           = searchParams.get("q")?.trim() ?? "";
-  const workspaceId = searchParams.get("exclude") ?? "";
+  const spaceId = searchParams.get("exclude") ?? "";
 
   if (q.length < 1) return NextResponse.json([]);
 
@@ -26,9 +26,9 @@ export async function GET(req: NextRequest) {
   // REMOVED and LEFT rows are excluded from this list so that previously-removed
   // users appear in search results and can be re-invited.
   const excludeIds: string[] = [user.id];
-  if (workspaceId) {
-    const members = await db.workspaceMember.findMany({
-      where: { workspaceId, status: WorkspaceMemberStatus.ACTIVE },
+  if (spaceId) {
+    const members = await db.spaceMember.findMany({
+      where: { spaceId, status: SpaceMemberStatus.ACTIVE },
       select: { userId: true },
     });
     excludeIds.push(...members.map((m) => m.userId));

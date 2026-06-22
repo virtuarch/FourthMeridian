@@ -3,8 +3,8 @@
  *
  * Multi-user demo world for local development.
  * Creates three regular users (Jane, John, Alex) plus the unchanged sysadmin,
- * 8 workspaces, 21 accounts, ~360 transactions over 120 days, holdings,
- * goals, audit log events, and workspace snapshots.
+ * 8 spaces, 21 accounts, ~360 transactions over 120 days, holdings,
+ * goals, audit log events, and space snapshots.
  *
  * All data is entirely fictional. Run via: npx prisma db seed
  * Safe to re-run — all data is wiped and recreated cleanly.
@@ -24,7 +24,7 @@ import {
   AccountType,
   TransactionCategory,
   PlaidItemStatus,
-  WorkspaceMemberRole,
+  SpaceMemberRole,
   UserRole,
   EmploymentStatus,
   UseCase,
@@ -37,7 +37,7 @@ import {
 } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { encrypt } from "../lib/plaid/encryption";
-import { getPresetsForCategory, WorkspaceCategory } from "../lib/workspace-presets";
+import { getPresetsForCategory, SpaceCategory } from "../lib/space-presets";
 
 const prisma = new PrismaClient();
 
@@ -60,7 +60,7 @@ function seededRand(seed: number): number {
 }
 
 // ─── Snapshot history generators ──────────────────────────────────────────────
-function buildHistory(workspaceId: string) {
+function buildHistory(spaceId: string) {
   return Array.from({ length: 365 }, (_, i) => {
     const date = D(364 - i);
     const t = i / 364;
@@ -74,11 +74,11 @@ function buildHistory(workspaceId: string) {
     const netWorth    = totalAssets - debt;
     const netLiquid   = cash + savings - debt;
     const cashOnHand  = cash + Math.max(savings - 6000, 0);
-    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
+    return { spaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
   });
 }
 
-function buildJohnHistory(workspaceId: string) {
+function buildJohnHistory(spaceId: string) {
   return Array.from({ length: 365 }, (_, i) => {
     const date = D(364 - i);
     const t = i / 364;
@@ -92,11 +92,11 @@ function buildJohnHistory(workspaceId: string) {
     const netWorth    = totalAssets - debt;
     const netLiquid   = cash + savings - debt;
     const cashOnHand  = Math.max(cash + Math.max(savings - 8000, 0), 0);
-    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
+    return { spaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
   });
 }
 
-function buildHouseholdHistory(workspaceId: string) {
+function buildHouseholdHistory(spaceId: string) {
   return Array.from({ length: 120 }, (_, i) => {
     const date = D(119 - i);
     const t = i / 119;
@@ -110,11 +110,11 @@ function buildHouseholdHistory(workspaceId: string) {
     const netWorth    = totalAssets - debt;
     const netLiquid   = cash + savings - debt;
     const cashOnHand  = cash + Math.max(savings - 15000, 0);
-    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
+    return { spaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
   });
 }
 
-function buildDebtHistory(workspaceId: string) {
+function buildDebtHistory(spaceId: string) {
   return Array.from({ length: 90 }, (_, i) => {
     const date = D(89 - i);
     const t = i / 89;
@@ -126,14 +126,14 @@ function buildDebtHistory(workspaceId: string) {
     const netWorth  = totalAssets - debt;
     const netLiquid = cash + savings - debt;
     const cashOnHand = 0;
-    return { workspaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
+    return { spaceId, date, stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
   });
 }
 
 // ─── createFullAccount ────────────────────────────────────────────────────────
 // Creates Account + FinancialAccount (same id) + AccountConnection + WorkspaceAccountShare
 async function createFullAccount(opts: {
-  workspaceId:     string;
+  spaceId:     string;
   userId:          string;
   plaidItemId?:    string;
   name:            string;
@@ -155,7 +155,7 @@ async function createFullAccount(opts: {
   syncStatus?:     string;
 }) {
   const {
-    workspaceId, userId, plaidItemId,
+    spaceId, userId, plaidItemId,
     name, type, institution, institutionId,
     balance, availableBalance, creditLimit, debtSubtype, interestRate, minimumPayment,
     currency    = "USD",
@@ -167,7 +167,7 @@ async function createFullAccount(opts: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const acct = await (prisma.account.create as any)({
     data: {
-      workspaceId, ownerId: userId, name, type, institution,
+      spaceId, ownerId: userId, name, type, institution,
       balance, availableBalance, creditLimit, currency, lastUpdated,
       plaidItemDbId: plaidItemId, plaidAccountId,
       walletAddress, walletChain, nativeBalance, syncStatus,
@@ -195,10 +195,11 @@ async function createFullAccount(opts: {
     },
   });
 
+  // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (prisma.workspaceAccountShare.create as any)({
     data: {
-      workspaceId, financialAccountId: acct.id, addedByUserId: userId,
+      workspaceId: spaceId, financialAccountId: acct.id, addedByUserId: userId,
       visibilityLevel: VisibilityLevel.FULL, status: ShareStatus.ACTIVE,
     },
   });
@@ -206,31 +207,32 @@ async function createFullAccount(opts: {
   return acct;
 }
 
-// ─── shareAccount — share an existing account into another workspace ──────────
+// ─── shareAccount — share an existing account into another space ──────────
 async function shareAccount(
-  workspaceId: string,
+  spaceId: string,
   accountId:   string,
   userId:      string,
   level:       VisibilityLevel = VisibilityLevel.FULL,
 ) {
+  // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (prisma.workspaceAccountShare.create as any)({
     data: {
-      workspaceId, financialAccountId: accountId,
+      workspaceId: spaceId, financialAccountId: accountId,
       addedByUserId: userId, visibilityLevel: level, status: ShareStatus.ACTIVE,
     },
   });
 }
 
 // ─── updateSectionConfig ──────────────────────────────────────────────────────
-async function updateSectionConfig(workspaceId: string, key: string, config: Record<string, unknown>) {
+async function updateSectionConfig(spaceId: string, key: string, config: Record<string, unknown>) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (prisma as any).workspaceDashboardSection.updateMany({ where: { workspaceId, key }, data: { config } });
+  await (prisma as any).spaceDashboardSection.updateMany({ where: { spaceId, key }, data: { config } });
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
-  console.log("🌱  Seeding FinTracker database…");
+  console.log("🌱  Seeding Fourth Meridian database…");
   console.log("   ⏳ Hashing passwords (bcrypt cost 12)…");
 
   const [janeHash, johnHash, alexHash, adminHash] = await Promise.all([
@@ -246,24 +248,24 @@ async function main() {
   // ── Wipe in reverse-dependency order ────────────────────────────────────────
   await prisma.goalCheckIn.deleteMany();
   await prisma.goalContribution.deleteMany();
-  await prisma.workspaceGoal.deleteMany();
+  await prisma.spaceGoal.deleteMany();
   await prisma.duplicateAccountCandidate.deleteMany();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (prisma as any).workspaceDashboardSection.deleteMany();
+  await (prisma as any).spaceDashboardSection.deleteMany();
   await prisma.workspaceAccountShare.deleteMany();
   await prisma.accountConnection.deleteMany();
   await prisma.financialAccount.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.aiAdvice.deleteMany();
-  await prisma.workspaceSnapshot.deleteMany();
+  await prisma.spaceSnapshot.deleteMany();
   await prisma.transaction.deleteMany();
   await prisma.holding.deleteMany();
   await prisma.account.deleteMany();
   await prisma.plaidItem.deleteMany();
   await prisma.aiAgent.deleteMany();
-  await prisma.workspaceInvite.deleteMany();
-  await prisma.workspaceMember.deleteMany();
-  await prisma.workspace.deleteMany();
+  await prisma.spaceInvite.deleteMany();
+  await prisma.spaceMember.deleteMany();
+  await prisma.space.deleteMany();
   await prisma.creditScore.deleteMany();
   await prisma.user.deleteMany();
   console.log("   ✓ Wiped all tables");
@@ -306,95 +308,95 @@ async function main() {
   });
   console.log(`   ✓ Users: ${jane.email}, ${john.email}, ${alex.email}, ${admin.email}`);
 
-  // ── Workspaces (8) ──────────────────────────────────────────────────────────
-  const janeWorkspace = await prisma.workspace.create({
+  // ── Spaces (8) ──────────────────────────────────────────────────────────
+  const janeSpace = await prisma.space.create({
     data: { name: "Jane's Space", type: "PERSONAL", category: "PERSONAL" },
   });
-  const johnWorkspace = await prisma.workspace.create({
+  const johnSpace = await prisma.space.create({
     data: { name: "John's Space", type: "PERSONAL", category: "PERSONAL" },
   });
-  const householdWorkspace = await prisma.workspace.create({
+  const householdSpace = await prisma.space.create({
     data: { name: "Smith-Doe Household", type: "SHARED", category: "HOUSEHOLD", isPublic: false, description: "Shared household finances for Jane & John" },
   });
-  const debtWorkspace = await prisma.workspace.create({
+  const debtSpace = await prisma.space.create({
     data: { name: "Debt Payoff Tracker", type: "SHARED", category: "DEBT_PAYOFF", isPublic: false, description: "Joint debt elimination plan" },
   });
-  const japanWorkspace = await prisma.workspace.create({
+  const japanSpace = await prisma.space.create({
     data: { name: "Japan Trip 2027", type: "SHARED", category: "TRIP", isPublic: false, description: "3-week Japan trip — saving $8,500 by March 2027" },
   });
-  const investmentWorkspace = await prisma.workspace.create({
+  const investmentSpace = await prisma.space.create({
     data: { name: "Investment Club", type: "SHARED", category: "INVESTMENT", isPublic: false, description: "John & Jane portfolio tracking — Alex as advisor" },
   });
-  const businessWorkspace = await prisma.workspace.create({
+  const businessSpace = await prisma.space.create({
     data: { name: "JD Freelance LLC", type: "SHARED", category: "BUSINESS", isPublic: false, description: "John's freelance business finances — Alex bookkeeping" },
   });
-  const propertyWorkspace = await prisma.workspace.create({
+  const propertySpace = await prisma.space.create({
     data: { name: "Austin Home", type: "SHARED", category: "PROPERTY", isPublic: false, description: "Primary residence — 3BR/2BA, purchased April 2020" },
   });
-  console.log("   ✓ Workspaces: 8");
+  console.log("   ✓ Spaces: 8");
 
   // ── Dashboard sections ───────────────────────────────────────────────────────
-  async function seedSections(workspaceId: string, category: string) {
+  async function seedSections(spaceId: string, category: string) {
     const presets = getPresetsForCategory(category);
     if (presets.length === 0) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (prisma as any).workspaceDashboardSection.createMany({
+    await (prisma as any).spaceDashboardSection.createMany({
       data: presets.map((s) => ({
-        workspaceId, key: s.key, label: s.label,
+        spaceId, key: s.key, label: s.label,
         tab: s.tab, enabled: s.enabled, order: s.order, config: s.config ?? null,
       })),
       skipDuplicates: true,
     });
   }
 
-  await seedSections(janeWorkspace.id,       WorkspaceCategory.PERSONAL);
-  await seedSections(johnWorkspace.id,       WorkspaceCategory.PERSONAL);
-  await seedSections(householdWorkspace.id,  WorkspaceCategory.HOUSEHOLD);
-  await seedSections(debtWorkspace.id,       WorkspaceCategory.DEBT_PAYOFF);
-  await seedSections(japanWorkspace.id,      WorkspaceCategory.TRIP);
-  await seedSections(investmentWorkspace.id, WorkspaceCategory.INVESTMENT);
-  await seedSections(businessWorkspace.id,   WorkspaceCategory.BUSINESS);
-  await seedSections(propertyWorkspace.id,   WorkspaceCategory.PROPERTY);
+  await seedSections(janeSpace.id,       SpaceCategory.PERSONAL);
+  await seedSections(johnSpace.id,       SpaceCategory.PERSONAL);
+  await seedSections(householdSpace.id,  SpaceCategory.HOUSEHOLD);
+  await seedSections(debtSpace.id,       SpaceCategory.DEBT_PAYOFF);
+  await seedSections(japanSpace.id,      SpaceCategory.TRIP);
+  await seedSections(investmentSpace.id, SpaceCategory.INVESTMENT);
+  await seedSections(businessSpace.id,   SpaceCategory.BUSINESS);
+  await seedSections(propertySpace.id,   SpaceCategory.PROPERTY);
 
-  await updateSectionConfig(japanWorkspace.id, "trip_budget",  { targetAmount: 8500, amountSpent: 3240, currency: "USD" });
-  await updateSectionConfig(japanWorkspace.id, "trip_savings", { targetAmount: 8500, targetDate: "2027-03-01" });
+  await updateSectionConfig(japanSpace.id, "trip_budget",  { targetAmount: 8500, amountSpent: 3240, currency: "USD" });
+  await updateSectionConfig(japanSpace.id, "trip_savings", { targetAmount: 8500, targetDate: "2027-03-01" });
 
-  // Add retirement_progress to investment workspace (not in INVESTMENT preset)
+  // Add retirement_progress to investment space (not in INVESTMENT preset)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (prisma as any).workspaceDashboardSection.create({
+  await (prisma as any).spaceDashboardSection.create({
     data: {
-      workspaceId: investmentWorkspace.id, key: "retirement_progress",
+      spaceId: investmentSpace.id, key: "retirement_progress",
       label: "Retirement Progress", tab: "OVERVIEW", enabled: true, order: 10,
       config: { targetAmount: 1500000, retirementAge: 65, currentAge: 38, expectedReturn: 7, annualContribution: 19500 },
     },
   });
-  console.log("   ✓ WorkspaceDashboardSections + configs");
+  console.log("   ✓ SpaceDashboardSections + configs");
 
-  // ── WorkspaceMembers ─────────────────────────────────────────────────────────
-  await prisma.workspaceMember.createMany({
+  // ── SpaceMembers ─────────────────────────────────────────────────────────
+  await prisma.spaceMember.createMany({
     data: [
-      { workspaceId: janeWorkspace.id,       userId: jane.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: johnWorkspace.id,       userId: john.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: householdWorkspace.id,  userId: jane.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: householdWorkspace.id,  userId: john.id, role: WorkspaceMemberRole.MEMBER },
-      { workspaceId: debtWorkspace.id,       userId: john.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: debtWorkspace.id,       userId: jane.id, role: WorkspaceMemberRole.MEMBER },
-      { workspaceId: japanWorkspace.id,      userId: jane.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: japanWorkspace.id,      userId: john.id, role: WorkspaceMemberRole.MEMBER },
-      { workspaceId: investmentWorkspace.id, userId: john.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: investmentWorkspace.id, userId: jane.id, role: WorkspaceMemberRole.MEMBER },
-      { workspaceId: investmentWorkspace.id, userId: alex.id, role: WorkspaceMemberRole.VIEWER },
-      { workspaceId: businessWorkspace.id,   userId: john.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: businessWorkspace.id,   userId: alex.id, role: WorkspaceMemberRole.ADMIN  },
-      { workspaceId: propertyWorkspace.id,   userId: john.id, role: WorkspaceMemberRole.OWNER  },
-      { workspaceId: propertyWorkspace.id,   userId: jane.id, role: WorkspaceMemberRole.ADMIN  },
+      { spaceId: janeSpace.id,       userId: jane.id, role: SpaceMemberRole.OWNER  },
+      { spaceId: johnSpace.id,       userId: john.id, role: SpaceMemberRole.OWNER  },
+      { spaceId: householdSpace.id,  userId: jane.id, role: SpaceMemberRole.OWNER  },
+      { spaceId: householdSpace.id,  userId: john.id, role: SpaceMemberRole.MEMBER },
+      { spaceId: debtSpace.id,       userId: john.id, role: SpaceMemberRole.OWNER  },
+      { spaceId: debtSpace.id,       userId: jane.id, role: SpaceMemberRole.MEMBER },
+      { spaceId: japanSpace.id,      userId: jane.id, role: SpaceMemberRole.OWNER  },
+      { spaceId: japanSpace.id,      userId: john.id, role: SpaceMemberRole.MEMBER },
+      { spaceId: investmentSpace.id, userId: john.id, role: SpaceMemberRole.OWNER  },
+      { spaceId: investmentSpace.id, userId: jane.id, role: SpaceMemberRole.MEMBER },
+      { spaceId: investmentSpace.id, userId: alex.id, role: SpaceMemberRole.VIEWER },
+      { spaceId: businessSpace.id,   userId: john.id, role: SpaceMemberRole.OWNER  },
+      { spaceId: businessSpace.id,   userId: alex.id, role: SpaceMemberRole.ADMIN  },
+      { spaceId: propertySpace.id,   userId: john.id, role: SpaceMemberRole.OWNER  },
+      { spaceId: propertySpace.id,   userId: jane.id, role: SpaceMemberRole.ADMIN  },
     ],
   });
-  console.log("   ✓ WorkspaceMembers: 15");
+  console.log("   ✓ SpaceMembers: 15");
 
   // ── AI Agents ────────────────────────────────────────────────────────────────
-  const janeAgent = await prisma.aiAgent.create({ data: { workspaceId: janeWorkspace.id, name: "Jane's Financial Agent" } });
-  const johnAgent = await prisma.aiAgent.create({ data: { workspaceId: johnWorkspace.id, name: "John's Financial Agent" } });
+  const janeAgent = await prisma.aiAgent.create({ data: { spaceId: janeSpace.id, name: "Jane's Financial Agent" } });
+  const johnAgent = await prisma.aiAgent.create({ data: { spaceId: johnSpace.id, name: "John's Financial Agent" } });
   console.log("   ✓ AiAgents");
 
   // ── Credit Scores ────────────────────────────────────────────────────────────
@@ -424,56 +426,56 @@ async function main() {
 
   // Jane — 9 accounts
   const jDemoChecking = await createFullAccount({
-    workspaceId: janeWorkspace.id, userId: jane.id,
+    spaceId: janeSpace.id, userId: jane.id,
     plaidItemId: janeItemBy["Demo Bank"].id, institutionId: "demo_ins_001",
     name: "Demo Bank Checking", type: AccountType.checking,
     institution: "Demo Bank", balance: 3450, availableBalance: 3450,
   });
   const jDemoHysa = await createFullAccount({
-    workspaceId: janeWorkspace.id, userId: jane.id,
+    spaceId: janeSpace.id, userId: jane.id,
     plaidItemId: janeItemBy["Demo Bank"].id, institutionId: "demo_ins_001",
     name: "Demo Bank High Yield Savings", type: AccountType.savings,
     institution: "Demo Bank", balance: 8500, availableBalance: 8500,
   });
   const jJapanSavings = await createFullAccount({
-    workspaceId: janeWorkspace.id, userId: jane.id,
+    spaceId: janeSpace.id, userId: jane.id,
     plaidItemId: janeItemBy["Demo Bank"].id, institutionId: "demo_ins_001",
     name: "Demo Bank Japan Trip Fund", type: AccountType.savings,
     institution: "Demo Bank", balance: 3240, availableBalance: 3240,
   });
   const _jCuChecking = await createFullAccount({
-    workspaceId: janeWorkspace.id, userId: jane.id,
+    spaceId: janeSpace.id, userId: jane.id,
     plaidItemId: janeItemBy["Example Credit Union"].id, institutionId: "demo_ins_002",
     name: "Example CU Checking", type: AccountType.checking,
     institution: "Example Credit Union", balance: 750, availableBalance: 750,
   });
   const jCreditCard = await createFullAccount({
-    workspaceId: janeWorkspace.id, userId: jane.id,
+    spaceId: janeSpace.id, userId: jane.id,
     plaidItemId: janeItemBy["Example Credit Union"].id, institutionId: "demo_ins_002",
     name: "Example CU Credit Card", type: AccountType.debt,
     institution: "Example Credit Union", balance: 3200, creditLimit: 10000,
     debtSubtype: "credit_card", interestRate: 19.99, minimumPayment: 85,
   });
   const jBrokerageIra = await createFullAccount({
-    workspaceId: janeWorkspace.id, userId: jane.id,
+    spaceId: janeSpace.id, userId: jane.id,
     plaidItemId: janeItemBy["Sample Brokerage"].id, institutionId: "demo_ins_003",
     name: "Sample Brokerage IRA", type: AccountType.investment,
     institution: "Sample Brokerage", balance: 9200,
   });
   const jBrokerageTaxable = await createFullAccount({
-    workspaceId: janeWorkspace.id, userId: jane.id,
+    spaceId: janeSpace.id, userId: jane.id,
     plaidItemId: janeItemBy["Sample Brokerage"].id, institutionId: "demo_ins_003",
     name: "Sample Brokerage Taxable", type: AccountType.investment,
     institution: "Sample Brokerage", balance: 3200,
   });
   const jCryptoExchange = await createFullAccount({
-    workspaceId: janeWorkspace.id, userId: jane.id,
+    spaceId: janeSpace.id, userId: jane.id,
     plaidItemId: janeItemBy["Fictional Crypto Exchange"].id, institutionId: "demo_ins_004",
     name: "Fictional Crypto Exchange", type: AccountType.crypto,
     institution: "Fictional Crypto Exchange", balance: 4850,
   });
   const jBtcWallet = await createFullAccount({
-    workspaceId: janeWorkspace.id, userId: jane.id,
+    spaceId: janeSpace.id, userId: jane.id,
     name: "Jane BTC Wallet", type: AccountType.crypto, institution: "Self-custodied",
     balance: 1950, walletAddress: "bc1demo000000000000000000000000000000000janeA",
     walletChain: "BTC", nativeBalance: 0.02,
@@ -481,21 +483,21 @@ async function main() {
   });
   console.log("   ✓ Jane's accounts: 9");
 
-  // Jane — cross-workspace shares
+  // Jane — cross-space shares
   // Household: checking FULL, HYSA BALANCE_ONLY, CC BALANCE_ONLY
-  await shareAccount(householdWorkspace.id, jDemoChecking.id, jane.id, VisibilityLevel.FULL);
-  await shareAccount(householdWorkspace.id, jDemoHysa.id,     jane.id, VisibilityLevel.BALANCE_ONLY);
-  await shareAccount(householdWorkspace.id, jCreditCard.id,   jane.id, VisibilityLevel.BALANCE_ONLY);
-  // Debt workspace: CC BALANCE_ONLY (John sees Jane's CC balance for household debt view)
-  await shareAccount(debtWorkspace.id, jCreditCard.id, jane.id, VisibilityLevel.BALANCE_ONLY);
+  await shareAccount(householdSpace.id, jDemoChecking.id, jane.id, VisibilityLevel.FULL);
+  await shareAccount(householdSpace.id, jDemoHysa.id,     jane.id, VisibilityLevel.BALANCE_ONLY);
+  await shareAccount(householdSpace.id, jCreditCard.id,   jane.id, VisibilityLevel.BALANCE_ONLY);
+  // Debt space: CC BALANCE_ONLY (John sees Jane's CC balance for household debt view)
+  await shareAccount(debtSpace.id, jCreditCard.id, jane.id, VisibilityLevel.BALANCE_ONLY);
   // Japan Trip: Japan savings FULL, HYSA BALANCE_ONLY
-  await shareAccount(japanWorkspace.id, jJapanSavings.id, jane.id, VisibilityLevel.FULL);
-  await shareAccount(japanWorkspace.id, jDemoHysa.id,     jane.id, VisibilityLevel.BALANCE_ONLY);
+  await shareAccount(japanSpace.id, jJapanSavings.id, jane.id, VisibilityLevel.FULL);
+  await shareAccount(japanSpace.id, jDemoHysa.id,     jane.id, VisibilityLevel.BALANCE_ONLY);
   // Investment Club: IRA FULL, Taxable FULL, Crypto FULL
-  await shareAccount(investmentWorkspace.id, jBrokerageIra.id,     jane.id, VisibilityLevel.FULL);
-  await shareAccount(investmentWorkspace.id, jBrokerageTaxable.id, jane.id, VisibilityLevel.FULL);
-  await shareAccount(investmentWorkspace.id, jCryptoExchange.id,   jane.id, VisibilityLevel.FULL);
-  console.log("   ✓ Jane's cross-workspace shares: 9");
+  await shareAccount(investmentSpace.id, jBrokerageIra.id,     jane.id, VisibilityLevel.FULL);
+  await shareAccount(investmentSpace.id, jBrokerageTaxable.id, jane.id, VisibilityLevel.FULL);
+  await shareAccount(investmentSpace.id, jCryptoExchange.id,   jane.id, VisibilityLevel.FULL);
+  console.log("   ✓ Jane's cross-space shares: 9");
 
   // Jane — Holdings
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -721,7 +723,7 @@ async function main() {
   // Jane — AI Advice
   await prisma.aiAdvice.create({
     data: {
-      workspaceId: janeWorkspace.id, agentId: janeAgent.id,
+      spaceId: janeSpace.id, agentId: janeAgent.id,
       summary: "Strong savings rate and low debt — focus on IRA contributions and CC payoff.",
       adviceText: `**Market Context (June 2026):** BTC ~$98,000. S&P 500 steady. HYSA at 4.35% APY.
 
@@ -746,8 +748,8 @@ async function main() {
   });
 
   // Jane — Snapshots
-  await prisma.workspaceSnapshot.createMany({ data: buildHistory(janeWorkspace.id) });
-  console.log("   ✓ WorkspaceSnapshots (Jane): 365");
+  await prisma.spaceSnapshot.createMany({ data: buildHistory(janeSpace.id) });
+  console.log("   ✓ SpaceSnapshots (Jane): 365");
 
   // ════════════════════════════════════════════════════════════════════════════
   // JOHN DOE — medium risk, freelance side income, higher debt
@@ -767,77 +769,77 @@ async function main() {
 
   // John — 12 accounts
   const jnChecking = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
     name: "Beacon Bank Checking", type: AccountType.checking,
     institution: "Beacon Bank", balance: 2100, availableBalance: 2100,
   });
   const jnSavings = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
     name: "Beacon Bank Savings", type: AccountType.savings,
     institution: "Beacon Bank", balance: 5500, availableBalance: 5500,
   });
   const jnCreditCard = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
     name: "Beacon Credit Card", type: AccountType.debt,
     institution: "Beacon Bank", balance: 5800, creditLimit: 15000,
     debtSubtype: "credit_card", interestRate: 22.99, minimumPayment: 135,
   });
   const jnAutoLoan = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
     name: "Beacon Auto Loan", type: AccountType.debt,
     institution: "Beacon Bank", balance: 11200,
     debtSubtype: "auto_loan", interestRate: 6.49, minimumPayment: 287,
   });
   const jnMortgage = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Beacon Bank"].id, institutionId: "demo_ins_005",
     name: "Beacon Mortgage", type: AccountType.debt,
     institution: "Beacon Bank", balance: 285000,
     debtSubtype: "mortgage", interestRate: 3.875, minimumPayment: 1480,
   });
   const jnRothIra = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Alpha Brokerage"].id, institutionId: "demo_ins_006",
     name: "Alpha Brokerage Roth IRA", type: AccountType.investment,
     institution: "Alpha Brokerage", balance: 28500,
   });
   const jn401k = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Alpha Brokerage"].id, institutionId: "demo_ins_006",
     name: "Alpha Brokerage 401k", type: AccountType.investment,
     institution: "Alpha Brokerage", balance: 18200,
   });
   const jnBrokerage = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Alpha Brokerage"].id, institutionId: "demo_ins_006",
     name: "Alpha Brokerage Taxable", type: AccountType.investment,
     institution: "Alpha Brokerage", balance: 12800,
   });
   const jnCryptoExchange = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Alpha Crypto Exchange"].id, institutionId: "demo_ins_007",
     name: "Alpha Crypto Exchange", type: AccountType.crypto,
     institution: "Alpha Crypto Exchange", balance: 7400,
   });
   const jnBtcWallet = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     name: "John BTC Wallet", type: AccountType.crypto, institution: "Self-custodied",
     balance: 3724, walletAddress: "bc1demo000000000000000000000000000000000johnB",
     walletChain: "BTC", nativeBalance: 0.038,
     lastUpdated: new Date("2026-06-09T10:10:00Z"),
   });
   const jnBizChecking = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Summit Business Bank"].id, institutionId: "demo_ins_008",
     name: "Summit Business Checking", type: AccountType.checking,
     institution: "Summit Business Bank", balance: 8400, availableBalance: 8400,
   });
   const jnBizCard = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Summit Business Bank"].id, institutionId: "demo_ins_008",
     name: "Summit Business Credit Card", type: AccountType.debt,
     institution: "Summit Business Bank", balance: 2100, creditLimit: 20000,
@@ -849,59 +851,59 @@ async function main() {
   // TODO: when AccountType.asset is added to schema, run:
   //   UPDATE "FinancialAccount" SET type = 'asset' WHERE type = 'other' AND "syncStatus" = 'manual'
   const jnHome = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Manual Entry"].id, institutionId: "manual_entry",
     name: "Austin Home (Est. Value)", type: AccountType.other,
     institution: "Manual Entry", balance: 485000, syncStatus: "manual",
   });
   const _jnVehicle = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Manual Entry"].id, institutionId: "manual_entry",
     name: "2022 Honda CR-V (Est. Value)", type: AccountType.other,
     institution: "Manual Entry", balance: 22000, syncStatus: "manual",
   });
   const jnEquipment = await createFullAccount({
-    workspaceId: johnWorkspace.id, userId: john.id,
+    spaceId: johnSpace.id, userId: john.id,
     plaidItemId: johnItemBy["Manual Entry"].id, institutionId: "manual_entry",
     name: "Freelance Business Equipment", type: AccountType.other,
     institution: "Manual Entry", balance: 3500, syncStatus: "manual",
   });
   console.log("   ✓ John's accounts: 12 financial + 3 manual asset (total 15)");
 
-  // John — cross-workspace shares
+  // John — cross-space shares
   // Household: checking FULL, savings BALANCE_ONLY, CC BALANCE_ONLY, mortgage FULL
-  await shareAccount(householdWorkspace.id, jnChecking.id,    john.id, VisibilityLevel.FULL);
-  await shareAccount(householdWorkspace.id, jnSavings.id,     john.id, VisibilityLevel.BALANCE_ONLY);
-  await shareAccount(householdWorkspace.id, jnCreditCard.id,  john.id, VisibilityLevel.BALANCE_ONLY);
-  await shareAccount(householdWorkspace.id, jnMortgage.id,    john.id, VisibilityLevel.FULL);
-  // Debt workspace: CC FULL, auto loan FULL
-  await shareAccount(debtWorkspace.id, jnCreditCard.id, john.id, VisibilityLevel.FULL);
-  await shareAccount(debtWorkspace.id, jnAutoLoan.id,   john.id, VisibilityLevel.FULL);
+  await shareAccount(householdSpace.id, jnChecking.id,    john.id, VisibilityLevel.FULL);
+  await shareAccount(householdSpace.id, jnSavings.id,     john.id, VisibilityLevel.BALANCE_ONLY);
+  await shareAccount(householdSpace.id, jnCreditCard.id,  john.id, VisibilityLevel.BALANCE_ONLY);
+  await shareAccount(householdSpace.id, jnMortgage.id,    john.id, VisibilityLevel.FULL);
+  // Debt space: CC FULL, auto loan FULL
+  await shareAccount(debtSpace.id, jnCreditCard.id, john.id, VisibilityLevel.FULL);
+  await shareAccount(debtSpace.id, jnAutoLoan.id,   john.id, VisibilityLevel.FULL);
   // Japan Trip: John's checking BALANCE_ONLY (for trip budget awareness)
-  await shareAccount(japanWorkspace.id, jnChecking.id, john.id, VisibilityLevel.BALANCE_ONLY);
+  await shareAccount(japanSpace.id, jnChecking.id, john.id, VisibilityLevel.BALANCE_ONLY);
   // Investment Club: Roth IRA FULL, 401k FULL, Taxable FULL, Crypto FULL, BTC wallet FULL
-  await shareAccount(investmentWorkspace.id, jnRothIra.id,       john.id, VisibilityLevel.FULL);
-  await shareAccount(investmentWorkspace.id, jn401k.id,          john.id, VisibilityLevel.FULL);
-  await shareAccount(investmentWorkspace.id, jnBrokerage.id,     john.id, VisibilityLevel.FULL);
-  await shareAccount(investmentWorkspace.id, jnCryptoExchange.id,john.id, VisibilityLevel.FULL);
-  await shareAccount(investmentWorkspace.id, jnBtcWallet.id,     john.id, VisibilityLevel.FULL);
+  await shareAccount(investmentSpace.id, jnRothIra.id,       john.id, VisibilityLevel.FULL);
+  await shareAccount(investmentSpace.id, jn401k.id,          john.id, VisibilityLevel.FULL);
+  await shareAccount(investmentSpace.id, jnBrokerage.id,     john.id, VisibilityLevel.FULL);
+  await shareAccount(investmentSpace.id, jnCryptoExchange.id,john.id, VisibilityLevel.FULL);
+  await shareAccount(investmentSpace.id, jnBtcWallet.id,     john.id, VisibilityLevel.FULL);
   // Business: biz checking FULL, biz CC FULL
-  await shareAccount(businessWorkspace.id, jnBizChecking.id, john.id, VisibilityLevel.FULL);
-  await shareAccount(businessWorkspace.id, jnBizCard.id,     john.id, VisibilityLevel.FULL);
+  await shareAccount(businessSpace.id, jnBizChecking.id, john.id, VisibilityLevel.FULL);
+  await shareAccount(businessSpace.id, jnBizCard.id,     john.id, VisibilityLevel.FULL);
   // Property: mortgage FULL, home asset FULL, checking BALANCE_ONLY
-  await shareAccount(propertyWorkspace.id, jnMortgage.id,  john.id, VisibilityLevel.FULL);
-  await shareAccount(propertyWorkspace.id, jnHome.id,      john.id, VisibilityLevel.FULL);
-  await shareAccount(propertyWorkspace.id, jnChecking.id,  john.id, VisibilityLevel.BALANCE_ONLY);
+  await shareAccount(propertySpace.id, jnMortgage.id,  john.id, VisibilityLevel.FULL);
+  await shareAccount(propertySpace.id, jnHome.id,      john.id, VisibilityLevel.FULL);
+  await shareAccount(propertySpace.id, jnChecking.id,  john.id, VisibilityLevel.BALANCE_ONLY);
   // Household: home asset FULL (for household net worth)
-  await shareAccount(householdWorkspace.id, jnHome.id,     john.id, VisibilityLevel.FULL);
+  await shareAccount(householdSpace.id, jnHome.id,     john.id, VisibilityLevel.FULL);
   // Business: equipment FULL
-  await shareAccount(businessWorkspace.id, jnEquipment.id, john.id, VisibilityLevel.FULL);
-  console.log("   ✓ John's cross-workspace shares: 19 (incl. 3 manual asset shares)");
+  await shareAccount(businessSpace.id, jnEquipment.id, john.id, VisibilityLevel.FULL);
+  console.log("   ✓ John's cross-space shares: 19 (incl. 3 manual asset shares)");
 
   // Config-driven section overrides that depend on John's manual asset account IDs.
   // Placed here (after jnHome / jnEquipment are created) to avoid a temporal dead zone error.
   // accountId pins the section to the correct FinancialAccount so the adapter skips name heuristics.
-  await updateSectionConfig(propertyWorkspace.id, "property_value", {
+  await updateSectionConfig(propertySpace.id, "property_value", {
     accountId:       jnHome.id,
     assetKind:       "real_estate",
     purchasePrice:   320000,
@@ -910,7 +912,7 @@ async function main() {
     estimatedAt:     "2026-06-14",
     notes:           "3BR/2BA primary residence — Austin, TX",
   });
-  await updateSectionConfig(businessWorkspace.id, "equipment_value", {
+  await updateSectionConfig(businessSpace.id, "equipment_value", {
     accountId:       jnEquipment.id,
     purchasePrice:   4200,
     purchaseDate:    "2023-09-01",
@@ -1197,7 +1199,7 @@ async function main() {
   // John — AI Advice
   await prisma.aiAdvice.create({
     data: {
-      workspaceId: johnWorkspace.id, agentId: johnAgent.id,
+      spaceId: johnSpace.id, agentId: johnAgent.id,
       summary: "High debt load, thin cash reserves — eliminate the CC before any new investments.",
       adviceText: `**Market Context (June 2026):** BTC ~$98,000. S&P 500 steady. Rates elevated.
 
@@ -1225,61 +1227,61 @@ async function main() {
   });
 
   // John — Snapshots
-  await prisma.workspaceSnapshot.createMany({ data: buildJohnHistory(johnWorkspace.id) });
-  console.log("   ✓ WorkspaceSnapshots (John): 365");
+  await prisma.spaceSnapshot.createMany({ data: buildJohnHistory(johnSpace.id) });
+  console.log("   ✓ SpaceSnapshots (John): 365");
 
-  // Shared workspace snapshots
-  await prisma.workspaceSnapshot.createMany({ data: buildHouseholdHistory(householdWorkspace.id) });
-  await prisma.workspaceSnapshot.createMany({ data: buildDebtHistory(debtWorkspace.id) });
-  console.log("   ✓ WorkspaceSnapshots (Household 120, Debt 90)");
+  // Shared space snapshots
+  await prisma.spaceSnapshot.createMany({ data: buildHouseholdHistory(householdSpace.id) });
+  await prisma.spaceSnapshot.createMany({ data: buildDebtHistory(debtSpace.id) });
+  console.log("   ✓ SpaceSnapshots (Household 120, Debt 90)");
 
-  // ── Workspace Goals ──────────────────────────────────────────────────────────
+  // ── Space Goals ──────────────────────────────────────────────────────────
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const goalCreate = (data: any) => (prisma.workspaceGoal as any).create({ data });
+  const goalCreate = (data: any) => (prisma.spaceGoal as any).create({ data });
 
   const goalJaneEmergencyFund = await goalCreate({
-    workspaceId: householdWorkspace.id, createdByUserId: jane.id,
+    spaceId: householdSpace.id, createdByUserId: jane.id,
     name: "6-Month Emergency Fund", description: "Build a combined emergency fund covering 6 months of household expenses (~$20k)",
     category: GoalCategory.EMERGENCY_FUND, goalType: GoalType.FINANCIAL,
     status: GoalStatus.ACTIVE, targetAmount: 20000, currentAmount: 11740,
     targetDate: new Date("2027-01-01"),
   });
   const goalJaneJapan = await goalCreate({
-    workspaceId: japanWorkspace.id, createdByUserId: jane.id,
+    spaceId: japanSpace.id, createdByUserId: jane.id,
     name: "Japan Trip 2027 Fund", description: "Save $8,500 for flights, accommodation, and spending money",
     category: GoalCategory.TRIP, goalType: GoalType.FINANCIAL,
     status: GoalStatus.ACTIVE, targetAmount: 8500, currentAmount: 3240,
     targetDate: new Date("2027-03-01"),
   });
   const goalJaneCCPayoff = await goalCreate({
-    workspaceId: janeWorkspace.id, createdByUserId: jane.id,
+    spaceId: janeSpace.id, createdByUserId: jane.id,
     name: "Pay Off CU Credit Card", description: "Eliminate $3,200 balance at 19.99% APR",
     category: GoalCategory.DEBT_PAYOFF, goalType: GoalType.DEBT_REDUCTION,
     status: GoalStatus.ACTIVE, targetAmount: 3200, currentAmount: 2100,
     linkedAccountId: jCreditCard.id, snapshotBalance: 3200, targetReductionAmount: 3200,
   });
   const _goalJaneExercise = await goalCreate({
-    workspaceId: janeWorkspace.id, createdByUserId: jane.id,
+    spaceId: janeSpace.id, createdByUserId: jane.id,
     name: "Daily Exercise Streak", description: "30-minute workout every day — building the habit",
     category: GoalCategory.GENERAL, goalType: GoalType.HABIT,
     status: GoalStatus.ACTIVE, habitFrequency: "DAILY", currentStreak: 12, longestStreak: 28,
     lastCheckIn: D(1),
   });
   const _goalJaneDiningBudget = await goalCreate({
-    workspaceId: janeWorkspace.id, createdByUserId: jane.id,
+    spaceId: janeSpace.id, createdByUserId: jane.id,
     name: "Dining Budget — $300/mo", description: "Keep dining + coffee under $300/month",
     category: GoalCategory.GENERAL, goalType: GoalType.SPENDING_LIMIT,
     status: GoalStatus.ACTIVE, targetAmount: 300, spendingCategory: "Dining",
   });
   const goalJohnCCElim = await goalCreate({
-    workspaceId: debtWorkspace.id, createdByUserId: john.id,
+    spaceId: debtSpace.id, createdByUserId: john.id,
     name: "Beacon CC Elimination",  description: "Pay off Beacon Credit Card ($5,800 at 22.99% APR) — highest priority debt",
     category: GoalCategory.DEBT_PAYOFF, goalType: GoalType.DEBT_REDUCTION,
     status: GoalStatus.ACTIVE, targetAmount: 5800, currentAmount: 3200,
     linkedAccountId: jnCreditCard.id, snapshotBalance: 5800, targetReductionAmount: 5800,
   });
   const goalJohnAutoLoan = await goalCreate({
-    workspaceId: debtWorkspace.id, createdByUserId: john.id,
+    spaceId: debtSpace.id, createdByUserId: john.id,
     name: "Auto Loan Payoff", description: "Accelerate payoff of $11,200 auto loan (6.49% APR)",
     category: GoalCategory.DEBT_PAYOFF, goalType: GoalType.DEBT_REDUCTION,
     status: GoalStatus.ACTIVE, targetAmount: 11200, currentAmount: 4000,
@@ -1287,14 +1289,14 @@ async function main() {
     targetDate: new Date("2028-06-01"),
   });
   const goalJohnRothMax = await goalCreate({
-    workspaceId: investmentWorkspace.id, createdByUserId: john.id,
+    spaceId: investmentSpace.id, createdByUserId: john.id,
     name: "Max Roth IRA 2026", description: "Contribute full $7,000 to Roth IRA this calendar year",
     category: GoalCategory.INVESTMENT, goalType: GoalType.FINANCIAL,
     status: GoalStatus.ACTIVE, targetAmount: 7000, currentAmount: 2332,
     targetDate: new Date("2026-12-31"),
   });
   const _goalJohnRenovation = await goalCreate({
-    workspaceId: propertyWorkspace.id, createdByUserId: john.id,
+    spaceId: propertySpace.id, createdByUserId: john.id,
     name: "Home Renovation Fund", description: "Kitchen + master bath renovation — paused pending CC payoff",
     category: GoalCategory.HOME_PURCHASE, goalType: GoalType.FINANCIAL,
     status: GoalStatus.PAUSED, targetAmount: 25000, currentAmount: 0,
@@ -1302,13 +1304,13 @@ async function main() {
   });
   // Completed goal — earlier Japan research fund
   const _goalJaneCompleted = await goalCreate({
-    workspaceId: janeWorkspace.id, createdByUserId: jane.id,
+    spaceId: janeSpace.id, createdByUserId: jane.id,
     name: "Japan Research Budget", description: "Fund for Japan trip research and flight booking deposit",
     category: GoalCategory.TRIP, goalType: GoalType.FINANCIAL,
     status: GoalStatus.COMPLETED, targetAmount: 1000, currentAmount: 1000,
     targetDate: new Date("2026-03-01"), completedAt: D(45),
   });
-  console.log("   ✓ WorkspaceGoals: 10");
+  console.log("   ✓ SpaceGoals: 10");
 
   // ── Goal Contributions ────────────────────────────────────────────────────────
   await prisma.goalContribution.createMany({
@@ -1326,8 +1328,8 @@ async function main() {
 
   // ── Audit Log ─────────────────────────────────────────────────────────────────
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const log = (userId: string, workspaceId: string | null, action: string, metadata?: any, createdAt?: Date) =>
-    ({ userId, workspaceId, action, metadata: metadata ?? {}, ...(createdAt ? { createdAt } : {}) });
+  const log = (userId: string, spaceId: string | null, action: string, metadata?: any, createdAt?: Date) =>
+    ({ userId, spaceId, action, metadata: metadata ?? {}, ...(createdAt ? { createdAt } : {}) });
 
   // Helper: minutes-ago offset so events within the same day are ordered properly.
   // Larger offset = older event. Events are listed oldest → newest, each 5 min apart.
@@ -1339,52 +1341,52 @@ async function main() {
 
   await prisma.auditLog.createMany({
     data: [
-      // ── Workspace creation trails (oldest events get highest offsets) ─────────
-      // Personal workspaces (created ~90 days ago)
-      log(jane.id, janeWorkspace.id,      "WORKSPACE_CREATED",  { name: "Jane's Space",    category: "PERSONAL"   }, T(90)),
-      log(john.id, johnWorkspace.id,      "WORKSPACE_CREATED",  { name: "John's Space",    category: "PERSONAL"   }, T(90)),
+      // ── Space creation trails (oldest events get highest offsets) ─────────
+      // Personal spaces (created ~90 days ago)
+      log(jane.id, janeSpace.id,      "SPACE_CREATED",  { name: "Jane's Space",    category: "PERSONAL"   }, T(90)),
+      log(john.id, johnSpace.id,      "SPACE_CREATED",  { name: "John's Space",    category: "PERSONAL"   }, T(90)),
 
-      // Household workspace (created ~60 days ago, events staggered 5 min apart)
-      log(jane.id, householdWorkspace.id, "WORKSPACE_CREATED",  { name: "Smith-Doe Household", category: "HOUSEHOLD"  }, T(60, 20)),
-      log(john.id, householdWorkspace.id, "MEMBER_INVITED",     { invitedEmail: "john@example.com", role: "MEMBER" },    T(60, 15)),
-      log(john.id, householdWorkspace.id, "MEMBER_JOINED",      { role: "MEMBER" },                                     T(60, 10)),
-      log(jane.id, householdWorkspace.id, "ACCOUNT_SHARED",     { accountName: "Demo Bank Checking",           visibility: "FULL"         }, T(60, 5)),
-      log(jane.id, householdWorkspace.id, "ACCOUNT_SHARED",     { accountName: "Demo Bank High Yield Savings", visibility: "BALANCE_ONLY" }, T(60, 4)),
-      log(john.id, householdWorkspace.id, "ACCOUNT_SHARED",     { accountName: "Beacon Bank Checking",         visibility: "FULL"         }, T(60, 3)),
-      log(john.id, householdWorkspace.id, "ACCOUNT_SHARED",     { accountName: "Beacon Mortgage",              visibility: "FULL"         }, T(60, 2)),
+      // Household space (created ~60 days ago, events staggered 5 min apart)
+      log(jane.id, householdSpace.id, "SPACE_CREATED",  { name: "Smith-Doe Household", category: "HOUSEHOLD"  }, T(60, 20)),
+      log(john.id, householdSpace.id, "MEMBER_INVITED",     { invitedEmail: "john@example.com", role: "MEMBER" },    T(60, 15)),
+      log(john.id, householdSpace.id, "MEMBER_JOINED",      { role: "MEMBER" },                                     T(60, 10)),
+      log(jane.id, householdSpace.id, "ACCOUNT_SHARED",     { accountName: "Demo Bank Checking",           visibility: "FULL"         }, T(60, 5)),
+      log(jane.id, householdSpace.id, "ACCOUNT_SHARED",     { accountName: "Demo Bank High Yield Savings", visibility: "BALANCE_ONLY" }, T(60, 4)),
+      log(john.id, householdSpace.id, "ACCOUNT_SHARED",     { accountName: "Beacon Bank Checking",         visibility: "FULL"         }, T(60, 3)),
+      log(john.id, householdSpace.id, "ACCOUNT_SHARED",     { accountName: "Beacon Mortgage",              visibility: "FULL"         }, T(60, 2)),
 
       // Debt Payoff Tracker (created ~30 days ago)
-      log(john.id, debtWorkspace.id,      "WORKSPACE_CREATED",  { name: "Debt Payoff Tracker", category: "DEBT_PAYOFF" }, T(30, 20)),
-      log(john.id, debtWorkspace.id,      "MEMBER_INVITED",     { invitedEmail: "jane@example.com", role: "MEMBER" },     T(30, 15)),
-      log(jane.id, debtWorkspace.id,      "MEMBER_JOINED",      { role: "MEMBER" },                                      T(30, 10)),
-      log(john.id, debtWorkspace.id,      "ACCOUNT_SHARED",     { accountName: "Beacon Credit Card",     visibility: "FULL"         }, T(30, 5)),
-      log(john.id, debtWorkspace.id,      "ACCOUNT_SHARED",     { accountName: "Beacon Auto Loan",       visibility: "FULL"         }, T(30, 4)),
-      log(jane.id, debtWorkspace.id,      "ACCOUNT_SHARED",     { accountName: "Example CU Credit Card", visibility: "BALANCE_ONLY" }, T(30, 3)),
+      log(john.id, debtSpace.id,      "SPACE_CREATED",  { name: "Debt Payoff Tracker", category: "DEBT_PAYOFF" }, T(30, 20)),
+      log(john.id, debtSpace.id,      "MEMBER_INVITED",     { invitedEmail: "jane@example.com", role: "MEMBER" },     T(30, 15)),
+      log(jane.id, debtSpace.id,      "MEMBER_JOINED",      { role: "MEMBER" },                                      T(30, 10)),
+      log(john.id, debtSpace.id,      "ACCOUNT_SHARED",     { accountName: "Beacon Credit Card",     visibility: "FULL"         }, T(30, 5)),
+      log(john.id, debtSpace.id,      "ACCOUNT_SHARED",     { accountName: "Beacon Auto Loan",       visibility: "FULL"         }, T(30, 4)),
+      log(jane.id, debtSpace.id,      "ACCOUNT_SHARED",     { accountName: "Example CU Credit Card", visibility: "BALANCE_ONLY" }, T(30, 3)),
 
-      // Japan Trip workspace (created ~20 days ago)
-      log(jane.id, japanWorkspace.id,     "WORKSPACE_CREATED",  { name: "Japan Trip 2027", category: "TRIP"   }, T(20, 15)),
-      log(jane.id, japanWorkspace.id,     "MEMBER_INVITED",     { invitedEmail: "john@example.com", role: "MEMBER" }, T(20, 10)),
-      log(john.id, japanWorkspace.id,     "MEMBER_JOINED",      { role: "MEMBER" },                                  T(20,  5)),
+      // Japan Trip space (created ~20 days ago)
+      log(jane.id, japanSpace.id,     "SPACE_CREATED",  { name: "Japan Trip 2027", category: "TRIP"   }, T(20, 15)),
+      log(jane.id, japanSpace.id,     "MEMBER_INVITED",     { invitedEmail: "john@example.com", role: "MEMBER" }, T(20, 10)),
+      log(john.id, japanSpace.id,     "MEMBER_JOINED",      { role: "MEMBER" },                                  T(20,  5)),
 
       // Investment Club (created ~14 days ago)
-      log(john.id, investmentWorkspace.id,"WORKSPACE_CREATED",  { name: "Investment Club",  category: "INVESTMENT" }, T(14, 15)),
-      log(john.id, investmentWorkspace.id,"MEMBER_INVITED",     { invitedEmail: "alex@example.com", role: "VIEWER" }, T(14, 10)),
-      log(alex.id, investmentWorkspace.id,"MEMBER_JOINED",      { role: "VIEWER" },                                  T(14,  5)),
+      log(john.id, investmentSpace.id,"SPACE_CREATED",  { name: "Investment Club",  category: "INVESTMENT" }, T(14, 15)),
+      log(john.id, investmentSpace.id,"MEMBER_INVITED",     { invitedEmail: "alex@example.com", role: "VIEWER" }, T(14, 10)),
+      log(alex.id, investmentSpace.id,"MEMBER_JOINED",      { role: "VIEWER" },                                  T(14,  5)),
 
       // JD Freelance LLC (created ~7 days ago)
-      log(john.id, businessWorkspace.id,  "WORKSPACE_CREATED",  { name: "JD Freelance LLC", category: "BUSINESS" }, T(7, 15)),
-      log(john.id, businessWorkspace.id,  "MEMBER_INVITED",     { invitedEmail: "alex@example.com", role: "ADMIN" }, T(7, 10)),
-      log(alex.id, businessWorkspace.id,  "MEMBER_JOINED",      { role: "ADMIN" },                                  T(7,  5)),
+      log(john.id, businessSpace.id,  "SPACE_CREATED",  { name: "JD Freelance LLC", category: "BUSINESS" }, T(7, 15)),
+      log(john.id, businessSpace.id,  "MEMBER_INVITED",     { invitedEmail: "alex@example.com", role: "ADMIN" }, T(7, 10)),
+      log(alex.id, businessSpace.id,  "MEMBER_JOINED",      { role: "ADMIN" },                                  T(7,  5)),
 
       // Austin Home (created ~3 days ago)
-      log(john.id, propertyWorkspace.id,  "WORKSPACE_CREATED",  { name: "Austin Home", category: "PROPERTY" }, T(3, 15)),
-      log(john.id, propertyWorkspace.id,  "MEMBER_INVITED",     { invitedEmail: "jane@example.com", role: "ADMIN" }, T(3, 10)),
-      log(jane.id, propertyWorkspace.id,  "MEMBER_JOINED",      { role: "ADMIN" },                                  T(3,  5)),
+      log(john.id, propertySpace.id,  "SPACE_CREATED",  { name: "Austin Home", category: "PROPERTY" }, T(3, 15)),
+      log(john.id, propertySpace.id,  "MEMBER_INVITED",     { invitedEmail: "jane@example.com", role: "ADMIN" }, T(3, 10)),
+      log(jane.id, propertySpace.id,  "MEMBER_JOINED",      { role: "ADMIN" },                                  T(3,  5)),
 
       // ── Recent activity (today / yesterday) ──────────────────────────────────
-      log(jane.id, janeWorkspace.id,      "GOAL_CREATED",       { goalName: "Pay Off CU Credit Card", category: "DEBT_PAYOFF" }, T(2)),
-      log(john.id, debtWorkspace.id,      "GOAL_CREATED",       { goalName: "Beacon CC Elimination",  category: "DEBT_PAYOFF" }, T(1)),
-      log(jane.id, janeWorkspace.id,      "GOAL_COMPLETED",     { goalName: "Japan Research Budget",  completedAt: D(45).toISOString() }, T(0, 30)),
+      log(jane.id, janeSpace.id,      "GOAL_CREATED",       { goalName: "Pay Off CU Credit Card", category: "DEBT_PAYOFF" }, T(2)),
+      log(john.id, debtSpace.id,      "GOAL_CREATED",       { goalName: "Beacon CC Elimination",  category: "DEBT_PAYOFF" }, T(1)),
+      log(jane.id, janeSpace.id,      "GOAL_COMPLETED",     { goalName: "Japan Research Budget",  completedAt: D(45).toISOString() }, T(0, 30)),
       log(john.id, null,                  "TOTP_ENABLED",       { method: "authenticator_app" }),
       log(admin.id,null,                  "SEED",               { note: "Comprehensive demo seed — dev only" }),
     ],
@@ -1393,23 +1395,23 @@ async function main() {
 
   console.log("\n✅  Seed complete.");
   console.log("─── Jane Smith ──────────────────────────────────────────────────────────────");
-  console.log(`   Workspace:  ${janeWorkspace.name} (id: ${janeWorkspace.id})`);
+  console.log(`   Space:  ${janeSpace.name} (id: ${janeSpace.id})`);
   console.log("   Accounts:   9 (checking, HYSA, Japan savings, CU checking, CC, IRA, taxable, crypto, BTC)");
   console.log("   Net worth:  ~$28,700  |  CC debt: $3,200  |  FICO: 720  |  Action ready: YES");
   console.log("─── John Doe ────────────────────────────────────────────────────────────────");
-  console.log(`   Workspace:  ${johnWorkspace.name} (id: ${johnWorkspace.id})`);
+  console.log(`   Space:  ${johnSpace.name} (id: ${johnSpace.id})`);
   console.log("   Accounts:   12 (checking, savings, CC, auto, mortgage, Roth, 401k, taxable, crypto, BTC, biz checking, biz CC)");
   console.log("   Net worth:  ~$77,800  |  Debt: $302k  |  FICO: 680  |  Action ready: NO");
   console.log("─── Alex Chen ───────────────────────────────────────────────────────────────");
   console.log(`   No personal accounts — viewer/bookkeeper role only`);
   console.log("   FICO: 750");
-  console.log("─── Shared Workspaces ───────────────────────────────────────────────────────");
-  console.log(`   ${householdWorkspace.name}  — Jane (OWNER) + John (MEMBER)`);
-  console.log(`   ${debtWorkspace.name}      — John (OWNER) + Jane (MEMBER)`);
-  console.log(`   ${japanWorkspace.name}          — Jane (OWNER) + John (MEMBER)`);
-  console.log(`   ${investmentWorkspace.name}      — John (OWNER) + Jane (MEMBER) + Alex (VIEWER)`);
-  console.log(`   ${businessWorkspace.name}       — John (OWNER) + Alex (ADMIN)`);
-  console.log(`   ${propertyWorkspace.name}             — John (OWNER) + Jane (ADMIN)`);
+  console.log("─── Shared Spaces ───────────────────────────────────────────────────────");
+  console.log(`   ${householdSpace.name}  — Jane (OWNER) + John (MEMBER)`);
+  console.log(`   ${debtSpace.name}      — John (OWNER) + Jane (MEMBER)`);
+  console.log(`   ${japanSpace.name}          — Jane (OWNER) + John (MEMBER)`);
+  console.log(`   ${investmentSpace.name}      — John (OWNER) + Jane (MEMBER) + Alex (VIEWER)`);
+  console.log(`   ${businessSpace.name}       — John (OWNER) + Alex (ADMIN)`);
+  console.log(`   ${propertySpace.name}             — John (OWNER) + Jane (ADMIN)`);
   console.log("\n🔑  Demo credentials (⚠️  local dev only — never use in production):");
   console.log(`   jane@example.com      (@janesmith)  /  ${JANE_PASSWORD}    [USER]`);
   console.log(`   john@example.com      (@johndoe)    /  ${JANE_PASSWORD}    [USER]`);

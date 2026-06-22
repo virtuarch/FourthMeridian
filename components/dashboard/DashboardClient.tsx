@@ -44,7 +44,7 @@ import { DebtClient } from "@/components/dashboard/DebtClient";
 import { ConnectAccountButton } from "@/components/dashboard/ConnectAccountButton";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
-import { ManageWorkspaceModal } from "@/components/dashboard/ManageWorkspaceModal";
+import { ManageSpaceModal } from "@/components/dashboard/ManageSpaceModal";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
@@ -101,8 +101,8 @@ const TIMELINE_FILTERS: { id: TimelineFilterId; label: string }[] = [
 ];
 
 interface Props {
-  workspaceId:       string;
-  workspaceName:     string;
+  spaceId:       string;
+  spaceName:     string;
   category:          string;
   myRole:            string;
   currentUserId:     string;
@@ -119,7 +119,7 @@ interface Props {
 // ── Tab config ────────────────────────────────────────────────────────────────
 // Fixed-rail tab order/copy comes from lib/space-nav.ts — the same source
 // every Space dashboard (Personal here, every other category in
-// WorkspaceDashboard.tsx) draws its top-level tab strip from. Each rail tab
+// SpaceDashboard.tsx) draws its top-level tab strip from. Each rail tab
 // maps to this dashboard's own internal tab id (preserved from before this
 // pass) so existing tab content needs zero changes — only which ids get a
 // visible rail control has changed.
@@ -144,7 +144,7 @@ const RAIL_TO_INTERNAL: Record<SpaceTabId, PersonalTab> = {
 // the header's Manage control). Accounts/Transactions/Members/Documents
 // move into MORE_MENU_ITEMS below instead of their own pills. This trim is
 // Personal-only — lib/space-nav.ts's SPACE_TAB_ORDER is untouched, so every
-// other Space category (WorkspaceDashboard.tsx) keeps its full rail.
+// other Space category (SpaceDashboard.tsx) keeps its full rail.
 const PERSONAL_TABS: { key: PersonalTab; label: string }[] = [
   { key: RAIL_TO_INTERNAL.OVERVIEW, label: SPACE_TAB_LABELS.OVERVIEW },
 ];
@@ -262,7 +262,7 @@ const fmtAbs = (n: number) =>
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export function DashboardClient({
-  workspaceId, workspaceName, category, myRole, currentUserId,
+  spaceId, spaceName, category, myRole, currentUserId,
   accounts, holdings, snapshots, advice, ficoScore, ficoUpdatedAt, debtTransactions,
   transactions,
 }: Props) {
@@ -315,7 +315,7 @@ export function DashboardClient({
   const [timelineFilter, setTimelineFilter] = useState<TimelineFilterId>("all");
   // "Now" for the today/week/month buckets below, captured at click time
   // (see handleTimelineFilterChange) rather than read during render — same
-  // reason WorkspaceDashboard.tsx's TrashDrawer takes its timestamp from an
+  // reason SpaceDashboard.tsx's TrashDrawer takes its timestamp from an
   // event handler instead of calling Date.now() inside a render-phase
   // computation (react-hooks/purity).
   const [timelineNow, setTimelineNow] = useState(0);
@@ -550,13 +550,13 @@ export function DashboardClient({
 
   // ── Timeline (lib/timeline-types.ts + lib/timeline-placeholder.ts) ────────
   // Real events come from the existing, unmodified activity route — the same
-  // one workspace Spaces already use — merged with placeholder rows for
+  // one space Spaces already use — merged with placeholder rows for
   // event types that have no real producer yet (document upload, AI
   // recommendation, etc.). No new aggregation logic; this is just the first
-  // place Personal threads workspaceId through to read it.
+  // place Personal threads spaceId through to read it.
   useEffect(() => {
     let active = true;
-    fetch(`/api/workspaces/${workspaceId}/activity`)
+    fetch(`/api/spaces/${spaceId}/activity`)
       .then((r) => (r.ok ? r.json() : { events: [] }))
       .then((data) => {
         if (!active) return;
@@ -568,7 +568,7 @@ export function DashboardClient({
       })
       .catch(() => { if (active) setTimelineEvents(FUTURE_TIMELINE_EVENTS); });
     return () => { active = false; };
-  }, [workspaceId]);
+  }, [spaceId]);
 
   // Timeline sub-nav filter — date-range buckets computed against each
   // event's real `date`; AI/Transactions/Documents bucket by `type` (the
@@ -595,17 +595,17 @@ export function DashboardClient({
     return events.filter((e) => typeMatch[timelineFilter](e.type));
   }, [timelineEvents, timelineFilter, timelineNow]);
 
-  // Header subtitle member count — same read-only workspace-detail endpoint
+  // Header subtitle member count — same read-only space-detail endpoint
   // SpaceMembersWidget uses; kept as its own tiny fetch so the header never
   // waits on (or couples to) whichever tab happens to be active.
   useEffect(() => {
     let active = true;
-    fetch(`/api/workspaces/${workspaceId}`)
+    fetch(`/api/spaces/${spaceId}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => { if (active) setMemberCount(data?.members?.length ?? null); })
       .catch(() => { if (active) setMemberCount(null); });
     return () => { active = false; };
-  }, [workspaceId]);
+  }, [spaceId]);
 
   // ── Account section rows (shared across tabs) ─────────────────────────────
   const accountSections = (
@@ -1059,9 +1059,9 @@ export function DashboardClient({
       {walletOpen && <AddWalletModal onClose={() => setWalletOpen(false)} />}
       {assetOpen  && <AddManualAssetModal onClose={() => setAssetOpen(false)} />}
       {manageSpaceOpen && (
-        <ManageWorkspaceModal
-          workspaceId={workspaceId}
-          workspaceName={workspaceName}
+        <ManageSpaceModal
+          spaceId={spaceId}
+          spaceName={spaceName}
           myRole={myRole}
           currentUserId={currentUserId}
           onClose={() => setManageSpaceOpen(false)}
@@ -1202,10 +1202,10 @@ export function DashboardClient({
         />
       )}
 
-      {/* Members tab — real data via the existing workspace-detail endpoint
-          (same one ManageWorkspaceModal already uses). */}
+      {/* Members tab — real data via the existing space-detail endpoint
+          (same one ManageSpaceModal already uses). */}
       {isMembers && (
-        <SpaceMembersWidget workspaceId={workspaceId} onManage={() => setManageSpaceOpen(true)} />
+        <SpaceMembersWidget spaceId={spaceId} onManage={() => setManageSpaceOpen(true)} />
       )}
 
       {/* Documents tab — placeholder, no feature exists yet. */}

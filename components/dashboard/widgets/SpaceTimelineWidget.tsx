@@ -5,14 +5,14 @@
  *
  * The richer "history of the Space" Timeline described in the redesign
  * spec — distinct from (and built on top of the same TimelineEvent
- * contract as) the existing components/workspace/widgets/TimelineWidget.tsx,
+ * contract as) the existing components/space/widgets/TimelineWidget.tsx,
  * which remains untouched and keeps powering the legacy Activity surface.
  * This widget adds the date-grouped presentation ("APR 28 / + Salary
  * deposited") and Atlas Glass styling the spec calls for, and is reusable
  * across every Space type and both dashboard implementations.
  *
  * Pure presenter: it never fetches. The host fetches real events from the
- * existing GET /api/workspaces/[id]/activity route (unmodified) and may
+ * existing GET /api/spaces/[id]/activity route (unmodified) and may
  * concat lib/timeline-placeholder.ts's FUTURE_TIMELINE_EVENTS to demonstrate
  * event types with no backend aggregation yet. Preview rows
  * (`isPreview: true`) are visually de-emphasized and badged "Preview" so

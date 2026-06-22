@@ -5,11 +5,11 @@
  *
  * Features:
  *   - Free-text search (action, name, email, username)
- *   - Dedicated filters: email, username, action, workspace, date range
+ *   - Dedicated filters: email, username, action, space, date range
  *   - Quick-filter pills: Security events | Admin actions
  *   - Expandable rows for full metadata
  *   - Device/browser column parsed from userAgent
- *   - Workspace column
+ *   - Space column
  *   - Performed-by-admin badge
  *   - Pagination (50/page)
  */
@@ -31,14 +31,14 @@ type LogEntry = {
   id:                 string;
   action:             string;
   userId:             string | null;
-  workspaceId:        string | null;
+  spaceId:        string | null;
   metadata:           Record<string, unknown> | null;
   ipAddress:          string | null;
   userAgent:          string | null;
   performedByAdminId: string | null;
   createdAt:          string;
   user:               { email: string; username: string | null; name: string | null; firstName: string | null; lastName: string | null; role: string } | null;
-  workspace:          { name: string } | null;
+  space:          { name: string } | null;
   performedByAdmin:   { email: string; username: string | null; name: string | null } | null;
 };
 
@@ -55,7 +55,7 @@ function fmtTime(d: string) {
 function actionBadgeClass(action: string): string {
   if (action.includes("FAIL") || action.includes("ERROR"))
     return "bg-red-500/10 text-red-400 border-red-500/20";
-  if (action === "LOGIN" || action === "LOGOUT" || action === "WORKSPACE_SWITCH")
+  if (action === "LOGIN" || action === "LOGOUT" || action === "SPACE_SWITCH")
     return "bg-blue-500/10 text-blue-400 border-blue-500/20";
   if (action.includes("TWO_FACTOR") || action.includes("RECOVERY"))
     return "bg-amber-500/10 text-amber-400 border-amber-500/20";
@@ -163,10 +163,10 @@ function LogRow({ log, isLast }: { log: LogEntry; isLast: boolean }) {
           </div>
         </td>
 
-        {/* Workspace */}
+        {/* Space */}
         <td className="px-4 py-3 hidden lg:table-cell">
-          {log.workspace ? (
-            <p className="text-xs text-gray-400 max-w-[120px] truncate">{log.workspace.name}</p>
+          {log.space ? (
+            <p className="text-xs text-gray-400 max-w-[120px] truncate">{log.space.name}</p>
           ) : (
             <span className="text-xs text-gray-700">—</span>
           )}
@@ -215,7 +215,7 @@ function LogRow({ log, isLast }: { log: LogEntry; isLast: boolean }) {
               <div className="flex flex-wrap gap-4 text-xs text-gray-600">
                 <span>ID: <span className="font-mono text-gray-500">{log.id}</span></span>
                 {log.userId && <span>User ID: <span className="font-mono text-gray-500">{log.userId}</span></span>}
-                {log.workspaceId && <span>Space ID: <span className="font-mono text-gray-500">{log.workspaceId}</span></span>}
+                {log.spaceId && <span>Space ID: <span className="font-mono text-gray-500">{log.spaceId}</span></span>}
                 {log.performedByAdminId && <span>Admin ID: <span className="font-mono text-gray-500">{log.performedByAdminId}</span></span>}
               </div>
             </div>
@@ -236,7 +236,7 @@ export default function AdminAuditPage() {
   const [userEmail,    setUserEmail]    = useState("");
   const [username,     setUsername]     = useState("");
   const [action,       setAction]       = useState("");
-  const [workspaceId,  setWorkspaceId]  = useState("");
+  const [spaceId,  setSpaceId]  = useState("");
   const [from,         setFrom]         = useState("");
   const [to,           setTo]           = useState("");
   const [securityOnly, setSecurityOnly] = useState(false);
@@ -260,7 +260,7 @@ export default function AdminAuditPage() {
       if (userEmail)    params.set("userEmail",     userEmail);
       if (username)     params.set("username",      username);
       if (action)       params.set("action",        action);
-      if (workspaceId)  params.set("workspaceId",   workspaceId);
+      if (spaceId)  params.set("spaceId",   spaceId);
       if (from)         params.set("from",          from);
       if (to)           params.set("to",            to);
       if (securityOnly) params.set("securityOnly",  "true");
@@ -276,7 +276,7 @@ export default function AdminAuditPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, userEmail, username, action, workspaceId, from, to, securityOnly, adminOnly]);
+  }, [search, userEmail, username, action, spaceId, from, to, securityOnly, adminOnly]);
 
   // Reset to page 0 on any filter change
   useEffect(() => {
@@ -287,7 +287,7 @@ export default function AdminAuditPage() {
     }, 300);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, userEmail, username, action, workspaceId, from, to, securityOnly, adminOnly]);
+  }, [search, userEmail, username, action, spaceId, from, to, securityOnly, adminOnly]);
 
   // Page navigation — wrapped in setTimeout so fetchLogs's synchronous setLoading(true)
   // doesn't run directly within the effect body (satisfies react-hooks/set-state-in-effect).
@@ -298,12 +298,12 @@ export default function AdminAuditPage() {
 
   function clearFilters() {
     setSearch(""); setUserEmail(""); setUsername("");
-    setAction(""); setWorkspaceId(""); setFrom(""); setTo("");
+    setAction(""); setSpaceId(""); setFrom(""); setTo("");
     setSecurityOnly(false); setAdminOnly(false);
     setOffset(0);
   }
 
-  const hasFilters = search || userEmail || username || action || workspaceId || from || to || securityOnly || adminOnly;
+  const hasFilters = search || userEmail || username || action || spaceId || from || to || securityOnly || adminOnly;
   const totalPages  = Math.ceil(total / PAGE_SIZE);
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
@@ -434,15 +434,15 @@ export default function AdminAuditPage() {
               </select>
             </div>
 
-            {/* Workspace ID */}
+            {/* Space ID */}
             <div className="space-y-1">
               <label className="flex items-center gap-1.5 text-xs text-gray-500 font-medium">
                 <Building2 size={11} /> Space ID
               </label>
               <input
                 type="text"
-                value={workspaceId}
-                onChange={(e) => setWorkspaceId(e.target.value)}
+                value={spaceId}
+                onChange={(e) => setSpaceId(e.target.value)}
                 placeholder="Space ID"
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 font-mono"
               />

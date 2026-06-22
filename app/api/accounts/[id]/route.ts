@@ -179,7 +179,7 @@ export const DELETE = withApiHandler(async (
     await db.auditLog.create({
       data: {
         userId:      user.id,
-        workspaceId: userShare.workspaceId,
+        spaceId: userShare.workspaceId, // WorkspaceAccountShare keeps its own pre-Phase-1 field name
         action:      "ACCOUNT_REMOVE",
         metadata:    { accountName: fa.name, accountType: fa.type },
         ipAddress:   getClientIp(req),

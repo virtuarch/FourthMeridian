@@ -15,9 +15,7 @@ const sections = [
 ] as const;
 
 export default async function AccountsPage() {
-  const t0 = Date.now();
   const allAccounts = await getAccounts();
-  console.log(`[page:accounts] total: ${Date.now() - t0}ms`);
 
   return (
     <div className="space-y-4 pb-4">

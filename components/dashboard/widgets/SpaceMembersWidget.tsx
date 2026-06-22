@@ -4,10 +4,10 @@
  * SpaceMembersWidget
  *
  * Read-only member roster for the new Members tab — self-fetches via the
- * existing GET /api/workspaces/[id] route (the same endpoint
- * ManageWorkspaceModal already uses internally), so this ships with real
+ * existing GET /api/spaces/[id] route (the same endpoint
+ * ManageSpaceModal already uses internally), so this ships with real
  * data on day one rather than a placeholder. All actual management
- * (invite, remove, role change) stays inside ManageWorkspaceModal, which
+ * (invite, remove, role change) stays inside ManageSpaceModal, which
  * this widget links out to via `onManage` rather than re-implementing —
  * one source of truth for member mutations.
  *
@@ -50,22 +50,22 @@ const ROLE_ICON: Record<string, React.ReactNode> = {
 };
 
 export function SpaceMembersWidget({
-  workspaceId,
+  spaceId,
   onManage,
 }: {
-  workspaceId: string;
+  spaceId: string;
   onManage?: () => void;
 }) {
   const [members, setMembers] = useState<Member[] | null>(null);
 
   useEffect(() => {
     let active = true;
-    fetch(`/api/workspaces/${workspaceId}`)
+    fetch(`/api/spaces/${spaceId}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => { if (active) setMembers(data?.members ?? []); })
       .catch(() => { if (active) setMembers([]); });
     return () => { active = false; };
-  }, [workspaceId]);
+  }, [spaceId]);
 
   if (members === null) {
     return (

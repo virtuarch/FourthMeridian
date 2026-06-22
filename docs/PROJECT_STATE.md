@@ -1,4 +1,4 @@
-# FinTracker — Project State
+# Fourth Meridian — Project State
 **Last updated:** 2026-06-11  
 **Version tag:** v1.0 (post-commit polish)  
 **Status:** v1 committed to GitHub. Post-commit: branding finalized, workplaces → workspaces refactor complete. Next: background sync jobs (Milestone 2).
@@ -32,16 +32,16 @@ A local-first personal finance dashboard. Runs on your laptop via Docker Compose
 ## Database Models
 
 - **User** — email, username, hashed password, TOTP secret, role (USER/SYSTEM_ADMIN)
-- **Workspace** — financial namespace; type PERSONAL or SHARED; `isPublic`, `description`
-- **WorkspaceMember** — user ↔ workspace with role (OWNER/ADMIN/MEMBER/VIEWER)
-- **WorkspaceInvite** — invite queue with status (PENDING/ACCEPTED/DECLINED)
+- **Space** — financial namespace; type PERSONAL or SHARED; `isPublic`, `description` (renamed from `Workspace` — Fourth Meridian Phase 1, `@@map`, no DDL)
+- **SpaceMember** — user ↔ space with role (OWNER/ADMIN/MEMBER/VIEWER) (renamed from `WorkspaceMember`)
+- **SpaceInvite** — invite queue with status (PENDING/ACCEPTED/DECLINED) (renamed from `WorkspaceInvite`)
 - **Account** — financial account (checking/savings/investment/crypto/debt); soft-deleted via `deletedAt`
 - **PlaidItem** — Plaid institution link; encrypted access token; status (ACTIVE/NEEDS_REAUTH/ERROR/REVOKED)
 - **Transaction** — Plaid-synced transactions with category, merchant, amount, pending flag
 - **Holding** — individual positions inside investment/crypto accounts
-- **WorkspaceSnapshot** — daily net worth snapshots per workspace for historical charting
+- **SpaceSnapshot** — daily net worth snapshots per space for historical charting (renamed from `WorkspaceSnapshot`)
 - **AiAdvice** — AI-generated advice records with actionReady signal and risk level
-- **AiAgent** — one agent per workspace; advice records are linked to it
+- **AiAgent** — one agent per space; advice records are linked to it
 - **CreditScore** — manual FICO score snapshots per user (dated)
 - **AuditLog** — every sensitive action logged with actor, IP, and metadata
 - **TotpDevice** — TOTP 2FA secrets per user
@@ -63,11 +63,11 @@ No pending migrations as of v1.
 ## Features Complete
 
 ### Authentication
-- [x] Registration with personal workspace auto-creation
+- [x] Registration with personal space auto-creation
 - [x] Login with bcrypt password validation (cost 12)
 - [x] JWT sessions via NextAuth v4
 - [x] 2FA/TOTP model wired (UI flow not yet built)
-- [x] Audit logging on login, account changes, workspace events
+- [x] Audit logging on login, account changes, space events
 - [x] SYSTEM_ADMIN kill switch via `DISABLE_SYSTEM_ADMIN` env var
 
 ### Dashboard
@@ -92,33 +92,33 @@ No pending migrations as of v1.
 ### Data Sync
 - [x] Plaid token exchange and AES-256-GCM encryption on connect
 - [x] Plaid transaction sync (incremental cursor-based; initial connect backfills up to 24 months)
-- [x] WorkspaceSnapshot written on each sync
+- [x] SpaceSnapshot written on each sync
 - [ ] Background cron jobs (next milestone — Plaid every 4h weekdays, daily weekends)
 - [ ] Crypto wallet balance refresh jobs (Blockstream/Etherscan/Helius)
 
 ### AI Advice Tab
-- [x] ML Review tab — advice banner, schedule info, "What the Engine Reviews" grid (all 6 cells pull real workspace data), Action Readiness wired to `advice.actionReady`
+- [x] ML Review tab — advice banner, schedule info, "What the Engine Reviews" grid (all 6 cells pull real space data), Action Readiness wired to `advice.actionReady`
 - [x] AI Chat tab — mock responses keyed to topic; greeting uses session user's first name
 - [ ] Live LLM integration (Milestone 5)
 
-### Workspaces
-- [x] Personal workspace per user (auto-created at registration, non-deletable)
-- [x] Create shared workspaces (public or private, with description)
-- [x] Public workspace discovery tab
+### Spaces
+- [x] Personal space per user (auto-created at registration, non-deletable)
+- [x] Create shared spaces (public or private, with description)
+- [x] Public space discovery tab
 - [x] Invite users by name or @username (OWNER/ADMIN only)
 - [x] Pending invite queue with rescind; re-invite after rescind
 - [x] Accept/decline invites
-- [x] Remove members; leave workspace
-- [x] Delete workspace (OWNER only)
+- [x] Remove members; leave space
+- [x] Delete space (OWNER only)
 
 ### Admin Panel (`/admin`)
-- [x] Overview stats — users, workspaces, accounts, transactions, platform net worth
+- [x] Overview stats — users, spaces, accounts, transactions, platform net worth
 - [x] Users table
-- [x] Workspaces table
+- [x] Spaces table
 - [x] Audit log viewer (paginated)
 
 ### UI / Mobile
-- [x] Mobile-first bottom nav (Dashboard → Workspaces → AI)
+- [x] Mobile-first bottom nav (Dashboard → Spaces → AI)
 - [x] Desktop sidebar
 - [x] All modals as bottom sheets on mobile, centered on desktop
 - [x] Modal height tuned for iPhone: `max-h-[calc(100dvh-180px)]` clears browser chrome + home indicator
@@ -161,21 +161,21 @@ No pending migrations as of v1.
 
 ## What's Next (Priority Order)
 
-### Milestone 1 — Active Workspace Experience
-- Shared account visibility — workspace members see each other's linked accounts
-- Per-workspace net worth view
-- Workspace activity feed (who connected what, recent syncs)
+### Milestone 1 — Active Space Experience
+- Shared account visibility — space members see each other's linked accounts
+- Per-space net worth view
+- Space activity feed (who connected what, recent syncs)
 - 2FA/TOTP setup screen and login verification
 
 ### Milestone 2 — Background Sync Jobs
 - node-cron scheduler inside Docker
 - Plaid sync: runs every 4 hours on weekdays, once daily on weekends
 - Crypto wallet balance refresh: Blockstream (BTC), Etherscan (ETH/EVM), Helius (SOL)
-- WorkspaceSnapshot written after every sync
+- SpaceSnapshot written after every sync
 - "Last synced" timestamp per account; "Refresh Now" button wired to API
 
 ### Milestone 3 — Historical Net Worth Charts
-- `WorkspaceSnapshot` table already populated — build the chart UI
+- `SpaceSnapshot` table already populated — build the chart UI
 - Recharts line chart with 30D / 90D / 1Y / All views
 - Per-category overlay (cash, investments, crypto, debt)
 - Debt payoff progress tracker
@@ -225,14 +225,14 @@ ANTHROPIC_API_KEY=  # for AI advice engine (future)
 app/
   (auth)/login, register         — auth pages
   dashboard/                     — main dashboard
-  dashboard/workspaces/          — workspaces page
+  dashboard/spaces/              — spaces page (dashboard/workspaces/ kept as a permanent redirect)
   admin/                         — admin panel
   api/
     auth/                        — register, [...nextauth]
     accounts/                    — CRUD + wallet add
     plaid/                       — link token, exchange, webhook
     sync/plaid                   — transaction + balance sync
-    workspaces/                  — workspace CRUD + invite system
+    spaces/                      — space CRUD + invite system
     users/search                 — username search for invites
     admin/                       — admin data endpoints
 
@@ -261,5 +261,5 @@ prisma/
 - **Crypto wallet balances** — not refreshed automatically; shows "Pending Sync" until Milestone 2 cron jobs are built
 - **`prisma migrate dev && prisma generate`** must be run after cloning before the app compiles
 - **`UserRole.SYSTEM_ADMIN`** is the schema name for the platform admin role. Used consistently throughout. Renaming requires a DB migration — deferred.
-- **`getDemoContext()`** in `lib/workspace.ts` has been removed (2026-06-17 naming cleanup) — it had zero call sites anywhere in the codebase. `getWorkspaceContext()`/`resolveWorkspaceContext()` are unaffected.
-- **Admin has no workspace** — `admin@example.com` intentionally has no workspace memberships. The proxy redirects SYSTEM_ADMIN away from `/dashboard`. If an admin session somehow reaches a dashboard route, `resolveWorkspaceContext` will throw. This is expected behavior, not a bug.
+- **`getDemoContext()`** in `lib/space.ts` (renamed from `lib/workspace.ts` — Fourth Meridian Phase 1) has been removed (2026-06-17 naming cleanup) — it had zero call sites anywhere in the codebase. `getSpaceContext()`/`resolveSpaceContext()` (renamed from `getWorkspaceContext()`/`resolveWorkspaceContext()`) are unaffected.
+- **Admin has no space** — `admin@example.com` intentionally has no space memberships. The proxy redirects SYSTEM_ADMIN away from `/dashboard`. If an admin session somehow reaches a dashboard route, `resolveSpaceContext` will throw. This is expected behavior, not a bug.

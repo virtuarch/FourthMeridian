@@ -26,12 +26,12 @@ export async function GET() {
       employmentStatus: true, useCase: true,
       // DOB is encrypted — return a flag so the client knows if it's set
       dateOfBirthEncrypted: true,
-      preferredWorkspaceId: true,
+      preferredSpaceId: true,
     },
   }) as {
     email: string; username: string | null; firstName: string | null;
     lastName: string | null; employmentStatus: string | null; useCase: string | null;
-    dateOfBirthEncrypted: string | null; preferredWorkspaceId: string | null;
+    dateOfBirthEncrypted: string | null; preferredSpaceId: string | null;
   } | null;
 
   if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -44,7 +44,7 @@ export async function GET() {
     employmentStatus:     dbUser.employmentStatus     ?? "",
     useCase:              dbUser.useCase              ?? "",
     hasDob:               !!dbUser.dateOfBirthEncrypted,
-    preferredWorkspaceId: dbUser.preferredWorkspaceId ?? null,
+    preferredSpaceId: dbUser.preferredSpaceId ?? null,
   });
 }
 
@@ -53,7 +53,7 @@ export async function PATCH(req: NextRequest) {
   if (err) return err;
 
   const body = await req.json();
-  const { username, firstName, lastName, employmentStatus, useCase, dateOfBirth, preferredWorkspaceId } = body;
+  const { username, firstName, lastName, employmentStatus, useCase, dateOfBirth, preferredSpaceId } = body;
 
   // ── Validate username if provided ─────────────────────────────────────────
   if (username !== undefined) {
@@ -81,18 +81,18 @@ export async function PATCH(req: NextRequest) {
   if (employmentStatus      !== undefined) data.employmentStatus      = employmentStatus as EmploymentStatus || null;
   if (useCase               !== undefined) data.useCase               = useCase as UseCase || null;
   if (dateOfBirth           !== undefined) data.dateOfBirthEncrypted  = dateOfBirth ? encrypt(dateOfBirth) : null;
-  if (preferredWorkspaceId  !== undefined) {
-    // Validate that user is actually a member of this workspace (or null to clear)
-    if (preferredWorkspaceId !== null) {
-      const membership = await db.workspaceMember.findUnique({
-        where: { workspaceId_userId: { workspaceId: preferredWorkspaceId, userId: user.id } },
+  if (preferredSpaceId  !== undefined) {
+    // Validate that user is actually a member of this space (or null to clear)
+    if (preferredSpaceId !== null) {
+      const membership = await db.spaceMember.findUnique({
+        where: { spaceId_userId: { spaceId: preferredSpaceId, userId: user.id } },
         select: { status: true },
       });
       if (!membership || membership.status !== "ACTIVE") {
         return NextResponse.json({ error: "Not a member of that Space" }, { status: 403 });
       }
     }
-    data.preferredWorkspaceId = preferredWorkspaceId;
+    data.preferredSpaceId = preferredSpaceId;
   }
 
   // Keep display name in sync

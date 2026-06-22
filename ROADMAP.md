@@ -1,4 +1,4 @@
-# FinTracker — Roadmap
+# Fourth Meridian — Roadmap
 
 Last updated: June 2026 · v1.0
 
@@ -17,7 +17,7 @@ Last updated: June 2026 · v1.0
 - [x] NextAuth v4 JWT sessions with role support
 - [x] Route protection via `proxy.ts` (Next.js 16) for `/dashboard/*` and `/admin/*`
 - [x] AES-256-GCM encryption for Plaid access tokens at rest
-- [x] Audit log on all logins, account changes, workspace events
+- [x] Audit log on all logins, account changes, space events
 - [x] SYSTEM_ADMIN kill switch via `DISABLE_SYSTEM_ADMIN` env var
 - [ ] 2FA/TOTP UI — model + schema done; setup + login verification screens not yet built
 
@@ -35,39 +35,39 @@ Last updated: June 2026 · v1.0
 - [x] Transaction modal with pagination and category filter
 - [x] Investment holdings table with pagination
 
-### Workspaces
-- [x] Personal workspace per user (auto-created at registration)
-- [x] Create public/private shared workspaces
+### Spaces
+- [x] Personal space per user (auto-created at registration)
+- [x] Create public/private shared spaces
 - [x] Invite users by name or @username (OWNER/ADMIN only)
 - [x] Pending invite queue with rescind + re-invite
 - [x] Accept/decline invites
 - [x] Role-based access (OWNER, ADMIN, MEMBER, VIEWER)
-- [x] Remove members; leave workspace; delete workspace
+- [x] Remove members; leave space; delete space
 
 ### Admin Panel
-- [x] Overview stats — users, workspaces, accounts, transactions, platform net worth
-- [x] Users table, workspaces table
+- [x] Overview stats — users, spaces, accounts, transactions, platform net worth
+- [x] Users table, spaces table
 - [x] Audit log viewer (paginated)
 
 ---
 
 ## 🔲 Next Milestones — In Order
 
-### Milestone 1 — Active Workspace Experience
-- [ ] Shared account visibility — workspace members see each other's linked accounts
-- [ ] Per-workspace net worth view
-- [ ] Workspace activity feed (who connected what, recent syncs)
+### Milestone 1 — Active Space Experience
+- [ ] Shared account visibility — space members see each other's linked accounts
+- [ ] Per-space net worth view
+- [ ] Space activity feed (who connected what, recent syncs)
 - [ ] 2FA/TOTP setup screen and login verification
 
 ### Milestone 2 — Background Sync Jobs
 - [ ] Plaid sync cron — runs every 4 hours on weekdays, once daily on weekends
 - [ ] Crypto wallet balance refresh — Blockstream (BTC), Etherscan (ETH/EVM), Helius (SOL)
-- [ ] WorkspaceSnapshot written after every sync (already writing on manual refresh)
+- [ ] SpaceSnapshot written after every sync (already writing on manual refresh)
 - [ ] "Last synced" timestamp shown per account
 - [ ] "Refresh Now" button wired to API (UI exists, endpoint needed)
 
 ### Milestone 3 — Historical Net Worth Charts
-- [ ] `WorkspaceSnapshot` table is already populated — build the chart UI
+- [ ] `SpaceSnapshot` table is already populated — build the chart UI
 - [ ] Recharts line chart with 30D / 90D / 1Y / All time views
 - [ ] Per-category overlay (cash, investments, crypto, debt)
 - [ ] Debt payoff progress tracker

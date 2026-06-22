@@ -15,7 +15,7 @@
  *
  * Generic over the filter id (`<F extends string>`) rather than importing a
  * single shared TimelineFilterId: DashboardClient.tsx and
- * WorkspaceDashboard.tsx intentionally keep their own short id vocabularies
+ * SpaceDashboard.tsx intentionally keep their own short id vocabularies
  * (see lib/perspectives.ts's doc comment on this same host-local-glue
  * pattern for Perspective routing), so this stays host-agnostic on *which*
  * filters exist while still sharing the one modal shell + timeline
@@ -48,7 +48,7 @@ export function TimelineModal<F extends string>({
   events: TimelineEvent[];
   loading: boolean;
   /** Sub-nav row, e.g. DashboardClient.tsx's All/Today/Week/Month/AI/Transactions/Documents
-   *  chips. Omit entirely for hosts with no Timeline sub-nav yet (e.g. WorkspaceDashboard.tsx,
+   *  chips. Omit entirely for hosts with no Timeline sub-nav yet (e.g. SpaceDashboard.tsx,
    *  which renders every event with no filter) — the modal just skips the toolbar slot. */
   filters?: InlineFilterOption<F>[];
   filterValue?: F;

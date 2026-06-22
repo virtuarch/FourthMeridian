@@ -1,14 +1,14 @@
 /**
  * lib/snapshots/regenerate.ts
  *
- * Regenerates today's WorkspaceSnapshot row for a workspace from current
+ * Regenerates today's SpaceSnapshot row for a space from current
  * FinancialAccount balances.
  *
  * Root cause this fixes: the Cash History / Banking History / Net Worth
  * charts (lib/data/snapshots.ts: getRecentSnapshots, getPortfolioHistory)
- * read exclusively from WorkspaceSnapshot. Before this file existed, the
- * only code path that ever wrote a WorkspaceSnapshot row was prisma/seed.ts
- * — there was no production writer, so real (non-seeded) workspaces had no
+ * read exclusively from SpaceSnapshot. Before this file existed, the
+ * only code path that ever wrote a SpaceSnapshot row was prisma/seed.ts
+ * — there was no production writer, so real (non-seeded) spaces had no
  * rows and the charts rendered blank regardless of how fresh balances or
  * transactions were.
  *
@@ -16,11 +16,11 @@
  * lib/plaid/refresh.ts today (manual Refresh button, and — unchanged at
  * call sites — the future cron/webhook that reuse the same function).
  *
- * Idempotent: upserts on the [workspaceId, date] unique constraint, so
+ * Idempotent: upserts on the [spaceId, date] unique constraint, so
  * calling it multiple times in one day updates that day's row instead of
  * creating duplicates.
  *
- * Formula mirrors the field comments on WorkspaceSnapshot in
+ * Formula mirrors the field comments on SpaceSnapshot in
  * prisma/schema.prisma exactly: totalAssets/netWorth are stocks + crypto +
  * cash + savings (± debt) — manual/real assets (AccountType.other) are
  * intentionally excluded, matching the existing seed data convention.
@@ -38,15 +38,15 @@ function todayUTC(): Date {
 }
 
 /**
- * Recomputes and upserts today's WorkspaceSnapshot row for one workspace
+ * Recomputes and upserts today's SpaceSnapshot row for one space
  * from its current FinancialAccount balances (via getAccounts, the same
  * live data source the dashboard's "Banking" card already renders from).
  */
-export async function regenerateWorkspaceSnapshot(
-  workspaceId: string,
+export async function regenerateSpaceSnapshot(
+  spaceId: string,
   date: Date = todayUTC(),
 ): Promise<void> {
-  const accounts = await getAccounts({ workspaceId });
+  const accounts = await getAccounts({ spaceId });
   const c = classifyAccounts(accounts);
 
   const stocks  = c.totalInvestments;
@@ -64,10 +64,10 @@ export async function regenerateWorkspaceSnapshot(
   // cash rather than an invented buffer amount.
   const cashOnHand  = Math.max(cash, 0);
 
-  await db.workspaceSnapshot.upsert({
-    where: { workspaceId_date: { workspaceId, date } },
+  await db.spaceSnapshot.upsert({
+    where: { spaceId_date: { spaceId, date } },
     create: {
-      workspaceId, date,
+      spaceId, date,
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
     },
@@ -79,12 +79,12 @@ export async function regenerateWorkspaceSnapshot(
 }
 
 /**
- * Regenerates snapshots for every workspace that shares any of the given
+ * Regenerates snapshots for every space that shares any of the given
  * FinancialAccount ids via an ACTIVE WorkspaceAccountShare. Used by the
- * Plaid refresh pipeline so refreshing one item keeps every workspace it's
- * shared into up to date — not just a single "current" workspace.
+ * Plaid refresh pipeline so refreshing one item keeps every space it's
+ * shared into up to date — not just a single "current" space.
  *
- * @returns the distinct workspace ids that were regenerated.
+ * @returns the distinct space ids that were regenerated.
  */
 export async function regenerateSnapshotsForAccounts(
   financialAccountIds: string[],
@@ -93,10 +93,11 @@ export async function regenerateSnapshotsForAccounts(
 
   const shares = await db.workspaceAccountShare.findMany({
     where:  { financialAccountId: { in: financialAccountIds }, status: ShareStatus.ACTIVE },
+    // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
     select: { workspaceId: true },
   });
 
-  const workspaceIds = [...new Set(shares.map((s) => s.workspaceId))];
-  await Promise.all(workspaceIds.map((id) => regenerateWorkspaceSnapshot(id)));
-  return workspaceIds;
+  const spaceIds = [...new Set(shares.map((s) => s.workspaceId))];
+  await Promise.all(spaceIds.map((id) => regenerateSpaceSnapshot(id)));
+  return spaceIds;
 }

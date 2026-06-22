@@ -4,7 +4,7 @@
  * Perspectives are "different lenses through which the same underlying
  * Space data is viewed" — Wealth, Cash Flow, Investments, Debt, Retirement,
  * Goals, Tax, Property, Business Health, etc. They are a first-class
- * concept, parallel to lib/workspace-presets.ts's section presets, but
+ * concept, parallel to lib/space-presets.ts's section presets, but
  * answer a different question: presets decide *which widgets* a Space's
  * Overview/Accounts/etc. show; Perspectives decide *which lenses* a user
  * can open onto that same data.
@@ -20,12 +20,12 @@
  *     Property, Business Health as dedicated views) — the host renders a
  *     calm placeholder card. No `targetTab`.
  *
- * Host dashboards (DashboardClient.tsx, WorkspaceDashboard.tsx) each keep
+ * Host dashboards (DashboardClient.tsx, SpaceDashboard.tsx) each keep
  * their own short id-to-internal-tab map, because the two dashboards use
  * different internal tab id vocabularies (e.g. "credit" vs. "DEBT") for
  * historical reasons this pass intentionally leaves alone. Keeping that
  * map at the call site — instead of here — keeps this file honest about
- * being host-agnostic, the same separation lib/workspace-presets.ts uses.
+ * being host-agnostic, the same separation lib/space-presets.ts uses.
  */
 
 export type PerspectiveStatus = "available" | "comingSoon";
@@ -106,7 +106,7 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
 
 /**
  * Ordered lens ids per Space category. Mirrors the shape (not the content)
- * of PRESET_MAP in lib/workspace-presets.ts: configuration over branching,
+ * of PRESET_MAP in lib/space-presets.ts: configuration over branching,
  * so adding a category here is a one-line change, not a new code path.
  */
 const PERSPECTIVES_BY_CATEGORY: Record<string, string[]> = {

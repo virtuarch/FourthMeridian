@@ -7,8 +7,8 @@
  * Creates:
  *   FinancialAccount     — type=other, syncStatus='manual', balance=user-provided
  *   AccountConnection    — manual connection row (no PlaidItem, no walletAddress)
- *   WorkspaceAccountShare — always shares into the user's PERSONAL workspace
- *                           + any additional workspace IDs passed in `workspaceIds`
+ *   WorkspaceAccountShare — always shares into the user's PERSONAL space
+ *                           + any additional space IDs passed in `spaceIds`
  *
  * Body: {
  *   name:          string             // display name, e.g. "Austin Home"
@@ -18,7 +18,7 @@
  *   purchasePrice?: number            // for gain/loss in asset widgets
  *   purchaseDate?:  string            // ISO date string, e.g. "2020-04-15"
  *   notes?:         string            // free-text display note
- *   workspaceIds?:  string[]          // additional (non-personal) workspaces to share into
+ *   spaceIds?:  string[]          // additional (non-personal) spaces to share into
  * }
  *
  * Returns: { accountId: string }
@@ -26,8 +26,8 @@
 
 import { NextRequest, NextResponse }        from "next/server";
 import { db }                               from "@/lib/db";
-import { getWorkspaceContext }              from "@/lib/workspace";
-import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, WorkspaceMemberStatus } from "@prisma/client";
+import { getSpaceContext }              from "@/lib/space";
+import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, SpaceMemberStatus } from "@prisma/client";
 import { requireUser }                      from "@/lib/session";
 import { withApiHandler }                   from "@/lib/api";
 
@@ -44,7 +44,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     purchasePrice?: number;
     purchaseDate?:  string;
     notes?:         string;
-    workspaceIds?:  string[];
+    spaceIds?:  string[];
   };
 
   const {
@@ -55,7 +55,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     purchasePrice,
     purchaseDate,
     notes,
-    workspaceIds = [],
+    spaceIds = [],
   } = body;
 
   // ── Validation ─────────────────────────────────────────────────────────────
@@ -69,31 +69,31 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   if (!VALID_KINDS.includes(assetKind))
                                return NextResponse.json({ error: `Invalid assetKind. Use: ${VALID_KINDS.join(", ")}` }, { status: 400 });
 
-  // ── Get user's personal workspace ──────────────────────────────────────────
-  const ctx = await getWorkspaceContext();
-  const personalWorkspaceId = ctx.workspace.type === "PERSONAL"
-    ? ctx.workspaceId
-    : (await db.workspaceMember.findFirst({
-        where: { userId, status: WorkspaceMemberStatus.ACTIVE, workspace: { type: "PERSONAL" } },
-        select: { workspaceId: true },
-      }))?.workspaceId;
+  // ── Get user's personal space ──────────────────────────────────────────
+  const ctx = await getSpaceContext();
+  const personalSpaceId = ctx.space.type === "PERSONAL"
+    ? ctx.spaceId
+    : (await db.spaceMember.findFirst({
+        where: { userId, status: SpaceMemberStatus.ACTIVE, space: { type: "PERSONAL" } },
+        select: { spaceId: true },
+      }))?.spaceId;
 
-  if (!personalWorkspaceId) {
+  if (!personalSpaceId) {
     return NextResponse.json({ error: "Personal Space not found." }, { status: 500 });
   }
 
-  // ── Validate additional workspace IDs (must be member of each) ────────────
-  const additionalIds = [...new Set(workspaceIds.filter((id) => id !== personalWorkspaceId))];
+  // ── Validate additional space IDs (must be member of each) ────────────
+  const additionalIds = [...new Set(spaceIds.filter((id) => id !== personalSpaceId))];
   if (additionalIds.length > 0) {
-    const memberships = await db.workspaceMember.findMany({
+    const memberships = await db.spaceMember.findMany({
       where: {
         userId,
-        status:      WorkspaceMemberStatus.ACTIVE,
-        workspaceId: { in: additionalIds },
+        status:      SpaceMemberStatus.ACTIVE,
+        spaceId: { in: additionalIds },
       },
-      select: { workspaceId: true },
+      select: { spaceId: true },
     });
-    const validIds = new Set(memberships.map((m) => m.workspaceId));
+    const validIds = new Set(memberships.map((m) => m.spaceId));
     const invalid  = additionalIds.filter((id) => !validIds.has(id));
     if (invalid.length > 0) {
       return NextResponse.json({ error: "Not a member of one or more requested Spaces." }, { status: 403 });
@@ -125,10 +125,11 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     },
   });
 
-  // ── Share into personal workspace + any additional workspaces ─────────────
-  const shareTargets = [personalWorkspaceId, ...additionalIds];
+  // ── Share into personal space + any additional spaces ─────────────
+  const shareTargets = [personalSpaceId, ...additionalIds];
   await Promise.all(shareTargets.map((wsId) =>
     db.workspaceAccountShare.upsert({
+      // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
       where:  { workspaceId_financialAccountId: { workspaceId: wsId, financialAccountId: fa.id } },
       create: {
         workspaceId:        wsId,
@@ -150,7 +151,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   await db.auditLog.create({
     data: {
       userId,
-      workspaceId: personalWorkspaceId,
+      spaceId: personalSpaceId,
       action:      "MANUAL_ASSET_ADD",
       metadata: {
         name:           fa.name,
@@ -159,7 +160,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         assetKind,
         purchasePrice,
         purchaseDate,
-        sharedWorkspaces: shareTargets,
+        sharedSpaces: shareTargets,
       },
     },
   });

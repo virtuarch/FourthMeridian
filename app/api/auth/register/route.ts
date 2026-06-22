@@ -1,7 +1,7 @@
 /**
  * POST /api/auth/register
  *
- * Creates a new user with a Personal Workspace.
+ * Creates a new user with a Personal Space.
  * All required fields are validated server-side.
  * dateOfBirth is AES-256-GCM encrypted before storage.
  *
@@ -23,7 +23,7 @@ import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
 import { encrypt } from "@/lib/plaid/encryption";
 import { possessive } from "@/lib/format";
-import { EmploymentStatus, UseCase, WorkspaceMemberRole } from "@prisma/client";
+import { EmploymentStatus, UseCase, SpaceMemberRole } from "@prisma/client";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
     const passwordHash = await bcrypt.hash(password, 12);
     const dateOfBirthEncrypted = dateOfBirth ? encrypt(dateOfBirth) : undefined;
 
-    // ── Create user + workspace atomically ───────────────────────────────────
+    // ── Create user + space atomically ───────────────────────────────────
     const user = await db.$transaction(async (tx) => {
       const newUser = await tx.user.create({
         data: {
@@ -95,30 +95,30 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      const workspace = await tx.workspace.create({
+      const space = await tx.space.create({
         data: {
           name: `${possessive(firstName.trim())} Space`,
           type: "PERSONAL",
         },
       });
 
-      await tx.workspaceMember.create({
+      await tx.spaceMember.create({
         data: {
           userId:      newUser.id,
-          workspaceId: workspace.id,
-          role:        WorkspaceMemberRole.OWNER,
+          spaceId: space.id,
+          role:        SpaceMemberRole.OWNER,
         },
       });
 
-      // Set the personal workspace as the user's default landing workspace.
+      // Set the personal space as the user's default landing space.
       await tx.user.update({
         where: { id: newUser.id },
-        data:  { preferredWorkspaceId: workspace.id },
+        data:  { preferredSpaceId: space.id },
       });
 
       await tx.aiAgent.create({
         data: {
-          workspaceId: workspace.id,
+          spaceId: space.id,
           name:        `${possessive(firstName.trim())} Financial Agent`,
         },
       });
@@ -137,7 +137,7 @@ export async function POST(req: NextRequest) {
       await tx.auditLog.create({
         data: {
           userId:      newUser.id,
-          workspaceId: workspace.id,
+          spaceId: space.id,
           action:      "REGISTER",
           metadata:    { email: normalizedEmail, username: normalizedUsername },
         },

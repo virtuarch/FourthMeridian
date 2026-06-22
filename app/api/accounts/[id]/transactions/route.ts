@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getWorkspaceContext } from "@/lib/workspace";
+import { getSpaceContext } from "@/lib/space";
 import { ShareStatus } from "@prisma/client";
 
 export async function GET(
@@ -9,20 +9,21 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  const { workspaceId } = await getWorkspaceContext();
+  const { spaceId } = await getSpaceContext();
 
   // `id` is most commonly a FinancialAccount.id (the canonical model — see
-  // getAccounts() in lib/data/accounts.ts), visible to this workspace via an
+  // getAccounts() in lib/data/accounts.ts), visible to this space via an
   // active WorkspaceAccountShare. Fall back to the legacy Account model for
   // any pre-migration rows that might still be referenced directly.
   const share = await db.workspaceAccountShare.findFirst({
-    where:  { workspaceId, financialAccountId: id, status: ShareStatus.ACTIVE },
+    // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
+    where:  { workspaceId: spaceId, financialAccountId: id, status: ShareStatus.ACTIVE },
     select: { id: true },
   });
 
   if (!share) {
     const legacyAccount = await db.account.findFirst({
-      where:  { id, workspaceId },
+      where:  { id, spaceId },
       select: { id: true },
     });
     if (!legacyAccount) {

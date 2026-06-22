@@ -3,9 +3,9 @@
  *
  * Server-only transaction queries.
  *
- * Transactions reach a workspace via two paths (see Transaction model comment
+ * Transactions reach a space via two paths (see Transaction model comment
  * in prisma/schema.prisma):
- *  - legacy rows: account.workspaceId (the old Account model)
+ *  - legacy rows: account.spaceId (the old Account model)
  *  - Plaid-synced rows: financialAccount.workspaceShares (the canonical
  *    FinancialAccount + WorkspaceAccountShare model)
  * Every query below matches both so newly-synced Plaid transactions show up
@@ -15,7 +15,7 @@
  */
 
 import { db } from "@/lib/db";
-import { getWorkspaceContext } from "@/lib/workspace";
+import { getSpaceContext } from "@/lib/space";
 import { Transaction, InvestmentTransaction } from "@/types";
 import { ShareStatus } from "@prisma/client";
 
@@ -25,14 +25,15 @@ const BANKING_CATEGORIES = [
 ];
 
 /** Banking transactions only (excludes investment activity), newest first. */
-export async function getTransactions(ctx?: { workspaceId: string }): Promise<Transaction[]> {
-  const { workspaceId } = ctx ?? (await getWorkspaceContext());
+export async function getTransactions(ctx?: { spaceId: string }): Promise<Transaction[]> {
+  const { spaceId } = ctx ?? (await getSpaceContext());
 
   const rows = await db.transaction.findMany({
     where: {
       OR: [
-        { account:          { workspaceId } },
-        { financialAccount: { workspaceShares: { some: { workspaceId, status: ShareStatus.ACTIVE } } } },
+        { account:          { spaceId } },
+        // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
+        { financialAccount: { workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
       ],
       category: { in: BANKING_CATEGORIES as never[] },
     },
@@ -53,14 +54,15 @@ export async function getTransactions(ctx?: { workspaceId: string }): Promise<Tr
 }
 
 /** Transactions for debt accounts only (credit card activity), newest first. */
-export async function getDebtTransactions(ctx?: { workspaceId: string }): Promise<Transaction[]> {
-  const { workspaceId } = ctx ?? (await getWorkspaceContext());
+export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Transaction[]> {
+  const { spaceId } = ctx ?? (await getSpaceContext());
 
   const rows = await db.transaction.findMany({
     where: {
       OR: [
-        { account:          { workspaceId, type: "debt" } },
-        { financialAccount: { type: "debt", workspaceShares: { some: { workspaceId, status: ShareStatus.ACTIVE } } } },
+        { account:          { spaceId, type: "debt" } },
+        // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
+        { financialAccount: { type: "debt", workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
       ],
       category: { in: BANKING_CATEGORIES as never[] },
     },
@@ -82,13 +84,14 @@ export async function getDebtTransactions(ctx?: { workspaceId: string }): Promis
 
 /** Investment transactions (Buy/Sell/Dividend/Split/Fee), newest first. */
 export async function getInvestmentTransactions(): Promise<InvestmentTransaction[]> {
-  const { workspaceId } = await getWorkspaceContext();
+  const { spaceId } = await getSpaceContext();
 
   const rows = await db.transaction.findMany({
     where: {
       OR: [
-        { account:          { workspaceId } },
-        { financialAccount: { workspaceShares: { some: { workspaceId, status: ShareStatus.ACTIVE } } } },
+        { account:          { spaceId } },
+        // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
+        { financialAccount: { workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
       ],
       category: { in: ["Buy","Sell","Dividend","Split","Fee"] as never[] },
     },

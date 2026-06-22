@@ -1,0 +1,373 @@
+<svg viewBox="0 0 980 1978" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system,Segoe UI,sans-serif">
+  <title>Fourth Meridian Architecture Map</title>
+  <desc>City-map view of 51 tables across six bounded contexts (Identity, External Connections, Financial, Spaces, Marketplace v1 scope, Platform Ops), with relationship roads between districts and per-table badges for security tier, regenerability and the seven-badge lifecycle classification (archive, soft-delete, hard-delete, cascade, retention, AI-accessible, publicly exposable). Includes the proposed ProviderCatalog (Platform Ops, routes user institution choice to a provider adapter) and SpaceTemplate (Marketplace, the installable configuration behind a Framework).</desc>
+  <defs>
+    <marker id="arrow-bold" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4A4944"/>
+    </marker>
+    <marker id="arrow-thin" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9C9A92"/>
+    </marker>
+    <marker id="arrow-deny" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#A32D2D"/>
+    </marker>
+    </defs>
+  <rect x="0" y="0" width="980" height="1978" fill="#FBFAF8"/>
+  <text x="50.0" y="24.0" font-size="19" font-weight="700" text-anchor="start" fill="#23231F" font-family="-apple-system,Segoe UI,sans-serif"  style="">Fourth Meridian — Architecture Map</text>
+  <rect x="50.0" y="33.0" width="10" height="10" rx="2" fill="#185FA5"/>
+<text x="66.0" y="42.0" font-size="11" font-weight="400" text-anchor="start" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟦 Identity</text>
+<rect x="148.0" y="33.0" width="10" height="10" rx="2" fill="#9C6B2E"/>
+<text x="164.0" y="42.0" font-size="11" font-weight="400" text-anchor="start" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟫 External Conn.</text>
+<rect x="282.0" y="33.0" width="10" height="10" rx="2" fill="#3B6D11"/>
+<text x="298.0" y="42.0" font-size="11" font-weight="400" text-anchor="start" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟩 Financial</text>
+<rect x="386.0" y="33.0" width="10" height="10" rx="2" fill="#854F0B"/>
+<text x="402.0" y="42.0" font-size="11" font-weight="400" text-anchor="start" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟨 Spaces</text>
+<rect x="472.0" y="33.0" width="10" height="10" rx="2" fill="#A32D2D"/>
+<text x="488.0" y="42.0" font-size="11" font-weight="400" text-anchor="start" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟥 Marketplace</text>
+<rect x="588.0" y="33.0" width="10" height="10" rx="2" fill="#534AB7"/>
+<text x="604.0" y="42.0" font-size="11" font-weight="400" text-anchor="start" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟪 Platform Ops</text>
+  <text x="50.0" y="60.0" font-size="10.5" font-weight="400" text-anchor="start" fill="#9C9A92" font-family="-apple-system,Segoe UI,sans-serif"  style="">Tags: 🔓 plaintext  🔐 app-encrypted  #️⃣ hashed  👁️ public  🤖 AI-readable only   |   ♻ regenerable   |   * proposed   strikethrough = retiring</text>
+  <text x="50.0" y="78.0" font-size="10.5" font-weight="400" text-anchor="start" fill="#9C9A92" font-family="-apple-system,Segoe UI,sans-serif"  style="">Lifecycle: 📦 archive  🩹 soft-delete  ⛔ hard-delete  🔗 cascade-only  ⏳ retention window  🧠 AI Context Builder input  🌐 publicly exposable   |   badges on proposed tables are recommendations, not yet-built behavior (§7.1)</text>
+  <rect x="50.0" y="106.0" width="470.0" height="164.0" rx="14" fill="#FFFFFF" stroke="#185FA5" stroke-width="2" />
+<rect x="50.0" y="106.0" width="470.0" height="38.0" rx="14" fill="#E6F1FB" stroke="#E6F1FB" stroke-width="0" />
+<rect x="50.0" y="130.0" width="470.0" height="14" fill="#E6F1FB"/>
+<text x="64.0" y="130.0" font-size="14" font-weight="700" text-anchor="start" fill="#0C447C" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟦 IDENTITY</text>
+<g opacity="1.0">
+<text x="64.0" y="172.5" font-size="11" font-weight="500" text-anchor="start" fill="#0C447C" font-family="SF Mono,Menlo,monospace"  style="">User</text>
+<text x="252.0" y="172.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔐 #️⃣</text>
+<text x="292.0" y="172.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="172.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">⛔ 🧠</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="197.5" font-size="11" font-weight="500" text-anchor="start" fill="#0C447C" font-family="SF Mono,Menlo,monospace"  style="">UserSession</text>
+<text x="252.0" y="197.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="197.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ Y</text>
+<text x="336.0" y="197.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="222.5" font-size="11" font-weight="500" text-anchor="start" fill="#0C447C" font-family="SF Mono,Menlo,monospace"  style="">RecoveryCode</text>
+<text x="252.0" y="222.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">#️⃣</text>
+<text x="292.0" y="222.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="222.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗 ⏳</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="247.5" font-size="11" font-weight="500" text-anchor="start" fill="#0C447C" font-family="SF Mono,Menlo,monospace"  style="">AuditLog</text>
+<text x="252.0" y="247.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="247.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="247.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">⏳</text>
+</g>
+<rect x="50.0" y="348.0" width="470.0" height="239.0" rx="14" fill="#FFFFFF" stroke="#9C6B2E" stroke-width="2" />
+<rect x="50.0" y="348.0" width="470.0" height="38.0" rx="14" fill="#F3E9DD" stroke="#F3E9DD" stroke-width="0" />
+<rect x="50.0" y="372.0" width="470.0" height="14" fill="#F3E9DD"/>
+<text x="64.0" y="372.0" font-size="14" font-weight="700" text-anchor="start" fill="#6B4A23" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟫 EXTERNAL CONNECTIONS</text>
+<g opacity="1.0">
+<text x="64.0" y="414.5" font-size="11" font-weight="500" text-anchor="start" fill="#6B4A23" font-family="SF Mono,Menlo,monospace"  style="">Connection *</text>
+<text x="252.0" y="414.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔐</text>
+<text x="292.0" y="414.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="414.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="439.5" font-size="11" font-weight="500" text-anchor="start" fill="#6B4A23" font-family="SF Mono,Menlo,monospace"  style="">AggregatorConnectionDetail *</text>
+<text x="252.0" y="439.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="439.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="439.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="464.5" font-size="11" font-weight="500" text-anchor="start" fill="#6B4A23" font-family="SF Mono,Menlo,monospace"  style="">ExchangeConnectionDetail *</text>
+<text x="252.0" y="464.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="464.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="464.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="489.5" font-size="11" font-weight="500" text-anchor="start" fill="#6B4A23" font-family="SF Mono,Menlo,monospace"  style="">BrokerageConnectionDetail *</text>
+<text x="252.0" y="489.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="489.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="489.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="514.5" font-size="11" font-weight="500" text-anchor="start" fill="#6B4A23" font-family="SF Mono,Menlo,monospace"  style="">ImportConnectionDetail *</text>
+<text x="252.0" y="514.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="514.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="514.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="539.5" font-size="11" font-weight="500" text-anchor="start" fill="#6B4A23" font-family="SF Mono,Menlo,monospace"  style="">DiscoveredAccount *</text>
+<text x="252.0" y="539.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="539.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ Y</text>
+<text x="336.0" y="539.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🔗</text>
+</g>
+<g opacity="0.5">
+<text x="64.0" y="564.5" font-size="11" font-weight="500" text-anchor="start" fill="#6B4A23" font-family="SF Mono,Menlo,monospace" text-decoration="line-through" style="">PlaidItem</text>
+<text x="252.0" y="564.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔐</text>
+<text x="292.0" y="564.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="564.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🔗</text>
+</g>
+<rect x="50.0" y="665.0" width="470.0" height="389.0" rx="14" fill="#FFFFFF" stroke="#3B6D11" stroke-width="2" />
+<rect x="50.0" y="665.0" width="470.0" height="38.0" rx="14" fill="#EAF3DE" stroke="#EAF3DE" stroke-width="0" />
+<rect x="50.0" y="689.0" width="470.0" height="14" fill="#EAF3DE"/>
+<text x="64.0" y="689.0" font-size="14" font-weight="700" text-anchor="start" fill="#27500A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟩 FINANCIAL</text>
+<g opacity="1.0">
+<text x="64.0" y="731.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">FinancialAccount</text>
+<text x="252.0" y="731.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="731.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="731.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🩹 🧠 🌐</text>
+</g>
+<g opacity="0.5">
+<text x="64.0" y="756.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace" text-decoration="line-through" style="">Account</text>
+<text x="252.0" y="756.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="756.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="756.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🩹 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="781.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">AccountConnection</text>
+<text x="252.0" y="781.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="781.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="781.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🩹 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="806.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">DuplicateAccountCandidate</text>
+<text x="252.0" y="806.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="806.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ Y</text>
+<text x="336.0" y="806.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="831.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">DebtProfile</text>
+<text x="252.0" y="831.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="831.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="831.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗 🧠</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="856.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">Holding</text>
+<text x="252.0" y="856.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="856.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="856.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗 🧠</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="881.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">Transaction</text>
+<text x="252.0" y="881.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="881.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="881.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗 🧠 🌐</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="906.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">SpaceGoal</text>
+<text x="252.0" y="906.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="906.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="906.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🩹 🔗 🧠</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="931.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">GoalCheckIn</text>
+<text x="252.0" y="931.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="931.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="931.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗 🧠</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="956.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">GoalContribution</text>
+<text x="252.0" y="956.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="956.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="956.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗 🧠</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="981.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">CreditScore</text>
+<text x="252.0" y="981.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="981.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="336.0" y="981.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗 🧠</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1006.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">SpaceSnapshot</text>
+<text x="252.0" y="1006.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="292.0" y="1006.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ Y</text>
+<text x="336.0" y="1006.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗 🧠 🌐</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1031.5" font-size="11" font-weight="500" text-anchor="start" fill="#27500A" font-family="SF Mono,Menlo,monospace"  style="">MerchantSpendingSummary *</text>
+<text x="252.0" y="1031.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🤖</text>
+<text x="292.0" y="1031.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ Y</text>
+<text x="336.0" y="1031.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🧠 🌐</text>
+</g>
+<rect x="50.0" y="1132.0" width="490.0" height="439.0" rx="14" fill="#FFFFFF" stroke="#854F0B" stroke-width="2" />
+<rect x="50.0" y="1132.0" width="490.0" height="38.0" rx="14" fill="#FAEEDA" stroke="#FAEEDA" stroke-width="0" />
+<rect x="50.0" y="1156.0" width="490.0" height="14" fill="#FAEEDA"/>
+<text x="64.0" y="1156.0" font-size="14" font-weight="700" text-anchor="start" fill="#633806" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟨 SPACES</text>
+<g opacity="1.0">
+<text x="64.0" y="1198.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">Space</text>
+<text x="260.0" y="1198.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1198.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1198.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🩹 🧠</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1223.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">SpaceMember</text>
+<text x="260.0" y="1223.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1223.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1223.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1248.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">SpaceInvite</text>
+<text x="260.0" y="1248.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1248.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ Y</text>
+<text x="344.0" y="1248.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 ⏳ 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1273.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">SpaceDashboardSection</text>
+<text x="260.0" y="1273.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1273.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1273.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1298.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">SpaceAccountLink *</text>
+<text x="260.0" y="1298.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1298.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1298.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🧠 🌐</text>
+</g>
+<g opacity="0.5">
+<text x="64.0" y="1323.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace" text-decoration="line-through" style="">WorkspaceAccountShare</text>
+<text x="260.0" y="1323.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1323.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1323.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1348.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">PublishedAccountView *</text>
+<text x="260.0" y="1348.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">👁️</text>
+<text x="300.0" y="1348.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ live</text>
+<text x="344.0" y="1348.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🌐</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1373.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">SpaceCollection *</text>
+<text x="260.0" y="1373.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1373.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1373.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">⛔</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1398.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">SpaceCollectionItem *</text>
+<text x="260.0" y="1398.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1398.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1398.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1423.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">Notification *</text>
+<text x="260.0" y="1423.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1423.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1423.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">⛔ ⏳</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1448.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">NotificationPreference *</text>
+<text x="260.0" y="1448.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1448.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1448.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">⛔</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1473.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">Conversation *</text>
+<text x="260.0" y="1473.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1473.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1473.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1498.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">ConversationParticipant *</text>
+<text x="260.0" y="1498.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1498.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1498.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1523.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">Message *</text>
+<text x="260.0" y="1523.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1523.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1523.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🩹 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1548.5" font-size="11" font-weight="500" text-anchor="start" fill="#633806" font-family="SF Mono,Menlo,monospace"  style="">MessageAttachment *</text>
+<text x="260.0" y="1548.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1548.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1548.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗</text>
+</g>
+<rect x="610.0" y="1132.0" width="320.0" height="189.0" rx="14" fill="#FFFFFF" stroke="#A32D2D" stroke-width="2" />
+<rect x="610.0" y="1132.0" width="320.0" height="38.0" rx="14" fill="#FCEBEB" stroke="#FCEBEB" stroke-width="0" />
+<rect x="610.0" y="1156.0" width="320.0" height="14" fill="#FCEBEB"/>
+<text x="624.0" y="1156.0" font-size="14" font-weight="700" text-anchor="start" fill="#791F1F" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟥 MARKETPLACE (v1 scope)</text>
+<g opacity="1.0">
+<text x="624.0" y="1198.5" font-size="11" font-weight="500" text-anchor="start" fill="#791F1F" font-family="SF Mono,Menlo,monospace"  style="">CreatorProfile *</text>
+<text x="752.0" y="1198.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="792.0" y="1198.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="836.0" y="1198.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗</text>
+</g>
+<g opacity="1.0">
+<text x="624.0" y="1223.5" font-size="11" font-weight="500" text-anchor="start" fill="#791F1F" font-family="SF Mono,Menlo,monospace"  style="">Follow *</text>
+<text x="752.0" y="1223.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="792.0" y="1223.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="836.0" y="1223.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">⛔</text>
+</g>
+<g opacity="1.0">
+<text x="624.0" y="1248.5" font-size="11" font-weight="500" text-anchor="start" fill="#791F1F" font-family="SF Mono,Menlo,monospace"  style="">Framework *</text>
+<text x="752.0" y="1248.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="792.0" y="1248.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="836.0" y="1248.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦</text>
+</g>
+<g opacity="1.0">
+<text x="624.0" y="1273.5" font-size="11" font-weight="500" text-anchor="start" fill="#791F1F" font-family="SF Mono,Menlo,monospace"  style="">SpaceTemplate *</text>
+<text x="752.0" y="1273.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="792.0" y="1273.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="836.0" y="1273.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦 🔗</text>
+</g>
+<g opacity="1.0">
+<text x="624.0" y="1298.5" font-size="11" font-weight="500" text-anchor="start" fill="#791F1F" font-family="SF Mono,Menlo,monospace"  style="">FrameworkInstall *</text>
+<text x="752.0" y="1298.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="792.0" y="1298.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="836.0" y="1298.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗 ⛔</text>
+</g>
+<text x="610.0" y="1338.0" font-size="9.5" font-weight="400" text-anchor="start" fill="#A32D2D" font-family="-apple-system,Segoe UI,sans-serif"  style="font-style:italic;">SpaceRating + CreatorPayout deferred — no install</text>
+<text x="610.0" y="1352.0" font-size="9.5" font-weight="400" text-anchor="start" fill="#A32D2D" font-family="-apple-system,Segoe UI,sans-serif"  style="font-style:italic;">volume / no billing integration yet (§7.4)</text>
+<rect x="50.0" y="1649.0" width="490.0" height="239.0" rx="14" fill="#FFFFFF" stroke="#534AB7" stroke-width="2" />
+<rect x="50.0" y="1649.0" width="490.0" height="38.0" rx="14" fill="#EEEDFE" stroke="#EEEDFE" stroke-width="0" />
+<rect x="50.0" y="1673.0" width="490.0" height="14" fill="#EEEDFE"/>
+<text x="64.0" y="1673.0" font-size="14" font-weight="700" text-anchor="start" fill="#3C3489" font-family="-apple-system,Segoe UI,sans-serif"  style="">🟪 PLATFORM OPS</text>
+<g opacity="1.0">
+<text x="64.0" y="1715.5" font-size="11" font-weight="500" text-anchor="start" fill="#3C3489" font-family="SF Mono,Menlo,monospace"  style="">PlatformSetting</text>
+<text x="260.0" y="1715.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1715.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1715.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">⛔</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1740.5" font-size="11" font-weight="500" text-anchor="start" fill="#3C3489" font-family="SF Mono,Menlo,monospace"  style="">AiAgent</text>
+<text x="260.0" y="1740.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1740.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1740.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1765.5" font-size="11" font-weight="500" text-anchor="start" fill="#3C3489" font-family="SF Mono,Menlo,monospace"  style="">ProviderCatalog *</text>
+<text x="260.0" y="1765.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1765.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1765.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1790.5" font-size="11" font-weight="500" text-anchor="start" fill="#3C3489" font-family="SF Mono,Menlo,monospace"  style="">PlatformDataSource *</text>
+<text x="260.0" y="1790.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔐</text>
+<text x="300.0" y="1790.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1790.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">📦</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1815.5" font-size="11" font-weight="500" text-anchor="start" fill="#3C3489" font-family="SF Mono,Menlo,monospace"  style="">PlatformMetricDefinition *</text>
+<text x="260.0" y="1815.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1815.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1815.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">⛔</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1840.5" font-size="11" font-weight="500" text-anchor="start" fill="#3C3489" font-family="SF Mono,Menlo,monospace"  style="">PlatformMetricSnapshot *</text>
+<text x="260.0" y="1840.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔓</text>
+<text x="300.0" y="1840.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ Y</text>
+<text x="344.0" y="1840.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">⏳</text>
+</g>
+<g opacity="1.0">
+<text x="64.0" y="1865.5" font-size="11" font-weight="500" text-anchor="start" fill="#3C3489" font-family="SF Mono,Menlo,monospace"  style="">AiAdvice</text>
+<text x="260.0" y="1865.5" font-size="11" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🤖</text>
+<text x="300.0" y="1865.5" font-size="9.5" font-weight="400" text-anchor="start" fill="#73726C" font-family="-apple-system,Segoe UI,sans-serif"  style="">♻ N</text>
+<text x="344.0" y="1865.5" font-size="10.5" font-weight="400" text-anchor="start" fill="#3D3D3A" font-family="-apple-system,Segoe UI,sans-serif"  style="">🔗</text>
+</g>
+<path d="M285.0,270.0 C285.0,309.0 285.0,309.0 285.0,348.0" fill="none" stroke="#4A4944" stroke-width="2.2"  marker-end="url(#arrow-bold)"/><rect x="206.2" y="300.0" width="157.6" height="16" rx="4" fill="#FBFAF8" stroke="#E5E3DC" stroke-width="1"/><text x="285.0" y="312.0" font-size="9.5" font-weight="400" text-anchor="middle" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">User authorizes Connection</text>
+<path d="M285.0,587.0 C285.0,626.0 285.0,626.0 285.0,665.0" fill="none" stroke="#4A4944" stroke-width="2.2"  marker-end="url(#arrow-bold)"/><rect x="167.0" y="617.0" width="236.0" height="16" rx="4" fill="#FBFAF8" stroke="#E5E3DC" stroke-width="1"/><text x="285.0" y="629.0" font-size="9.5" font-weight="400" text-anchor="middle" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">Adapter Layer discovers FinancialAccount</text>
+<path d="M200.4,1054.0 C200.4,1093.0 295.0,1093.0 295.0,1132.0" fill="none" stroke="#4A4944" stroke-width="2.2"  marker-end="url(#arrow-bold)"/><rect x="76.5" y="1084.0" width="342.4" height="16" rx="4" fill="#FBFAF8" stroke="#E5E3DC" stroke-width="1"/><text x="247.7" y="1096.0" font-size="9.5" font-weight="400" text-anchor="middle" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">SpaceAccountLink / PublishedAccountView / SpaceSnapshot</text>
+<path d="M540.0,1211.0 C540.0,1199.9 610.0,1199.9 610.0,1188.7" fill="none" stroke="#4A4944" stroke-width="2.2"  marker-end="url(#arrow-bold)"/><rect x="552.2" y="1190.9" width="45.6" height="16" rx="4" fill="#FBFAF8" stroke="#E5E3DC" stroke-width="1"/><text x="575.0" y="1202.9" font-size="9.5" font-weight="400" text-anchor="middle" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">Follow</text>
+<path d="M610.0,1236.0 C610.0,1276.2 540.0,1276.2 540.0,1316.4" fill="none" stroke="#4A4944" stroke-width="2.2"  marker-end="url(#arrow-bold)"/><rect x="546.6" y="1267.2" width="56.8" height="16" rx="4" fill="#FBFAF8" stroke="#E5E3DC" stroke-width="1"/><text x="575.0" y="1279.2" font-size="9.5" font-weight="400" text-anchor="middle" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">Installs</text>
+<path d="M295.0,1571.0 C295.0,1610.0 295.0,1610.0 295.0,1649.0" fill="none" stroke="#4A4944" stroke-width="2.2"  marker-end="url(#arrow-bold)"/><rect x="179.8" y="1601.0" width="230.4" height="16" rx="4" fill="#FBFAF8" stroke="#E5E3DC" stroke-width="1"/><text x="295.0" y="1613.0" font-size="9.5" font-weight="400" text-anchor="middle" fill="#5B5A54" font-family="-apple-system,Segoe UI,sans-serif"  style="">SpaceDashboardSection binds metrics</text>
+<path d="M520.0,171.6 L529.0,171.6 Q537.0,171.6 537.0,179.6 L537.0,1154.7 Q537.0,1162.7 545.0,1162.7 L540.0,1162.7" fill="none" stroke="#ACA9A0" stroke-width="1.3" stroke-dasharray="4,4" marker-end="url(#arrow-thin)"/><rect x="474.8" y="1006.1" width="124.4" height="15" rx="4" fill="#FBFAF8" stroke="#E5E3DC" stroke-width="1"/><text x="537.0" y="1017.1" font-size="8.8" font-weight="400" text-anchor="middle" fill="#7A7870" font-family="-apple-system,Segoe UI,sans-serif"  style="">SpaceMember.userId</text>
+<path d="M520.0,212.6 L542.0,212.6 Q550.0,212.6 550.0,220.6 L550.0,1146.7 Q550.0,1154.7 558.0,1154.7 L610.0,1154.7" fill="none" stroke="#ACA9A0" stroke-width="1.3" stroke-dasharray="4,4" marker-end="url(#arrow-thin)"/><rect x="490.4" y="722.7" width="119.2" height="15" rx="4" fill="#FBFAF8" stroke="#E5E3DC" stroke-width="1"/><text x="550.0" y="733.7" font-size="8.8" font-weight="400" text-anchor="middle" fill="#7A7870" font-family="-apple-system,Segoe UI,sans-serif"  style="">CreatorProfile.userId</text>
+<path d="M520.0,253.6 L555.0,253.6 Q563.0,253.6 563.0,261.6 L563.0,1688.8 Q563.0,1696.8 571.0,1696.8 L540.0,1696.8" fill="none" stroke="#ACA9A0" stroke-width="1.3" stroke-dasharray="4,4" marker-end="url(#arrow-thin)"/><rect x="519.0" y="1587.8" width="88.0" height="15" rx="4" fill="#FBFAF8" stroke="#E5E3DC" stroke-width="1"/><text x="563.0" y="1598.8" font-size="8.8" font-weight="400" text-anchor="middle" fill="#7A7870" font-family="-apple-system,Segoe UI,sans-serif"  style="">AiAdvice.userId</text>
+<path d="M540.0,1735.0 L568.0,1735.0 Q576.0,1735.0 576.0,1743.0 L576.0,363.9 Q576.0,371.9 584.0,371.9 L520.0,371.9" fill="none" stroke="#ACA9A0" stroke-width="1.3" stroke-dasharray="4,4" marker-end="url(#arrow-thin)"/><rect x="456.6" y="1045.5" width="238.8" height="15" rx="4" fill="#FBFAF8" stroke="#E5E3DC" stroke-width="1"/><text x="576.0" y="1056.5" font-size="8.8" font-weight="400" text-anchor="middle" fill="#7A7870" font-family="-apple-system,Segoe UI,sans-serif"  style="">ProviderCatalog routes institution → adapter</text>
+</svg>

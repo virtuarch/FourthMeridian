@@ -6,7 +6,7 @@
  * linked/removed, AI recommendation, goal reached, manual asset added,
  * wallet added, recurring payment, investment milestone, note, reminder —
  * for event types that have no real backend aggregation yet (see the
- * ALLOWED_ACTIONS allowlist in app/api/workspaces/[id]/activity/route.ts,
+ * ALLOWED_ACTIONS allowlist in app/api/spaces/[id]/activity/route.ts,
  * which intentionally is NOT touched by this pass).
  *
  * Every event here is `isPreview: true`. SpaceTimelineWidget merges these

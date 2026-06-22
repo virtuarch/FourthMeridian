@@ -6,17 +6,11 @@ export const preferredRegion = "sin1";
 export const runtime = "nodejs";
 
 export default async function CreditPage() {
-  const t0 = Date.now();
-  const time = <T,>(label: string, p: Promise<T>): Promise<T> => {
-    const s = Date.now();
-    return p.then((r) => { console.log(`[page:credit]   ${label}: ${Date.now() - s}ms`); return r; });
-  };
   const [{ score, updatedAt }, accounts, transactions] = await Promise.all([
-    time("getFicoData", getFicoData()),
-    time("getAccounts", getAccounts()),
-    time("getDebtTransactions", getDebtTransactions()),
+    getFicoData(),
+    getAccounts(),
+    getDebtTransactions(),
   ]);
-  console.log(`[page:credit] total: ${Date.now() - t0}ms`);
 
   const debtAccounts = accounts.filter((a) => a.type === "debt");
 

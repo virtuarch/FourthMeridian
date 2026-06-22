@@ -1,6 +1,6 @@
 # Hydration Rules
 
-React hydration fails when the HTML rendered on the server does not match the first render on the client. In FinTracker, the most common causes are:
+React hydration fails when the HTML rendered on the server does not match the first render on the client. In Fourth Meridian, the most common causes are:
 
 1. **Timezone-sensitive date formatting** — `new Date(iso).toLocaleDateString()` with no explicit timezone produces different calendar dates on a Mac dev server (e.g. UTC-5) vs an Android phone (e.g. UTC+5:30) for timestamps near midnight UTC.
 2. **ICU version drift in combined date+time strings** — `Intl.DateTimeFormat.format()` with both date and time fields produces different separators across Node/ICU versions ("Jun 9, 2026, 9:00 AM" on ICU 71 vs "Jun 9, 2026 at 9:00 AM" on ICU 73+). Use `formatToParts` + manual assembly instead.

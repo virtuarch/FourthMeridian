@@ -1,4 +1,4 @@
-# FinTracker v2.0.1 — Cloud Staging Deployment Guide
+# Fourth Meridian v2.0.1 — Cloud Staging Deployment Guide
 
 **Branch:** `v2.0.1-cloud-staging`  
 **Goal:** Stable HTTPS staging environment on Vercel + Supabase for real Plaid Production OAuth testing.
@@ -22,7 +22,7 @@ Plaid Production API
 ## Step 1 — Create a Supabase Project
 
 1. Go to [supabase.com](https://supabase.com) → **New project**
-2. Name it `fintracker-staging`
+2. Name it `fourthmeridian-staging`
 3. Choose a region close to you (US East or West)
 4. Set a strong database password — **save it somewhere safe**
 5. Wait for provisioning (~1 min)
@@ -173,7 +173,7 @@ Test at least one non-OAuth institution as well (e.g. any institution that doesn
 - [ ] Registration works on the hosted URL
 - [ ] Login and session work on the hosted URL
 - [ ] Daily Brief loads
-- [ ] Workspace switching works
+- [ ] Space switching works
 - [ ] Plaid link token endpoint responds (`/api/plaid/link-token`)
 - [ ] At least one real bank institution links successfully
 - [ ] OAuth institution (Chase or Capital One) reaches the bank login page

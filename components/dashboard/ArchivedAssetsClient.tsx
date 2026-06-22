@@ -13,23 +13,23 @@
  *                           Delete permanently (manual only) ->
  *                             DELETE /api/accounts/manual/[id]/permanent
  *
- *   Archived Workspaces — Workspace.archivedAt set (deletedAt still null).
+ *   Archived Spaces — Space.archivedAt set (deletedAt still null).
  *                         Fully intact, hidden from active nav only.
- *                           Restore (unarchive) -> PATCH /api/workspaces/[id]
+ *                           Restore (unarchive) -> PATCH /api/spaces/[id]
  *                                                  { archivedAt: null }
- *                           Move to trash       -> DELETE /api/workspaces/[id]
+ *                           Move to trash       -> DELETE /api/spaces/[id]
  *                         OWNER only — buttons are hidden for everyone else.
  *
- *   Trash               — Workspace.deletedAt set. Same OWNER-only gating.
- *                           Restore             -> POST /api/workspaces/[id]/restore
- *                           Delete permanently  -> DELETE /api/workspaces/[id]/permanent
+ *   Trash               — Space.deletedAt set. Same OWNER-only gating.
+ *                           Restore             -> POST /api/spaces/[id]/restore
+ *                           Delete permanently  -> DELETE /api/spaces/[id]/permanent
  *                         Permanent delete is blocked server-side (and the
- *                         error surfaced here) if the workspace still owns
+ *                         error surfaced here) if the space still owns
  *                         FinancialAccount rows — those must be reassigned
  *                         or removed first so they aren't orphaned.
  *
- * This is the only place a Workspace can be permanently deleted from — the
- * workspace detail / Manage modals only offer archive and trash.
+ * This is the only place a Space can be permanently deleted from — the
+ * space detail / Manage modals only offer archive and trash.
  */
 
 import { useState, useCallback } from "react";
@@ -53,19 +53,19 @@ export interface ArchivedAsset {
   deletedAt:   string;
   institution: string;
   source:      ArchivedAssetSource;
-  workspaces: { id: string; name: string }[];
+  spaces: { id: string; name: string }[];
 }
 
-export interface ArchivedWorkspace {
+export interface ArchivedSpace {
   id:         string;
   name:       string;
-  type:       string;     // "SHARED" — PERSONAL workspaces can never be archived
+  type:       string;     // "SHARED" — PERSONAL spaces can never be archived
   category:   string;
   archivedAt: string;
   myRole:     string;
 }
 
-export interface TrashedWorkspace {
+export interface TrashedSpace {
   id:        string;
   name:      string;
   type:      string;
@@ -76,11 +76,11 @@ export interface TrashedWorkspace {
 
 interface Props {
   assets:             ArchivedAsset[];
-  archivedWorkspaces: ArchivedWorkspace[];
-  trashedWorkspaces:  TrashedWorkspace[];
+  archivedSpaces: ArchivedSpace[];
+  trashedSpaces:  TrashedSpace[];
 }
 
-type BinTab = "accounts" | "workspaces" | "trash";
+type BinTab = "accounts" | "spaces" | "trash";
 
 const SOURCE_LABEL: Record<ArchivedAssetSource, string> = {
   manual: "Manual",
@@ -195,9 +195,9 @@ function AssetRow({
             {asset.institution ? `${asset.institution} · ` : ""}
             {fmtCurrency(asset.balance, asset.currency)} · Archived {timeAgo(asset.deletedAt)}
           </p>
-          {asset.workspaces.length > 0 && (
+          {asset.spaces.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-2">
-              {asset.workspaces.map((ws) => (
+              {asset.spaces.map((ws) => (
                 <span
                   key={ws.id}
                   className="inline-flex items-center text-[11px] font-medium text-gray-400 bg-gray-800 border border-gray-700 px-2 py-0.5 rounded-md"
@@ -269,14 +269,14 @@ function AssetRow({
   );
 }
 
-// ─── Row: Archived Workspace ─────────────────────────────────────────────────
+// ─── Row: Archived Space ─────────────────────────────────────────────────
 
-function ArchivedWorkspaceRow({
+function ArchivedSpaceRow({
   ws,
   onUnarchived,
   onTrashed,
 }: {
-  ws:           ArchivedWorkspace;
+  ws:           ArchivedSpace;
   onUnarchived: (id: string) => void;
   onTrashed:    (id: string) => void;
 }) {
@@ -291,7 +291,7 @@ function ArchivedWorkspaceRow({
     setRestoring(true);
     setError(null);
     try {
-      const res = await fetch(`/api/workspaces/${ws.id}`, {
+      const res = await fetch(`/api/spaces/${ws.id}`, {
         method:  "PATCH",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ archivedAt: null }),
@@ -311,7 +311,7 @@ function ArchivedWorkspaceRow({
     setTrashing(true);
     setError(null);
     try {
-      const res = await fetch(`/api/workspaces/${ws.id}`, { method: "DELETE" });
+      const res = await fetch(`/api/spaces/${ws.id}`, { method: "DELETE" });
       if (res.ok) {
         onTrashed(ws.id);
       } else {
@@ -401,14 +401,14 @@ function ArchivedWorkspaceRow({
   );
 }
 
-// ─── Row: Trashed Workspace ──────────────────────────────────────────────────
+// ─── Row: Trashed Space ──────────────────────────────────────────────────
 
-function TrashedWorkspaceRow({
+function TrashedSpaceRow({
   ws,
   onRestored,
   onDeleted,
 }: {
-  ws:         TrashedWorkspace;
+  ws:         TrashedSpace;
   onRestored: (id: string) => void;
   onDeleted:  (id: string) => void;
 }) {
@@ -423,7 +423,7 @@ function TrashedWorkspaceRow({
     setRestoring(true);
     setError(null);
     try {
-      const res = await fetch(`/api/workspaces/${ws.id}/restore`, { method: "POST" });
+      const res = await fetch(`/api/spaces/${ws.id}/restore`, { method: "POST" });
       if (res.ok) {
         onRestored(ws.id);
       } else {
@@ -439,12 +439,12 @@ function TrashedWorkspaceRow({
     setDeleting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/workspaces/${ws.id}/permanent`, { method: "DELETE" });
+      const res = await fetch(`/api/spaces/${ws.id}/permanent`, { method: "DELETE" });
       if (res.ok) {
         onDeleted(ws.id);
       } else {
         const data = await res.json().catch(() => ({}));
-        // Server includes ownedAccountCount when the block is "this workspace
+        // Server includes ownedAccountCount when the block is "this space
         // still owns accounts" — the message already explains what to do.
         setError(data.error ?? "Failed to delete.");
         setConfirmingDelete(false);
@@ -550,14 +550,14 @@ function EmptyState({ icon: Icon, title, body }: { icon: React.ElementType; titl
 
 export function ArchiveBinClient({
   assets: initialAssets,
-  archivedWorkspaces: initialArchivedWorkspaces,
-  trashedWorkspaces: initialTrashedWorkspaces,
+  archivedSpaces: initialArchivedSpaces,
+  trashedSpaces: initialTrashedSpaces,
 }: Props) {
   const router = useRouter();
   const [tab,         setTab]         = useState<BinTab>("accounts");
   const [assets,       setAssets]       = useState<ArchivedAsset[]>(initialAssets);
-  const [archivedWs,   setArchivedWs]   = useState<ArchivedWorkspace[]>(initialArchivedWorkspaces);
-  const [trashedWs,    setTrashedWs]    = useState<TrashedWorkspace[]>(initialTrashedWorkspaces);
+  const [archivedWs,   setArchivedWs]   = useState<ArchivedSpace[]>(initialArchivedSpaces);
+  const [trashedWs,    setTrashedWs]    = useState<TrashedSpace[]>(initialTrashedSpaces);
 
   const handleAssetRestored = useCallback((id: string) => {
     setAssets((prev) => prev.filter((a) => a.id !== id));
@@ -568,28 +568,28 @@ export function ArchiveBinClient({
     setAssets((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
-  const handleWorkspaceUnarchived = useCallback((id: string) => {
+  const handleSpaceUnarchived = useCallback((id: string) => {
     setArchivedWs((prev) => prev.filter((w) => w.id !== id));
     router.refresh();
   }, [router]);
 
-  const handleWorkspaceTrashedFromArchive = useCallback((id: string) => {
+  const handleSpaceTrashedFromArchive = useCallback((id: string) => {
     setArchivedWs((prev) => prev.filter((w) => w.id !== id));
     router.refresh();
   }, [router]);
 
-  const handleWorkspaceRestoredFromTrash = useCallback((id: string) => {
+  const handleSpaceRestoredFromTrash = useCallback((id: string) => {
     setTrashedWs((prev) => prev.filter((w) => w.id !== id));
     router.refresh();
   }, [router]);
 
-  const handleWorkspacePermanentlyDeleted = useCallback((id: string) => {
+  const handleSpacePermanentlyDeleted = useCallback((id: string) => {
     setTrashedWs((prev) => prev.filter((w) => w.id !== id));
   }, []);
 
   const tabs: { id: BinTab; label: string; count: number }[] = [
     { id: "accounts",   label: "Archived Accounts",   count: assets.length },
-    { id: "workspaces", label: "Archived Spaces", count: archivedWs.length },
+    { id: "spaces", label: "Archived Spaces", count: archivedWs.length },
     { id: "trash",      label: "Trash",               count: trashedWs.length },
   ];
 
@@ -654,7 +654,7 @@ export function ArchiveBinClient({
         )
       )}
 
-      {tab === "workspaces" && (
+      {tab === "spaces" && (
         archivedWs.length === 0 ? (
           <EmptyState
             icon={Building2}
@@ -664,11 +664,11 @@ export function ArchiveBinClient({
         ) : (
           <div className="space-y-3">
             {archivedWs.map((ws) => (
-              <ArchivedWorkspaceRow
+              <ArchivedSpaceRow
                 key={ws.id}
                 ws={ws}
-                onUnarchived={handleWorkspaceUnarchived}
-                onTrashed={handleWorkspaceTrashedFromArchive}
+                onUnarchived={handleSpaceUnarchived}
+                onTrashed={handleSpaceTrashedFromArchive}
               />
             ))}
             <p className="text-xs text-gray-600 text-center pt-2">
@@ -688,11 +688,11 @@ export function ArchiveBinClient({
         ) : (
           <div className="space-y-3">
             {trashedWs.map((ws) => (
-              <TrashedWorkspaceRow
+              <TrashedSpaceRow
                 key={ws.id}
                 ws={ws}
-                onRestored={handleWorkspaceRestoredFromTrash}
-                onDeleted={handleWorkspacePermanentlyDeleted}
+                onRestored={handleSpaceRestoredFromTrash}
+                onDeleted={handleSpacePermanentlyDeleted}
               />
             ))}
             <p className="text-xs text-gray-600 text-center pt-2">

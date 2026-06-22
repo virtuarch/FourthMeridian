@@ -53,11 +53,11 @@ export async function GET(req: NextRequest) {
       employmentStatus: true,
       useCase:          true,
       createdAt:        true,
-      workspaces: {
+      spaces: {
         select: {
           role:   true,
           status: true,
-          workspace: {
+          space: {
             select: { id: true, name: true, type: true, _count: { select: { accounts: true } } },
           },
         },

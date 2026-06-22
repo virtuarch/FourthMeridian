@@ -246,7 +246,7 @@ export const authOptions: NextAuthOptions = {
       // getServerSession()/requireUser() call — every Server Component render
       // and every API route that checks auth — and production logs showed
       // this single query costing 1.1-2.4s each time, the dominant cost behind
-      // the multi-second /dashboard/workspaces latency (a trivial count()
+      // the multi-second /dashboard/spaces latency (a trivial count()
       // query elsewhere still took 5+ seconds once wrapped in this check).
       //
       // Fix: cache the verified result per sessionToken for

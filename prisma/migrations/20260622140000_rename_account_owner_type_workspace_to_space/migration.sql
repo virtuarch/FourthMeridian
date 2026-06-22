@@ -1,0 +1,21 @@
+-- Fourth Meridian Phase 1: Workspace -> Space naming migration.
+--
+-- This is the ONLY real DDL change in the entire Phase 1 rename. Every other
+-- renamed Prisma model/enum/field uses @@map/@map to keep the underlying
+-- Postgres table/column/type names unchanged (zero-DDL). AccountOwnerType is
+-- different: the enum VALUE itself is user-facing-adjacent application logic
+-- (FinancialAccount.ownerType), and we are doing a real end-to-end rename of
+-- the value from WORKSPACE to SPACE rather than keeping the old label mapped
+-- under a new Prisma name.
+--
+-- Safety notes:
+--   * ALTER TYPE ... RENAME VALUE is a metadata-only operation in Postgres.
+--     Existing FinancialAccount rows reference this enum by OID, not by
+--     string label, so no row data is rewritten and no UPDATE statement is
+--     needed or included here.
+--   * WorkspaceAccountShare and its `workspace`/`workspaceId` fields are
+--     NOT affected by this migration — they are excluded from the Phase 1
+--     rename entirely (separate Phase 3 replacement: SpaceAccountLink).
+
+-- AlterEnum
+ALTER TYPE "AccountOwnerType" RENAME VALUE 'WORKSPACE' TO 'SPACE';

@@ -1,4 +1,4 @@
-# FinTracker
+# Fourth Meridian
 
 A local-first personal finance intelligence platform. Runs on your laptop via Docker Compose, accessible from any device via a Cloudflare tunnel, and installable as a PWA from your iPhone home screen.
 
@@ -6,25 +6,25 @@ A local-first personal finance intelligence platform. Runs on your laptop via Do
 
 ## Project Status
 
-**v2.0** — Workspace Platform
+**v2.0** — Space Platform
 
-FinTracker is an actively developed personal project. The v2.0 release introduces the full multi-user workspace architecture on top of the v1.0 financial foundation. Features, APIs, and schemas evolve between versions.
+Fourth Meridian is an actively developed personal project. The v2.0 release introduces the full multi-user space architecture on top of the v1.0 financial foundation (originally built as FinTracker, now the platform's default Space Template — see `fourth-meridian-product-language.md`). Features, APIs, and schemas evolve between versions.
 
 ---
 
 ## Major Features
 
-### Multi-Workspace Architecture
-Every user gets a personal workspace on signup. Additional shared workspaces can be created for households, investment clubs, advisory relationships, or any collaborative finance context — each with its own dashboard, goals, and account visibility rules.
+### Multi-Space Architecture
+Every user gets a personal space on signup. Additional shared spaces can be created for households, investment clubs, advisory relationships, or any collaborative finance context — each with its own dashboard, goals, and account visibility rules.
 
 ### Roles and Permissions
-Each workspace has four roles: **Owner**, **Admin**, **Member**, and **Viewer**. Role enforcement runs at both the API and UI layer. Owners can manage members, configure sections, and control what each participant can see.
+Each space has four roles: **Owner**, **Admin**, **Member**, and **Viewer**. Role enforcement runs at both the API and UI layer. Owners can manage members, configure sections, and control what each participant can see.
 
 ### Account Sharing
-Accounts are explicitly shared into workspaces rather than duplicated. Each share grants either **Full Access** (balance, transactions, holdings) or **Balance Only** visibility. Shares are revocable at any time and the underlying account data remains private to its owner.
+Accounts are explicitly shared into spaces rather than duplicated. Each share grants either **Full Access** (balance, transactions, holdings) or **Balance Only** visibility. Shares are revocable at any time and the underlying account data remains private to its owner.
 
 ### Personal Dashboard
-The personal workspace dashboard covers net worth, checking and savings, investments, crypto wallets, debt, and cash-to-play — all in a single mobile-first view. Accounts are grouped by institution with asset drawers for detailed breakdowns.
+The personal space dashboard covers net worth, checking and savings, investments, crypto wallets, debt, and cash-to-play — all in a single mobile-first view. Accounts are grouped by institution with asset drawers for detailed breakdowns.
 
 ### Plaid Integration
 Connect banks and brokerages via Plaid Link. Transactions sync incrementally using a cursor-based approach. OAuth institutions (Chase, Bank of America, etc.) are supported via `/plaid-oauth-return`. Access tokens are encrypted at rest with AES-256-GCM before DB storage.
@@ -33,7 +33,7 @@ Connect banks and brokerages via Plaid Link. Transactions sync incrementally usi
 Track public wallet addresses across seven chains — BTC, ETH, SOL, BNB, MATIC, ADA, XRP — without storing private keys. Exchange accounts show a holdings breakdown with a TradingView chart via the asset drawer.
 
 ### Manual Assets
-Any tangible asset — property, vehicle, equipment — can be added as a manual account. The workspace dashboard renders a live value widget showing current estimate, purchase price, gain/loss, and acquisition date.
+Any tangible asset — property, vehicle, equipment — can be added as a manual account. The space dashboard renders a live value widget showing current estimate, purchase price, gain/loss, and acquisition date.
 
 ### Daily Brief
 A full-screen ambient view that summarises net worth movement, upcoming attention items, and financial insights since the last visit. Designed for morning review. Accessible from the bottom nav.
@@ -42,7 +42,7 @@ A full-screen ambient view that summarises net worth movement, upcoming attentio
 Two-factor authentication is fully implemented: setup flow, authenticator QR code, login verification, recovery codes, and an admin reset flow. Platform-level enforcement (require 2FA for all system admins, or all users) is configurable via the admin security panel.
 
 ### Admin Panel
-Available at `/admin` to system admin accounts. Covers user management, workspace oversight, platform-wide audit log, session revocation, TOTP enforcement settings, and live security status.
+Available at `/admin` to system admin accounts. Covers user management, space oversight, platform-wide audit log, session revocation, TOTP enforcement settings, and live security status.
 
 ---
 
@@ -153,7 +153,7 @@ npm run db:reset      # Reset DB and re-run migrations (destroys data)
 - Plaid access tokens encrypted at rest (AES-256-GCM)
 - Route protection via `proxy.ts` — all `/dashboard/*` and `/admin/*` routes require a valid JWT session
 - TOTP/2FA fully implemented with platform-level enforcement
-- Audit log on every login, account change, session event, and workspace action
+- Audit log on every login, account change, session event, and space action
 - System admin kill switch via `DISABLE_SYSTEM_ADMIN` env var
 - Database never exposed publicly — accessible only inside the Docker network
 
@@ -163,11 +163,11 @@ npm run db:reset      # Reset DB and re-run migrations (destroys data)
 
 | Version | Theme |
 |---|---|
-| **v2.0** | Workspace Platform *(current)* |
+| **v2.0** | Space Platform *(current)* |
 | **v2.0.1** | Cloud Staging — Vercel + Supabase |
-| **v2.1** | Collaborative Workspace Experience |
+| **v2.1** | Collaborative Space Experience |
 | **v2.2** | Ambient Intelligence Foundation |
-| **v2.3** | Adaptive Dashboards & Specialized Workspace Intelligence |
+| **v2.3** | Adaptive Dashboards & Specialized Space Intelligence |
 
 ---
 

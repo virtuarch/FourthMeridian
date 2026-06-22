@@ -1,7 +1,7 @@
 /**
  * lib/format.ts
  *
- * Shared formatting helpers for FinTracker.
+ * Shared formatting helpers for Fourth Meridian.
  *
  * ── HYDRATION SAFETY ──────────────────────────────────────────────────────────
  * All date formatters in this module use an explicit timezone ("UTC") so that
@@ -242,7 +242,7 @@ export function possessive(name: string): string {
  * Catches two independent legacy issues at render time, without touching
  * the database:
  *
- *  1. Vocabulary rename — rows created before "Workspace" became "Space"
+ *  1. Vocabulary rename — rows created before "Space" became "Space"
  *     still literally store a trailing " Dashboard" suffix.
  *  2. Possessive-grammar bug — rows created before possessive() existed
  *     hardcoded `${name}'s Space` / `${name}'s Dashboard` unconditionally,

@@ -4,7 +4,7 @@
  * Sidebar
  *
  * Spaces-first navigation, restyled with Atlas Glass (Fourth Meridian
- * Design Language v1). Replaces the old flat Dashboard/Workspaces/Analyze
+ * Design Language v1). Replaces the old flat Dashboard/Spaces/Analyze
  * list with the platform-shaped tree from the redesign brief:
  *
  *   Daily Brief
@@ -25,14 +25,14 @@
  *
  * There is no standalone "Dashboard" entry — a Space's dashboard is reached
  * by selecting that Space below, not via a separate nav item. There is also
- * no standalone "Workspaces" entry — Spaces are inline here, with
+ * no standalone "Spaces" entry — Spaces are inline here, with
  * /dashboard/spaces (SpacesClient) as the full landing page for managing,
  * creating, and exploring them.
  *
- * Backend note: this component still reads the existing `fintracker_workspace`
- * cookie and calls the existing /api/workspaces, /api/workspace/switch and
- * /api/workspaces/invites/pending routes verbatim — no API or schema changes.
- * The lightweight GET /api/workspaces used here only selects {id,name,type},
+ * Backend note: this component still reads the existing `fintracker_space`
+ * cookie and calls the existing /api/spaces, /api/space/switch and
+ * /api/spaces/invites/pending routes verbatim — no API or schema changes.
+ * The lightweight GET /api/spaces used here only selects {id,name,type},
  * so per-category icons (used on the Spaces cards) aren't available at this
  * call site; rows use a Personal/Shared icon distinction instead. Future
  * enhancement: add `category` to that route's select if per-Space icons in
@@ -64,8 +64,13 @@ import {
 } from "lucide-react";
 import { AppLogo } from "@/components/ui/AppLogo";
 import { displaySpaceName } from "@/lib/format";
+import {
+  SPACE_LIST_CHANGED_EVENT,
+  SPACE_INVITES_CHANGED_EVENT,
+  OPEN_CREATE_SPACE_EVENT,
+} from "@/lib/space-nav";
 
-const COOKIE_NAME = "fintracker_workspace";
+const COOKIE_NAME = "fintracker_space";
 const INLINE_SPACE_LIMIT = 6;
 
 function readSpaceCookie(): string | null {
@@ -97,7 +102,7 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
 
   const loadSpaces = useCallback(async () => {
     try {
-      const res = await fetch("/api/workspaces");
+      const res = await fetch("/api/spaces");
       if (res.ok) {
         const data = await res.json();
         const mine: SpaceItem[] = (data.mine ?? []).map((w: SpaceItem) => ({
@@ -119,7 +124,7 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
 
   const loadInvites = useCallback(async () => {
     try {
-      const res = await fetch("/api/workspaces/invites/pending");
+      const res = await fetch("/api/spaces/invites/pending");
       if (res.ok) {
         const data = await res.json();
         setPendingInvites(data.count ?? 0);
@@ -134,11 +139,11 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
 
   useEffect(() => {
     function handle() { loadSpaces(); loadInvites(); }
-    window.addEventListener("workspace-list-changed", handle);
-    window.addEventListener("workspace-invites-changed", handle);
+    window.addEventListener(SPACE_LIST_CHANGED_EVENT, handle);
+    window.addEventListener(SPACE_INVITES_CHANGED_EVENT, handle);
     return () => {
-      window.removeEventListener("workspace-list-changed", handle);
-      window.removeEventListener("workspace-invites-changed", handle);
+      window.removeEventListener(SPACE_LIST_CHANGED_EVENT, handle);
+      window.removeEventListener(SPACE_INVITES_CHANGED_EVENT, handle);
     };
   }, [loadSpaces, loadInvites]);
 
@@ -146,14 +151,14 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
     if (id === activeId) { router.push("/dashboard"); return; }
     setSwitching(id);
     try {
-      const res = await fetch("/api/workspace/switch", {
+      const res = await fetch("/api/space/switch", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ workspaceId: id }),
+        body:    JSON.stringify({ spaceId: id }),
       });
       if (res.ok) {
         setActiveId(id);
-        window.dispatchEvent(new CustomEvent("workspace-list-changed"));
+        window.dispatchEvent(new CustomEvent(SPACE_LIST_CHANGED_EVENT));
         router.refresh();
         router.push("/dashboard");
       }
@@ -259,7 +264,7 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
             not just from the Spaces page. */}
         <button
           type="button"
-          onClick={() => window.dispatchEvent(new CustomEvent("open-create-space"))}
+          onClick={() => window.dispatchEvent(new CustomEvent(OPEN_CREATE_SPACE_EVENT))}
           className="w-full mt-1 flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-[13px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--glass-ultrathin)] hover:bg-[var(--surface-hover-strong)] border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:-translate-y-[1px] active:scale-[0.97] transition-[transform,background-color,border-color,color] duration-[var(--dur-base)] ease-[var(--ease-standard)]"
         >
           <Plus size={13} className="shrink-0" />

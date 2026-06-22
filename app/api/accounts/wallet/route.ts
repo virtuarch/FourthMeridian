@@ -1,13 +1,13 @@
 /**
  * POST /api/accounts/wallet
  *
- * Manually adds a self-custodied crypto wallet to the user's workspace.
+ * Manually adds a self-custodied crypto wallet to the user's space.
  * Balance starts at 0 — the sync job will populate it on next run.
  *
  * Creates:
  *   FinancialAccount   — canonical account row (ownerType=USER, no plaidAccountId)
  *   AccountConnection  — manual/wallet connection (no plaidItemDbId)
- *   WorkspaceAccountShare — makes the account visible in the active workspace
+ *   WorkspaceAccountShare — makes the account visible in the active space
  *
  * Body: {
  *   name:          string   // display name, e.g. "Ledger BTC"
@@ -18,7 +18,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getWorkspaceContext } from "@/lib/workspace";
+import { getSpaceContext } from "@/lib/space";
 import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
 import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Unsupported chain. Use: ${SUPPORTED_CHAINS.join(", ")}` }, { status: 400 });
   }
 
-  const { workspaceId, userId } = await getWorkspaceContext();
+  const { spaceId, userId } = await getSpaceContext();
 
   // ── Automatic duplicate reconciliation ────────────────────────────────────
   // Same provider-identity check as Plaid reconnect: never create a second
@@ -52,13 +52,14 @@ export async function POST(req: NextRequest) {
   });
 
   if (activeFa) {
-    // Already exists and active — re-share into this workspace if needed and
+    // Already exists and active — re-share into this space if needed and
     // return success silently. No 409, no "already connected" message.
     await db.workspaceAccountShare.upsert({
-      where:  { workspaceId_financialAccountId: { workspaceId, financialAccountId: activeFa.id } },
+      // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
+      where:  { workspaceId_financialAccountId: { workspaceId: spaceId, financialAccountId: activeFa.id } },
       update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
       create: {
-        workspaceId,
+        workspaceId: spaceId,
         financialAccountId: activeFa.id,
         addedByUserId:      userId,
         visibilityLevel:    VisibilityLevel.FULL,
@@ -87,10 +88,11 @@ export async function POST(req: NextRequest) {
       data:  { deletedAt: null },
     });
     await db.workspaceAccountShare.upsert({
-      where:  { workspaceId_financialAccountId: { workspaceId, financialAccountId: archivedFa.id } },
+      // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
+      where:  { workspaceId_financialAccountId: { workspaceId: spaceId, financialAccountId: archivedFa.id } },
       update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
       create: {
-        workspaceId,
+        workspaceId: spaceId,
         financialAccountId: archivedFa.id,
         addedByUserId:      userId,
         visibilityLevel:    VisibilityLevel.FULL,
@@ -100,7 +102,7 @@ export async function POST(req: NextRequest) {
     await db.auditLog.create({
       data: {
         userId,
-        workspaceId,
+        spaceId,
         action:   AuditAction.ACCOUNT_RESTORE,
         metadata: { name: name.trim(), chain, address: walletAddress.trim() },
       },
@@ -138,7 +140,8 @@ export async function POST(req: NextRequest) {
   // ── Create WorkspaceAccountShare ───────────────────────────────────────────
   await db.workspaceAccountShare.create({
     data: {
-      workspaceId,
+      // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
+      workspaceId: spaceId,
       financialAccountId: fa.id,
       addedByUserId:      userId,
       visibilityLevel:    VisibilityLevel.FULL,
@@ -149,7 +152,7 @@ export async function POST(req: NextRequest) {
   await db.auditLog.create({
     data: {
       userId,
-      workspaceId,
+      spaceId,
       action:   "WALLET_ADD",
       metadata: { name: fa.name, chain, address: walletAddress.trim() },
     },

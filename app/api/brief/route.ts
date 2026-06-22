@@ -9,7 +9,7 @@
 import { NextResponse }          from "next/server";
 import { db }                    from "@/lib/db";
 import { requireUser }           from "@/lib/session";
-import { getWorkspaceContext }   from "@/lib/workspace";
+import { getSpaceContext }   from "@/lib/space";
 import { ShareStatus }           from "@prisma/client";
 import type {
   BriefPayload,
@@ -335,19 +335,20 @@ export async function GET() {
   const lastViewedAt = dbUser.lastBriefViewedAt;
   const displayName  = dbUser.firstName ?? dbUser.name ?? null;
 
-  // Get the user's personal workspace context
-  let workspaceId: string;
+  // Get the user's personal space context
+  let spaceId: string;
   try {
-    const ctx = await getWorkspaceContext();
-    workspaceId = ctx.workspaceId;
+    const ctx = await getSpaceContext();
+    spaceId = ctx.spaceId;
   } catch {
-    return NextResponse.json({ error: "No workspace" }, { status: 404 });
+    return NextResponse.json({ error: "No space" }, { status: 404 });
   }
 
   // ── Accounts ──────────────────────────────────────────────────────────────
   const shares = await db.workspaceAccountShare.findMany({
     where: {
-      workspaceId,
+      // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
+      workspaceId: spaceId,
       status:           ShareStatus.ACTIVE,
       financialAccount: { deletedAt: null },
     },
@@ -391,8 +392,8 @@ export async function GET() {
   // ── Prior net worth from most recent snapshot ──────────────────────────────
   let prevNetWorth: number | null = null;
   if (hasData && lastViewedAt) {
-    const snap = await db.workspaceSnapshot.findFirst({
-      where:   { workspaceId, date: { lte: lastViewedAt } },
+    const snap = await db.spaceSnapshot.findFirst({
+      where:   { spaceId, date: { lte: lastViewedAt } },
       orderBy: { date: "desc" },
       select:  { netWorth: true },
     });
@@ -402,14 +403,14 @@ export async function GET() {
   // ── Cached AI advice ───────────────────────────────────────────────────────
   const advice = hasData
     ? await db.aiAdvice.findFirst({
-        where:   { workspaceId },
+        where:   { spaceId },
         orderBy: { generatedAt: "desc" },
         select:  { summary: true, adviceText: true },
       })
     : null;
 
-  // ── Pending workspace invites ──────────────────────────────────────────────
-  const pendingInviteCount = await db.workspaceInvite.count({
+  // ── Pending space invites ──────────────────────────────────────────────
+  const pendingInviteCount = await db.spaceInvite.count({
     where: { invitedUserId: user.id, status: "PENDING" },
   });
 

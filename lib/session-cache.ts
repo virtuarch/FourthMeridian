@@ -12,7 +12,7 @@
  * alone costing 1.1-2.4s per call, and it runs on EVERY Server Component
  * render and EVERY API route that checks auth — multiple times per page
  * navigation. That's the dominant cost behind the multi-second
- * /dashboard/workspaces latency.
+ * /dashboard/spaces latency.
  *
  * Revocation is rare, and a few seconds of staleness on an ordinary page
  * load is an acceptable trade-off for a 10-50x latency win. So:

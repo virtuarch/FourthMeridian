@@ -10,26 +10,27 @@
  */
 
 import { db } from "@/lib/db";
-import { getWorkspaceContext } from "@/lib/workspace";
+import { getSpaceContext } from "@/lib/space";
 import { Account, Holding } from "@/types";
 import { ShareStatus } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
 
 /**
- * All accounts visible to the current workspace, via WorkspaceAccountShare.
+ * All accounts visible to the current space, via WorkspaceAccountShare.
  *
- * Pass `ctx` when the caller has already resolved workspace context for this
+ * Pass `ctx` when the caller has already resolved space context for this
  * request (e.g. the dashboard page resolves it once and fans it out to all
- * its data helpers) to avoid a redundant getWorkspaceContext() call. Falls
+ * its data helpers) to avoid a redundant getSpaceContext() call. Falls
  * back to resolving it internally (now cached per-request via React's
  * cache()) when called standalone, so existing callers keep working.
  */
-export async function getAccounts(ctx?: { workspaceId: string }): Promise<Account[]> {
-  const { workspaceId } = ctx ?? (await getWorkspaceContext());
+export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]> {
+  const { spaceId } = ctx ?? (await getSpaceContext());
 
   const shares = await db.workspaceAccountShare.findMany({
     where: {
-      workspaceId,
+      // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
+      workspaceId: spaceId,
       status:           ShareStatus.ACTIVE,
       financialAccount: { deletedAt: null },
     },
@@ -98,11 +99,11 @@ export async function getAccounts(ctx?: { workspaceId: string }): Promise<Accoun
  * Still queries via the legacy Account → Holding path until Holding FKs are
  * moved to AccountConnection in a future milestone.
  */
-export async function getHoldings(ctx?: { workspaceId: string }): Promise<Holding[]> {
-  const { workspaceId } = ctx ?? (await getWorkspaceContext());
+export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]> {
+  const { spaceId } = ctx ?? (await getSpaceContext());
 
   const rows = await db.holding.findMany({
-    where: { account: { workspaceId } },
+    where: { account: { spaceId } },
     orderBy: { value: "desc" },
   });
 
@@ -122,10 +123,10 @@ export async function getHoldings(ctx?: { workspaceId: string }): Promise<Holdin
 
 /**
  * Latest credit score for the current user.
- * CreditScore is user-owned (not workspace-owned) since it is personal identity data.
+ * CreditScore is user-owned (not space-owned) since it is personal identity data.
  */
 export async function getFicoData(ctx?: { userId: string }): Promise<{ score: number | null; updatedAt: string | null }> {
-  const { userId } = ctx ?? (await getWorkspaceContext());
+  const { userId } = ctx ?? (await getSpaceContext());
 
   const row = await db.creditScore.findFirst({
     where:   { userId },

@@ -15,7 +15,7 @@
  *     if (err) return err;
  *     ...
  *     return ok(data);
- *   }, "GET /api/workspaces");
+ *   }, "GET /api/spaces");
  *
  * ─── getRequestMeta / getClientIp ────────────────────────────────────────────
  * getRequestMeta() returns a structured object with all request metadata:
@@ -115,7 +115,7 @@ type RouteHandler<T extends unknown[] = []> = (
  * - Stack traces and raw error messages are never sent to the client.
  *
  * @param handler  The route handler function
- * @param context  A short label for the server log (e.g. "GET /api/workspaces/goals")
+ * @param context  A short label for the server log (e.g. "GET /api/spaces/goals")
  */
 export function withApiHandler<T extends unknown[]>(
   handler: RouteHandler<T>,
