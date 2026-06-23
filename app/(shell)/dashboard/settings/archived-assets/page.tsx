@@ -46,10 +46,17 @@ export default async function ArchivedAssetsPage() {
         syncStatus:    true,
         walletAddress: true,
         institution:   true,
-        workspaceShares: {
+        // D3 Step 4E read cutover — replaces the prior workspaceShares
+        // (WorkspaceAccountShare) include. SpaceAccountLink is kept in sync
+        // with it by the D3 Step 3 dual-write
+        // (lib/accounts/space-account-link.ts), so this read returns the
+        // same set of spaces either way. No status filter, matching the
+        // prior workspaceShares behavior (active and revoked links both
+        // surface here). Response shape (spaces: {id, name}[]) is unchanged
+        // — see docs/D3_LEGACY_RETIREMENT_AUDIT.md.
+        spaceAccountLinks: {
           select: {
-            // WorkspaceAccountShare keeps its own pre-Phase-1 relation name (workspace).
-            workspace: { select: { id: true, name: true } },
+            space: { select: { id: true, name: true } },
           },
         },
       },
@@ -87,9 +94,9 @@ export default async function ArchivedAssetsPage() {
     deletedAt:   a.deletedAt!.toISOString(),
     institution: a.institution,
     source:      deriveSource(a),
-    spaces: a.workspaceShares.map((s) => ({
-      id:   s.workspace.id,
-      name: s.workspace.name,
+    spaces: a.spaceAccountLinks.map((l) => ({
+      id:   l.space.id,
+      name: l.space.name,
     })),
   }));
 
