@@ -345,10 +345,13 @@ export async function GET() {
   }
 
   // ── Accounts ──────────────────────────────────────────────────────────────
-  const shares = await db.workspaceAccountShare.findMany({
+  // D3 Step 4D read cutover — replaces the prior db.workspaceAccountShare
+  // query. Same status: ACTIVE visibility gate and financialAccount.deletedAt
+  // guard; no filter on `kind` (HOME vs SHARED both confer visibility), same
+  // as every other D3 Step 4 cutover. See docs/D3_STEP4_READ_CUTOVER_REVIEW.md.
+  const links = await db.spaceAccountLink.findMany({
     where: {
-      // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
-      workspaceId: spaceId,
+      spaceId,
       status:           ShareStatus.ACTIVE,
       financialAccount: { deletedAt: null },
     },
@@ -356,7 +359,7 @@ export async function GET() {
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const accounts = shares.map(({ financialAccount: r }: any) => ({
+  const accounts = links.map(({ financialAccount: r }: any) => ({
     id:            r.id as string,
     name:          r.name as string,
     type:          r.type as string,

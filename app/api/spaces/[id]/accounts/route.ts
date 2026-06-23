@@ -1,7 +1,11 @@
 /**
  * GET /api/spaces/[id]/accounts
  *
- * Returns active accounts visible to a space, via WorkspaceAccountShare.
+ * Returns active accounts visible to a space, via SpaceAccountLink (D3 Step
+ * 4D read cutover — see docs/D3_STEP4_READ_CUTOVER_REVIEW.md; replaces the
+ * prior db.workspaceAccountShare query). Visibility is status: ACTIVE on the
+ * link; `kind` (HOME vs SHARED) is not filtered on — both confer visibility,
+ * matching every other D3 Step 4 cutover.
  * Used by the Space Detail modal accounts tab and all space widgets.
  *
  * Security / normalisation:
@@ -35,11 +39,9 @@ export async function GET(
   const [, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
   if (err) return err;
 
-  const shares = await db.workspaceAccountShare.findMany({
+  const links = await db.spaceAccountLink.findMany({
     where: {
-      // WorkspaceAccountShare keeps its pre-Phase-1 field name (workspaceId)
-      // — only the local variable here is named spaceId.
-      workspaceId: spaceId,
+      spaceId,
       status:           ShareStatus.ACTIVE,
       financialAccount: { deletedAt: null },
     },
@@ -74,5 +76,8 @@ export async function GET(
   // normalizeSharedAccounts handles both visibility tiers:
   //   FULL        → individual records with all fields
   //   BALANCE_ONLY → sanitised, aggregated by owner × type × currency
-  return NextResponse.json(normalizeSharedAccounts(shares));
+  // It is table-agnostic — it only depends on the ShareRow shape
+  // (visibilityLevel, addedByUserId, addedByUser, financialAccount), which
+  // SpaceAccountLink's select below matches field-for-field.
+  return NextResponse.json(normalizeSharedAccounts(links));
 }

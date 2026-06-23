@@ -474,11 +474,20 @@ function MembersTab({
   space,
   myRole,
   currentUserId,
+  reloadSpace,
   onRefresh,
 }: {
   space:     SpaceDetail;
   myRole:        string;
   currentUserId: string;
+  // Refreshes this modal's own member list (was previously — confusingly —
+  // bound to the prop named `onRefresh`; renamed so `onRefresh` below can
+  // unambiguously mean "the real top-level ManageSpaceModal.onRefresh",
+  // matching GeneralTab/DangerZoneTab's convention elsewhere in this file).
+  reloadSpace:   () => void | Promise<void>;
+  // The real top-level callback the hosting page (SpaceDashboard /
+  // SpacesClient / DashboardClient) relies on to refresh its own
+  // accounts/sections/cards. Previously never called from this tab.
   onRefresh:     () => void | Promise<void>;
 }) {
   const [inviteQueue,   setInviteQueue]   = useState<QueuedInvite[]>([]);
@@ -543,6 +552,16 @@ function MembersTab({
       }
       // Refresh member list in-place; sidebar will pick up the change
       window.dispatchEvent(new CustomEvent(SPACE_LIST_CHANGED_EVENT));
+      // Removal revokes the member's shared accounts server-side (see DELETE
+      // /api/spaces/[id]/members/[userId]) — signal SpaceDashboard's account
+      // listener so accounts/widgets/totals refresh without a manual reload.
+      window.dispatchEvent(new CustomEvent(SPACE_ACCOUNTS_CHANGED_EVENT));
+      // Refresh this modal's own member list...
+      await reloadSpace();
+      // ...and notify the hosting page directly. The event dispatches above
+      // only reach SpaceDashboard's listener; this is the one mechanism
+      // every host page (SpaceDashboard / SpacesClient / DashboardClient)
+      // already implements correctly — it just was never being called.
       await onRefresh();
     } finally {
       setRemovingId(null);
@@ -1114,9 +1133,14 @@ export function ShareExistingAccountsPanel({
 function FinancesTab({
   spaceId,
   myRole,
+  onRefresh,
 }: {
   spaceId: string;
   myRole:      string;
+  // The real top-level ManageSpaceModal.onRefresh — previously never
+  // threaded into this tab at all, which is why sharing/revoking an asset
+  // from /dashboard/spaces never updated the Space card/totals there.
+  onRefresh:   () => void | Promise<void>;
 }) {
   const [accounts,       setAccounts]       = useState<SharedAccount[]>([]);
   const [loading,        setLoading]        = useState(true);
@@ -1146,6 +1170,9 @@ function FinancesTab({
       });
       loadAccounts();
       window.dispatchEvent(new CustomEvent(SPACE_ACCOUNTS_CHANGED_EVENT));
+      // Notify the hosting page directly — same gap as MembersTab had:
+      // the event above only reaches SpaceDashboard's listener.
+      await onRefresh();
     } finally {
       setRevokingId(null);
     }
@@ -1162,7 +1189,10 @@ function FinancesTab({
           </button>
           <p className="text-sm font-semibold text-[var(--text-primary)]">Share an account</p>
         </div>
-        <ShareExistingAccountsPanel spaceId={spaceId} onShared={loadAccounts} />
+        <ShareExistingAccountsPanel
+          spaceId={spaceId}
+          onShared={() => { loadAccounts(); onRefresh(); }}
+        />
       </div>
     );
   }
@@ -1616,14 +1646,15 @@ export function ManageSpaceModal({
                   space={space}
                   myRole={myRole}
                   currentUserId={currentUserId}
-                  onRefresh={loadSpace}
+                  reloadSpace={loadSpace}
+                  onRefresh={onRefresh}
                 />
               )}
               {activeTab === "goals"    && canManage && (
                 <GoalsTab spaceId={spaceId} canManage={canManage} />
               )}
               {activeTab === "finances"             && (
-                <FinancesTab spaceId={spaceId} myRole={myRole} />
+                <FinancesTab spaceId={spaceId} myRole={myRole} onRefresh={onRefresh} />
               )}
               {activeTab === "dashboard" && canManage && (
                 <DashboardTab spaceId={spaceId} />
