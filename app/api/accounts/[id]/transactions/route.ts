@@ -13,15 +13,19 @@ export async function GET(
 
   // `id` is most commonly a FinancialAccount.id (the canonical model — see
   // getAccounts() in lib/data/accounts.ts), visible to this space via an
-  // active WorkspaceAccountShare. Fall back to the legacy Account model for
+  // active SpaceAccountLink. Fall back to the legacy Account model for
   // any pre-migration rows that might still be referenced directly.
-  const share = await db.workspaceAccountShare.findFirst({
-    // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
-    where:  { workspaceId: spaceId, financialAccountId: id, status: ShareStatus.ACTIVE },
+  //
+  // D3 Step 4B read cutover: this used to query WorkspaceAccountShare.
+  // SpaceAccountLink is kept in sync with it by the D3 Step 3 dual-write
+  // (lib/accounts/space-account-link.ts), so this read returns the same
+  // visibility decision either way. See docs/D3_STEP4_READ_CUTOVER_REVIEW.md.
+  const link = await db.spaceAccountLink.findFirst({
+    where:  { spaceId, financialAccountId: id, status: ShareStatus.ACTIVE },
     select: { id: true },
   });
 
-  if (!share) {
+  if (!link) {
     const legacyAccount = await db.account.findFirst({
       where:  { id, spaceId },
       select: { id: true },

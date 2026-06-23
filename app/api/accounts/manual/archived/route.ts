@@ -42,11 +42,16 @@ export const GET = withApiHandler(async () => {
       balance:   true,
       currency:  true,
       deletedAt: true,
-      workspaceShares: {
+      // D3 Step 4B read cutover: this used to include workspaceShares
+      // (WorkspaceAccountShare). SpaceAccountLink is kept in sync with it by
+      // the D3 Step 3 dual-write (lib/accounts/space-account-link.ts), so
+      // this read returns the same set of spaces either way. Response shape
+      // (ArchivedAsset.spaces: {id, name}[]) is unchanged — see
+      // docs/D3_STEP4_READ_CUTOVER_REVIEW.md.
+      spaceAccountLinks: {
         select: {
-          status:    true,
-          // WorkspaceAccountShare keeps its own pre-Phase-1 relation name (workspace).
-          workspace: { select: { id: true, name: true } },
+          status: true,
+          space:  { select: { id: true, name: true } },
         },
       },
     },
@@ -59,9 +64,9 @@ export const GET = withApiHandler(async () => {
     balance:   a.balance,
     currency:  a.currency,
     deletedAt: a.deletedAt!.toISOString(),
-    spaces: a.workspaceShares.map((s) => ({
-      id:   s.workspace.id,
-      name: s.workspace.name,
+    spaces: a.spaceAccountLinks.map((l) => ({
+      id:   l.space.id,
+      name: l.space.name,
     })),
   }));
 
