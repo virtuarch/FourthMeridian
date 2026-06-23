@@ -33,7 +33,10 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
       OR: [
         { account:          { spaceId } },
         // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
-        { financialAccount: { workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
+        // deletedAt: null guards against an archived account's transactions
+        // surfacing in a shared Space if its share were ever left ACTIVE —
+        // same defensive filter getAccounts()/getHoldings() already apply.
+        { financialAccount: { deletedAt: null, workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
       ],
       category: { in: BANKING_CATEGORIES as never[] },
     },
@@ -62,7 +65,8 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
       OR: [
         { account:          { spaceId, type: "debt" } },
         // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
-        { financialAccount: { type: "debt", workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
+        // deletedAt: null — see getTransactions() above for rationale.
+        { financialAccount: { type: "debt", deletedAt: null, workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
       ],
       category: { in: BANKING_CATEGORIES as never[] },
     },
@@ -91,7 +95,8 @@ export async function getInvestmentTransactions(): Promise<InvestmentTransaction
       OR: [
         { account:          { spaceId } },
         // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
-        { financialAccount: { workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
+        // deletedAt: null — see getTransactions() above for rationale.
+        { financialAccount: { deletedAt: null, workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
       ],
       category: { in: ["Buy","Sell","Dividend","Split","Fee"] as never[] },
     },
