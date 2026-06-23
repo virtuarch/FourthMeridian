@@ -26,6 +26,7 @@ import { SpaceMemberStatus, ShareStatus, SpaceMemberRole } from "@prisma/client"
 import { requireSpaceRole }                   from "@/lib/session";
 import { withApiHandler, getClientIp }            from "@/lib/api";
 import { dualWriteFromShares }                    from "@/lib/accounts/space-account-link";
+import { regenerateSpaceSnapshot }                from "@/lib/snapshots/regenerate";
 
 const PROMOTABLE_ROLES: SpaceMemberRole[] = [
   SpaceMemberRole.ADMIN,
@@ -177,6 +178,17 @@ export const DELETE = withApiHandler(async (
       revokedByUserId:    isSelf ? targetUserId : user.id,
     }))
   );
+
+  // ── 2b. Regenerate SpaceSnapshot now that this space's active shares have
+  //       changed (the departing/removed member's shares were just revoked
+  //       above) — see docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md and
+  //       the share/revoke route fix for the established pattern.
+  //       Best-effort/non-fatal: the removal itself has already succeeded.
+  try {
+    await regenerateSpaceSnapshot(spaceId);
+  } catch (snapshotErr) {
+    console.warn(`[DELETE /api/spaces/:id/members/:userId] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
+  }
 
   // ── 3. Audit log ──────────────────────────────────────────────────────────
   const ru = targetMembership.user;
