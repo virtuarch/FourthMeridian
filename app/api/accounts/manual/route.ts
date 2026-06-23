@@ -31,6 +31,7 @@ import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, SpaceMembe
 import { requireUser }                      from "@/lib/session";
 import { withApiHandler }                   from "@/lib/api";
 import { dualWriteSpaceAccountLink }        from "@/lib/accounts/space-account-link";
+import { regenerateSnapshotsForAccounts }   from "@/lib/snapshots/regenerate";
 
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
@@ -149,10 +150,20 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     })
   ));
 
-  // ── D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal).
-  //    shareTargets[0] is always personalSpaceId, so no Rule 4 gap here.
-  await Promise.all(shareTargets.map((wsId) =>
-    dualWriteSpaceAccountLink({
+  // ── D3 Stabilization — mirror onto SpaceAccountLink (best-effort,
+  //    non-fatal). Sequential, NOT Promise.all: computeLinkKind() inside
+  //    dualWriteSpaceAccountLink() decides HOME vs SHARED by counting
+  //    existing links for this financialAccountId, with no transaction or
+  //    lock. Run concurrently, every call in this batch could read
+  //    count === 0 before any of them commit, so more than one target could
+  //    independently decide HOME. Awaiting each write before starting the
+  //    next removes the race: shareTargets[0] (always personalSpaceId)
+  //    commits first and becomes HOME; every subsequent target then sees
+  //    that committed HOME row and correctly becomes SHARED. See
+  //    docs/D3_STEP4C_REGRESSION_ROOT_CAUSE.md ("Secondary finding") and
+  //    docs/D3_LEGACY_RETIREMENT_AUDIT.md.
+  for (const wsId of shareTargets) {
+    await dualWriteSpaceAccountLink({
       spaceId:            wsId,
       financialAccountId: fa.id,
       creatorUserId:       userId,
@@ -167,8 +178,17 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         revokedAt:        null,
         revokedByUserId:  null,
       },
-    })
-  ));
+    });
+  }
+
+  // Regenerate SpaceSnapshot for every space this asset was just shared into
+  // — same best-effort/non-fatal pattern as the existing archive/restore/
+  // share/revoke snapshot fixes (see docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
+  try {
+    await regenerateSnapshotsForAccounts([fa.id]);
+  } catch (snapshotErr) {
+    console.warn(`[POST /api/accounts/manual] snapshot regen failed for account ${fa.id} (non-fatal):`, snapshotErr);
+  }
 
   // ── Audit log ─────────────────────────────────────────────────────────────
   await db.auditLog.create({

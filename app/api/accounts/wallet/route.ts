@@ -70,6 +70,26 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // D3 Step 3 — mirror the re-share onto SpaceAccountLink (best-effort,
+    // non-fatal, handled inside dualWriteSpaceAccountLink). Previously
+    // missing from this branch: the WorkspaceAccountShare upsert above
+    // activated the share, but the D3 read path (SpaceAccountLink) never
+    // learned about it.
+    await dualWriteSpaceAccountLink({
+      spaceId,
+      financialAccountId: activeFa.id,
+      create: {
+        addedByUserId:   userId,
+        visibilityLevel: VisibilityLevel.FULL,
+        status:          ShareStatus.ACTIVE,
+      },
+      update: {
+        status:          ShareStatus.ACTIVE,
+        revokedAt:       null,
+        revokedByUserId: null,
+      },
+    });
+
     // walletAddress has no DB-level unique constraint, so an archived row
     // for this same address can exist alongside the active one (e.g. a
     // previous soft-delete that never got cleaned up). Before this fix,
@@ -87,6 +107,14 @@ export async function POST(req: NextRequest) {
         DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH,
         spaceId
       );
+    }
+
+    // Regenerate SpaceSnapshot now that the share is active in this space —
+    // same best-effort/non-fatal pattern as the reactivation branch below.
+    try {
+      await regenerateSnapshotsForAccounts([activeFa.id]);
+    } catch (snapshotErr) {
+      console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${activeFa.id} (non-fatal):`, snapshotErr);
     }
 
     return NextResponse.json({ success: true, accountId: activeFa.id }, { status: 200 });
@@ -222,6 +250,15 @@ export async function POST(req: NextRequest) {
   // written at — i.e. spaceId, the actually-active Space — rather than
   // synthesizing an extra HOME link at the creator's personal Space. See
   // docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
+
+  // Regenerate SpaceSnapshot now that this new wallet is shared in —
+  // same best-effort/non-fatal pattern as every other account-create/
+  // reactivate path (see docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
+  try {
+    await regenerateSnapshotsForAccounts([fa.id]);
+  } catch (snapshotErr) {
+    console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${fa.id} (non-fatal):`, snapshotErr);
+  }
 
   await db.auditLog.create({
     data: {

@@ -20,10 +20,16 @@
  * calling it multiple times in one day updates that day's row instead of
  * creating duplicates.
  *
- * Formula mirrors the field comments on SpaceSnapshot in
- * prisma/schema.prisma exactly: totalAssets/netWorth are stocks + crypto +
- * cash + savings (± debt) — manual/real assets (AccountType.other) are
- * intentionally excluded, matching the existing seed data convention.
+ * totalAssets/netWorth = stocks + crypto + cash + savings + realAssets
+ * (± debt). realAssets (AccountType.other — manual/real assets: property,
+ * vehicles, equipment) is included here even though the SpaceSnapshot
+ * schema field comments predate this and only mention stocks/crypto/cash/
+ * savings. Without it, this formula silently diverged from
+ * classifyAccounts() (lib/account-classifier.ts), the single source of
+ * truth every live dashboard total uses, so a Space's /dashboard/spaces
+ * card could never reflect manual assets no matter how often this
+ * function ran. netLiquid intentionally still excludes realAssets —
+ * manual assets aren't liquid.
  */
 
 import { db } from "@/lib/db";
@@ -49,14 +55,15 @@ export async function regenerateSpaceSnapshot(
   const accounts = await getAccounts({ spaceId });
   const c = classifyAccounts(accounts);
 
-  const stocks  = c.totalInvestments;
-  const crypto  = c.totalDigitalAssets;
-  const total   = stocks + crypto;
-  const cash    = c.totalChecking;
-  const savings = c.totalSavings;
-  const debt    = c.totalLiabilities;
+  const stocks     = c.totalInvestments;
+  const crypto     = c.totalDigitalAssets;
+  const total      = stocks + crypto;
+  const cash       = c.totalChecking;
+  const savings    = c.totalSavings;
+  const debt       = c.totalLiabilities;
+  const realAssets = c.totalRealAssets;
 
-  const totalAssets = total + cash + savings;
+  const totalAssets = total + cash + savings + realAssets;
   const netWorth    = totalAssets - debt;
   const netLiquid   = cash + savings - debt;
   // No "expense buffer" setting exists yet (schema comment: max(cash -
