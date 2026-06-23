@@ -79,10 +79,17 @@ export async function regenerateSpaceSnapshot(
 }
 
 /**
- * Regenerates snapshots for every space that shares any of the given
- * FinancialAccount ids via an ACTIVE WorkspaceAccountShare. Used by the
+ * Regenerates snapshots for every space that links any of the given
+ * FinancialAccount ids via an ACTIVE SpaceAccountLink. Used by the
  * Plaid refresh pipeline so refreshing one item keeps every space it's
  * shared into up to date — not just a single "current" space.
+ *
+ * D3 Step 4A read cutover: this used to query WorkspaceAccountShare.
+ * SpaceAccountLink is kept in sync with it by the D3 Step 3 dual-write
+ * (lib/accounts/space-account-link.ts) at every mutation site, so this
+ * read returns the same space ids either way. WorkspaceAccountShare
+ * remains the write system of record — see
+ * docs/D3_STEP4_READ_CUTOVER_REVIEW.md for the cutover plan and rollback.
  *
  * @returns the distinct space ids that were regenerated.
  */
@@ -91,13 +98,12 @@ export async function regenerateSnapshotsForAccounts(
 ): Promise<string[]> {
   if (financialAccountIds.length === 0) return [];
 
-  const shares = await db.workspaceAccountShare.findMany({
+  const links = await db.spaceAccountLink.findMany({
     where:  { financialAccountId: { in: financialAccountIds }, status: ShareStatus.ACTIVE },
-    // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
-    select: { workspaceId: true },
+    select: { spaceId: true },
   });
 
-  const spaceIds = [...new Set(shares.map((s) => s.workspaceId))];
+  const spaceIds = [...new Set(links.map((l) => l.spaceId))];
   await Promise.all(spaceIds.map((id) => regenerateSpaceSnapshot(id)));
   return spaceIds;
 }
