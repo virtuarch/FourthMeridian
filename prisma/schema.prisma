@@ -58,6 +58,29 @@ enum PlaidItemStatus {
   REVOKED       // all accounts removed; itemRemove() was called
 }
 
+/// D2 (Phase 2, Step 1A): generalizes PlaidItemStatus across all connection
+/// types. Mirrors PlaidItemStatus exactly. PlaidItem keeps its own enum
+/// unchanged — this is additive, not a replacement. Not yet used by any
+/// application code.
+enum ConnectionStatus {
+  ACTIVE        // syncing normally / valid credential
+  NEEDS_REAUTH  // user must re-authenticate
+  ERROR         // unrecoverable error — see errorCode
+  REVOKED       // credential revoked / connection removed
+}
+
+/// D2 (Phase 2, Step 1A): identifies which kind of provider a Connection
+/// represents. Extensible — new values can be appended later without a
+/// breaking migration. Not yet used by any application code.
+enum ProviderType {
+  PLAID
+  MANUAL
+  WALLET
+  CSV
+  EXCHANGE
+  BROKERAGE
+}
+
 /// Renamed from Workspace -> Space (Fourth Meridian Phase 1 naming migration).
 /// @@map keeps the underlying Postgres enum type name unchanged so this is a
 /// code/Prisma-Client-only rename — no DDL required.
@@ -280,6 +303,7 @@ model User {
   sentInvites          SpaceInvite[]     @relation("SentInvites")
   receivedInvites      SpaceInvite[]     @relation("ReceivedInvites")
   plaidItems           PlaidItem[]
+  connections          Connection[]      // D2 (Phase 2, Step 1A) — additive only, not yet populated
   ownedAccounts        Account[]         // legacy: accounts this user connected/created
   creditScores         CreditScore[]
   auditLogs            AuditLog[]
@@ -477,6 +501,37 @@ model PlaidItem {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Connection (D2, Phase 2, Step 1A — additive only, not yet read or written
+// by any application code).
+// Provider-agnostic generalization of the credential/login layer PlaidItem
+// represents today. PlaidItem is NOT migrated or modified by this step — it
+// continues to serve all existing Plaid behavior unchanged. Connection exists
+// so future, non-Plaid providers (wallets with xpub/watch-only, exchanges,
+// brokerages, CSV) have a home that isn't shaped like Plaid.
+// See docs/D2_PROVIDER_CONNECTION_ARCHITECTURE.md.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Connection {
+  id                   String           @id @default(cuid())
+  userId               String
+  user                 User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider             ProviderType
+  externalConnectionId String?                    // provider's login/connection id, where one exists
+  credential           String?                    // encrypted; null for MANUAL; xpub/descriptor for WALLET watch-only — NEVER a private key
+  status               ConnectionStatus @default(ACTIVE)
+  cursor               String?                    // sync cursor, where the provider supports one
+  errorCode            String?
+  lastSyncedAt         DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  accountConnections   AccountConnection[]
+
+  @@index([userId])
+  @@index([provider])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Account (LEGACY — kept temporarily during migration)
 // Will be removed once all data is migrated to FinancialAccount +
 // AccountConnection + WorkspaceAccountShare and validated in production.
@@ -665,6 +720,12 @@ model AccountConnection {
   plaidItemDbId      String?
   plaidItem          PlaidItem?       @relation(fields: [plaidItemDbId], references: [id], onDelete: SetNull)
 
+  // D2 (Phase 2, Step 1A) — additive only, not yet read or written by any
+  // application code. Parallel path to plaidItemDbId for non-Plaid
+  // providers; does not change existing Plaid/manual/wallet behavior.
+  connectionId       String?
+  connection         Connection?      @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+
   syncStatus         String           @default("pending")
   isCanonical        Boolean          @default(true)   // authoritative balance source for this account
   lastSyncedAt       DateTime?
@@ -676,6 +737,7 @@ model AccountConnection {
   @@index([financialAccountId])
   @@index([connectedByUserId])
   @@index([plaidItemDbId])
+  @@index([connectionId])
   @@index([financialAccountId, isCanonical])
 }
 
