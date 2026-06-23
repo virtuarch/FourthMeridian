@@ -24,7 +24,7 @@ import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
-import { dualWriteSpaceAccountLink, ensureHomeLink } from "@/lib/accounts/space-account-link";
+import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -216,10 +216,12 @@ export async function POST(req: NextRequest) {
       revokedByUserId: null,
     },
   });
-  // Rule 4 — spaceId here is getSpaceContext()'s active space, which may not
-  // be the creator's personal space. This is a brand-new account, so ensure
-  // it still ends up with exactly one HOME link.
-  await ensureHomeLink({ financialAccountId: fa.id, creatorUserId: userId, excludeSpaceId: spaceId });
+  // D3 Step 3 HOME Semantics Correction — no separate HOME backfill call
+  // needed here. computeLinkKind() (inside dualWriteSpaceAccountLink above)
+  // now assigns HOME to the Space a brand-new account's first link is
+  // written at — i.e. spaceId, the actually-active Space — rather than
+  // synthesizing an extra HOME link at the creator's personal Space. See
+  // docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
 
   await db.auditLog.create({
     data: {

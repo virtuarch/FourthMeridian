@@ -10,16 +10,26 @@
  * SpaceAccountLink is written here purely so it stays a live, accurate
  * mirror ahead of a future read-cutover step — nothing reads it yet.
  *
- * Rules (docs/D3_STEP3_DUAL_WRITE_REVIEW.md §2):
+ * Rules (docs/D3_STEP3_DUAL_WRITE_REVIEW.md §2, amended by
+ * docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md):
  *   Rule 1 — `kind` is always recomputed dynamically here, never passed in
  *            and never copied from another row.
  *   Rule 2 — every write is an idempotent upsert keyed on
  *            (spaceId, financialAccountId).
  *   Rule 3 — every other field mirrors the corresponding WorkspaceAccountShare
  *            write verbatim.
- *   Rule 4 — account-creation paths whose primary share write may target a
- *            non-personal space must separately call ensureHomeLink() so the
- *            account still ends up with exactly one HOME link.
+ *   Rule 4 — [SUPERSEDED, see docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5]
+ *            Previously: account-creation paths whose primary share write
+ *            may target a non-personal space must separately call
+ *            ensureHomeLink() to backfill a HOME link at the creator's
+ *            personal Space. This synthesized visibility into Personal that
+ *            no real share ever granted, and is no longer correct now that
+ *            HOME means "canonical owning Space" rather than "the creator's
+ *            personal Space." computeLinkKind() below now assigns HOME to
+ *            whichever space an account's first link was written at —
+ *            Personal, Business, Household, or otherwise — so no separate
+ *            backfill call is needed. ensureHomeLink() is no longer called
+ *            anywhere; see its own doc comment.
  *   Rule 5 — best-effort, non-fatal: every exported write function catches
  *            its own errors and logs via console.warn; none of them throw.
  *   Rule 7 — no db.$transaction (see review doc §4 — none used anywhere in
@@ -63,30 +73,46 @@ export async function resolveAccountCreatorUserId(financialAccountId: string): P
 
 /**
  * Computes whether the link at (spaceId, financialAccountId) should be HOME
- * or SHARED — HOME iff spaceId is the account creator's own personal Space.
- * Never throws: an unresolvable creator or personal Space just means the
- * link can't be HOME, so it falls back to SHARED rather than blocking the
- * dual-write (mirrors how the Step 2 backfill still wrote SHARED links for
- * accounts it couldn't resolve a HOME link for).
+ * or SHARED.
  *
- * Pass `knownCreatorUserId` when the caller already has it (e.g. a route
- * that just created the FinancialAccount with createdByUserId: userId) to
- * skip a redundant FinancialAccount lookup.
+ * D3 Step 3 HOME Semantics Correction (docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md
+ * §5A) — HOME means the account's canonical owning Space, not "the creator's
+ * personal Space." There is no Personal special-casing here:
+ *
+ *   1. If no SpaceAccountLink row exists yet for this financialAccountId at
+ *      all, this is the first link ever written for the account — it
+ *      becomes HOME, whatever Space it's being written at (Personal,
+ *      Business, Household, Property, ...).
+ *   2. Otherwise, if a HOME link already exists for this account and it's
+ *      at this same spaceId, reassert HOME (idempotent — a re-upsert of the
+ *      existing HOME row, e.g. a status/visibility update, must not flip
+ *      it to SHARED).
+ *   3. Otherwise, this is an additional space gaining visibility into an
+ *      account that already has its HOME elsewhere — SHARED.
+ *
+ * Never throws on its own — any DB error propagates to the caller, which
+ * (per Rule 5) is expected to catch and log non-fatally.
  */
 export async function computeLinkKind(
   spaceId: string,
   financialAccountId: string,
-  knownCreatorUserId?: string | null
 ): Promise<SpaceAccountLinkKind> {
-  const creatorUserId = knownCreatorUserId !== undefined
-    ? knownCreatorUserId
-    : await resolveAccountCreatorUserId(financialAccountId);
-  if (!creatorUserId) return SpaceAccountLinkKind.SHARED;
+  const existingLinkCount = await db.spaceAccountLink.count({
+    where: { financialAccountId },
+  });
+  if (existingLinkCount === 0) {
+    return SpaceAccountLinkKind.HOME;
+  }
 
-  const personalSpaceId = await resolvePersonalSpaceId(creatorUserId);
-  if (!personalSpaceId) return SpaceAccountLinkKind.SHARED;
+  const existingHome = await db.spaceAccountLink.findFirst({
+    where:  { financialAccountId, kind: SpaceAccountLinkKind.HOME },
+    select: { spaceId: true },
+  });
+  if (existingHome && existingHome.spaceId === spaceId) {
+    return SpaceAccountLinkKind.HOME;
+  }
 
-  return spaceId === personalSpaceId ? SpaceAccountLinkKind.HOME : SpaceAccountLinkKind.SHARED;
+  return SpaceAccountLinkKind.SHARED;
 }
 
 export interface SpaceAccountLinkWriteFields {
@@ -114,7 +140,10 @@ export async function dualWriteSpaceAccountLink(params: {
   update:             Partial<SpaceAccountLinkWriteFields>;
 }): Promise<void> {
   try {
-    const kind = await computeLinkKind(params.spaceId, params.financialAccountId, params.creatorUserId);
+    // params.creatorUserId is accepted for call-site backward compatibility
+    // (every existing dual-write call site still passes it) but is no longer
+    // used to compute kind — see computeLinkKind()'s doc comment.
+    const kind = await computeLinkKind(params.spaceId, params.financialAccountId);
     await db.spaceAccountLink.upsert({
       where: {
         spaceId_financialAccountId: {
@@ -202,19 +231,29 @@ export async function dualWriteFromShares(
 }
 
 /**
- * Rule 4 — HOME synthesis for account-creation paths whose primary
+ * UNUSED as of D3 Step 3 HOME Semantics Correction
+ * (docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B). No call sites remain —
+ * removed from app/api/plaid/exchange-token/route.ts and
+ * app/api/accounts/wallet/route.ts.
+ *
+ * Previously: HOME synthesis for account-creation paths whose primary
  * WorkspaceAccountShare write may target a non-personal Space (Plaid
  * exchange-token and wallet create both resolve `spaceId` via
  * getSpaceContext(), which can be any Space the user is currently active
- * in, not necessarily personal). Without this, such an account could end
- * up with zero HOME link.
+ * in, not necessarily personal) — backfilled a HOME link at the creator's
+ * personal Space so the account wouldn't end up with zero HOME links.
  *
- * No-ops (writes nothing) if:
- *   - the creator has no resolvable ACTIVE PERSONAL Space, or
- *   - personalSpaceId === excludeSpaceId (the primary dual-write at that
- *     same pair already covers it).
+ * That backfill is no longer needed: computeLinkKind() now assigns HOME to
+ * whichever Space an account's first link is written at, so the *primary*
+ * dual-write at account creation already produces the correct HOME link
+ * (at the actually-active Space, Personal or otherwise) without a second,
+ * synthesized row at Personal. Calling this function today would
+ * reintroduce exactly the product-wrong synthesized-personal-HOME rows the
+ * correction was meant to remove — do not reconnect it without revisiting
+ * that decision.
  *
- * Best-effort, non-fatal — see Rule 5.
+ * Left in place (not deleted) for fast rollback and as a reference for the
+ * "previous" pattern. Best-effort, non-fatal — see Rule 5.
  */
 export async function ensureHomeLink(params: {
   financialAccountId: string;

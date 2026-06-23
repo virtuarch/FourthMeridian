@@ -39,7 +39,7 @@ import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { AuditAction } from "@/lib/audit-actions";
 import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
-import { dualWriteSpaceAccountLink, ensureHomeLink } from "@/lib/accounts/space-account-link";
+import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 
 // ── Map Plaid account type/subtype → our AccountType enum ────────────────────
 function mapAccountType(type: string, subtype: string | null | undefined): AccountType {
@@ -130,7 +130,6 @@ export async function POST(req: NextRequest) {
       //    lib/accounts/reconcile.ts for the matching rules.
       // 3. Only create a new row if neither lookup finds anything.
       let fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
-      let isNewAccount = false;
 
       if (fa) {
         fa = await db.financialAccount.update({
@@ -187,7 +186,6 @@ export async function POST(req: NextRequest) {
             },
           });
         } else {
-          isNewAccount = true;
           fa = await db.financialAccount.create({
             data: {
               ownerType:       AccountOwnerType.USER,
@@ -279,13 +277,12 @@ export async function POST(req: NextRequest) {
           revokedByUserId:  null,
         },
       });
-      // Rule 4 — this share write may have landed in a non-personal space
-      // (spaceId here is getSpaceContext()'s active space, not necessarily
-      // the creator's personal one). Only relevant for brand-new accounts —
-      // an existing account already has whatever HOME link it needs.
-      if (isNewAccount) {
-        await ensureHomeLink({ financialAccountId: fa.id, creatorUserId: userId, excludeSpaceId: spaceId });
-      }
+      // D3 Step 3 HOME Semantics Correction — no separate HOME backfill call
+      // needed here. computeLinkKind() (inside dualWriteSpaceAccountLink
+      // above) now assigns HOME to the Space a brand-new account's first
+      // link is written at — i.e. spaceId, the actually-active Space —
+      // rather than synthesizing an extra HOME link at the creator's
+      // personal Space. See docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
 
       importedIds.push(fa.id);
       imported++;
