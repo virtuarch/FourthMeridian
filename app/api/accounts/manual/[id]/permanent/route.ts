@@ -19,6 +19,7 @@ import { NextRequest, NextResponse }   from "next/server";
 import { db }                          from "@/lib/db";
 import { requireUser }                 from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { dualDeleteSpaceAccountLinks } from "@/lib/accounts/space-account-link";
 
 export const DELETE = withApiHandler(async (
   req: NextRequest,
@@ -68,6 +69,8 @@ export const DELETE = withApiHandler(async (
 
   // ── Hard delete in FK-safe order ──────────────────────────────────────────
   await db.workspaceAccountShare.deleteMany({ where: { financialAccountId: id } });
+  // D3 Step 3 — mirror the hard delete onto SpaceAccountLink (best-effort/non-fatal).
+  await dualDeleteSpaceAccountLinks(id);
   await db.accountConnection.deleteMany({ where: { financialAccountId: id } });
   await db.financialAccount.delete({ where: { id } });
 

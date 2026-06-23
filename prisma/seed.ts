@@ -31,6 +31,7 @@ import {
   AccountOwnerType,
   ShareStatus,
   VisibilityLevel,
+  SpaceAccountLinkKind,
   GoalType,
   GoalStatus,
   GoalCategory,
@@ -204,6 +205,17 @@ async function createFullAccount(opts: {
     },
   });
 
+  // D3 Step 3 — mirror onto SpaceAccountLink. Every createFullAccount() call
+  // in this seed passes the creator's own PERSONAL space as `spaceId`, so this
+  // is always the account's HOME link by construction.
+  await prisma.spaceAccountLink.create({
+    data: {
+      spaceId, financialAccountId: acct.id, addedByUserId: userId,
+      visibilityLevel: VisibilityLevel.FULL, status: ShareStatus.ACTIVE,
+      kind: SpaceAccountLinkKind.HOME,
+    },
+  });
+
   return acct;
 }
 
@@ -220,6 +232,18 @@ async function shareAccount(
     data: {
       workspaceId: spaceId, financialAccountId: accountId,
       addedByUserId: userId, visibilityLevel: level, status: ShareStatus.ACTIVE,
+    },
+  });
+
+  // D3 Step 3 — mirror onto SpaceAccountLink. shareAccount() is only ever
+  // called to mirror an account into a space other than its creator's
+  // PERSONAL space (that link is created inside createFullAccount() above),
+  // so this is always SHARED.
+  await prisma.spaceAccountLink.create({
+    data: {
+      spaceId, financialAccountId: accountId, addedByUserId: userId,
+      visibilityLevel: level, status: ShareStatus.ACTIVE,
+      kind: SpaceAccountLinkKind.SHARED,
     },
   });
 }
@@ -252,6 +276,7 @@ async function main() {
   await prisma.duplicateAccountCandidate.deleteMany();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (prisma as any).spaceDashboardSection.deleteMany();
+  await prisma.spaceAccountLink.deleteMany();
   await prisma.workspaceAccountShare.deleteMany();
   await prisma.accountConnection.deleteMany();
   await prisma.financialAccount.deleteMany();

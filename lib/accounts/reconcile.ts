@@ -49,6 +49,7 @@
 
 import { db } from "@/lib/db";
 import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus } from "@prisma/client";
+import { dualWriteSpaceAccountLink, resolveAccountCreatorUserId } from "@/lib/accounts/space-account-link";
 
 export type ProviderIdentity =
   | { kind: "plaid"; plaidAccountId: string }
@@ -324,6 +325,11 @@ export async function mergeArchivedDuplicateIntoCanonical(
     });
   }
 
+  // D3 Step 3 — resolved once against the winner's own identity (never the
+  // loser's), so every SpaceAccountLink mirrored below gets `kind` recomputed
+  // against the right account.
+  const winnerCreatorUserId = await resolveAccountCreatorUserId(winnerId);
+
   const loserShares = await db.workspaceAccountShare.findMany({ where: { financialAccountId: loserId } });
   for (const s of loserShares) {
     await db.workspaceAccountShare.upsert({
@@ -336,6 +342,23 @@ export async function mergeArchivedDuplicateIntoCanonical(
         addedByUserId:       s.addedByUserId,
         visibilityLevel:     s.visibilityLevel,
         status:              ShareStatus.ACTIVE,
+      },
+    });
+
+    // D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal).
+    await dualWriteSpaceAccountLink({
+      spaceId:            s.workspaceId,
+      financialAccountId: winnerId,
+      creatorUserId:      winnerCreatorUserId,
+      create: {
+        addedByUserId:   s.addedByUserId,
+        visibilityLevel: s.visibilityLevel,
+        status:          ShareStatus.ACTIVE,
+      },
+      update: {
+        status:          ShareStatus.ACTIVE,
+        revokedAt:       null,
+        revokedByUserId: null,
       },
     });
   }

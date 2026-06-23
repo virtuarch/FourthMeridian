@@ -39,6 +39,7 @@ import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { AuditAction } from "@/lib/audit-actions";
 import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
+import { dualWriteSpaceAccountLink, ensureHomeLink } from "@/lib/accounts/space-account-link";
 
 // ── Map Plaid account type/subtype → our AccountType enum ────────────────────
 function mapAccountType(type: string, subtype: string | null | undefined): AccountType {
@@ -129,6 +130,7 @@ export async function POST(req: NextRequest) {
       //    lib/accounts/reconcile.ts for the matching rules.
       // 3. Only create a new row if neither lookup finds anything.
       let fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
+      let isNewAccount = false;
 
       if (fa) {
         fa = await db.financialAccount.update({
@@ -185,6 +187,7 @@ export async function POST(req: NextRequest) {
             },
           });
         } else {
+          isNewAccount = true;
           fa = await db.financialAccount.create({
             data: {
               ownerType:       AccountOwnerType.USER,
@@ -259,6 +262,30 @@ export async function POST(req: NextRequest) {
           status:             ShareStatus.ACTIVE,
         },
       });
+
+      // ── D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal) ───
+      await dualWriteSpaceAccountLink({
+        spaceId,
+        financialAccountId: fa.id,
+        creatorUserId:       fa.createdByUserId ?? fa.ownerUserId,
+        create: {
+          addedByUserId:    userId,
+          visibilityLevel:  VisibilityLevel.FULL,
+          status:           ShareStatus.ACTIVE,
+        },
+        update: {
+          status:           ShareStatus.ACTIVE,
+          revokedAt:        null,
+          revokedByUserId:  null,
+        },
+      });
+      // Rule 4 — this share write may have landed in a non-personal space
+      // (spaceId here is getSpaceContext()'s active space, not necessarily
+      // the creator's personal one). Only relevant for brand-new accounts —
+      // an existing account already has whatever HOME link it needs.
+      if (isNewAccount) {
+        await ensureHomeLink({ financialAccountId: fa.id, creatorUserId: userId, excludeSpaceId: spaceId });
+      }
 
       importedIds.push(fa.id);
       imported++;

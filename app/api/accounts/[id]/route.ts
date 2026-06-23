@@ -24,6 +24,7 @@ import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
+import { dualWriteFromShares } from "@/lib/accounts/space-account-link";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -164,6 +165,22 @@ export const DELETE = withApiHandler(async (
       where: { financialAccountId: id, status: ShareStatus.ACTIVE },
       data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: user.id },
     });
+
+    // ── 3a. D3 Step 3 — mirror the revocation onto SpaceAccountLink, using the
+    //       pre-revocation share rows captured above (best-effort/non-fatal,
+    //       handled inside dualWriteFromShares itself).
+    await dualWriteFromShares(
+      fa.workspaceShares.map((s) => ({
+        workspaceId:        s.workspaceId,
+        financialAccountId: s.financialAccountId,
+        addedByUserId:      s.addedByUserId,
+        visibilityLevel:    s.visibilityLevel,
+        status:             ShareStatus.REVOKED,
+        revokedAt:          now,
+        revokedByUserId:    user.id,
+      })),
+      fa.createdByUserId ?? fa.ownerUserId
+    );
 
     // ── 3b. Regenerate SpaceSnapshot for every space this account was active
     //       in — captured from fa.workspaceShares *before* the revocation

@@ -30,6 +30,7 @@ import { getSpaceContext }              from "@/lib/space";
 import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, SpaceMemberStatus } from "@prisma/client";
 import { requireUser }                      from "@/lib/session";
 import { withApiHandler }                   from "@/lib/api";
+import { dualWriteSpaceAccountLink }        from "@/lib/accounts/space-account-link";
 
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
@@ -144,6 +145,27 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         visibilityLevel: VisibilityLevel.FULL,
         revokedAt:       null,
         revokedByUserId: null,
+      },
+    })
+  ));
+
+  // ── D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal).
+  //    shareTargets[0] is always personalSpaceId, so no Rule 4 gap here.
+  await Promise.all(shareTargets.map((wsId) =>
+    dualWriteSpaceAccountLink({
+      spaceId:            wsId,
+      financialAccountId: fa.id,
+      creatorUserId:       userId,
+      create: {
+        addedByUserId:    userId,
+        visibilityLevel:  VisibilityLevel.FULL,
+        status:           ShareStatus.ACTIVE,
+      },
+      update: {
+        status:           ShareStatus.ACTIVE,
+        visibilityLevel:  VisibilityLevel.FULL,
+        revokedAt:        null,
+        revokedByUserId:  null,
       },
     })
   ));

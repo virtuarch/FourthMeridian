@@ -13,6 +13,8 @@ import { NextRequest, NextResponse }   from "next/server";
 import { db }                          from "@/lib/db";
 import { requireUser }                 from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { ShareStatus }                 from "@prisma/client";
+import { dualWriteFromShares }         from "@/lib/accounts/space-account-link";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -131,6 +133,10 @@ export const DELETE = withApiHandler(async (
 
   const now = new Date();
 
+  // Captured before the revoke below so the D3 Step 3 dual-write has the
+  // pre-revocation rows to mirror (the updateMany itself returns only a count).
+  const sharesBeforeRevoke = await db.workspaceAccountShare.findMany({ where: { financialAccountId: id } });
+
   // ── 1. Revoke WorkspaceAccountShare rows ─────────────────────────────────
   await db.workspaceAccountShare.updateMany({
     where: { financialAccountId: id },
@@ -140,6 +146,21 @@ export const DELETE = withApiHandler(async (
       revokedByUserId: userId,
     },
   });
+
+  // ── 1a. D3 Step 3 — mirror the revocation onto SpaceAccountLink
+  //       (best-effort/non-fatal, handled inside dualWriteFromShares).
+  await dualWriteFromShares(
+    sharesBeforeRevoke.map((s) => ({
+      workspaceId:        s.workspaceId,
+      financialAccountId: s.financialAccountId,
+      addedByUserId:      s.addedByUserId,
+      visibilityLevel:    s.visibilityLevel,
+      status:             ShareStatus.REVOKED,
+      revokedAt:          now,
+      revokedByUserId:    userId,
+    })),
+    fa.ownerUserId
+  );
 
   // ── 2. Soft-delete AccountConnection rows ─────────────────────────────────
   await db.accountConnection.updateMany({

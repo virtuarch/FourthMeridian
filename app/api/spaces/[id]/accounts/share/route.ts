@@ -18,6 +18,7 @@ import { db }                                           from "@/lib/db";
 import { ShareStatus, VisibilityLevel, SpaceMemberStatus } from "@prisma/client";
 import { requireUser } from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 
 // ─── POST ─────────────────────────────────────────────────────────────────────
 
@@ -91,6 +92,26 @@ export const POST = withApiHandler(async (
     },
   });
 
+  // ── D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal).
+  // No creatorUserId passed: fa here is selected without createdByUserId, so
+  // dualWriteSpaceAccountLink resolves the creator itself.
+  await dualWriteSpaceAccountLink({
+    spaceId,
+    financialAccountId,
+    create: {
+      addedByUserId:   userId,
+      visibilityLevel: visibilityLevel as VisibilityLevel,
+      status:          ShareStatus.ACTIVE,
+    },
+    update: {
+      addedByUserId:   userId,
+      visibilityLevel: visibilityLevel as VisibilityLevel,
+      status:          ShareStatus.ACTIVE,
+      revokedAt:       null,
+      revokedByUserId: null,
+    },
+  });
+
   await db.auditLog.create({
     data: {
       userId,
@@ -134,9 +155,10 @@ export const DELETE = withApiHandler(async (
   const share = await db.workspaceAccountShare.findUnique({
     where: { workspaceId_financialAccountId: { workspaceId: spaceId, financialAccountId } },
     select: {
-      id:           true,
-      status:       true,
-      addedByUserId: true,
+      id:              true,
+      status:          true,
+      addedByUserId:   true,
+      visibilityLevel: true,
       financialAccount: { select: { name: true } },
     },
   });
@@ -150,11 +172,32 @@ export const DELETE = withApiHandler(async (
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  const revokedAt = new Date();
+
   await db.workspaceAccountShare.update({
     where: { id: share.id },
     data: {
       status:          ShareStatus.REVOKED,
-      revokedAt:       new Date(),
+      revokedAt,
+      revokedByUserId: userId,
+    },
+  });
+
+  // ── D3 Step 3 — mirror the revocation onto SpaceAccountLink
+  //    (best-effort/non-fatal, handled inside dualWriteSpaceAccountLink).
+  await dualWriteSpaceAccountLink({
+    spaceId,
+    financialAccountId,
+    create: {
+      addedByUserId:   share.addedByUserId,
+      visibilityLevel: share.visibilityLevel,
+      status:          ShareStatus.REVOKED,
+      revokedAt,
+      revokedByUserId: userId,
+    },
+    update: {
+      status:          ShareStatus.REVOKED,
+      revokedAt,
       revokedByUserId: userId,
     },
   });

@@ -24,6 +24,7 @@ import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { dualWriteSpaceAccountLink, ensureHomeLink } from "@/lib/accounts/space-account-link";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -122,6 +123,24 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal).
+    // No creatorUserId passed: archivedFa is selected as {id: true} only, so
+    // dualWriteSpaceAccountLink resolves the creator itself.
+    await dualWriteSpaceAccountLink({
+      spaceId,
+      financialAccountId: archivedFa.id,
+      create: {
+        addedByUserId:   userId,
+        visibilityLevel: VisibilityLevel.FULL,
+        status:          ShareStatus.ACTIVE,
+      },
+      update: {
+        status:          ShareStatus.ACTIVE,
+        revokedAt:       null,
+        revokedByUserId: null,
+      },
+    });
+
     // Regenerate SpaceSnapshot now that the share is active again — see
     // docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
     try {
@@ -180,6 +199,27 @@ export async function POST(req: NextRequest) {
       status:             ShareStatus.ACTIVE,
     },
   });
+
+  // D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal).
+  await dualWriteSpaceAccountLink({
+    spaceId,
+    financialAccountId: fa.id,
+    creatorUserId:       fa.createdByUserId ?? fa.ownerUserId,
+    create: {
+      addedByUserId:   userId,
+      visibilityLevel: VisibilityLevel.FULL,
+      status:          ShareStatus.ACTIVE,
+    },
+    update: {
+      status:          ShareStatus.ACTIVE,
+      revokedAt:       null,
+      revokedByUserId: null,
+    },
+  });
+  // Rule 4 — spaceId here is getSpaceContext()'s active space, which may not
+  // be the creator's personal space. This is a brand-new account, so ensure
+  // it still ends up with exactly one HOME link.
+  await ensureHomeLink({ financialAccountId: fa.id, creatorUserId: userId, excludeSpaceId: spaceId });
 
   await db.auditLog.create({
     data: {

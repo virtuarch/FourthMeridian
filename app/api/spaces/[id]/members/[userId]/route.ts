@@ -25,6 +25,7 @@ import { db }                                     from "@/lib/db";
 import { SpaceMemberStatus, ShareStatus, SpaceMemberRole } from "@prisma/client";
 import { requireSpaceRole }                   from "@/lib/session";
 import { withApiHandler, getClientIp }            from "@/lib/api";
+import { dualWriteFromShares }                    from "@/lib/accounts/space-account-link";
 
 const PROMOTABLE_ROLES: SpaceMemberRole[] = [
   SpaceMemberRole.ADMIN,
@@ -138,6 +139,16 @@ export const DELETE = withApiHandler(async (
     },
   });
 
+  // Captured before the revoke below so the D3 Step 3 dual-write has the
+  // pre-revocation rows to mirror (the updateMany itself returns only a count).
+  const sharesBeforeRevoke = await db.workspaceAccountShare.findMany({
+    where: {
+      workspaceId:   spaceId,
+      addedByUserId: targetUserId,
+      status:        ShareStatus.ACTIVE,
+    },
+  });
+
   // ── 2. Revoke all active WorkspaceAccountShare rows the member added ───────
   await db.workspaceAccountShare.updateMany({
     where: {
@@ -152,6 +163,20 @@ export const DELETE = withApiHandler(async (
       revokedByUserId: isSelf ? targetUserId : user.id,
     },
   });
+
+  // ── 2a. D3 Step 3 — mirror the revocation onto SpaceAccountLink
+  //       (best-effort/non-fatal, handled inside dualWriteFromShares).
+  await dualWriteFromShares(
+    sharesBeforeRevoke.map((s) => ({
+      workspaceId:        s.workspaceId,
+      financialAccountId: s.financialAccountId,
+      addedByUserId:      s.addedByUserId,
+      visibilityLevel:    s.visibilityLevel,
+      status:             ShareStatus.REVOKED,
+      revokedAt:          now,
+      revokedByUserId:    isSelf ? targetUserId : user.id,
+    }))
+  );
 
   // ── 3. Audit log ──────────────────────────────────────────────────────────
   const ru = targetMembership.user;
