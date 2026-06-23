@@ -1833,7 +1833,9 @@ export function SpaceDashboard({
       const res = await fetch(`/api/spaces/${spaceId}/members/${currentUserId}`, {
         method: "DELETE",
       });
-      if (res.ok) router.push("/dashboard");
+      if (res.ok) {
+        router.push(`/dashboard/spaces?left=${encodeURIComponent(displaySpaceName(spaceName))}`);
+      }
     } finally {
       setLeaveBusy(false);
     }

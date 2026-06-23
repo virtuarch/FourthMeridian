@@ -769,6 +769,31 @@ export function SpacesClient({
   const [managingSpace, setManagingSpace]      = useState<SpaceItem | null>(null);
   const [showAllSpaces, setShowAllSpaces]      = useState(false);
   const [viewingPublicSpace, setViewingPublicSpace] = useState<SpaceItem | null>(null);
+  const [leftSpaceToast, setLeftSpaceToast]    = useState<string | null>(null);
+
+  // Picks up the "?left=<name>" hint a Leave Space action (ManageSpaceModal
+  // or SpaceDashboard's header Leave button) appends when it redirects here,
+  // shows a one-shot success toast, then strips the param so a refresh or
+  // back-navigation doesn't re-show it. Plain history API instead of
+  // useSearchParams() — avoids opting this whole client component into a
+  // Suspense boundary for a single one-time read.
+  useEffect(() => {
+    const left = new URLSearchParams(window.location.search).get("left");
+    if (!left) return;
+    // setTimeout(..., 0) defers the setState out of the effect body itself —
+    // same pattern as the managingSpace sync effect above, avoids the
+    // react-hooks/set-state-in-effect cascading-render lint rule.
+    let dismissTimer: ReturnType<typeof setTimeout> | undefined;
+    const showTimer = setTimeout(() => {
+      setLeftSpaceToast(left);
+      window.history.replaceState({}, "", window.location.pathname);
+      dismissTimer = setTimeout(() => setLeftSpaceToast(null), 3500);
+    }, 0);
+    return () => {
+      clearTimeout(showTimer);
+      if (dismissTimer) clearTimeout(dismissTimer);
+    };
+  }, []);
 
   // Keep managingSpace in sync with the latest server-rendered `mine` list
   // after router.refresh() — same pattern as the old SpacesClient.
@@ -850,6 +875,13 @@ export function SpacesClient({
 
   return (
     <div className="min-h-[70vh]">
+      {leftSpaceToast && (
+        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg border text-sm font-medium bg-emerald-500/10 border-emerald-500/30 text-emerald-400">
+          <Check size={14} />
+          You left {leftSpaceToast}
+        </div>
+      )}
+
       {/* Atlas Field now renders from DashboardChrome.tsx so it can paint
           behind the header strip too, not just this page's own content
           (Phase G #2) — nothing to render here anymore. */}

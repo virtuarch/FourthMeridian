@@ -23,6 +23,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useRouter } from "next/navigation";
 import {
   X, Settings, Users, Target, Landmark, LayoutDashboard,
   AlertTriangle, Loader2, Crown, Shield, Eye, EyeOff,
@@ -1329,6 +1330,7 @@ function DangerZoneTab({
   onRefresh:     () => void;
   onDeleted?:    () => void;
 }) {
+  const router = useRouter();
   const [confirmTrash, setConfirmTrash] = useState(false);
   const [archiveBusy,  setArchiveBusy]  = useState(false);
   const [trashBusy,    setTrashBusy]    = useState(false);
@@ -1339,9 +1341,16 @@ function DangerZoneTab({
 
   async function handleLeave() {
     setLeaveBusy(true);
-    await fetch(`/api/spaces/${space.id}/members/${currentUserId}`, { method: "DELETE" });
-    onRefresh();
-    onClose();
+    try {
+      const res = await fetch(`/api/spaces/${space.id}/members/${currentUserId}`, { method: "DELETE" });
+      if (res.ok) {
+        onRefresh();
+        onClose();
+        router.push(`/dashboard/spaces?left=${encodeURIComponent(displaySpaceName(space.name))}`);
+      }
+    } finally {
+      setLeaveBusy(false);
+    }
   }
 
   async function handleArchive() {
@@ -1398,7 +1407,7 @@ function DangerZoneTab({
               <ul className="space-y-1">
                 {[
                   "You won't see this Space in your sidebar.",
-                  "Any accounts you shared here remain — the Space owner still has access to them.",
+                  "Any accounts you shared into this Space will be removed from the Space when you leave.",
                   "You can only rejoin if an owner sends you a new invite.",
                 ].map((line) => (
                   <li key={line} className="flex items-start gap-1.5 text-xs text-[var(--text-muted)]">
