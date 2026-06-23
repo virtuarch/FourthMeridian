@@ -19,6 +19,7 @@ import { ShareStatus, VisibilityLevel, SpaceMemberStatus } from "@prisma/client"
 import { requireUser } from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
+import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 
 // ─── POST ─────────────────────────────────────────────────────────────────────
 
@@ -122,6 +123,15 @@ export const POST = withApiHandler(async (
     },
   });
 
+  // Regenerate SpaceSnapshot now that this space has a new active share —
+  // see docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md for the established
+  // pattern. Best-effort/non-fatal: the share itself has already succeeded.
+  try {
+    await regenerateSpaceSnapshot(spaceId);
+  } catch (snapshotErr) {
+    console.warn(`[POST /api/spaces/:id/accounts/share] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
+  }
+
   return NextResponse.json(share, { status: 201 });
 }, "POST /api/spaces/[id]/accounts/share");
 
@@ -211,6 +221,15 @@ export const DELETE = withApiHandler(async (
       ipAddress: getClientIp(req),
     },
   });
+
+  // Regenerate SpaceSnapshot now that this space lost an active share —
+  // see docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md for the established
+  // pattern. Best-effort/non-fatal: the revoke itself has already succeeded.
+  try {
+    await regenerateSpaceSnapshot(spaceId);
+  } catch (snapshotErr) {
+    console.warn(`[DELETE /api/spaces/:id/accounts/share] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
+  }
 
   return NextResponse.json({ ok: true });
 }, "DELETE /api/spaces/[id]/accounts/share");
