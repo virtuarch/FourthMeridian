@@ -525,10 +525,38 @@ model Connection {
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
 
-  accountConnections   AccountConnection[]
+  accountConnections        AccountConnection[]
+  // ProviderAccountIdentity (D2, Step 1B) — additive, not yet populated.
+  providerAccountIdentities ProviderAccountIdentity[]
 
   @@index([userId])
   @@index([provider])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProviderAccountIdentity (D2, Phase 2, Step 1B — additive only, not yet read
+// or written by any application code; no backfill performed in this step).
+// Generalizes the ad hoc provider-identity columns on FinancialAccount
+// (plaidAccountId, walletAddress) into one row per (provider,
+// externalAccountId). FinancialAccount's existing provider columns are NOT
+// changed or backfilled by this step — this table starts empty.
+// See docs/D2_PROVIDER_CONNECTION_ARCHITECTURE.md §2, §8, §9.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ProviderAccountIdentity {
+  id                 String           @id @default(cuid())
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  connectionId       String?
+  connection         Connection?      @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  provider           ProviderType
+  externalAccountId  String
+  metadata           Json?
+  createdAt          DateTime         @default(now())
+
+  @@unique([provider, externalAccountId])
+  @@index([financialAccountId])
+  @@index([connectionId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -664,6 +692,8 @@ model FinancialAccount {
   debtProfile           DebtProfile?
   transactions          Transaction[]               @relation("FinancialAccountTransactions")
   holdings              Holding[]
+  // ProviderAccountIdentity (D2, Step 1B) — additive, not yet populated.
+  providerIdentities    ProviderAccountIdentity[]
 
   @@index([ownerUserId])
   @@index([ownerSpaceId])
