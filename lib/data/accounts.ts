@@ -4,12 +4,18 @@
  * Server-only. All functions query Prisma and return plain serialisable objects
  * (no Date instances) so they can be passed safely from Server → Client components.
  *
- * getAccounts() now queries via WorkspaceAccountShare → FinancialAccount.
+ * getAccounts() queries via SpaceAccountLink → FinancialAccount (D3 Step 4C
+ * read cutover — see docs/D3_STEP4C_CORE_DASHBOARD_REVIEW.md). Visibility is
+ * status: ACTIVE on the link, same as the WorkspaceAccountShare query this
+ * replaced; `kind` (HOME vs SHARED) is not filtered on — both confer
+ * visibility, only ownership semantics differ, and only after the D3 Step 3
+ * HOME Semantics Correction (docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md) is
+ * the link set here guaranteed to agree with WorkspaceAccountShare's.
  * getHoldings() reads both Holding anchors during the D11 migration: legacy
  * rows still pointing at Account (spaceId direct), and current/new rows
- * pointing at FinancialAccount (visibility via WorkspaceAccountShare, same
- * join getAccounts() uses). Output is normalized back to a single
- * `accountId` field so existing UI call sites need no changes.
+ * pointing at FinancialAccount (visibility via SpaceAccountLink, same join
+ * getAccounts() uses). Output is normalized back to a single `accountId`
+ * field so existing UI call sites need no changes.
  */
 
 import { db } from "@/lib/db";
@@ -19,7 +25,7 @@ import { ShareStatus } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
 
 /**
- * All accounts visible to the current space, via WorkspaceAccountShare.
+ * All accounts visible to the current space, via SpaceAccountLink.
  *
  * Pass `ctx` when the caller has already resolved space context for this
  * request (e.g. the dashboard page resolves it once and fans it out to all
@@ -30,10 +36,9 @@ import { estimateMinimumPayment } from "@/lib/debt";
 export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]> {
   const { spaceId } = ctx ?? (await getSpaceContext());
 
-  const shares = await db.workspaceAccountShare.findMany({
+  const links = await db.spaceAccountLink.findMany({
     where: {
-      // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
-      workspaceId: spaceId,
+      spaceId,
       status:           ShareStatus.ACTIVE,
       financialAccount: { deletedAt: null },
     },
@@ -45,7 +50,7 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return shares.map(({ financialAccount: r }: any) => {
+  return links.map(({ financialAccount: r }: any) => {
     const profile = r.debtProfile ?? null;
 
     // Effective APR/minimum payment: DebtProfile (new, richer source) takes
@@ -104,9 +109,9 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
  * FinancialAccount (financialAccountId) — while the migration is in
  * progress. Queried separately because each anchor resolves space visibility
  * differently (Account.spaceId is direct; FinancialAccount visibility goes
- * through an active WorkspaceAccountShare, mirroring getAccounts() above),
- * then merged. A given row only ever has one of the two FKs set, so there's
- * no double-counting. Once every Holding is confirmed migrated off Account,
+ * through an active SpaceAccountLink, mirroring getAccounts() above), then
+ * merged. A given row only ever has one of the two FKs set, so there's no
+ * double-counting. Once every Holding is confirmed migrated off Account,
  * the legacy branch can be deleted — not done here (additive-only for D11).
  */
 export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]> {
@@ -121,7 +126,7 @@ export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]>
         financialAccountId: { not: null },
         financialAccount: {
           deletedAt: null,
-          workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } },
+          spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } },
         },
       },
     }),

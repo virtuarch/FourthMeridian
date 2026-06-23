@@ -6,8 +6,13 @@
  * Transactions reach a space via two paths (see Transaction model comment
  * in prisma/schema.prisma):
  *  - legacy rows: account.spaceId (the old Account model)
- *  - Plaid-synced rows: financialAccount.workspaceShares (the canonical
- *    FinancialAccount + WorkspaceAccountShare model)
+ *  - Plaid-synced rows: financialAccount.spaceAccountLinks (D3 Step 4C read
+ *    cutover — see docs/D3_STEP4C_CORE_DASHBOARD_REVIEW.md; replaces the prior
+ *    financialAccount.workspaceShares query). Visibility is status: ACTIVE on
+ *    the link; `kind` (HOME vs SHARED) is not filtered on — both confer
+ *    visibility. This is the identical link/status shape lib/data/accounts.ts
+ *    now uses, so accounts, holdings, and transactions cannot disagree on
+ *    what's visible.
  * Every query below matches both so newly-synced Plaid transactions show up
  * alongside legacy/manual ones. `accountId` on the returned objects is
  * normalized to whichever FK is actually set, since callers (e.g. AccountModal)
@@ -32,11 +37,10 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
     where: {
       OR: [
         { account:          { spaceId } },
-        // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
         // deletedAt: null guards against an archived account's transactions
-        // surfacing in a shared Space if its share were ever left ACTIVE —
+        // surfacing in a shared Space if its link were ever left ACTIVE —
         // same defensive filter getAccounts()/getHoldings() already apply.
-        { financialAccount: { deletedAt: null, workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
+        { financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } } } },
       ],
       category: { in: BANKING_CATEGORIES as never[] },
     },
@@ -64,9 +68,8 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
     where: {
       OR: [
         { account:          { spaceId, type: "debt" } },
-        // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
         // deletedAt: null — see getTransactions() above for rationale.
-        { financialAccount: { type: "debt", deletedAt: null, workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
+        { financialAccount: { type: "debt", deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } } } },
       ],
       category: { in: BANKING_CATEGORIES as never[] },
     },
@@ -94,9 +97,8 @@ export async function getInvestmentTransactions(): Promise<InvestmentTransaction
     where: {
       OR: [
         { account:          { spaceId } },
-        // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
         // deletedAt: null — see getTransactions() above for rationale.
-        { financialAccount: { deletedAt: null, workspaceShares: { some: { workspaceId: spaceId, status: ShareStatus.ACTIVE } } } },
+        { financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } } } },
       ],
       category: { in: ["Buy","Sell","Dividend","Split","Fee"] as never[] },
     },
