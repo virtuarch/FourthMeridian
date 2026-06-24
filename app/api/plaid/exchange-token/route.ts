@@ -121,16 +121,44 @@ export async function POST(req: NextRequest) {
       const creditLimit      = acct.balances.limit ?? undefined;
 
       // ── Resolve FinancialAccount ──────────────────────────────────────────────
-      // 1. Exact match on plaidAccountId (the common case).
+      // 1. Exact match. D2 Step 3C — resolved primarily via
+      //    ProviderAccountIdentity (provider=PLAID, externalAccountId=
+      //    acct.account_id) rather than FinancialAccount.plaidAccountId
+      //    directly, with a fallback to the legacy lookup if no identity row
+      //    exists yet. Fallback-first, not a hard replacement — see
+      //    docs/initiatives/d2/D2_STEP3A_PROVIDER_ACCOUNT_IDENTITY_READ_CUTOVER_INVESTIGATION.md
+      //    §B (Risk 1: coverage gaps) and §C (Step 3C). A fallback hit is
+      //    logged so coverage gaps are visible before the fallback is ever
+      //    removed (Step 3G).
       // 2. If no exact match, Plaid may have reissued a new account_id for an
       //    account we already have archived (observed directly — same
       //    institutionId/mask/officialName/type, different plaidAccountId).
       //    Fall back to a fingerprint match against soft-deleted accounts; if
       //    exactly one candidate fits, reuse that row and update its
       //    plaidAccountId rather than creating a second visible account. See
-      //    lib/accounts/reconcile.ts for the matching rules.
-      // 3. Only create a new row if neither lookup finds anything.
-      let fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
+      //    lib/accounts/reconcile.ts for the matching rules. Unchanged by
+      //    Step 3C.
+      // 3. Only create a new row if neither lookup finds anything. Unchanged
+      //    by Step 3C.
+      const plaidIdentity = await db.providerAccountIdentity.findUnique({
+        where: { provider_externalAccountId: { provider: ProviderType.PLAID, externalAccountId: acct.account_id } },
+        include: { financialAccount: true },
+      });
+
+      let fa = plaidIdentity?.financialAccount ?? null;
+
+      if (!fa) {
+        fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
+        if (fa) {
+          // Legacy lookup succeeded where the identity-table lookup missed —
+          // a coverage gap (e.g. this account predates backfill, or a prior
+          // dual-write attempt failed silently). Non-fatal, existing
+          // behavior is unaffected, but worth surfacing.
+          console.warn(
+            `[plaid][D2-3C] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${acct.account_id}. Coverage gap; investigate before removing fallback.`
+          );
+        }
+      }
 
       if (fa) {
         fa = await db.financialAccount.update({
