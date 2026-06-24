@@ -38,7 +38,14 @@ export async function GET(
   // Match either FK — Plaid-synced transactions carry financialAccountId,
   // legacy/manual rows carry accountId.
   const rows = await db.transaction.findMany({
-    where:   { OR: [{ accountId: id }, { financialAccountId: id }] },
+    where: {
+      OR: [{ accountId: id }, { financialAccountId: id }],
+      // deletedAt: null — D2 Step 4D-R: excludes rows soft-deleted by an
+      // import rollback, the same Transaction-level guard the dashboard
+      // reads in lib/data/transactions.ts apply. See
+      // docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md.
+      deletedAt: null,
+    },
     orderBy: { date: "desc" },
   });
 

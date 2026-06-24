@@ -17,6 +17,12 @@
  * alongside legacy/manual ones. `accountId` on the returned objects is
  * normalized to whichever FK is actually set, since callers (e.g. AccountModal)
  * match transactions to an account by this single id field.
+ *
+ * D2 Step 4D-R: every query below also filters Transaction.deletedAt: null,
+ * excluding rows soft-deleted by an import rollback. This is the row's own
+ * soft-delete and is independent of (ANDed with) the financialAccount.deletedAt
+ * account-level guard above — both must hold for a transaction to be visible.
+ * See docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md.
  */
 
 import { db } from "@/lib/db";
@@ -42,6 +48,9 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
         // same defensive filter getAccounts()/getHoldings() already apply.
         { financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } } } },
       ],
+      // Transaction.deletedAt: null — D2 Step 4D-R: excludes rows soft-deleted
+      // by an import rollback. See module header above for rationale.
+      deletedAt: null,
       category: { in: BANKING_CATEGORIES as never[] },
     },
     orderBy: { date: "desc" },
@@ -71,6 +80,8 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
         // deletedAt: null — see getTransactions() above for rationale.
         { financialAccount: { type: "debt", deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } } } },
       ],
+      // Transaction.deletedAt: null — D2 Step 4D-R, see getTransactions() above.
+      deletedAt: null,
       category: { in: BANKING_CATEGORIES as never[] },
     },
     orderBy: { date: "desc" },
@@ -100,6 +111,8 @@ export async function getInvestmentTransactions(): Promise<InvestmentTransaction
         // deletedAt: null — see getTransactions() above for rationale.
         { financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } } } },
       ],
+      // Transaction.deletedAt: null — D2 Step 4D-R, see getTransactions() above.
+      deletedAt: null,
       category: { in: ["Buy","Sell","Dividend","Split","Fee"] as never[] },
     },
     orderBy: { date: "desc" },

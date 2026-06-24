@@ -309,8 +309,13 @@ export async function resolveFingerprintOutcome(
   externalTransactionId: string | null
 ): Promise<FingerprintOutcome> {
   if (externalTransactionId) {
+    // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import
+    // rollback must not be treated as an exact match, or re-importing the
+    // same file after a rollback would silently no-op instead of recreating
+    // the row. See
+    // docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
     const exact = await db.transaction.findFirst({
-      where:  { financialAccountId, externalTransactionId },
+      where:  { financialAccountId, externalTransactionId, deletedAt: null },
       select: { id: true },
     });
     if (exact) return { outcome: "MATCH", transactionId: exact.id };
@@ -319,8 +324,12 @@ export async function resolveFingerprintOutcome(
   const fpMatch = await findByFingerprint(financialAccountId, date, amount, merchant, false);
   if (!fpMatch) return { outcome: "CREATE" };
 
+  // deletedAt: null — same rationale as above. This candidate set must agree
+  // with findByFingerprint()'s own (also deletedAt: null, D2 Step 4D-R)
+  // candidate set, or the two could disagree on whether a match is
+  // ambiguous.
   const candidates = await db.transaction.findMany({
-    where:  { financialAccountId, date, amount, pending: false },
+    where:  { financialAccountId, date, amount, pending: false, deletedAt: null },
     select: { id: true, merchant: true },
   });
   const target  = normalizeMerchantKey(merchant);

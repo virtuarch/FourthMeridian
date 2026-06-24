@@ -221,7 +221,11 @@ async function pickCanonicalAndMerge(
   const counts = new Map<string, number>();
 
   for (const c of candidates) {
-    const count = await db.transaction.count({ where: { financialAccountId: c.id } });
+    // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import
+    // rollback must not count as "history" when deciding which duplicate-
+    // account candidate is canonical. See
+    // docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §2.
+    const count = await db.transaction.count({ where: { financialAccountId: c.id, deletedAt: null } });
     counts.set(c.id, count);
     if (count > canonicalCount) {
       canonical = c;
@@ -336,6 +340,14 @@ export async function mergeArchivedDuplicateIntoCanonical(
 ) {
   if (loserId === winnerId) return;
 
+  // Re-points ALL of the loser's transactions, including any soft-deleted by
+  // an import rollback (Transaction.deletedAt) — intentionally NOT filtered
+  // to deletedAt: null. A soft-deleted row must move with the rest of the
+  // account's history, or it would be orphaned on the archived loser account
+  // and could resurface incorrectly if that loser is ever individually
+  // restored. This is the one Transaction call site the D2 Step 4D-R audit
+  // identified as needing to keep ignoring deletedAt — see
+  // docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §5.
   await db.transaction.updateMany({
     where: { financialAccountId: loserId },
     data:  { financialAccountId: winnerId },

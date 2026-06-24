@@ -60,7 +60,16 @@ export async function findByFingerprint(
   pending: boolean
 ): Promise<TransactionFingerprintCandidate | null> {
   const candidates = await db.transaction.findMany({
-    where:  { financialAccountId, date, amount, pending },
+    // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import
+    // rollback must never be treated as a match candidate. Without this,
+    // Plaid sync's own fingerprint fallback (lib/plaid/syncTransactions.ts)
+    // could silently "adopt" a rolled-back row — setting plaidTransactionId
+    // on it without clearing deletedAt — permanently losing a real
+    // transaction with no error surfaced anywhere. Same rationale applies to
+    // lib/imports/csv.ts's resolveFingerprintOutcome(), the other caller of
+    // this helper. See
+    // docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
+    where:  { financialAccountId, date, amount, pending, deletedAt: null },
     select: { id: true, merchant: true, plaidTransactionId: true },
   });
   if (candidates.length === 0) return null;
