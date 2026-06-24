@@ -34,7 +34,7 @@
 import { plaidClient } from "@/lib/plaid/client";
 import { decrypt } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
-import { AccountType, PlaidItemStatus } from "@prisma/client";
+import { AccountType, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 
@@ -96,7 +96,27 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
   const plaidAccounts = accountsRes.data.accounts;
 
   for (const acct of plaidAccounts) {
-    const fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
+    // D2 Step 3E — resolved primarily via ProviderAccountIdentity (provider=
+    // PLAID, externalAccountId=acct.account_id) rather than
+    // FinancialAccount.plaidAccountId directly, with a fallback to the
+    // legacy lookup if no identity row exists yet. Fallback-first, not a
+    // hard replacement — mirrors Steps 3C/3D. See
+    // docs/initiatives/d2/D2_STEP3A_PROVIDER_ACCOUNT_IDENTITY_READ_CUTOVER_INVESTIGATION.md.
+    const plaidIdentity = await db.providerAccountIdentity.findUnique({
+      where: { provider_externalAccountId: { provider: ProviderType.PLAID, externalAccountId: acct.account_id } },
+      include: { financialAccount: true },
+    });
+
+    let fa = plaidIdentity?.financialAccount ?? null;
+    if (!fa) {
+      fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
+      if (fa) {
+        console.warn(
+          `[plaid][D2-3E] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${acct.account_id}. Coverage gap; investigate before removing fallback.`
+        );
+      }
+    }
+
     // No match, or soft-deleted (removed by the user) — never restore or
     // create during a refresh. That only happens via relink (exchange-token).
     if (!fa || fa.deletedAt) continue;
@@ -139,11 +159,26 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
         if (!acctHoldings.length) continue;
 
         // D11 — Holding is now FK'd to FinancialAccount directly; cross-
-        // reference via plaidAccountId, same as exchange-token's initial import.
-        const fa = await db.financialAccount.findUnique({
-          where:  { plaidAccountId: plaidAcct.account_id },
-          select: { id: true },
+        // reference via provider identity (D2 Step 3E), same pattern as the
+        // balance lookup above, falling back to plaidAccountId if no
+        // identity row exists yet — same as exchange-token's initial import.
+        const holdingPlaidIdentity = await db.providerAccountIdentity.findUnique({
+          where: { provider_externalAccountId: { provider: ProviderType.PLAID, externalAccountId: plaidAcct.account_id } },
+          select: { financialAccount: { select: { id: true } } },
         });
+
+        let fa = holdingPlaidIdentity?.financialAccount ?? null;
+        if (!fa) {
+          fa = await db.financialAccount.findUnique({
+            where:  { plaidAccountId: plaidAcct.account_id },
+            select: { id: true },
+          });
+          if (fa) {
+            console.warn(
+              `[plaid][D2-3E] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${plaidAcct.account_id}. Coverage gap; investigate before removing fallback.`
+            );
+          }
+        }
         if (!fa) continue; // never create — refresh only updates known accounts
 
         await db.holding.deleteMany({ where: { financialAccountId: fa.id } });
