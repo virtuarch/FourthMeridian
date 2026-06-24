@@ -3,7 +3,7 @@
  *
  * D3 Step 2 — companion validation script for backfill-space-account-link.ts.
  * Read-only: makes zero writes to any table. Implements the four checks from
- * docs/D3_STEP2_BACKFILL_REVIEW.md §5 ("Application checks") via Prisma
+ * docs/initiatives/d3/D3_STEP2_BACKFILL_REVIEW.md §5 ("Application checks") via Prisma
  * instead of raw SQL, so they run against the live schema types.
  *
  * Checks:

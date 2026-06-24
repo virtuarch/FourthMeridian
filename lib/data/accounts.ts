@@ -5,11 +5,11 @@
  * (no Date instances) so they can be passed safely from Server → Client components.
  *
  * getAccounts() queries via SpaceAccountLink → FinancialAccount (D3 Step 4C
- * read cutover — see docs/D3_STEP4C_CORE_DASHBOARD_REVIEW.md). Visibility is
+ * read cutover — see docs/initiatives/d3/D3_STEP4C_CORE_DASHBOARD_REVIEW.md). Visibility is
  * status: ACTIVE on the link, same as the WorkspaceAccountShare query this
  * replaced; `kind` (HOME vs SHARED) is not filtered on — both confer
  * visibility, only ownership semantics differ, and only after the D3 Step 3
- * HOME Semantics Correction (docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md) is
+ * HOME Semantics Correction (docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md) is
  * the link set here guaranteed to agree with WorkspaceAccountShare's.
  * getHoldings() reads both Holding anchors during the D11 migration: legacy
  * rows still pointing at Account (spaceId direct), and current/new rows

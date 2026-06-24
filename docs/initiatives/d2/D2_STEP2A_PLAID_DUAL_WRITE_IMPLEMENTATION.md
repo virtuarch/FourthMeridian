@@ -20,7 +20,7 @@ Approved scope (verbatim):
 
 | File | Change | Why |
 |---|---|---|
-| `lib/accounts/provider-identity.ts` (new) | `dualWriteProviderAccountIdentity(financialAccountId, provider, externalAccountId)` — find-by-{financialAccountId, provider} → create if missing, update `externalAccountId` in place if drifted, no-op if correct. Try/catch, logs, never throws. | New mirror-write helper, scoped exactly to the design in `docs/D2_STEP2A_PLAID_DUAL_WRITE_INVESTIGATION.md` §B. |
+| `lib/accounts/provider-identity.ts` (new) | `dualWriteProviderAccountIdentity(financialAccountId, provider, externalAccountId)` — find-by-{financialAccountId, provider} → create if missing, update `externalAccountId` in place if drifted, no-op if correct. Try/catch, logs, never throws. | New mirror-write helper, scoped exactly to the design in `docs/initiatives/d2/D2_STEP2A_PLAID_DUAL_WRITE_INVESTIGATION.md` §B. |
 | `app/api/plaid/exchange-token/route.ts` | +1 import line; +1 call site (`await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);`) placed once, immediately after the exact-match/fingerprint-repoint/create resolution block (after line 220, before the AccountConnection upsert). | Only file in the codebase that ever writes `plaidAccountId` (confirmed in the Step 2A investigation). |
 | `prisma/schema.prisma` | Comment-only update on the `ProviderAccountIdentity` model header — the old comment said "not yet... written by any application code," which became false the moment this change shipped. No field, type, index, or constraint changed. `prisma generate` output is identical. | Keep the schema file's own documentation accurate; not a schema change in the sense the project's rules mean (no migration triggered). |
 

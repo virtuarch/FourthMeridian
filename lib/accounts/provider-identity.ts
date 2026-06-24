@@ -2,7 +2,7 @@
  * lib/accounts/provider-identity.ts
  *
  * D2 Step 2A — dual-write helper for ProviderAccountIdentity.
- * Design reference: docs/D2_STEP2A_PLAID_DUAL_WRITE_INVESTIGATION.md (§B).
+ * Design reference: docs/initiatives/d2/D2_STEP2A_PLAID_DUAL_WRITE_INVESTIGATION.md (§B).
  *
  * Scope, deliberately narrow:
  *   - Called only from app/api/plaid/exchange-token/route.ts, only with
@@ -12,7 +12,7 @@
  *     writes plaidAccountId on either side of a merge, so it needs no
  *     changes and is not a caller of this helper.
  *   - WALLET is not wired to this helper — deferred pending the collision
- *     decision in docs/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md
+ *     decision in docs/initiatives/d2/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md
  *     (owner-scoped wallet dedup vs. this table's global unique constraint).
  *     The helper is written generically over ProviderType so it can be
  *     reused for WALLET later without a signature change, but nothing calls

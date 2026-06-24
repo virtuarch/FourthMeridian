@@ -160,8 +160,8 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   //    next removes the race: shareTargets[0] (always personalSpaceId)
   //    commits first and becomes HOME; every subsequent target then sees
   //    that committed HOME row and correctly becomes SHARED. See
-  //    docs/D3_STEP4C_REGRESSION_ROOT_CAUSE.md ("Secondary finding") and
-  //    docs/D3_LEGACY_RETIREMENT_AUDIT.md.
+  //    docs/initiatives/d3/D3_STEP4C_REGRESSION_ROOT_CAUSE.md ("Secondary finding") and
+  //    docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md.
   for (const wsId of shareTargets) {
     await dualWriteSpaceAccountLink({
       spaceId:            wsId,
@@ -183,7 +183,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
   // Regenerate SpaceSnapshot for every space this asset was just shared into
   // — same best-effort/non-fatal pattern as the existing archive/restore/
-  // share/revoke snapshot fixes (see docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
+  // share/revoke snapshot fixes (see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
   try {
     await regenerateSnapshotsForAccounts([fa.id]);
   } catch (snapshotErr) {

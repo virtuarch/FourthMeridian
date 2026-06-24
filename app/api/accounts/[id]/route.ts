@@ -187,7 +187,7 @@ export const DELETE = withApiHandler(async (
     //       above, since regenerateSnapshotsForAccounts() (used elsewhere)
     //       looks up ACTIVE shares and would find none here. Best-effort/
     //       non-fatal: a snapshot regen failure must never block the archive
-    //       itself. See docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
+    //       itself. See docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
     const affectedSpaceIds = [...new Set(fa.workspaceShares.map((s) => s.workspaceId))];
     for (const spaceId of affectedSpaceIds) {
       try {

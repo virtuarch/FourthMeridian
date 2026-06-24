@@ -3,7 +3,7 @@
 Status: **read-only investigation. No code, schema, or migration changes made.**
 
 Context confirmed before writing this report:
-- D2 1A, 1B applied locally. D2 1C-A/1C-B complete for PLAID (3 rows backfilled, verification passed). WALLET deferred per `docs/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md` (global-unique schema vs. owner-scoped app behavior mismatch).
+- D2 1A, 1B applied locally. D2 1C-A/1C-B complete for PLAID (3 rows backfilled, verification passed). WALLET deferred per `docs/initiatives/d2/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md` (global-unique schema vs. owner-scoped app behavior mismatch).
 - `grep -r plaidAccountId` across `app/`, `lib/`, `jobs/` (excluding `scripts/`, `prisma/seed.ts`, and the already-ruled-out `manual/[id]/restore` route) returns exactly the files read for this report — every one is covered below.
 - `grep -r "db.connection."` / `"prisma.connection."` across the whole repo returns **zero matches** — the `Connection` model (Step 1A) has no writers anywhere yet. This matters for the design in B: `connectionId` stays `null` in every dual-write path, consistent with the backfill script's existing rule.
 

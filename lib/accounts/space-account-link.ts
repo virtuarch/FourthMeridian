@@ -3,22 +3,22 @@
  *
  * D3 Step 3 — dual-write helpers. Every WorkspaceAccountShare mutation site
  * calls into this module to mirror the same change onto SpaceAccountLink,
- * best-effort and non-fatal. See docs/D3_STEP3_DUAL_WRITE_REVIEW.md for the
+ * best-effort and non-fatal. See docs/initiatives/d3/D3_STEP3_DUAL_WRITE_REVIEW.md for the
  * full design rationale.
  *
  * WorkspaceAccountShare remains the only table any read path consults.
  * SpaceAccountLink is written here purely so it stays a live, accurate
  * mirror ahead of a future read-cutover step — nothing reads it yet.
  *
- * Rules (docs/D3_STEP3_DUAL_WRITE_REVIEW.md §2, amended by
- * docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md):
+ * Rules (docs/initiatives/d3/D3_STEP3_DUAL_WRITE_REVIEW.md §2, amended by
+ * docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md):
  *   Rule 1 — `kind` is always recomputed dynamically here, never passed in
  *            and never copied from another row.
  *   Rule 2 — every write is an idempotent upsert keyed on
  *            (spaceId, financialAccountId).
  *   Rule 3 — every other field mirrors the corresponding WorkspaceAccountShare
  *            write verbatim.
- *   Rule 4 — [SUPERSEDED, see docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5]
+ *   Rule 4 — [SUPERSEDED, see docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5]
  *            Previously: account-creation paths whose primary share write
  *            may target a non-personal space must separately call
  *            ensureHomeLink() to backfill a HOME link at the creator's
@@ -75,7 +75,7 @@ export async function resolveAccountCreatorUserId(financialAccountId: string): P
  * Computes whether the link at (spaceId, financialAccountId) should be HOME
  * or SHARED.
  *
- * D3 Step 3 HOME Semantics Correction (docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md
+ * D3 Step 3 HOME Semantics Correction (docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md
  * §5A) — HOME means the account's canonical owning Space, not "the creator's
  * personal Space." There is no Personal special-casing here:
  *
@@ -232,7 +232,7 @@ export async function dualWriteFromShares(
 
 /**
  * UNUSED as of D3 Step 3 HOME Semantics Correction
- * (docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B). No call sites remain —
+ * (docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B). No call sites remain —
  * removed from app/api/plaid/exchange-token/route.ts and
  * app/api/accounts/wallet/route.ts.
  *

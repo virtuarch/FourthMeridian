@@ -10,7 +10,7 @@ All file:line references below were verified directly against the current `prism
 
 ## 0. Numbering correction (read this first)
 
-The investigation brief's §6 asks about dependencies on "D3 SpaceAccountLink, D4 ProviderCatalog, D5 AI Context Builder, D6 Space Templates, D7 Ownership & Sharing, D8 PublishedAccountView." Those labels do not match `docs/PHASE_2_DECISION_MATRIX.md`, which is this project's canonical D1–D14 numbering. The real mapping:
+The investigation brief's §6 asks about dependencies on "D3 SpaceAccountLink, D4 ProviderCatalog, D5 AI Context Builder, D6 Space Templates, D7 Ownership & Sharing, D8 PublishedAccountView." Those labels do not match `docs/architecture/PHASE_2_DECISION_MATRIX.md`, which is this project's canonical D1–D14 numbering. The real mapping:
 
 | Brief's label | Brief's topic | Canonical ID(s) | Canonical topic |
 |---|---|---|---|

@@ -2,7 +2,7 @@
  * scripts/correct-home-links.ts
  *
  * D3 Step 3 HOME Semantics Correction — one-time data correction.
- * Design reference: docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md (§4 diagnostic,
+ * Design reference: docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md (§4 diagnostic,
  * §5C correction scope).
  *
  * Problem this fixes:
@@ -52,7 +52,7 @@
  *
  * Rollback: this script only ever (a) flips an existing row's `kind` column
  * and (b) deletes rows that were never backed by a real share. Both are
- * narrow, identifiable changes — see docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md
+ * narrow, identifiable changes — see docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md
  * for the exact fingerprint if a manual revert is ever needed. No schema or
  * migration change is involved.
  */

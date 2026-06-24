@@ -138,4 +138,4 @@ npm run dev
 | `context/PlaidContext.tsx` | Single Plaid Link instance (prevents duplicate script warning) |
 | `app/dashboard/` | All dashboard pages |
 | `components/dashboard/` | Dashboard UI components |
-| `docs/PROJECT_STATE.md` | Full technical state snapshot |
+| `docs/operations/PROJECT_STATE.md` | Full technical state snapshot |

@@ -2,7 +2,7 @@
  * scripts/backfill-provider-account-identity.ts
  *
  * D2 Step 1C-A — backfill ProviderAccountIdentity for PLAID accounts only.
- * Design reference: docs/D2_STEP1C_PROVIDER_ACCOUNT_IDENTITY_BACKFILL_INVESTIGATION.md
+ * Design reference: docs/initiatives/d2/D2_STEP1C_PROVIDER_ACCOUNT_IDENTITY_BACKFILL_INVESTIGATION.md
  * (§B eligibility matrix, §C recommended backfill rules, §F smallest safe slice).
  *
  * Scope, deliberately narrow:
@@ -17,7 +17,7 @@
  *   - Writes ONLY to ProviderAccountIdentity. Never touches FinancialAccount,
  *     Connection, AccountConnection, or any other table.
  *   - connectionId is always null — backfilling PlaidItem -> Connection is
- *     explicitly out of scope (carried over from docs/D2_PROVIDER_CONNECTION_ARCHITECTURE.md
+ *     explicitly out of scope (carried over from docs/architecture/D2_PROVIDER_CONNECTION_ARCHITECTURE.md
  *     §10 Phase 2).
  *   - ProviderAccountIdentity is not yet read by any application code
  *     (confirmed zero references in app/, lib/, components/ as of this

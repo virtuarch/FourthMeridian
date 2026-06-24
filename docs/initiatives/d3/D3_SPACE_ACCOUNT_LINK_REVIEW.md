@@ -2,7 +2,7 @@
 
 **Status: investigation complete. Read-only — no schema, migration, API, route, or application code was modified to produce this document.**
 
-Source context: `docs/D2_CONNECTION_ARCHITECTURE_REVIEW.md` (D2 investigation, this branch). Governing docs: `docs/PHASE_2_ARCHITECTURE_FREEZE.md` §4, §8, §9.3, §16-17; `docs/PHASE_2_DECISION_MATRIX.md` D3 (lines 88-106). All file:line references verified directly against the current `prisma/schema.prisma` and listed route/lib files on this branch.
+Source context: `docs/architecture/D2_CONNECTION_ARCHITECTURE_REVIEW.md` (D2 investigation, this branch). Governing docs: `docs/architecture/PHASE_2_ARCHITECTURE_FREEZE.md` §4, §8, §9.3, §16-17; `docs/architecture/PHASE_2_DECISION_MATRIX.md` D3 (lines 88-106). All file:line references verified directly against the current `prisma/schema.prisma` and listed route/lib files on this branch.
 
 One naming note before the substance: the task that produced this report referred to "WorkspaceMember." The live Prisma model is `SpaceMember` (`schema.prisma:365`) — `WorkspaceMember` is only the underlying Postgres table name, preserved via `@@map("WorkspaceMember")` from the Phase 1 rename. Both names point at the same rows; this report uses `SpaceMember`, matching the schema and every route that queries it.
 

@@ -508,7 +508,7 @@ model PlaidItem {
 // continues to serve all existing Plaid behavior unchanged. Connection exists
 // so future, non-Plaid providers (wallets with xpub/watch-only, exchanges,
 // brokerages, CSV) have a home that isn't shaped like Plaid.
-// See docs/D2_PROVIDER_CONNECTION_ARCHITECTURE.md.
+// See docs/architecture/D2_PROVIDER_CONNECTION_ARCHITECTURE.md.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Connection {
@@ -542,10 +542,10 @@ model Connection {
 // externalAccountId). FinancialAccount's existing provider columns remain
 // the source of truth and are NOT removed by this step. WALLET is not yet
 // backfilled or dual-written — see
-// docs/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md. Still not
+// docs/initiatives/d2/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md. Still not
 // read by any application code as of Step 2A — write-only until a later
 // read-cutover step.
-// See docs/D2_PROVIDER_CONNECTION_ARCHITECTURE.md §2, §8, §9.
+// See docs/architecture/D2_PROVIDER_CONNECTION_ARCHITECTURE.md §2, §8, §9.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model ProviderAccountIdentity {
@@ -823,7 +823,7 @@ model WorkspaceAccountShare {
 // One row per (space, financialAccount) pair, same cardinality
 // WorkspaceAccountShare already has. Table is created empty in this step —
 // no backfill, no dual-write, no read cutover. See
-// docs/D3_SPACE_ACCOUNT_LINK_REVIEW.md for the full migration strategy and
+// docs/initiatives/d3/D3_SPACE_ACCOUNT_LINK_REVIEW.md for the full migration strategy and
 // open decisions (notably: the HOME/SHARED backfill collision rule) still to
 // be resolved before the next step.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -858,7 +858,7 @@ model SpaceAccountLink {
 // lib/accounts/reconcile.ts (mergeArchivedDuplicateIntoCanonical). Rows are
 // written AFTER a merge has already happened — this table does not gate or
 // block any merge, and nothing reads it back yet (no review UI exists).
-// D1 (see docs/D1_DUPLICATE_ACCOUNT_CANDIDATE_DESIGN_REVIEW.md) repurposed
+// D1 (see docs/initiatives/d1/D1_DUPLICATE_ACCOUNT_CANDIDATE_DESIGN_REVIEW.md) repurposed
 // this model from an unused human-review-queue design — the original comment
 // here claimed "NEVER auto-merges," which was already false of the running
 // code before D1 — into the audit ledger described above.

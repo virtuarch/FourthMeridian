@@ -4,7 +4,7 @@
  * D2 Step 1C-B — companion validation script for
  * backfill-provider-account-identity.ts. Read-only: makes zero writes to any
  * table. Modeled directly on scripts/verify-space-account-link-backfill.ts.
- * Design reference: docs/D2_STEP1C_PROVIDER_ACCOUNT_IDENTITY_BACKFILL_INVESTIGATION.md §D.
+ * Design reference: docs/initiatives/d2/D2_STEP1C_PROVIDER_ACCOUNT_IDENTITY_BACKFILL_INVESTIGATION.md §D.
  *
  * Scope, deliberately narrow: PLAID only. WALLET accounts are reported as a
  * known exception (informational), never verified for correctness — WALLET

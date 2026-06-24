@@ -124,7 +124,7 @@ export const POST = withApiHandler(async (
   });
 
   // Regenerate SpaceSnapshot now that this space has a new active share —
-  // see docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md for the established
+  // see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md for the established
   // pattern. Best-effort/non-fatal: the share itself has already succeeded.
   try {
     await regenerateSpaceSnapshot(spaceId);
@@ -223,7 +223,7 @@ export const DELETE = withApiHandler(async (
   });
 
   // Regenerate SpaceSnapshot now that this space lost an active share —
-  // see docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md for the established
+  // see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md for the established
   // pattern. Best-effort/non-fatal: the revoke itself has already succeeded.
   try {
     await regenerateSpaceSnapshot(spaceId);

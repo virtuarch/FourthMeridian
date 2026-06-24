@@ -2,7 +2,7 @@
 
 **Status: design only. No schema, migration, route, or application code was modified to produce this document.**
 
-Source context: `docs/D3_SPACE_ACCOUNT_LINK_REVIEW.md` (D3 Step 1 investigation, this branch); `prisma/migrations/20260622221354_d3_space_account_link_additive/migration.sql` (the applied Step 1 migration, read directly for this report); `prisma/seed.ts` (read in full — both halves — for every count and edge case below). Governing docs: `docs/PHASE_2_ARCHITECTURE_FREEZE.md` §9.3, §16-17; `docs/PHASE_2_DECISION_MATRIX.md` D3.
+Source context: `docs/initiatives/d3/D3_SPACE_ACCOUNT_LINK_REVIEW.md` (D3 Step 1 investigation, this branch); `prisma/migrations/20260622221354_d3_space_account_link_additive/migration.sql` (the applied Step 1 migration, read directly for this report); `prisma/seed.ts` (read in full — both halves — for every count and edge case below). Governing docs: `docs/architecture/PHASE_2_ARCHITECTURE_FREEZE.md` §9.3, §16-17; `docs/architecture/PHASE_2_DECISION_MATRIX.md` D3.
 
 **Confirmed current state** (re-verified this session, not assumed from the prior report): `SpaceAccountLinkKind` enum and `SpaceAccountLink` table exist in Postgres exactly as designed — `kind` column type `"SpaceAccountLinkKind"`, FKs `spaceId → "Workspace"`, `financialAccountId → "FinancialAccount"`, `addedByUserId/revokedByUserId → "User"`, unique on `(spaceId, financialAccountId)`. Zero references to `spaceAccountLink`/`SpaceAccountLink` anywhere in `app/`, `lib/`, or `components/` (`.ts`/`.tsx`, repo-wide grep, zero matches) — confirming the user's stated status that no route reads or writes it yet.
 

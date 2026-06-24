@@ -96,7 +96,7 @@ export async function regenerateSpaceSnapshot(
  * (lib/accounts/space-account-link.ts) at every mutation site, so this
  * read returns the same space ids either way. WorkspaceAccountShare
  * remains the write system of record — see
- * docs/D3_STEP4_READ_CUTOVER_REVIEW.md for the cutover plan and rollback.
+ * docs/initiatives/d3/D3_STEP4_READ_CUTOVER_REVIEW.md for the cutover plan and rollback.
  *
  * @returns the distinct space ids that were regenerated.
  */

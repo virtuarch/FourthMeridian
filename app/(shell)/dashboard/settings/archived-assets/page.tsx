@@ -53,7 +53,7 @@ export default async function ArchivedAssetsPage() {
         // same set of spaces either way. No status filter, matching the
         // prior workspaceShares behavior (active and revoked links both
         // surface here). Response shape (spaces: {id, name}[]) is unchanged
-        // — see docs/D3_LEGACY_RETIREMENT_AUDIT.md.
+        // — see docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md.
         spaceAccountLinks: {
           select: {
             space: { select: { id: true, name: true } },

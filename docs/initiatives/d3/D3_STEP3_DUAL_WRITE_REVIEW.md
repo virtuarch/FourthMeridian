@@ -10,7 +10,7 @@ change. No removal of `WorkspaceAccountShare`. No change to `ownerUserId` /
 
 Prior state this builds on:
 - D3 Step 1 (schema): `SpaceAccountLinkKind` enum + `SpaceAccountLink` model, additive, migration applied.
-- D3 Step 2 (backfill): `SpaceAccountLink` now mirrors every existing `WorkspaceAccountShare` row 1:1 (verified — see `docs/D3_STEP2_BACKFILL_REVIEW.md` and `scripts/verify-space-account-link-backfill.ts`). HOME = the link at the account creator's personal-space pair; SHARED = every other link.
+- D3 Step 2 (backfill): `SpaceAccountLink` now mirrors every existing `WorkspaceAccountShare` row 1:1 (verified — see `docs/initiatives/d3/D3_STEP2_BACKFILL_REVIEW.md` and `scripts/verify-space-account-link-backfill.ts`). HOME = the link at the account creator's personal-space pair; SHARED = every other link.
 - Nothing in `app/`, `lib/`, or `components/` reads `SpaceAccountLink` yet. That fact is load-bearing for the transaction strategy in §4.
 
 ---

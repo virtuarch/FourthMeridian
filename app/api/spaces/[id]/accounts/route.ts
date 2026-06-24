@@ -2,7 +2,7 @@
  * GET /api/spaces/[id]/accounts
  *
  * Returns active accounts visible to a space, via SpaceAccountLink (D3 Step
- * 4D read cutover — see docs/D3_STEP4_READ_CUTOVER_REVIEW.md; replaces the
+ * 4D read cutover — see docs/initiatives/d3/D3_STEP4_READ_CUTOVER_REVIEW.md; replaces the
  * prior db.workspaceAccountShare query). Visibility is status: ACTIVE on the
  * link; `kind` (HOME vs SHARED) is not filtered on — both confer visibility,
  * matching every other D3 Step 4 cutover.

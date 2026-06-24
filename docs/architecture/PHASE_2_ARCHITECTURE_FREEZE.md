@@ -8,7 +8,7 @@
 |---|---|
 | Branch | `feature/phase-2-architecture` (off `fourth-meridian`) |
 | Baseline tag | `v2.3.0` — Workspace → Space rename, merged into `fourth-meridian` |
-| Primary source | `docs/DATABASE_ARCHITECTURE_REVIEW.md` (759 lines, all 8 sections + 3 addenda read in full) |
+| Primary source | `docs/architecture/DATABASE_ARCHITECTURE_REVIEW.md` (759 lines, all 8 sections + 3 addenda read in full) |
 | Reconciled against | `prisma/schema.prisma` (1053 lines, read in full — every model/enum listed in §2 below), plus `lib/plaid/encryption.ts`, `lib/audit-actions.ts`, `lib/account-privacy.ts`, `lib/accounts/reconcile.ts`, `lib/space.ts`, `lib/space-presets.ts`, `jobs/scheduler.ts`, `jobs/sync-banks.ts`, `app/api/plaid/exchange-token/route.ts`, `app/api/auth/forgot-password/route.ts`, `app/api/auth/reset-password/route.ts` |
 | Out of scope this pass | Any change to `prisma/schema.prisma`, migrations, API routes, or UI. This document is the only deliverable. |
 

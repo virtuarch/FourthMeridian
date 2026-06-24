@@ -6,7 +6,7 @@
 |---|---|
 | Branch | `feature/phase-2-architecture` |
 | Baseline | `v2.3.0`, on top of D11 (`ba065ea`) |
-| Sources | `docs/PHASE_2_ARCHITECTURE_FREEZE.md` §18.1, §19.1 · `docs/PHASE_2_DECISION_MATRIX.md` D1 · `docs/DATABASE_ARCHITECTURE_REVIEW.md` §1, Appendix C · live code (`prisma/schema.prisma`, `lib/accounts/reconcile.ts`, and every call site) |
+| Sources | `docs/architecture/PHASE_2_ARCHITECTURE_FREEZE.md` §18.1, §19.1 · `docs/architecture/PHASE_2_DECISION_MATRIX.md` D1 · `docs/architecture/DATABASE_ARCHITECTURE_REVIEW.md` §1, Appendix C · live code (`prisma/schema.prisma`, `lib/accounts/reconcile.ts`, and every call site) |
 | Approved direction | Decision Matrix D1, **Option B** — repurpose `DuplicateAccountCandidate` as a post-hoc audit log of automatic merges |
 
 This document verifies Option B against the actual running code (not just the two governing docs), and surfaces three concrete gaps the docs don't mention: a required schema change (`spaceId` nullability), a uniqueness-constraint conflict with "log" semantics, and one call site (`/api/accounts/wallet`) that won't inherit the new behavior unless explicitly extended.

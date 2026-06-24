@@ -7,7 +7,7 @@
  * in prisma/schema.prisma):
  *  - legacy rows: account.spaceId (the old Account model)
  *  - Plaid-synced rows: financialAccount.spaceAccountLinks (D3 Step 4C read
- *    cutover — see docs/D3_STEP4C_CORE_DASHBOARD_REVIEW.md; replaces the prior
+ *    cutover — see docs/initiatives/d3/D3_STEP4C_CORE_DASHBOARD_REVIEW.md; replaces the prior
  *    financialAccount.workspaceShares query). Visibility is status: ACTIVE on
  *    the link; `kind` (HOME vs SHARED) is not filtered on — both confer
  *    visibility. This is the identical link/status shape lib/data/accounts.ts

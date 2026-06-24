@@ -47,7 +47,7 @@ export const GET = withApiHandler(async () => {
       // the D3 Step 3 dual-write (lib/accounts/space-account-link.ts), so
       // this read returns the same set of spaces either way. Response shape
       // (ArchivedAsset.spaces: {id, name}[]) is unchanged — see
-      // docs/D3_STEP4_READ_CUTOVER_REVIEW.md.
+      // docs/initiatives/d3/D3_STEP4_READ_CUTOVER_REVIEW.md.
       spaceAccountLinks: {
         select: {
           status: true,

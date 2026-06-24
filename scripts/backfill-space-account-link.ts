@@ -3,7 +3,7 @@
  *
  * D3 Step 2 — backfill SpaceAccountLink (HOME + SHARED) from existing
  * FinancialAccount / WorkspaceAccountShare data. Design reference:
- * docs/D3_STEP2_BACKFILL_REVIEW.md (§1 HOME strategy, §2 SHARED strategy,
+ * docs/initiatives/d3/D3_STEP2_BACKFILL_REVIEW.md (§1 HOME strategy, §2 SHARED strategy,
  * §3 collision analysis, §7 implementation checklist).
  *
  * Scope, deliberately narrow:

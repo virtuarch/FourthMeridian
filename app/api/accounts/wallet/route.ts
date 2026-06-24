@@ -170,7 +170,7 @@ export async function POST(req: NextRequest) {
     });
 
     // Regenerate SpaceSnapshot now that the share is active again — see
-    // docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
+    // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
     try {
       await regenerateSnapshotsForAccounts([archivedFa.id]);
     } catch (snapshotErr) {
@@ -249,11 +249,11 @@ export async function POST(req: NextRequest) {
   // now assigns HOME to the Space a brand-new account's first link is
   // written at — i.e. spaceId, the actually-active Space — rather than
   // synthesizing an extra HOME link at the creator's personal Space. See
-  // docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
+  // docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
 
   // Regenerate SpaceSnapshot now that this new wallet is shared in —
   // same best-effort/non-fatal pattern as every other account-create/
-  // reactivate path (see docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
+  // reactivate path (see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
   try {
     await regenerateSnapshotsForAccounts([fa.id]);
   } catch (snapshotErr) {

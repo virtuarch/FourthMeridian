@@ -8,7 +8,7 @@
 |---|---|
 | Branch | `feature/phase-2-architecture` (off `fourth-meridian`) |
 | Baseline tag | `v2.3.0` — Workspace → Space rename, merged into `fourth-meridian` |
-| Primary source | `docs/PHASE_2_ARCHITECTURE_FREEZE.md` (485 lines, read in full — all 20 sections) |
+| Primary source | `docs/architecture/PHASE_2_ARCHITECTURE_FREEZE.md` (485 lines, read in full — all 20 sections) |
 | Purpose | Resolve the 9 open decisions in the freeze doc's §19, plus 9 named areas requiring extra scrutiny, into actionable recommendations |
 | Out of scope this pass | Any change to `prisma/schema.prisma`, migrations, API routes, or UI. This document is the only deliverable. |
 

@@ -106,7 +106,7 @@ export const POST = withApiHandler(async (
 
   // ── D3 Step 3 — mirror the reactivated shares onto SpaceAccountLink.
   //    Run sequentially after the Promise.all above resolves (no
-  //    transaction join — see docs/D3_STEP3_DUAL_WRITE_REVIEW.md Rule 6).
+  //    transaction join — see docs/initiatives/d3/D3_STEP3_DUAL_WRITE_REVIEW.md Rule 6).
   //    Best-effort/non-fatal.
   try {
     const shares = await db.workspaceAccountShare.findMany({ where: { financialAccountId: id } });
@@ -119,7 +119,7 @@ export const POST = withApiHandler(async (
   //    again. Shares were just reactivated above, so the existing ACTIVE-
   //    share lookup inside regenerateSnapshotsForAccounts() finds the right
   //    space(s). Best-effort/non-fatal — see
-  //    docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
+  //    docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
   try {
     await regenerateSnapshotsForAccounts([id]);
   } catch (snapshotErr) {

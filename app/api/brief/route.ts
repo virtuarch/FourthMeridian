@@ -348,7 +348,7 @@ export async function GET() {
   // D3 Step 4D read cutover — replaces the prior db.workspaceAccountShare
   // query. Same status: ACTIVE visibility gate and financialAccount.deletedAt
   // guard; no filter on `kind` (HOME vs SHARED both confer visibility), same
-  // as every other D3 Step 4 cutover. See docs/D3_STEP4_READ_CUTOVER_REVIEW.md.
+  // as every other D3 Step 4 cutover. See docs/initiatives/d3/D3_STEP4_READ_CUTOVER_REVIEW.md.
   const links = await db.spaceAccountLink.findMany({
     where: {
       spaceId,

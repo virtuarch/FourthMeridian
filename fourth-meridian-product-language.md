@@ -61,7 +61,7 @@ This is the bridge table: what changed in **user-facing copy**, and what changed
 | FinTracker (as the whole app) | Fourth Meridian (platform) / FinTracker (default Space Template) | npm package name renamed `fintracker` → `fourth-meridian`; branding strings, comments, and docs updated to match | Done — naming cleanup pass |
 | PlaidItem | Linked account / connection | `PlaidItem` unchanged | UI copy only, no provider abstraction yet |
 | Archive / Trash (workspace) | Archive / Trash (Space) | Lifecycle logic unchanged | UI copy only |
-| WorkspaceAccountShare | (no UI copy change — internal join table) | `WorkspaceAccountShare` deliberately **not** renamed | Out of scope until a separately-approved migration (see `docs/DATABASE_ARCHITECTURE_REVIEW.md` §2.C) |
+| WorkspaceAccountShare | (no UI copy change — internal join table) | `WorkspaceAccountShare` deliberately **not** renamed | Out of scope until a separately-approved migration (see `docs/architecture/DATABASE_ARCHITECTURE_REVIEW.md` §2.C) |
 
 Rule of thumb going forward for anything not yet renamed: **rename in sentences first; a code/schema rename only follows as its own controlled, explicitly-approved step.** `WorkspaceAccountShare` is the current example — its UI-facing concept ("which Spaces can see this account") already says "Space," but the model itself stays `WorkspaceAccountShare` until that step is separately approved.
 
@@ -151,7 +151,7 @@ Short platform description (for app store / about copy):
 ## 8. Guardrails (current)
 
 * Phase 1 (complete): `Workspace` → `Space`, `WorkspaceMember` → `SpaceMember`, `WorkspaceSnapshot` → `SpaceSnapshot` renamed at the Prisma model/client layer via `@@map`/`@map` — zero DDL, physical Postgres tables/columns unchanged, no API/auth/business-logic changes beyond the naming itself. `PlaidItem` stays exactly as it is in code (no rename proposed).
-* `WorkspaceAccountShare` is explicitly **not** renamed — model name, Prisma accessor, and its own `workspaceId` field/relation all stay as-is for compatibility. Any future rename of it (e.g. into a consolidated `SpaceAccountLink`, per `docs/DATABASE_ARCHITECTURE_REVIEW.md`) is a separate, not-yet-approved milestone.
+* `WorkspaceAccountShare` is explicitly **not** renamed — model name, Prisma accessor, and its own `workspaceId` field/relation all stay as-is for compatibility. Any future rename of it (e.g. into a consolidated `SpaceAccountLink`, per `docs/architecture/DATABASE_ARCHITECTURE_REVIEW.md`) is a separate, not-yet-approved milestone.
 * No new backend architecture (`ProviderCatalog`, `Connection`, `SpaceAccountLink`) is in scope until separately approved.
 * FinTracker is no longer the app/package name (renamed `fintracker` → `fourth-meridian` in the naming cleanup pass) but remains a valid Space Template name — the default one. This doc does not rename the GitHub repo (`virtuarch/fintracker`) — that's an external rename, done outside the codebase if/when desired.
 * The local Postgres database/user name, the `fintracker_space` cookie, and any other compatibility-sensitive identifiers stay as `fintracker*` until a separately-approved migration — see §3.

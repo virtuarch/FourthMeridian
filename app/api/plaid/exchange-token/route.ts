@@ -228,7 +228,7 @@ export async function POST(req: NextRequest) {
       // (exact-match branch), a repoint when the value drifted (fingerprint
       // branch), a create when no row exists yet (create branch). See
       // lib/accounts/provider-identity.ts and
-      // docs/D2_STEP2A_PLAID_DUAL_WRITE_INVESTIGATION.md §B. Best-effort/
+      // docs/initiatives/d2/D2_STEP2A_PLAID_DUAL_WRITE_INVESTIGATION.md §B. Best-effort/
       // non-fatal — never blocks this import/relink flow.
       await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
 
@@ -295,7 +295,7 @@ export async function POST(req: NextRequest) {
       // above) now assigns HOME to the Space a brand-new account's first
       // link is written at — i.e. spaceId, the actually-active Space —
       // rather than synthesizing an extra HOME link at the creator's
-      // personal Space. See docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
+      // personal Space. See docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
 
       importedIds.push(fa.id);
       imported++;

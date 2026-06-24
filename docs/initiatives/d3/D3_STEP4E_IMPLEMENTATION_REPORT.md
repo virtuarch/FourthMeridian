@@ -46,7 +46,7 @@ The `ownerUserId` and `deletedAt: { not: null }` filters on the top-level query,
 
 Not affected, by design: `WorkspaceAccountShare` writes (every dual-write call site untouched), the `WorkspaceAccountShare` table itself (not removed, still the live write target), the two other tabs on this page (`archivedMemberships`/`trashedMemberships`, both `SpaceMember`-based, never touched `WorkspaceAccountShare`), `app/api/accounts/manual/archived/route.ts` (already cut over in 4B, not touched again here), schema/migrations (none), and any D2/D4 work (not started).
 
-Per `docs/D3_LEGACY_RETIREMENT_AUDIT.md`, this was the last known production read path on `WorkspaceAccountShare`. With this cutover shipped, no `app/`, `lib/`, or `components/` code reads `WorkspaceAccountShare` for serving data — confirmed below by repo-wide grep, same method used to confirm the prior three cutover steps.
+Per `docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md`, this was the last known production read path on `WorkspaceAccountShare`. With this cutover shipped, no `app/`, `lib/`, or `components/` code reads `WorkspaceAccountShare` for serving data — confirmed below by repo-wide grep, same method used to confirm the prior three cutover steps.
 
 ## Files changed
 
@@ -60,8 +60,8 @@ Per `docs/D3_LEGACY_RETIREMENT_AUDIT.md`, this was the last known production rea
 
 - `npx tsc --noEmit` — clean, zero errors.
 - `npm run lint` — clean; only the same 4 pre-existing warnings in untouched files (`AccountModal.tsx:45`, `TotpSection.tsx:152`, `CoinIcon.tsx:78`, `:97`, all `@next/next/no-img-element`) seen in every prior D3 Step 4 report — unrelated to this change.
-- Repo-wide grep for `workspaceShares`/`workspaceAccountShare` post-change — the only remaining matches are write paths, the dual-write helper module, seed/tooling scripts, the schema model itself, and stale comments, matching `docs/D3_LEGACY_RETIREMENT_AUDIT.md`'s inventory minus this one entry. No application read path references it anymore.
-- Manual test (Archived Assets page loads; archived assets still show associated Spaces correctly) — **not performed by me**, same DB-access limitation noted in every prior report (sandbox has no route to the dev database — `localhost:5432` connection refused). Recommend running this locally before merge. If an archived account's spaces list comes back empty where it previously showed a space, that would point to the same `SpaceAccountLink` completeness question raised in `docs/D3_STEP4C_REGRESSION_ROOT_CAUSE.md` (unresolved as of the legacy retirement audit) — not a new bug introduced by this change, since the query logic is structurally identical to the already-shipped `manual/archived/route.ts` cutover.
+- Repo-wide grep for `workspaceShares`/`workspaceAccountShare` post-change — the only remaining matches are write paths, the dual-write helper module, seed/tooling scripts, the schema model itself, and stale comments, matching `docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md`'s inventory minus this one entry. No application read path references it anymore.
+- Manual test (Archived Assets page loads; archived assets still show associated Spaces correctly) — **not performed by me**, same DB-access limitation noted in every prior report (sandbox has no route to the dev database — `localhost:5432` connection refused). Recommend running this locally before merge. If an archived account's spaces list comes back empty where it previously showed a space, that would point to the same `SpaceAccountLink` completeness question raised in `docs/initiatives/d3/D3_STEP4C_REGRESSION_ROOT_CAUSE.md` (unresolved as of the legacy retirement audit) — not a new bug introduced by this change, since the query logic is structurally identical to the already-shipped `manual/archived/route.ts` cutover.
 
 ## Rollback plan
 

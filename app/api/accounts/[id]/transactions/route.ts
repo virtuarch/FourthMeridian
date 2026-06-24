@@ -19,7 +19,7 @@ export async function GET(
   // D3 Step 4B read cutover: this used to query WorkspaceAccountShare.
   // SpaceAccountLink is kept in sync with it by the D3 Step 3 dual-write
   // (lib/accounts/space-account-link.ts), so this read returns the same
-  // visibility decision either way. See docs/D3_STEP4_READ_CUTOVER_REVIEW.md.
+  // visibility decision either way. See docs/initiatives/d3/D3_STEP4_READ_CUTOVER_REVIEW.md.
   const link = await db.spaceAccountLink.findFirst({
     where:  { spaceId, financialAccountId: id, status: ShareStatus.ACTIVE },
     select: { id: true },

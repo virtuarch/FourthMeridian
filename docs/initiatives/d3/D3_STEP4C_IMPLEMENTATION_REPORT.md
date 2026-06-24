@@ -6,7 +6,7 @@ Prerequisite confirmed by user before this step began: `correct-home-links.ts --
 
 ## 1. Impact map
 
-Reused from `docs/D3_STEP4C_CORE_DASHBOARD_REVIEW.md` §2 (caller/blast-radius map), confirmed still accurate:
+Reused from `docs/initiatives/d3/D3_STEP4C_CORE_DASHBOARD_REVIEW.md` §2 (caller/blast-radius map), confirmed still accurate:
 
 | Caller | Calls |
 |---|---|
@@ -88,7 +88,7 @@ Pure code revert, no schema or data risk:
 - `npx tsc --noEmit` — clean, zero errors.
 - `npm run lint` — clean; only 4 pre-existing warnings in untouched files (`AccountModal.tsx:45`, `TotpSection.tsx:152`, `CoinIcon.tsx:78`, `:97` — all `@next/next/no-img-element`, unrelated to this change).
 - Requirement 4 (account list / holdings / transactions / debt transactions / investment transactions all resolve visibility from the same source and cannot disagree): confirmed structurally — all five functions now query the identical shape, `spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } }` (or the equivalent top-level `spaceAccountLink.findMany({ where: { spaceId, status: ACTIVE, ... } })` in `getAccounts()`), against the same `SpaceAccountLink` table, with the same `deletedAt: null` guard on `financialAccount`. There is no longer any function in this cluster reading `workspaceShares`/`WorkspaceAccountShare`, so the five cannot diverge from each other by construction.
-- `npx tsx scripts/verify-space-account-link-backfill.ts` — not re-run in this session (no DB connectivity from the sandbox, consistent with the limitation already documented in `docs/D3_STEP3_HOME_SEMANTICS_CORRECTION.md` §4). Recommend running this locally before/with the manual Preview pass below.
+- `npx tsx scripts/verify-space-account-link-backfill.ts` — not re-run in this session (no DB connectivity from the sandbox, consistent with the limitation already documented in `docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md` §4). Recommend running this locally before/with the manual Preview pass below.
 - Manual Preview pass (personal space and a shared space, accounts/holdings/banking/investments/credit pages) — not performed by me; recommended as the final check before merge, comparing against pre-cutover behavior per the original review's §7 checklist.
 
 Stopping here per instruction. 4D not started.

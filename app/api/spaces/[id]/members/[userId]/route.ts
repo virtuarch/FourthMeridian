@@ -181,7 +181,7 @@ export const DELETE = withApiHandler(async (
 
   // ── 2b. Regenerate SpaceSnapshot now that this space's active shares have
   //       changed (the departing/removed member's shares were just revoked
-  //       above) — see docs/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md and
+  //       above) — see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md and
   //       the share/revoke route fix for the established pattern.
   //       Best-effort/non-fatal: the removal itself has already succeeded.
   try {
