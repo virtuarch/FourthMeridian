@@ -3,12 +3,27 @@
  *
  * id refers to a FinancialAccount.id.
  *
- * POST — D2 Step 4D-1 CSV import MVP. Accepts a CSV file (multipart/form-data),
- * parses + classifies each row against existing Transaction history, and
- * writes an ImportBatch + any newly-created Transaction rows.
+ * POST — D2 Step 4D-1 CSV import MVP, extended in D2 Step 4D-2 to also accept
+ * Excel (.xlsx) files. Accepts a file (multipart/form-data), parses +
+ * classifies each row against existing Transaction history, and writes an
+ * ImportBatch + any newly-created Transaction rows.
+ *
+ * Format is sniffed from the uploaded file's name/MIME type — see
+ * docs/initiatives/d2/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md §5:
+ *   - `.xlsx` extension, or the OOXML spreadsheet MIME type → Excel branch
+ *     (lib/imports/excel.ts).
+ *   - Legacy binary `.xls` → rejected with a 400 (exceljs, the parsing
+ *     library this route depends on, only reads the modern OOXML `.xlsx`
+ *     format — see lib/imports/excel.ts's module header).
+ *   - Everything else → CSV branch (lib/imports/csv.ts), unchanged from
+ *     4D-1 — this is not a new restriction, it's the same permissive
+ *     fallback the route always had (no file-type check existed before
+ *     4D-2; only a positive Excel match is carved out of that fallback).
+ * Both branches converge on the same NormalizedRow[]-driven batch-create/
+ * loop/finalize body below.
  *
  * Body (multipart/form-data):
- *   file:           File   — required, the CSV to import
+ *   file:           File   — required, the CSV or .xlsx file to import
  *   signConvention: string — optional, "creditPositive" (default) | "debitPositive"
  *                    Only used when the file has a single signed Amount
  *                    column (not a Debit/Credit pair, which is
@@ -16,26 +31,27 @@
  *                    own convention (positive = money in) — see
  *                    lib/plaid/syncTransactions.ts's sign-flip comment.
  *
- * Per-row outcome (see lib/imports/csv.ts for the classification logic):
+ * Per-row outcome (see lib/imports/csv.ts for the classification logic,
+ * shared unmodified by the Excel branch):
  *   CREATED — no existing match found; a new Transaction was written.
  *   MATCHED — resolved to an already-existing Transaction (exact
  *             externalTransactionId, or an unambiguous fingerprint match).
- *             No write — the existing row (possibly Plaid-sourced) is left
- *             untouched.
+ *             No write — the existing row (possibly Plaid-sourced, or from
+ *             a prior CSV/Excel import) is left untouched.
  *   SKIPPED — ambiguous fingerprint match (more than one existing row could
  *             be "the same" transaction). Recorded in errorSummary.
  *   FAILED  — row could not be parsed (bad date/amount, missing
  *             merchant/description). Recorded in errorSummary.
  *
  * Explicitly out of scope for this slice (see
- * docs/initiatives/d2/D2_STEP4D1_CSV_IMPORT_MVP_INVESTIGATION.md):
- * Excel, QuickBooks, rollback, any UI, background/async processing, a
- * generic provider-adapter abstraction. Rows are processed sequentially
- * (not Promise.all) — later rows must see earlier rows' commits so
- * within-file duplicates land on the fingerprint-match path instead of
- * racing past each other and double-creating; see the dualWriteSpaceAccountLink
- * comment in app/api/accounts/manual/route.ts for the same race lesson on a
- * different table.
+ * docs/initiatives/d2/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md):
+ * QuickBooks, rollback, any UI, background/async processing, a generic
+ * provider-adapter abstraction, multi-sheet selection. Rows are processed
+ * sequentially (not Promise.all) — later rows must see earlier rows'
+ * commits so within-file duplicates land on the fingerprint-match path
+ * instead of racing past each other and double-creating; see the
+ * dualWriteSpaceAccountLink comment in app/api/accounts/manual/route.ts for
+ * the same race lesson on a different table.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -50,7 +66,29 @@ import {
   normalizeRow,
   resolveFingerprintOutcome,
   type SignConvention,
+  type NormalizedRow,
 } from "@/lib/imports/csv";
+import { parseExcelFile } from "@/lib/imports/excel";
+
+const XLSX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const LEGACY_XLS_MIME_TYPE = "application/vnd.ms-excel";
+
+/**
+ * Format sniff — investigation §5. Extension is checked first (the more
+ * reliable signal in practice; browsers/OSes are inconsistent about the
+ * MIME type they attach to a multipart file part), MIME type as a fallback
+ * for a file whose name was changed or stripped. Anything not positively
+ * identified as Excel (xlsx or legacy xls) falls through to the CSV branch,
+ * preserving the route's pre-4D-2 permissive default exactly.
+ */
+function detectExcelFormat(file: File): "xlsx" | "legacy-xls" | null {
+  const name = (file.name || "").toLowerCase();
+  if (name.endsWith(".xlsx")) return "xlsx";
+  if (name.endsWith(".xls")) return "legacy-xls";
+  if (file.type === XLSX_MIME_TYPE) return "xlsx";
+  if (file.type === LEGACY_XLS_MIME_TYPE) return "legacy-xls";
+  return null;
+}
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -105,18 +143,46 @@ export const POST = withApiHandler(async (
   const signConvention: SignConvention =
     signConventionRaw === "debitPositive" ? "debitPositive" : "creditPositive";
 
-  const text = await file.text();
+  // ── Format-sniffed parse ─────────────────────────────────────────────────
+  // Converges on the same NormalizedRow[] shape regardless of source format
+  // — see module header and D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md §3/§5.
+  const excelFormat = detectExcelFormat(file);
 
-  let parsed;
-  try {
-    parsed = parseCsvText(text);
-  } catch {
-    return NextResponse.json({ error: "Could not parse file as CSV." }, { status: 400 });
+  if (excelFormat === "legacy-xls") {
+    return NextResponse.json(
+      { error: "Legacy .xls files are not supported. Please save the file as .xlsx and re-upload." },
+      { status: 400 }
+    );
   }
 
-  const columns = detectColumns(parsed.headers);
-  if ("error" in columns) {
-    return NextResponse.json({ error: columns.error }, { status: 400 });
+  let rows: NormalizedRow[];
+  let source: ImportSource;
+
+  if (excelFormat === "xlsx") {
+    source = ImportSource.EXCEL;
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const parsed = await parseExcelFile(buffer, signConvention);
+    if ("error" in parsed) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+    rows = parsed.rows;
+  } else {
+    source = ImportSource.CSV;
+    const text = await file.text();
+
+    let parsed;
+    try {
+      parsed = parseCsvText(text);
+    } catch {
+      return NextResponse.json({ error: "Could not parse file as CSV." }, { status: 400 });
+    }
+
+    const columns = detectColumns(parsed.headers);
+    if ("error" in columns) {
+      return NextResponse.json({ error: columns.error }, { status: 400 });
+    }
+
+    rows = parsed.rows.map((raw, i) => normalizeRow(raw, columns, signConvention, i + 1));
   }
 
   // ── Create the batch ─────────────────────────────────────────────────────
@@ -126,10 +192,10 @@ export const POST = withApiHandler(async (
     data: {
       financialAccountId,
       createdByUserId:  user.id,
-      source:           ImportSource.CSV,
+      source,
       originalFilename: file.name || null,
       status:           ImportBatchStatus.PROCESSING,
-      rowCount:         parsed.rows.length,
+      rowCount:         rows.length,
     },
   });
 
@@ -139,9 +205,8 @@ export const POST = withApiHandler(async (
   let failed  = 0;
   const errors: { row: number; reason: string }[] = [];
 
-  for (let i = 0; i < parsed.rows.length; i++) {
-    const lineNumber = i + 1; // data-row index, 1-indexed, header row excluded
-    const row = normalizeRow(parsed.rows[i], columns, signConvention, lineNumber);
+  for (const row of rows) {
+    const lineNumber = row.lineNumber; // data-row index, 1-indexed, header row excluded
 
     if (row.error || !row.date || row.amount === null || !row.merchant) {
       failed++;
@@ -182,7 +247,7 @@ export const POST = withApiHandler(async (
     } catch (rowErr) {
       failed++;
       errors.push({ row: lineNumber, reason: "unexpected error writing row" });
-      console.error(`[csv import] batch ${batch.id} row ${lineNumber} failed:`, rowErr);
+      console.error(`[import] batch ${batch.id} row ${lineNumber} failed:`, rowErr);
     }
   }
 
