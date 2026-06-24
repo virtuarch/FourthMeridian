@@ -67,6 +67,12 @@ export const AuditAction = {
   ACCOUNT_ADD:              "ACCOUNT_ADD",
   ACCOUNT_REMOVE:           "ACCOUNT_REMOVE",
   REGISTER:                 "REGISTER",
+
+  // ── Imports (D2 Step 4D-3) ───────────────────────────────────────────────────
+  // Only the rollback action is added in this slice — IMPORT_BATCH_CREATED /
+  // IMPORT_BATCH_COMPLETED are deliberately deferred (see
+  // docs/initiatives/d2/D2_STEP4D3_IMPORT_ROLLBACK_INVESTIGATION.md §8).
+  IMPORT_BATCH_ROLLED_BACK: "IMPORT_BATCH_ROLLED_BACK",
 } as const;
 
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];
@@ -143,5 +149,9 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
   {
     label: "Accounts",
     actions: [AuditAction.ACCOUNT_SHARED, AuditAction.ACCOUNT_REVOKED],
+  },
+  {
+    label: "Imports",
+    actions: [AuditAction.IMPORT_BATCH_ROLLED_BACK],
   },
 ];
