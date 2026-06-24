@@ -1185,6 +1185,14 @@ model ImportBatch {
   rowCount           Int               @default(0)
   importedCount      Int               @default(0)
   skippedCount       Int               @default(0)
+  // D2 Step 4D-1 — additive counters needed once a real classifier (CSV
+  // import) exists. matchedCount: rows that resolved to an already-existing
+  // Transaction (no new row written) — distinct from skippedCount, which
+  // covers rows skipped for other reasons (e.g. an ambiguous fingerprint
+  // match). failedCount: rows that could not be parsed/validated at all. See
+  // docs/initiatives/d2/D2_STEP4D1_CSV_IMPORT_MVP_INVESTIGATION.md §8.
+  matchedCount       Int               @default(0)
+  failedCount        Int               @default(0)
   errorSummary       Json?
 
   createdAt          DateTime          @default(now())
