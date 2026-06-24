@@ -48,7 +48,7 @@
  */
 
 import { db } from "@/lib/db";
-import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus } from "@prisma/client";
+import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus, ProviderType } from "@prisma/client";
 import { dualWriteSpaceAccountLink, resolveAccountCreatorUserId } from "@/lib/accounts/space-account-link";
 
 export type ProviderIdentity =
@@ -72,15 +72,54 @@ export function providerIdentityOf(fa: {
  * Finds an existing ACTIVE FinancialAccount sharing the given provider
  * identity, excluding `excludeId` (typically the row we're about to
  * restore/reconnect).
+ *
+ * D2 Step 3D — the PLAID branch resolves primarily via
+ * ProviderAccountIdentity (provider=PLAID, externalAccountId=
+ * identity.plaidAccountId) rather than FinancialAccount.plaidAccountId
+ * directly, with a fallback to the legacy lookup if no identity row exists
+ * yet. Fallback-first, not a hard replacement — mirrors Step 3C's
+ * exchange-token cutover. See
+ * docs/initiatives/d2/D2_STEP3A_PROVIDER_ACCOUNT_IDENTITY_READ_CUTOVER_INVESTIGATION.md
+ * §B (Risk 1: coverage gaps) and §C (Step 3D). A fallback hit is logged so
+ * coverage gaps are visible before the fallback is ever removed (Step 3G).
+ * The WALLET branch is unchanged by this step.
  */
 export async function findActiveAccountByIdentity(identity: ProviderIdentity, excludeId?: string) {
-  const where =
-    identity.kind === "plaid"
-      ? { plaidAccountId: identity.plaidAccountId }
-      : { ownerUserId: identity.ownerUserId, walletAddress: identity.walletAddress };
+  if (identity.kind === "plaid") {
+    const plaidIdentity = await db.providerAccountIdentity.findUnique({
+      where: { provider_externalAccountId: { provider: ProviderType.PLAID, externalAccountId: identity.plaidAccountId } },
+      include: { financialAccount: true },
+    });
+
+    if (plaidIdentity) {
+      // plaidAccountId is globally unique at the DB level, so the linked
+      // FinancialAccount is the same row the legacy lookup below would have
+      // found — apply the same "active, not excluded" predicate to it
+      // in-memory instead of a second query.
+      const fa = plaidIdentity.financialAccount;
+      const isExcluded = excludeId ? fa.id === excludeId : false;
+      return fa.deletedAt === null && !isExcluded ? fa : null;
+    }
+
+    // No identity row — coverage gap. Fall back to the legacy lookup.
+    const fallback = await db.financialAccount.findFirst({
+      where: { plaidAccountId: identity.plaidAccountId, deletedAt: null, ...(excludeId ? { id: { not: excludeId } } : {}) },
+    });
+    if (fallback) {
+      console.warn(
+        `[plaid][D2-3D] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fallback.id} externalAccountId=${identity.plaidAccountId}. Coverage gap; investigate before removing fallback.`
+      );
+    }
+    return fallback;
+  }
 
   return db.financialAccount.findFirst({
-    where: { ...where, deletedAt: null, ...(excludeId ? { id: { not: excludeId } } : {}) },
+    where: {
+      ownerUserId:   identity.ownerUserId,
+      walletAddress: identity.walletAddress,
+      deletedAt:     null,
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+    },
   });
 }
 
