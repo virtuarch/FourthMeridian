@@ -51,6 +51,12 @@
  *    heuristic reuse of an existing row, not a uniqueness constraint:
  *    genuinely repeated same-day/same-amount/same-merchant transactions are
  *    valid data and are never blocked from being created.
+ *  - D2 Step 4C — the fingerprint fallback itself (`findByFingerprint`/
+ *    `normalizeMerchantKey`) now lives in lib/transactions/fingerprint.ts,
+ *    extracted unchanged from this file so future import sources (CSV,
+ *    Excel, QuickBooks — Step 4D) can reuse the same matching logic instead
+ *    of each writing their own. Behavior here is unchanged by the move —
+ *    see docs/initiatives/d2/D2_STEP4C_TRANSACTION_FINGERPRINTING_INVESTIGATION.md.
  *  - Writes `financialAccountId`, never the legacy `accountId` — Plaid-synced
  *    transactions only ever belong to a FinancialAccount.
  */
@@ -60,6 +66,7 @@ import { decrypt } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import { TransactionCategory, ProviderType } from "@prisma/client";
 import type { Transaction as PlaidTransaction } from "plaid";
+import { findByFingerprint } from "@/lib/transactions/fingerprint";
 
 export interface SyncTransactionsResult {
   /** Count of transactions Plaid reported in its `added` array this run (Plaid's own count, unchanged semantics). */
@@ -78,55 +85,6 @@ export interface SyncTransactionsResult {
   updatedByFingerprint:  number;
   /** Transactions dropped because no FinancialAccount matched the Plaid account_id. */
   skippedMissingAccount: number;
-}
-
-/**
- * Normalizes a merchant/description string for fingerprint comparison —
- * trims, collapses internal whitespace, uppercases. Deliberately
- * conservative: it does not strip reference/trace numbers, so two distinct
- * real transactions that merely share a date and amount but differ in their
- * merchant text are never merged.
- */
-function normalizeMerchantKey(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toUpperCase();
-}
-
-/**
- * Fingerprint fallback for the case plaidTransactionId alone misses: the
- * same real-world transaction reappearing with a brand-new transaction_id on
- * a later sync run. Scoped first by (financialAccountId, date, amount,
- * pending) — financialAccountId+date is already indexed
- * (@@index([financialAccountId, date])) — then narrowed by normalized
- * merchant in memory, since the DB doesn't store a normalized column.
- * Candidate sets here are always small (a handful of same-day transactions
- * per account at most).
- *
- * Returns the first match, logging a warning if more than one candidate
- * matches (unexpected, but handled deterministically rather than erroring).
- */
-async function findByFingerprint(
-  financialAccountId: string,
-  date: Date,
-  amount: number,
-  merchant: string,
-  pending: boolean
-): Promise<{ id: string; plaidTransactionId: string | null } | null> {
-  const candidates = await db.transaction.findMany({
-    where:  { financialAccountId, date, amount, pending },
-    select: { id: true, merchant: true, plaidTransactionId: true },
-  });
-  if (candidates.length === 0) return null;
-
-  const target  = normalizeMerchantKey(merchant);
-  const matches = candidates.filter((c) => normalizeMerchantKey(c.merchant) === target);
-  if (matches.length === 0) return null;
-
-  if (matches.length > 1) {
-    console.warn(
-      `[plaid sync] fingerprint match ambiguous — ${matches.length} existing rows match financialAccountId=${financialAccountId} date=${date.toISOString().slice(0, 10)} amount=${amount} merchant="${merchant}"; using the first (id=${matches[0].id})`
-    );
-  }
-  return matches[0];
 }
 
 /**
