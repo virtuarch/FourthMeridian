@@ -534,12 +534,17 @@ model Connection {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ProviderAccountIdentity (D2, Phase 2, Step 1B — additive only, not yet read
-// or written by any application code; no backfill performed in this step).
+// ProviderAccountIdentity (D2, Phase 2, Step 1B schema; Step 1C-A backfilled
+// PLAID rows; Step 2A added a PLAID-only dual-write — see
+// app/api/plaid/exchange-token/route.ts and lib/accounts/provider-identity.ts).
 // Generalizes the ad hoc provider-identity columns on FinancialAccount
 // (plaidAccountId, walletAddress) into one row per (provider,
-// externalAccountId). FinancialAccount's existing provider columns are NOT
-// changed or backfilled by this step — this table starts empty.
+// externalAccountId). FinancialAccount's existing provider columns remain
+// the source of truth and are NOT removed by this step. WALLET is not yet
+// backfilled or dual-written — see
+// docs/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md. Still not
+// read by any application code as of Step 2A — write-only until a later
+// read-cutover step.
 // See docs/D2_PROVIDER_CONNECTION_ARCHITECTURE.md §2, §8, §9.
 // ─────────────────────────────────────────────────────────────────────────────
 

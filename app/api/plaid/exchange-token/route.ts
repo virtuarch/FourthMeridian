@@ -33,13 +33,14 @@ import { plaidClient } from "@/lib/plaid/client";
 import { encrypt } from "@/lib/plaid/encryption";
 import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
-import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
+import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, VisibilityLevel, ProviderType } from "@prisma/client";
 import { getSpaceContext } from "@/lib/space";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { AuditAction } from "@/lib/audit-actions";
 import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
+import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
 
 // ── Map Plaid account type/subtype → our AccountType enum ────────────────────
 function mapAccountType(type: string, subtype: string | null | undefined): AccountType {
@@ -218,6 +219,18 @@ export async function POST(req: NextRequest) {
           });
         }
       }
+
+      // ── D2 Step 2A — dual-write ProviderAccountIdentity (PLAID only) ────────
+      // One call site covers all three resolution branches above (exact
+      // match, fingerprint-resolved repoint, fresh create): by this point
+      // `fa` and `acct.account_id` hold the correct, final values in every
+      // case, and the helper is idempotent — a no-op when already correct
+      // (exact-match branch), a repoint when the value drifted (fingerprint
+      // branch), a create when no row exists yet (create branch). See
+      // lib/accounts/provider-identity.ts and
+      // docs/D2_STEP2A_PLAID_DUAL_WRITE_INVESTIGATION.md §B. Best-effort/
+      // non-fatal — never blocks this import/relink flow.
+      await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
 
       // ── Upsert AccountConnection ─────────────────────────────────────────────
       const existingConn = await db.accountConnection.findFirst({
