@@ -106,6 +106,8 @@ Wallets get the *same* answer for today's single-address case (§7) but a *diffe
 
 ## 7. Wallets — design
 
+> **Status update (D2 Roadmap):** WALLET identities are deferred — `ProviderAccountIdentity` is not backfilled, dual-written, or read-cut-over for WALLET. The 1C-C investigation found `walletAddress` doesn't map onto provider identity as cleanly as `plaidAccountId` once ownership/watch-only/claim semantics are considered. WALLET work resumes only once those semantics are resolved as their own explicit decision. The design below remains valid rationale for when that happens. See `docs/initiatives/d2/D2_ROADMAP.md`.
+
 - **BTC address tracking (today).** Already modeled: `FinancialAccount.walletAddress/walletChain/nativeBalance`, confirmed live in `app/api/accounts/wallet/route.ts` (`SUPPORTED_CHAINS` includes `BTC`). The gap is sync, not schema — `jobs/sync-crypto.ts` and `lib/crypto-apis.ts` are both still empty stubs, confirmed again for this report. D2 should not build that sync job (separately tracked, scheduler-dependent gap), but should give it a stable place to read from: recommend introducing `ProviderAccountIdentity(provider=WALLET, externalAccountId=address)` now, even though nothing populates it from real sync yet, specifically so the eventual sync job iterates one consistent table instead of querying `FinancialAccount.walletAddress` directly and re-deriving "every wallet I need to refresh" ad hoc.
 - **xpub/watch-only support (later).** Needs a real `Connection` row: `provider=WALLET`, `credential` = the xpub/descriptor string (**never** a private key), `status` from `ConnectionStatus`. One `Connection` → many `AccountConnection` → many `FinancialAccount` (each a derived address) — the exact one-credential-to-many-accounts shape `Connection` exists to generalize, same as one Plaid item covering many bank accounts.
 - **Multi-chain support (later).** `walletChain` already exists per-account and is additive-friendly as is; recommend leaving it on `FinancialAccount` rather than relocating it to `Connection`/`ProviderAccountIdentity` (no benefit, violates additive-before-subtractive for no gain). The real multi-chain gap is adapter code (one balance client per chain), not schema — out of D2's scope.
@@ -116,6 +118,8 @@ Wallets get the *same* answer for today's single-address case (§7) but a *diffe
 ---
 
 ## 8. CSV imports — design
+
+> **Status update (D2 Roadmap):** CSV/import history is now explicitly sequenced as **D2 Step 4 — Import & History Foundation**, not a loose "later." The design below is retained as the rationale for that step; no `ImportBatch` implementation has started — it requires its own approved implementation checklist first, per standing working style. See `docs/initiatives/d2/D2_ROADMAP.md`.
 
 - **Uploaded file batches.** New `ImportBatch` model (see §2 for fields). One row per upload.
 - **Account matching.** Recommend: **the user always picks an existing `FinancialAccount` before uploading** ("import this CSV into my Chase checking"); CSV does not create a brand-new account from file contents. CSV exports rarely carry reliable institution/mask metadata to fingerprint-match against (unlike Plaid's structured `institution_id`/`mask`/`official_name`), so reusing `reconcile.ts`'s fingerprint approach for CSV-driven account *creation* would be guessing. Account creation from a CSV, if ever wanted, is an explicit future decision, not assumed here.
@@ -136,6 +140,8 @@ Wallets get the *same* answer for today's single-address case (§7) but a *diffe
 ---
 
 ## 10. Migration strategy — five phases
+
+> **Superseded for sequencing (D2 Roadmap):** the five-phase plan below is superseded as the step *sequencing* reference by `docs/initiatives/d2/D2_ROADMAP.md`, which tracks the real, finer-grained step lettering this work actually used (1A/1B/1C-A/1C-B/1C-C, 2A, 3A–3G) plus the newly approved Steps 4–7 (Import & History Foundation, Adapter Interface, First real new provider, Stabilization). The phase descriptions below remain accurate design rationale for *why* each phase exists — Phase 1≈Steps 1A/1B, Phase 2≈Step 1C, Phase 3≈Step 2, Phase 4≈Step 3, Phase 5≈future cleanup planning in Step 7 — just consult the roadmap doc for current status.
 
 Deliberately mirrors this branch's own proven D3 playbook (additive table → backfill → dual-write/adapter → read cutover → cleanup) rather than inventing a new migration shape.
 
@@ -336,6 +342,8 @@ model Transaction {
 ```
 
 ## D. Proposed migration phases
+
+> **Superseded for sequencing (D2 Roadmap):** see the note at §10 — `docs/initiatives/d2/D2_ROADMAP.md` is now the canonical step tracker (Steps 1A–7); this summary's design rationale stands.
 
 See §10 for the full table; summary:
 

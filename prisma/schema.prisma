@@ -304,6 +304,7 @@ model User {
   receivedInvites      SpaceInvite[]     @relation("ReceivedInvites")
   plaidItems           PlaidItem[]
   connections          Connection[]      // D2 (Phase 2, Step 1A) — additive only, not yet populated
+  importBatches        ImportBatch[]     // D2 (Phase 2, Step 4B) — additive only, not yet populated
   ownedAccounts        Account[]         // legacy: accounts this user connected/created
   creditScores         CreditScore[]
   auditLogs            AuditLog[]
@@ -528,6 +529,8 @@ model Connection {
   accountConnections        AccountConnection[]
   // ProviderAccountIdentity (D2, Step 1B) — additive, not yet populated.
   providerAccountIdentities ProviderAccountIdentity[]
+  // ImportBatch (D2, Step 4B) — additive seam, not yet populated.
+  importBatches             ImportBatch[]
 
   @@index([userId])
   @@index([provider])
@@ -699,6 +702,8 @@ model FinancialAccount {
   holdings              Holding[]
   // ProviderAccountIdentity (D2, Step 1B) — additive, not yet populated.
   providerIdentities    ProviderAccountIdentity[]
+  // ImportBatch (D2, Step 4B) — additive, not yet populated.
+  importBatches         ImportBatch[]
 
   @@index([ownerUserId])
   @@index([ownerSpaceId])
@@ -1103,6 +1108,23 @@ model Transaction {
 
   plaidTransactionId String? @unique // prevents duplicate inserts on re-sync
 
+  // D2 (Phase 2, Step 4B) — additive only, not yet read or written by any
+  // application code (that's Step 4D). Generic sibling of plaidTransactionId
+  // for files/exports that carry their own stable row id. Deliberately no
+  // unique constraint yet — a CSV export's own id is only guaranteed unique
+  // within that one file/institution, not globally; real uniqueness shape
+  // (e.g. scoped to [financialAccountId, externalTransactionId]) is decided
+  // at Step 4D implementation time, not assumed here. See
+  // docs/initiatives/d2/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §3.
+  importBatchId         String?
+  importBatch            ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  externalTransactionId String?
+
+  // D2 (Phase 2, Step 4B) — net-new soft-delete column. Nothing sets this yet;
+  // the rollback path that would (ImportBatch.status = ROLLED_BACK) is Step 4D,
+  // not part of this slice. See D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §1.
+  deletedAt              DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1111,6 +1133,70 @@ model Transaction {
   @@index([financialAccountId])
   @@index([financialAccountId, date])
   @@index([date])
+  @@index([importBatchId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ImportBatch (D2, Phase 2, Step 4B)
+// One row per CSV/Excel/QuickBooks upload. Additive, schema-only — nothing
+// reads or writes this table yet; the upload/parse/import pipeline is Step 4D.
+// financialAccountId is required: the user always selects an existing target
+// account before importing (no fingerprint-based auto-account-creation from
+// file contents — see Step 4A §5). createdByUserId is nullable, mirroring
+// FinancialAccount.createdByUserId's own D11 precedent, so that onDelete:
+// SetNull is valid. connectionId is a forward-compatible seam mirroring
+// AccountConnection.connectionId / ProviderAccountIdentity.connectionId —
+// nullable, unpopulated until D2's later Adapter/ProviderCatalog work exists;
+// ImportBatch does not depend on that work existing.
+// See docs/initiatives/d2/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md
+// and docs/initiatives/d2/D2_STEP4A_IMPORT_HISTORY_FOUNDATION_INVESTIGATION.md.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ImportSource {
+  CSV
+  EXCEL
+  QUICKBOOKS
+}
+
+enum ImportBatchStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  ROLLED_BACK
+  FAILED
+}
+
+model ImportBatch {
+  id                 String            @id @default(cuid())
+
+  financialAccountId String
+  financialAccount   FinancialAccount  @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+
+  createdByUserId    String?
+  createdByUser      User?             @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  connectionId       String?
+  connection         Connection?       @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+
+  source             ImportSource
+  originalFilename   String?
+  status             ImportBatchStatus @default(PENDING)
+  rowCount           Int               @default(0)
+  importedCount      Int               @default(0)
+  skippedCount       Int               @default(0)
+  errorSummary       Json?
+
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  completedAt        DateTime?
+
+  transactions       Transaction[]
+
+  @@index([financialAccountId])
+  @@index([createdByUserId])
+  @@index([connectionId])
+  @@index([status])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
