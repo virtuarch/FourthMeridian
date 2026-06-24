@@ -58,7 +58,7 @@
 import { plaidClient } from "@/lib/plaid/client";
 import { decrypt } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
-import { TransactionCategory } from "@prisma/client";
+import { TransactionCategory, ProviderType } from "@prisma/client";
 import type { Transaction as PlaidTransaction } from "plaid";
 
 export interface SyncTransactionsResult {
@@ -204,10 +204,31 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   const accountIdCache = new Map<string, string | null>();
   async function resolveFinancialAccountId(plaidAccountId: string): Promise<string | null> {
     if (accountIdCache.has(plaidAccountId)) return accountIdCache.get(plaidAccountId)!;
-    const fa = await db.financialAccount.findUnique({
-      where:  { plaidAccountId },
-      select: { id: true },
+
+    // D2 Step 3F — resolved primarily via ProviderAccountIdentity (provider=
+    // PLAID, externalAccountId=plaidAccountId) rather than
+    // FinancialAccount.plaidAccountId directly, with a fallback to the
+    // legacy lookup if no identity row exists yet. Fallback-first, not a
+    // hard replacement — mirrors Steps 3C/3D/3E. The resolved id (from
+    // either path) is cached exactly as before.
+    const plaidIdentity = await db.providerAccountIdentity.findUnique({
+      where:  { provider_externalAccountId: { provider: ProviderType.PLAID, externalAccountId: plaidAccountId } },
+      select: { financialAccount: { select: { id: true } } },
     });
+
+    let fa = plaidIdentity?.financialAccount ?? null;
+    if (!fa) {
+      fa = await db.financialAccount.findUnique({
+        where:  { plaidAccountId },
+        select: { id: true },
+      });
+      if (fa) {
+        console.warn(
+          `[plaid][D2-3F] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${plaidAccountId}. Coverage gap; investigate before removing fallback.`
+        );
+      }
+    }
+
     const resolved = fa?.id ?? null;
     accountIdCache.set(plaidAccountId, resolved);
     return resolved;

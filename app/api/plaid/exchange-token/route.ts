@@ -348,13 +348,29 @@ export async function POST(req: NextRequest) {
           const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
           if (!acctHoldings.length) continue;
 
-          // Look up the FinancialAccount row created/updated in step 7, by
-          // plaidAccountId — same account, just no longer cross-referenced
-          // through the legacy Account table.
-          const fa = await db.financialAccount.findUnique({
-            where:  { plaidAccountId: plaidAcct.account_id },
-            select: { id: true },
+          // Look up the FinancialAccount row created/updated in step 7. D2
+          // Step 3F — resolved primarily via ProviderAccountIdentity
+          // (provider=PLAID, externalAccountId=plaidAcct.account_id) rather
+          // than plaidAccountId directly, with a fallback to the legacy
+          // lookup if no identity row exists yet. Fallback-first, not a
+          // hard replacement — mirrors Steps 3C/3D/3E.
+          const holdingPlaidIdentity = await db.providerAccountIdentity.findUnique({
+            where:  { provider_externalAccountId: { provider: ProviderType.PLAID, externalAccountId: plaidAcct.account_id } },
+            select: { financialAccount: { select: { id: true } } },
           });
+
+          let fa = holdingPlaidIdentity?.financialAccount ?? null;
+          if (!fa) {
+            fa = await db.financialAccount.findUnique({
+              where:  { plaidAccountId: plaidAcct.account_id },
+              select: { id: true },
+            });
+            if (fa) {
+              console.warn(
+                `[plaid][D2-3F] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${plaidAcct.account_id}. Coverage gap; investigate before removing fallback.`
+              );
+            }
+          }
           if (!fa) continue;
 
           await db.holding.deleteMany({ where: { financialAccountId: fa.id } });
