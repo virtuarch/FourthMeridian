@@ -10,6 +10,20 @@
  * CREATE writes importBatchId) and are therefore never touched by this
  * route; rollback only ever removes rows a batch itself created.
  *
+ * D2 Step 4D-4 — QuickBooks update-on-match overwrites an existing
+ * Transaction's allow-listed fields in place (see the confirm route's MATCH
+ * branch); it never assigns importBatchId to the row it updates (only
+ * CREATE does that). This rollback route's soft-delete, scoped to
+ * importBatchId + deletedAt: null, was already structurally incapable of
+ * reaching those rows before update-on-match existed — that fact doesn't
+ * change here. Documenting it explicitly: rolling back a QuickBooks batch
+ * that performed updates removes the rows it created, but leaves any
+ * updated rows in their post-update state. There is no revert capability for
+ * those overwrites — no snapshot table, no versioning, no schema change.
+ * This is a known, accepted limitation (see
+ * docs/initiatives/d2/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §7),
+ * not a gap introduced by this file.
+ *
  * Implements the design in
  * docs/initiatives/d2/D2_STEP4D3_IMPORT_ROLLBACK_INVESTIGATION.md exactly:
  *   - The Transaction soft-delete is filtered by importBatchId +

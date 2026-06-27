@@ -50,6 +50,13 @@
  *            id off resolveFingerprintOutcome()'s result either, so
  *            exposing it here would mean changing that function's return
  *            shape, which conflicts with "no fingerprint behavior changes."
+ *            D2 Step 4D-4 — each MATCH row also carries a derived
+ *            `wouldUpdate: boolean`, read-only parity with the confirm
+ *            route's update-on-match gate (QUICKBOOKS source + an exact
+ *            externalId match only — never a fingerprint-fallback match).
+ *            `matchedVia` itself is never serialized anywhere in this
+ *            response — only the derived, user-facing wouldUpdate/
+ *            willUpdate fields are exposed.
  *   SKIP   — ambiguous fingerprint match. Included in `errors` with the
  *            same reason string the confirm route's errorSummary would use.
  *   FAILED — row could not be parsed. Included in `errors`, same as above.
@@ -76,8 +83,10 @@ import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { withApiHandler } from "@/lib/api";
+import { ImportSource } from "@prisma/client";
 import {
   resolveFingerprintOutcome,
+  computeQuickBooksUpdateDiff,
   type SignConvention,
   type SavedMappingProfileLite,
   type NormalizedTransaction,
@@ -100,6 +109,8 @@ interface ImportPreviewRow {
   externalTransactionId: string | null;
   classification:        PreviewClassification;
   reason:                string | null;
+  /** D2 Step 4D-4 — read-only parity with confirm's update-on-match gate. */
+  wouldUpdate:           boolean;
 }
 
 function toIsoDate(d: Date | null): string | null {
@@ -140,6 +151,12 @@ export const POST = withApiHandler(async (
   const signConventionRaw = formData.get("signConvention");
   const signConvention: SignConvention =
     signConventionRaw === "debitPositive" ? "debitPositive" : "creditPositive";
+
+  // ── Source override (D2 Step 4D-4) — identical to the confirm route,
+  // so a QuickBooks preview and a QuickBooks confirm classify identically ──
+  const sourceRaw = formData.get("source");
+  const sourceOverride: ImportSource | undefined =
+    sourceRaw === "QUICKBOOKS" ? ImportSource.QUICKBOOKS : undefined;
 
   // ── Explicit column mapping — identical to the confirm route ────────────
   const columnMappingRaw = formData.get("columnMapping");
@@ -183,6 +200,7 @@ export const POST = withApiHandler(async (
     signConvention,
     explicitMapping,
     savedProfiles: savedProfilesLite,
+    sourceOverride,
   });
   if ("error" in pipelineResult) {
     // D2 Step 4D-5c-3 — resolution failure now returns 200 with
@@ -208,6 +226,7 @@ export const POST = withApiHandler(async (
   let willMatch  = 0;
   let willSkip   = 0;
   let willFail   = 0;
+  let willUpdate = 0; // D2 Step 4D-4
   const previewRows: ImportPreviewRow[] = [];
   const errors: { row: number; reason: string }[] = [];
   let earliest: Date | null = null;
@@ -223,6 +242,7 @@ export const POST = withApiHandler(async (
 
     let classification: PreviewClassification = "FAILED";
     let reason: string | null = null;
+    let wouldUpdate = false; // D2 Step 4D-4
 
     if (row.error || !row.date || row.amount === null || !row.merchant) {
       willFail++;
@@ -244,6 +264,29 @@ export const POST = withApiHandler(async (
         } else if (result.outcome === "MATCH") {
           willMatch++;
           classification = "MATCH";
+          // D2 Step 4D-4 — read-only parity with the confirm route's
+          // update-on-match gate. Never writes. This `source === QUICKBOOKS`
+          // check is intentionally temporary; expected to migrate to an
+          // adapter-capability check during D2 Step 5 (not implemented now).
+          if (source === ImportSource.QUICKBOOKS && result.matchedVia === "externalId") {
+            const existing = await db.transaction.findUnique({
+              where:  { id: result.transactionId },
+              select: { date: true, amount: true, merchant: true, description: true, category: true },
+            });
+            if (existing) {
+              const diff = computeQuickBooksUpdateDiff(existing, {
+                date:        row.date,
+                amount:      row.amount,
+                merchant:    row.merchant,
+                description: row.description,
+                category:    row.category,
+              });
+              if (diff) {
+                wouldUpdate = true;
+                willUpdate++;
+              }
+            }
+          }
         } else {
           willSkip++;
           classification = "SKIP";
@@ -270,6 +313,7 @@ export const POST = withApiHandler(async (
         externalTransactionId: row.externalTransactionId,
         classification,
         reason,
+        wouldUpdate,
       });
     }
   }
@@ -285,6 +329,7 @@ export const POST = withApiHandler(async (
       willMatch,
       willSkip,
       willFail,
+      willUpdate,
     },
     dateRange: {
       earliest: toIsoDate(earliest),

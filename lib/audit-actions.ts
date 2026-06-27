@@ -73,6 +73,11 @@ export const AuditAction = {
   // IMPORT_BATCH_COMPLETED are deliberately deferred (see
   // docs/initiatives/d2/D2_STEP4D3_IMPORT_ROLLBACK_INVESTIGATION.md §8).
   IMPORT_BATCH_ROLLED_BACK: "IMPORT_BATCH_ROLLED_BACK",
+  // D2 Step 4D-4 — one batch-level event when a QuickBooks externalId match
+  // overwrites an existing Transaction's allow-listed fields. No per-row
+  // entries, no before/after snapshots — see
+  // docs/initiatives/d2/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §8.
+  IMPORT_BATCH_UPDATED_ON_MATCH: "IMPORT_BATCH_UPDATED_ON_MATCH",
 } as const;
 
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];
@@ -152,6 +157,6 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
   },
   {
     label: "Imports",
-    actions: [AuditAction.IMPORT_BATCH_ROLLED_BACK],
+    actions: [AuditAction.IMPORT_BATCH_ROLLED_BACK, AuditAction.IMPORT_BATCH_UPDATED_ON_MATCH],
   },
 ];

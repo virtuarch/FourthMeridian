@@ -91,6 +91,15 @@ export interface ImportPipelineOptions {
   explicitMapping?: Record<string, string | null | undefined>;
   /** Already fetched by the caller — this module never queries `db`. */
   savedProfiles:    SavedMappingProfileLite[];
+  /**
+   * D2 Step 4D-4 — caller-asserted source label (e.g. QUICKBOOKS). Format-
+   * sniffing below is completely unaffected by this — it only overrides the
+   * `source` value returned alongside the sniffed rows. This module
+   * deliberately never inspects file content to detect QuickBooks; a
+   * QuickBooks export parses through the identical CSV/Excel code path as
+   * any other file of that shape.
+   */
+  sourceOverride?:  ImportSource;
 }
 
 /**
@@ -123,7 +132,7 @@ export async function runImportPipeline(
       return parsed;
     }
     return {
-      source:                ImportSource.EXCEL,
+      source:                opts.sourceOverride ?? ImportSource.EXCEL,
       rows:                  parsed.rows,
       resolvedColumnMapping: parsed.columns,
       matchedProfileId:      parsed.matchedProfileId,
@@ -152,7 +161,7 @@ export async function runImportPipeline(
   const rows = parsed.rows.map((raw, i) => normalizeRow(raw, resolved.columns, opts.signConvention, i + 1));
 
   return {
-    source:                ImportSource.CSV,
+    source:                opts.sourceOverride ?? ImportSource.CSV,
     rows,
     resolvedColumnMapping: resolved.columns,
     matchedProfileId:      resolved.matchedProfileId,

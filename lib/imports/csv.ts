@@ -504,7 +504,7 @@ export function normalizeRow(
 
 export type FingerprintOutcome =
   | { outcome: "CREATE" }
-  | { outcome: "MATCH"; transactionId: string }
+  | { outcome: "MATCH"; transactionId: string; matchedVia: "externalId" | "fingerprint" }
   | { outcome: "SKIP"; reason: string };
 
 /**
@@ -545,7 +545,11 @@ export async function resolveFingerprintOutcome(
       where:  { financialAccountId, externalTransactionId, deletedAt: null },
       select: { id: true },
     });
-    if (exact) return { outcome: "MATCH", transactionId: exact.id };
+    // matchedVia: "externalId" — D2 Step 4D-4. A durable id match. This is
+    // the only matchedVia value update-on-match is ever gated on; see
+    // computeQuickBooksUpdateDiff() below and the callers' source-specific
+    // gate checks.
+    if (exact) return { outcome: "MATCH", transactionId: exact.id, matchedVia: "externalId" };
   }
 
   const fpMatch = await findByFingerprint(financialAccountId, date, amount, merchant, false);
@@ -565,5 +569,54 @@ export async function resolveFingerprintOutcome(
   if (matches.length > 1) {
     return { outcome: "SKIP", reason: `ambiguous fingerprint match (${matches.length} existing rows)` };
   }
-  return { outcome: "MATCH", transactionId: fpMatch.id };
+  // matchedVia: "fingerprint" — D2 Step 4D-4. Heuristic evidence (shared
+  // date+amount+normalized-merchant), not a durable id. Deliberately never
+  // eligible for update-on-match, regardless of source — see
+  // computeQuickBooksUpdateDiff()'s callers.
+  return { outcome: "MATCH", transactionId: fpMatch.id, matchedVia: "fingerprint" };
+}
+
+// ── QuickBooks update-on-match (D2 Step 4D-4) ─────────────────────────────────
+
+/**
+ * Field-level diff for a QuickBooks update-on-match write. Shared by the
+ * confirm route and the preview route so the allow-list and comparison logic
+ * live in exactly one place — neither route duplicates it.
+ *
+ * Allow-list: date, amount, merchant, description, category. Deliberately
+ * excludes `pending` — NormalizedTransaction carries no incoming pending
+ * value (CSV/Excel/QuickBooks rows are always-posted historical records;
+ * every CREATE already hardcodes pending: false), so there is nothing to
+ * diff or overwrite for it. Never touches externalTransactionId (the match
+ * key itself — identical by construction on this path), importBatchId,
+ * financialAccountId, createdAt, plaidTransactionId, deletedAt, or id.
+ *
+ * Returns null when every allow-listed field already matches — callers use
+ * this to skip the write entirely (no updatedAt churn, no audit
+ * contribution) rather than issuing a no-op UPDATE. See
+ * docs/initiatives/d2/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §4/§5.
+ *
+ * Callers are responsible for gating *whether* this runs (source ===
+ * QUICKBOOKS && matchedVia === "externalId") — this function only computes
+ * the diff once a caller has already decided the write is eligible.
+ */
+export interface QuickBooksUpdatableFields {
+  date:        Date;
+  amount:      number;
+  merchant:    string;
+  description: string | null;
+  category:    TransactionCategory;
+}
+
+export function computeQuickBooksUpdateDiff(
+  existing: QuickBooksUpdatableFields,
+  incoming: QuickBooksUpdatableFields
+): Partial<QuickBooksUpdatableFields> | null {
+  const diff: Partial<QuickBooksUpdatableFields> = {};
+  if (incoming.date.getTime() !== existing.date.getTime()) diff.date = incoming.date;
+  if (incoming.amount !== existing.amount)                 diff.amount = incoming.amount;
+  if (incoming.merchant !== existing.merchant)             diff.merchant = incoming.merchant;
+  if (incoming.description !== existing.description)       diff.description = incoming.description;
+  if (incoming.category !== existing.category)             diff.category = incoming.category;
+  return Object.keys(diff).length > 0 ? diff : null;
 }

@@ -39,6 +39,16 @@
  *                    detectColumns()'s alias-based auto-detection — see
  *                    lib/imports/csv.ts's applyExplicitMapping(). Absent →
  *                    auto-detection behavior is unchanged from 4D-1/4D-2.
+ *   source:         string — optional, D2 Step 4D-4. "QUICKBOOKS" asserts
+ *                    this file is a QuickBooks export — caller-asserted,
+ *                    never content-detected; format-sniffing below is
+ *                    unaffected (see lib/imports/pipeline.ts's
+ *                    sourceOverride). Any other value, or absent, behaves
+ *                    exactly as before (source is sniffed from the file as
+ *                    CSV or EXCEL). Only "QUICKBOOKS" combined with an exact
+ *                    externalTransactionId match (matchedVia: "externalId")
+ *                    triggers update-on-match below — never a fingerprint
+ *                    fallback match, regardless of source.
  *
  * D2 Step 4D-5b — column resolution for both branches now goes through
  * lib/imports/csv.ts's resolveColumns(), which adds a third source after
@@ -81,8 +91,14 @@
  *   CREATED — no existing match found; a new Transaction was written.
  *   MATCHED — resolved to an already-existing Transaction (exact
  *             externalTransactionId, or an unambiguous fingerprint match).
- *             No write — the existing row (possibly Plaid-sourced, or from
- *             a prior CSV/Excel import) is left untouched.
+ *             No write, except: D2 Step 4D-4 — a QUICKBOOKS-sourced batch
+ *             whose match was via externalId (never a fingerprint match)
+ *             overwrites the existing row's allow-listed fields (date,
+ *             amount, merchant, description, category) when they differ
+ *             from the incoming row — see lib/imports/csv.ts's
+ *             computeQuickBooksUpdateDiff(). Otherwise the existing row
+ *             (possibly Plaid-sourced, or from a prior CSV/Excel import) is
+ *             left untouched.
  *   SKIPPED — ambiguous fingerprint match (more than one existing row could
  *             be "the same" transaction). Recorded in errorSummary.
  *   FAILED  — row could not be parsed (bad date/amount, missing
@@ -90,7 +106,7 @@
  *
  * Explicitly out of scope for this slice (see
  * docs/initiatives/d2/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md):
- * QuickBooks, rollback, any UI, background/async processing, a generic
+ * rollback, any UI, background/async processing, a generic
  * provider-adapter abstraction, multi-sheet selection. Rows are processed
  * sequentially (not Promise.all) — later rows must see earlier rows'
  * commits so within-file duplicates land on the fingerprint-match path
@@ -103,10 +119,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { ImportBatchStatus, Prisma } from "@prisma/client";
-import { withApiHandler } from "@/lib/api";
+import { ImportBatchStatus, ImportSource, Prisma } from "@prisma/client";
+import { withApiHandler, getClientIp } from "@/lib/api";
+import { AuditAction } from "@/lib/audit-actions";
 import {
   resolveFingerprintOutcome,
+  computeQuickBooksUpdateDiff,
   type SignConvention,
   type SavedMappingProfileLite,
 } from "@/lib/imports/csv";
@@ -151,6 +169,15 @@ export const POST = withApiHandler(async (
   const signConventionRaw = formData.get("signConvention");
   const signConvention: SignConvention =
     signConventionRaw === "debitPositive" ? "debitPositive" : "creditPositive";
+
+  // ── Source override (D2 Step 4D-4) ───────────────────────────────────────
+  // Caller-asserted only — never inferred from file content. See module
+  // header's `source` field doc and lib/imports/pipeline.ts's
+  // sourceOverride. Any value other than "QUICKBOOKS" (including absent)
+  // leaves source exactly as today's format-sniffing produces it.
+  const sourceRaw = formData.get("source");
+  const sourceOverride: ImportSource | undefined =
+    sourceRaw === "QUICKBOOKS" ? ImportSource.QUICKBOOKS : undefined;
 
   // ── Explicit column mapping (D2 Step 4D-5a) ──────────────────────────────
   // Optional caller-supplied mapping, JSON-encoded in a form field. Present →
@@ -226,6 +253,7 @@ export const POST = withApiHandler(async (
     signConvention,
     explicitMapping,
     savedProfiles: savedProfilesLite,
+    sourceOverride,
   });
   if ("error" in pipelineResult) {
     return NextResponse.json({ error: pipelineResult.error }, { status: 400 });
@@ -268,6 +296,10 @@ export const POST = withApiHandler(async (
   let skipped = 0;
   let failed  = 0;
   const errors: { row: number; reason: string }[] = [];
+  // D2 Step 4D-4 — ids of rows actually overwritten by update-on-match.
+  // Drives the single batch-level audit entry below; not a new ImportBatch
+  // counter (see D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §5).
+  const updatedTransactionIds: string[] = [];
 
   for (const row of rows) {
     const lineNumber = row.lineNumber; // data-row index, 1-indexed, header row excluded
@@ -303,7 +335,31 @@ export const POST = withApiHandler(async (
         });
         created++;
       } else if (result.outcome === "MATCH") {
-        matched++; // no write
+        matched++;
+        // D2 Step 4D-4 — update-on-match. Gate: QUICKBOOKS source + an
+        // exact externalId match only — never a fingerprint-fallback
+        // match, regardless of source. This `source === QUICKBOOKS` check
+        // is intentionally temporary: it is expected to migrate to an
+        // adapter-capability check during D2 Step 5 (not implemented now).
+        if (source === ImportSource.QUICKBOOKS && result.matchedVia === "externalId") {
+          const existing = await db.transaction.findUnique({
+            where:  { id: result.transactionId },
+            select: { date: true, amount: true, merchant: true, description: true, category: true },
+          });
+          if (existing) {
+            const diff = computeQuickBooksUpdateDiff(existing, {
+              date:        row.date,
+              amount:      row.amount,
+              merchant:    row.merchant,
+              description: row.description,
+              category:    row.category,
+            });
+            if (diff) {
+              await db.transaction.update({ where: { id: result.transactionId }, data: diff });
+              updatedTransactionIds.push(result.transactionId);
+            }
+          }
+        }
       } else {
         skipped++;
         errors.push({ row: lineNumber, reason: result.reason });
@@ -329,6 +385,35 @@ export const POST = withApiHandler(async (
       completedAt:   new Date(),
     },
   });
+
+  // D2 Step 4D-4 — one batch-level audit event, written only if at least
+  // one row was actually overwritten (diff was non-empty for at least one
+  // row). Mirrors the existing IMPORT_BATCH_ROLLED_BACK pattern exactly:
+  // single row, structured metadata, no per-row spam, no before/after
+  // snapshots, no versioning. Non-fatal — a failure here must not turn an
+  // otherwise-successful import response into an error.
+  if (updatedTransactionIds.length > 0) {
+    try {
+      await db.auditLog.create({
+        data: {
+          userId:    user.id,
+          spaceId,
+          action:    AuditAction.IMPORT_BATCH_UPDATED_ON_MATCH,
+          metadata:  {
+            importBatchId: batch.id,
+            financialAccountId,
+            updatedTransactionIds,
+          },
+          ipAddress: getClientIp(req),
+        },
+      });
+    } catch (auditErr) {
+      console.error(
+        `[import] batch ${batch.id} failed to write update-on-match audit log:`,
+        auditErr
+      );
+    }
+  }
 
   // D2 Step 4D-5b — a "successful import" here means the batch ran to
   // completion (COMPLETED or COMPLETED_WITH_ERRORS, set just above), not
