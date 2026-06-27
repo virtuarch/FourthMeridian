@@ -8,6 +8,11 @@
  *   FinancialAccount   — canonical account row (ownerType=USER, no plaidAccountId)
  *   AccountConnection  — manual/wallet connection (no plaidItemDbId)
  *   WorkspaceAccountShare — makes the account visible in the active space
+ *   ProviderAccountIdentity (mirror) — best-effort dual-write, provider=WALLET.
+ *     D2 Step 2. See lib/accounts/provider-identity.ts. Owner-scoped lookups
+ *     below are unchanged: a wallet address is a public external fact, but
+ *     each FinancialAccount's row here stays private to its own owner — no
+ *     cross-owner sharing, reuse, or collision handling (D2 Step 1D).
  *
  * Body: {
  *   name:          string   // display name, e.g. "Ledger BTC"
@@ -19,12 +24,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource } from "@prisma/client";
+import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource, ProviderType } from "@prisma/client";
 import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
+import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -89,6 +95,12 @@ export async function POST(req: NextRequest) {
         revokedByUserId: null,
       },
     });
+
+    // D2 Step 2 — WALLET dual-write (best-effort, non-fatal; see
+    // lib/accounts/provider-identity.ts). Owner-scoped lookup above is
+    // unchanged — this only mirrors activeFa's own identity, never another
+    // owner's FinancialAccount, per the D2 Step 1D corrected model.
+    await dualWriteProviderAccountIdentity(activeFa.id, ProviderType.WALLET, walletAddress.trim());
 
     // walletAddress has no DB-level unique constraint, so an archived row
     // for this same address can exist alongside the active one (e.g. a
@@ -169,6 +181,10 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
+    // this user's own archived account — no cross-owner behavior involved.
+    await dualWriteProviderAccountIdentity(archivedFa.id, ProviderType.WALLET, walletAddress.trim());
+
     // Regenerate SpaceSnapshot now that the share is active again — see
     // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
     try {
@@ -244,6 +260,13 @@ export async function POST(req: NextRequest) {
       revokedByUserId: null,
     },
   });
+
+  // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). New row, so
+  // dualWriteProviderAccountIdentity's find-by-{financialAccountId,
+  // provider} lookup finds nothing and creates — no collision handling
+  // needed: another owner's FinancialAccount for the same address (if any)
+  // is an entirely separate row under the D2 Step 1D corrected model.
+  await dualWriteProviderAccountIdentity(fa.id, ProviderType.WALLET, walletAddress.trim());
   // D3 Step 3 HOME Semantics Correction — no separate HOME backfill call
   // needed here. computeLinkKind() (inside dualWriteSpaceAccountLink above)
   // now assigns HOME to the Space a brand-new account's first link is
