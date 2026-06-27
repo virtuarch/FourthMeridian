@@ -65,7 +65,10 @@ export interface CsvColumnMap {
   reference:   string | null; // externalTransactionId source
 }
 
-const HEADER_ALIASES: Record<keyof Omit<CsvColumnMap, never>, string[]> = {
+// D2 Step 4D-5c-3 — exported (was module-private) so lib/imports/suggest.ts
+// can score raw headers against the same alias table detectColumns() uses.
+// Not widened, not modified — same 8 fields, same alias strings as before.
+export const HEADER_ALIASES: Record<keyof Omit<CsvColumnMap, never>, string[]> = {
   date:        ["date", "transaction date", "posted date", "post date"],
   merchant:    ["merchant", "payee"],
   description: ["description", "memo", "details", "name"],
@@ -76,7 +79,9 @@ const HEADER_ALIASES: Record<keyof Omit<CsvColumnMap, never>, string[]> = {
   reference:   ["reference", "reference number", "transaction id", "check number", "ref no", "id"],
 };
 
-function normalizeHeader(h: string): string {
+// D2 Step 4D-5c-3 — exported (was module-private) so lib/imports/suggest.ts
+// normalizes raw headers identically to detectColumns() before scoring.
+export function normalizeHeader(h: string): string {
   return h.trim().toLowerCase().replace(/\s+/g, " ");
 }
 

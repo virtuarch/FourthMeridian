@@ -37,6 +37,13 @@
  * called them before this extraction. See the implementation plan §5 and
  * csv.ts's own module header on why a forced shared adapter interface
  * between formats is deliberately avoided.
+ *
+ * D2 Step 4D-5c-3 — when column resolution fails but the header row itself
+ * parsed successfully, the returned error now also carries `rawHeaders` so
+ * the preview route's suggestion engine (lib/imports/suggest.ts) has
+ * something to score. See docs/initiatives/d2/D2_STEP4D5C3_IMPLEMENTATION_PLAN.md.
+ * Additive only — the confirm route only ever reads `.error` off this same
+ * return value, so it is unaffected.
  */
 
 import { ImportSource } from "@prisma/client";
@@ -102,7 +109,7 @@ export interface ImportPipelineOptions {
 export async function runImportPipeline(
   file: File,
   opts: ImportPipelineOptions
-): Promise<ImportPipelineResult | { error: string }> {
+): Promise<ImportPipelineResult | { error: string; rawHeaders?: string[] }> {
   const excelFormat = detectExcelFormat(file);
 
   if (excelFormat === "legacy-xls") {
@@ -137,7 +144,9 @@ export async function runImportPipeline(
     savedProfiles:   opts.savedProfiles,
   });
   if ("error" in resolved) {
-    return resolved;
+    // D2 Step 4D-5c-3 — header row parsed; resolution failed. Surface the
+    // raw headers for the preview route's suggestion engine.
+    return { ...resolved, rawHeaders: parsed.headers };
   }
 
   const rows = parsed.rows.map((raw, i) => normalizeRow(raw, resolved.columns, opts.signConvention, i + 1));

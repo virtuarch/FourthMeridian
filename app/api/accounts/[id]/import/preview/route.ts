@@ -3,9 +3,11 @@
  *
  * id refers to a FinancialAccount.id.
  *
- * POST — D2 Step 4D-5c-2. Read-only preview of what
- * `POST /api/accounts/[id]/import` (the confirm route, unmodified by this
- * file) would do with the same file/options, without persisting anything.
+ * POST — D2 Step 4D-5c-2 (read-only preview) + D2 Step 4D-5c-3
+ * (suggestions on the resolution-failure branch below). Read-only preview
+ * of what `POST /api/accounts/[id]/import` (the confirm route, unmodified
+ * by this file) would do with the same file/options, without persisting
+ * anything.
  * Accepts the exact same multipart/form-data fields as the confirm route
  * (file, signConvention?, columnMapping?), reuses the confirm route's parse
  * → resolve → normalize pipeline (lib/imports/pipeline.ts's
@@ -28,12 +30,15 @@
  *   columnMapping:  string — optional, JSON-encoded CsvColumnMap-shaped object
  *
  * Resolution failure (no auto-detect, no explicit mapping, no saved-profile
- * match) returns the exact same `{ error }` / 400 the confirm route returns
- * today — approved decision, deferred from the investigation's richer
- * `resolved: false` / rawHeaders / suggestedMapping shape, which depends on
- * 4D-5c-3 (fuzzy suggestions, not built yet). Shipping that shape now with
- * an always-empty suggestion would be a half-built contract 4D-5c-3 would
- * then have to change.
+ * match) returns `200 { resolved: false, rawHeaders, suggestedMapping,
+ * error }` (D2 Step 4D-5c-3) — `rawHeaders` threaded through from
+ * lib/imports/pipeline.ts's/lib/imports/excel.ts's resolveColumns()
+ * failure branches; `suggestedMapping` computed by
+ * lib/imports/suggest.ts's suggestColumnMapping() (deterministic
+ * Levenshtein similarity against csv.ts's existing HEADER_ALIASES — no ML,
+ * never auto-applied; a caller must explicitly resubmit a suggestion as
+ * `columnMapping` to use it). The confirm route is unmodified by this — it
+ * still returns the same plain `{ error }` / 400 it always has.
  *
  * Per-row classification (identical semantics to the confirm route's loop,
  * see that route's module header):
@@ -79,6 +84,7 @@ import {
 } from "@/lib/imports/csv";
 import { runImportPipeline } from "@/lib/imports/pipeline";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { suggestColumnMapping } from "@/lib/imports/suggest";
 
 const PREVIEW_ROW_CAP = 50;
 
@@ -179,10 +185,17 @@ export const POST = withApiHandler(async (
     savedProfiles: savedProfilesLite,
   });
   if ("error" in pipelineResult) {
-    // Approved decision: same plain { error } / 400 the confirm route
-    // returns for an unresolvable file — no resolved:false/suggestion
-    // shape in this slice (4D-5c-3).
-    return NextResponse.json({ error: pipelineResult.error }, { status: 400 });
+    // D2 Step 4D-5c-3 — resolution failure now returns 200 with
+    // resolved: false plus the file's raw headers and a deterministic
+    // best-guess mapping (never auto-applied). The confirm route is
+    // unmodified — it still returns this same `.error` as a plain 400.
+    const rawHeaders = pipelineResult.rawHeaders ?? [];
+    return NextResponse.json({
+      resolved: false,
+      rawHeaders,
+      suggestedMapping: suggestColumnMapping(rawHeaders),
+      error: pipelineResult.error,
+    });
   }
   const { source, rows, resolvedColumnMapping, matchedProfileId } = pipelineResult;
 

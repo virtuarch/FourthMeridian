@@ -307,7 +307,7 @@ export async function parseExcelFile(
   signConvention: SignConvention,
   explicitMapping?: Record<string, string | null | undefined>,
   savedProfiles?: SavedMappingProfileLite[]
-): Promise<ParsedExcel | { error: string }> {
+): Promise<ParsedExcel | { error: string; rawHeaders?: string[] }> {
   const workbook = new ExcelJS.Workbook();
   try {
     // Cast needed: exceljs's own dependency fast-csv pins @types/node@^14 as a
@@ -350,7 +350,9 @@ export async function parseExcelFile(
   }
 
   const resolved = resolveColumns(headers, { explicitMapping, savedProfiles });
-  if ("error" in resolved) return resolved;
+  // D2 Step 4D-5c-3 — surface raw headers for the preview route's
+  // suggestion engine; same rationale as csv.ts's pipeline branch.
+  if ("error" in resolved) return { ...resolved, rawHeaders: headers };
   const { columns, matchedProfileId } = resolved;
 
   const dateCol = headerIndex.get(columns.date);
