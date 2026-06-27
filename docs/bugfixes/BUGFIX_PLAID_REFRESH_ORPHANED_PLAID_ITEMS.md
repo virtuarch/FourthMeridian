@@ -302,3 +302,44 @@ In-sandbox (no live DB available here — same `linux-arm64` vs. `darwin-arm64` 
 - `scripts/cleanup-orphaned-plaid-items.ts` — new.
 - `scripts/verify-orphaned-plaid-items.ts` — new.
 - Confirmed unchanged: `app/api/accounts/[id]/route.ts`, `app/api/accounts/[id]/restore/route.ts`, `app/api/accounts/manual/[id]/route.ts`, `lib/plaid/disconnect.ts`, `prisma/schema.prisma`, `app/api/plaid/refresh/route.ts`, any D2 Step 2/WALLET file, any `link-token`/`PLAID_REDIRECT_URI` file.
+
+---
+
+## Follow-up round 2: Preview confirmation of Steps A/C/D, plus a distinct warning-ordering defect found and fixed in `refreshPlaidItem()`
+
+### Preview validation results (Steps A/C/D)
+
+A live Preview run confirmed the orphaned-`PlaidItem`-level fix described above is working as designed:
+
+- The Step E SQL check / `scripts/verify-orphaned-plaid-items.ts` Check 1 returned **0 orphaned `ACTIVE` PlaidItems**.
+- `scripts/verify-provider-account-identity-backfill.ts --verbose` — **PASS**, unchanged.
+- `/api/plaid/refresh` — **200**, synced successfully.
+
+So Steps A/C/D resolved exactly what they were designed to resolve: no `PlaidItem` with zero live linked accounts remains stuck at `status: ACTIVE`, and nothing in this fix disturbed the identity-backfill state.
+
+### A second, distinct defect: the D2-3E warning could fire *before* the `deletedAt` filter, not just for zero-live-account items
+
+Despite the clean result above, the same Preview run still logged the `[plaid][D2-3E] ProviderAccountIdentity miss, legacy plaidAccountId hit` warning for the same two archived accounts (`cmqqllcj6002inlk20bmuvval`, `cmqqllcmk002qnlk237wc3nce`). Investigation (see "Note" and "Follow-up" sections above) had already explained *why* this can happen even with Steps A/C/D fully working: these two accounts belong to a multi-account `PlaidItem` where at least one sibling account is still active, so the item legitimately keeps refreshing — but it surfaces a second, narrower bug that those earlier sections didn't separately name: inside `refreshPlaidItem()`'s legacy `plaidAccountId` fallback, in both the balances loop and the holdings loop, the warning was logged **unconditionally whenever the fallback matched a row at all**, before the existing `fa.deletedAt` check (balances: `if (!fa || fa.deletedAt) continue;`; holdings: `if (!fa) continue;`, which never checked `deletedAt` at all). So an archived sibling account — which is expected, harmless, no-write, "fallback correctly found nothing to do" — produced the exact same scary-looking coverage-gap warning as a genuine missing-identity case on an *active* account. The warning's whole purpose (per D2 Step 3A's "Risk 1 — coverage gaps") is to flag rows that should have a `ProviderAccountIdentity` and don't; an archived row was never going to get one (by design — see the D2 Step 1C-A archived-exclusion rule cited above) and so should never have tripped this signal in the first place.
+
+**Fix — logging/control-flow only, no data/schema/identity changes, in `lib/plaid/refresh.ts`:**
+
+- Balances loop (`refreshPlaidItem()`, legacy-fallback block originally at lines 114-121): the warning condition changed from `if (fa) {` to `if (fa && !fa.deletedAt) {`. The existing `findUnique` call here was already unfiltered/unselected (full row), so `fa.deletedAt` was already available — no select change needed.
+- Holdings loop (legacy-fallback block originally at lines 177-188): the legacy `findUnique`'s `select` was widened from `{ id: true }` to `{ id: true, deletedAt: true }` so `deletedAt` is available at all, and the result is now captured in a new local `legacyFa` (rather than assigned straight into the outer `fa`) so the warning can check `legacyFa.deletedAt` without changing `fa`'s declared type elsewhere in the function. `fa` is then assigned from `legacyFa` immediately after, so the existing `if (!fa) continue;` guard and every later use of `fa.id` are completely unaffected.
+- Both balances- and holdings-loop guards that decide whether a **write** happens (`if (!fa || fa.deletedAt) continue;` and `if (!fa) continue;`) are untouched — this fix only changes when the warning is *logged*, never what gets written.
+
+Net effect: the warning now fires only when the legacy fallback matches a row that is genuinely still active (a real, investigable coverage gap), and stays silent for archived rows reached via a still-refreshing sibling `PlaidItem` — closing the gap the earlier sections of this document diagnosed but didn't yet fix at the logging level.
+
+### Validation (round 2)
+
+1. `npx tsc --noEmit` — clean, zero errors.
+2. `npx eslint lib/plaid/refresh.ts` — clean, zero errors/warnings.
+3. `git diff`/`git status --short` reviewed directly — confirmed the only file touched is `lib/plaid/refresh.ts`, and the only changes are the two warning-gating edits described above. Steps A/C/D (`reconcile.ts`'s `closeOutAccountConnections`, `refresh.ts`'s `hasActiveLinkedAccount`/`selfHealOrphanedPlaidItem`/the `refreshAllActiveItemsForUser` guard, both scripts) are untouched. `lib/accounts/reconcile.ts`'s own D2-3D warning site was deliberately left alone — its query already filters `deletedAt: null` at the source, so it never had this defect, and editing it was outside the requested scope.
+4. Still needs a live Preview re-run to empirically confirm the warning no longer fires for these two accounts on the next refresh of their still-active sibling `PlaidItem` (cannot be exercised from this sandbox — no live DB/Plaid credentials here, consistent with every other live-validation step in this document).
+
+### Rollback
+
+Single-file, single-commit, two-line-condition change — `git revert` of this commit restores the unconditional-warning behavior with no data implications either way (this only ever affected logging, never a write).
+
+### Exact files changed (round 2)
+
+- `lib/plaid/refresh.ts` — `refreshPlaidItem()`'s two legacy-fallback warning sites (balances loop, holdings loop) now gate the `console.warn` on `!fa.deletedAt` (or `!legacyFa.deletedAt` in the holdings loop, prior to assignment into `fa`). No other function or file touched.

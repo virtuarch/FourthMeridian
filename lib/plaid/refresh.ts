@@ -113,7 +113,11 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
     let fa = plaidIdentity?.financialAccount ?? null;
     if (!fa) {
       fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
-      if (fa) {
+      // Only warn for accounts still in active use — an archived (deletedAt
+      // set) account hitting the legacy fallback is expected, not a coverage
+      // gap worth investigating: it's the same account skipped two lines
+      // below by the `if (!fa || fa.deletedAt) continue;` guard.
+      if (fa && !fa.deletedAt) {
         console.warn(
           `[plaid][D2-3E] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${acct.account_id}. Coverage gap; investigate before removing fallback.`
         );
@@ -175,15 +179,22 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
 
         let fa = holdingPlaidIdentity?.financialAccount ?? null;
         if (!fa) {
-          fa = await db.financialAccount.findUnique({
+          // Selected via a separate variable (not assigned straight into
+          // `fa`) so `deletedAt` is available to gate the warning below
+          // without widening `fa`'s declared type beyond `{ id }`.
+          const legacyFa = await db.financialAccount.findUnique({
             where:  { plaidAccountId: plaidAcct.account_id },
-            select: { id: true },
+            select: { id: true, deletedAt: true },
           });
-          if (fa) {
+          // Only warn for accounts still in active use — an archived
+          // account hitting the legacy fallback is expected, not a coverage
+          // gap worth investigating.
+          if (legacyFa && !legacyFa.deletedAt) {
             console.warn(
-              `[plaid][D2-3E] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${plaidAcct.account_id}. Coverage gap; investigate before removing fallback.`
+              `[plaid][D2-3E] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${legacyFa.id} externalAccountId=${plaidAcct.account_id}. Coverage gap; investigate before removing fallback.`
             );
           }
+          fa = legacyFa;
         }
         if (!fa) continue; // never create — refresh only updates known accounts
 
