@@ -140,8 +140,10 @@ export async function POST(req: NextRequest) {
       //    Step 3C.
       // 3. Only create a new row if neither lookup finds anything. Unchanged
       //    by Step 3C.
-      const plaidIdentity = await db.providerAccountIdentity.findUnique({
-        where: { provider_externalAccountId: { provider: ProviderType.PLAID, externalAccountId: acct.account_id } },
+      // D2 Step 1D — findFirst, not findUnique: see lib/accounts/reconcile.ts
+      // for why (provider, externalAccountId) is no longer a named unique key.
+      const plaidIdentity = await db.providerAccountIdentity.findFirst({
+        where: { provider: ProviderType.PLAID, externalAccountId: acct.account_id },
         include: { financialAccount: true },
       });
 
@@ -354,8 +356,11 @@ export async function POST(req: NextRequest) {
           // than plaidAccountId directly, with a fallback to the legacy
           // lookup if no identity row exists yet. Fallback-first, not a
           // hard replacement — mirrors Steps 3C/3D/3E.
-          const holdingPlaidIdentity = await db.providerAccountIdentity.findUnique({
-            where:  { provider_externalAccountId: { provider: ProviderType.PLAID, externalAccountId: plaidAcct.account_id } },
+          // D2 Step 1D — findFirst, not findUnique: see
+          // lib/accounts/reconcile.ts for why (provider, externalAccountId)
+          // is no longer a named unique key.
+          const holdingPlaidIdentity = await db.providerAccountIdentity.findFirst({
+            where:  { provider: ProviderType.PLAID, externalAccountId: plaidAcct.account_id },
             select: { financialAccount: { select: { id: true } } },
           });
 

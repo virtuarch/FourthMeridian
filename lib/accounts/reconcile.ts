@@ -86,8 +86,14 @@ export function providerIdentityOf(fa: {
  */
 export async function findActiveAccountByIdentity(identity: ProviderIdentity, excludeId?: string) {
   if (identity.kind === "plaid") {
-    const plaidIdentity = await db.providerAccountIdentity.findUnique({
-      where: { provider_externalAccountId: { provider: ProviderType.PLAID, externalAccountId: identity.plaidAccountId } },
+    // D2 Step 1D — findFirst, not findUnique: ProviderAccountIdentity's
+    // unique key now includes financialAccountId (multiple FinancialAccounts
+    // may share one externalAccountId), so (provider, externalAccountId)
+    // alone is no longer a named unique key. PLAID's real uniqueness is
+    // still guaranteed independently by FinancialAccount.plaidAccountId
+    // @unique, so this is a type-shape change only, not a behavior change.
+    const plaidIdentity = await db.providerAccountIdentity.findFirst({
+      where: { provider: ProviderType.PLAID, externalAccountId: identity.plaidAccountId },
       include: { financialAccount: true },
     });
 

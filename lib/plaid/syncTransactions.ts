@@ -169,8 +169,10 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
     // legacy lookup if no identity row exists yet. Fallback-first, not a
     // hard replacement — mirrors Steps 3C/3D/3E. The resolved id (from
     // either path) is cached exactly as before.
-    const plaidIdentity = await db.providerAccountIdentity.findUnique({
-      where:  { provider_externalAccountId: { provider: ProviderType.PLAID, externalAccountId: plaidAccountId } },
+    // D2 Step 1D — findFirst, not findUnique: see lib/accounts/reconcile.ts
+    // for why (provider, externalAccountId) is no longer a named unique key).
+    const plaidIdentity = await db.providerAccountIdentity.findFirst({
+      where:  { provider: ProviderType.PLAID, externalAccountId: plaidAccountId },
       select: { financialAccount: { select: { id: true } } },
     });
 

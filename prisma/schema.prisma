@@ -568,7 +568,27 @@ model ProviderAccountIdentity {
   metadata           Json?
   createdAt          DateTime         @default(now())
 
-  @@unique([provider, externalAccountId])
+  // D2 Step 1D — multi-account correction. A provider identity (e.g. a
+  // wallet address) is a public external fact; a FinancialAccount is a
+  // private Fourth Meridian object. Multiple FinancialAccount rows
+  // (different owners' private interpretations of the same address, or
+  // future public/watch-Space interpretations) may legitimately share one
+  // externalAccountId — each gets its own row here, distinguished by
+  // financialAccountId. The constraint below was previously
+  // @@unique([provider, externalAccountId]) alone, which made that
+  // impossible (at most one FinancialAccount could ever hold a given
+  // identity, globally). See
+  // docs/initiatives/d2/D2_STEP1D_PROVIDER_ACCOUNT_IDENTITY_MULTI_ACCOUNT_CORRECTION.md.
+  // PLAID is unaffected: FinancialAccount.plaidAccountId already carries its
+  // own independent @unique, so this relaxation doesn't change PLAID's
+  // real-world uniqueness guarantee.
+  @@unique([provider, externalAccountId, financialAccountId])
+  // Defense-in-depth: at most one identity row per (provider,
+  // financialAccountId) — formalizes an invariant
+  // dualWriteProviderAccountIdentity() already relies on (find-by-
+  // {financialAccountId, provider}, then create-or-update-in-place; never
+  // creates a second row for the same pair).
+  @@unique([provider, financialAccountId])
   @@index([financialAccountId])
   @@index([connectionId])
 }
