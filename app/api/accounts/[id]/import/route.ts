@@ -51,6 +51,21 @@
  * profiles in this slice; see
  * docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md.
  *
+ * D2 Step 4D-5c-1 — the format-sniff → parse → resolveColumns() → normalize
+ * sequence above has been extracted into lib/imports/pipeline.ts's
+ * runImportPipeline(), called once below instead of being inlined per
+ * CSV/Excel branch. Zero behavior change: same error strings/status codes
+ * (including the legacy-.xls rejection, now surfaced as a normal
+ * runImportPipeline() `{ error }` instead of a dedicated early return), same
+ * resolvedColumnMapping/mappingProfileId stamping. Done so the future
+ * preview route (D2 Step 4D-5c-2) can call the same pipeline instead of
+ * duplicating it. Classification (resolveFingerprintOutcome, below) and all
+ * persistence deliberately stay here, unmodified — see
+ * docs/initiatives/d2/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md §3 on why
+ * classification can't be hoisted into that helper without breaking the
+ * sequential within-file duplicate-detection invariant documented in the
+ * paragraph below.
+ *
  * Per-row outcome (see lib/imports/csv.ts for the classification logic,
  * shared unmodified by the Excel branch):
  *   CREATED — no existing match found; a new Transaction was written.
@@ -78,39 +93,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { ShareStatus, ImportSource, ImportBatchStatus, Prisma } from "@prisma/client";
+import { ShareStatus, ImportBatchStatus, Prisma } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import {
-  parseCsvText,
-  resolveColumns,
-  normalizeRow,
   resolveFingerprintOutcome,
   type SignConvention,
-  type NormalizedTransaction,
-  type CsvColumnMap,
   type SavedMappingProfileLite,
 } from "@/lib/imports/csv";
-import { parseExcelFile } from "@/lib/imports/excel";
-
-const XLSX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-const LEGACY_XLS_MIME_TYPE = "application/vnd.ms-excel";
-
-/**
- * Format sniff — investigation §5. Extension is checked first (the more
- * reliable signal in practice; browsers/OSes are inconsistent about the
- * MIME type they attach to a multipart file part), MIME type as a fallback
- * for a file whose name was changed or stripped. Anything not positively
- * identified as Excel (xlsx or legacy xls) falls through to the CSV branch,
- * preserving the route's pre-4D-2 permissive default exactly.
- */
-function detectExcelFormat(file: File): "xlsx" | "legacy-xls" | null {
-  const name = (file.name || "").toLowerCase();
-  if (name.endsWith(".xlsx")) return "xlsx";
-  if (name.endsWith(".xls")) return "legacy-xls";
-  if (file.type === XLSX_MIME_TYPE) return "xlsx";
-  if (file.type === LEGACY_XLS_MIME_TYPE) return "legacy-xls";
-  return null;
-}
+import { runImportPipeline } from "@/lib/imports/pipeline";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -195,24 +185,14 @@ export const POST = withApiHandler(async (
     explicitMapping = parsedMapping as Record<string, string | null | undefined>;
   }
 
-  // ── Format-sniffed parse ─────────────────────────────────────────────────
-  // Converges on the same NormalizedTransaction[] shape regardless of source format
-  // — see module header and D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md §3/§5.
-  const excelFormat = detectExcelFormat(file);
-
-  if (excelFormat === "legacy-xls") {
-    return NextResponse.json(
-      { error: "Legacy .xls files are not supported. Please save the file as .xlsx and re-upload." },
-      { status: 400 }
-    );
-  }
-
   // ── Saved column-mapping profiles (D2 Step 4D-5b) ────────────────────────
-  // Fetched once per request, used by both branches below via
-  // resolveColumns()/parseExcelFile()'s shared third resolution source.
-  // Sorted lastUsedAt desc (nulls last) then createdAt desc so the
-  // most-recently-used matching profile wins when more than one of this
-  // Space's profiles would trial-apply successfully — see
+  // Fetched once per request, passed into runImportPipeline() below rather
+  // than fetched by it — the pipeline helper is deliberately DB-free (D2
+  // Step 4D-5c-1, see
+  // docs/initiatives/d2/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md §2). Sorted
+  // lastUsedAt desc (nulls last) then createdAt desc so the most-recently-
+  // used matching profile wins when more than one of this Space's profiles
+  // would trial-apply successfully — see
   // docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5's tie-break.
   // Every Space with zero saved profiles (every Space today — no route
   // creates one yet) gets an empty array here, which makes the saved-profile
@@ -233,44 +213,27 @@ export const POST = withApiHandler(async (
     mapping: p.mapping as Record<string, string | null>,
   }));
 
-  let rows: NormalizedTransaction[];
-  let source: ImportSource;
-  let resolvedColumns: CsvColumnMap;
-  let matchedProfileId: string | null = null;
-
-  if (excelFormat === "xlsx") {
-    source = ImportSource.EXCEL;
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const parsed = await parseExcelFile(buffer, signConvention, explicitMapping, savedProfilesLite);
-    if ("error" in parsed) {
-      return NextResponse.json({ error: parsed.error }, { status: 400 });
-    }
-    rows             = parsed.rows;
-    resolvedColumns  = parsed.columns;
-    matchedProfileId = parsed.matchedProfileId;
-  } else {
-    source = ImportSource.CSV;
-    const text = await file.text();
-
-    let parsed;
-    try {
-      parsed = parseCsvText(text);
-    } catch {
-      return NextResponse.json({ error: "Could not parse file as CSV." }, { status: 400 });
-    }
-
-    const resolved = resolveColumns(parsed.headers, {
-      explicitMapping,
-      savedProfiles: savedProfilesLite,
-    });
-    if ("error" in resolved) {
-      return NextResponse.json({ error: resolved.error }, { status: 400 });
-    }
-
-    resolvedColumns  = resolved.columns;
-    matchedProfileId = resolved.matchedProfileId;
-    rows = parsed.rows.map((raw, i) => normalizeRow(raw, resolved.columns, signConvention, i + 1));
+  // ── Format-sniffed parse / resolve / normalize (D2 Step 4D-5c-1) ────────
+  // Converges on the same NormalizedTransaction[] shape regardless of source
+  // format — see module header and
+  // D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md §3/§5. Extracted into
+  // runImportPipeline() so the future preview route (D2 Step 4D-5c-2) can
+  // call the identical logic instead of duplicating it — see
+  // docs/initiatives/d2/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md. Deliberately
+  // does not classify rows against existing Transaction history or write
+  // anything — that stays below, in the sequential loop, unchanged (see
+  // this route's module header above on why classification can't be
+  // hoisted into a batch pre-pass without breaking within-file duplicate
+  // detection).
+  const pipelineResult = await runImportPipeline(file, {
+    signConvention,
+    explicitMapping,
+    savedProfiles: savedProfilesLite,
+  });
+  if ("error" in pipelineResult) {
+    return NextResponse.json({ error: pipelineResult.error }, { status: 400 });
   }
+  const { source, rows, resolvedColumnMapping, matchedProfileId } = pipelineResult;
 
   // ── Create the batch ─────────────────────────────────────────────────────
   // Only created once the file shape is known-valid — a file with the wrong
@@ -284,8 +247,9 @@ export const POST = withApiHandler(async (
       status:           ImportBatchStatus.PROCESSING,
       rowCount:         rows.length,
       // D2 Step 4D-5b — written on every batch regardless of which
-      // resolveColumns() branch produced resolvedColumns; mappingProfileId
-      // stays null unless the saved-profile branch matched.
+      // resolveColumns() branch (now inside runImportPipeline(), D2 Step
+      // 4D-5c-1) produced resolvedColumnMapping; mappingProfileId stays null
+      // unless the saved-profile branch matched.
       //
       // Cast (not a behavior change): CsvColumnMap is a plain, JSON-
       // compatible interface (string | null fields only), but Prisma's Json
@@ -297,7 +261,7 @@ export const POST = withApiHandler(async (
       // in lib/imports/excel.ts's parseExcelFile(). The values written are
       // unaffected — this only satisfies the type checker at this one call
       // site.
-      resolvedColumnMapping: resolvedColumns as unknown as Prisma.InputJsonValue,
+      resolvedColumnMapping: resolvedColumnMapping as unknown as Prisma.InputJsonValue,
       mappingProfileId:      matchedProfileId,
     },
   });
