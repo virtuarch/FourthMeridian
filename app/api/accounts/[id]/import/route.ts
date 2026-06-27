@@ -40,6 +40,17 @@
  *                    lib/imports/csv.ts's applyExplicitMapping(). Absent →
  *                    auto-detection behavior is unchanged from 4D-1/4D-2.
  *
+ * D2 Step 4D-5b — column resolution for both branches now goes through
+ * lib/imports/csv.ts's resolveColumns(), which adds a third source after
+ * explicitMapping/detectColumns: this Space's saved ImportMappingProfile
+ * rows, trial-applied in recency order. Every ImportBatch now also records
+ * resolvedColumnMapping (the actual CsvColumnMap used, regardless of source)
+ * and mappingProfileId (set only when a saved profile matched). A matched
+ * profile's lastUsedAt/useCount are bumped after the import completes. No
+ * request shape change — there is still no route to create/edit/list
+ * profiles in this slice; see
+ * docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md.
+ *
  * Per-row outcome (see lib/imports/csv.ts for the classification logic,
  * shared unmodified by the Excel branch):
  *   CREATED — no existing match found; a new Transaction was written.
@@ -67,16 +78,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { ShareStatus, ImportSource, ImportBatchStatus } from "@prisma/client";
+import { ShareStatus, ImportSource, ImportBatchStatus, Prisma } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import {
   parseCsvText,
-  detectColumns,
-  applyExplicitMapping,
+  resolveColumns,
   normalizeRow,
   resolveFingerprintOutcome,
   type SignConvention,
   type NormalizedTransaction,
+  type CsvColumnMap,
+  type SavedMappingProfileLite,
 } from "@/lib/imports/csv";
 import { parseExcelFile } from "@/lib/imports/excel";
 
@@ -195,17 +207,47 @@ export const POST = withApiHandler(async (
     );
   }
 
+  // ── Saved column-mapping profiles (D2 Step 4D-5b) ────────────────────────
+  // Fetched once per request, used by both branches below via
+  // resolveColumns()/parseExcelFile()'s shared third resolution source.
+  // Sorted lastUsedAt desc (nulls last) then createdAt desc so the
+  // most-recently-used matching profile wins when more than one of this
+  // Space's profiles would trial-apply successfully — see
+  // docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5's tie-break.
+  // Every Space with zero saved profiles (every Space today — no route
+  // creates one yet) gets an empty array here, which makes the saved-profile
+  // branch of resolveColumns() a no-op — identical to pre-4D-5b behavior.
+  const savedProfileRows = await db.importMappingProfile.findMany({
+    where:   { spaceId },
+    orderBy: [{ lastUsedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+    select:  { id: true, mapping: true },
+  });
+  const savedProfilesLite: SavedMappingProfileLite[] = savedProfileRows.map((p) => ({
+    id:      p.id,
+    // Json column at the Prisma layer is looser (Prisma.JsonValue) than this
+    // module's CsvColumnMap-shaped assumption — every row here was written
+    // either by applyExplicitMapping()'s own output (route-created profiles,
+    // once 4D-5c adds that) or by a validation script seeding rows directly
+    // in that exact shape (4D-5b has no CRUD route yet). See
+    // D2_STEP4D5B_IMPLEMENTATION_PLAN.md §3.
+    mapping: p.mapping as Record<string, string | null>,
+  }));
+
   let rows: NormalizedTransaction[];
   let source: ImportSource;
+  let resolvedColumns: CsvColumnMap;
+  let matchedProfileId: string | null = null;
 
   if (excelFormat === "xlsx") {
     source = ImportSource.EXCEL;
     const buffer = Buffer.from(await file.arrayBuffer());
-    const parsed = await parseExcelFile(buffer, signConvention, explicitMapping);
+    const parsed = await parseExcelFile(buffer, signConvention, explicitMapping, savedProfilesLite);
     if ("error" in parsed) {
       return NextResponse.json({ error: parsed.error }, { status: 400 });
     }
-    rows = parsed.rows;
+    rows             = parsed.rows;
+    resolvedColumns  = parsed.columns;
+    matchedProfileId = parsed.matchedProfileId;
   } else {
     source = ImportSource.CSV;
     const text = await file.text();
@@ -217,14 +259,17 @@ export const POST = withApiHandler(async (
       return NextResponse.json({ error: "Could not parse file as CSV." }, { status: 400 });
     }
 
-    const columns = explicitMapping
-      ? applyExplicitMapping(parsed.headers, explicitMapping)
-      : detectColumns(parsed.headers);
-    if ("error" in columns) {
-      return NextResponse.json({ error: columns.error }, { status: 400 });
+    const resolved = resolveColumns(parsed.headers, {
+      explicitMapping,
+      savedProfiles: savedProfilesLite,
+    });
+    if ("error" in resolved) {
+      return NextResponse.json({ error: resolved.error }, { status: 400 });
     }
 
-    rows = parsed.rows.map((raw, i) => normalizeRow(raw, columns, signConvention, i + 1));
+    resolvedColumns  = resolved.columns;
+    matchedProfileId = resolved.matchedProfileId;
+    rows = parsed.rows.map((raw, i) => normalizeRow(raw, resolved.columns, signConvention, i + 1));
   }
 
   // ── Create the batch ─────────────────────────────────────────────────────
@@ -238,6 +283,22 @@ export const POST = withApiHandler(async (
       originalFilename: file.name || null,
       status:           ImportBatchStatus.PROCESSING,
       rowCount:         rows.length,
+      // D2 Step 4D-5b — written on every batch regardless of which
+      // resolveColumns() branch produced resolvedColumns; mappingProfileId
+      // stays null unless the saved-profile branch matched.
+      //
+      // Cast (not a behavior change): CsvColumnMap is a plain, JSON-
+      // compatible interface (string | null fields only), but Prisma's Json
+      // input type (Prisma.InputJsonObject) requires a string index
+      // signature for assignability, which a named interface doesn't carry
+      // automatically — TS won't bridge that gap with a direct cast either
+      // ("neither type sufficiently overlaps"), so this goes through
+      // `unknown` first, same as the pre-existing exceljs Buffer-typing cast
+      // in lib/imports/excel.ts's parseExcelFile(). The values written are
+      // unaffected — this only satisfies the type checker at this one call
+      // site.
+      resolvedColumnMapping: resolvedColumns as unknown as Prisma.InputJsonValue,
+      mappingProfileId:      matchedProfileId,
     },
   });
 
@@ -307,6 +368,27 @@ export const POST = withApiHandler(async (
       completedAt:   new Date(),
     },
   });
+
+  // D2 Step 4D-5b — a "successful import" here means the batch ran to
+  // completion (COMPLETED or COMPLETED_WITH_ERRORS, set just above), not
+  // that every row succeeded; a request that 400'd earlier never created a
+  // batch and never reaches this point. Atomic increment ({ increment: 1 })
+  // rather than read-then-write, so concurrent imports against the same
+  // profile can't lose an update. Non-fatal: a failure here must not turn an
+  // otherwise-successful import response into an error.
+  if (matchedProfileId) {
+    try {
+      await db.importMappingProfile.update({
+        where: { id: matchedProfileId },
+        data:  { useCount: { increment: 1 }, lastUsedAt: new Date() },
+      });
+    } catch (profileErr) {
+      console.error(
+        `[import] batch ${batch.id} failed to bump mapping profile ${matchedProfileId} usage:`,
+        profileErr
+      );
+    }
+  }
 
   return NextResponse.json(
     {

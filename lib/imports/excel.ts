@@ -22,6 +22,16 @@
  * step (mechanical, compile-time-only) — see
  * docs/initiatives/d2/D2_STEP4D5A_IMPLEMENTATION_PLAN.md.
  *
+ * D2 Step 4D-5b replaced this file's internal
+ * `explicitMapping ? applyExplicitMapping(...) : detectColumns(...)` ternary
+ * with a delegation to `csv.ts`'s new `resolveColumns()` — the same
+ * centralized entry point the import route's CSV branch now also uses — and
+ * added an optional `savedProfiles` parameter so a Space's saved
+ * ImportMappingProfile rows can be trial-applied here too. `ParsedExcel` now
+ * also returns the resolved `columns` (for `ImportBatch.resolvedColumnMapping`)
+ * and `matchedProfileId` (for `ImportBatch.mappingProfileId`) alongside
+ * `rows`. See docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5.
+ *
  * Scope notes (see the investigation doc for full rationale):
  * - First worksheet only (`workbook.worksheets[0]`) — no multi-sheet
  *   selection in this slice (investigation §8).
@@ -38,13 +48,14 @@
 
 import ExcelJS from "exceljs";
 import {
-  detectColumns,
-  applyExplicitMapping,
+  resolveColumns,
   mapCategory,
   parseDate,
   parseAmount,
   type SignConvention,
   type NormalizedTransaction,
+  type CsvColumnMap,
+  type SavedMappingProfileLite,
 } from "@/lib/imports/csv";
 
 // ── Typed-cell helpers ──────────────────────────────────────────────────────
@@ -247,7 +258,15 @@ function normalizeExcelRow(
 // ── File parsing ─────────────────────────────────────────────────────────
 
 export interface ParsedExcel {
-  rows: NormalizedTransaction[];
+  rows:             NormalizedTransaction[];
+  // D2 Step 4D-5b — the resolved CsvColumnMap that actually produced `rows`,
+  // snapshotted onto ImportBatch.resolvedColumnMapping regardless of which
+  // resolveColumns() branch produced it.
+  columns:          CsvColumnMap;
+  // D2 Step 4D-5b — non-null only when a saved ImportMappingProfile's
+  // mapping is what resolved this file's columns; null for the
+  // explicit-mapping and auto-detect paths.
+  matchedProfileId: string | null;
 }
 
 /**
@@ -259,10 +278,10 @@ export interface ParsedExcel {
  *
  * First-worksheet-only (investigation §8) — `workbook.worksheets[1+]` are
  * never read. Header-row cells are coerced to strings and handed to
- * `detectColumns` (or, when `explicitMapping` is supplied, to
- * `applyExplicitMapping` instead — D2 Step 4D-5a, all-or-nothing, never
- * both) unmodified; the recognized header *names* either function returns
- * are then resolved back to this sheet's actual column indexes via a
+ * `csv.ts`'s `resolveColumns()` (D2 Step 4D-5b — explicit mapping, then
+ * `detectColumns`, then any saved profile, in that order; see that
+ * function's own doc comment) unmodified; the recognized header *names* it
+ * returns are then resolved back to this sheet's actual column indexes via a
  * name→index map built from the same header row — "look up by name, not
  * position," the same discipline `detectColumns` already requires of CSV,
  * called out explicitly here because it's also what makes merged header
@@ -278,11 +297,16 @@ export interface ParsedExcel {
  *   mapping (same shape `csv.ts`'s `applyExplicitMapping()` accepts). When
  *   present, used instead of `detectColumns()` for this file's header
  *   resolution; absent, behavior is unchanged from 4D-2.
+ * @param savedProfiles D2 Step 4D-5b — optional, caller-pre-sorted list of a
+ *   Space's saved ImportMappingProfile rows. Only consulted when
+ *   `explicitMapping` is absent AND `detectColumns()` fails — see
+ *   `resolveColumns()` in `csv.ts` for the full priority order.
  */
 export async function parseExcelFile(
   buffer: Buffer,
   signConvention: SignConvention,
-  explicitMapping?: Record<string, string | null | undefined>
+  explicitMapping?: Record<string, string | null | undefined>,
+  savedProfiles?: SavedMappingProfileLite[]
 ): Promise<ParsedExcel | { error: string }> {
   const workbook = new ExcelJS.Workbook();
   try {
@@ -325,10 +349,9 @@ export async function parseExcelFile(
     return { error: "No header row found." };
   }
 
-  const columns = explicitMapping
-    ? applyExplicitMapping(headers, explicitMapping)
-    : detectColumns(headers);
-  if ("error" in columns) return columns;
+  const resolved = resolveColumns(headers, { explicitMapping, savedProfiles });
+  if ("error" in resolved) return resolved;
+  const { columns, matchedProfileId } = resolved;
 
   const dateCol = headerIndex.get(columns.date);
   if (dateCol === undefined) {
@@ -337,7 +360,7 @@ export async function parseExcelFile(
     return { error: "Could not locate the date column in the worksheet." };
   }
 
-  const resolved: ResolvedColumnIndexes = {
+  const resolvedIndexes: ResolvedColumnIndexes = {
     dateCol,
     merchantCol:    columns.merchant    ? headerIndex.get(columns.merchant)    ?? null : null,
     descriptionCol: columns.description ? headerIndex.get(columns.description) ?? null : null,
@@ -353,8 +376,8 @@ export async function parseExcelFile(
   worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     if (rowNumber === 1) return; // header row, already consumed above
     dataRowIndex++;
-    rows.push(normalizeExcelRow(row, resolved, signConvention, dataRowIndex));
+    rows.push(normalizeExcelRow(row, resolvedIndexes, signConvention, dataRowIndex));
   });
 
-  return { rows };
+  return { rows, columns, matchedProfileId };
 }

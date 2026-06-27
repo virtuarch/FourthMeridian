@@ -17,6 +17,26 @@
  * docs/initiatives/d2/D2_STEP4D5A_IMPLEMENTATION_PLAN.md). No change to
  * HEADER_ALIASES, detectColumns()'s own logic, or normalizeRow()'s body.
  *
+ * D2 Step 4D-5b added three things, all scoped to the column-resolution
+ * stage only (see docs/initiatives/d2/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md and
+ * D2_STEP4D5B_IMPLEMENTATION_PLAN.md):
+ *   1. validateResolvedColumns() — the three required-field rules
+ *      detectColumns() and applyExplicitMapping() each separately
+ *      hand-wrote, extracted once. Both functions still own their own,
+ *      previously-existing error strings — only the rule itself is shared,
+ *      so this is a zero-observable-behavior-change refactor (Option A).
+ *   2. resolveColumns() — the single entry point route.ts and
+ *      parseExcelFile() now both call instead of independently writing the
+ *      same `explicitMapping ? applyExplicitMapping(...) : detectColumns(...)`
+ *      ternary. Adds a third resolution source — a caller-supplied list of
+ *      saved ImportMappingProfile rows, trial-applied via
+ *      applyExplicitMapping() itself (a profile is just a remembered mapping
+ *      argument; "does this profile still match" and "apply this profile"
+ *      are the same call, deliberately not a header-signature/hash
+ *      comparison — see the architecture review §5/§6).
+ *   3. No change to HEADER_ALIASES, the alias-matching algorithm inside
+ *      detectColumns(), or normalizeRow()'s body.
+ *
  * Scope notes:
  * - No modifications to lib/transactions/fingerprint.ts. findByFingerprint()
  *   is called as-is for the MATCH path; normalizeMerchantKey() is reused
@@ -61,6 +81,34 @@ function normalizeHeader(h: string): string {
 }
 
 /**
+ * D2 Step 4D-5b — the three required-field rules detectColumns() and
+ * applyExplicitMapping() each independently hand-wrote (date required;
+ * merchant-or-description required; amount-or-debit/credit required),
+ * extracted once so a third producer of CsvColumnMap (a saved
+ * ImportMappingProfile's trial-applied mapping) doesn't have to duplicate
+ * them a third time. This owns the RULE, not the message — each caller
+ * translates the returned code into its own pre-existing, distinct error
+ * string, so this extraction changes no observable error text. See
+ * docs/initiatives/d2/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §3 and
+ * D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5.
+ */
+export type ColumnValidationFailure = "date" | "merchantOrDescription" | "amountOrDebitCredit";
+
+export function validateResolvedColumns(resolved: {
+  date:        string | null;
+  merchant:    string | null;
+  description: string | null;
+  amount:      string | null;
+  debit:       string | null;
+  credit:      string | null;
+}): ColumnValidationFailure | null {
+  if (!resolved.date) return "date";
+  if (!resolved.merchant && !resolved.description) return "merchantOrDescription";
+  if (!resolved.amount && !(resolved.debit || resolved.credit)) return "amountOrDebitCredit";
+  return null;
+}
+
+/**
  * Resolves a parsed CSV's headers against known aliases. Returns an error
  * (file-level, not row-level) if the minimum required columns are missing:
  * a date column, an amount source (single amount OR a debit/credit pair),
@@ -88,17 +136,23 @@ export function detectColumns(headers: string[]): CsvColumnMap | { error: string
   const category    = find(HEADER_ALIASES.category);
   const reference    = find(HEADER_ALIASES.reference);
 
-  if (!date) {
+  // D2 Step 4D-5b — rule centralized via validateResolvedColumns(); wording
+  // below is unchanged from pre-4D-5b (Option A — see csv.ts's module header).
+  const failure = validateResolvedColumns({ date, merchant, description, amount, debit, credit });
+  if (failure === "date") {
     return { error: "Could not find a date column. Expected one of: " + HEADER_ALIASES.date.join(", ") + "." };
   }
-  if (!merchant && !description) {
+  if (failure === "merchantOrDescription") {
     return { error: "Could not find a merchant or description column." };
   }
-  if (!amount && !(debit || credit)) {
+  if (failure === "amountOrDebitCredit") {
     return { error: "Could not find an amount column (or a Debit/Credit pair)." };
   }
 
-  return { date, merchant, description, amount, debit, credit, category, reference };
+  // Safe: validateResolvedColumns() already returned non-"date" above, so
+  // `date` is guaranteed non-null here — TS can't infer that across the
+  // function-call boundary the way it could infer it from an inline `if`.
+  return { date: date as string, merchant, description, amount, debit, credit, category, reference };
 }
 
 // ── Explicit column mapping (D2 Step 4D-5a) ─────────────────────────────────────
@@ -172,18 +226,92 @@ export function applyExplicitMapping(
     resolved[field] = hit.raw;
   }
 
-  const date = resolved.date;
-  if (!date) {
+  // D2 Step 4D-5b — rule centralized via validateResolvedColumns(); wording
+  // below is unchanged from pre-4D-5b (Option A — see csv.ts's module header).
+  const failure = validateResolvedColumns(resolved);
+  if (failure === "date") {
     return { error: "Column mapping did not specify a date column." };
   }
-  if (!resolved.merchant && !resolved.description) {
+  if (failure === "merchantOrDescription") {
     return { error: "Column mapping did not specify a merchant or description column." };
   }
-  if (!resolved.amount && !(resolved.debit || resolved.credit)) {
+  if (failure === "amountOrDebitCredit") {
     return { error: "Column mapping did not specify an amount column, or a debit/credit pair." };
   }
 
-  return { ...resolved, date };
+  // Safe: validateResolvedColumns() already returned non-"date" above, so
+  // resolved.date is guaranteed non-null here — same TS-narrowing note as
+  // detectColumns() above.
+  return { ...resolved, date: resolved.date as string };
+}
+
+// ── Centralized column resolution (D2 Step 4D-5b) ───────────────────────────
+
+/**
+ * The minimal shape resolveColumns() needs from a saved ImportMappingProfile
+ * — deliberately not the full Prisma model, so this module doesn't need to
+ * import Prisma's generated ImportMappingProfile type just to call this
+ * function. `mapping` is that profile's resolved CsvColumnMap (the exact
+ * shape applyExplicitMapping()'s second parameter accepts).
+ */
+export interface SavedMappingProfileLite {
+  id:      string;
+  mapping: Record<string, string | null | undefined>;
+}
+
+/**
+ * D2 Step 4D-5b — the single column-resolution entry point. Both
+ * app/api/accounts/[id]/import/route.ts (CSV branch) and
+ * lib/imports/excel.ts's parseExcelFile() delegate to this instead of each
+ * independently writing the same
+ * `explicitMapping ? applyExplicitMapping(...) : detectColumns(...)` ternary
+ * — see docs/initiatives/d2/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §4 and
+ * D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5.
+ *
+ * Priority (confirmed, not re-litigated, in the implementation plan):
+ *   1. `opts.explicitMapping`, if present — all-or-nothing, exactly
+ *      applyExplicitMapping()'s existing 4D-5a behavior. Saved profiles are
+ *      never consulted when an explicit mapping is supplied.
+ *   2. detectColumns() — the unmodified fixed-alias fast path, tried before
+ *      any saved profile. HEADER_ALIASES is not widened by this function.
+ *   3. `opts.savedProfiles`, in caller-supplied array order — the first
+ *      profile whose mapping successfully trial-applies via
+ *      applyExplicitMapping() wins. Callers should pass savedProfiles
+ *      pre-sorted by recency (lastUsedAt desc, nulls last, then createdAt
+ *      desc); this function does no sorting of its own, it just takes the
+ *      first array match.
+ *
+ * If none of the above resolves a file, returns detectColumns()'s own
+ * error — the most actionable message available when no saved profile
+ * matched either, and the only possible outcome for every Space until a
+ * profile exists (no CRUD route creates one yet — see the implementation
+ * plan §7/§8).
+ */
+export function resolveColumns(
+  headers: string[],
+  opts: {
+    explicitMapping?: Record<string, string | null | undefined>;
+    savedProfiles?:   SavedMappingProfileLite[];
+  }
+): { columns: CsvColumnMap; matchedProfileId: string | null } | { error: string } {
+  if (opts.explicitMapping) {
+    const result = applyExplicitMapping(headers, opts.explicitMapping);
+    return "error" in result ? result : { columns: result, matchedProfileId: null };
+  }
+
+  const detected = detectColumns(headers);
+  if (!("error" in detected)) {
+    return { columns: detected, matchedProfileId: null };
+  }
+
+  for (const profile of opts.savedProfiles ?? []) {
+    const applied = applyExplicitMapping(headers, profile.mapping);
+    if (!("error" in applied)) {
+      return { columns: applied, matchedProfileId: profile.id };
+    }
+  }
+
+  return detected; // { error } — surfaces detectColumns()'s own message
 }
 
 // ── File parsing ──────────────────────────────────────────────────────────────

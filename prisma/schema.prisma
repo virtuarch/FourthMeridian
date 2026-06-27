@@ -305,6 +305,7 @@ model User {
   plaidItems           PlaidItem[]
   connections          Connection[]      // D2 (Phase 2, Step 1A) — additive only, not yet populated
   importBatches        ImportBatch[]     // D2 (Phase 2, Step 4B) — additive only, not yet populated
+  importMappingProfiles ImportMappingProfile[] // D2 (Phase 2, Step 4D-5b) — additive; display-only creator ref, not an authorization boundary
   ownedAccounts        Account[]         // legacy: accounts this user connected/created
   creditScores         CreditScore[]
   auditLogs            AuditLog[]
@@ -388,6 +389,11 @@ model Space {
   ownedFinancialAccounts FinancialAccount[]      @relation("SpaceOwnedFinancialAccounts")
   goals                  SpaceGoal[]
   dashboardSections      SpaceDashboardSection[]
+  // ImportMappingProfile (D2, Phase 2, Step 4D-5b) — additive; Space-scoped
+  // saved column mappings, auto-used by the import pipeline when they match
+  // an upload's headers. See
+  // docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md.
+  importMappingProfiles  ImportMappingProfile[]
 
   @@index([type])
   @@index([isPublic])
@@ -1179,6 +1185,14 @@ model ImportBatch {
   connectionId       String?
   connection         Connection?       @relation(fields: [connectionId], references: [id], onDelete: SetNull)
 
+  // D2 Step 4D-5b — which ImportMappingProfile (if any) resolved this
+  // batch's columns. Set only on the saved-profile-matched path; null for
+  // the explicit-mapping and auto-detect paths. onDelete: SetNull so
+  // deleting a profile later never deletes the historical batches that used
+  // it. See docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §2.
+  mappingProfileId   String?
+  mappingProfile     ImportMappingProfile? @relation(fields: [mappingProfileId], references: [id], onDelete: SetNull)
+
   source             ImportSource
   originalFilename   String?
   status             ImportBatchStatus @default(PENDING)
@@ -1194,6 +1208,12 @@ model ImportBatch {
   matchedCount       Int               @default(0)
   failedCount        Int               @default(0)
   errorSummary       Json?
+  // D2 Step 4D-5b — snapshot of the actual resolved CsvColumnMap, written on
+  // every import regardless of which resolver path produced it (auto-detect,
+  // explicit mapping, or saved profile). Exists so a profile that's later
+  // edited never retroactively changes what a historical batch is recorded
+  // as having used — see D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §2.
+  resolvedColumnMapping Json?
 
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
@@ -1204,7 +1224,53 @@ model ImportBatch {
   @@index([financialAccountId])
   @@index([createdByUserId])
   @@index([connectionId])
+  @@index([mappingProfileId])
   @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ImportMappingProfile (D2, Phase 2, Step 4D-5b)
+// Space-scoped, saved column mapping for recurring import sources (e.g. one
+// specific bank's CSV/Excel export shape). `mapping` stores the *resolved*
+// CsvColumnMap (lib/imports/csv.ts) — all 8 keys present, each a header
+// string or null — produced by a prior successful applyExplicitMapping()
+// call, not a caller's raw/partial input. Matching a profile against a new
+// upload is a trial-application of that same mapping via
+// applyExplicitMapping(), never a comparison of the file's full header set —
+// see docs/initiatives/d2/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §5/§6 for why a
+// header-signature hash was considered and rejected. source/institutionLabel
+// are informational/display only, never consulted by the matcher. No CRUD
+// route exists for this model yet (4D-5b is auto-use only, over rows seeded
+// directly via the database client) — see
+// docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §7/§8.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ImportMappingProfile {
+  id               String       @id @default(cuid())
+
+  spaceId          String
+  space            Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  name             String
+  source           ImportSource // informational only — NOT part of the matching key
+  institutionLabel String?      // informational only, e.g. "Chase"
+
+  mapping          Json         // resolved CsvColumnMap shape — see module comment above
+
+  createdByUserId  String?
+  createdByUser    User?        @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  lastUsedAt       DateTime?
+  useCount         Int          @default(0)
+
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  importBatches    ImportBatch[]
+
+  @@unique([spaceId, name])
+  @@index([spaceId])
+  @@index([createdByUserId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
