@@ -6,7 +6,16 @@
  * and deliberately not a generic "ImportAdapter" — see
  * docs/initiatives/d2/D2_STEP4D1_CSV_IMPORT_MVP_INVESTIGATION.md. A future
  * Excel/QuickBooks source (D2 Step 4D-2+) is expected to get its own
- * sibling module, not a forced shared interface bolted on here.
+ * sibling module, not a forced shared interface bolted on here. (In
+ * practice, lib/imports/excel.ts reuses detectColumns()/applyExplicitMapping()
+ * directly rather than duplicating them — see that file's own header.)
+ *
+ * D2 Step 4D-5a added applyExplicitMapping() — a caller-supplied alternative
+ * to detectColumns() for the same column-resolution stage, used all-or-
+ * nothing when supplied — and renamed NormalizedRow to NormalizedTransaction
+ * (mechanical, compile-time-only; see
+ * docs/initiatives/d2/D2_STEP4D5A_IMPLEMENTATION_PLAN.md). No change to
+ * HEADER_ALIASES, detectColumns()'s own logic, or normalizeRow()'s body.
  *
  * Scope notes:
  * - No modifications to lib/transactions/fingerprint.ts. findByFingerprint()
@@ -90,6 +99,91 @@ export function detectColumns(headers: string[]): CsvColumnMap | { error: string
   }
 
   return { date, merchant, description, amount, debit, credit, category, reference };
+}
+
+// ── Explicit column mapping (D2 Step 4D-5a) ─────────────────────────────────────
+
+/**
+ * The CsvColumnMap fields a caller-supplied mapping may target in 4D-5a.
+ * Deliberately the same 8 fields CsvColumnMap already has — transactionType/
+ * balanceAfter/currency/rawMetadata are NOT supported here: they don't exist
+ * on NormalizedTransaction yet, and nothing downstream reads them, so wiring
+ * mapping support for them now would be dead plumbing. See
+ * docs/initiatives/d2/D2_STEP4D5A_IMPLEMENTATION_PLAN.md §3. Kept as an
+ * explicit list (not derived from HEADER_ALIASES) so the accepted key set is
+ * visible at a glance and decoupled from HEADER_ALIASES's own shape.
+ */
+const MAPPABLE_FIELDS = [
+  "date", "merchant", "description", "amount", "debit", "credit", "category", "reference",
+] as const;
+type MappableField = (typeof MAPPABLE_FIELDS)[number];
+
+/**
+ * Resolves a caller-supplied explicit column mapping against a file's real
+ * headers, as an alternative to detectColumns()'s alias-based auto-
+ * detection — same return shape (CsvColumnMap | { error }), same required-
+ * field rules, so callers (the import route, parseExcelFile()) can use
+ * either interchangeably without any other code changing.
+ *
+ * All-or-nothing by construction: there is no fallback to HEADER_ALIASES
+ * inside this function for an unmapped field — a field the caller didn't
+ * map simply resolves to null, exactly as if detectColumns() hadn't found
+ * an alias for it either. Callers decide whether to call this function or
+ * detectColumns(), never both for the same request (D2_STEP4D5A_
+ * IMPLEMENTATION_PLAN.md §2).
+ *
+ * Validates, in order:
+ *   1. every key in `mapping` is a recognized field name (MAPPABLE_FIELDS);
+ *   2. every non-null mapped value matches one of `headers` (same
+ *      normalizeHeader() comparison detectColumns() uses — case/whitespace-
+ *      insensitive, exact match, not substring);
+ *   3. the same required-field rules detectColumns() enforces: date; at
+ *      least one of merchant/description; at least one of amount or a
+ *      debit/credit pair.
+ *
+ * Resolved values are the file's actual header strings (not the caller's
+ * copy of them) — normalizeRow()/normalizeExcelRow() look up raw row values
+ * by exact header string, so this must match detectColumns()'s own
+ * resolved-value convention exactly.
+ */
+export function applyExplicitMapping(
+  headers: string[],
+  mapping: Record<string, string | null | undefined>
+): CsvColumnMap | { error: string } {
+  for (const key of Object.keys(mapping)) {
+    if (!(MAPPABLE_FIELDS as readonly string[]).includes(key)) {
+      return { error: `Unrecognized column mapping field: "${key}".` };
+    }
+  }
+
+  const normalizedHeaders = headers.map((h) => ({ raw: h, norm: normalizeHeader(h) }));
+  const resolved: Record<MappableField, string | null> = {
+    date: null, merchant: null, description: null, amount: null,
+    debit: null, credit: null, category: null, reference: null,
+  };
+
+  for (const field of MAPPABLE_FIELDS) {
+    const requested = mapping[field];
+    if (!requested || !requested.trim()) continue; // not mapped — stays null, same as a detectColumns() miss
+    const hit = normalizedHeaders.find((h) => h.norm === normalizeHeader(requested));
+    if (!hit) {
+      return { error: `Mapped column "${requested}" for field "${field}" was not found in the file's headers.` };
+    }
+    resolved[field] = hit.raw;
+  }
+
+  const date = resolved.date;
+  if (!date) {
+    return { error: "Column mapping did not specify a date column." };
+  }
+  if (!resolved.merchant && !resolved.description) {
+    return { error: "Column mapping did not specify a merchant or description column." };
+  }
+  if (!resolved.amount && !(resolved.debit || resolved.credit)) {
+    return { error: "Column mapping did not specify an amount column, or a debit/credit pair." };
+  }
+
+  return { ...resolved, date };
 }
 
 // ── File parsing ──────────────────────────────────────────────────────────────
@@ -214,7 +308,7 @@ export function mapCategory(raw: string | undefined): TransactionCategory {
 
 // ── Row normalization ─────────────────────────────────────────────────────────
 
-export interface NormalizedRow {
+export interface NormalizedTransaction {
   lineNumber:            number; // 1-indexed data row, header row excluded (line 1 = first data row)
   date:                  Date | null;
   merchant:              string | null;
@@ -237,7 +331,7 @@ export function normalizeRow(
   columns: CsvColumnMap,
   signConvention: SignConvention,
   lineNumber: number
-): NormalizedRow {
+): NormalizedTransaction {
   const dateRaw = raw[columns.date] ?? "";
   const date = parseDate(dateRaw);
 

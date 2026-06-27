@@ -19,8 +19,8 @@
  *     4D-1 — this is not a new restriction, it's the same permissive
  *     fallback the route always had (no file-type check existed before
  *     4D-2; only a positive Excel match is carved out of that fallback).
- * Both branches converge on the same NormalizedRow[]-driven batch-create/
- * loop/finalize body below.
+ * Both branches converge on the same NormalizedTransaction[]-driven
+ * batch-create/loop/finalize body below.
  *
  * Body (multipart/form-data):
  *   file:           File   — required, the CSV or .xlsx file to import
@@ -30,6 +30,15 @@
  *                    sign-unambiguous). "creditPositive" matches this app's
  *                    own convention (positive = money in) — see
  *                    lib/plaid/syncTransactions.ts's sign-flip comment.
+ *   columnMapping:  string — optional, D2 Step 4D-5a. JSON-encoded object
+ *                    mapping CsvColumnMap field names (date, merchant,
+ *                    description, amount, debit, credit, category,
+ *                    reference) to this file's actual header strings, e.g.
+ *                    {"date":"Posting Date","debit":"Debit Amount"}. When
+ *                    present, used all-or-nothing in place of
+ *                    detectColumns()'s alias-based auto-detection — see
+ *                    lib/imports/csv.ts's applyExplicitMapping(). Absent →
+ *                    auto-detection behavior is unchanged from 4D-1/4D-2.
  *
  * Per-row outcome (see lib/imports/csv.ts for the classification logic,
  * shared unmodified by the Excel branch):
@@ -63,10 +72,11 @@ import { withApiHandler } from "@/lib/api";
 import {
   parseCsvText,
   detectColumns,
+  applyExplicitMapping,
   normalizeRow,
   resolveFingerprintOutcome,
   type SignConvention,
-  type NormalizedRow,
+  type NormalizedTransaction,
 } from "@/lib/imports/csv";
 import { parseExcelFile } from "@/lib/imports/excel";
 
@@ -143,8 +153,38 @@ export const POST = withApiHandler(async (
   const signConvention: SignConvention =
     signConventionRaw === "debitPositive" ? "debitPositive" : "creditPositive";
 
+  // ── Explicit column mapping (D2 Step 4D-5a) ──────────────────────────────
+  // Optional caller-supplied mapping, JSON-encoded in a form field. Present →
+  // validated here at the shape level (object, string|null values), then
+  // used all-or-nothing in place of detectColumns()'s alias-based
+  // auto-detection by applyExplicitMapping() below (field-name/header
+  // validation happens there, not here). Absent → today's exact behavior,
+  // unchanged. See docs/initiatives/d2/D2_STEP4D5A_IMPLEMENTATION_PLAN.md.
+  const columnMappingRaw = formData.get("columnMapping");
+  let explicitMapping: Record<string, string | null | undefined> | undefined;
+  if (typeof columnMappingRaw === "string" && columnMappingRaw.trim() !== "") {
+    let parsedMapping: unknown;
+    try {
+      parsedMapping = JSON.parse(columnMappingRaw);
+    } catch {
+      return NextResponse.json({ error: "Could not parse columnMapping as JSON." }, { status: 400 });
+    }
+    if (typeof parsedMapping !== "object" || parsedMapping === null || Array.isArray(parsedMapping)) {
+      return NextResponse.json({ error: "columnMapping must be a JSON object." }, { status: 400 });
+    }
+    for (const value of Object.values(parsedMapping as Record<string, unknown>)) {
+      if (value !== null && value !== undefined && typeof value !== "string") {
+        return NextResponse.json(
+          { error: "columnMapping values must be strings or null." },
+          { status: 400 }
+        );
+      }
+    }
+    explicitMapping = parsedMapping as Record<string, string | null | undefined>;
+  }
+
   // ── Format-sniffed parse ─────────────────────────────────────────────────
-  // Converges on the same NormalizedRow[] shape regardless of source format
+  // Converges on the same NormalizedTransaction[] shape regardless of source format
   // — see module header and D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md §3/§5.
   const excelFormat = detectExcelFormat(file);
 
@@ -155,13 +195,13 @@ export const POST = withApiHandler(async (
     );
   }
 
-  let rows: NormalizedRow[];
+  let rows: NormalizedTransaction[];
   let source: ImportSource;
 
   if (excelFormat === "xlsx") {
     source = ImportSource.EXCEL;
     const buffer = Buffer.from(await file.arrayBuffer());
-    const parsed = await parseExcelFile(buffer, signConvention);
+    const parsed = await parseExcelFile(buffer, signConvention, explicitMapping);
     if ("error" in parsed) {
       return NextResponse.json({ error: parsed.error }, { status: 400 });
     }
@@ -177,7 +217,9 @@ export const POST = withApiHandler(async (
       return NextResponse.json({ error: "Could not parse file as CSV." }, { status: 400 });
     }
 
-    const columns = detectColumns(parsed.headers);
+    const columns = explicitMapping
+      ? applyExplicitMapping(parsed.headers, explicitMapping)
+      : detectColumns(parsed.headers);
     if ("error" in columns) {
       return NextResponse.json({ error: columns.error }, { status: 400 });
     }

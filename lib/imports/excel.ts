@@ -3,16 +3,24 @@
  *
  * D2 Step 4D-2 — Excel import. Provides the Excel-specific Parse stage
  * (workbook/worksheet loading, header coercion) and a typed-value-aware row
- * normalizer that produces the same `NormalizedRow` shape `lib/imports/csv.ts`
- * already produces for CSV — see
+ * normalizer that produces the same `NormalizedTransaction` shape
+ * `lib/imports/csv.ts` already produces for CSV — see
  * docs/initiatives/d2/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md.
  *
  * Deliberately reuses, unmodified, the source-agnostic pieces of csv.ts:
  * `detectColumns`, `mapCategory`, `parseDate`, `parseAmount`, and the shared
- * `NormalizedRow`/`CsvColumnMap`/`SignConvention` types (investigation §3
- * option (ii), §4 option (i) — csv.ts itself is not touched by this file).
+ * `NormalizedTransaction`/`CsvColumnMap`/`SignConvention` types (investigation
+ * §3 option (ii), §4 option (i) — csv.ts itself is not touched by this file).
  * `resolveFingerprintOutcome` is not called here at all — it's
  * source-agnostic and is called directly by the route for both formats.
+ *
+ * D2 Step 4D-5a added an optional `explicitMapping` parameter to
+ * `parseExcelFile()` — when supplied, `csv.ts`'s `applyExplicitMapping()` is
+ * used in place of `detectColumns()` for header resolution, all-or-nothing,
+ * identically to how the CSV branch of the import route uses it. `csv.ts`'s
+ * `NormalizedRow` was also renamed to `NormalizedTransaction` in that same
+ * step (mechanical, compile-time-only) — see
+ * docs/initiatives/d2/D2_STEP4D5A_IMPLEMENTATION_PLAN.md.
  *
  * Scope notes (see the investigation doc for full rationale):
  * - First worksheet only (`workbook.worksheets[0]`) — no multi-sheet
@@ -31,11 +39,12 @@
 import ExcelJS from "exceljs";
 import {
   detectColumns,
+  applyExplicitMapping,
   mapCategory,
   parseDate,
   parseAmount,
   type SignConvention,
-  type NormalizedRow,
+  type NormalizedTransaction,
 } from "@/lib/imports/csv";
 
 // ── Typed-cell helpers ──────────────────────────────────────────────────────
@@ -184,8 +193,8 @@ interface ResolvedColumnIndexes {
 }
 
 /**
- * Normalizes one Excel data row into a `NormalizedRow` — the typed-cell
- * analog of csv.ts's `normalizeRow()`. Field-for-field, this mirrors
+ * Normalizes one Excel data row into a `NormalizedTransaction` — the typed-
+ * cell analog of csv.ts's `normalizeRow()`. Field-for-field, this mirrors
  * `normalizeRow()`'s logic exactly (same debit/credit-vs-single-amount
  * branch, same signConvention application point, same merchant-or-
  * description fallback, same error precedence), just sourcing each value
@@ -197,7 +206,7 @@ function normalizeExcelRow(
   cols: ResolvedColumnIndexes,
   signConvention: SignConvention,
   lineNumber: number
-): NormalizedRow {
+): NormalizedTransaction {
   const date = cellRawDate(row.getCell(cols.dateCol).value);
 
   const merchantRaw    = cols.merchantCol    !== null ? cellToText(row.getCell(cols.merchantCol).value)    : null;
@@ -238,34 +247,42 @@ function normalizeExcelRow(
 // ── File parsing ─────────────────────────────────────────────────────────
 
 export interface ParsedExcel {
-  rows: NormalizedRow[];
+  rows: NormalizedTransaction[];
 }
 
 /**
- * Parses an `.xlsx` workbook buffer into the same `NormalizedRow[]` shape
- * CSV import produces, or a file-level `{ error }` for the same class of
- * "wrong shape" problems `detectColumns`/`parseCsvText` already return for
+ * Parses an `.xlsx` workbook buffer into the same `NormalizedTransaction[]`
+ * shape CSV import produces, or a file-level `{ error }` for the same class
+ * of "wrong shape" problems `detectColumns`/`parseCsvText` already return for
  * CSV (investigation §8/§11): no worksheets, an empty first sheet, no
  * header row, or a header row missing a required column.
  *
  * First-worksheet-only (investigation §8) — `workbook.worksheets[1+]` are
  * never read. Header-row cells are coerced to strings and handed to
- * `detectColumns` unmodified; the recognized header *names* it returns are
- * then resolved back to this sheet's actual column indexes via a name→index
- * map built from the same header row — "look up by name, not position,"
- * the same discipline `detectColumns` already requires of CSV, called out
- * explicitly here because it's also what makes merged header cells
- * harmless (investigation §8's structural-risk note).
+ * `detectColumns` (or, when `explicitMapping` is supplied, to
+ * `applyExplicitMapping` instead — D2 Step 4D-5a, all-or-nothing, never
+ * both) unmodified; the recognized header *names* either function returns
+ * are then resolved back to this sheet's actual column indexes via a
+ * name→index map built from the same header row — "look up by name, not
+ * position," the same discipline `detectColumns` already requires of CSV,
+ * called out explicitly here because it's also what makes merged header
+ * cells harmless (investigation §8's structural-risk note).
  *
  * Fully empty rows (every cell empty) are skipped without being counted at
  * all — `eachRow({ includeEmpty: false })` — mirroring `Papa.parse`'s
  * `skipEmptyLines: true` behavior for CSV exactly; a row that has some
  * cells filled but is missing a required field is NOT skipped and instead
  * flows through to be classified FAILED, same as CSV.
+ *
+ * @param explicitMapping D2 Step 4D-5a — optional caller-supplied column
+ *   mapping (same shape `csv.ts`'s `applyExplicitMapping()` accepts). When
+ *   present, used instead of `detectColumns()` for this file's header
+ *   resolution; absent, behavior is unchanged from 4D-2.
  */
 export async function parseExcelFile(
   buffer: Buffer,
-  signConvention: SignConvention
+  signConvention: SignConvention,
+  explicitMapping?: Record<string, string | null | undefined>
 ): Promise<ParsedExcel | { error: string }> {
   const workbook = new ExcelJS.Workbook();
   try {
@@ -308,7 +325,9 @@ export async function parseExcelFile(
     return { error: "No header row found." };
   }
 
-  const columns = detectColumns(headers);
+  const columns = explicitMapping
+    ? applyExplicitMapping(headers, explicitMapping)
+    : detectColumns(headers);
   if ("error" in columns) return columns;
 
   const dateCol = headerIndex.get(columns.date);
@@ -329,8 +348,8 @@ export async function parseExcelFile(
     referenceCol:   columns.reference   ? headerIndex.get(columns.reference)   ?? null : null,
   };
 
-  const rows: NormalizedRow[] = [];
-  let dataRowIndex = 0; // 1-indexed, header row excluded — matches NormalizedRow.lineNumber's CSV convention
+  const rows: NormalizedTransaction[] = [];
+  let dataRowIndex = 0; // 1-indexed, header row excluded — matches NormalizedTransaction.lineNumber's CSV convention
   worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     if (rowNumber === 1) return; // header row, already consumed above
     dataRowIndex++;
