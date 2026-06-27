@@ -66,6 +66,16 @@
  * sequential within-file duplicate-detection invariant documented in the
  * paragraph below.
  *
+ * D2 Step 4D-5c-2 — the account-resolution/authorization check below (was
+ * inlined here) is now lib/imports/authorize.ts's
+ * resolveImportableFinancialAccount(), shared verbatim with the new, purely
+ * read-only `POST .../import/preview` route
+ * (app/api/accounts/[id]/import/preview/route.ts), which calls
+ * runImportPipeline() and resolveFingerprintOutcome() exactly as this route
+ * does but never creates an ImportBatch/Transaction or bumps a profile's
+ * usage counters. Zero behavior change here. See
+ * docs/initiatives/d2/D2_STEP4D5C2_IMPLEMENTATION_PLAN.md.
+ *
  * Per-row outcome (see lib/imports/csv.ts for the classification logic,
  * shared unmodified by the Excel branch):
  *   CREATED — no existing match found; a new Transaction was written.
@@ -93,7 +103,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { ShareStatus, ImportBatchStatus, Prisma } from "@prisma/client";
+import { ImportBatchStatus, Prisma } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import {
   resolveFingerprintOutcome,
@@ -101,6 +111,7 @@ import {
   type SavedMappingProfileLite,
 } from "@/lib/imports/csv";
 import { runImportPipeline } from "@/lib/imports/pipeline";
+import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -114,29 +125,15 @@ export const POST = withApiHandler(async (
 
   const { spaceId } = await getSpaceContext();
 
-  // Resolve + authorize the target account — same SpaceAccountLink-first,
-  // legacy-Account-fallback pattern as GET .../transactions. Unlike that
-  // read route, import specifically requires a FinancialAccount: ImportBatch
-  // .financialAccountId is a required FK to FinancialAccount, not the legacy
-  // Account model, and the two id spaces never overlap. A legacy-only match
-  // (no FinancialAccount counterpart) is therefore a real "can't do this"
-  // case, not just a fallback to try.
-  const link = await db.spaceAccountLink.findFirst({
-    where:  { spaceId, financialAccountId: id, status: ShareStatus.ACTIVE },
-    select: { id: true },
-  });
-
-  if (!link) {
-    const legacyAccount = await db.account.findFirst({ where: { id, spaceId }, select: { id: true } });
-    if (!legacyAccount) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
-    }
-    return NextResponse.json(
-      { error: "This account does not support transaction import." },
-      { status: 400 }
-    );
-  }
-  const financialAccountId = id;
+  // Resolve + authorize the target account — D2 Step 4D-5c-2 extracted this
+  // check into lib/imports/authorize.ts's resolveImportableFinancialAccount()
+  // so the new preview route shares it verbatim instead of duplicating it.
+  // Zero behavior change here — same two db reads, same NextResponse
+  // bodies/status codes. See that module's header for the
+  // SpaceAccountLink-first/legacy-Account-fallback rationale.
+  const access = await resolveImportableFinancialAccount(spaceId, id);
+  if (!access.ok) return access.response;
+  const { financialAccountId } = access;
 
   // ── Parse request ────────────────────────────────────────────────────────
   let formData: FormData;
