@@ -50,6 +50,58 @@
 import { db } from "@/lib/db";
 import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus, ProviderType } from "@prisma/client";
 import { dualWriteSpaceAccountLink, resolveAccountCreatorUserId } from "@/lib/accounts/space-account-link";
+import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+
+/**
+ * Lifecycle fix — docs/bugfixes/BUGFIX_PLAID_REFRESH_ORPHANED_PLAID_ITEMS.md,
+ * Step A.
+ *
+ * Closes out a FinancialAccount's live AccountConnection rows once it has
+ * been folded into a canonical duplicate by mergeArchivedDuplicateIntoCanonical
+ * and is staying archived for good (mergeArchivedDuplicateIntoCanonical
+ * itself never touches AccountConnection or PlaidItem — confirmed by
+ * reading its full body — so every call site that archives a "loser" must
+ * do this separately).
+ *
+ * Without this, a duplicate-merged account keeps a live AccountConnection
+ * pointing at a still-ACTIVE PlaidItem indefinitely: lib/plaid/refresh.ts
+ * has no deletedAt filter on FinancialAccount before calling Plaid, so an
+ * orphaned PlaidItem like this gets refreshed forever and only ever
+ * produces a "[plaid][D2-3E] ProviderAccountIdentity miss, legacy
+ * plaidAccountId hit" warning instead of ever being skipped or revoked.
+ * This was confirmed directly against two real accounts
+ * (cmqqllcj6002inlk20bmuvval, cmqqllcmk002qnlk237wc3nce) — both archived,
+ * both still carrying a plaidAccountId, both with no ProviderAccountIdentity
+ * row, both still producing the warning on every refresh.
+ *
+ * Mirrors the existing pattern in app/api/accounts/[id]/route.ts's DELETE
+ * handler: soft-delete the account's live connections, then disconnect any
+ * PlaidItem that has zero live connections left as a result. Safe to call
+ * on an account with no live connections (manual accounts, WALLET accounts,
+ * or one already closed out) — it's then a no-op. Called unconditionally on
+ * every losing candidate below, not just newly-archived ones — a candidate
+ * that arrived already archived can still be carrying a live connection if
+ * it was archived before this fix existed, which is exactly the bug above.
+ */
+async function closeOutAccountConnections(financialAccountId: string): Promise<void> {
+  const liveConnections = await db.accountConnection.findMany({
+    where:  { financialAccountId, deletedAt: null },
+    select: { id: true, plaidItemDbId: true },
+  });
+  if (liveConnections.length === 0) return;
+
+  await db.accountConnection.updateMany({
+    where: { financialAccountId, deletedAt: null },
+    data:  { deletedAt: new Date() },
+  });
+
+  const plaidItemDbIds = [...new Set(
+    liveConnections.map((c) => c.plaidItemDbId).filter((id): id is string => !!id)
+  )];
+  for (const plaidItemDbId of plaidItemDbIds) {
+    await disconnectPlaidItemIfOrphaned(plaidItemDbId);
+  }
+}
 
 export type ProviderIdentity =
   | { kind: "plaid"; plaidAccountId: string }
@@ -247,6 +299,10 @@ async function pickCanonicalAndMerge(
       // on the canonical row, so archive it to remove the duplicate from view.
       await db.financialAccount.update({ where: { id: c.id }, data: { deletedAt: new Date() } });
     }
+    // Lifecycle fix (Step A) — close out `c`'s own connections now that it's
+    // being folded away as a loser, whether it was archived just above or
+    // arrived already archived. See closeOutAccountConnections' doc comment.
+    await closeOutAccountConnections(c.id);
   }
 
   return canonical;
@@ -288,6 +344,12 @@ export async function resolveAccountByFingerprint(
     const canonical = await pickCanonicalAndMerge(activeCandidates, spaceId);
     for (const a of archivedCandidates) {
       await mergeArchivedDuplicateIntoCanonical(a.id, canonical!.id, DuplicateDetectionSource.FINGERPRINT_MATCH, spaceId);
+      // Lifecycle fix (Step A) — second gap, found on a full read of this
+      // file while implementing the fix above: this loop folds already-
+      // archived siblings into the canonical directly, without ever going
+      // through pickCanonicalAndMerge's loop. Same reasoning applies — `a`
+      // may still be carrying a live connection from before this fix existed.
+      await closeOutAccountConnections(a.id);
     }
     return {
       canonical:              canonical!,

@@ -37,6 +37,7 @@ import { db } from "@/lib/db";
 import { AccountType, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 
 // Mirrors app/api/plaid/exchange-token/route.ts's mapAccountType — kept as a
 // private copy here (not exported/shared) since refresh only needs it to
@@ -258,9 +259,59 @@ export interface RefreshSummary {
 }
 
 /**
+ * Lifecycle fix — docs/bugfixes/BUGFIX_PLAID_REFRESH_ORPHANED_PLAID_ITEMS.md,
+ * Step C.
+ *
+ * True if this PlaidItem has at least one live AccountConnection pointing at
+ * a FinancialAccount that is not archived. False means every account this
+ * item was ever linked to has since been archived (most commonly via
+ * duplicate reconciliation — see lib/accounts/reconcile.ts's Step A, which
+ * closes this gap going forward for new merges) — there is nothing left for
+ * a refresh to update, and calling Plaid for it only produces a
+ * "[plaid][D2-3E] ProviderAccountIdentity miss, legacy plaidAccountId hit"
+ * warning with no useful write behind it.
+ */
+async function hasActiveLinkedAccount(plaidItemDbId: string): Promise<boolean> {
+  const count = await db.accountConnection.count({
+    where: {
+      plaidItemDbId,
+      deletedAt: null,
+      financialAccount: { deletedAt: null },
+    },
+  });
+  return count > 0;
+}
+
+/**
+ * Self-heals a PlaidItem found to have zero active linked accounts: closes
+ * out any AccountConnection rows still marked live (deletedAt: null) — there
+ * should be none left after reconcile.ts's Step A fix, but data orphaned
+ * before that fix shipped can still reach this path once — then disconnects
+ * the PlaidItem if that leaves it with zero live connections, via the same
+ * disconnectPlaidItemIfOrphaned used by app/api/accounts/[id]/route.ts's
+ * DELETE handler. Once this runs, the item drops out of the
+ * `status: ACTIVE` query below on every later call, so this is a one-time
+ * cost per orphaned item, not a per-refresh cost.
+ */
+async function selfHealOrphanedPlaidItem(plaidItemDbId: string): Promise<void> {
+  await db.accountConnection.updateMany({
+    where: { plaidItemDbId, deletedAt: null },
+    data:  { deletedAt: new Date() },
+  });
+  await disconnectPlaidItemIfOrphaned(plaidItemDbId);
+}
+
+/**
  * Refreshes every active PlaidItem owned by the given user. One item's
  * failure (e.g. ITEM_LOGIN_REQUIRED) does not block the others — mirrors the
  * per-item try/catch pattern in app/api/plaid/sync/route.ts.
+ *
+ * Step C guard — an item with zero active linked accounts is skipped before
+ * ever calling Plaid (self-healed instead, see selfHealOrphanedPlaidItem).
+ * Items with at least one active linked account are completely unaffected:
+ * the try/catch below is untouched, so real per-item Plaid failures
+ * (ITEM_LOGIN_REQUIRED, INVALID_ACCESS_TOKEN, permissions errors, etc.) are
+ * never suppressed.
  */
 export async function refreshAllActiveItemsForUser(userId: string): Promise<RefreshSummary> {
   const items = await db.plaidItem.findMany({
@@ -277,6 +328,14 @@ export async function refreshAllActiveItemsForUser(userId: string): Promise<Refr
   const snapshottedSpaceIds = new Set<string>();
 
   for (const item of items) {
+    if (!(await hasActiveLinkedAccount(item.id))) {
+      // No active linked account left for this item — not a failure, just
+      // done. Self-heal so it drops out of this query on every later call,
+      // and skip straight to the next item without calling Plaid.
+      await selfHealOrphanedPlaidItem(item.id);
+      continue;
+    }
+
     try {
       const r = await refreshPlaidItem(item.id);
       results.push(r);

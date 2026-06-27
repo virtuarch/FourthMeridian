@@ -77,3 +77,4 @@ lib/plaid.ts
 lib/encryption.ts
 lib/prisma.ts
 app/api/plaid/create-link-token/
+.env*
