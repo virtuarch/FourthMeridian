@@ -290,21 +290,7 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // ── Upsert WorkspaceAccountShare ─────────────────────────────────────────
-      await db.workspaceAccountShare.upsert({
-        // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
-        where:  { workspaceId_financialAccountId: { workspaceId: spaceId, financialAccountId: fa.id } },
-        update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
-        create: {
-          workspaceId: spaceId,
-          financialAccountId: fa.id,
-          addedByUserId:      userId,
-          visibilityLevel:    VisibilityLevel.FULL,
-          status:             ShareStatus.ACTIVE,
-        },
-      });
-
-      // ── D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal) ───
+      // ── D3 Stage B3 — SpaceAccountLink is the sole write target ─────────────
       await dualWriteSpaceAccountLink({
         spaceId,
         financialAccountId: fa.id,
@@ -320,12 +306,6 @@ export async function POST(req: NextRequest) {
           revokedByUserId:  null,
         },
       });
-      // D3 Step 3 HOME Semantics Correction — no separate HOME backfill call
-      // needed here. computeLinkKind() (inside dualWriteSpaceAccountLink
-      // above) now assigns HOME to the Space a brand-new account's first
-      // link is written at — i.e. spaceId, the actually-active Space —
-      // rather than synthesizing an extra HOME link at the creator's
-      // personal Space. See docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
 
       importedIds.push(fa.id);
       imported++;

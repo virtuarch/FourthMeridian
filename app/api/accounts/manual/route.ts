@@ -7,7 +7,7 @@
  * Creates:
  *   FinancialAccount     — type=other, syncStatus='manual', balance=user-provided
  *   AccountConnection    — manual connection row (no PlaidItem, no walletAddress)
- *   WorkspaceAccountShare — always shares into the user's PERSONAL space
+ *   SpaceAccountLink      — always shares into the user's PERSONAL space
  *                           + any additional space IDs passed in `spaceIds`
  *
  * Body: {
@@ -128,40 +128,17 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     },
   });
 
-  // ── Share into personal space + any additional spaces ─────────────
+  // ── D3 Stage B3 — SpaceAccountLink is the sole write target ─────────────
+  // Sequential, NOT Promise.all: computeLinkKind() inside
+  // dualWriteSpaceAccountLink() decides HOME vs SHARED by counting existing
+  // links with no transaction or lock. Run concurrently, every call could
+  // read count === 0 before any commit, assigning HOME to more than one
+  // target. Awaiting each write serially removes the race: shareTargets[0]
+  // (always personalSpaceId) commits first and becomes HOME; subsequent
+  // targets see that committed row and become SHARED. See
+  // docs/initiatives/d3/D3_STEP4C_REGRESSION_ROOT_CAUSE.md ("Secondary finding") and
+  // docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md.
   const shareTargets = [personalSpaceId, ...additionalIds];
-  await Promise.all(shareTargets.map((wsId) =>
-    db.workspaceAccountShare.upsert({
-      // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
-      where:  { workspaceId_financialAccountId: { workspaceId: wsId, financialAccountId: fa.id } },
-      create: {
-        workspaceId:        wsId,
-        financialAccountId: fa.id,
-        addedByUserId:      userId,
-        visibilityLevel:    VisibilityLevel.FULL,
-        status:             ShareStatus.ACTIVE,
-      },
-      update: {
-        status:          ShareStatus.ACTIVE,
-        visibilityLevel: VisibilityLevel.FULL,
-        revokedAt:       null,
-        revokedByUserId: null,
-      },
-    })
-  ));
-
-  // ── D3 Stabilization — mirror onto SpaceAccountLink (best-effort,
-  //    non-fatal). Sequential, NOT Promise.all: computeLinkKind() inside
-  //    dualWriteSpaceAccountLink() decides HOME vs SHARED by counting
-  //    existing links for this financialAccountId, with no transaction or
-  //    lock. Run concurrently, every call in this batch could read
-  //    count === 0 before any of them commit, so more than one target could
-  //    independently decide HOME. Awaiting each write before starting the
-  //    next removes the race: shareTargets[0] (always personalSpaceId)
-  //    commits first and becomes HOME; every subsequent target then sees
-  //    that committed HOME row and correctly becomes SHARED. See
-  //    docs/initiatives/d3/D3_STEP4C_REGRESSION_ROOT_CAUSE.md ("Secondary finding") and
-  //    docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md.
   for (const wsId of shareTargets) {
     await dualWriteSpaceAccountLink({
       spaceId:            wsId,

@@ -71,31 +71,8 @@ export const POST = withApiHandler(async (
     return NextResponse.json({ error: "You do not own this account" }, { status: 403 });
   }
 
-  // Upsert the share — if one exists (even REVOKED), re-activate it
-  const share = await db.workspaceAccountShare.upsert({
-    where: {
-      // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
-      workspaceId_financialAccountId: { workspaceId: spaceId, financialAccountId },
-    },
-    create: {
-      workspaceId: spaceId,
-      financialAccountId,
-      addedByUserId:   userId,
-      visibilityLevel: visibilityLevel as VisibilityLevel,
-      status:          ShareStatus.ACTIVE,
-    },
-    update: {
-      status:          ShareStatus.ACTIVE,
-      visibilityLevel: visibilityLevel as VisibilityLevel,
-      addedByUserId:   userId,
-      revokedAt:       null,
-      revokedByUserId: null,
-    },
-  });
-
-  // ── D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal).
-  // No creatorUserId passed: fa here is selected without createdByUserId, so
-  // dualWriteSpaceAccountLink resolves the creator itself.
+  // D3 Stage B3 — SpaceAccountLink is the sole write target.
+  // Upsert the link — if one exists (even REVOKED), re-activate it.
   await dualWriteSpaceAccountLink({
     spaceId,
     financialAccountId,
@@ -132,7 +109,7 @@ export const POST = withApiHandler(async (
     console.warn(`[POST /api/spaces/:id/accounts/share] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
   }
 
-  return NextResponse.json(share, { status: 201 });
+  return NextResponse.json({ ok: true }, { status: 201 });
 }, "POST /api/spaces/[id]/accounts/share");
 
 // ─── DELETE ───────────────────────────────────────────────────────────────────
@@ -162,14 +139,8 @@ export const DELETE = withApiHandler(async (
     return NextResponse.json({ error: "financialAccountId is required" }, { status: 400 });
   }
 
-  // D3 Stage B1 — authorization and revoke write migrated from
-  // WorkspaceAccountShare to SpaceAccountLink. SpaceAccountLink is kept
-  // fully in sync with WorkspaceAccountShare by the D3 Step 3 dual-write
-  // (lib/accounts/space-account-link.ts), so status, addedByUserId, and
-  // visibilityLevel read here reflect the same values the previous
-  // workspaceAccountShare.findUnique returned. The POST handler above still
-  // writes WorkspaceAccountShare (not retired yet — see
-  // docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md §7 Stage B sequence).
+  // D3 Stage B1/B3 — authorization and revoke write on SpaceAccountLink.
+  // POST (above) also writes SpaceAccountLink exclusively as of Stage B3.
   const link = await db.spaceAccountLink.findUnique({
     where: { spaceId_financialAccountId: { spaceId, financialAccountId } },
     select: {

@@ -7,7 +7,7 @@
  * Creates:
  *   FinancialAccount   — canonical account row (ownerType=USER, no plaidAccountId)
  *   AccountConnection  — manual/wallet connection (no plaidItemDbId)
- *   WorkspaceAccountShare — makes the account visible in the active space
+ *   SpaceAccountLink      — makes the account visible in the active space
  *   ProviderAccountIdentity (mirror) — best-effort dual-write, provider=WALLET.
  *     D2 Step 2. See lib/accounts/provider-identity.ts. Owner-scoped lookups
  *     below are unchanged: a wallet address is a public external fact, but
@@ -63,24 +63,7 @@ export async function POST(req: NextRequest) {
   if (activeFa) {
     // Already exists and active — re-share into this space if needed and
     // return success silently. No 409, no "already connected" message.
-    await db.workspaceAccountShare.upsert({
-      // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
-      where:  { workspaceId_financialAccountId: { workspaceId: spaceId, financialAccountId: activeFa.id } },
-      update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
-      create: {
-        workspaceId: spaceId,
-        financialAccountId: activeFa.id,
-        addedByUserId:      userId,
-        visibilityLevel:    VisibilityLevel.FULL,
-        status:             ShareStatus.ACTIVE,
-      },
-    });
-
-    // D3 Step 3 — mirror the re-share onto SpaceAccountLink (best-effort,
-    // non-fatal, handled inside dualWriteSpaceAccountLink). Previously
-    // missing from this branch: the WorkspaceAccountShare upsert above
-    // activated the share, but the D3 read path (SpaceAccountLink) never
-    // learned about it.
+    // D3 Stage B3 — SpaceAccountLink is the sole write target.
     await dualWriteSpaceAccountLink({
       spaceId,
       financialAccountId: activeFa.id,
@@ -150,22 +133,7 @@ export async function POST(req: NextRequest) {
       where: { financialAccountId: archivedFa.id, deletedAt: { not: null } },
       data:  { deletedAt: null },
     });
-    await db.workspaceAccountShare.upsert({
-      // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
-      where:  { workspaceId_financialAccountId: { workspaceId: spaceId, financialAccountId: archivedFa.id } },
-      update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
-      create: {
-        workspaceId: spaceId,
-        financialAccountId: archivedFa.id,
-        addedByUserId:      userId,
-        visibilityLevel:    VisibilityLevel.FULL,
-        status:             ShareStatus.ACTIVE,
-      },
-    });
-
-    // D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal).
-    // No creatorUserId passed: archivedFa is selected as {id: true} only, so
-    // dualWriteSpaceAccountLink resolves the creator itself.
+    // D3 Stage B3 — SpaceAccountLink is the sole write target.
     await dualWriteSpaceAccountLink({
       spaceId,
       financialAccountId: archivedFa.id,
@@ -232,19 +200,7 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  // ── Create WorkspaceAccountShare ───────────────────────────────────────────
-  await db.workspaceAccountShare.create({
-    data: {
-      // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
-      workspaceId: spaceId,
-      financialAccountId: fa.id,
-      addedByUserId:      userId,
-      visibilityLevel:    VisibilityLevel.FULL,
-      status:             ShareStatus.ACTIVE,
-    },
-  });
-
-  // D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal).
+  // ── D3 Stage B3 — SpaceAccountLink is the sole write target ─────────────
   await dualWriteSpaceAccountLink({
     spaceId,
     financialAccountId: fa.id,
