@@ -162,10 +162,17 @@ export const DELETE = withApiHandler(async (
     return NextResponse.json({ error: "financialAccountId is required" }, { status: 400 });
   }
 
-  const share = await db.workspaceAccountShare.findUnique({
-    where: { workspaceId_financialAccountId: { workspaceId: spaceId, financialAccountId } },
+  // D3 Stage B1 — authorization and revoke write migrated from
+  // WorkspaceAccountShare to SpaceAccountLink. SpaceAccountLink is kept
+  // fully in sync with WorkspaceAccountShare by the D3 Step 3 dual-write
+  // (lib/accounts/space-account-link.ts), so status, addedByUserId, and
+  // visibilityLevel read here reflect the same values the previous
+  // workspaceAccountShare.findUnique returned. The POST handler above still
+  // writes WorkspaceAccountShare (not retired yet — see
+  // docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md §7 Stage B sequence).
+  const link = await db.spaceAccountLink.findUnique({
+    where: { spaceId_financialAccountId: { spaceId, financialAccountId } },
     select: {
-      id:              true,
       status:          true,
       addedByUserId:   true,
       visibilityLevel: true,
@@ -173,39 +180,20 @@ export const DELETE = withApiHandler(async (
     },
   });
 
-  if (!share || share.status !== ShareStatus.ACTIVE) {
+  if (!link || link.status !== ShareStatus.ACTIVE) {
     return NextResponse.json({ error: "Share not found" }, { status: 404 });
   }
 
   const isPrivileged = ["OWNER", "ADMIN"].includes(membership.role);
-  if (share.addedByUserId !== userId && !isPrivileged) {
+  if (link.addedByUserId !== userId && !isPrivileged) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const revokedAt = new Date();
 
-  await db.workspaceAccountShare.update({
-    where: { id: share.id },
+  await db.spaceAccountLink.update({
+    where: { spaceId_financialAccountId: { spaceId, financialAccountId } },
     data: {
-      status:          ShareStatus.REVOKED,
-      revokedAt,
-      revokedByUserId: userId,
-    },
-  });
-
-  // ── D3 Step 3 — mirror the revocation onto SpaceAccountLink
-  //    (best-effort/non-fatal, handled inside dualWriteSpaceAccountLink).
-  await dualWriteSpaceAccountLink({
-    spaceId,
-    financialAccountId,
-    create: {
-      addedByUserId:   share.addedByUserId,
-      visibilityLevel: share.visibilityLevel,
-      status:          ShareStatus.REVOKED,
-      revokedAt,
-      revokedByUserId: userId,
-    },
-    update: {
       status:          ShareStatus.REVOKED,
       revokedAt,
       revokedByUserId: userId,
@@ -217,7 +205,7 @@ export const DELETE = withApiHandler(async (
       userId,
       spaceId,
       action:    "ACCOUNT_SHARE_REVOKE",
-      metadata:  { financialAccountId, accountName: share.financialAccount?.name ?? null },
+      metadata:  { financialAccountId, accountName: link.financialAccount?.name ?? null },
       ipAddress: getClientIp(req),
     },
   });
