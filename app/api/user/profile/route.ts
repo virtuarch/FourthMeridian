@@ -8,7 +8,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { encrypt } from "@/lib/plaid/encryption";
+import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { EmploymentStatus, UseCase } from "@prisma/client";
 import { requireUser } from "@/lib/session";
 
@@ -80,7 +80,7 @@ export async function PATCH(req: NextRequest) {
   if (lastName              !== undefined) data.lastName              = lastName.trim();
   if (employmentStatus      !== undefined) data.employmentStatus      = employmentStatus as EmploymentStatus || null;
   if (useCase               !== undefined) data.useCase               = useCase as UseCase || null;
-  if (dateOfBirth           !== undefined) data.dateOfBirthEncrypted  = dateOfBirth ? encrypt(dateOfBirth) : null;
+  if (dateOfBirth           !== undefined) data.dateOfBirthEncrypted  = dateOfBirth ? encryptWithPurpose(dateOfBirth, EncryptionPurpose.DATE_OF_BIRTH) : null;
   if (preferredSpaceId  !== undefined) {
     // Validate that user is actually a member of this space (or null to clear)
     if (preferredSpaceId !== null) {

@@ -16,7 +16,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { decrypt } from "@/lib/plaid/encryption";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
 import { verifyTOTP } from "@/lib/totp";
@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
   // Decrypt and verify
   let secret: string;
   try {
-    secret = decrypt(dbUser.totpSecret);
+    secret = decryptWithPurpose(dbUser.totpSecret, EncryptionPurpose.TOTP_SECRET);
   } catch {
     return NextResponse.json({ error: "Failed to decrypt secret. Try setup again." }, { status: 500 });
   }

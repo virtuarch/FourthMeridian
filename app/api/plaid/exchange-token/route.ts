@@ -30,7 +30,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { plaidClient } from "@/lib/plaid/client";
-import { encrypt } from "@/lib/plaid/encryption";
+import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
 import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, VisibilityLevel, ProviderType } from "@prisma/client";
@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
     console.log(`[plaid] public token exchanged — item_id: ${item_id}`);
 
     // 4. Encrypt the access_token before it ever touches the DB
-    const encryptedToken = encrypt(access_token);
+    const encryptedToken = encryptWithPurpose(access_token, EncryptionPurpose.PLAID_ACCESS_TOKEN);
 
     // 5. Upsert PlaidItem — credential belongs to User, not space
     const plaidItem = await db.plaidItem.upsert({

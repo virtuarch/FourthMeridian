@@ -19,7 +19,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { decrypt } from "@/lib/plaid/encryption";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { verifyTOTP } from "@/lib/totp";
 import { requireFreshUser } from "@/lib/session";
@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
   // Verify the TOTP code
   let secret: string;
   try {
-    secret = decrypt(dbUser.totpSecret);
+    secret = decryptWithPurpose(dbUser.totpSecret, EncryptionPurpose.TOTP_SECRET);
   } catch {
     return NextResponse.json({ error: "Failed to verify code." }, { status: 500 });
   }

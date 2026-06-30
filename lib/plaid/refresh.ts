@@ -32,7 +32,7 @@
  */
 
 import { plaidClient } from "@/lib/plaid/client";
-import { decrypt } from "@/lib/plaid/encryption";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import { AccountType, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
@@ -94,7 +94,7 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
     throw new Error(`refreshPlaidItem: PlaidItem ${plaidItemDbId} not found`);
   }
 
-  const accessToken = decrypt(item.encryptedToken);
+  const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
 
   // ── 1. Balances / account metadata ────────────────────────────────────────
   let accountsUpdated = 0;

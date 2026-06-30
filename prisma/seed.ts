@@ -37,7 +37,7 @@ import {
   GoalCategory,
 } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import { encrypt } from "../lib/plaid/encryption";
+import { encryptWithPurpose, EncryptionPurpose } from "../lib/plaid/encryption";
 import { getPresetsForCategory, SpaceCategory } from "../lib/space-presets";
 
 const prisma = new PrismaClient();
@@ -265,9 +265,9 @@ async function main() {
     bcrypt.hash(JANE_PASSWORD, 12),
     bcrypt.hash(ADMIN_PASSWORD, 12),
   ]);
-  const janeDobEncrypted = encrypt("1990-03-15");
-  const johnDobEncrypted = encrypt("1988-07-22");
-  const alexDobEncrypted = encrypt("1992-11-05");
+  const janeDobEncrypted = encryptWithPurpose("1990-03-15", EncryptionPurpose.DATE_OF_BIRTH);
+  const johnDobEncrypted = encryptWithPurpose("1988-07-22", EncryptionPurpose.DATE_OF_BIRTH);
+  const alexDobEncrypted = encryptWithPurpose("1992-11-05", EncryptionPurpose.DATE_OF_BIRTH);
 
   // ── Wipe in reverse-dependency order ────────────────────────────────────────
   await prisma.goalCheckIn.deleteMany();

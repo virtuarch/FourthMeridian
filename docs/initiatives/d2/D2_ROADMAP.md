@@ -65,7 +65,7 @@ All read sites identified by the 3A investigation now resolve via `ProviderAccou
 | **4B** | **ImportBatch Foundation — schema only.** `ImportBatch` model (`financialAccountId` required FK, `createdByUserId` **nullable** — corrected from 4A's draft, mirrors `FinancialAccount.createdByUserId`'s D11 precedent so `onDelete: SetNull` is valid — nullable `connectionId` seam mirroring `AccountConnection`'s pattern, source/status enums, `rowCount`/`importedCount`/`skippedCount`/`errorSummary`). `Transaction.importBatchId` (nullable FK) **plus `@@index([importBatchId])`**. `Transaction.externalTransactionId` (nullable — no unique constraint yet). `Transaction.deletedAt` (nullable — net-new column). No reads, no writes, nothing wired up. Schema additions are in `prisma/schema.prisma`; `npx tsc --noEmit` and `npm run lint` both clean. `npx prisma generate`/`migrate dev` could not run in this sandbox (network-restricted, no `linux-arm64` engine) and were run locally afterward — **migration `20260624110946_d2_4b_importbatch_foundation` is applied.** See `docs/initiatives/d2/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md` and `docs/initiatives/d2/D2_STEP4B_IMPLEMENTATION_VALIDATION.md`. | ✅ Schema implemented and migrated. |
 | **4C** | **Shared Fingerprint Engine.** Investigated the two existing, independently-implemented fingerprint matchers (`lib/accounts/reconcile.ts`, account-level; `lib/plaid/syncTransactions.ts`, transaction-level via `findByFingerprint`/`normalizeMerchantKey`) — see `docs/initiatives/d2/D2_STEP4C_TRANSACTION_FINGERPRINTING_INVESTIGATION.md`. Implemented the helper-extraction half of that report's recommendation: `findByFingerprint`/`normalizeMerchantKey` moved unchanged into a new shared module, `lib/transactions/fingerprint.ts`; `syncTransactions.ts` re-pointed onto it — behavior-preserving, no new CSV behavior, no schema change. `reconcile.ts`'s account-level fingerprint was left untouched (re-pointing it was explicitly optional and flagged as a smaller win than it sounds, since the two matchers key on disjoint field sets). A persisted `fingerprintHash` column was explicitly recommended against being bundled into this step and was not added. `npx tsc --noEmit` and `npm run lint` both clean. See `docs/initiatives/d2/D2_STEP4C_IMPLEMENTATION_VALIDATION.md`. | ✅ Helper extracted. |
 | **4D-1** | **CSV Import MVP.** `POST /api/accounts/[id]/import` — multipart CSV upload, in-memory parse (`papaparse`), header-alias column detection (date / merchant-or-description / amount-or-debit+credit / category / reference), per-row classification into CREATED / MATCHED / SKIPPED / FAILED. MATCH path calls `findByFingerprint`/`normalizeMerchantKey` from the 4C shared helper **unmodified**; an additive CSV-only refinement (`resolveFingerprintOutcome` in new `lib/imports/csv.ts`) re-queries the same candidate shape to detect an ambiguous (>1 candidate) match and downgrades it to SKIPPED rather than silently picking the first one. New `ImportBatch.matchedCount`/`failedCount` counters (additive). No Excel, no QuickBooks, no rollback, no UI, no background jobs, no Step 5 provider-adapter abstraction — see `docs/initiatives/d2/D2_STEP4D1_CSV_IMPORT_MVP_INVESTIGATION.md`. `npx tsc --noEmit` clean except the 3 expected `matchedCount`/`failedCount` errors from the sandbox's stale (pre-this-change) generated Prisma client — same `prisma generate` sandbox gap as 4B, resolved by running it locally. `npm run lint` clean. Pure parsing/classification helpers unit-traced via `tsx` (date/amount/category parsing, column detection, malformed rows, header-only file); the DB-dependent fingerprint-classification path was verified by code trace, not execution — DB and Prisma engine binary are both unreachable in this sandbox. See `docs/initiatives/d2/D2_STEP4D1_IMPLEMENTATION_VALIDATION.md`. | ✅ Implemented. |
-| **4D (remainder)** | Excel / QuickBooks-export upload and parsing. Rollback via `ImportBatch.status = ROLLED_BACK` + `Transaction.deletedAt` soft-delete — preceded by a read-path audit (which existing `Transaction` queries need a `deletedAt: null` filter) as its own checklist item before rollback ships, the same investigation-before-cutover pattern Step 3A used for `ProviderAccountIdentity`. Optional create-new-account-from-import flow (explicitly optional/later, not Day-1). Historical backfill beyond Plaid's API retention window. AuditLog entry for CSV imports (deliberately not added in 4D-1 — wasn't part of that slice's approved scope). | ⏳ Not started. |
+| **4D (remainder)** | Excel / QuickBooks-export upload and parsing. Rollback via `ImportBatch.status = ROLLED_BACK` + `Transaction.deletedAt` soft-delete — preceded by a read-path audit (which existing `Transaction` queries need a `deletedAt: null` filter) as its own checklist item before rollback ships, the same investigation-before-cutover pattern Step 3A used for `ProviderAccountIdentity`. Optional create-new-account-from-import flow (explicitly optional/later, not Day-1). Historical backfill beyond Plaid's API retention window. AuditLog entry for CSV imports (deliberately not added in 4D-1 — wasn't part of that slice's approved scope). | ⛔ Deferred (beyond v2.4). |
 
 **4B and 4C are independent of each other — either order, or in parallel — but both must be complete before 4D starts. 4D-1 is complete; the remaining 4D sub-steps are separate, separately-approved slices.**
 
@@ -73,16 +73,17 @@ This formalizes and supersedes the informal "§8 CSV imports — design" sketch 
 
 ## Step 5 — Adapter Interface
 
-⏳ **Planned. Not started.**
+🔶 **In progress — slice #1 shipped; sync/wallet adapter generalization not started.**
 
-- Sync provider adapter (interface every "pull balances/transactions on a schedule" provider implements — mirrors what `lib/plaid/refresh.ts`/`syncTransactions.ts` do today for Plaid specifically, generalized).
-- Import provider adapter (interface for batch/file-based providers — CSV today, potentially Excel/QuickBooks exports).
-- Wallet adapter abstraction (covers both today's single-address tracking and the later xpub/watch-only model from §7 of the architecture doc).
-- Shared normalized transaction format that every adapter maps into, so `Transaction` creation/dedupe logic is written once and reused regardless of provider.
+- **Import provider capabilities (slice #1)** — `lib/imports/provider-capabilities.ts` (commit `18f0922`) shipped and in live use (`app/api/accounts/[id]/import/route.ts` and its preview counterpart); validated by Step 6's CSV Import candidate. Its own header is explicit that this is a capability-lookup helper, **not** a sync adapter or wallet adapter — it does not satisfy the bullets below. | ✅
+- Sync provider adapter (interface every "pull balances/transactions on a schedule" provider implements — mirrors what `lib/plaid/refresh.ts`/`syncTransactions.ts` do today for Plaid specifically, generalized). | ⛔ Deferred (beyond v2.4).
+- Import provider adapter (interface for batch/file-based providers — CSV today, potentially Excel/QuickBooks exports), beyond the capability-lookup slice above. | ⛔ Deferred (beyond v2.4).
+- Wallet adapter abstraction (covers both today's single-address tracking and the later xpub/watch-only model from §7 of the architecture doc). | ⛔ Deferred (beyond v2.4).
+- Shared normalized transaction format that every adapter maps into, so `Transaction` creation/dedupe logic is written once and reused regardless of provider. | ⛔ Deferred (beyond v2.4).
 
 ## Step 6 — First real new provider
 
-🔶 **Two candidates closed; sync-side candidate still not selected:**
+🔶 **Two candidates closed; sync-side provider selection deferred beyond v2.4.**
 
 Closed:
 - Wallet watch-only single-address provider — ✅ already shipped (`app/api/accounts/wallet/route.ts`; dual-write wired since Step 2). See `docs/initiatives/d2/D2_STEP6_FIRST_PROVIDER_INVESTIGATION.md`.
@@ -90,14 +91,18 @@ Closed:
 
 Open candidates, not yet selected:
 - Wallet xpub / multi-address / signed-message verification (extends the existing single-address BTC tracking into real credential-backed multi-address support — §7 of the architecture doc) — ⏸ Deferred (v2.7).
-- Coinbase (would validate the sync adapter shape against a real exchange).
-- Schwab (would validate the sync adapter shape against a real brokerage).
+- Coinbase (would validate the sync adapter shape against a real exchange). — ⛔ Deferred (beyond v2.4).
+- Schwab (would validate the sync adapter shape against a real brokerage). — ⛔ Deferred (beyond v2.4).
 
-Selecting the first real **sync**-side provider (Coinbase, Schwab, or wallet xpub) is still an open decision, to be made when Steps 4/5 are far enough along to need a real adapter to validate against — not assumed or pre-selected here (mirrors Open Decision 2 in the architecture doc, which has carried unresolved since the original investigation).
+Selecting the first real **sync**-side provider (Coinbase, Schwab, or wallet xpub) is deferred beyond v2.4 — mirrors Open Decision 2 in the architecture doc, which has carried unresolved since the original investigation; deferred until Steps 4/5 generalization is approved and scoped.
 
 ## Step 7 — Stabilization
 
-⏳ **Planned. Not started.**
+🔶 **Two distinct initiatives share the "Step 7" label. See the split below — this is the same kind of collision the roadmap already resolved once for "Step 3G" (Step 3's note above); recorded here explicitly rather than silently re-numbered.**
+
+**Step 7A–7G — Production Hardening.** ✅ **Complete.** A separately-scoped initiative (connection health classification, manual refresh cooldown, scheduler/cron wiring, retry/backoff, reconnect flow, provider diagnostics) that also claimed the "Step 7" label, distinct from the original Stabilization bullets below. Shipped across 6 commits (`19456ff`, `1879dab`, `444cb6c`, `ad4415d`, `8e67be2`, `6c28d32`); `npx tsc --noEmit` and `npm run lint` both clean; working tree clean at close. See `docs/initiatives/d2/D2_STEP7A_*` through `D2_STEP7F_*` checklists for implementation detail and `docs/initiatives/d2/D2_STEP7G_PRODUCTION_HARDENING_CLOSEOUT_AUDIT.md` for the closeout verification (code-vs-checklist audit, two minor file-relocation deviations noted, no blockers).
+
+**Step 7 — Stabilization (original scope).** ⛔ **Deferred (beyond v2.4).** None of the bullets below were touched by the Production Hardening initiative above.
 
 - **PLAID fallback removal** — remove the legacy-field fallback added in 3C–3F, once proven stable over a production observation period (zero `[plaid][D2-3C/3D/3E/3F]` fallback-hit warnings). **Does not** remove the `FinancialAccount.plaidAccountId` column itself — legacy columns/tables are never dropped prematurely, per standing project rule. This is the activity formerly referred to informally as "Step 3G"; it is tracked here, not as a Step 3 sub-step (see Step 3's note above).
 - Verification scripts (generalizing the pattern established by `scripts/verify-provider-account-identity-backfill.ts` to whatever Steps 4–6 add).

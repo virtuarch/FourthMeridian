@@ -19,7 +19,7 @@ import { CountryCode, Products } from "plaid";
 import { requireUser } from "@/lib/session";
 import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
-import { decrypt } from "@/lib/plaid/encryption";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 
 export async function GET(req: NextRequest) {
   const [user, err] = await requireUser();
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
       if (!existing) {
         return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
       }
-      accessToken = decrypt(existing.encryptedToken);
+      accessToken = decryptWithPurpose(existing.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
     }
 
     // redirect_uri is required for OAuth institutions (Chase, BoA, Wells Fargo, etc.)

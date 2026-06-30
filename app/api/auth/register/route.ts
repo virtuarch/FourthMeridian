@@ -21,7 +21,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
-import { encrypt } from "@/lib/plaid/encryption";
+import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { possessive } from "@/lib/format";
 import { EmploymentStatus, UseCase, SpaceMemberRole } from "@prisma/client";
 
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
 
     // ── Hash password + encrypt DOB ───────────────────────────────────────────
     const passwordHash = await bcrypt.hash(password, 12);
-    const dateOfBirthEncrypted = dateOfBirth ? encrypt(dateOfBirth) : undefined;
+    const dateOfBirthEncrypted = dateOfBirth ? encryptWithPurpose(dateOfBirth, EncryptionPurpose.DATE_OF_BIRTH) : undefined;
 
     // ── Create user + space atomically ───────────────────────────────────
     const user = await db.$transaction(async (tx) => {

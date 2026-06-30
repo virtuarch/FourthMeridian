@@ -138,11 +138,19 @@ export const DELETE = withApiHandler(async (
       return NextResponse.json({ error: "Account not found" }, { status: 404 });
     }
 
-    // Verify the session user has an active share for this account (owns it or added it)
-    const userShare = fa.workspaceShares.find(
-      (s) => s.addedByUserId === user.id
-    );
-    if (!userShare) {
+    // D3 Stage A — authorization read migrated from WorkspaceAccountShare to
+    // SpaceAccountLink. WorkspaceAccountShare.workspaceShares is still fetched
+    // above because the write path (updateMany + dualWriteFromShares + snapshot
+    // regen) depends on it; only the auth check moves here.
+    const userLink = await db.spaceAccountLink.findFirst({
+      where: {
+        financialAccountId: id,
+        addedByUserId:      user.id,
+        status:             ShareStatus.ACTIVE,
+      },
+      select: { spaceId: true },
+    });
+    if (!userLink) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -212,7 +220,7 @@ export const DELETE = withApiHandler(async (
     await db.auditLog.create({
       data: {
         userId:      user.id,
-        spaceId: userShare.workspaceId, // WorkspaceAccountShare keeps its own pre-Phase-1 field name
+        spaceId: userLink.spaceId,
         action:      "ACCOUNT_REMOVE",
         metadata:    { accountName: fa.name, accountType: fa.type },
         ipAddress:   getClientIp(req),

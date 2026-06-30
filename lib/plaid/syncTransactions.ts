@@ -62,7 +62,7 @@
  */
 
 import { plaidClient } from "@/lib/plaid/client";
-import { decrypt } from "@/lib/plaid/encryption";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import { TransactionCategory, ProviderType, PlaidItemStatus } from "@prisma/client";
 import type { Transaction as PlaidTransaction } from "plaid";
@@ -145,7 +145,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
     throw new Error(`syncTransactionsForItem: PlaidItem ${plaidItemDbId} not found`);
   }
 
-  const accessToken = decrypt(item.encryptedToken);
+  const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
 
   let cursor: string | undefined = item.cursor ?? undefined;
   let added = 0;
