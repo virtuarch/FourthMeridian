@@ -130,6 +130,7 @@ import {
 } from "@/lib/imports/csv";
 import { runImportPipeline } from "@/lib/imports/pipeline";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
+import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -336,12 +337,11 @@ export const POST = withApiHandler(async (
         created++;
       } else if (result.outcome === "MATCH") {
         matched++;
-        // D2 Step 4D-4 — update-on-match. Gate: QUICKBOOKS source + an
-        // exact externalId match only — never a fingerprint-fallback
-        // match, regardless of source. This `source === QUICKBOOKS` check
-        // is intentionally temporary: it is expected to migrate to an
-        // adapter-capability check during D2 Step 5 (not implemented now).
-        if (source === ImportSource.QUICKBOOKS && result.matchedVia === "externalId") {
+        // D2 Step 4D-4 / D2 Step 5 slice #1 — update-on-match. Gate: source
+        // supports update-on-match (lib/imports/provider-capabilities.ts) +
+        // an exact externalId match only — never a fingerprint-fallback
+        // match, regardless of source.
+        if (getImportProviderCapabilities(source).supportsUpdateOnMatch && result.matchedVia === "externalId") {
           const existing = await db.transaction.findUnique({
             where:  { id: result.transactionId },
             select: { date: true, amount: true, merchant: true, description: true, category: true },

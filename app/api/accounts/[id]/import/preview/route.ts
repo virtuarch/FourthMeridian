@@ -94,6 +94,7 @@ import {
 import { runImportPipeline } from "@/lib/imports/pipeline";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { suggestColumnMapping } from "@/lib/imports/suggest";
+import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
 
 const PREVIEW_ROW_CAP = 50;
 
@@ -264,11 +265,10 @@ export const POST = withApiHandler(async (
         } else if (result.outcome === "MATCH") {
           willMatch++;
           classification = "MATCH";
-          // D2 Step 4D-4 — read-only parity with the confirm route's
-          // update-on-match gate. Never writes. This `source === QUICKBOOKS`
-          // check is intentionally temporary; expected to migrate to an
-          // adapter-capability check during D2 Step 5 (not implemented now).
-          if (source === ImportSource.QUICKBOOKS && result.matchedVia === "externalId") {
+          // D2 Step 4D-4 / D2 Step 5 slice #1 — read-only parity with the
+          // confirm route's update-on-match gate (lib/imports/provider-capabilities.ts).
+          // Never writes.
+          if (getImportProviderCapabilities(source).supportsUpdateOnMatch && result.matchedVia === "externalId") {
             const existing = await db.transaction.findUnique({
               where:  { id: result.transactionId },
               select: { date: true, amount: true, merchant: true, description: true, category: true },
