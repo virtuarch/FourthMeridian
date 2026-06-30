@@ -15,3 +15,5 @@
 
 // Finance assemblers (D4 Slice 2+)
 import './accounts';
+import './snapshot';
+import './goals';

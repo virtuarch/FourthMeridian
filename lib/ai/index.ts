@@ -36,4 +36,8 @@ export type {
   AccountsSectionData,
   AccountSummaryItem,
   AccountHealthSummary,
+  SnapshotSectionData,
+  SnapshotDataPoint,
+  GoalsSectionData,
+  GoalSummaryItem,
 } from '@/lib/ai/types';

@@ -174,6 +174,96 @@ export interface AccountsSectionData {
 }
 
 // ---------------------------------------------------------------------------
+// Snapshot domain types
+// ---------------------------------------------------------------------------
+
+/**
+ * A single SpaceSnapshot data point, normalized for AI consumption.
+ * Field names are semantically clear rather than terse DB column aliases.
+ */
+export interface SnapshotDataPoint {
+  date:         string; // YYYY-MM-DD
+  netWorth:     number;
+  totalAssets:  number;
+  liabilities:  number; // `debt` column — positive absolute value
+  liquid:       number; // cash + savings
+  investments:  number; // `stocks` column
+  digitalAssets: number; // `crypto` column
+  cashOnHand:   number;
+  netLiquid:    number;
+}
+
+/**
+ * Data payload for the 'snapshot_history' context domain.
+ *
+ * `history` is bounded (≤ SNAPSHOT_HISTORY_LIMIT rows, newest-last).
+ * When assembled with scopeHint='brief', `history` is omitted and only
+ * `latest` + trend deltas are returned.
+ */
+export interface SnapshotSectionData {
+  snapshotCount:   number;
+  oldestDate:      string | null; // YYYY-MM-DD
+  newestDate:      string | null; // YYYY-MM-DD
+  /** Absolute net-worth change from oldest to newest in the window. */
+  netWorthTrend:   number | null; // null if fewer than 2 snapshots
+  /** Percentage change, null if oldest net worth was 0. */
+  netWorthTrendPct: number | null;
+  latest:          SnapshotDataPoint | null;
+  history:         SnapshotDataPoint[]; // omitted on scopeHint='brief'
+}
+
+// ---------------------------------------------------------------------------
+// Goals domain types
+// ---------------------------------------------------------------------------
+
+/**
+ * A single goal summary for AI context.
+ * Only fields relevant to AI-generated advice are included.
+ * Sensitive or purely-UI fields (description, spendingCategory, etc.) are
+ * omitted to keep the context payload lean.
+ */
+export interface GoalSummaryItem {
+  id:       string;
+  name:     string;
+  category: string; // GoalCategory
+  goalType: string; // GoalType
+  status:   string; // GoalStatus
+
+  // FINANCIAL / SPENDING_LIMIT — amounts and progress
+  targetAmount?:  number | null;
+  currentAmount?: number;
+  /** 0-100 integer, null when not computable (HABIT, DEBT_REDUCTION). */
+  progressPct?:   number | null;
+  targetDate?:    string | null; // YYYY-MM-DD
+
+  // DEBT_REDUCTION — debt-specific reduction targets
+  targetReductionAmount?: number | null;
+  targetReductionPct?:    number | null;
+  snapshotBalance?:       number | null;
+
+  // HABIT — streak tracking
+  habitFrequency?: string | null;
+  currentStreak?:  number;
+  longestStreak?:  number;
+  lastCheckIn?:    string | null; // ISO-8601
+
+  completedAt?: string | null; // ISO-8601
+}
+
+/**
+ * Data payload for the 'goals' context domain.
+ */
+export interface GoalsSectionData {
+  totalCount: number;
+  counts: {
+    active:    number;
+    paused:    number;
+    completed: number;
+  };
+  goals: GoalSummaryItem[];
+}
+
+// ---------------------------------------------------------------------------
 // Assembled context
 // ---------------------------------------------------------------------------
 
