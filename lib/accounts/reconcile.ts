@@ -444,34 +444,26 @@ export async function mergeArchivedDuplicateIntoCanonical(
     });
   }
 
-  // D3 Step 3 — resolved once against the winner's own identity (never the
-  // loser's), so every SpaceAccountLink mirrored below gets `kind` recomputed
-  // against the right account.
+  // D3 Stage B2 — loser-share re-pointing migrated from WorkspaceAccountShare
+  // to SpaceAccountLink. SpaceAccountLink is now the read and write target for
+  // this merge path; WorkspaceAccountShare is no longer touched here.
+  // `kind` is still recomputed per dualWriteSpaceAccountLink's Rule 1
+  // (computeLinkKind), so the winner's first re-pointed link correctly becomes
+  // HOME if it had none before the merge.
   const winnerCreatorUserId = await resolveAccountCreatorUserId(winnerId);
 
-  const loserShares = await db.workspaceAccountShare.findMany({ where: { financialAccountId: loserId } });
-  for (const s of loserShares) {
-    await db.workspaceAccountShare.upsert({
-      // WorkspaceAccountShare keeps its own pre-Phase-1 field/key names.
-      where:  { workspaceId_financialAccountId: { workspaceId: s.workspaceId, financialAccountId: winnerId } },
-      update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
-      create: {
-        workspaceId:         s.workspaceId,
-        financialAccountId:  winnerId,
-        addedByUserId:       s.addedByUserId,
-        visibilityLevel:     s.visibilityLevel,
-        status:              ShareStatus.ACTIVE,
-      },
-    });
-
-    // D3 Step 3 — mirror onto SpaceAccountLink (best-effort, non-fatal).
+  const loserLinks = await db.spaceAccountLink.findMany({
+    where:  { financialAccountId: loserId },
+    select: { spaceId: true, addedByUserId: true, visibilityLevel: true },
+  });
+  for (const l of loserLinks) {
     await dualWriteSpaceAccountLink({
-      spaceId:            s.workspaceId,
+      spaceId:            l.spaceId,
       financialAccountId: winnerId,
       creatorUserId:      winnerCreatorUserId,
       create: {
-        addedByUserId:   s.addedByUserId,
-        visibilityLevel: s.visibilityLevel,
+        addedByUserId:   l.addedByUserId,
+        visibilityLevel: l.visibilityLevel,
         status:          ShareStatus.ACTIVE,
       },
       update: {
