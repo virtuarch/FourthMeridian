@@ -21,8 +21,9 @@ import { db } from "@/lib/db";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
-import { refreshPlaidItem, refreshAllActiveItemsForUser, type RefreshSummary } from "@/lib/plaid/refresh";
+import { refreshPlaidItem, refreshAllActiveItemsForUser, type RefreshSummary, type RefreshItemResult } from "@/lib/plaid/refresh";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { checkManualRefreshCooldown, markManualRefreshed, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
 
 interface RefreshBody {
   plaidItemId?: string;
@@ -39,11 +40,23 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   if (body.plaidItemId) {
     const item = await db.plaidItem.findFirst({
       where:  { id: body.plaidItemId, userId: user.id, status: PlaidItemStatus.ACTIVE },
-      select: { id: true },
+      select: { id: true, lastManualRefreshAt: true },
     });
     if (!item) {
       return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
     }
+
+    // D2 Step 7B — manual-refresh cooldown, checked before calling Plaid.
+    const cooldown = checkManualRefreshCooldown(item.lastManualRefreshAt);
+    if (cooldown.onCooldown) {
+      return NextResponse.json(
+        { error: "cooldown", retryAfterSeconds: cooldown.retryAfterSeconds },
+        { status: 429 }
+      );
+    }
+
+    // Marked on every attempt (success or failure) — see D2-7B checklist §5.
+    await markManualRefreshed(item.id);
 
     try {
       const r = await refreshPlaidItem(item.id);
@@ -69,7 +82,47 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       return NextResponse.json({ error: "Refresh failed" }, { status: 500 });
     }
   } else {
-    summary = await refreshAllActiveItemsForUser(user.id);
+    // D2 Step 7B — partition active items into on-cooldown (skipped, no
+    // Plaid call) vs. eligible before refreshing. Cooldown is marked on
+    // every eligible item up front (every attempt counts, success or
+    // failure — see D2-7B checklist §5), then refreshAllActiveItemsForUser
+    // excludes the on-cooldown ids so it never calls Plaid for them.
+    const items = await db.plaidItem.findMany({
+      where:  { userId: user.id, status: PlaidItemStatus.ACTIVE },
+      select: { id: true, institutionName: true, lastManualRefreshAt: true },
+    });
+
+    const skippedResults: RefreshItemResult[] = [];
+    const onCooldownIds: string[] = [];
+    const eligibleIds: string[] = [];
+
+    for (const item of items) {
+      const cooldown = checkManualRefreshCooldown(item.lastManualRefreshAt);
+      if (cooldown.onCooldown) {
+        onCooldownIds.push(item.id);
+        skippedResults.push({
+          plaidItemId:          item.id,
+          institution:          item.institutionName,
+          ok:                   false,
+          accountsUpdated:      0,
+          holdingsUpdated:      0,
+          transactionsAdded:    0,
+          transactionsModified: 0,
+          transactionsRemoved:  0,
+          spacesSnapshotted:    [],
+          skipped:              "cooldown",
+          retryAfterSeconds:    cooldown.retryAfterSeconds,
+        });
+      } else {
+        eligibleIds.push(item.id);
+      }
+    }
+
+    await markManyManualRefreshed(eligibleIds);
+
+    summary = await refreshAllActiveItemsForUser(user.id, { excludeItemIds: onCooldownIds });
+    summary.results   = [...summary.results, ...skippedResults];
+    summary.itemCount = summary.itemCount + skippedResults.length;
   }
 
   await db.auditLog.create({

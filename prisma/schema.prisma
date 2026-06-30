@@ -498,6 +498,11 @@ model PlaidItem {
   cursor          String?                  // /transactions/sync cursor for incremental sync
   errorCode       String?                  // last Plaid error code when status = ERROR
   lastSyncedAt    DateTime?
+  // D2 Step 7B — last manual "Refresh"/"Sync Now" attempt (success or
+  // failure), distinct from lastSyncedAt above (also written by the
+  // scheduled sync job). Gates the manual-refresh cooldown only; the
+  // scheduler never reads or writes this field.
+  lastManualRefreshAt DateTime?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 

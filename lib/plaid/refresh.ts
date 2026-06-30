@@ -73,6 +73,10 @@ export interface RefreshItemResult {
   /** Space ids whose SpaceSnapshot row was regenerated (today's date). */
   spacesSnapshotted:  string[];
   error?:                 string;
+  /** D2 Step 7B — set instead of calling Plaid when this item is on the manual-refresh cooldown. */
+  skipped?:               "cooldown";
+  /** D2 Step 7B — only set when skipped === "cooldown". */
+  retryAfterSeconds?:     number;
 }
 
 /**
@@ -324,10 +328,23 @@ async function selfHealOrphanedPlaidItem(plaidItemDbId: string): Promise<void> {
  * the try/catch below is untouched, so real per-item Plaid failures
  * (ITEM_LOGIN_REQUIRED, INVALID_ACCESS_TOKEN, permissions errors, etc.) are
  * never suppressed.
+ *
+ * D2 Step 7B — `options.excludeItemIds` lets the caller (the manual refresh
+ * route) keep items on the manual-refresh cooldown out of this query
+ * entirely, so they're never passed to Plaid. Cooldown itself is decided and
+ * marked by the caller (lib/plaid/refreshCooldown.ts) — this function only
+ * honors the exclusion list; it has no cooldown logic of its own.
  */
-export async function refreshAllActiveItemsForUser(userId: string): Promise<RefreshSummary> {
+export async function refreshAllActiveItemsForUser(
+  userId: string,
+  options?: { excludeItemIds?: string[] }
+): Promise<RefreshSummary> {
   const items = await db.plaidItem.findMany({
-    where:  { userId, status: PlaidItemStatus.ACTIVE },
+    where: {
+      userId,
+      status: PlaidItemStatus.ACTIVE,
+      ...(options?.excludeItemIds?.length && { id: { notIn: options.excludeItemIds } }),
+    },
     select: { id: true, institutionName: true },
   });
 

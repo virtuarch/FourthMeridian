@@ -22,6 +22,7 @@ import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { checkManualRefreshCooldown, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
 
 interface SyncBody {
   plaidItemId?: string;
@@ -39,17 +40,55 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       status: PlaidItemStatus.ACTIVE,
       ...(body.plaidItemId && { id: body.plaidItemId }),
     },
-    select: { id: true, institutionName: true },
+    select: { id: true, institutionName: true, lastManualRefreshAt: true },
   });
 
   if (body.plaidItemId && items.length === 0) {
     return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
   }
 
+  // D2 Step 7B — a single named item that's on cooldown short-circuits with
+  // a hard 429 before touching Plaid. The "all active items" path never
+  // fails the whole request — see the partition below instead.
+  if (body.plaidItemId) {
+    const cooldown = checkManualRefreshCooldown(items[0].lastManualRefreshAt);
+    if (cooldown.onCooldown) {
+      return NextResponse.json(
+        { error: "cooldown", retryAfterSeconds: cooldown.retryAfterSeconds },
+        { status: 429 }
+      );
+    }
+  }
+
   const results = [];
   let totalAdded = 0, totalModified = 0, totalRemoved = 0;
 
+  // Partition into on-cooldown (skipped, no Plaid call) vs. eligible before
+  // syncing. Cooldown is marked on every eligible item up front (every
+  // attempt counts, success or failure — see D2-7B checklist §5), via one
+  // updateMany rather than N writes.
+  const eligibleItems = [];
+  const eligibleIds: string[] = [];
+
   for (const item of items) {
+    const cooldown = checkManualRefreshCooldown(item.lastManualRefreshAt);
+    if (cooldown.onCooldown) {
+      results.push({
+        plaidItemId:       item.id,
+        institution:       item.institutionName,
+        ok:                false,
+        skipped:           "cooldown",
+        retryAfterSeconds: cooldown.retryAfterSeconds,
+      });
+    } else {
+      eligibleItems.push(item);
+      eligibleIds.push(item.id);
+    }
+  }
+
+  await markManyManualRefreshed(eligibleIds);
+
+  for (const item of eligibleItems) {
     try {
       const r = await syncTransactionsForItem(item.id);
       totalAdded    += r.added;
@@ -73,7 +112,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     data: {
       userId:    user.id,
       action:    AuditAction.PLAID_SYNC,
-      metadata:  { itemCount: items.length, totalAdded, totalModified, totalRemoved },
+      metadata:  { itemCount: eligibleItems.length, totalAdded, totalModified, totalRemoved },
       ipAddress: getClientIp(req),
     },
   });
