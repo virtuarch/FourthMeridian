@@ -20,7 +20,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
-import { decrypt } from "@/lib/plaid/encryption";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
 import { verifyTOTP } from "@/lib/totp";
@@ -146,7 +146,7 @@ export const authOptions: NextAuthOptions = {
           if (totpCode) {
             // Verify TOTP code
             let secret: string;
-            try { secret = decrypt(user.totpSecret); }
+            try { secret = decryptWithPurpose(user.totpSecret, EncryptionPurpose.TOTP_SECRET); }
             catch {
               return null; // corrupted secret — fail safe
             }
