@@ -78,6 +78,9 @@ export const AuditAction = {
   // entries, no before/after snapshots — see
   // docs/initiatives/d2/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §8.
   IMPORT_BATCH_UPDATED_ON_MATCH: "IMPORT_BATCH_UPDATED_ON_MATCH",
+
+  // ── AI Context ───────────────────────────────────────────────────────────────
+  AI_CONTEXT_ASSEMBLED:     "AI_CONTEXT_ASSEMBLED",
 } as const;
 
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];

@@ -470,6 +470,13 @@ model AiAgent {
   spaceId      String    @unique @map("workspaceId")
   space        Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   name         String
+  // D4 — optional restriction layer for AI context assembly.
+  // When empty (default), the full template manifest is used.
+  // When set, the builder assembles the intersection of the template manifest
+  // and these keys. Values are ContextDomain string keys (e.g. "accounts").
+  // NOT the primary declaration — the domain manifest (derived from SpaceCategory
+  // or, after D9, from SpaceTemplate.contextDomains) is authoritative.
+  agentScope   String[]
   lastActiveAt DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
