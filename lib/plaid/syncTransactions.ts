@@ -67,6 +67,7 @@ import { db } from "@/lib/db";
 import { TransactionCategory, ProviderType, PlaidItemStatus } from "@prisma/client";
 import type { Transaction as PlaidTransaction } from "plaid";
 import { findByFingerprint } from "@/lib/transactions/fingerprint";
+import { withPlaidRetry } from "@/lib/plaid/retry";
 
 export interface SyncTransactionsResult {
   /** Count of transactions Plaid reported in its `added` array this run (Plaid's own count, unchanged semantics). */
@@ -195,10 +196,13 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   }
 
   while (hasMore) {
-    const resp = await plaidClient.transactionsSync({
-      access_token: accessToken,
-      ...(cursor ? { cursor } : {}),
-    });
+    const resp = await withPlaidRetry(
+      () => plaidClient.transactionsSync({
+        access_token: accessToken,
+        ...(cursor ? { cursor } : {}),
+      }),
+      "transactionsSync"
+    );
     const { added: addedTxns, modified: modifiedTxns, removed: removedTxns, has_more, next_cursor } = resp.data;
 
     for (const txn of [...addedTxns, ...modifiedTxns]) {

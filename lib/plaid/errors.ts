@@ -151,3 +151,42 @@ export function classifyPlaidErrorForHealth(err: unknown): PlaidHealthResult | n
   // any unrecognized code — is treated as unrecoverable-until-investigated.
   return { status: PlaidItemStatus.ERROR, errorCode: code };
 }
+
+// D2 Step 7D — retry/backoff. Separate question from
+// classifyPlaidErrorForHealth() above: that function decides what to
+// persist to PlaidItem.status; this one decides whether lib/plaid/retry.ts
+// should attempt the same call again. A code can be retryable here and
+// still resolve to "log only, no status change" there (TRANSIENT_CODES) —
+// the two are independent.
+//
+// Retryable:
+//  - Any TRANSIENT_CODES error_code (provider-outage/lock — same bucket
+//    classifyPlaidErrorForHealth already treats as log-only).
+//  - HTTP 429 (rate limit) — classifyPlaidErrorForHealth already
+//    special-cases this as log-only; it's also the textbook retry case.
+//  - A raw network-level failure: the request reached axios but never got
+//    a response (timeout, ECONNRESET, DNS failure, etc.), recognized via
+//    axios's own `isAxiosError` flag — set on every AxiosError regardless
+//    of whether a response was received, unlike isAxiosError() above,
+//    which requires a `response` key and is false for exactly this case.
+//
+// Not retryable: NEEDS_REAUTH_CODES, any other recognized-but-terminal code
+// (INVALID_ENVIRONMENT, SANDBOX_ONLY, INSTITUTION_NO_LONGER_SUPPORTED), any
+// unrecognized error_code, and any non-Axios exception (decrypt/env/DB
+// errors) — none of those are fixed by trying again.
+export function isRetryablePlaidError(err: unknown): boolean {
+  const isAxiosOrigin =
+    typeof err === "object" && err !== null && (err as { isAxiosError?: unknown }).isAxiosError === true;
+  if (!isAxiosOrigin) return false;
+
+  const axiosErr = err as { response?: { data?: PlaidErrorBody; status?: number } };
+  if (!axiosErr.response) return true; // no response reached us at all — network-level
+
+  const status = axiosErr.response.status;
+  const code   = axiosErr.response.data?.error_code;
+
+  if (status === 429) return true;
+  if (code && TRANSIENT_CODES.has(code)) return true;
+
+  return false;
+}

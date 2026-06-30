@@ -39,6 +39,7 @@ import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { withPlaidRetry } from "@/lib/plaid/retry";
 
 // Mirrors app/api/plaid/exchange-token/route.ts's mapAccountType — kept as a
 // private copy here (not exported/shared) since refresh only needs it to
@@ -98,7 +99,10 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
   // ── 1. Balances / account metadata ────────────────────────────────────────
   let accountsUpdated = 0;
   const updatedAccountIds: string[] = [];
-  const accountsRes   = await plaidClient.accountsGet({ access_token: accessToken });
+  const accountsRes   = await withPlaidRetry(
+    () => plaidClient.accountsGet({ access_token: accessToken }),
+    "accountsGet"
+  );
   const plaidAccounts = accountsRes.data.accounts;
 
   for (const acct of plaidAccounts) {
@@ -162,7 +166,10 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
 
   if (investmentPlaidAccounts.length > 0) {
     try {
-      const holdingsRes      = await plaidClient.investmentsHoldingsGet({ access_token: accessToken });
+      const holdingsRes      = await withPlaidRetry(
+        () => plaidClient.investmentsHoldingsGet({ access_token: accessToken }),
+        "investmentsHoldingsGet"
+      );
       const { holdings, securities } = holdingsRes.data;
       const secById           = Object.fromEntries(securities.map((s) => [s.security_id, s]));
 
