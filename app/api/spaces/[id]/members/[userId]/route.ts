@@ -25,7 +25,6 @@ import { db }                                     from "@/lib/db";
 import { SpaceMemberStatus, ShareStatus, SpaceMemberRole } from "@prisma/client";
 import { requireSpaceRole }                   from "@/lib/session";
 import { withApiHandler, getClientIp }            from "@/lib/api";
-import { dualWriteFromShares }                    from "@/lib/accounts/space-account-link";
 import { regenerateSpaceSnapshot }                from "@/lib/snapshots/regenerate";
 
 const PROMOTABLE_ROLES: SpaceMemberRole[] = [
@@ -140,21 +139,10 @@ export const DELETE = withApiHandler(async (
     },
   });
 
-  // Captured before the revoke below so the D3 Step 3 dual-write has the
-  // pre-revocation rows to mirror (the updateMany itself returns only a count).
-  const sharesBeforeRevoke = await db.workspaceAccountShare.findMany({
+  // ── 2. D3 Stage B4 — Revoke all active SpaceAccountLink rows the member added
+  await db.spaceAccountLink.updateMany({
     where: {
-      workspaceId:   spaceId,
-      addedByUserId: targetUserId,
-      status:        ShareStatus.ACTIVE,
-    },
-  });
-
-  // ── 2. Revoke all active WorkspaceAccountShare rows the member added ───────
-  await db.workspaceAccountShare.updateMany({
-    where: {
-      // WorkspaceAccountShare keeps its own pre-Phase-1 field name.
-      workspaceId: spaceId,
+      spaceId,
       addedByUserId: targetUserId,
       status:        ShareStatus.ACTIVE,
     },
@@ -165,21 +153,7 @@ export const DELETE = withApiHandler(async (
     },
   });
 
-  // ── 2a. D3 Step 3 — mirror the revocation onto SpaceAccountLink
-  //       (best-effort/non-fatal, handled inside dualWriteFromShares).
-  await dualWriteFromShares(
-    sharesBeforeRevoke.map((s) => ({
-      workspaceId:        s.workspaceId,
-      financialAccountId: s.financialAccountId,
-      addedByUserId:      s.addedByUserId,
-      visibilityLevel:    s.visibilityLevel,
-      status:             ShareStatus.REVOKED,
-      revokedAt:          now,
-      revokedByUserId:    isSelf ? targetUserId : user.id,
-    }))
-  );
-
-  // ── 2b. Regenerate SpaceSnapshot now that this space's active shares have
+  // ── 2a. Regenerate SpaceSnapshot now that this space's active shares have
   //       changed (the departing/removed member's shares were just revoked
   //       above) — see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md and
   //       the share/revoke route fix for the established pattern.

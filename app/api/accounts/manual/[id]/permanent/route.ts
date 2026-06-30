@@ -68,8 +68,8 @@ export const DELETE = withApiHandler(async (
   });
 
   // ── Hard delete in FK-safe order ──────────────────────────────────────────
-  await db.workspaceAccountShare.deleteMany({ where: { financialAccountId: id } });
-  // D3 Step 3 — mirror the hard delete onto SpaceAccountLink (best-effort/non-fatal).
+  // D3 Stage B4 — SpaceAccountLink is the sole target; WorkspaceAccountShare
+  // write retired here.
   await dualDeleteSpaceAccountLinks(id);
   await db.accountConnection.deleteMany({ where: { financialAccountId: id } });
   await db.financialAccount.delete({ where: { id } });

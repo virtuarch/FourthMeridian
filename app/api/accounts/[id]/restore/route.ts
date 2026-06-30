@@ -54,7 +54,6 @@ import {
   mergeArchivedDuplicateIntoCanonical,
 } from "@/lib/accounts/reconcile";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
-import { dualWriteFromShares } from "@/lib/accounts/space-account-link";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -154,23 +153,12 @@ export const POST = withApiHandler(async (
         where: { financialAccountId: id, deletedAt: { not: null } },
         data:  { deletedAt: null },
       }),
-      // 3. Reactivate WorkspaceAccountShare rows that were revoked
-      db.workspaceAccountShare.updateMany({
+      // 3. D3 Stage B4 — Reactivate SpaceAccountLink rows that were revoked
+      db.spaceAccountLink.updateMany({
         where: { financialAccountId: id, status: ShareStatus.REVOKED },
         data:  { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
       }),
     ]);
-
-    // ── D3 Step 3 — mirror the reactivated shares onto SpaceAccountLink.
-    //    Run sequentially after the Promise.all above resolves (no
-    //    transaction join — see docs/initiatives/d3/D3_STEP3_DUAL_WRITE_REVIEW.md Rule 6).
-    //    Best-effort/non-fatal.
-    try {
-      const shares = await db.workspaceAccountShare.findMany({ where: { financialAccountId: id } });
-      await dualWriteFromShares(shares);
-    } catch (linkErr) {
-      console.warn(`[POST /api/accounts/:id/restore] SpaceAccountLink dual-write failed for account ${id} (non-fatal):`, linkErr);
-    }
 
     // ── Regenerate SpaceSnapshot for every space this account is now active
     //    in again. Shares were just reactivated above, so the existing

@@ -24,7 +24,6 @@ import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
-import { dualWriteFromShares } from "@/lib/accounts/space-account-link";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -128,9 +127,6 @@ export const DELETE = withApiHandler(async (
           where: { deletedAt: null },
           include: { plaidItem: true },
         },
-        workspaceShares: {
-          where: { status: ShareStatus.ACTIVE },
-        },
       },
     });
 
@@ -138,10 +134,7 @@ export const DELETE = withApiHandler(async (
       return NextResponse.json({ error: "Account not found" }, { status: 404 });
     }
 
-    // D3 Stage A — authorization read migrated from WorkspaceAccountShare to
-    // SpaceAccountLink. WorkspaceAccountShare.workspaceShares is still fetched
-    // above because the write path (updateMany + dualWriteFromShares + snapshot
-    // regen) depends on it; only the auth check moves here.
+    // D3 Stage A — authorization read on SpaceAccountLink.
     const userLink = await db.spaceAccountLink.findFirst({
       where: {
         financialAccountId: id,
@@ -168,35 +161,22 @@ export const DELETE = withApiHandler(async (
       data:  { deletedAt: now },
     });
 
-    // ── 3. Revoke all active WorkspaceAccountShare rows ───────────────────────
-    await db.workspaceAccountShare.updateMany({
+    // ── 3. Revoke all active SpaceAccountLink rows ────────────────────────────
+    // Capture before revocation so snapshot regen knows which spaces are affected.
+    const activeLinks = await db.spaceAccountLink.findMany({
+      where:  { financialAccountId: id, status: ShareStatus.ACTIVE },
+      select: { spaceId: true },
+    });
+    await db.spaceAccountLink.updateMany({
       where: { financialAccountId: id, status: ShareStatus.ACTIVE },
       data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: user.id },
     });
 
-    // ── 3a. D3 Step 3 — mirror the revocation onto SpaceAccountLink, using the
-    //       pre-revocation share rows captured above (best-effort/non-fatal,
-    //       handled inside dualWriteFromShares itself).
-    await dualWriteFromShares(
-      fa.workspaceShares.map((s) => ({
-        workspaceId:        s.workspaceId,
-        financialAccountId: s.financialAccountId,
-        addedByUserId:      s.addedByUserId,
-        visibilityLevel:    s.visibilityLevel,
-        status:             ShareStatus.REVOKED,
-        revokedAt:          now,
-        revokedByUserId:    user.id,
-      })),
-      fa.createdByUserId ?? fa.ownerUserId
-    );
-
-    // ── 3b. Regenerate SpaceSnapshot for every space this account was active
-    //       in — captured from fa.workspaceShares *before* the revocation
-    //       above, since regenerateSnapshotsForAccounts() (used elsewhere)
-    //       looks up ACTIVE shares and would find none here. Best-effort/
-    //       non-fatal: a snapshot regen failure must never block the archive
-    //       itself. See docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
-    const affectedSpaceIds = [...new Set(fa.workspaceShares.map((s) => s.workspaceId))];
+    // ── 3a. Regenerate SpaceSnapshot for every space this account was active
+    //       in — captured above before revocation. Best-effort/non-fatal: a
+    //       snapshot regen failure must never block the archive itself. See
+    //       docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
+    const affectedSpaceIds = [...new Set(activeLinks.map((l) => l.spaceId))];
     for (const spaceId of affectedSpaceIds) {
       try {
         await regenerateSpaceSnapshot(spaceId);
