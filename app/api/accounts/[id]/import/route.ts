@@ -150,7 +150,7 @@ export const POST = withApiHandler(async (
   // Zero behavior change here — same two db reads, same NextResponse
   // bodies/status codes. See that module's header for the
   // SpaceAccountLink-first/legacy-Account-fallback rationale.
-  const access = await resolveImportableFinancialAccount(spaceId, id);
+  const access = await resolveImportableFinancialAccount(user.id, spaceId, id);
   if (!access.ok) return access.response;
   const { financialAccountId } = access;
 

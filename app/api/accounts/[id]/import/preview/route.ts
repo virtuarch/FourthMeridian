@@ -125,14 +125,19 @@ export const POST = withApiHandler(async (
   const { id } = await params;
   if (!id) return NextResponse.json({ error: "Missing account id" }, { status: 400 });
 
-  const [, err] = await requireUser();
+  const [user, err] = await requireUser();
   if (err) return err;
 
   const { spaceId } = await getSpaceContext();
 
   // Same shared check the confirm route uses — see
   // lib/imports/authorize.ts and this route's module header.
-  const access = await resolveImportableFinancialAccount(spaceId, id);
+  // D2 Slice B: pass user.id so the write-authority guard can verify
+  // ownership/Space role before allowing a preview (which reads existing
+  // transactions to compute match/skip/create outcomes — same read that
+  // the confirm route performs before committing). A read-only Space
+  // MEMBER should not see match outcomes against an account they can't import.
+  const access = await resolveImportableFinancialAccount(user.id, spaceId, id);
   if (!access.ok) return access.response;
   const { financialAccountId } = access;
 
