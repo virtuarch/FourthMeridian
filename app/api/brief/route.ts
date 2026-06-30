@@ -2,15 +2,50 @@
  * GET /api/brief
  *
  * Returns a BriefPayload for the Daily Brief page.
- * Uses real data only — no fabrication.
- * Sections are rule-based; AI generation is deferred.
+ *
+ * D4 Slice 6 — Context Builder integration.
+ * Financial data now flows exclusively through buildContext() / the AI Context
+ * Builder. The route no longer queries SpaceAccountLink, SpaceSnapshot, or
+ * any financial table directly.
+ *
+ * ── Space eligibility ─────────────────────────────────────────────────────────
+ * Context is built for every Space where the user is OWNER, ADMIN, or MEMBER.
+ * VIEWER Spaces are excluded — they contribute read-only access to shared data
+ * but should not drive the user's personal financial brief.
+ *
+ * ── Aggregation model ────────────────────────────────────────────────────────
+ * Each eligible Space assembles its own Context independently (via buildContext
+ * with scopeHint='brief'). The brief then:
+ *   - Uses the primary Space (PERSONAL or first eligible) for headline metrics
+ *     (net worth, account health) to avoid double-counting shared accounts.
+ *   - Aggregates signals from ALL eligible Spaces; signals from non-primary
+ *     Spaces carry the Space name in their metadata for attribution.
+ *   - Reports the total account count across all eligible Spaces.
+ *
+ * ── What is still queried directly ───────────────────────────────────────────
+ * Non-financial tables only:
+ *   db.user          — display name, lastBriefViewedAt
+ *   db.spaceMember   — eligible Space membership enumeration
+ *   db.spaceInvite   — pending invite count
+ *   db.aiAdvice      — cached AI-generated advice text (AI output, not source data)
  */
 
-import { NextResponse }          from "next/server";
-import { db }                    from "@/lib/db";
-import { requireUser }           from "@/lib/session";
-import { getSpaceContext }   from "@/lib/space";
-import { ShareStatus }           from "@prisma/client";
+import { NextResponse }       from "next/server";
+import { db }                 from "@/lib/db";
+import { requireUser }        from "@/lib/session";
+import { SpaceMemberRole }    from "@prisma/client";
+import {
+  buildContext,
+  FinanceDomains,
+  SignalType,
+} from "@/lib/ai";
+import type {
+  SpaceContext_AI,
+  AccountsSectionData,
+  SnapshotSectionData,
+  TransactionsSummaryData,
+  ContextSignal,
+} from "@/lib/ai";
 import type {
   BriefPayload,
   BriefSection,
@@ -18,10 +53,9 @@ import type {
   BriefTone,
   VisitState,
   FinancialMapData,
-  FinancialMapMarker,
 } from "@/lib/brief-types";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Formatting helpers (unchanged) ────────────────────────────────────────────
 
 function fmtCurrency(n: number): string {
   const abs = Math.abs(n);
@@ -34,6 +68,8 @@ function fmtDelta(delta: number): string {
   const sign = delta >= 0 ? "+" : "−";
   return `${sign}${fmtCurrency(Math.abs(delta))}`;
 }
+
+// ── Visit state helpers (unchanged) ───────────────────────────────────────────
 
 function visitState(lastViewedAt: Date | null, hasData: boolean): VisitState {
   if (!hasData) return "new_user";
@@ -57,25 +93,81 @@ function contextLine(state: VisitState, name: string | null): string {
   }
 }
 
-// ── Section builders ──────────────────────────────────────────────────────────
+function sinceLabel(lastViewedAt: Date | null): string {
+  if (!lastViewedAt) return "Your financial snapshot";
+  const diffMs = Date.now() - lastViewedAt.getTime();
+  const diffH  = diffMs / (1000 * 60 * 60);
+  if (diffH < 1)    return "In the last hour";
+  if (diffH < 24)   return "Since earlier today";
+  const diffD = Math.floor(diffH / 24);
+  if (diffD === 1)  return "Since yesterday";
+  if (diffD <  7)   return `Since ${diffD} days ago`;
+  return "Since your last visit";
+}
 
-/** Since Last Visit section — net worth delta, account count, event count. */
+// ── Context domain extractors ─────────────────────────────────────────────────
+
+function accounts(ctx: SpaceContext_AI): AccountsSectionData | null {
+  const s = ctx.domains[FinanceDomains.ACCOUNTS];
+  return s ? (s.data as AccountsSectionData) : null;
+}
+
+function snapshot(ctx: SpaceContext_AI): SnapshotSectionData | null {
+  const s = ctx.domains[FinanceDomains.SNAPSHOT_HISTORY];
+  return s ? (s.data as SnapshotSectionData) : null;
+}
+
+function transactions(ctx: SpaceContext_AI): TransactionsSummaryData | null {
+  const s = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY];
+  return s ? (s.data as TransactionsSummaryData) : null;
+}
+
+// ── Onboarding (unchanged) ────────────────────────────────────────────────────
+
+function buildOnboarding(): BriefSection {
+  return {
+    id:       "onboarding",
+    type:     "onboarding",
+    priority: 5,
+    title:    "Get started",
+    items: [
+      { id: "ob_bank",    label: "Connect your first bank account",                            tone: "neutral", href: "/dashboard/accounts" },
+      { id: "ob_invest",  label: "Add an investment account",                                  tone: "neutral", href: "/dashboard/accounts" },
+      { id: "ob_crypto",  label: "Import a crypto wallet",                                     tone: "neutral", href: "/dashboard/accounts" },
+      { id: "ob_manual",  label: "Add manual assets — home, vehicle, equipment, or valuables", tone: "neutral", href: "/dashboard/accounts" },
+    ],
+  };
+}
+
+// ── Since Last Visit — now sourced from Context ───────────────────────────────
+
+/**
+ * Net worth and account count come from the primary Space's accounts domain.
+ * Trend (delta) comes from the snapshot domain's netWorthTrend, which covers
+ * the full snapshot history window rather than exact since-last-visit.
+ * When no trend data exists, only the current value is shown.
+ */
 function buildSinceLastVisit(
-  netWorth:         number,
-  prevNetWorth:     number | null,
-  accountCount:     number,
-  sinceLabel:       string,
-  pendingInvites:   number,
+  primaryCtx:     SpaceContext_AI,
+  totalAccounts:  number,
+  lastViewedAt:   Date | null,
+  pendingInvites: number,
 ): BriefSection | null {
-  const items: BriefItem[] = [];
+  const acct = accounts(primaryCtx);
+  const snap  = snapshot(primaryCtx);
 
-  if (prevNetWorth !== null) {
-    const delta = netWorth - prevNetWorth;
-    const tone: BriefTone = delta > 0 ? "positive" : delta < 0 ? "warning" : "neutral";
+  if (!acct) return null;
+
+  const items: BriefItem[] = [];
+  const netWorth = acct.netWorth;
+
+  // Net worth — with trend from snapshot domain if available
+  if (snap?.netWorthTrend != null && snap.netWorthTrend !== 0) {
+    const tone: BriefTone = snap.netWorthTrend > 0 ? "positive" : "warning";
     items.push({
       id:     "nw_delta",
       label:  "Net worth",
-      value:  fmtDelta(delta),
+      value:  fmtDelta(snap.netWorthTrend),
       detail: `now ${fmtCurrency(netWorth)}`,
       tone,
     });
@@ -88,11 +180,11 @@ function buildSinceLastVisit(
     });
   }
 
-  if (accountCount > 0) {
+  if (totalAccounts > 0) {
     items.push({
       id:    "account_count",
       label: "Accounts tracked",
-      value: String(accountCount),
+      value: String(totalAccounts),
       tone:  "neutral",
     });
   }
@@ -113,20 +205,129 @@ function buildSinceLastVisit(
     id:       "since_last_visit",
     type:     "since_last_visit",
     priority: 10,
-    title:    sinceLabel,
+    title:    sinceLabel(lastViewedAt),
     items,
   };
 }
 
-/** Rule-based insight from snapshot data. */
-function buildInsight(
-  netWorth:    number,
-  totalAssets: number,
-  totalDebt:   number,
-  cash:        number,
-  advice:      { summary: string; adviceText: string } | null,
+// ── Needs Attention — driven by signals and account health ────────────────────
+
+/**
+ * Priority order within the section:
+ *   1. NEEDS_REAUTH signals (danger — account syncing is blocked)
+ *   2. Sync error accounts (danger — from accounts health summary)
+ *   3. STALE_CONNECTION signals (warning)
+ *   4. NET_WORTH_DECLINED signal (warning)
+ *   5. Low liquidity from accounts domain (warning)
+ *
+ * Capped at 5 items to match the previous implementation.
+ */
+function buildAttention(
+  allSignals:  ContextSignal[],
+  primaryCtx:  SpaceContext_AI,
 ): BriefSection | null {
-  // Prefer cached AI advice summary
+  const items: BriefItem[] = [];
+  const acct  = accounts(primaryCtx);
+
+  // ── Signals → items ───────────────────────────────────────────────────────
+  // Only warning/critical signals belong in the Attention section.
+
+  for (const sig of allSignals) {
+    if (sig.severity === 'info') continue;
+
+    switch (sig.type) {
+      case SignalType.NEEDS_REAUTH:
+        items.push({
+          id:    sig.id,
+          label: sig.title,
+          tone:  "danger",
+          href:  "/dashboard/accounts",
+        });
+        break;
+
+      case SignalType.STALE_CONNECTION:
+        items.push({
+          id:    sig.id,
+          label: sig.title,
+          detail: "Manual assets may be out of date",
+          tone:  "warning",
+          href:  "/dashboard/accounts",
+        });
+        break;
+
+      case SignalType.NET_WORTH_DECLINED:
+        items.push({
+          id:    sig.id,
+          label: sig.title,
+          tone:  "warning",
+        });
+        break;
+    }
+  }
+
+  // ── Account sync errors (from health summary, primary Space only) ─────────
+  // Not a Slice 5 signal yet, but available in the accounts domain health.
+
+  if (acct && acct.health.errorCount > 0) {
+    const names = acct.health.errorAccountNames;
+    if (names.length > 0) {
+      for (const name of names) {
+        items.push({
+          id:   `sync_error_${name}`,
+          label: `Sync issue — ${name}`,
+          tone:  "danger",
+          href:  "/dashboard/accounts",
+        });
+      }
+    } else {
+      items.push({
+        id:    "sync_error_accounts",
+        label: `${acct.health.errorCount} account${acct.health.errorCount > 1 ? "s" : ""} have sync errors`,
+        tone:  "danger",
+        href:  "/dashboard/accounts",
+      });
+    }
+  }
+
+  // ── Low liquidity (primary Space accounts domain) ─────────────────────────
+  if (acct && acct.netWorth > 5000 && acct.totalLiquid >= 0 && acct.totalLiquid / acct.netWorth < 0.05) {
+    items.push({
+      id:     "low_liquidity",
+      label:  "Low cash position",
+      value:  fmtCurrency(acct.totalLiquid),
+      detail: "Less than 5% of net worth is liquid",
+      tone:   "warning",
+    });
+  }
+
+  if (items.length === 0) return null;
+
+  return {
+    id:       "attention",
+    type:     "attention",
+    priority: 15,
+    title:    "Needs Attention",
+    items:    items.slice(0, 5),
+    tone:     "warning",
+  };
+}
+
+// ── Insight — driven by signals, context data, and cached AI advice ───────────
+
+/**
+ * Prefers cached AI advice when present.
+ * Otherwise synthesizes a rule-based insight using:
+ *   - NET_WORTH_INCREASED signal (positive trend)
+ *   - GOAL_COMPLETED signal (achievement)
+ *   - Transaction summary (income vs expense picture)
+ *   - Accounts domain (debt ratio, cash ratio)
+ */
+function buildInsight(
+  allSignals:   ContextSignal[],
+  primaryCtx:   SpaceContext_AI,
+  advice:       { summary: string; adviceText: string } | null,
+): BriefSection | null {
+  // Prefer cached AI advice
   if (advice?.summary) {
     return {
       id:          "insight",
@@ -140,7 +341,65 @@ function buildInsight(
     };
   }
 
-  // Rule-based fallback
+  const acct  = accounts(primaryCtx);
+  const txn   = transactions(primaryCtx);
+  const snap  = snapshot(primaryCtx);
+
+  const netWorth    = acct?.netWorth    ?? 0;
+  const totalAssets = acct?.totalAssets ?? 0;
+  const totalDebt   = acct?.totalLiabilities ?? 0;
+  const cash        = acct?.totalLiquid ?? 0;
+
+  // ── Signal-driven insights (highest priority) ─────────────────────────────
+
+  // Recently completed goal
+  const completedGoalSig = allSignals.find(s => s.type === SignalType.GOAL_COMPLETED);
+  if (completedGoalSig) {
+    const name = (completedGoalSig.metadata?.goalName as string | undefined) ?? "a goal";
+    return {
+      id:       "insight",
+      type:     "insight",
+      priority: 20,
+      title:    "Today's Insight",
+      body:     `You completed "${name}" — great work. Review your remaining goals and consider setting a new target.`,
+      tone:     "positive",
+    };
+  }
+
+  // Positive net worth trend
+  const trendUpSig = allSignals.find(s => s.type === SignalType.NET_WORTH_INCREASED);
+  if (trendUpSig && snap?.netWorthTrendPct != null) {
+    return {
+      id:       "insight",
+      type:     "insight",
+      priority: 20,
+      title:    "Today's Insight",
+      body:     `Net worth is up ${snap.netWorthTrendPct.toFixed(1)}% over the last ${snap.snapshotCount} days — ${fmtCurrency(netWorth)} total. Stay consistent.`,
+      tone:     "positive",
+    };
+  }
+
+  // Transaction picture: spending vs income
+  if (txn && txn.incomeTotal > 0) {
+    const savingsRate = txn.incomeTotal > 0
+      ? Math.round(((txn.incomeTotal - txn.expenseTotal) / txn.incomeTotal) * 100)
+      : null;
+    if (savingsRate !== null && savingsRate > 0) {
+      return {
+        id:       "insight",
+        type:     "insight",
+        priority: 20,
+        title:    "Today's Insight",
+        body:     `You kept ${savingsRate}% of income over the last ${txn.windowDays} days. Expenses were ${fmtCurrency(txn.expenseTotal)} against ${fmtCurrency(txn.incomeTotal)} in income.`,
+        tone:     "info",
+      };
+    }
+  }
+
+  // ── Rule-based fallback (mirrors previous logic) ──────────────────────────
+
+  if (totalAssets === 0 && totalDebt === 0) return null;
+
   let body: string;
   const debtRatio = totalAssets > 0 ? totalDebt / totalAssets : 0;
   const cashRatio = netWorth    > 0 ? cash      / netWorth    : 0;
@@ -167,165 +426,13 @@ function buildInsight(
   };
 }
 
-/** Needs Attention — rule-based flags. */
-function buildAttention(
-  accounts: {
-    type:            string;
-    balance:         number;
-    creditLimit?:    number | null;
-    syncStatus?:     string | null;
-    lastUpdated:     Date;
-    name:            string;
-    interestRate?:   number | null;
-    minimumPayment?: number | null;
-  }[],
-  netWorth: number,
-  cash:     number,
-): BriefSection | null {
-  const items: BriefItem[] = [];
-  const now = new Date();
-
-  for (const acct of accounts) {
-    // High credit utilization (> 70%)
-    if (
-      acct.type === "debt" &&
-      acct.creditLimit &&
-      acct.creditLimit > 0 &&
-      Math.abs(acct.balance) / acct.creditLimit > 0.7
-    ) {
-      const utilPct = Math.round((Math.abs(acct.balance) / acct.creditLimit) * 100);
-      items.push({
-        id:     `high_util_${acct.name}`,
-        label:  `High utilization — ${acct.name}`,
-        value:  `${utilPct}%`,
-        detail: "Consider paying down this balance",
-        tone:   "warning",
-        href:   "/dashboard/credit",
-      });
-    }
-
-    // Sync error
-    if (acct.syncStatus === "error") {
-      items.push({
-        id:    `sync_error_${acct.name}`,
-        label: `Sync issue — ${acct.name}`,
-        tone:  "danger",
-        href:  "/dashboard/accounts",
-      });
-    }
-
-    // Manual asset not updated in 30+ days
-    if (acct.syncStatus === "manual") {
-      const daysSince = (now.getTime() - acct.lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
-      if (daysSince > 30) {
-        items.push({
-          id:     `stale_manual_${acct.name}`,
-          label:  `${acct.name} not updated in ${Math.floor(daysSince)} days`,
-          detail: "Manual assets may be out of date",
-          tone:   "warning",
-          href:   "/dashboard/accounts",
-        });
-      }
-    }
-  }
-
-  // Low liquidity: cash < 5% of net worth (and net worth > 0)
-  if (netWorth > 5000 && cash >= 0 && cash / netWorth < 0.05) {
-    items.push({
-      id:     "low_liquidity",
-      label:  "Low cash position",
-      value:  fmtCurrency(cash),
-      detail: "Less than 5% of net worth is liquid",
-      tone:   "warning",
-    });
-  }
-
-  if (items.length === 0) return null;
-
-  return {
-    id:       "attention",
-    type:     "attention",
-    priority: 15,
-    title:    "Needs Attention",
-    items:    items.slice(0, 5), // cap at 5
-    tone:     "warning",
-  };
-}
-
-/** Onboarding section for new users. */
-function buildOnboarding(): BriefSection {
-  return {
-    id:       "onboarding",
-    type:     "onboarding",
-    priority: 5,
-    title:    "Get started",
-    items: [
-      { id: "ob_bank",    label: "Connect your first bank account",                            tone: "neutral", href: "/dashboard/accounts" },
-      { id: "ob_invest",  label: "Add an investment account",                                  tone: "neutral", href: "/dashboard/accounts" },
-      { id: "ob_crypto",  label: "Import a crypto wallet",                                     tone: "neutral", href: "/dashboard/accounts" },
-      { id: "ob_manual",  label: "Add manual assets — home, vehicle, equipment, or valuables", tone: "neutral", href: "/dashboard/accounts" },
-    ],
-  };
-}
-
-// ── Map marker derivation ─────────────────────────────────────────────────────
-// Note: map data is kept in the BriefPayload for future hero pin rendering.
-// buildMapSection is intentionally removed — the earth hero IS the footprint.
-
-function deriveMapMarkers(
-  accounts: { id: string; name: string; type: string; institution: string; balance: number; }[],
-): FinancialMapData {
-  const markers: FinancialMapMarker[] = [];
-
-  // Group by institution to avoid duplicate pins
-  const seen = new Set<string>();
-
-  for (const acct of accounts) {
-    const key = acct.institution.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const markerType: FinancialMapMarker["type"] =
-      acct.type === "investment"  ? "investment"  :
-      acct.type === "crypto"      ? "crypto"      :
-      acct.type === "debt"        ? "bank"        :
-      acct.type === "checking" || acct.type === "savings" ? "bank" :
-      acct.type === "other"       ? "asset"       :
-      "other";
-
-    markers.push({
-      id:           acct.id,
-      label:        acct.institution,
-      type:         markerType,
-      privacyLevel: "summary",
-      value:        Math.abs(acct.balance),
-    });
-  }
-
-  return { markers, hasLocations: false };
-}
-
-// ── Since-label helper ────────────────────────────────────────────────────────
-
-function sinceLabel(lastViewedAt: Date | null): string {
-  if (!lastViewedAt) return "Your financial snapshot";
-  const diffMs = Date.now() - lastViewedAt.getTime();
-  const diffH  = diffMs / (1000 * 60 * 60);
-  if (diffH < 1)    return "In the last hour";
-  if (diffH < 24)   return "Since earlier today";
-  const diffD = Math.floor(diffH / 24);
-  if (diffD === 1)  return "Since yesterday";
-  if (diffD <  7)   return `Since ${diffD} days ago`;
-  return "Since your last visit";
-}
-
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function GET() {
   const [user, err] = await requireUser();
   if (err) return err;
 
-  // Fetch user's lastBriefViewedAt and name
+  // ── User metadata (non-financial) ──────────────────────────────────────────
   const dbUser = await db.user.findUnique({
     where:  { id: user.id },
     select: { lastBriefViewedAt: true, firstName: true, name: true },
@@ -335,120 +442,127 @@ export async function GET() {
   const lastViewedAt = dbUser.lastBriefViewedAt;
   const displayName  = dbUser.firstName ?? dbUser.name ?? null;
 
-  // Get the user's personal space context
-  let spaceId: string;
-  try {
-    const ctx = await getSpaceContext();
-    spaceId = ctx.spaceId;
-  } catch {
+  // ── Eligible Space memberships ─────────────────────────────────────────────
+  // OWNER, ADMIN, MEMBER roles only — VIEWER Spaces are excluded from the brief.
+
+  const memberships = await db.spaceMember.findMany({
+    where: {
+      userId: user.id,
+      status: "ACTIVE",
+      role:   { in: [SpaceMemberRole.OWNER, SpaceMemberRole.ADMIN, SpaceMemberRole.MEMBER] },
+      space:  { archivedAt: null, deletedAt: null },
+    },
+    select: {
+      spaceId: true,
+      space:   { select: { type: true } },
+    },
+  });
+
+  if (memberships.length === 0) {
     return NextResponse.json({ error: "No space" }, { status: 404 });
   }
 
-  // ── Accounts ──────────────────────────────────────────────────────────────
-  // D3 Step 4D read cutover — replaces the prior db.workspaceAccountShare
-  // query. Same status: ACTIVE visibility gate and financialAccount.deletedAt
-  // guard; no filter on `kind` (HOME vs SHARED both confer visibility), same
-  // as every other D3 Step 4 cutover. See docs/initiatives/d3/D3_STEP4_READ_CUTOVER_REVIEW.md.
-  const links = await db.spaceAccountLink.findMany({
-    where: {
-      spaceId,
-      status:           ShareStatus.ACTIVE,
-      financialAccount: { deletedAt: null },
-    },
-    include: { financialAccount: true },
+  // Primary Space: personal Space preferred; first eligible as fallback.
+  const primaryMembership =
+    memberships.find((m) => m.space.type === "PERSONAL") ?? memberships[0];
+
+  // ── Build context for every eligible Space in parallel ─────────────────────
+  // scopeHint='brief' keeps each context lean (no per-account list, no raw
+  // transaction history, no full snapshot series).
+
+  const contextResults = await Promise.allSettled(
+    memberships.map((m) =>
+      buildContext(m.spaceId, user.id, { scopeHint: "brief" }),
+    ),
+  );
+
+  const successfulContexts: SpaceContext_AI[] = contextResults
+    .filter((r): r is PromiseFulfilledResult<SpaceContext_AI> => r.status === "fulfilled")
+    .map((r) => r.value);
+
+  // Log failures so they are visible without crashing the brief
+  contextResults.forEach((r, i) => {
+    if (r.status === "rejected") {
+      console.error(
+        `[brief] buildContext failed for Space ${memberships[i]?.spaceId}:`,
+        r.reason,
+      );
+    }
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const accounts = links.map(({ financialAccount: r }: any) => ({
-    id:            r.id as string,
-    name:          r.name as string,
-    type:          r.type as string,
-    institution:   r.institution as string,
-    balance:       r.balance as number,
-    creditLimit:   r.creditLimit  as number | null,
-    syncStatus:    r.syncStatus   as string | null,
-    lastUpdated:   r.lastUpdated  as Date,
-    interestRate:  r.interestRate as number | null,
-    minimumPayment:r.minimumPayment as number | null,
-  }));
+  // ── Primary context ────────────────────────────────────────────────────────
+  const primaryCtx =
+    successfulContexts.find((c) => c.spaceId === primaryMembership.spaceId) ??
+    successfulContexts[0] ??
+    null;
 
-  const hasData = accounts.length > 0;
+  const hasData = primaryCtx !== null && accounts(primaryCtx) !== null;
 
-  // ── Compute net worth ──────────────────────────────────────────────────────
-  let netWorth    = 0;
-  let totalAssets = 0;
-  let totalDebt   = 0;
-  let cash        = 0;
+  // ── Aggregated signals (all eligible Spaces, sorted by severity) ───────────
+  // Signals from each context are already sorted by the registry.
+  // Merge and re-sort across all Spaces.
+  const SEVERITY_ORDER: Record<ContextSignal["severity"], number> = {
+    critical: 0, warning: 1, info: 2,
+  };
+  const allSignals: ContextSignal[] = successfulContexts
+    .flatMap((c) => c.signals)
+    .sort(
+      (a, b) =>
+        SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] ||
+        a.detectedAt.localeCompare(b.detectedAt),
+    );
 
-  for (const a of accounts) {
-    if (a.type === "debt") {
-      totalDebt += Math.abs(a.balance);
-    } else {
-      totalAssets += a.balance;
-      if (a.type === "checking" || a.type === "savings") {
-        cash += a.balance;
-      }
-    }
-  }
-  netWorth = totalAssets - totalDebt;
+  // ── Cross-Space account count (total across all eligible Spaces) ───────────
+  // Note: shared accounts may be double-counted when they appear in multiple
+  // Spaces. This is a known limitation of per-Space context aggregation and
+  // will be addressed in a future deduplication slice.
+  const totalAccountCount = successfulContexts
+    .reduce((sum, c) => sum + (accounts(c)?.totalCount ?? 0), 0);
 
-  // ── Prior net worth from most recent snapshot ──────────────────────────────
-  let prevNetWorth: number | null = null;
-  if (hasData && lastViewedAt) {
-    const snap = await db.spaceSnapshot.findFirst({
-      where:   { spaceId, date: { lte: lastViewedAt } },
-      orderBy: { date: "desc" },
-      select:  { netWorth: true },
-    });
-    if (snap) prevNetWorth = snap.netWorth;
-  }
+  // ── Pending Space invites (non-financial query) ────────────────────────────
+  const pendingInviteCount = await db.spaceInvite.count({
+    where: { invitedUserId: user.id, status: "PENDING" },
+  });
 
-  // ── Cached AI advice ───────────────────────────────────────────────────────
-  const advice = hasData
+  // ── Cached AI advice (primary Space) ──────────────────────────────────────
+  const advice = hasData && primaryCtx
     ? await db.aiAdvice.findFirst({
-        where:   { spaceId },
+        where:   { spaceId: primaryCtx.spaceId },
         orderBy: { generatedAt: "desc" },
         select:  { summary: true, adviceText: true },
       })
     : null;
 
-  // ── Pending space invites ──────────────────────────────────────────────
-  const pendingInviteCount = await db.spaceInvite.count({
-    where: { invitedUserId: user.id, status: "PENDING" },
-  });
-
-  // ── Visit state & context ─────────────────────────────────────────────────
+  // ── Visit state ───────────────────────────────────────────────────────────
   const state   = visitState(lastViewedAt, hasData);
   const context = contextLine(state, displayName);
 
   // ── Build sections ─────────────────────────────────────────────────────────
   const sections: BriefSection[] = [];
 
-  if (!hasData) {
+  if (!hasData || !primaryCtx) {
     sections.push(buildOnboarding());
   } else {
     const sinceSection = buildSinceLastVisit(
-      netWorth,
-      prevNetWorth,
-      accounts.length,
-      sinceLabel(lastViewedAt),
+      primaryCtx,
+      totalAccountCount,
+      lastViewedAt,
       pendingInviteCount,
     );
     if (sinceSection) sections.push(sinceSection);
 
-    const attentionSection = buildAttention(accounts, netWorth, cash);
+    const attentionSection = buildAttention(allSignals, primaryCtx);
     if (attentionSection) sections.push(attentionSection);
 
-    const insightSection = buildInsight(netWorth, totalAssets, totalDebt, cash, advice);
+    const insightSection = buildInsight(allSignals, primaryCtx, advice);
     if (insightSection) sections.push(insightSection);
   }
 
-  // Map data is kept in the payload for future hero pin rendering —
-  // it no longer renders as a standalone section card.
-  const map = deriveMapMarkers(accounts);
-
-  // Sort by priority ascending (lower = higher up the page)
   sections.sort((a, b) => a.priority - b.priority);
+
+  // ── Map data (empty markers in brief mode — no per-account detail available)
+  // Map hero rendering does not require markers in the current UI.
+  const map: FinancialMapData = { markers: [], hasLocations: false };
 
   const payload: BriefPayload = {
     visitState:  state,
