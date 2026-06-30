@@ -35,7 +35,7 @@ Each step's own investigation/implementation report under `docs/initiatives/d2/`
 | Sub-step | What | Status |
 |---|---|---|
 | **2A** | PLAID dual-write helper (`lib/accounts/provider-identity.ts`) wired into `app/api/plaid/exchange-token/route.ts`'s create / fingerprint-repoint / exact-match branches. Best-effort, non-fatal. `connectionId` left `null` (Step 1A's `Connection` rows are not yet populated for PLAID — that's an Open Decision, not yet made). | ✅ |
-| WALLET dual-write | Not started — blocked on the same WALLET identity semantics question as 1C-C. | ⛔ |
+| WALLET dual-write | `dualWriteProviderAccountIdentity(id, ProviderType.WALLET, walletAddress)` wired into `app/api/accounts/wallet/route.ts`'s active-match, archived-match, and fresh-create branches. | ✅ |
 
 ## Step 3 — Read cutover
 
@@ -51,7 +51,7 @@ All read sites identified by the 3A investigation now resolve via `ProviderAccou
 | **3D** | `lib/accounts/reconcile.ts`'s `findActiveAccountByIdentity` (PLAID branch) cut over — propagates automatically to both restore routes that call it. | ✅ |
 | **3E** | `lib/plaid/refresh.ts` — balance lookup and holdings cross-reference, both cut over together. | ✅ |
 | **3F** | `lib/plaid/syncTransactions.ts`'s `resolveFinancialAccountId()` and `exchange-token/route.ts`'s holdings cross-reference, both cut over together. | ✅ |
-| WALLET read cutover | Not started — blocked on the same WALLET identity semantics question as 1C-C/Step 2. | ⛔ |
+| WALLET read cutover | Permanently excluded from read cutover by design (D2 Step 1D §5) — not a pending decision. | ⛔ |
 
 **Fallback removal (legacy-field fallback in 3C–3F) is deferred to Step 7 (Stabilization), not tracked as active Step 3 work.** It is not a numbered Step 3 sub-step — see Step 7 below. (An earlier audit report informally referred to this future decision as "Step 3G" before a separate audit task also claimed that label for itself; this roadmap resolves the collision by dropping the "3G" designation entirely and placing the fallback-removal decision under Step 7 instead.)
 
@@ -82,14 +82,18 @@ This formalizes and supersedes the informal "§8 CSV imports — design" sketch 
 
 ## Step 6 — First real new provider
 
-⏳ **Planned. Not started. Candidate, not yet selected:**
+🔶 **Two candidates closed; sync-side candidate still not selected:**
 
-- Wallet/xpub (extends the existing single-address BTC tracking into real credential-backed multi-address support — §7 of the architecture doc).
-- CSV Import (would validate the Step 4/5 import adapter shape against a real file-based provider).
+Closed:
+- Wallet watch-only single-address provider — ✅ already shipped (`app/api/accounts/wallet/route.ts`; dual-write wired since Step 2). See `docs/initiatives/d2/D2_STEP6_FIRST_PROVIDER_INVESTIGATION.md`.
+- CSV Import — ✅ already validated by D2-5 (`lib/imports/provider-capabilities.ts`, commit `18f0922`). See `docs/initiatives/d2/D2_STEP6_FIRST_PROVIDER_INVESTIGATION.md` §3.
+
+Open candidates, not yet selected:
+- Wallet xpub / multi-address / signed-message verification (extends the existing single-address BTC tracking into real credential-backed multi-address support — §7 of the architecture doc) — ⏸ Deferred (v2.7).
 - Coinbase (would validate the sync adapter shape against a real exchange).
 - Schwab (would validate the sync adapter shape against a real brokerage).
 
-Selecting one is itself a decision to be made when Steps 4/5 are far enough along to need a real adapter to validate against — not assumed or pre-selected here (mirrors Open Decision 2 in the architecture doc, which has carried unresolved since the original investigation).
+Selecting the first real **sync**-side provider (Coinbase, Schwab, or wallet xpub) is still an open decision, to be made when Steps 4/5 are far enough along to need a real adapter to validate against — not assumed or pre-selected here (mirrors Open Decision 2 in the architecture doc, which has carried unresolved since the original investigation).
 
 ## Step 7 — Stabilization
 
@@ -107,7 +111,7 @@ Selecting one is itself a decision to be made when Steps 4/5 are far enough alon
 
 ## Required notes (canon)
 
-**WALLET identities are deferred.** `ProviderAccountIdentity` rows are not backfilled or dual-written for WALLET, and no WALLET read path has been cut over. This is deliberate, not an oversight — the 1C-C investigation found that `FinancialAccount.walletAddress` does not map onto provider identity the same clean way `plaidAccountId` does once ownership/watch-only/claim semantics are considered (e.g. who "owns" a watched address that isn't the connecting user's own wallet). WALLET work across Steps 1C, 2, and 3 stays blocked until those semantics are explicitly resolved as their own decision — not bundled into any PLAID-scoped step, and not assumed resolved by this roadmap update.
+**WALLET identity backfill (1C-C) and read cutover (Step 3) are permanently excluded by design — not pending decisions.** Dual-write (Step 2) is wired: `ProviderAccountIdentity` rows are written for WALLET via `dualWriteProviderAccountIdentity` in `app/api/accounts/wallet/route.ts`. Backfill and read cutover are different — the 1C-C investigation found that `FinancialAccount.walletAddress` does not map onto provider identity the same clean way `plaidAccountId` does once ownership/watch-only/claim semantics are considered (e.g. who "owns" a watched address that isn't the connecting user's own wallet). Per D2 Step 1D §5, WALLET reads stay direct/owner-scoped permanently — a public address can't resolve through a globally-unique identity table without leaking cross-owner existence. This is a resolved architectural exclusion, not an open decision awaiting resolution.
 
 **CSV/import history is now explicitly D2 Step 4, formally split into 4A–4D.** The architecture doc's §8 "CSV imports — design" sketch is real design rationale and is retained as-is, but it was never sequenced as a numbered step until the original roadmap update, and was further refined into 4A (investigation, complete) / 4B (`ImportBatch` + `Transaction` provenance columns, schema only) / 4C (shared fingerprint helper, extracted from `reconcile.ts` and `syncTransactions.ts`) / 4D (the actual import pipeline) after the 4A investigation surfaced enough detail to warrant the split — see `docs/initiatives/d2/D2_STEP4_ROADMAP_REFINEMENT.md` for the rationale. No 4B/4C/4D implementation work starts until each is individually and explicitly approved on its own implementation checklist, per the standing "produce a checklist, wait for approval, then implement only that decision" working style — 4A's completion does not pre-approve 4B, 4C, or 4D.
 

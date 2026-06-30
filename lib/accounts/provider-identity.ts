@@ -11,12 +11,14 @@
  *     happens in exactly that one file. lib/accounts/reconcile.ts never
  *     writes plaidAccountId on either side of a merge, so it needs no
  *     changes and is not a caller of this helper.
- *   - WALLET is not wired to this helper — deferred pending the collision
- *     decision in docs/initiatives/d2/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md
- *     (owner-scoped wallet dedup vs. this table's global unique constraint).
- *     The helper is written generically over ProviderType so it can be
- *     reused for WALLET later without a signature change, but nothing calls
- *     it with provider=WALLET today.
+ *   - WALLET is also wired to this helper — called from
+ *     app/api/accounts/wallet/route.ts's active-match, archived-match, and
+ *     fresh-create branches (provider=WALLET, externalAccountId=walletAddress).
+ *     The owner-scoped wallet dedup vs. this table's global unique constraint
+ *     question raised in docs/initiatives/d2/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md
+ *     applies to WALLET backfill and read cutover, not to dual-write — see
+ *     docs/initiatives/d2/D2_ROADMAP.md's "Required notes" for the current
+ *     status of each.
  *   - connectionId is always null — Connection has zero writers anywhere in
  *     this codebase yet (confirmed via repo-wide grep); wiring
  *     PlaidItem -> Connection is a separate, later decision.
