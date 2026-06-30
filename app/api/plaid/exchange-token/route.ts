@@ -33,7 +33,7 @@ import { plaidClient } from "@/lib/plaid/client";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
-import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, VisibilityLevel, ProviderType } from "@prisma/client";
+import { AccountType, PlaidItemStatus, AccountOwnerType, ShareStatus, VisibilityLevel, ProviderType, ConnectionStatus } from "@prisma/client";
 import { getSpaceContext } from "@/lib/space";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
@@ -105,12 +105,67 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // 5b. D2 Slice A — Connection dual-write (PLAID).
+    //
+    // Upsert a Connection row keyed on (userId, provider=PLAID,
+    // externalConnectionId=institution_id). Connection.externalConnectionId
+    // stores the institution_id — the stable, institution-level identifier —
+    // not the item_id, which belongs to PlaidItem. This lets one Connection
+    // survive PlaidItem rotation: re-links that produce a new item_id update
+    // the same Connection row rather than creating a second one.
+    //
+    // Connection.credential uses the CONNECTION_CREDENTIAL HKDF subkey,
+    // isolated from PlaidItem.encryptedToken's PLAID_ACCESS_TOKEN subkey —
+    // both encrypt the same access_token but under separate purpose-derived
+    // keys per D14. PlaidItem remains the source of truth for all existing
+    // Plaid flows; Connection is the forward-compatible dual-write target.
+    //
+    // Best-effort / non-fatal: a failure here never blocks the import.
+    // connectionId is null if the write fails; AccountConnection still records
+    // plaidItemDbId as before, so nothing regresses.
+    let connectionId: string | null = null;
+    try {
+      const encryptedCredential = encryptWithPurpose(
+        access_token,
+        EncryptionPurpose.CONNECTION_CREDENTIAL,
+      );
+      const existingConn = await db.connection.findFirst({
+        where:  { userId, provider: ProviderType.PLAID, externalConnectionId: institution_id },
+        select: { id: true },
+      });
+      if (existingConn) {
+        await db.connection.update({
+          where: { id: existingConn.id },
+          data:  {
+            credential: encryptedCredential,
+            status:     ConnectionStatus.ACTIVE,
+            errorCode:  null,
+          },
+        });
+        connectionId = existingConn.id;
+      } else {
+        const created = await db.connection.create({
+          data: {
+            userId,
+            provider:             ProviderType.PLAID,
+            externalConnectionId: institution_id,
+            credential:           encryptedCredential,
+            status:               ConnectionStatus.ACTIVE,
+          },
+          select: { id: true },
+        });
+        connectionId = created.id;
+      }
+    } catch (connErr) {
+      console.warn("[plaid][D2-SliceA] Connection dual-write failed (non-fatal):", connErr);
+    }
+
     // 6. Fetch accounts from Plaid
     const accountsRes = await plaidClient.accountsGet({ access_token });
     const plaidAccounts = accountsRes.data.accounts;
     console.log(`[plaid] institution "${institution_name}" connected — ${plaidAccounts.length} account(s) found`);
 
-    // 7. Upsert each account as FinancialAccount + AccountConnection + WorkspaceAccountShare
+    // 7. Upsert each account as FinancialAccount + AccountConnection + SpaceAccountLink
     let imported = 0;
     const importedIds: string[] = [];
 
@@ -263,6 +318,9 @@ export async function POST(req: NextRequest) {
       await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
 
       // ── Upsert AccountConnection ─────────────────────────────────────────────
+      // D2 Slice A: connectionId is set when the Connection dual-write (step 5b)
+      // succeeded; null otherwise. plaidItemDbId is always set — PlaidItem
+      // remains the source of truth. Both FKs coexist; neither is removed here.
       const existingConn = await db.accountConnection.findFirst({
         where: {
           financialAccountId: fa.id,
@@ -277,6 +335,7 @@ export async function POST(req: NextRequest) {
             financialAccountId: fa.id,
             connectedByUserId:  userId,
             plaidItemDbId:      plaidItem.id,
+            connectionId:       connectionId,   // D2 Slice A — null if dual-write failed
             syncStatus:         "synced",
             isCanonical:        true,
           },
@@ -286,7 +345,14 @@ export async function POST(req: NextRequest) {
           where: { id: existingConn.id },
           // Same reasoning as the FinancialAccount update above — restore a
           // soft-deleted connection on relink rather than leaving it orphaned.
-          data:  { syncStatus: "synced", lastSyncedAt: new Date(), deletedAt: null },
+          // connectionId: only set when the dual-write succeeded and the row
+          // doesn't already have one (avoid overwriting a valid id with null).
+          data: {
+            syncStatus:   "synced",
+            lastSyncedAt: new Date(),
+            deletedAt:    null,
+            ...(connectionId && !existingConn.connectionId && { connectionId }),
+          },
         });
       }
 

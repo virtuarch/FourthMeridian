@@ -6,11 +6,21 @@
  * After the user completes Link, the public_token is sent to /api/plaid/exchange-token.
  *
  * Query params:
- *   plaidItemId (optional) — D2-7E reconnect flow. When provided, the token
- *   is created in Plaid Link **update mode** (existing item's access_token
- *   passed back to Plaid) so the reconnect preserves the same item_id,
- *   letting /api/plaid/exchange-token heal the existing PlaidItem row
- *   instead of creating a duplicate. Ownership-checked against the caller.
+ *   plaidItemId   (optional) — D2-7E reconnect flow. When provided, the token
+ *                  is created in Plaid Link **update mode** (existing item's
+ *                  access_token passed back to Plaid) so the reconnect
+ *                  preserves the same item_id, letting
+ *                  /api/plaid/exchange-token heal the existing PlaidItem row
+ *                  instead of creating a duplicate. Ownership-checked against
+ *                  the caller. Takes precedence over institutionId.
+ *
+ *   institutionId (optional) — D2 Slice A auto-detection. When provided,
+ *                  checks whether the user already has an ACTIVE credential
+ *                  for this institution (Connection layer first, PlaidItem
+ *                  layer as legacy fallback). If found, puts Link in update
+ *                  mode to prevent a duplicate credential being created for
+ *                  the same institution. If not found, falls through to a
+ *                  normal fresh-link flow. Ignored when plaidItemId is set.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -20,17 +30,22 @@ import { requireUser } from "@/lib/session";
 import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
+import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client";
 
 export async function GET(req: NextRequest) {
   const [user, err] = await requireUser();
   if (err) return err;
 
   try {
-    // D2-7E — reconnect flow: optional plaidItemId triggers update mode.
+    // D2-7E — explicit reconnect by PlaidItem ID (reconnect badge).
+    // Takes precedence over institutionId auto-detection below.
     const reconnectItemId = req.nextUrl.searchParams.get("plaidItemId");
+    // D2 Slice A — institution-level auto-detection (Add Account flow).
+    const institutionId   = req.nextUrl.searchParams.get("institutionId");
     let accessToken: string | undefined;
 
     if (reconnectItemId) {
+      // Existing path — unchanged from D2-7E.
       const existing = await db.plaidItem.findFirst({
         where:  { id: reconnectItemId, userId: user.id },
         select: { encryptedToken: true },
@@ -39,6 +54,47 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
       }
       accessToken = decryptWithPurpose(existing.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
+    } else if (institutionId) {
+      // D2 Slice A — auto-detect an existing credential for this institution.
+      // Check Connection layer first (written by exchange-token since Slice A);
+      // fall back to PlaidItem for credentials that predate Slice A and have
+      // no Connection row yet.
+      const existingConnection = await db.connection.findFirst({
+        where:  {
+          userId:               user.id,
+          provider:             ProviderType.PLAID,
+          externalConnectionId: institutionId,
+          status:               ConnectionStatus.ACTIVE,
+        },
+        select: { credential: true },
+      });
+
+      if (existingConnection?.credential) {
+        accessToken = decryptWithPurpose(
+          existingConnection.credential,
+          EncryptionPurpose.CONNECTION_CREDENTIAL,
+        );
+        console.log(
+          `[plaid][D2-SliceA] institution ${institutionId} — existing Connection found, opening Link in update mode`,
+        );
+      } else {
+        // Legacy fallback: PlaidItem has no Connection row yet (pre-Slice-A link).
+        const existingItem = await db.plaidItem.findFirst({
+          where:   { userId: user.id, institutionId, status: PlaidItemStatus.ACTIVE },
+          select:  { encryptedToken: true },
+          orderBy: { updatedAt: "desc" },
+        });
+        if (existingItem) {
+          accessToken = decryptWithPurpose(
+            existingItem.encryptedToken,
+            EncryptionPurpose.PLAID_ACCESS_TOKEN,
+          );
+          console.log(
+            `[plaid][D2-SliceA] institution ${institutionId} — existing PlaidItem found (no Connection row yet), opening Link in update mode`,
+          );
+        }
+        // Neither found → accessToken stays undefined → normal fresh-link flow.
+      }
     }
 
     // redirect_uri is required for OAuth institutions (Chase, BoA, Wells Fargo, etc.)
