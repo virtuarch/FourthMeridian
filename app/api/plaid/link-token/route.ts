@@ -4,19 +4,43 @@
  * Generates a short-lived Plaid Link token for the current user.
  * The frontend passes this token to react-plaid-link to open the Link UI.
  * After the user completes Link, the public_token is sent to /api/plaid/exchange-token.
+ *
+ * Query params:
+ *   plaidItemId (optional) — D2-7E reconnect flow. When provided, the token
+ *   is created in Plaid Link **update mode** (existing item's access_token
+ *   passed back to Plaid) so the reconnect preserves the same item_id,
+ *   letting /api/plaid/exchange-token heal the existing PlaidItem row
+ *   instead of creating a duplicate. Ownership-checked against the caller.
  */
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { plaidClient, PLAID_ENV } from "@/lib/plaid/client";
 import { CountryCode, Products } from "plaid";
 import { requireUser } from "@/lib/session";
 import { parsePlaidError } from "@/lib/plaid/errors";
+import { db } from "@/lib/db";
+import { decrypt } from "@/lib/plaid/encryption";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const [user, err] = await requireUser();
   if (err) return err;
 
   try {
+    // D2-7E — reconnect flow: optional plaidItemId triggers update mode.
+    const reconnectItemId = req.nextUrl.searchParams.get("plaidItemId");
+    let accessToken: string | undefined;
+
+    if (reconnectItemId) {
+      const existing = await db.plaidItem.findFirst({
+        where:  { id: reconnectItemId, userId: user.id },
+        select: { encryptedToken: true },
+      });
+      if (!existing) {
+        return NextResponse.json({ error: "Plaid item not found" }, { status: 404 });
+      }
+      accessToken = decrypt(existing.encryptedToken);
+    }
+
     // redirect_uri is required for OAuth institutions (Chase, BoA, Wells Fargo, etc.)
     // in Production. Must be HTTPS and registered in the Plaid Dashboard.
     // Set PLAID_REDIRECT_URI in .env.local. For local dev use an ngrok/tunnel HTTPS URL.
@@ -29,6 +53,7 @@ export async function GET() {
     console.log("[plaid] link-token config:", {
       env:           PLAID_ENV,
       client_name:   "Fourth Meridian",
+      mode:          accessToken ? "update" : "new",
       products:      products.map(String),
       country_codes: country_codes.map(String),
       redirect_uri:  redirectUri ? "set" : "NOT SET (OAuth institutions will fail)",
@@ -37,9 +62,11 @@ export async function GET() {
     const response = await plaidClient.linkTokenCreate({
       user:          { client_user_id: user.id },
       client_name:   "Fourth Meridian",
-      products,
       country_codes,
       language:      "en",
+      // Update mode: pass access_token, omit products (Plaid requires this —
+      // see LinkTokenCreateRequest docs). Default mode: unchanged from before.
+      ...(accessToken ? { access_token: accessToken } : { products }),
       ...(redirectUri && { redirect_uri: redirectUri }),
     });
 

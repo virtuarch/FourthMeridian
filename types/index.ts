@@ -43,6 +43,14 @@ export interface Account {
    * 'error'   = last sync failed
    */
   syncStatus?: 'synced' | 'pending' | 'error' | 'manual';
+  /**
+   * D2-7E reconnect flow. True only when the *current* user's own Plaid
+   * connection to this account is NEEDS_REAUTH — never true for a Space
+   * member viewing an account they don't own/connect. See getAccounts().
+   */
+  needsReauth?: boolean;
+  /** PlaidItem.id to pass to openLink() for reconnect. Set iff needsReauth. */
+  plaidItemId?: string;
 }
 
 export interface Holding {

@@ -3,6 +3,7 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate } from "@/lib/format";
 import { Account } from "@/types";
 import { Building2, TrendingUp, Bitcoin, CreditCard, PiggyBank } from "lucide-react";
+import { ReconnectAccountButton } from "@/components/dashboard/ReconnectAccountButton";
 
 const icons: Record<string, React.ElementType> = {
   checking: Building2,
@@ -50,6 +51,13 @@ export function AccountCard({ account }: Props) {
       <p className="text-xs text-gray-500">
         Updated {formatDate(account.lastUpdated)}
       </p>
+      {/* D2-7E — needsReauth/plaidItemId are already scoped to the current
+          user's own connection by getAccounts(), so no further ownership
+          check is needed here: a Space member never sees this for an
+          account connected by someone else. */}
+      {account.needsReauth && account.plaidItemId && (
+        <ReconnectAccountButton plaidItemId={account.plaidItemId} />
+      )}
     </Card>
   );
 }

@@ -21,7 +21,7 @@
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { Account, Holding } from "@/types";
-import { ShareStatus } from "@prisma/client";
+import { ShareStatus, PlaidItemStatus } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
 
 /**
@@ -35,6 +35,10 @@ import { estimateMinimumPayment } from "@/lib/debt";
  */
 export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]> {
   const { spaceId } = ctx ?? (await getSpaceContext());
+  // D2-7E — current user, for the reconnect-badge ownership check below.
+  // getSpaceContext() is cache()-memoized per request, so this costs nothing
+  // extra even when the caller already passed a resolved `ctx`.
+  const { userId } = await getSpaceContext();
 
   const links = await db.spaceAccountLink.findMany({
     where: {
@@ -42,7 +46,23 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
       status:           ShareStatus.ACTIVE,
       financialAccount: { deletedAt: null },
     },
-    include: { financialAccount: { include: { debtProfile: true } } },
+    include: {
+      financialAccount: {
+        include: {
+          debtProfile: true,
+          // D2-7E — only enough to compute needsReauth/plaidItemId below.
+          // No other change to this query.
+          connections: {
+            where:  { deletedAt: null, plaidItemDbId: { not: null } },
+            select: {
+              connectedByUserId: true,
+              plaidItemDbId:     true,
+              plaidItem:         { select: { status: true } },
+            },
+          },
+        },
+      },
+    },
     orderBy: [
       { financialAccount: { type: "asc" } },
       { financialAccount: { name: "asc" } },
@@ -52,6 +72,15 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return links.map(({ financialAccount: r }: any) => {
     const profile = r.debtProfile ?? null;
+
+    // D2-7E — reconnect badge. Only true for the connection *this* user made
+    // themselves (AccountConnection.connectedByUserId), never for a Space
+    // member viewing an account shared by someone else — a joint account can
+    // have one healthy connection and one broken one.
+    const reauthConnection = (r.connections ?? []).find(
+      (c: { connectedByUserId: string; plaidItem: { status: PlaidItemStatus } | null }) =>
+        c.connectedByUserId === userId && c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH
+    );
 
     // Effective APR/minimum payment: DebtProfile (new, richer source) takes
     // precedence over the legacy flat columns when present.
@@ -98,6 +127,8 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
       walletChain:   r.walletChain   as Account["walletChain"] ?? undefined,
       nativeBalance: r.nativeBalance ?? undefined,
       syncStatus:    r.syncStatus    as Account["syncStatus"]  ?? undefined,
+      needsReauth:   !!reauthConnection,
+      plaidItemId:   reauthConnection?.plaidItemDbId ?? undefined,
     };
   });
 }
