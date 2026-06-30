@@ -22,6 +22,7 @@ import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 import { refreshPlaidItem, refreshAllActiveItemsForUser, type RefreshSummary } from "@/lib/plaid/refresh";
+import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 
 interface RefreshBody {
   plaidItemId?: string;
@@ -58,6 +59,13 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       };
     } catch (e) {
       console.error(`[POST /api/plaid/refresh] refresh failed for PlaidItem ${item.id}:`, e);
+      const health = classifyPlaidErrorForHealth(e);
+      if (health) {
+        await db.plaidItem.update({
+          where: { id: item.id },
+          data:  { status: health.status, errorCode: health.errorCode },
+        });
+      }
       return NextResponse.json({ error: "Refresh failed" }, { status: 500 });
     }
   } else {

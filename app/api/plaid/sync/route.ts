@@ -21,6 +21,7 @@ import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 
 interface SyncBody {
   plaidItemId?: string;
@@ -57,6 +58,13 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       results.push({ plaidItemId: item.id, institution: item.institutionName, ok: true, ...r });
     } catch (e) {
       console.error(`[POST /api/plaid/sync] sync failed for PlaidItem ${item.id}:`, e);
+      const health = classifyPlaidErrorForHealth(e);
+      if (health) {
+        await db.plaidItem.update({
+          where: { id: item.id },
+          data:  { status: health.status, errorCode: health.errorCode },
+        });
+      }
       results.push({ plaidItemId: item.id, institution: item.institutionName, ok: false });
     }
   }

@@ -26,6 +26,7 @@
 import { db } from "@/lib/db";
 import { PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 
 export async function syncBanks(): Promise<void> {
   const items = await db.plaidItem.findMany({
@@ -50,6 +51,13 @@ export async function syncBanks(): Promise<void> {
     } catch (e) {
       failed++;
       console.error(`[sync-banks] failed for institution "${item.institutionName}" (PlaidItem ${item.id}):`, e);
+      const health = classifyPlaidErrorForHealth(e);
+      if (health) {
+        await db.plaidItem.update({
+          where: { id: item.id },
+          data:  { status: health.status, errorCode: health.errorCode },
+        });
+      }
     }
   }
 

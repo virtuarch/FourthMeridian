@@ -13,6 +13,8 @@
  *   }
  */
 
+import { PlaidItemStatus } from "@prisma/client";
+
 // Subset of Plaid error codes we handle explicitly
 const USER_MESSAGES: Record<string, string> = {
   ITEM_LOGIN_REQUIRED:
@@ -94,4 +96,58 @@ export function parsePlaidError(err: unknown, fallback: string): ParsedError {
   }
 
   return { message: fallback, status: 500 };
+}
+
+// D2 Step 7A — connection health classification. Separate from
+// parsePlaidError() above: that function's `status` is an HTTP response
+// code for the client, not a health state to persist.
+//
+// NEEDS_REAUTH — credential is dead; Plaid Link re-authentication is the
+// actual fix.
+const NEEDS_REAUTH_CODES = new Set(["ITEM_LOGIN_REQUIRED", "INVALID_ACCESS_TOKEN"]);
+
+// Transient / provider-outage codes — log only, never write PlaidItem.status.
+// Kept out of the ERROR bucket on purpose: today's sync queries only ever
+// select status: ACTIVE, so moving a transient blip to ERROR would
+// permanently lock that item out of every existing sync path (no
+// retry/backoff or reconnect UI exists yet to recover it). See
+// docs/initiatives/d2/D2_STEP7A_CONNECTION_HEALTH_IMPLEMENTATION_CHECKLIST.md
+// §4/§7.
+const TRANSIENT_CODES = new Set([
+  "ITEM_LOCKED",
+  "INSTITUTION_DOWN",
+  "INSTITUTION_NOT_RESPONDING",
+  "PRODUCT_NOT_READY",
+]);
+
+export interface PlaidHealthResult {
+  status: typeof PlaidItemStatus.NEEDS_REAUTH | typeof PlaidItemStatus.ERROR;
+  errorCode: string;
+}
+
+/**
+ * Classifies a caught Plaid/sync error into a PlaidItem health state to
+ * persist, or null if it should be logged only (status left unchanged).
+ * Requires a real Plaid error_code (Axios-shaped error response) — never
+ * fires for transient codes above, rate limiting, or non-Axios exceptions
+ * (e.g. decrypt/env/DB errors), since blaming this specific item's
+ * credential for an infra-wide failure would be misleading.
+ */
+export function classifyPlaidErrorForHealth(err: unknown): PlaidHealthResult | null {
+  if (!isAxiosError(err)) return null;
+
+  const status = err.response?.status;
+  const code   = err.response?.data?.error_code;
+
+  if (status === 429) return null;
+  if (!code || TRANSIENT_CODES.has(code)) return null;
+
+  if (NEEDS_REAUTH_CODES.has(code)) {
+    return { status: PlaidItemStatus.NEEDS_REAUTH, errorCode: code };
+  }
+
+  // Everything else with a real Plaid error_code that isn't transient —
+  // INSTITUTION_NO_LONGER_SUPPORTED, INVALID_ENVIRONMENT, SANDBOX_ONLY, and
+  // any unrecognized code — is treated as unrecoverable-until-investigated.
+  return { status: PlaidItemStatus.ERROR, errorCode: code };
 }

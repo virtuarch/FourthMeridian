@@ -64,7 +64,7 @@
 import { plaidClient } from "@/lib/plaid/client";
 import { decrypt } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
-import { TransactionCategory, ProviderType } from "@prisma/client";
+import { TransactionCategory, ProviderType, PlaidItemStatus } from "@prisma/client";
 import type { Transaction as PlaidTransaction } from "plaid";
 import { findByFingerprint } from "@/lib/transactions/fingerprint";
 
@@ -273,7 +273,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
 
   await db.plaidItem.update({
     where: { id: plaidItemDbId },
-    data:  { cursor: cursor ?? null, lastSyncedAt: new Date() },
+    data:  { cursor: cursor ?? null, lastSyncedAt: new Date(), status: PlaidItemStatus.ACTIVE, errorCode: null },
   });
 
   console.log(

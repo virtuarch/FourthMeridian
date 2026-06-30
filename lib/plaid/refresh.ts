@@ -38,6 +38,7 @@ import { AccountType, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 
 // Mirrors app/api/plaid/exchange-token/route.ts's mapAccountType — kept as a
 // private copy here (not exported/shared) since refresh only needs it to
@@ -358,6 +359,13 @@ export async function refreshAllActiveItemsForUser(userId: string): Promise<Refr
       r.spacesSnapshotted.forEach((id) => snapshottedSpaceIds.add(id));
     } catch (e) {
       console.error(`[refreshAllActiveItemsForUser] refresh failed for PlaidItem ${item.id}:`, e);
+      const health = classifyPlaidErrorForHealth(e);
+      if (health) {
+        await db.plaidItem.update({
+          where: { id: item.id },
+          data:  { status: health.status, errorCode: health.errorCode },
+        });
+      }
       results.push({
         plaidItemId:          item.id,
         institution:          item.institutionName,
