@@ -17,3 +17,4 @@
 import './accounts';
 import './snapshot';
 import './goals';
+import './transactions';

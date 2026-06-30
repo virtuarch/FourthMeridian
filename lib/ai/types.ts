@@ -174,6 +174,84 @@ export interface AccountsSectionData {
 }
 
 // ---------------------------------------------------------------------------
+// Transactions summary domain types
+// ---------------------------------------------------------------------------
+
+/**
+ * Spending/income total for a single transaction category.
+ * `total` is always a positive number representing absolute value of spend
+ * (for expense categories) or raw inflow (for income categories).
+ */
+export interface CategorySpend {
+  category: string; // TransactionCategory value
+  total:    number; // absolute value
+  count:    number;
+}
+
+/**
+ * A merchant that appears two or more times in the query window —
+ * a deterministic, rule-based indicator of a recurring charge.
+ * No ML or LLM required.
+ */
+export interface RecurringCandidate {
+  merchant:      string;
+  occurrences:   number;
+  typicalAmount: number; // mean amount across occurrences (negative = expense)
+  category:      string;
+}
+
+/**
+ * Data payload for the 'transactions_summary' context domain.
+ *
+ * Summarizes banking transaction activity over a sliding window.
+ * Raw transaction rows are never included — this domain is intentionally
+ * aggregated-only to keep the context payload lean and avoid exposing
+ * line-item detail to AI consumers by default.
+ *
+ * Amount sign convention (mirrors Plaid / existing codebase):
+ *   positive → money in  (income, interest, incoming transfers)
+ *   negative → money out (expenses, payments, outgoing transfers)
+ *
+ * `byCategory` lists all categories present in the window.
+ * `recurringCandidates` is omitted when scopeHint='brief'.
+ */
+export interface TransactionsSummaryData {
+  windowDays:       number;
+  startDate:        string; // YYYY-MM-DD — window floor
+  endDate:          string; // YYYY-MM-DD — most recent transaction date (or today)
+  transactionCount: number; // settled + pending
+
+  // ── Cash flow totals ────────────────────────────────────────────────────
+  /** Sum of positive amounts in Income + Interest categories. */
+  incomeTotal:       number;
+  /** Absolute sum of negative amounts in non-transfer, non-payment categories. */
+  expenseTotal:      number;
+  /** Absolute sum of Payment category (debt repayment). */
+  debtPaymentTotal:  number;
+  /** Absolute sum of Transfer category (internal moves, both directions). */
+  transferTotal:     number;
+  /** incomeTotal − expenseTotal − debtPaymentTotal (excludes transfers). */
+  netCashFlow:       number;
+
+  // ── Pending ─────────────────────────────────────────────────────────────
+  pendingCreditCount: number;
+  pendingCreditTotal: number;
+  pendingDebitCount:  number;
+  /** Absolute value of pending outflows. */
+  pendingDebitTotal:  number;
+
+  // ── By category ─────────────────────────────────────────────────────────
+  byCategory: CategorySpend[];
+
+  // ── Highlights ──────────────────────────────────────────────────────────
+  largestIncome:  { merchant: string; amount: number; date: string } | null;
+  largestExpense: { merchant: string; amount: number; date: string } | null;
+
+  // ── Recurring candidates (omitted on scopeHint='brief') ─────────────────
+  recurringCandidates?: RecurringCandidate[];
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot domain types
 // ---------------------------------------------------------------------------
 
