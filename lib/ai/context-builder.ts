@@ -42,7 +42,7 @@ import { resolveSpaceContext } from '@/lib/space';
 import { AuditAction } from '@/lib/audit-actions';
 import { getDomainManifest } from '@/lib/ai/domain-manifest';
 import { getAssembler } from '@/lib/ai/assembler-registry';
-import { detectSignals } from '@/lib/ai/signal-registry';
+import { runSignalDetectors } from '@/lib/ai/signals';
 import type {
   SpaceContext_AI,
   ContextDomain,
@@ -193,7 +193,7 @@ export async function buildContext(
   //
   // Runs after all assemblers complete. No detectors exist in Slice 1.
 
-  const signals = detectSignals(domains, spaceId);
+  const signals = runSignalDetectors(domains, spaceId);
 
   // ── Step 6: Audit log ────────────────────────────────────────────────────
 

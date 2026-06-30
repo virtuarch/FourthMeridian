@@ -31,6 +31,10 @@ export type {
 export { FinanceDomains } from '@/lib/ai/types';
 export type { FinanceDomain } from '@/lib/ai/types';
 
+// Signals engine
+export { SignalType } from '@/lib/ai/signals';
+export type { SignalTypeValue } from '@/lib/ai/signals';
+
 // Domain-specific data types (for consumer type-narrowing)
 export type {
   AccountsSectionData,

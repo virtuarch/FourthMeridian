@@ -95,16 +95,17 @@ export interface AssemblerOptions {
  *   - 'critical' → requires prompt attention
  */
 export interface ContextSignal {
-  id:        string;           // stable deterministic id, e.g. `${domain}:${ruleId}`
-  domain:    string;           // which ContextDomain produced this signal
-  spaceId:   string;
-  severity:  'info' | 'warning' | 'critical';
-  title:     string;
-  body?:     string;
-  value?:    number;           // observed value (e.g. balance)
-  threshold?: number;          // rule threshold that triggered this signal
-  metadata?: Record<string, unknown>;
-  detectedAt: string;          // ISO-8601
+  id:         string;  // stable deterministic id — `${spaceId}:${type}` or `${spaceId}:${type}:${entityId}`
+  type:       string;  // SignalType constant — machine-readable signal kind (D4 Slice 5)
+  domain:     string;  // ContextDomain that produced this signal
+  spaceId:    string;
+  severity:   'info' | 'warning' | 'critical';
+  title:      string;  // short human-readable summary (the LLM consumes this)
+  body?:      string;  // optional additional detail
+  value?:     number;  // observed value (e.g. balance, count)
+  threshold?: number;  // rule threshold that triggered this signal
+  metadata?:  Record<string, unknown>;
+  detectedAt: string;  // ISO-8601
 }
 
 // ---------------------------------------------------------------------------
