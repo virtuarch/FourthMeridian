@@ -30,8 +30,11 @@
  *            Personal, Business, Household, or otherwise — so no separate
  *            backfill call is needed. ensureHomeLink() is no longer called
  *            anywhere; see its own doc comment.
- *   Rule 5 — best-effort, non-fatal: every exported write function catches
- *            its own errors and logs via console.warn; none of them throw.
+ *   Rule 5 — [REMOVED — D3 Rule 5 removal, ahead of B3 write cutover]
+ *            Previously: best-effort, non-fatal — write functions caught
+ *            errors and logged via console.warn without throwing. Removed
+ *            so that SpaceAccountLink failures surface to the caller now
+ *            that SAL is the primary write target.
  *   Rule 7 — no db.$transaction (see review doc §4 — none used anywhere in
  *            this codebase today).
  */
@@ -90,8 +93,7 @@ export async function resolveAccountCreatorUserId(financialAccountId: string): P
  *   3. Otherwise, this is an additional space gaining visibility into an
  *      account that already has its HOME elsewhere — SHARED.
  *
- * Never throws on its own — any DB error propagates to the caller, which
- * (per Rule 5) is expected to catch and log non-fatally.
+ * Never throws on its own — any DB error propagates to the caller.
  */
 export async function computeLinkKind(
   spaceId: string,
@@ -124,13 +126,12 @@ export interface SpaceAccountLinkWriteFields {
 }
 
 /**
- * Best-effort, non-fatal upsert of a single SpaceAccountLink row. `create`
- * and `update` are passed separately (rather than one shared object) so
- * each call site can mirror its WorkspaceAccountShare write exactly — some
- * sites reassert addedByUserId on update, most don't (see review doc §1
- * field-mapping table).
+ * Upsert of a single SpaceAccountLink row. `create` and `update` are passed
+ * separately (rather than one shared object) so each call site can mirror its
+ * WorkspaceAccountShare write exactly — some sites reassert addedByUserId on
+ * update, most don't (see review doc §1 field-mapping table).
  *
- * Never throws — logs via console.warn and returns on any failure (Rule 5).
+ * Throws on failure — callers are responsible for error handling.
  */
 export async function dualWriteSpaceAccountLink(params: {
   spaceId:            string;
@@ -139,35 +140,28 @@ export async function dualWriteSpaceAccountLink(params: {
   create:             SpaceAccountLinkWriteFields;
   update:             Partial<SpaceAccountLinkWriteFields>;
 }): Promise<void> {
-  try {
-    // params.creatorUserId is accepted for call-site backward compatibility
-    // (every existing dual-write call site still passes it) but is no longer
-    // used to compute kind — see computeLinkKind()'s doc comment.
-    const kind = await computeLinkKind(params.spaceId, params.financialAccountId);
-    await db.spaceAccountLink.upsert({
-      where: {
-        spaceId_financialAccountId: {
-          spaceId:            params.spaceId,
-          financialAccountId: params.financialAccountId,
-        },
-      },
-      create: {
+  // params.creatorUserId is accepted for call-site backward compatibility
+  // (every existing dual-write call site still passes it) but is no longer
+  // used to compute kind — see computeLinkKind()'s doc comment.
+  const kind = await computeLinkKind(params.spaceId, params.financialAccountId);
+  await db.spaceAccountLink.upsert({
+    where: {
+      spaceId_financialAccountId: {
         spaceId:            params.spaceId,
         financialAccountId: params.financialAccountId,
-        kind,
-        ...params.create,
       },
-      update: {
-        kind,
-        ...params.update,
-      },
-    });
-  } catch (err) {
-    console.warn(
-      `[dualWriteSpaceAccountLink] best-effort write failed (space=${params.spaceId}, account=${params.financialAccountId}) — non-fatal:`,
-      err
-    );
-  }
+    },
+    create: {
+      spaceId:            params.spaceId,
+      financialAccountId: params.financialAccountId,
+      kind,
+      ...params.create,
+    },
+    update: {
+      kind,
+      ...params.update,
+    },
+  });
 }
 
 /**
@@ -302,17 +296,12 @@ export async function ensureHomeLink(params: {
 }
 
 /**
- * Best-effort, non-fatal hard-delete of every SpaceAccountLink row for an
- * account — mirrors a WorkspaceAccountShare.deleteMany at a permanent-delete
- * call site (see app/api/accounts/manual/[id]/permanent/route.ts).
+ * Hard-delete of every SpaceAccountLink row for an account — mirrors a
+ * WorkspaceAccountShare.deleteMany at a permanent-delete call site
+ * (see app/api/accounts/manual/[id]/permanent/route.ts).
+ *
+ * Throws on failure — callers are responsible for error handling.
  */
 export async function dualDeleteSpaceAccountLinks(financialAccountId: string): Promise<void> {
-  try {
-    await db.spaceAccountLink.deleteMany({ where: { financialAccountId } });
-  } catch (err) {
-    console.warn(
-      `[dualDeleteSpaceAccountLinks] best-effort delete failed for account ${financialAccountId} (non-fatal):`,
-      err
-    );
-  }
+  await db.spaceAccountLink.deleteMany({ where: { financialAccountId } });
 }
