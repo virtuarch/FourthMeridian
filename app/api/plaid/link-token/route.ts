@@ -102,7 +102,11 @@ export async function GET(req: NextRequest) {
     // Set PLAID_REDIRECT_URI in .env.local. For local dev use an ngrok/tunnel HTTPS URL.
     const redirectUri = process.env.PLAID_REDIRECT_URI || undefined;
 
-    const products      = [Products.Transactions, Products.Investments];
+    // Investments intentionally omitted: AmEx and other credit-only institutions
+    // reject link tokens that include the investments product. Transactions covers
+    // the core data we need; investment holdings are synced separately if the
+    // institution supports it.
+    const products      = [Products.Transactions];
     const country_codes = [CountryCode.Us];
 
     // ── Server-side config log (safe fields only) ─────────────────────────────
