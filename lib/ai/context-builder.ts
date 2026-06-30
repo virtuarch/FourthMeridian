@@ -33,6 +33,10 @@
 
 import 'server-only';
 
+// Bootstrap: side-effect imports register all assemblers at module load time.
+// Add new assemblers to lib/ai/assemblers/index.ts — no changes needed here.
+import '@/lib/ai/assemblers';
+
 import { db } from '@/lib/db';
 import { resolveSpaceContext } from '@/lib/space';
 import { AuditAction } from '@/lib/audit-actions';

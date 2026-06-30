@@ -30,3 +30,10 @@ export type {
 
 export { FinanceDomains } from '@/lib/ai/types';
 export type { FinanceDomain } from '@/lib/ai/types';
+
+// Domain-specific data types (for consumer type-narrowing)
+export type {
+  AccountsSectionData,
+  AccountSummaryItem,
+  AccountHealthSummary,
+} from '@/lib/ai/types';

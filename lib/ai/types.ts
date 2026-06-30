@@ -108,6 +108,72 @@ export interface ContextSignal {
 }
 
 // ---------------------------------------------------------------------------
+// Domain-specific data shapes
+// ---------------------------------------------------------------------------
+
+/**
+ * Health summary for the accounts domain.
+ * Account names are only populated for FULL-visibility accounts — BALANCE_ONLY
+ * accounts contribute to error/stale counts but their names are never exposed.
+ */
+export interface AccountHealthSummary {
+  errorCount:              number;
+  staleCount:              number;
+  needsReauthCount:        number;
+  errorAccountNames:       string[]; // FULL visibility only
+  staleAccountNames:       string[]; // FULL visibility only
+  needsReauthAccountNames: string[]; // FULL visibility only
+}
+
+/**
+ * A single account entry in the accounts domain section.
+ * `name` is always the display-safe name — real name for FULL, generic label
+ * for BALANCE_ONLY. `institution` is omitted on BALANCE_ONLY entries.
+ */
+export interface AccountSummaryItem {
+  id:               string;
+  name:             string;
+  type:             string;
+  institution?:     string;
+  balance:          number;
+  currency:         string;
+  lastUpdated:      string; // ISO-8601
+  syncStatus?:      string | null;
+  needsReauth:      boolean;
+  visibilityLevel:  'FULL' | 'BALANCE_ONLY';
+}
+
+/**
+ * Data payload for the 'accounts' context domain.
+ *
+ * All monetary values are in the Space's primary currency (USD unless the
+ * majority of accounts differ). Mixed-currency balances are summed without
+ * conversion — a known limitation until multi-currency support lands.
+ *
+ * When assembled with scopeHint='brief', the `accounts` array is omitted
+ * to reduce payload size for the Daily Brief aggregator.
+ */
+export interface AccountsSectionData {
+  totalCount:         number;
+  totalAssets:        number;
+  totalLiabilities:   number;
+  netWorth:           number;
+  totalLiquid:        number;
+  totalInvestments:   number;
+  totalDigitalAssets: number;
+  totalRealAssets:    number;
+  counts: {
+    liquid:       number;
+    investments:  number;
+    digitalAssets: number;
+    realAssets:   number;
+    liabilities:  number;
+  };
+  health:    AccountHealthSummary;
+  accounts?: AccountSummaryItem[]; // omitted when scopeHint === 'brief'
+}
+
+// ---------------------------------------------------------------------------
 // Assembled context
 // ---------------------------------------------------------------------------
 
