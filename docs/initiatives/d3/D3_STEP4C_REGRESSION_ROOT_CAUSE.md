@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D3 Step 4C Regression — Root Cause Report
 
 Status: **investigation only. No code changed. 4D not touched.**

@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D6.3C — Investment Intelligence Investigation
 
 **Status:** Investigation only. No files changed. No implementation.

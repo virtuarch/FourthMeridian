@@ -6,9 +6,7 @@ A local-first personal finance intelligence platform. Runs on your laptop via Do
 
 ## Project Status
 
-**v2.0** — Space Platform
-
-Fourth Meridian is an actively developed personal project. The v2.0 release introduces the full multi-user space architecture on top of the v1.0 financial foundation (originally built as FinTracker, now the platform's default Space Template — see `fourth-meridian-product-language.md`). Features, APIs, and schemas evolve between versions.
+Current status, roadmap, initiative ledger, and known defects live in [`STATUS.md`](STATUS.md) — the project's single canonical operational document. Features, APIs, and schemas evolve between versions.
 
 ---
 
@@ -131,6 +129,14 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+### Alternative: run everything in Docker
+
+```bash
+docker compose up -d          # app + db containers
+npx prisma migrate dev && npx prisma generate
+open http://localhost:3000
+```
+
 ---
 
 ## Useful Commands
@@ -161,13 +167,7 @@ npm run db:reset      # Reset DB and re-run migrations (destroys data)
 
 ## Roadmap
 
-| Version | Theme |
-|---|---|
-| **v2.0** | Space Platform *(current)* |
-| **v2.0.1** | Cloud Staging — Vercel + Supabase |
-| **v2.1** | Collaborative Space Experience |
-| **v2.2** | Ambient Intelligence Foundation |
-| **v2.3** | Adaptive Dashboards & Specialized Space Intelligence |
+See [`STATUS.md`](STATUS.md) §5 for the current roadmap with phase exit criteria.
 
 ---
 

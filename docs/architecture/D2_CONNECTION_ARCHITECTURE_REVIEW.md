@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current state see `STATUS.md` at the repository root.
+
 # D2 Connection Architecture Review
 
 **Status: investigation complete. Read-only — no schema, migration, API, route, or application code was modified to produce this document.**

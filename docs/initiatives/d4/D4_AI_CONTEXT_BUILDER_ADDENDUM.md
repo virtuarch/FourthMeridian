@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D4 — AI Context Builder: Architecture Addendum
 
 **Status: Investigation only. No schema, migration, API, or application code was modified.**

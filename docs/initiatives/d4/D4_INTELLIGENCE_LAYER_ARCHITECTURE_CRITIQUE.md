@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D4 — Financial Intelligence Layer: Architectural Critique
 
 **Status: Investigation only. No schema, migration, API route, UI, or application code was modified.**

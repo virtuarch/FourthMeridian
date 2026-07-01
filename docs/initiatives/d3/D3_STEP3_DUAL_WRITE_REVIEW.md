@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D3 Step 3 — Dual-Write Review
 
 Status: **design only — no code changed in this step.**

@@ -1,3 +1,5 @@
+> **DECISION RECORD — immutable.** Sole authority for D-number definitions D1–D14. Records decisions, not status; initiative status lives in `STATUS.md` at the repository root.
+
 # Phase 2 Decision Matrix — Spaces, Connections & Marketplace Foundation
 
 **Status: Documentation only. No schema, migration, API, or application code was modified to produce this document.**

@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D3 Step 4D — Final Production Read Cutover: Implementation + Validation Report
 
 Status: **implemented, validated, stopping per instruction. Legacy retirement and D2/D4 not started.**

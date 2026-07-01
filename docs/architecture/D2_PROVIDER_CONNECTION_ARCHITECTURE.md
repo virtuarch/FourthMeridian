@@ -1,3 +1,5 @@
+> **DESIGN RECORD — immutable.** Sequencing sections (§10, §D) were superseded by the now-frozen D2 roadmap; residual D2 status lives in `STATUS.md` at the repository root.
+
 # D2 — Provider & Connection Architecture Investigation
 
 **Status: investigation complete. Read-only — no schema, migration, API, route, or application code was modified to produce this document.**

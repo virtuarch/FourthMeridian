@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** The five D2_ROADMAP.md corrections prescribed in §1 have been applied; residual D2/D3/D14 scope is tracked in `STATUS.md` §3 at the repository root.
+
 # v2.4 Completion Planning Investigation
 
 **Status: investigation only. No code, schema, migration, or documentation file was modified to produce this document.** Branch: `feature/phase-2-architecture`. Baseline: `v2.3.0`.

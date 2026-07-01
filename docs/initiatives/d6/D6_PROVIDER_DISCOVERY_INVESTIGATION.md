@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # Provider Discovery Investigation
 
 **Investigation only. No code, schema, or migration changes made. No roadmap

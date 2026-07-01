@@ -1,35 +1,26 @@
 # Fourth Meridian — Documentation
 
-Index of everything under `docs/`. Each top-level folder has one job; keep new docs in the matching folder rather than back at the root.
+Index of everything under `docs/`. For current project status, roadmap, initiative ledger, and known defects, see [`/STATUS.md`](../STATUS.md) — the only document allowed to describe current state.
 
-## Architecture
+## Documentation layers
 
-`architecture/` — Governing design records: the Phase 2 architecture freeze, the Phase 2 decision matrix, the database architecture review, cross-cutting connection/provider architecture docs, and the historical workspace→space rename plan. Treat these as the architecture decision record — read before starting new implementation work, don't re-litigate without a concrete blocker.
+| Layer | Location | Mutability | Authority |
+|---|---|---|---|
+| Canonical operational | `/STATUS.md` | Living — updated by any behavior-changing PR | Current state, roadmap, defects, initiative status |
+| Decision records | `architecture/` | Immutable — superseded, never edited | What was decided and why, as of their date |
+| Initiative history | `initiatives/<id>/` | Immutable once the initiative closes | How something was built |
+| Cross-cutting investigations | `investigations/` | Immutable | Design reasoning not owned by one initiative |
+| Operational references | `operations/` | Living | How to deploy and operate |
+| Archive | `archive/` | Immutable | Superseded material kept for history |
 
-## Operations
+## Folders
 
-`operations/` — Day-to-day operational references: deployment process, hydration rules, and the current project state snapshot. Update these as the running system changes, not as a historical log.
-
-## D1–D12 Initiatives
-
-`initiatives/d1/` … `initiatives/d12/` — One folder per Phase 2 decision (D1 DuplicateAccountCandidate, D2 Provider Adapter/Connection, D3 SpaceAccountLink, D4 AI Context Builder, etc.), holding that decision's investigation, implementation, and review docs together. Folders stay flat under 15 docs; split into `investigations/`, `implementations/`, `verification/` only once a folder crosses that threshold. Empty folders are placeholders for decisions not yet started.
-
-## Bugfixes
-
-`bugfixes/` — Point-in-time writeups of specific bugs and their fixes. Each file is a closed investigation; don't edit after the fix ships, file a new doc instead.
-
-## Releases
-
-`releases/` — Per-version release notes, named by version number (e.g. `v2.0.1.md`).
-
-## Archive
-
-`archive/` — Retired or superseded docs kept for history only. Gitignored — not part of the tracked source tree. Never edit archived docs; if something here becomes relevant again, copy it forward into an active folder instead.
-
-## Design System
-
-`design-system/` — The Fourth Meridian design language reference and its image assets.
-
-## Images
-
-`images/` — Shared screenshots and diagrams referenced from docs, including `images/architecture/` for the architecture diagrams used in `architecture/DATABASE_ARCHITECTURE_REVIEW.md`.
+- `architecture/` — Governing design records: Phase 2 architecture freeze, decision matrix, database architecture review, D2 connection/provider architecture. The Decision Matrix is the sole authority for D-numbers D1–D14.
+- `initiatives/<id>/` — One folder per initiative, holding its investigations, checklists, validations, and closeout. Folders stay flat under 15 docs; past that they split into `investigations/`, `implementation/`, `validation/`, `closeout/` with an `INDEX.md` (see `initiatives/d2/`).
+- `investigations/` — Cross-cutting or alias-mapped investigations (see STATUS.md §4 for D-number aliasing).
+- `bugfixes/` — Closed point-in-time bug writeups. Never edited after the fix ships.
+- `releases/` — Per-version release notes.
+- `operations/` — Deployment process and hydration rules.
+- `design-system/` — Design language reference and assets.
+- `images/` — Shared screenshots and diagrams.
+- `archive/` — Retired or superseded docs. Never edit archived docs; copy forward instead.

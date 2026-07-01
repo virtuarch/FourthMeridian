@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D3 Step 4C — Core Dashboard Read Cutover: Implementation + Validation Report
 
 Status: **implemented, validated, stopping per instruction. Do not begin 4D.**

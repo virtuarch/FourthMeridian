@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D6/D7 — Provider Catalog Investigation (v2.4 Refresh)
 
 **Investigation only. No code, schema, migration, or roadmap documentation

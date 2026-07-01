@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D3 Stabilization — Fix Manual HOME Race: Implementation + Validation Report
 
 Status: **implemented, validated where possible, stopping per instruction. Legacy retirement and D2/D4 not started.**

@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D3 Step 2 — Backfill Design Review
 
 **Status: design only. No schema, migration, route, or application code was modified to produce this document.**

@@ -1,3 +1,5 @@
+> **SUPERSEDED FOR STATUS — kept for method.** The initiative status table in §1 was accurate on 2026-06-30 and is superseded by `STATUS.md` §3 at the repository root (which corrects D4, D5, and D14). The audit method in §0 remains a useful reference.
+
 # Phase 2 Canonical Roadmap Audit
 
 **Audit only. No schema, migration, API, UI, or roadmap documentation was

@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D0 Step 2 — Documentation Reorganization Implementation Report
 
 **Status: complete.** Executes the move plan from `D0_DOCUMENTATION_IA_REVIEW.md`, with the two adjustments approved by Chris (flat D2/D3, root `docs/README.md`).

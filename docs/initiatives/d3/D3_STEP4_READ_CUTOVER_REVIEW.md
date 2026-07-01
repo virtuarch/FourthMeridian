@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D3 Step 4 — Read Cutover Investigation
 
 Read-only research. No code, schema, or migrations were changed to produce this report.

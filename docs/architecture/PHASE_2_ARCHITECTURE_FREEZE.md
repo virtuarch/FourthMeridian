@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** Architecture baseline as of 2026-06-22. Schema line references and some model claims (e.g. Holding FKs) predate D11. For current state see `STATUS.md` at the repository root.
+
 # Phase 2 Architecture Freeze — Spaces, Connections & Marketplace Foundation
 
 **Status: FROZEN — pending product/eng approval. Documentation only. No schema, migration, API, or application code was modified to produce this document.**

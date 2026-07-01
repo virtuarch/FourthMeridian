@@ -1,6 +1,8 @@
 # D2 Roadmap — Provider & Connection Architecture
 
-**Status: documentation canon. This is the live, single source of truth for D2 step sequencing. No code, schema, or migration changes were made to produce this document.**
+> **FROZEN — historical record.** This roadmap is no longer maintained. Residual D2 scope (Step 4D remainder, Step 5 full scope, Step 6 sync-provider selection, Step 7 Stabilization) is tracked in `STATUS.md` §3 (D2 row) at the repository root, the project's sole source of truth for current status.
+
+**Status: frozen implementation record. No code, schema, or migration changes were made to produce this document.**
 
 Branch: `feature/phase-2-architecture`. Baseline: `v2.3.0`.
 

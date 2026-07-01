@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D0 — Documentation Information Architecture Review
 
 **Status: investigation only. No files moved, renamed, or created (other than this report). No folders created. No links edited.**

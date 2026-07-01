@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** Source review that the Phase 2 Architecture Freeze reconciled. For current state see `STATUS.md` at the repository root.
+
 # Fourth Meridian — Database Architecture Review
 
 **Current State vs. Future State — Spaces Platform Evolution**

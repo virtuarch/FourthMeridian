@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D4 — Layer 2 Financial Intelligence Investigation
 
 **Status: Investigation only. No schema, migration, API route, UI, or application code was modified.**

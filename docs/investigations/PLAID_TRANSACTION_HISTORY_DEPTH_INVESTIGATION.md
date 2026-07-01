@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # Plaid Transaction History Depth — Investigation Report
 
 **Date:** 2026-07-01  

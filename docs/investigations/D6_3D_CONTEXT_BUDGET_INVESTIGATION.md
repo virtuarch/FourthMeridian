@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D6.3D — Context Budget & Priority Investigation
 
 **Status:** Investigation only. No code, no schema, no file changes proposed for

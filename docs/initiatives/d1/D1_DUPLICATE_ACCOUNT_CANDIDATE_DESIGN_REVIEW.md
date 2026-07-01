@@ -1,3 +1,5 @@
+> **POINT-IN-TIME RECORD — immutable.** For current project status see `STATUS.md` at the repository root.
+
 # D1 — DuplicateAccountCandidate Design Review
 
 **Status: Planning only. No schema, migration, API, or application code was modified to produce this document.**
