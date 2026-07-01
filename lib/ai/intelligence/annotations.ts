@@ -31,6 +31,7 @@
 import type {
   SpaceContext_AI,
   TransactionsSummaryData,
+  MonthlyBreakdownEntry,
   SnapshotSectionData,
   AccountsSectionData,
   GoalsSectionData,
@@ -321,6 +322,67 @@ export interface SpendingOpportunitySection {
   hasTransactionData:      boolean;
 }
 
+// ── 2.3B Spending Trends Engine types (D6.3B-1) ───────────────────────────────
+
+/** Direction of a metric's month-over-month movement. */
+export type TrendDirection = 'RISING' | 'FALLING' | 'FLAT' | 'INSUFFICIENT_DATA';
+
+/** Which cash-flow metric a trend line describes. */
+export type SpendingTrendMetric = 'income' | 'expense' | 'net';
+
+/**
+ * Deterministic month-over-month trend for a single cash-flow metric.
+ *
+ * Computed EXCLUSIVELY from complete calendar months in
+ * TransactionsSummaryData.monthlyBreakdown — every month flagged `partial`
+ * is excluded before any comparison. Fields are null when there is not enough
+ * complete-month history to compute them (< 2 months for MoM, < 3 for rolling).
+ *
+ * `net` mirrors the top-level netCashFlow convention: income − expense − debt
+ * payments (transfers excluded).
+ */
+export interface MetricTrend {
+  metric:                SpendingTrendMetric;
+  /** YYYY-MM of the most recent complete month, or null when none. */
+  latestCompleteMonth:   string | null;
+  /** YYYY-MM of the prior complete month, or null when < 2 complete months. */
+  previousCompleteMonth: string | null;
+  /** latest − previous. null when < 2 complete months. */
+  momDeltaAbs:           number | null;
+  /**
+   * Percentage change vs the previous complete month, using |previous| as the
+   * denominator so the sign follows the delta. null when < 2 complete months
+   * or the previous value is 0 (division undefined).
+   */
+  momDeltaPct:           number | null;
+  /** Mean over the 3 most recent complete months. null when < 3 complete months. */
+  rolling3moAvg:         number | null;
+  /**
+   * Movement classification. INSUFFICIENT_DATA when < 2 complete months exist —
+   * the LLM must NOT infer or narrate a trend in that case.
+   */
+  direction:             TrendDirection;
+}
+
+/**
+ * Deterministic spending-trends facts (D6.3B-1).
+ *
+ * Consumes TransactionsSummaryData.monthlyBreakdown ONLY — no new queries, no
+ * LLM, no schema access. All comparative math uses complete months exclusively;
+ * partial months are excluded and listed in `partialMonthsExcluded`.
+ *
+ * This slice intentionally covers month-over-month deltas, a 3-month rolling
+ * average, and a direction classification only. No seasonality and no category
+ * drift are computed here.
+ */
+export interface SpendingTrendsSection {
+  confidence:             ConfidenceLevel;
+  completeMonthsAnalyzed: number;
+  /** YYYY-MM keys excluded from comparisons because the window clipped them. */
+  partialMonthsExcluded:  string[];
+  metricTrends:           MetricTrend[];
+}
+
 // ── 2.4 Goal Alignment Engine types ──────────────────────────────────────────
 
 /** Alignment status of a single goal based on observable behavior. */
@@ -477,6 +539,7 @@ export interface RiskOpportunitySection {
  *   capitalAllocation    — 2.1 Capital Allocation Engine (with evidence)
  *   debtStrategy         — 2.2 Debt Strategy Engine
  *   spendingOpportunities — 2.3 Spending Opportunity Engine
+ *   spendingTrends       — 2.3B Spending Trends Engine (deterministic MoM/rolling)
  *   goalAlignment        — 2.4 Goal Alignment Engine
  *   investmentReadiness  — 2.5 Investment Readiness Engine
  *   riskOpportunities    — 2.6 Risk & Opportunity Engine (aggregates 2.1–2.5 + base)
@@ -489,6 +552,7 @@ export interface FinancialAssessment {
   capitalAllocation:     CapitalAllocationSection;      // 2.1
   debtStrategy:          DebtStrategySection;           // 2.2
   spendingOpportunities: SpendingOpportunitySection;    // 2.3
+  spendingTrends:        SpendingTrendsSection;         // 2.3B
   goalAlignment:         GoalAlignmentSection;          // 2.4
   investmentReadiness:   InvestmentReadinessSection;    // 2.5
   riskOpportunities:     RiskOpportunitySection;        // 2.6
@@ -769,6 +833,132 @@ function computeSpendingOpportunities(
     topReductionOpportunity,
     categoriesNeedingReview,
     hasTransactionData:      true,
+  };
+}
+
+// ── 2.3B Spending Trends computation (D6.3B-1) ────────────────────────────────
+
+/** ±% band around zero within which a month-over-month move is reported as FLAT. */
+const TREND_FLAT_PCT = 2;
+
+/** Round to cents (2 dp). */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Value of a single cash-flow metric for one month.
+ * `net` mirrors the top-level netCashFlow definition (income − expense − debt
+ * payments; transfers excluded).
+ */
+function metricValue(m: MonthlyBreakdownEntry, metric: SpendingTrendMetric): number {
+  if (metric === 'income')  return m.incomeTotal;
+  if (metric === 'expense') return m.expenseTotal;
+  return m.incomeTotal - m.expenseTotal - m.debtPaymentTotal; // net
+}
+
+/**
+ * Build the deterministic MoM / rolling trend for one metric from the ordered
+ * list of COMPLETE months (oldest → newest). Callers must pass complete months
+ * only — partial months are filtered upstream.
+ */
+function computeMetricTrend(
+  metric:   SpendingTrendMetric,
+  complete: MonthlyBreakdownEntry[],
+): MetricTrend {
+  const n = complete.length;
+
+  if (n === 0) {
+    return {
+      metric,
+      latestCompleteMonth:   null,
+      previousCompleteMonth: null,
+      momDeltaAbs:           null,
+      momDeltaPct:           null,
+      rolling3moAvg:         null,
+      direction:             'INSUFFICIENT_DATA',
+    };
+  }
+
+  const latest    = complete[n - 1];
+  const latestVal = metricValue(latest, metric);
+
+  let previousCompleteMonth: string | null = null;
+  let momDeltaAbs: number | null = null;
+  let momDeltaPct: number | null = null;
+  let direction: TrendDirection  = 'INSUFFICIENT_DATA';
+
+  // MoM requires ≥ 2 complete months.
+  if (n >= 2) {
+    const prev    = complete[n - 2];
+    const prevVal = metricValue(prev, metric);
+    previousCompleteMonth = prev.month;
+    momDeltaAbs = round2(latestVal - prevVal);
+    // |previous| as denominator so pct sign follows the delta; undefined at 0.
+    momDeltaPct = prevVal !== 0 ? round2((momDeltaAbs / Math.abs(prevVal)) * 100) : null;
+
+    direction =
+      momDeltaPct !== null && Math.abs(momDeltaPct) < TREND_FLAT_PCT ? 'FLAT' :
+      momDeltaAbs > 0 ? 'RISING' :
+      momDeltaAbs < 0 ? 'FALLING' :
+      'FLAT';
+  }
+
+  // Rolling 3-month average requires ≥ 3 complete months.
+  let rolling3moAvg: number | null = null;
+  if (n >= 3) {
+    const last3 = complete.slice(n - 3);
+    const sum   = last3.reduce((s, m) => s + metricValue(m, metric), 0);
+    rolling3moAvg = round2(sum / 3);
+  }
+
+  return {
+    metric,
+    latestCompleteMonth: latest.month,
+    previousCompleteMonth,
+    momDeltaAbs,
+    momDeltaPct,
+    rolling3moAvg,
+    direction,
+  };
+}
+
+/**
+ * 2.3B Spending Trends Engine.
+ *
+ * Deterministically derives month-over-month deltas, a 3-month rolling average,
+ * and a direction classification for income, expense, and net — reading ONLY
+ * TransactionsSummaryData.monthlyBreakdown. Partial months are excluded from all
+ * comparisons and reported separately. No seasonality, no category drift, no LLM.
+ *
+ * Pure function. No DB queries, no side effects.
+ */
+export function computeSpendingTrends(
+  txn: TransactionsSummaryData | null,
+): SpendingTrendsSection {
+  const breakdown = txn?.monthlyBreakdown ?? [];
+
+  // monthlyBreakdown is already ordered oldest → newest by the assembler.
+  const partialMonthsExcluded = breakdown.filter((m) => m.partial).map((m) => m.month);
+  const complete              = breakdown.filter((m) => !m.partial);
+  const completeMonthsAnalyzed = complete.length;
+
+  // Confidence reflects available complete-month history for this slice:
+  //   < 2 → LOW  (no MoM), 2 → MEDIUM (MoM only), ≥ 3 → HIGH (MoM + rolling).
+  const confidence: ConfidenceLevel =
+    completeMonthsAnalyzed < 2 ? 'LOW' :
+    completeMonthsAnalyzed < 3 ? 'MEDIUM' :
+    'HIGH';
+
+  const metricTrends: MetricTrend[] = (['income', 'expense', 'net'] as const).map(
+    (metric) => computeMetricTrend(metric, complete),
+  );
+
+  return {
+    confidence,
+    completeMonthsAnalyzed,
+    partialMonthsExcluded,
+    metricTrends,
   };
 }
 
@@ -1822,6 +2012,11 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
 
   const spendingOpportunities = computeSpendingOpportunities(txn, dataQuality);
 
+  // ── Step 8B: Spending Trends (2.3B) ─────────────────────────────────────
+  // Deterministic MoM / rolling trends from monthlyBreakdown complete months.
+
+  const spendingTrends = computeSpendingTrends(txn);
+
   // ── Step 9: Goal Alignment (2.4) ────────────────────────────────────────
 
   const goalAlignment = computeGoalAlignment(goals, cashFlow, debtSection, txn, snap);
@@ -1857,6 +2052,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     capitalAllocation,
     debtStrategy,
     spendingOpportunities,
+    spendingTrends,
     goalAlignment,
     investmentReadiness,
     riskOpportunities,

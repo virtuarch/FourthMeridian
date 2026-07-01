@@ -53,8 +53,10 @@ import type {
   TransactionsSummaryData,
   CategorySpend,
   RecurringCandidate,
+  MerchantSummary,
   MonthlyBreakdownEntry,
 } from '@/lib/ai/types';
+import { normalizeMerchant } from '@/lib/transactions/merchant';
 import type { SpaceContext } from '@/lib/space';
 
 // ---------------------------------------------------------------------------
@@ -94,6 +96,13 @@ const WINDOW_FULL_DAYS  = 90;
 
 /** Number of top categories surfaced per month in the monthly breakdown. */
 const MONTHLY_TOP_CATEGORIES = 3;
+
+/**
+ * Cap on merchants emitted in the (D6.3A-1) merchant rollup. Grouping happens
+ * over all settled rows; only the top N by absolute total are serialized so the
+ * context payload stays bounded for Spaces with a long merchant tail.
+ */
+const MERCHANT_ROLLUP_LIMIT = 25;
 
 /**
  * Defensive ceiling on an explicit (D6) window. The routing layer already caps
@@ -320,6 +329,84 @@ async function assembleTransactions(
     );
   }
 
+  // ── Merchant rollup (D6.3A-1 — canonicalized, settled rows, full scope) ───
+  // Groups settled rows by the deterministic canonical merchant key
+  // (lib/transactions/merchant.ts) so downstream consumers see one entry per
+  // merchant instead of one per raw statement descriptor. `total` is the
+  // absolute settled sum (mirrors byCategory/cash-flow money conventions);
+  // `category` is the merchant's dominant category. All categories present in
+  // the query are included (the query already scopes to BANKING_CATEGORIES) —
+  // no additional category exclusions here, unlike recurringCandidates.
+
+  let merchants: MerchantSummary[] | undefined;
+
+  if (scopeHint !== 'brief') {
+    type MerchantAgg = {
+      canonicalName: string;
+      total:         number;                      // absolute settled sum
+      occurrences:   number;
+      firstSeen:     string;                      // YYYY-MM-DD
+      lastSeen:      string;                      // YYYY-MM-DD
+      categoryCount: Map<string, { count: number; absTotal: number }>;
+    };
+
+    const merchantMap = new Map<string, MerchantAgg>();
+
+    for (const txn of settled) {
+      const { canonicalKey, canonicalName } = normalizeMerchant(txn.merchant);
+      const iso = txn.date.toISOString().split('T')[0];
+      const abs = Math.abs(txn.amount);
+
+      const agg = merchantMap.get(canonicalKey) ?? {
+        canonicalName,
+        total:         0,
+        occurrences:   0,
+        firstSeen:     iso,
+        lastSeen:      iso,
+        categoryCount: new Map<string, { count: number; absTotal: number }>(),
+      };
+
+      agg.total       += abs;
+      agg.occurrences += 1;
+      if (iso < agg.firstSeen) agg.firstSeen = iso;
+      if (iso > agg.lastSeen)  agg.lastSeen  = iso;
+
+      const cat = agg.categoryCount.get(txn.category) ?? { count: 0, absTotal: 0 };
+      cat.count    += 1;
+      cat.absTotal += abs;
+      agg.categoryCount.set(txn.category, cat);
+
+      merchantMap.set(canonicalKey, agg);
+    }
+
+    merchants = Array.from(merchantMap.entries())
+      .map(([canonicalKey, agg]): MerchantSummary => {
+        // Dominant category: most transactions, ties broken by larger abs total.
+        let dominant = '';
+        let best = { count: -1, absTotal: -1 };
+        for (const [category, stat] of agg.categoryCount) {
+          if (
+            stat.count > best.count ||
+            (stat.count === best.count && stat.absTotal > best.absTotal)
+          ) {
+            dominant = category;
+            best = stat;
+          }
+        }
+        return {
+          canonicalName: agg.canonicalName,
+          canonicalKey,
+          occurrences:   agg.occurrences,
+          total:         Math.round(agg.total * 100) / 100,
+          category:      dominant,
+          firstSeen:     agg.firstSeen,
+          lastSeen:      agg.lastSeen,
+        };
+      })
+      .sort((a, b) => b.total - a.total)
+      .slice(0, MERCHANT_ROLLUP_LIMIT);
+  }
+
   // ── Assemble payload ──────────────────────────────────────────────────────
 
   const data: TransactionsSummaryData = {
@@ -360,6 +447,7 @@ async function assembleTransactions(
       : null,
 
     ...(recurringCandidates !== undefined ? { recurringCandidates } : {}),
+    ...(merchants !== undefined ? { merchants } : {}),
   };
 
   return {

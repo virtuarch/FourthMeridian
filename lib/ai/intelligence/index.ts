@@ -12,7 +12,7 @@
  *   FinancialAnnotations → FinancialAssessment
  */
 
-export { computeAssessment, computeAnnotations } from './annotations';
+export { computeAssessment, computeAnnotations, computeSpendingTrends } from './annotations';
 
 export type {
   FinancialAssessment,
@@ -31,6 +31,10 @@ export type {
   SpendingOpportunitySection,
   SpendingCategoryOpportunity,
   SpendingCategoryClassification,
+  SpendingTrendsSection,
+  MetricTrend,
+  SpendingTrendMetric,
+  TrendDirection,
   GoalAlignmentSection,
   GoalAlignmentItem,
   GoalAlignmentStatus,

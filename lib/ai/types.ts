@@ -300,6 +300,35 @@ export interface MonthlyBreakdownEntry {
 }
 
 /**
+ * A canonicalized merchant rollup over the query window (D6.3A-1 — Merchant
+ * Intelligence foundation). Rows are grouped by a deterministic canonical key
+ * (see lib/transactions/merchant.ts); no ML or LLM is involved.
+ *
+ * Money semantics mirror the top-level cash-flow aggregation: `total` is the
+ * absolute sum of SETTLED amounts for this merchant (pending rows are excluded,
+ * matching byCategory / cash-flow conventions). `category` is the merchant's
+ * dominant TransactionCategory (most transactions; ties broken by larger
+ * absolute total). `firstSeen` / `lastSeen` bound the merchant's activity
+ * inside the window.
+ */
+export interface MerchantSummary {
+  /** Display-safe canonical merchant name. */
+  canonicalName: string;
+  /** Uppercased grouping key the name collapses to (stable across spellings). */
+  canonicalKey:  string;
+  /** Settled transaction count for this merchant in the window. */
+  occurrences:   number;
+  /** Absolute sum of settled amounts (spend/flow magnitude). */
+  total:         number;
+  /** Dominant TransactionCategory for this merchant. */
+  category:      string;
+  /** Earliest settled transaction date for this merchant (YYYY-MM-DD). */
+  firstSeen:     string;
+  /** Latest settled transaction date for this merchant (YYYY-MM-DD). */
+  lastSeen:      string;
+}
+
+/**
  * A merchant that appears two or more times in the query window —
  * a deterministic, rule-based indicator of a recurring charge.
  * No ML or LLM required.
@@ -369,6 +398,121 @@ export interface TransactionsSummaryData {
 
   // ── Recurring candidates (omitted on scopeHint='brief') ─────────────────
   recurringCandidates?: RecurringCandidate[];
+
+  // ── Merchant rollup (D6.3A-1; omitted on scopeHint='brief') ──────────────
+  /**
+   * Canonicalized per-merchant rollup over the window, sorted by absolute total
+   * descending and capped to the top N merchants to bound prompt size. Grouped
+   * by deterministic canonical key (lib/transactions/merchant.ts). Omitted when
+   * scopeHint='brief'.
+   */
+  merchants?: MerchantSummary[];
+}
+
+// ---------------------------------------------------------------------------
+// Holdings summary domain types (D6.3C-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single aggregated investment position for the holdings domain.
+ *
+ * Positions are aggregated by `symbol` across every FULL-visibility account —
+ * two brokerages both holding VTI produce one entry whose `value` is the sum.
+ * `weight` is the fraction of `analyzedInvestedValue` (FULL-visibility, non-cash)
+ * this symbol represents, in [0, 1].
+ *
+ * Positions are ONLY ever populated from FULL-visibility accounts. Holdings in
+ * BALANCE_ONLY / SUMMARY_ONLY accounts contribute to the aggregate value totals
+ * but never appear here — their symbols must not leak across Space membership
+ * boundaries (mirrors the accounts assembler's BALANCE_ONLY guarantee).
+ */
+export interface HoldingPosition {
+  symbol: string;
+  name:   string;
+  value:  number; // summed market value across FULL accounts
+  weight: number; // 0..1, fraction of analyzedInvestedValue
+}
+
+/**
+ * Concentration classification for the analyzable (FULL-visibility, non-cash)
+ * portion of the portfolio.
+ *   INSUFFICIENT_DATA — no analyzable positions (all holdings hidden or cash)
+ *   DIVERSIFIED       — no meaningful single-name or top-heavy concentration
+ *   MODERATE          — some concentration, not yet a risk
+ *   CONCENTRATED      — a single name or top cluster dominates
+ *   HIGHLY_CONCENTRATED — extreme single-name or top-cluster dominance
+ */
+export type ConcentrationClassification =
+  | 'INSUFFICIENT_DATA'
+  | 'DIVERSIFIED'
+  | 'MODERATE'
+  | 'CONCENTRATED'
+  | 'HIGHLY_CONCENTRATED';
+
+/**
+ * Deterministic concentration metrics over the analyzable (FULL-visibility,
+ * non-cash) positions, all computed relative to `analyzedInvestedValue`.
+ *
+ * All metric fields are null when there are no analyzable positions
+ * (classification === 'INSUFFICIENT_DATA').
+ *
+ *   topWeight         — largest single-symbol weight, 0..1
+ *   top5Weight        — sum of the five largest weights, 0..1 (or fewer if <5)
+ *   herfindahl        — Σ(weight²), 0..1; higher = more concentrated
+ *   effectiveHoldings — 1 / herfindahl; intuitive "effective number of positions"
+ */
+export interface HoldingsConcentration {
+  classification:    ConcentrationClassification;
+  topSymbol:         string | null;
+  topWeight:         number | null;
+  top5Weight:        number | null;
+  herfindahl:        number | null;
+  effectiveHoldings: number | null;
+}
+
+/**
+ * Data payload for the 'holdings_summary' context domain (D6.3C-1).
+ *
+ * Deterministic, value-based investment intelligence computed from existing
+ * Holding rows — no cost basis, no returns, no asset-class/sector data (see
+ * `dataLimits`). All monetary values are in the Space's primary currency;
+ * mixed-currency holdings are summed without conversion, matching the accounts
+ * assembler's known limitation.
+ *
+ * ── Visibility model (mirrors lib/ai/assemblers/accounts.ts) ─────────────────
+ * Aggregate value totals (totalPortfolioValue, investedValue, cashValue,
+ * cashPct) include EVERY visible account regardless of visibility level — these
+ * are sums and reveal nothing identifying, exactly like the accounts domain
+ * totals. Position-level detail (topPositions, positionCount, concentration) is
+ * computed ONLY over FULL-visibility accounts. When any visible account is
+ * BALANCE_ONLY / SUMMARY_ONLY and holds positions, `positionsPartiallyHidden`
+ * is true and a note is added to `dataLimits`.
+ *
+ * `topPositions` is omitted when scopeHint === 'brief'.
+ */
+export interface HoldingsSummaryData {
+  /** All visible holdings incl. synthetic cash rows. */
+  totalPortfolioValue: number;
+  /** Non-cash holdings across all visible accounts. */
+  investedValue:       number;
+  /** Synthetic uninvested-cash rows (isCash) across all visible accounts. */
+  cashValue:           number;
+  /** cashValue / totalPortfolioValue, 0..1 (0 when total is 0). */
+  cashPct:             number;
+  /** Count of distinct symbols in the analyzable (FULL, non-cash) set. */
+  positionCount:       number;
+  /** Value the concentration analysis is computed over (FULL, non-cash). */
+  analyzedInvestedValue: number;
+  /** True when some visible accounts are shared below FULL visibility and
+   *  their positions are therefore excluded from position/concentration analysis. */
+  positionsPartiallyHidden: boolean;
+  /** Largest analyzable positions by value, descending (≤ HOLDINGS_TOP_N).
+   *  Omitted when scopeHint === 'brief'. */
+  topPositions?:       HoldingPosition[];
+  concentration:       HoldingsConcentration;
+  /** Deterministic statements of what this domain cannot answer, so the LLM
+   *  never implies cost basis, gains, returns, or asset-class data exists. */
+  dataLimits:          string[];
 }
 
 // ---------------------------------------------------------------------------

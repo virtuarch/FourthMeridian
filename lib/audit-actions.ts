@@ -81,6 +81,9 @@ export const AuditAction = {
 
   // ── AI Context ───────────────────────────────────────────────────────────────
   AI_CONTEXT_ASSEMBLED:     "AI_CONTEXT_ASSEMBLED",
+  // Shadow-mode selection plan (D6.3D-1). Records what a token-budgeted
+  // selection WOULD include/trim. Purely observational — no prompt is changed.
+  AI_CONTEXT_SELECTION_PLANNED: "AI_CONTEXT_SELECTION_PLANNED",
 } as const;
 
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];

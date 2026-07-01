@@ -55,6 +55,9 @@ import { computeAssessment }        from '@/lib/ai/intelligence';
 import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { classifyFinancialIntent, serializeRoutingBlock } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
+import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
+import { AuditAction }               from '@/lib/audit-actions';
+import type { Prisma }               from '@prisma/client';
 
 export const preferredRegion = 'sin1';
 export const runtime         = 'nodejs';
@@ -67,6 +70,53 @@ const ELIGIBLE_ROLES: SpaceMemberRole[] = [
   SpaceMemberRole.ADMIN,
   SpaceMemberRole.MEMBER,
 ];
+
+// ── Shadow-mode context selection logging (D6.3D-1) ──────────────────────────
+//
+// Computes a deterministic SelectionPlan for each assembled context and writes
+// it to the AuditLog as AI_CONTEXT_SELECTION_PLANNED. This is OBSERVATIONAL
+// ONLY: the plan is never consulted when building the system prompt, so prompt
+// output is byte-for-byte unchanged. Any failure here is swallowed so shadow
+// logging can never affect the chat response.
+//
+// The existing AI_CONTEXT_ASSEMBLED row is written inside buildContext(), before
+// the intent route and assessment exist, so it cannot carry the plan. A separate
+// row is the low-risk, additive way to capture it.
+async function logShadowSelectionPlans(
+  userId:      string,
+  contexts:    SpaceContext_AI[],
+  assessments: FinancialAssessment[],
+  intentRoute: IntentRoute,
+): Promise<void> {
+  try {
+    await Promise.all(
+      contexts.map((context, i) => {
+        const assessment = assessments[i];
+        if (!assessment) return Promise.resolve(null);
+
+        const plan = planContextSelection({
+          intentRoute,
+          context,
+          assessment,
+          budgetTokens: DEFAULT_CONTEXT_BUDGET_TOKENS,
+        });
+
+        return db.auditLog.create({
+          data: {
+            action:   AuditAction.AI_CONTEXT_SELECTION_PLANNED,
+            userId,
+            spaceId:  context.spaceId,
+            metadata: plan as unknown as Prisma.InputJsonValue,
+          },
+          select: { id: true },
+        });
+      }),
+    );
+  } catch (err) {
+    // Non-fatal: shadow logging must never break the chat response.
+    console.error('[api/ai/chat] shadow selection-plan logging failed (non-fatal):', err);
+  }
+}
 
 // ── System prompt builder ────────────────────────────────────────────────────
 
@@ -430,6 +480,29 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
       );
     }
 
+    // ── Merchant summary (D6.3A-1 deterministic merchant rollup) ─────────────
+    // Canonicalized per-merchant totals over the same window. Compact top-N by
+    // spend so the model can answer "who do I spend the most with" without
+    // parsing the raw JSON blob. Totals are absolute settled sums for the
+    // window above — same period and denominator caveats apply.
+    if (txn.merchants && txn.merchants.length > 0) {
+      lines.push('');
+      lines.push(
+        'MERCHANT SUMMARY (top merchants by absolute settled spend in the window above — ' +
+        'grouped by canonical merchant name; totals are exact settled sums):',
+      );
+      for (const mrc of txn.merchants.slice(0, 8)) {
+        lines.push(
+          `  ${mrc.canonicalName}: ${fmtMoney(mrc.total)} across ${mrc.occurrences} txn(s), ` +
+          `mostly ${mrc.category}, ${mrc.firstSeen} → ${mrc.lastSeen}`,
+        );
+      }
+      lines.push(
+        '  Use these exact merchant totals for merchant questions; they cover only the window ' +
+        'above and exclude pending transactions.',
+      );
+    }
+
     lines.push('');
   }
 
@@ -700,6 +773,7 @@ function priorityGuidance(assessment: FinancialAssessment): string {
  *   6.  CAPITAL ALLOCATION      — 2.1: allocation context + evidence + primary/ignored domains.
  *   7.  DEBT STRATEGY           — 2.2: avalanche/snowball candidates + urgency.
  *   8.  SPENDING OPPORTUNITIES  — 2.3: category breakdown + discretionary total (conditional).
+ *   8B. SPENDING TRENDS        — 2.3B: deterministic MoM / rolling trends (conditional).
  *   9.  GOAL ALIGNMENT          — 2.4: per-goal alignment status (conditional).
  *   10. INVESTMENT READINESS    — 2.5: readiness context (conditional).
  *   11. RISK & OPPORTUNITY      — 2.6: top-3 aggregated risks + opportunities (conditional).
@@ -710,7 +784,7 @@ function serializeAssessmentBlock(assessment: FinancialAssessment, windowNote?: 
   const {
     dataQuality, cashFlow, debt, liquidity,
     capitalAllocation, debtStrategy,
-    spendingOpportunities, goalAlignment, investmentReadiness,
+    spendingOpportunities, spendingTrends, goalAlignment, investmentReadiness,
     riskOpportunities,
   } = assessment;
   const lines: string[] = [];
@@ -934,6 +1008,58 @@ function serializeAssessmentBlock(assessment: FinancialAssessment, windowNote?: 
     if (spendingOpportunities.categoriesNeedingReview.length > 0) {
       lines.push(`  Review needed: ${spendingOpportunities.categoriesNeedingReview.join(', ')}`);
     }
+    lines.push('');
+  }
+
+  // ── 8B. Spending Trends (2.3B) ────────────────────────────────────────────
+  // Deterministic month-over-month / rolling trends computed from COMPLETE
+  // months only (partial months are excluded upstream). Facts only — the LLM
+  // must not infer a trend where the direction is INSUFFICIENT_DATA.
+  if (
+    spendingTrends.completeMonthsAnalyzed > 0 ||
+    spendingTrends.partialMonthsExcluded.length > 0
+  ) {
+    lines.push(`SPENDING TRENDS  [confidence: ${spendingTrends.confidence}]`);
+    lines.push(
+      `  Complete months analyzed: ${spendingTrends.completeMonthsAnalyzed}` +
+      (spendingTrends.partialMonthsExcluded.length > 0
+        ? ` (excluded partial month(s): ${spendingTrends.partialMonthsExcluded.join(', ')})`
+        : ''),
+    );
+
+    for (const t of spendingTrends.metricTrends) {
+      const label = t.metric.charAt(0).toUpperCase() + t.metric.slice(1);
+
+      if (t.direction === 'INSUFFICIENT_DATA') {
+        lines.push(
+          `  ${label} [INSUFFICIENT_DATA]: fewer than 2 complete months — do not infer or state a trend.`,
+        );
+        continue;
+      }
+
+      const abs =
+        t.momDeltaAbs !== null
+          ? `${t.momDeltaAbs > 0 ? '+' : t.momDeltaAbs < 0 ? '−' : ''}${fmtMoney(Math.abs(t.momDeltaAbs))}`
+          : 'n/a';
+      const pct =
+        t.momDeltaPct !== null
+          ? ` (${t.momDeltaPct > 0 ? '+' : ''}${t.momDeltaPct.toFixed(1)}%)`
+          : '';
+      const roll =
+        t.rolling3moAvg !== null
+          ? `; 3-mo avg ${fmtMoney(t.rolling3moAvg)}`
+          : '; 3-mo avg n/a (needs 3 complete months)';
+
+      lines.push(
+        `  ${label} [${t.direction}]: ${t.latestCompleteMonth} vs ${t.previousCompleteMonth} ${abs}${pct}${roll}`,
+      );
+    }
+
+    lines.push(
+      '  Use only these deterministic figures. Where a metric is INSUFFICIENT_DATA, do NOT ' +
+      'infer, estimate, or narrate a trend for it. Partial / in-progress months are excluded ' +
+      'and must never be compared against complete months.',
+    );
     lines.push('');
   }
 
@@ -1293,7 +1419,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
 
-    systemPrompt = buildMasterSystemPrompt(contexts, contexts.map(computeAssessment), intentRoute);
+    const masterAssessments = contexts.map(computeAssessment);
+    systemPrompt = buildMasterSystemPrompt(contexts, masterAssessments, intentRoute);
+    // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
+    await logShadowSelectionPlans(user.id, contexts, masterAssessments, intentRoute);
     gapsForResponse = filterGapsByIntent(
       contexts.flatMap(extractKnowledgeGaps),
       detectsPayoffIntent(messages),
@@ -1335,7 +1464,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
 
-    systemPrompt = buildSpaceSystemPrompt(ctx, computeAssessment(ctx), intentRoute);
+    const assessment = computeAssessment(ctx);
+    systemPrompt = buildSpaceSystemPrompt(ctx, assessment, intentRoute);
+    // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
+    await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
     gapsForResponse = filterGapsByIntent(
       extractKnowledgeGaps(ctx),
       detectsPayoffIntent(messages),
