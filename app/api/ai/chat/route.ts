@@ -106,6 +106,25 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
 /**
  * Build the full system prompt for a single-Space chat session.
  */
+// ── Shared response-style rules ───────────────────────────────────────────────
+// Injected into every system prompt so single-Space and master modes behave
+// consistently. Keep these in sync if either prompt is updated.
+
+const RESPONSE_STYLE = [
+  'Response style:',
+  '- Be conversational and direct. Lead with your answer in 1–2 sentences.',
+  '- Mention only the 2–4 numbers most relevant to the question.',
+  '- Use short paragraphs. Use a compact bullet list only when comparing 3+ items or when the user explicitly asks for a list.',
+  '- Do not enumerate every field in the context. Synthesize; do not dump data.',
+  '- Never expose internal field names, type codes, or category labels in your reply.',
+  '',
+  'Formatting:',
+  '- The response is rendered as Markdown. Use Markdown formatting where it improves clarity.',
+  '- When the user explicitly requests a table, comparison, schedule, breakdown, matrix, checklist, or plan — produce a Markdown table (or tables) where it materially improves readability.',
+  '- For payoff schedules: if APR is not available in the context, clearly state that assumption, produce an approximate principal-only payoff table using a reasonable monthly payment, and note that interest charges will extend the actual schedule. Do not refuse solely because APR is unknown.',
+  '- For general questions, prose is preferred over tables.',
+].join('\n');
+
 function buildSpaceSystemPrompt(ctx: SpaceContext_AI): string {
   return [
     'You are the Fourth Meridian AI advisor for the space described below.',
@@ -114,12 +133,7 @@ function buildSpaceSystemPrompt(ctx: SpaceContext_AI): string {
     'If the context is insufficient to answer, say so clearly.',
     'Do not claim to execute actions, make trades, or modify any data.',
     '',
-    'Response style:',
-    '- Be conversational and direct. Lead with your answer in 1–2 sentences.',
-    '- Mention only the 2–4 numbers most relevant to the question.',
-    '- Use short paragraphs. Use a compact bullet list only when comparing 3+ items or when the user explicitly asks for a list.',
-    '- Do not enumerate every field in the context. Synthesize; do not dump data.',
-    '- Never expose internal field names, type codes, or category labels in your reply.',
+    RESPONSE_STYLE,
     '',
     '=== SPACE CONTEXT ===',
     serializeContextBlock(ctx),
@@ -150,12 +164,7 @@ function buildMasterSystemPrompt(contexts: SpaceContext_AI[]): string {
     'Do not claim to execute actions, make trades, or modify any data.',
     'When referencing data, attribute it to the correct space by name.',
     '',
-    'Response style:',
-    '- Be conversational and direct. Lead with your answer in 1–2 sentences.',
-    '- Mention only the 2–4 numbers most relevant to the question.',
-    '- Use short paragraphs. Use a compact bullet list only when comparing 3+ items or when the user explicitly asks for a list.',
-    '- Do not enumerate every field in the context. Synthesize; do not dump data.',
-    '- Never expose internal field names, type codes, or category labels in your reply.',
+    RESPONSE_STYLE,
     '',
     '=== SPACE CONTEXTS ===',
     spaceBlocks,

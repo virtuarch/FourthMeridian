@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
 import { Brain, Send, Clock, Zap, BarChart2, MessageSquare, ChevronDown } from "lucide-react";
@@ -38,6 +40,47 @@ const SUGGESTED_PROMPTS = [
 ];
 
 const ELIGIBLE_ROLES = new Set(["OWNER", "ADMIN", "MEMBER"]);
+
+// ── Markdown component overrides ──────────────────────────────────────────────
+// Defined once outside the render tree so the object reference is stable.
+// Cast to `any` at the call site — react-markdown@8 component map types are
+// incompatible with React 19's JSX namespace changes.
+const MD_COMPONENTS = {
+  h1: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-base text-white mb-1">{children}</p>,
+  h2: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-sm text-white mb-1">{children}</p>,
+  h3: ({ children }: { children: React.ReactNode }) => <p className="font-semibold text-sm text-gray-100 mb-0.5">{children}</p>,
+  p:  ({ children }: { children: React.ReactNode }) => <p className="mb-2 last:mb-0">{children}</p>,
+  strong: ({ children }: { children: React.ReactNode }) => <strong className="font-semibold text-white">{children}</strong>,
+  em: ({ children }: { children: React.ReactNode }) => <em className="italic text-gray-300">{children}</em>,
+  ul: ({ children }: { children: React.ReactNode }) => <ul className="list-disc pl-4 mb-2 space-y-0.5">{children}</ul>,
+  ol: ({ children }: { children: React.ReactNode }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
+  li: ({ children }: { children: React.ReactNode }) => <li className="text-gray-200">{children}</li>,
+  blockquote: ({ children }: { children: React.ReactNode }) => (
+    <blockquote className="border-l-2 border-blue-500/50 pl-3 text-gray-400 italic mb-2">{children}</blockquote>
+  ),
+  // Fenced code blocks come through with a className like "language-js";
+  // inline code has no className.
+  code: ({ children, className }: { children: React.ReactNode; className?: string }) =>
+    className ? (
+      <pre className="bg-gray-900 rounded-lg p-3 overflow-x-auto mb-2 text-xs text-green-300 font-mono">
+        <code>{children}</code>
+      </pre>
+    ) : (
+      <code className="bg-gray-900 rounded px-1 py-0.5 text-xs text-blue-300 font-mono">{children}</code>
+    ),
+  pre: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  hr: () => <hr className="border-gray-700 my-2" />,
+  table: ({ children }: { children: React.ReactNode }) => (
+    <div className="overflow-x-auto mb-2">
+      <table className="min-w-full text-xs border-collapse">{children}</table>
+    </div>
+  ),
+  thead: ({ children }: { children: React.ReactNode }) => <thead className="bg-gray-700/50">{children}</thead>,
+  tbody: ({ children }: { children: React.ReactNode }) => <tbody>{children}</tbody>,
+  tr: ({ children }: { children: React.ReactNode }) => <tr className="border-b border-gray-700/50">{children}</tr>,
+  th: ({ children }: { children: React.ReactNode }) => <th className="px-3 py-1.5 text-left font-semibold text-gray-200 whitespace-nowrap">{children}</th>,
+  td: ({ children }: { children: React.ReactNode }) => <td className="px-3 py-1.5 text-gray-300">{children}</td>,
+};
 
 export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, snapshotCount, assetClassCount, cryptoPct, userName }: Props) {
   const [tab, setTab] = useState<Tab>("review");
@@ -228,7 +271,7 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
 
       {/* AI Chat tab */}
       {tab === "chat" && (
-        <div className="flex flex-col h-[calc(100vh-280px)] min-h-[400px]">
+        <div className="flex flex-col h-[calc(100vh-180px)] min-h-[520px]">
           {/* Space selector */}
           <div className="mb-3 flex items-center gap-2">
             <span className="text-xs text-gray-500 shrink-0">Context:</span>
@@ -264,7 +307,12 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
                         : "bg-gray-800 text-gray-200 rounded-bl-sm"
                     }`}
                   >
-                    {m.content}
+                    {m.role === "user" ? m.content : (
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS as any}>
+                        {m.content}
+                      </ReactMarkdown>
+                    )}
                   </div>
                 </div>
               ))}
