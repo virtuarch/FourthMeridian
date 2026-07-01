@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
-import { Brain, Send, Clock, Zap, BarChart2, MessageSquare } from "lucide-react";
+import { Brain, Send, Clock, Zap, BarChart2, MessageSquare, ChevronDown } from "lucide-react";
 import type { AiAdvice, Snapshot } from "@/types";
 
 type Tab = "review" | "chat";
@@ -11,6 +11,12 @@ type Tab = "review" | "chat";
 interface Message {
   role: "user" | "assistant";
   content: string;
+}
+
+interface SpaceOption {
+  id: string;
+  name: string;
+  myRole: string;
 }
 
 interface Props {
@@ -31,56 +37,81 @@ const SUGGESTED_PROMPTS = [
   "What's my biggest risk right now?",
 ];
 
-function getMockResponse(input: string, ficoScore: number | null): string {
-  const lower = input.toLowerCase();
-  const MOCK_RESPONSES: Record<string, string> = {
-    debt: "Your total debt spans credit cards and other obligations. The highest-APR balances should be your top priority — pay those down aggressively before allocating to investments.",
-    crypto: "Your crypto allocation is within a conservative 5-10% band. No immediate action needed, but avoid adding more until cash reserves are fully built up.",
-    stocks: "Your stock portfolio has some tech concentration. Consider whether you want to rebalance toward more sectors for diversification.",
-    "net worth": "Your net worth has grown steadily over the past 30 days. Keep building cash reserves and paying down high-interest debt to continue the trend.",
-    "cash on hand": "Your 'cash on hand' is discretionary capital after reserving 3 months of estimated expenses. The AI recommends building reserves before deploying capital.",
-    fico: ficoScore != null
-      ? `Your FICO score is ${ficoScore}, which gives you access to favorable loan rates. Keep paying on time and keep utilization below 30%.`
-      : "No FICO score on file yet. Add one in the Credit tab to get personalized credit advice.",
-    default: "Based on your current portfolio snapshot, your net worth is trending upward. I'd recommend prioritizing liquidity before deploying new capital.",
-  };
+const ELIGIBLE_ROLES = new Set(["OWNER", "ADMIN", "MEMBER"]);
 
-  for (const [key, val] of Object.entries(MOCK_RESPONSES)) {
-    if (key !== "default" && lower.includes(key)) return val;
-  }
-  return MOCK_RESPONSES.default;
-}
-
-export function AnalyzeClient({ advice, ficoScore, latestSnapshot, snapshotCount, assetClassCount, cryptoPct, userName }: Props) {
+export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, snapshotCount, assetClassCount, cryptoPct, userName }: Props) {
   const [tab, setTab] = useState<Tab>("review");
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
       content:
-        `Hi ${userName} — I'm your Fourth Meridian AI advisor. I've been trained on your financial snapshot. Ask me anything about your portfolio, debt, cash position, or whether now is a good time to make a move.`,
+        `Hi ${userName} — I'm your Fourth Meridian AI advisor. I have access to your financial data. Ask me anything about your portfolio, debt, cash position, or whether now is a good time to make a move.`,
     },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [selectedSpaceId, setSelectedSpaceId] = useState<string>("master");
+  const [spaces, setSpaces] = useState<SpaceOption[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  function sendMessage(text?: string) {
+  // Fetch spaces once for the selector
+  useEffect(() => {
+    fetch("/api/spaces")
+      .then((r) => r.ok ? r.json() : Promise.reject(r.status))
+      .then((data: { mine: SpaceOption[] }) => {
+        setSpaces(data.mine.filter((s) => ELIGIBLE_ROLES.has(s.myRole)));
+      })
+      .catch(() => {
+        // Non-fatal: selector will just show "All My Spaces"
+      });
+  }, []);
+
+  async function sendMessage(text?: string) {
     const msg = text ?? input.trim();
     if (!msg || loading) return;
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: msg }]);
+
+    const nextMessages: Message[] = [...messages, { role: "user", content: msg }];
+    setMessages(nextMessages);
     setLoading(true);
-    setTimeout(() => {
+
+    try {
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          spaceId: selectedSpaceId,
+          // Send only user/assistant turns; skip the initial assistant greeting
+          // (index 0) as it is UI copy, not real conversation history.
+          messages: nextMessages.slice(1).map((m) => ({ role: m.role, content: m.content })),
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json() as { message: string };
+        setMessages((prev) => [...prev, { role: "assistant", content: data.message }]);
+      } else {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.error ?? "Something went wrong. Please try again.",
+          },
+        ]);
+      }
+    } catch {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: getMockResponse(msg, ficoScore) },
+        { role: "assistant", content: "Network error. Please check your connection and try again." },
       ]);
+    } finally {
       setLoading(false);
-    }, 900);
+    }
   }
 
   return (
@@ -198,6 +229,24 @@ export function AnalyzeClient({ advice, ficoScore, latestSnapshot, snapshotCount
       {/* AI Chat tab */}
       {tab === "chat" && (
         <div className="flex flex-col h-[calc(100vh-280px)] min-h-[400px]">
+          {/* Space selector */}
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-xs text-gray-500 shrink-0">Context:</span>
+            <div className="relative flex-1 max-w-xs">
+              <select
+                value={selectedSpaceId}
+                onChange={(e) => setSelectedSpaceId(e.target.value)}
+                className="w-full appearance-none bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors pr-8"
+              >
+                <option value="master">All My Spaces</option>
+                {spaces.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+            </div>
+          </div>
+
           <Card className="flex-1 flex flex-col overflow-hidden p-0">
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -271,9 +320,6 @@ export function AnalyzeClient({ advice, ficoScore, latestSnapshot, snapshotCount
             </div>
           </Card>
 
-          <p className="text-xs text-gray-600 text-center mt-2">
-            Mock responses only — live LLM integration coming in Milestone 9.
-          </p>
         </div>
       )}
     </div>
