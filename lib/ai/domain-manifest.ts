@@ -33,6 +33,11 @@ import { FinanceDomains, type ContextDomain } from '@/lib/ai/types';
 /**
  * Core finance domains present in every finance-category Space.
  * Ordered so the most important data is assembled first.
+ *
+ * SNAPSHOT_HISTORY is included here (not just in FINANCE_WITH_HOLDINGS) so
+ * that Personal, Business, Household, Debt-focused, and Goal-focused Spaces
+ * can all answer 90-day net-worth and trend questions. It is pre-aggregated
+ * data (SpaceSnapshot rows) — cheap to assemble, high advisory value.
  */
 const FINANCE_CORE: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
@@ -40,21 +45,24 @@ const FINANCE_CORE: ContextDomain[] = [
   FinanceDomains.GOALS,
   FinanceDomains.MEMBERS,
   FinanceDomains.PROVIDERS,
+  FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
 /**
  * Finance core + investment holdings.
  * Used for INVESTMENT and RETIREMENT categories.
+ * SNAPSHOT_HISTORY is inherited from FINANCE_CORE via spread.
  */
 const FINANCE_WITH_HOLDINGS: ContextDomain[] = [
   ...FINANCE_CORE,
   FinanceDomains.HOLDINGS_SUMMARY,
-  FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
 /**
  * Finance core + member management emphasis.
  * Used for HOUSEHOLD and FAMILY categories where member roles matter.
+ * SNAPSHOT_HISTORY included: multi-member Spaces benefit from net-worth trend
+ * context to show collective progress across members.
  */
 const FINANCE_WITH_MEMBERS: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
@@ -62,27 +70,34 @@ const FINANCE_WITH_MEMBERS: ContextDomain[] = [
   FinanceDomains.MEMBERS,
   FinanceDomains.GOALS,
   FinanceDomains.PROVIDERS,
+  FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
 /**
  * Focused debt payoff domain list.
- * Accounts and transactions are the primary signals; holdings not relevant.
+ * SNAPSHOT_HISTORY included: 90-day balance trend is the primary signal for
+ * debt reduction velocity — essential for questions like "am I paying this down
+ * fast enough?" or "how has my total debt changed?"
  */
 const FINANCE_DEBT_FOCUSED: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
   FinanceDomains.GOALS,
   FinanceDomains.PROVIDERS,
+  FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
 /**
  * Emergency fund / goal-focused domain list.
+ * SNAPSHOT_HISTORY included: savings trajectory over 90 days is the primary
+ * signal for emergency fund and goal-progress questions.
  */
 const FINANCE_GOAL_FOCUSED: ContextDomain[] = [
   FinanceDomains.ACCOUNTS,
   FinanceDomains.GOALS,
   FinanceDomains.TRANSACTIONS_SUMMARY,
   FinanceDomains.PROVIDERS,
+  FinanceDomains.SNAPSHOT_HISTORY,
 ];
 
 // ---------------------------------------------------------------------------

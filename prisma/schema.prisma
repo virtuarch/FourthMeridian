@@ -691,7 +691,16 @@ model FinancialAccount {
   availableBalance Float?
   creditLimit      Float?
   currency         String           @default("USD")
-  lastUpdated      DateTime         @default(now())
+  lastUpdated           DateTime         @default(now())
+  // D4 Balance Freshness Provenance — the timestamp Plaid reported for when
+  // the balance itself was last fetched from the institution. Distinct from
+  // lastUpdated (which records when Fourth Meridian wrote to this row).
+  // Populated from AccountBalance.last_updated_datetime on each Plaid refresh;
+  // null for institutions that do not supply this field (currently most — Plaid
+  // documents support only for ins_128026 / Capital One, but the field is typed
+  // as optional on all AccountBalance responses). Never backfilled for existing
+  // rows; null means "provenance unknown", not "balance is current".
+  balanceLastUpdatedAt  DateTime?
 
   // Plaid deduplication key
   plaidAccountId   String?          @unique

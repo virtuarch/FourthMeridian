@@ -5,6 +5,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
+import { KnowledgeAcquisitionCard } from "@/components/dashboard/KnowledgeAcquisitionCard";
+import type { GapEntry } from "@/components/dashboard/KnowledgeAcquisitionCard";
 import { Brain, Send, Clock, Zap, BarChart2, MessageSquare, ChevronDown } from "lucide-react";
 import type { AiAdvice, Snapshot } from "@/types";
 
@@ -13,6 +15,8 @@ type Tab = "review" | "chat";
 interface Message {
   role: "user" | "assistant";
   content: string;
+  /** Knowledge gaps present in context when this assistant response was generated. */
+  knowledgeGaps?: GapEntry[];
 }
 
 interface SpaceOption {
@@ -135,8 +139,16 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
       });
 
       if (res.ok) {
-        const data = await res.json() as { message: string };
-        setMessages((prev) => [...prev, { role: "assistant", content: data.message }]);
+        const data = await res.json() as { message: string; knowledgeGaps?: GapEntry[] };
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.message,
+            // Only attach gaps when the context actually has missing fields.
+            ...(data.knowledgeGaps?.length ? { knowledgeGaps: data.knowledgeGaps } : {}),
+          },
+        ]);
       } else {
         const data = await res.json().catch(() => ({})) as { error?: string };
         setMessages((prev) => [
@@ -295,25 +307,37 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {messages.map((m, i) => (
                 <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                  {m.role === "assistant" && (
-                    <div className="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center mr-2 mt-0.5 shrink-0">
-                      <Brain size={13} className="text-blue-400" />
+                  {m.role === "assistant" ? (
+                    <>
+                      {/* Avatar — pinned to the top of the message group */}
+                      <div className="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center mr-2 mt-0.5 shrink-0">
+                        <Brain size={13} className="text-blue-400" />
+                      </div>
+                      {/* Message bubble + optional Knowledge Acquisition card */}
+                      <div className="flex flex-col gap-2 max-w-[80%]">
+                        <div className="bg-gray-800 text-gray-200 rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed">
+                          {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS as any}>
+                            {m.content}
+                          </ReactMarkdown>
+                        </div>
+                        {m.knowledgeGaps && m.knowledgeGaps.length > 0 && (
+                          <KnowledgeAcquisitionCard
+                            gaps={m.knowledgeGaps}
+                            onSaved={() =>
+                              sendMessage(
+                                "I saved the missing information. Please recalculate with the updated context.",
+                              )
+                            }
+                          />
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed bg-blue-600 text-white rounded-br-sm">
+                      {m.content}
                     </div>
                   )}
-                  <div
-                    className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                      m.role === "user"
-                        ? "bg-blue-600 text-white rounded-br-sm"
-                        : "bg-gray-800 text-gray-200 rounded-bl-sm"
-                    }`}
-                  >
-                    {m.role === "user" ? m.content : (
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS as any}>
-                        {m.content}
-                      </ReactMarkdown>
-                    )}
-                  </div>
                 </div>
               ))}
               {loading && (

@@ -130,6 +130,17 @@ export interface AccountHealthSummary {
  * A single account entry in the accounts domain section.
  * `name` is always the display-safe name — real name for FULL, generic label
  * for BALANCE_ONLY. `institution` is omitted on BALANCE_ONLY entries.
+ *
+ * Debt metadata fields (`apr`, `minimumPayment`, etc.) are populated ONLY for
+ * FULL-visibility debt-type accounts. They are withheld for BALANCE_ONLY and
+ * SUMMARY_ONLY accounts to prevent identifying financial assumptions from leaking
+ * across Space membership boundaries.
+ *
+ * `rateSource` reflects where the effective APR came from:
+ *   'user'     — DebtProfile.apr was set by the account owner
+ *   'provider' — FinancialAccount.interestRate was populated by Plaid or another
+ *                provider; not user-confirmed
+ *   null       — no rate data available from any source
  */
 export interface AccountSummaryItem {
   id:               string;
@@ -138,10 +149,47 @@ export interface AccountSummaryItem {
   institution?:     string;
   balance:          number;
   currency:         string;
-  lastUpdated:      string; // ISO-8601
+  lastUpdated:           string;      // ISO-8601 — when FM last wrote this row from Plaid
+  /** D4 Balance Freshness Provenance. ISO-8601 timestamp Plaid reports for when
+   *  the balance was last fetched from the institution. Null when Plaid does not
+   *  supply this field (currently all institutions except Capital One).
+   *  Optional until the corresponding FinancialAccount schema field lands. */
+  balanceLastUpdatedAt?: string | null;
   syncStatus?:      string | null;
   needsReauth:      boolean;
   visibilityLevel:  'FULL' | 'BALANCE_ONLY';
+
+  // ── Debt metadata (FULL visibility, debt-type accounts only) ──────────────
+  // Resolved from DebtProfile (preferred) → FinancialAccount flat fields (fallback).
+  // All fields are undefined for non-debt account types and for BALANCE_ONLY accounts.
+  apr?:                   number | null; // effective APR; null = known missing
+  minimumPayment?:        number | null; // effective minimum payment; null = known missing
+  rateSource?:            'user' | 'provider' | null;
+  dueDay?:                number | null; // day of month (1–31)
+  statementCloseDay?:     number | null; // day of month (1–31)
+  promoAprEndDate?:       string | null; // ISO-8601 date string
+  debtProfileUpdatedAt?:  string | null; // ISO-8601 — when DebtProfile was last touched
+}
+
+/**
+ * A single knowledge gap — a field the AI needs for a calculation that has not
+ * yet been provided by the user.
+ *
+ * Gaps are derived at assembly time from null/undefined debt metadata fields on
+ * FULL-visibility debt accounts. They are never stored in the database; they are
+ * recomputed on every `buildContext()` call.
+ *
+ * `field` is a stable machine key the chat prompt and UI can use to identify
+ * what to collect. `label` is the human-readable name to surface in responses.
+ * `debtSubtype` is included so the label can be contextualised (e.g. "Mortgage
+ * Rate" instead of "APR" for a mortgage account).
+ */
+export interface KnowledgeGap {
+  accountId:    string;
+  accountName:  string;  // display-safe name (resolveDisplayName output)
+  field:        'apr' | 'minimumPayment';
+  label:        string;  // e.g. "APR", "Minimum Payment", "Mortgage Rate"
+  debtSubtype?: string | null; // FinancialAccount.debtSubtype when present
 }
 
 /**
@@ -153,6 +201,12 @@ export interface AccountSummaryItem {
  *
  * When assembled with scopeHint='brief', the `accounts` array is omitted
  * to reduce payload size for the Daily Brief aggregator.
+ *
+ * `knowledgeGaps` lists debt metadata fields that are null for FULL-visibility
+ * debt accounts. It is always present (possibly empty). The chat system prompt
+ * uses this list to surface missing fields conversationally. The list is never
+ * populated for BALANCE_ONLY accounts — those accounts' metadata is intentionally
+ * withheld, so surfacing gaps for them would indirectly reveal their existence.
  */
 export interface AccountsSectionData {
   totalCount:         number;
@@ -170,8 +224,9 @@ export interface AccountsSectionData {
     realAssets:   number;
     liabilities:  number;
   };
-  health:    AccountHealthSummary;
-  accounts?: AccountSummaryItem[]; // omitted when scopeHint === 'brief'
+  health:         AccountHealthSummary;
+  knowledgeGaps:  KnowledgeGap[];          // always present, possibly empty
+  accounts?:      AccountSummaryItem[];    // omitted when scopeHint === 'brief'
 }
 
 // ---------------------------------------------------------------------------

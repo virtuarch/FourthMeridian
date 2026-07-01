@@ -139,6 +139,15 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
 
     const availableBalance = acct.balances.available ?? undefined;
     const creditLimit       = acct.balances.limit ?? undefined;
+    // D4 Balance Freshness Provenance — when Plaid says the institution last
+    // refreshed this balance (AccountBalance.last_updated_datetime). Distinct
+    // from lastUpdated below, which records when Fourth Meridian synced with
+    // Plaid. Always overwritten on every refresh — including with null — so
+    // the stored value faithfully represents what Plaid returned on this call,
+    // not a cached historical value from a previous call.
+    const balanceLastUpdatedAt = acct.balances.last_updated_datetime
+      ? new Date(acct.balances.last_updated_datetime)
+      : null;
 
     await db.financialAccount.update({
       where: { id: fa.id },
@@ -148,6 +157,7 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
         balance: acct.balances.current ?? fa.balance,
         availableBalance,
         ...(creditLimit !== undefined && { creditLimit }),
+        balanceLastUpdatedAt,
         lastUpdated: new Date(),
         syncStatus:  "synced",
       },

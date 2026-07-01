@@ -40,6 +40,7 @@ export type {
   AccountsSectionData,
   AccountSummaryItem,
   AccountHealthSummary,
+  KnowledgeGap,
   TransactionsSummaryData,
   CategorySpend,
   RecurringCandidate,

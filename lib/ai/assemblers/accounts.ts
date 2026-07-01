@@ -1,12 +1,16 @@
 /**
  * lib/ai/assemblers/accounts.ts
  *
- * AI Context Assembler — 'accounts' domain (D4 Slice 2).
+ * AI Context Assembler — 'accounts' domain (D4 Slice 2 + Slice A).
  *
  * Assembles a ContextDomainSection for FinanceDomains.ACCOUNTS containing:
  *   - Financial totals: assets, liabilities, net worth, per-category subtotals
  *   - Per-category counts
  *   - Health summary: sync errors, stale manual accounts, needs-reauth flags
+ *   - Debt metadata for FULL-visibility debt accounts (APR, minimum payment,
+ *     due day, statement close day, promo APR expiry) — Slice A addition
+ *   - Knowledge gaps: list of null debt metadata fields for FULL-visibility
+ *     debt accounts — Slice A addition
  *   - Per-account list (omitted when scopeHint='brief')
  *
  * ── Permissions and visibility ───────────────────────────────────────────────
@@ -14,20 +18,33 @@
  * soft-deleted). SpaceAccountLink.visibilityLevel controls what the AI context
  * may include per account:
  *
- *   FULL         — real name, institution, full balance, sync metadata
- *   BALANCE_ONLY — generic sanitized name, balance only; institution and
- *                  identifying fields are withheld (mirroring the Space API
- *                  and normalizeSharedAccounts() behaviour).
+ *   FULL         — real name, institution, full balance, sync metadata,
+ *                  debt metadata (APR, rates, due day, etc.)
+ *   BALANCE_ONLY — generic sanitized name, balance only; institution, debt
+ *                  metadata, and all identifying fields are withheld (mirroring
+ *                  the Space API and normalizeSharedAccounts() behaviour).
+ *   SUMMARY_ONLY — treated the same as BALANCE_ONLY for debt metadata.
+ *
+ * Knowledge gaps are only emitted for FULL-visibility debt accounts. Emitting
+ * gaps for BALANCE_ONLY accounts would indirectly reveal their existence as
+ * debt accounts, breaking the privacy guarantee.
  *
  * Health checks (error count, stale count, needsReauth count) run across all
  * accounts. For BALANCE_ONLY accounts the count is included but the account
  * name is never exposed — errorAccountNames etc. only list FULL accounts.
+ *
+ * ── Debt metadata resolution ─────────────────────────────────────────────────
+ * Effective APR:            DebtProfile.apr (user) → FinancialAccount.interestRate (provider) → null
+ * Effective min. payment:   DebtProfile.minimumPayment (user) → FinancialAccount.minimumPayment (provider) → null
+ * rateSource:               'user' when DebtProfile.apr is set; 'provider' when only
+ *                           FinancialAccount.interestRate is set; null when both are null.
  *
  * ── Security invariants ──────────────────────────────────────────────────────
  * - Does NOT import lib/plaid/encryption or call any decrypt function.
  * - Does NOT query WorkspaceAccountShare.
  * - Queries are always filtered by spaceCtx.spaceId — no cross-Space data.
  * - All data returned is plaintext; no credential fields are selected.
+ * - Debt metadata (APR, rates) is only included for VisibilityLevel.FULL accounts.
  */
 
 import { db } from '@/lib/db';
@@ -43,6 +60,7 @@ import type {
   AccountsSectionData,
   AccountSummaryItem,
   AccountHealthSummary,
+  KnowledgeGap,
 } from '@/lib/ai/types';
 import type { SpaceContext } from '@/lib/space';
 
@@ -56,18 +74,31 @@ type AccountLinkRow = {
   addedByUserId:   string;
   addedByUser:     { firstName: string | null; name: string | null };
   financialAccount: {
-    id:           string;
-    name:         string;
-    displayName:  string | null;
-    officialName: string | null;
-    plaidName:    string | null;
-    type:         string;
-    institution:  string;
-    balance:      number;
-    currency:     string;
-    lastUpdated:  Date;
+    id:              string;
+    name:            string;
+    displayName:     string | null;
+    officialName:    string | null;
+    plaidName:       string | null;
+    type:            string;
+    institution:     string;
+    balance:         number;
+    currency:        string;
+    lastUpdated:          Date;
+    balanceLastUpdatedAt: Date | null;
     syncStatus:   string | null;
-    debtSubtype:  string | null;
+    debtSubtype:     string | null;
+    // Flat fallback debt fields (provider-sourced or legacy)
+    interestRate:    number | null;   // FinancialAccount.interestRate — provider APR fallback
+    minimumPayment:  number | null;   // FinancialAccount.minimumPayment — provider min-payment fallback
+    // DebtProfile: user-entered debt metadata (1:1, optional)
+    debtProfile: {
+      apr:               number | null;
+      minimumPayment:    number | null;
+      dueDay:            number | null;
+      statementCloseDay: number | null;
+      promoAprEndDate:   Date | null;
+      updatedAt:         Date;
+    } | null;
     connections:  Array<{
       connectedByUserId: string;
       plaidItem:         { status: PlaidItemStatus } | null;
@@ -106,24 +137,39 @@ async function assembleAccounts(
       },
       financialAccount: {
         select: {
-          id:          true,
-          name:        true,
-          displayName: true,
-          officialName: true,
-          plaidName:   true,
-          type:        true,
-          institution: true,
-          balance:     true,
-          currency:    true,
-          lastUpdated: true,
-          syncStatus:  true,
-          debtSubtype: true,
+          id:             true,
+          name:           true,
+          displayName:    true,
+          officialName:   true,
+          plaidName:      true,
+          type:           true,
+          institution:    true,
+          balance:        true,
+          currency:       true,
+          lastUpdated:          true,
+          balanceLastUpdatedAt: true,
+          syncStatus:     true,
+          debtSubtype:    true,
+          // Flat fallback debt fields — provider-sourced or legacy
+          interestRate:   true,
+          minimumPayment: true,
+          // DebtProfile — user-entered debt metadata (1:1 optional relation)
+          debtProfile: {
+            select: {
+              apr:               true,
+              minimumPayment:    true,
+              dueDay:            true,
+              statementCloseDay: true,
+              promoAprEndDate:   true,
+              updatedAt:         true,
+            },
+          },
           // For needsReauth check: only the current user's own Plaid connections.
           // We look at whether any of their connections has a NEEDS_REAUTH item.
           // No credential fields are selected — PlaidItem.status is plaintext.
           connections: {
             where: {
-              deletedAt:    null,
+              deletedAt:     null,
               plaidItemDbId: { not: null },
             },
             select: {
@@ -212,6 +258,44 @@ async function assembleAccounts(
     needsReauthAccountNames,
   };
 
+  // ── Knowledge gaps ────────────────────────────────────────────────────────
+  // Computed for FULL-visibility debt accounts only. BALANCE_ONLY and
+  // SUMMARY_ONLY accounts are excluded — surfacing gaps for them would
+  // implicitly reveal that they are debt accounts, breaking the privacy
+  // guarantee enforced by the BALANCE_ONLY visibility tier.
+
+  const knowledgeGaps: KnowledgeGap[] = [];
+
+  for (const link of links) {
+    const fa = link.financialAccount;
+    if (fa.type !== 'debt') continue;
+    if (link.visibilityLevel !== VisibilityLevel.FULL) continue;
+
+    const displayName = resolveDisplayName(fa);
+    const effectiveApr = fa.debtProfile?.apr ?? fa.interestRate ?? null;
+    const effectiveMinPayment = fa.debtProfile?.minimumPayment ?? fa.minimumPayment ?? null;
+
+    if (effectiveApr === null) {
+      knowledgeGaps.push({
+        accountId:   fa.id,
+        accountName: displayName,
+        field:       'apr',
+        label:       resolveRateLabel(fa.debtSubtype),
+        debtSubtype: fa.debtSubtype,
+      });
+    }
+
+    if (effectiveMinPayment === null) {
+      knowledgeGaps.push({
+        accountId:   fa.id,
+        accountName: displayName,
+        field:       'minimumPayment',
+        label:       'Minimum Payment',
+        debtSubtype: fa.debtSubtype,
+      });
+    }
+  }
+
   // ── Per-account summaries ─────────────────────────────────────────────────
   // Omitted entirely when scopeHint='brief' to reduce payload for the Daily
   // Brief aggregator (which only needs totals + health to compose insights).
@@ -233,21 +317,48 @@ async function assembleAccounts(
       );
 
       if (isFull) {
-        return {
+        const base: AccountSummaryItem = {
           id:              fa.id,
           name:            resolveDisplayName(fa),
           type:            fa.type,
           institution:     fa.institution,
           balance:         fa.balance,
           currency:        fa.currency,
-          lastUpdated:     fa.lastUpdated.toISOString(),
+          lastUpdated:          fa.lastUpdated.toISOString(),
+          balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
           syncStatus:      fa.syncStatus,
           needsReauth,
           visibilityLevel: 'FULL',
         };
+
+        // Debt metadata — FULL visibility, debt-type accounts only.
+        // Effective resolution: DebtProfile (user) → FinancialAccount flat (provider) → null.
+        if (fa.type === 'debt') {
+          const dp = fa.debtProfile;
+          const effectiveApr        = dp?.apr        ?? fa.interestRate   ?? null;
+          const effectiveMinPayment = dp?.minimumPayment ?? fa.minimumPayment ?? null;
+
+          // rateSource reflects where the effective APR originated.
+          const rateSource: 'user' | 'provider' | null =
+            dp?.apr        != null ? 'user'     :
+            fa.interestRate != null ? 'provider' :
+            null;
+
+          base.apr                  = effectiveApr;
+          base.minimumPayment       = effectiveMinPayment;
+          base.rateSource           = rateSource;
+          base.dueDay               = dp?.dueDay            ?? null;
+          base.statementCloseDay    = dp?.statementCloseDay ?? null;
+          base.promoAprEndDate      = dp?.promoAprEndDate
+            ? dp.promoAprEndDate.toISOString().split('T')[0]
+            : null;
+          base.debtProfileUpdatedAt = dp ? dp.updatedAt.toISOString() : null;
+        }
+
+        return base;
       }
 
-      // BALANCE_ONLY — sanitized, no institution or real name
+      // BALANCE_ONLY — sanitized, no institution, no debt metadata
       return {
         id:              `balance-only:${link.addedByUserId}:${fa.type}:${fa.currency}`,
         name:            genericAccountName({
@@ -258,10 +369,12 @@ async function assembleAccounts(
         type:            fa.type,
         balance:         fa.balance,
         currency:        fa.currency,
-        lastUpdated:     fa.lastUpdated.toISOString(),
+        lastUpdated:          fa.lastUpdated.toISOString(),
+        balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
         syncStatus:      fa.syncStatus,
         needsReauth,
         visibilityLevel: 'BALANCE_ONLY',
+        // Debt metadata intentionally omitted — BALANCE_ONLY privacy guarantee.
       };
     });
   }
@@ -278,13 +391,14 @@ async function assembleAccounts(
     totalDigitalAssets: classification.totalDigitalAssets,
     totalRealAssets:    classification.totalRealAssets,
     counts: {
-      liquid:       classification.liquid.length,
-      investments:  classification.investments.length,
+      liquid:        classification.liquid.length,
+      investments:   classification.investments.length,
       digitalAssets: classification.digitalAssets.length,
-      realAssets:   classification.realAssets.length,
-      liabilities:  classification.liabilities.length,
+      realAssets:    classification.realAssets.length,
+      liabilities:   classification.liabilities.length,
     },
     health,
+    knowledgeGaps,
     ...(accounts !== undefined ? { accounts } : {}),
   };
 
@@ -311,6 +425,25 @@ function resolveDisplayName(fa: {
   plaidName:    string | null;
 }): string {
   return fa.displayName ?? fa.officialName ?? fa.plaidName ?? fa.name;
+}
+
+/**
+ * Resolve the human-readable label for the APR/rate field based on
+ * the account's debtSubtype. Produces contextual labels so that the AI
+ * (and future UI) can say "Mortgage Rate" instead of "APR" for a mortgage,
+ * "Auto Loan Rate" for an auto loan, etc.
+ */
+function resolveRateLabel(debtSubtype: string | null | undefined): string {
+  switch (debtSubtype) {
+    case 'mortgage':       return 'Mortgage Rate';
+    case 'auto_loan':      return 'Auto Loan Rate';
+    case 'student_loan':   return 'Student Loan Rate';
+    case 'personal_loan':  return 'Personal Loan Rate';
+    case 'heloc':          return 'HELOC Rate';
+    case 'credit_card':
+    case 'line_of_credit':
+    default:               return 'APR';
+  }
 }
 
 // ---------------------------------------------------------------------------
