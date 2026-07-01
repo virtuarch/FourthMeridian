@@ -58,15 +58,18 @@ export const SPACE_TAB_LABELS: Record<SpaceTabId, string> = {
 
 /**
  * Tabs that don't yet have a real, working feature behind them anywhere in
- * the product (no API, no UI, in either dashboard implementation as of
- * this pass). Hosts render these with a calm "coming soon" placeholder
+ * the product (no API, no UI, in the shared-space dashboard implementation as
+ * of this pass). Hosts render these with a calm "coming soon" placeholder
  * instead of pretending there's depth that isn't built yet.
  *
- * FUTURE ENHANCEMENT: once a Transactions aggregation view and a Documents
- * feature exist, remove the corresponding entry here — everything else
- * (tab position, styling) is already in place and needs no rework.
+ * Note: TRANSACTIONS is real in the Personal Space (DashboardClient renders
+ * SpaceTransactionsPanel). SpaceDashboard still shows a placeholder for
+ * Transactions on shared/non-personal Spaces — that's a separate workstream.
+ *
+ * FUTURE ENHANCEMENT: once Finances and Documents features exist, and
+ * Transactions is wired for shared Spaces, remove entries here.
  */
-export const PLACEHOLDER_SPACE_TABS: SpaceTabId[] = ["FINANCES", "TRANSACTIONS", "DOCUMENTS"];
+export const PLACEHOLDER_SPACE_TABS: SpaceTabId[] = ["FINANCES", "DOCUMENTS"];
 
 /**
  * Cross-component CustomEvent names (window-level pub/sub between

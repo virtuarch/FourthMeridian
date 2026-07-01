@@ -23,9 +23,12 @@
  *   - Calls generateChatReply() with the merged prompt.
  *
  * ── Response ──────────────────────────────────────────────────────────────────
- * { "message": "...", "knowledgeGaps": [...] }
+ * { "message": "...", "knowledgeGaps": [...], "knowledgeGapMode": "clarification" | "form" }
  * knowledgeGaps mirrors the KnowledgeGap[] assembled at context time so the
  * client can render structured input cards without parsing the assistant text.
+ * knowledgeGapMode signals how the client should render gaps:
+ *   "form"          — user explicitly asked to update a field; render full card immediately.
+ *   "clarification" — context has gaps; render lightweight clarification card first.
  *
  * ── Not implemented in this slice ────────────────────────────────────────────
  * Streaming, conversation persistence, memory, actions, background jobs.
@@ -45,10 +48,13 @@ import { SpaceMemberRole }           from '@prisma/client';
 import { buildContext }              from '@/lib/ai/context-builder';
 import { generateChatReply }      from '@/lib/ai/provider';
 import type { ChatMessage }        from '@/lib/ai/provider';
-import type { SpaceContext_AI, KnowledgeGap } from '@/lib/ai/types';
+import type { SpaceContext_AI, KnowledgeGap, TransactionsSummaryData } from '@/lib/ai/types';
+import { FinanceDomains } from '@/lib/ai/types';
 import { displaySpaceName }        from '@/lib/format';
 import { computeAssessment }        from '@/lib/ai/intelligence';
 import type { FinancialAssessment }  from '@/lib/ai/intelligence';
+import { classifyFinancialIntent, serializeRoutingBlock } from '@/lib/ai/intent';
+import type { IntentRoute }          from '@/lib/ai/intent';
 
 export const preferredRegion = 'sin1';
 export const runtime         = 'nodejs';
@@ -78,6 +84,253 @@ const GAP_IMPACT: Record<string, string> = {
 };
 
 /**
+ * Keywords that signal the user is asking a payoff-schedule or payoff-timeline question.
+ * Only when these are present is minimumPayment included in the knowledge gaps response.
+ * APR is always included — it is durable account metadata, not operational data.
+ */
+const PAYOFF_INTENT_KEYWORDS = [
+  'payoff', 'pay off', 'pay-off',
+  'timeline', 'how long',
+  'debt free', 'debt-free',
+  'minimum payment',
+  'monthly payment',
+  'paydown', 'pay down',
+  'when will', 'how many months',
+  'amortize', 'amortization',
+  'schedule',
+];
+
+/**
+ * Action verbs that signal the user wants to explicitly enter or update a gap field.
+ * Must be paired with UPDATE_FIELD_KEYWORDS to confirm the intent is field-related.
+ */
+const UPDATE_ACTION_KEYWORDS = [
+  'update', 'save', 'set', 'add', 'change', 'enter', 'edit', 'fix', 'correct',
+];
+
+/**
+ * Field nouns identifying knowledge-gap fields the user might want to update.
+ */
+const UPDATE_FIELD_KEYWORDS = [
+  'apr', 'interest rate', 'rate', 'minimum payment', 'min payment',
+];
+
+
+/**
+ * Layer 0 (D4) — classify the most recent user message into an IntentRoute.
+ * Pure/deterministic; returns UNKNOWN routing when there is no user turn.
+ * The result is injected into the system prompt as the === QUESTION ROUTING ===
+ * block; it does not affect context assembly, DB access, or the model call.
+ */
+function routeForMessages(msgs: ChatMessage[]): IntentRoute {
+  const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+  // Pass the current server time so Layer 0 can resolve dynamic transaction
+  // windows (D6) against "now"; intent/temporal classification is unaffected.
+  return classifyFinancialIntent(lastUser?.content ?? '', new Date());
+}
+
+/**
+ * Convert a route's optional transactionWindow (D6) into the buildContext
+ * option shape. Returns undefined for general prompts — which preserves the
+ * transactions assembler's default 30/90-day window.
+ */
+function windowOptionFromRoute(
+  route: IntentRoute,
+): { startDate: string; endDate: string; label?: string } | undefined {
+  const w = route.transactionWindow;
+  if (w && w.startDate && w.endDate) {
+    return { startDate: w.startDate, endDate: w.endDate, label: w.label };
+  }
+  return undefined;
+}
+
+/**
+ * Follow-up detection (D6 carry-forward).
+ *
+ * A follow-up refines the previous question without restating its period
+ * ("break it down", "month by month", "what about January"). When the latest
+ * message names no window of its own but reads like one of these, we inherit
+ * the most recently expressed window instead of silently snapping back to the
+ * default 90-day window.
+ *
+ * Kept deliberately narrow: an unrelated new question ("how is my debt right
+ * now") matches nothing here, so it does NOT inherit a stale window.
+ */
+const FOLLOW_UP_PATTERNS: RegExp[] = [
+  /\bbreak (?:it|them|this|that)\s+down\b/,
+  /\bbreak\s+down\b/,
+  /\bbroken\s+down\b/,
+  /\bbreak\s+it\s+out\b/,
+  /\bmonth[\s-]by[\s-]month\b/,
+  /\bmonthly\s+breakdown\b/,
+  /\bby\s+month\b/,
+  /\bwhat about\b/,
+  /\bhow about\b/,
+  /\bwhat if\b/,
+  /\bshow me more\b/,
+  /\bmore detail/,
+  /\bdrill (?:down|into)\b/,
+  /\band\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/,
+  /\bfrom\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/,
+];
+
+/**
+ * Bare month reference, e.g. "What about January?" or just "June". Treated as a
+ * follow-up so it inherits the active window rather than resolving a lone month.
+ * The ambiguous "may" is included for completeness; it only ever triggers
+ * inheritance (never a fresh window), so the downside of a false positive is a
+ * window carry-forward on a message that already had none.
+ */
+const MONTH_NAME_RE =
+  /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/;
+
+function looksLikeFollowUp(message: string): boolean {
+  const t = message.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (FOLLOW_UP_PATTERNS.some((re) => re.test(t))) return true;
+  if (MONTH_NAME_RE.test(t)) return true;
+  return false;
+}
+
+/**
+ * Resolve the transaction window for the whole conversation (D6 carry-forward).
+ *
+ * Intent classification still uses only the latest message (routeForMessages).
+ * The *window* is resolved with carry-forward:
+ *   1. If the latest user message names its own window, use it.
+ *   2. Else, if the latest message reads like a follow-up, scan previous user
+ *      messages newest → oldest and inherit the most recent explicit window.
+ *   3. Else return undefined — the assembler keeps its default 30/90-day window.
+ */
+function resolveTransactionWindow(
+  msgs: ChatMessage[],
+  now:  Date,
+): ReturnType<typeof windowOptionFromRoute> {
+  const userMsgs = msgs.filter((m) => m.role === 'user');
+  if (userMsgs.length === 0) return undefined;
+
+  const latest = userMsgs[userMsgs.length - 1];
+  const latestWindow = windowOptionFromRoute(classifyFinancialIntent(latest.content, now));
+  if (latestWindow) return latestWindow;
+
+  // Latest message has no window of its own — only inherit for a follow-up.
+  if (!looksLikeFollowUp(latest.content)) return undefined;
+
+  for (let i = userMsgs.length - 2; i >= 0; i--) {
+    const inherited = windowOptionFromRoute(classifyFinancialIntent(userMsgs[i].content, now));
+    if (inherited) return inherited;
+  }
+  return undefined;
+}
+
+// ── Ambiguity guard (D6) ──────────────────────────────────────────────────────
+// A breakdown-style follow-up ("break it down", "month by month", "what about
+// January") names neither WHAT to break down nor a period. On its own — with no
+// prior financial topic or window to attach to — it is genuinely ambiguous. We
+// ask a clarifying question instead of guessing with the default window.
+
+/** Financial subjects a breakdown could be about. If the message names one of
+ *  these itself, it is self-descriptive and NOT treated as ambiguous. */
+const FINANCIAL_SUBJECT_WORDS = [
+  'spend', 'spending', 'spent', 'expense', 'expenses', 'income', 'earn', 'earning',
+  'earnings', 'debt', 'loan', 'loans', 'cash flow', 'cashflow', 'cash-flow',
+  'saving', 'savings', 'net worth', 'budget', 'transfer', 'transfers',
+  'dining', 'grocery', 'groceries', 'shopping', 'travel', 'subscription',
+  'subscriptions', 'utilities', 'category', 'categories', 'transaction', 'transactions',
+];
+
+function namesFinancialSubject(lowerText: string): boolean {
+  return FINANCIAL_SUBJECT_WORDS.some((w) => lowerText.includes(w));
+}
+
+/** Human month names keyed by first three letters (for month-specific prompts). */
+const MONTH_DISPLAY: Record<string, string> = {
+  jan: 'January', feb: 'February', mar: 'March', apr: 'April', may: 'May', jun: 'June',
+  jul: 'July', aug: 'August', sep: 'September', oct: 'October', nov: 'November', dec: 'December',
+};
+
+/**
+ * True when the latest message is a contentless breakdown follow-up: it uses
+ * follow-up phrasing (or a bare month) but names no financial subject of its own.
+ */
+function isAmbiguousBreakdownFollowUp(message: string): boolean {
+  const t = message.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (t.length === 0) return false;
+  if (namesFinancialSubject(t)) return false; // self-descriptive → not ambiguous
+  return looksLikeFollowUp(t);
+}
+
+/**
+ * True when an earlier user message established a financial topic or window the
+ * follow-up could reasonably attach to. Only prior turns (not the latest) count.
+ */
+function hasPriorFinancialContext(msgs: ChatMessage[], now: Date): boolean {
+  const userMsgs = msgs.filter((m) => m.role === 'user');
+  const prior = userMsgs.slice(0, -1); // exclude the latest (the follow-up itself)
+  for (const m of prior) {
+    const t = m.content.toLowerCase();
+    if (namesFinancialSubject(t)) return true;
+    if (windowOptionFromRoute(classifyFinancialIntent(m.content, now))) return true;
+  }
+  return false;
+}
+
+/**
+ * Build the clarifying question for an ambiguous breakdown follow-up. A bare
+ * month reference ("what about January?") gets a month-scoped prompt; everything
+ * else gets the month-by-month prompt.
+ */
+function buildBreakdownClarification(message: string): string {
+  const t = message.toLowerCase();
+  const monthMatch = t.match(MONTH_NAME_RE);
+  const isBareMonth =
+    !!monthMatch && !/\b(break|month by month|by month|breakdown|drill|more|show)\b/.test(t);
+  if (isBareMonth) {
+    const name = MONTH_DISPLAY[monthMatch![1].slice(0, 3)] ?? 'that month';
+    return `Which figures would you like for ${name} — spending, income, debt payments, or cash flow?`;
+  }
+  return 'What would you like broken down month by month — spending, income, debt payments, or cash flow?';
+}
+
+/**
+ * Returns true when the most recent user message signals a payoff-schedule intent.
+ * Used to gate whether minimumPayment gaps are returned alongside APR gaps.
+ */
+function detectsPayoffIntent(msgs: ChatMessage[]): boolean {
+  const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+  if (!lastUser) return false;
+  const lower = lastUser.content.toLowerCase();
+  return PAYOFF_INTENT_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+/**
+ * Returns true when the most recent user message explicitly asks to update or save
+ * a gap field (APR, minimum payment, interest rate, etc.).
+ * Requires both an action verb AND a field noun to avoid false positives.
+ * Used to gate whether the knowledge gap card renders as a full form immediately
+ * (vs. the lighter clarification card).
+ */
+function detectsExplicitUpdateIntent(msgs: ChatMessage[]): boolean {
+  const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+  if (!lastUser) return false;
+  const lower = lastUser.content.toLowerCase();
+  const hasAction = UPDATE_ACTION_KEYWORDS.some((kw) => lower.includes(kw));
+  const hasField  = UPDATE_FIELD_KEYWORDS.some((kw) => lower.includes(kw));
+  return hasAction && hasField;
+}
+
+/**
+ * Filter knowledge gaps by field relevance.
+ *
+ * APR       — always returned (durable metadata; affects interest cost in any advisory context).
+ * minimumPayment — returned only when payoff intent is detected (operational data; only
+ *                  meaningful for schedule / timeline questions).
+ */
+function filterGapsByIntent(gaps: KnowledgeGap[], includeMinPayment: boolean): KnowledgeGap[] {
+  if (includeMinPayment) return gaps;
+  return gaps.filter((g) => g.field !== 'minimumPayment');
+}
+
+/**
  * Extract knowledge gaps from the assembled accounts domain, if present.
  * Returns an empty array when the accounts domain is absent or has no gaps.
  * Type-narrows via a minimal structural check to avoid importing AccountsSectionData.
@@ -101,6 +354,84 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
   lines.push(`Space: ${displaySpaceName(ctx.space.name)}`);
   lines.push(`Your role: ${ctx.role}`);
   lines.push('');
+
+  // ── Analysis window (D6 provenance) ─────────────────────────────────────────
+  // Every aggregate derived from transactions is bounded by this window.
+  // Surfaced explicitly so the model states the period, month count, and
+  // transaction denominator instead of an unqualified "monthly average", and
+  // never answers a longer-period question ("this year", "YTD") using it
+  // without saying only this window is available.
+  const txn = getTransactionsSummary(ctx);
+  if (txn) {
+    lines.push(
+      'Transaction analysis window (use this exact period whenever presenting any ' +
+      'average, total, or cash-flow figure derived from spending, income, or category data):',
+    );
+    lines.push(`  Period: ${fmtMonthYear(txn.startDate)} – ${fmtMonthYear(txn.endDate)}`);
+    lines.push(`  Months analyzed: ~${approxMonths(txn.windowDays)} (${txn.windowDays}-day window)`);
+    lines.push(`  Transactions in window: ${txn.transactionCount}`);
+    lines.push(
+      '  This is the ONLY period for which transaction data exists in this Space. ' +
+      'Do not describe it as "this year", "YTD", or any longer span unless the dates match. ' +
+      'If the user asks about a longer period, state plainly that only this window is available.',
+    );
+
+    // Category breakdown polish (Goal 7): totals + monthly average together.
+    // monthlyEquivalent mirrors the existing total/windowDays*30 formula already
+    // used in the intelligence layer — presentation only, no stored value changes.
+    if (txn.byCategory.length > 0 && txn.windowDays > 0) {
+      lines.push('  Category figures for this window (total = exact sum; ≈/month = average across the window):');
+      for (const cat of txn.byCategory.slice(0, 8)) {
+        const monthly = Math.round((cat.total / txn.windowDays) * 30 * 100) / 100;
+        lines.push(`    ${cat.category}: ${fmtMoney(cat.total)} total ≈ ${fmtMoney(monthly)}/month (${cat.count} txn(s))`);
+      }
+    }
+
+    // ── Monthly breakdown (D6 deterministic rollups) ─────────────────────────
+    // Authoritative per-calendar-month figures. The model must read these for
+    // any month-by-month question instead of inferring buckets from window
+    // totals or averages (which previously produced inconsistent, invented
+    // monthly numbers). Only months inside the requested window appear here.
+    if (txn.monthlyBreakdown.length > 0) {
+      lines.push('');
+      lines.push(
+        'MONTHLY BREAKDOWN (deterministic per-calendar-month rollup — these are the ONLY valid ' +
+        'month-by-month figures; each line is summed directly from that month\'s transactions):',
+      );
+      for (const m of txn.monthlyBreakdown) {
+        const flag = m.partial ? ' [PARTIAL month — window does not fully cover it]' : '';
+        lines.push(
+          `  ${m.month}${flag}: income ${fmtMoney(m.incomeTotal)}, ` +
+          `spending ${fmtMoney(m.expenseTotal)}, ` +
+          `debt payments ${fmtMoney(m.debtPaymentTotal)}, ` +
+          `transfers ${fmtMoney(m.transferTotal)} (${m.transactionCount} txn(s))`,
+        );
+        // Complete deterministic per-category totals for this month. Absent
+        // categories had NO classified settled transactions that month — they
+        // are intentionally not listed so the model cannot read them as $0.
+        const cats = m.byCategory && m.byCategory.length > 0
+          ? m.byCategory.map((c) => `${c.category} ${fmtMoney(c.total)} (${c.count} txn)`).join(', ')
+          : '(no categorized spending recorded this month)';
+        lines.push(`      categories: ${cats}`);
+      }
+      lines.push(
+        '  Rules for month-by-month questions: use these exact monthlyBreakdown values. ' +
+        'Do NOT divide a window total by a month count, do NOT label an average as a specific ' +
+        'month\'s figure, and do NOT report a month that is not listed above — it has no data ' +
+        'in the requested window. Describe any month flagged PARTIAL as incomplete.',
+      );
+      lines.push(
+        '  Category rule (month-by-month category tables): the "categories:" line for each month is ' +
+        'the COMPLETE deterministic list of that month\'s classified spending. Use ONLY these values. ' +
+        'If a category is not listed for a month, it had no matching classified transactions that ' +
+        'month — leave the cell blank, write "—", or omit the column entirely. NEVER render an ' +
+        'unlisted category as $0, and NEVER infer or fill a category figure from an average, another ' +
+        'month, or a window total. Show only the categories actually present for each month.',
+      );
+    }
+
+    lines.push('');
+  }
 
   // ── Domains ───────────────────────────────────────────────────────────────
   const domainKeys = Object.keys(ctx.domains);
@@ -183,6 +514,55 @@ const ADVISOR_PRINCIPLES = [
   '- Lead with the currentStatePriority topic when the user asks an open-ended financial question.',
 ].join('\n');
 
+// ── Executive-summary doctrine (D4 prompt polish) ─────────────────────────────
+// Behaviour-only guidance injected after ADVISOR_PRINCIPLES. Covers:
+//   POLISH 2 — executive priority (lead with the highest-priority conclusion).
+//   POLISH 5 — avoid repeating the same caveat multiple times in one answer.
+//   POLISH 6 — answer-first ordering (answer → evidence → caveats → next step).
+// No data is added and no calculation changes; this only shapes response form.
+
+const EXECUTIVE_SUMMARY_DOCTRINE = [
+  'Executive priority (how to open every answer):',
+  '- Answer the user\'s actual question in the first sentence. Do not lead with caveats, disclaimers, or a list of missing data.',
+  '- Then state the single highest-priority conclusion — the biggest risk, the clearest opportunity, or the most urgent item — before the supporting detail. Prefer a conclusion over a raw fact.',
+  '  Example: instead of "Your debt is $12,400", open with "Your biggest priority right now is improving liquidity — here\'s why," then give the numbers.',
+  '- Use the RISK & OPPORTUNITY section as the source of that lead conclusion whenever it is populated. Do not restate every assessment section to get there.',
+  '',
+  'Answer ordering (POLISH 6): answer first, then supporting evidence, then any caveats, then a single concrete next recommendation — in that order.',
+  '',
+  'Do not repeat yourself (POLISH 5):',
+  '- Mention a caveat such as "critical liquidity", "missing APR", or "income data is incomplete" at most ONCE per response. State it, then keep reasoning — never re-raise the same caveat in multiple paragraphs.',
+  '- Follow the QUESTION ROUTING block\'s data-gap emphasis: only foreground a missing field when it materially affects THIS question.',
+].join('\n');
+
+// ── Explainability & provenance doctrine (D6) ─────────────────────────────────
+// Behaviour-only guidance. Governs how the model attributes numbers to their
+// source period, states data completeness, distinguishes exact vs estimated
+// values, and avoids contradictory time windows. Adds no data and changes no
+// calculation — it shapes how existing figures are explained.
+
+const EXPLAINABILITY_DOCTRINE = [
+  'Explainability & provenance — always show where a number came from:',
+  '',
+  '1. Time window on every aggregate. When you present average spending, average income, average debt payment, average category spend, average monthly savings, or cash flow, always name the analysis period and how many months it covers. Use the "Transaction analysis window" period from the space context verbatim. Never say only "monthly average" or "per month" without the period behind it. Example: "Average monthly spending, Jan 2026 – Apr 2026 (3 months): $8,894/month."',
+  '',
+  '2. State completeness. When it matters to the answer, add one concise completeness statement drawn from the DATA QUALITY block — e.g. "Based on complete transaction history for this window" when completeness is HIGH, or "Based on partial transaction history" when it is LOW or MEDIUM. Never invent a completeness level; use only what the assessment reports.',
+  '',
+  '3. Distinguish exact vs estimated vs average — and keep the wording consistent:',
+  '   - Exact: a figure summed directly from settled transactions or a current balance. Say "You paid $30,829 toward debt."',
+  '   - Estimated: a figure inferred or projected (implied income, projected monthly expense). Say "Estimated monthly income…". Estimated figures are the impliedMonthlyIncome / estimated* fields in the assessment.',
+  '   - Average: a total divided across the window. Say "Average monthly dining spend…".',
+  '   Do not mix these terms — never call an estimate "exact", and never present an average as though it were a single observed value.',
+  '',
+  '4. Explain the calculation. For any average or derived value, briefly state the denominator using metadata already in context: "Calculated across ~3 months", "Based on 412 transactions", or "Averaged over the 90-day window". Do not run new queries to obtain this — use the window and counts already provided.',
+  '',
+  '5. Historical questions ("this year", "last year", "last 6 months", "YTD", "since January"). If the analysis window covers the period asked about, answer directly. If it does not, answer with the data you have but clearly explain the window is shorter — e.g. "I only have the last 90 days of transactions, not the full year, so this covers Jan–Apr 2026." Never silently answer a different period than the one asked.',
+  '',
+  '6. Never present contradictory windows. Do not answer a "this year" question using a 90-day figure without explicitly saying only 90 days are available. Conversely, do not claim only 90 days exist if the window shown is longer. Always describe the actual coverage from the analysis-window block.',
+  '',
+  '7. Recommendation transparency. When you make a recommendation, state the driving evidence in the same sentence. Prefer "Build liquidity first — your cash covers only 0.5 months of expenses" over a bare "Build liquidity." Draw the evidence from the RISK & OPPORTUNITY, LIQUIDITY, or DEBT blocks.',
+].join('\n');
+
 // ── Shared response-style rules ───────────────────────────────────────────────
 // Covers formatting and presentation. Injected after ADVISOR_PRINCIPLES.
 
@@ -208,6 +588,8 @@ const KNOWLEDGE_GAPS_RULES = [
   '- Gaps list fields the user has not yet entered in Fourth Meridian. They are authoritative — the value is genuinely unknown.',
   '- Never invent, estimate, or assume a gap value. If you use an industry assumption, say so explicitly and label the result approximate.',
   '- When a gap field is needed: explain what is missing and why it matters, deliver the best answer with available data, and ask for the value naturally.',
+  '- APR is the most important missing field for debt analysis. Mention it when relevant to interest cost, capital allocation, or debt strategy.',
+  '- Minimum payment is only relevant for payoff schedule or timeline questions. Do not ask for minimum payment in general advisory conversations.',
   '- If the user provides a gap value during this conversation: confirm you are using it, and explicitly state it has NOT been saved. Example: "I\'ll use 24.99% for this conversation — this isn\'t saved yet, so tell Fourth Meridian when you\'re ready."',
   '- Never claim to save, remember, or persist a user-supplied value across sessions.',
   '- When a user wants to save or update a value such as APR, minimum payment, due day, or statement close day: tell them the form below this message saves it directly to their account. Their next message will automatically use the updated value.',
@@ -233,6 +615,48 @@ function buildSpaceAliasGuidance(spaceName: string): string {
 /** Format a number as a USD money string (e.g. $4,320.00). */
 function fmtMoney(n: number): string {
   return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// ── Explainability & provenance helpers (D6 polish) ───────────────────────────
+// Presentation-only. These derive human-readable provenance strings from
+// metadata the assemblers already produce (windowDays, startDate, endDate,
+// transactionCount, per-category totals). They introduce no new queries and
+// change no financial calculation.
+
+/** Format a YYYY-MM-DD date string as "Mon YYYY" (e.g. "2026-01-15" → "Jan 2026"). */
+function fmtMonthYear(isoDate: string): string {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return isoDate;
+  return d.toLocaleString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+}
+
+/** Approximate whole months covered by a day span (minimum 1). */
+function approxMonths(windowDays: number): number {
+  return Math.max(1, Math.round(windowDays / 30));
+}
+
+/** Read the transactions_summary domain data from a context, or null if absent. */
+function getTransactionsSummary(ctx: SpaceContext_AI): TransactionsSummaryData | null {
+  const section = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY];
+  if (!section?.data) return null;
+  return section.data as TransactionsSummaryData;
+}
+
+/**
+ * Human-readable provenance descriptor for the transaction analysis window.
+ * Uses only existing assembler metadata — no new queries, no new calculation.
+ *   e.g. "Jan 2026 – Apr 2026 (~3 months; 90-day window), 412 transaction(s)"
+ * Returns null when the transactions domain is absent (no window to describe).
+ */
+function analysisWindowNote(ctx: SpaceContext_AI): string | null {
+  const txn = getTransactionsSummary(ctx);
+  if (!txn) return null;
+  const period = `${fmtMonthYear(txn.startDate)} – ${fmtMonthYear(txn.endDate)}`;
+  const months = approxMonths(txn.windowDays);
+  return (
+    `${period} (~${months} month${months === 1 ? '' : 's'}; ${txn.windowDays}-day window), ` +
+    `${txn.transactionCount} transaction(s)`
+  );
 }
 
 /** Return a one-sentence LLM instruction based on the current priority. */
@@ -268,16 +692,27 @@ function priorityGuidance(assessment: FinancialAssessment): string {
  * Serialize a FinancialAssessment into the === FINANCIAL ASSESSMENT === prompt block.
  *
  * v2 structure (order is deliberate):
- *   1. INTERPRETED STATE — priority + leading instruction, so LLM reads intent first.
- *   2. DATA QUALITY      — completeness + confidence before any numbers.
- *   3. CASH FLOW         — confidence + warnings before deficit framing.
- *   4. DEBT              — confidence + balances + APR state.
- *   5. LIQUIDITY         — confidence + coverage + space-scope warning.
- *   6. ADVISOR FLAGS     — typed heuristics for calibration.
- *   7. PRIORITIES        — ranked deterministic hints (not recommendations).
+ *   1.  INTERPRETED STATE       — priority + leading instruction, so LLM reads intent first.
+ *   2.  DATA QUALITY            — completeness + confidence before any numbers.
+ *   3.  CASH FLOW               — confidence + warnings before deficit framing.
+ *   4.  DEBT                    — confidence + balances + APR state.
+ *   5.  LIQUIDITY               — confidence + coverage + space-scope warning.
+ *   6.  CAPITAL ALLOCATION      — 2.1: allocation context + evidence + primary/ignored domains.
+ *   7.  DEBT STRATEGY           — 2.2: avalanche/snowball candidates + urgency.
+ *   8.  SPENDING OPPORTUNITIES  — 2.3: category breakdown + discretionary total (conditional).
+ *   9.  GOAL ALIGNMENT          — 2.4: per-goal alignment status (conditional).
+ *   10. INVESTMENT READINESS    — 2.5: readiness context (conditional).
+ *   11. RISK & OPPORTUNITY      — 2.6: top-3 aggregated risks + opportunities (conditional).
+ *   12. ADVISOR FLAGS           — typed heuristics for calibration.
+ *   13. PRIORITIES              — ranked deterministic hints (not recommendations).
  */
-function serializeAssessmentBlock(assessment: FinancialAssessment): string {
-  const { dataQuality, cashFlow, debt, liquidity } = assessment;
+function serializeAssessmentBlock(assessment: FinancialAssessment, windowNote?: string | null): string {
+  const {
+    dataQuality, cashFlow, debt, liquidity,
+    capitalAllocation, debtStrategy,
+    spendingOpportunities, goalAlignment, investmentReadiness,
+    riskOpportunities,
+  } = assessment;
   const lines: string[] = [];
 
   // ── 1. Interpreted state ──────────────────────────────────────────────────
@@ -287,10 +722,19 @@ function serializeAssessmentBlock(assessment: FinancialAssessment): string {
 
   // ── 2. Data quality ───────────────────────────────────────────────────────
   lines.push('DATA QUALITY');
+  if (windowNote) {
+    // Provenance (D6): the period + denominators every derived figure is bounded by.
+    lines.push(`  Analysis period: ${windowNote}`);
+  }
   lines.push(
     `  Transaction completeness: ${dataQuality.transactionHistoryCompleteness}` +
     ` (${dataQuality.snapshotSpanDays}-day history in 90-day window;` +
     ` ${dataQuality.incomeTransactionCount} income transaction(s) captured)`,
+  );
+  lines.push(
+    dataQuality.transactionHistoryCompleteness === 'HIGH'
+      ? '  → Completeness is HIGH: you may say "based on complete transaction history for this window".'
+      : '  → Completeness is not HIGH: say "based on partial transaction history" when presenting derived figures.',
   );
   lines.push(`  Income confidence: ${dataQuality.incomeConfidence}`);
 
@@ -389,7 +833,172 @@ function serializeAssessmentBlock(assessment: FinancialAssessment): string {
 
   lines.push('');
 
-  // ── 6. Advisor flags ──────────────────────────────────────────────────────
+  // ── 6. Capital Allocation (2.1) ───────────────────────────────────────────
+  lines.push(`CAPITAL ALLOCATION  [confidence: ${capitalAllocation.confidence}]`);
+  lines.push(`  Context: ${capitalAllocation.recommendation}`);
+
+  if (capitalAllocation.primaryEvidence.length > 0) {
+    lines.push(`  Driven by: ${capitalAllocation.primaryEvidence.join(', ')}`);
+  }
+  if (capitalAllocation.ignoredEvidence.length > 0) {
+    lines.push(
+      `  Note: ${capitalAllocation.ignoredEvidence.join(', ')} is NOT primary to this recommendation` +
+      (capitalAllocation.ignoredEvidence.includes('cashFlow')
+        ? ' — recommendation holds even if income data is incomplete'
+        : ''),
+    );
+  }
+
+  const ev = capitalAllocation.evidence;
+  if (ev.weightedDebtApr !== null) {
+    lines.push(`  Weighted debt APR: ${ev.weightedDebtApr.toFixed(2)}% vs ${MARKET_RETURN_THRESHOLD_NOTE}% market reference`);
+    if (ev.guaranteedReturnAdvantage !== null) {
+      if (ev.guaranteedReturnAdvantage > 0) {
+        lines.push(
+          `  Paying down debt ≈ earning a guaranteed ${ev.weightedDebtApr.toFixed(2)}% return` +
+          ` (${ev.guaranteedReturnAdvantage.toFixed(2)}% above ${MARKET_RETURN_THRESHOLD_NOTE}% market reference)`,
+        );
+      } else {
+        lines.push(
+          `  Debt APR (${ev.weightedDebtApr.toFixed(2)}%) is below the ${MARKET_RETURN_THRESHOLD_NOTE}% market reference — investing return context may apply`,
+        );
+      }
+    }
+  }
+  if (ev.monthlyInterestBurden !== null) {
+    lines.push(`  Monthly interest cost of carrying debt: ${fmtMoney(ev.monthlyInterestBurden)}/mo`);
+  }
+  if (ev.liquidityMonths !== null) {
+    lines.push(`  Liquid coverage: ${ev.liquidityMonths.toFixed(1)} months`);
+  }
+  if (capitalAllocation.missingAprPreventsComparison) {
+    lines.push(`  ⚠ APR completeness: ${ev.aprCompleteness} — debt vs. investing comparison blocked`);
+  }
+  if (capitalAllocation.blockers.length > 0) {
+    lines.push(`  Blockers: ${capitalAllocation.blockers.join('; ')}`);
+  }
+
+  lines.push('');
+
+  // ── 7. Debt Strategy (2.2) ────────────────────────────────────────────────
+  if (debt.totalLiabilities > 0) {
+    lines.push(`DEBT STRATEGY  [confidence: ${debtStrategy.confidence}]`);
+    lines.push(`  Payoff urgency: ${debtStrategy.payoffUrgency}`);
+
+    if (debtStrategy.weightedAvgApr !== null) {
+      lines.push(`  Weighted avg APR: ${debtStrategy.weightedAvgApr.toFixed(2)}%`);
+    }
+    if (debtStrategy.avalancheCandidate) {
+      const c = debtStrategy.avalancheCandidate;
+      lines.push(
+        `  Avalanche target: ${c.accountName}` +
+        ` (${c.apr!.toFixed(2)}% APR, ${fmtMoney(c.balance)} balance)`,
+      );
+    }
+    if (debtStrategy.snowballCandidate) {
+      const c   = debtStrategy.snowballCandidate;
+      const apr = c.apr != null ? `, ${c.apr.toFixed(2)}% APR` : ', APR unknown';
+      lines.push(`  Snowball target: ${c.accountName} (${fmtMoney(c.balance)} balance${apr})`);
+    }
+    if (debtStrategy.missingAprAccountNames.length > 0) {
+      lines.push(`  APR missing for: ${debtStrategy.missingAprAccountNames.join(', ')}`);
+    }
+    if (debtStrategy.hasBalanceOnlyDebt) {
+      lines.push('  Some debt accounts are balance-only — APR structurally inaccessible in this Space.');
+    }
+    if (!debtStrategy.avalancheCandidate && !debtStrategy.snowballCandidate) {
+      lines.push('  No debt account detail available in this Space.');
+    }
+
+    lines.push('');
+  }
+
+  // ── 8. Spending Opportunities (2.3) ──────────────────────────────────────
+  if (spendingOpportunities.hasTransactionData && spendingOpportunities.topCategories.length > 0) {
+    lines.push(`SPENDING OPPORTUNITIES  [confidence: ${spendingOpportunities.confidence}]`);
+
+    if (spendingOpportunities.topReductionOpportunity) {
+      const top = spendingOpportunities.topReductionOpportunity;
+      lines.push(`  Top reduction opportunity: ${top.category} (${fmtMoney(top.monthlyEquivalent)}/mo, ${top.transactionCount} txn(s))`);
+    }
+    lines.push(`  Total discretionary spend: ${fmtMoney(spendingOpportunities.discretionaryTotal)}/mo`);
+
+    const displayCats = spendingOpportunities.topCategories.slice(0, 6);
+    if (displayCats.length > 0) {
+      lines.push('  By category:');
+      for (const cat of displayCats) {
+        lines.push(`    ${cat.category}: ${fmtMoney(cat.monthlyEquivalent)}/mo [${cat.classification}]`);
+      }
+    }
+
+    if (spendingOpportunities.categoriesNeedingReview.length > 0) {
+      lines.push(`  Review needed: ${spendingOpportunities.categoriesNeedingReview.join(', ')}`);
+    }
+    lines.push('');
+  }
+
+  // ── 9. Goal Alignment (2.4) ───────────────────────────────────────────────
+  if (goalAlignment.hasGoalsDomain && goalAlignment.activeGoalCount > 0) {
+    lines.push(`GOAL ALIGNMENT  [confidence: ${goalAlignment.confidence}]`);
+    lines.push(
+      `  Overall: ${goalAlignment.overallStatus}` +
+      ` (${goalAlignment.alignedCount} aligned, ${goalAlignment.misalignedCount} misaligned,` +
+      ` ${goalAlignment.blockedCount} insufficient data)`,
+    );
+    for (const g of goalAlignment.goalAlignments) {
+      lines.push(`  ${g.goalName} [${g.goalType}]: ${g.status} — ${g.evidence}`);
+      if (g.blocker) lines.push(`    ↳ Needs: ${g.blocker}`);
+    }
+    lines.push('');
+  }
+
+  // ── 10. Investment Readiness (2.5) ────────────────────────────────────────
+  lines.push(`INVESTMENT READINESS  [confidence: ${investmentReadiness.confidence}]`);
+  lines.push(`  Classification: ${investmentReadiness.classification}`);
+  if (investmentReadiness.debtBeatsMarket !== null) {
+    lines.push(
+      `  Debt APR exceeds ${MARKET_RETURN_THRESHOLD_NOTE}% market reference: ` +
+      (investmentReadiness.debtBeatsMarket ? 'YES' : 'NO'),
+    );
+  }
+  if (!investmentReadiness.holdingsDomainPresent) {
+    lines.push('  No holdings data in this Space context — existing investments not visible here.');
+  }
+  if (investmentReadiness.blockers.length > 0) {
+    lines.push(`  Blockers: ${investmentReadiness.blockers.join('; ')}`);
+  }
+  lines.push('');
+
+  // ── 11. Risk & Opportunity (2.6) ──────────────────────────────────────────
+  // Aggregated candidates only — top 3 of each to avoid bloating context.
+  // These are inputs for the LLM to reason from, not final recommendations.
+  if (riskOpportunities.risks.length > 0 || riskOpportunities.opportunities.length > 0) {
+    lines.push(`RISK & OPPORTUNITY  [confidence: ${riskOpportunities.confidence}]`);
+
+    if (riskOpportunities.risks.length > 0) {
+      lines.push('  Top risks:');
+      riskOpportunities.risks.slice(0, 3).forEach((r, i) => {
+        lines.push(
+          `    ${i + 1}. [${r.severity.toUpperCase()}] ${r.code} (confidence: ${r.confidence})` +
+          ` — ${r.evidence} [${r.affectedSections.join(', ')}]`,
+        );
+      });
+    }
+
+    if (riskOpportunities.opportunities.length > 0) {
+      lines.push('  Top opportunities:');
+      riskOpportunities.opportunities.slice(0, 3).forEach((o, i) => {
+        lines.push(
+          `    ${i + 1}. [${o.impact.toUpperCase()}] ${o.code} (confidence: ${o.confidence})` +
+          ` — ${o.evidence} [${o.affectedSections.join(', ')}]`,
+        );
+      });
+    }
+
+    lines.push('');
+  }
+
+  // ── 12. Advisor flags ──────────────────────────────────────────────────────
   if (assessment.advisorHeuristics.length > 0) {
     lines.push('ADVISOR FLAGS (deterministic — calibrate advice accordingly)');
     for (const flag of assessment.advisorHeuristics) {
@@ -398,7 +1007,7 @@ function serializeAssessmentBlock(assessment: FinancialAssessment): string {
     lines.push('');
   }
 
-  // ── 7. Priorities ─────────────────────────────────────────────────────────
+  // ── 13. Priorities ────────────────────────────────────────────────────────
   if (assessment.priorities.length > 0) {
     lines.push('PRIORITIES (ranked hints — not recommendations; LLM decides how to apply)');
     assessment.priorities.forEach((p, i) => {
@@ -409,12 +1018,18 @@ function serializeAssessmentBlock(assessment: FinancialAssessment): string {
   return lines.join('\n');
 }
 
-// Threshold used in assessment block to annotate partial expense data.
-// Matches SNAPSHOT_HIGH_THRESHOLD from annotations.ts — defined here to avoid
-// a cross-module constant import for a formatting-only concern.
-const SNAPSHOT_HIGH_THRESHOLD_NOTE = 45;
+// Thresholds used in the assessment serialization block.
+// Mirror named constants from annotations.ts — defined here to avoid importing
+// module-private constants for a formatting-only concern.
+const SNAPSHOT_HIGH_THRESHOLD_NOTE  = 45;
+/** Passive-index annual return reference (%) — mirrors MARKET_RETURN_THRESHOLD in annotations.ts. */
+const MARKET_RETURN_THRESHOLD_NOTE  = 7;
 
-function buildSpaceSystemPrompt(ctx: SpaceContext_AI, annotations: FinancialAssessment): string {
+function buildSpaceSystemPrompt(
+  ctx: SpaceContext_AI,
+  annotations: FinancialAssessment,
+  route: IntentRoute,
+): string {
   return [
     'You are a skilled, direct financial advisor powered by Fourth Meridian.',
     'You advise on the space described below.',
@@ -433,8 +1048,16 @@ function buildSpaceSystemPrompt(ctx: SpaceContext_AI, annotations: FinancialAsse
     '',
     buildSpaceAliasGuidance(displaySpaceName(ctx.space.name)),
     '',
+    EXECUTIVE_SUMMARY_DOCTRINE,
+    '',
+    EXPLAINABILITY_DOCTRINE,
+    '',
+    '=== QUESTION ROUTING ===',
+    serializeRoutingBlock(route),
+    '=== END ROUTING ===',
+    '',
     '=== FINANCIAL ASSESSMENT ===',
-    serializeAssessmentBlock(annotations),
+    serializeAssessmentBlock(annotations, analysisWindowNote(ctx)),
     '=== END ASSESSMENT ===',
     '',
     '=== SPACE CONTEXT ===',
@@ -465,14 +1088,18 @@ function buildMasterAliasGuidance(contexts: SpaceContext_AI[]): string {
  * Build the full system prompt for master (cross-Space) chat.
  * Each Space gets its own clearly delimited block to prevent cross-leakage.
  */
-function buildMasterSystemPrompt(contexts: SpaceContext_AI[], annotationsList: FinancialAssessment[]): string {
+function buildMasterSystemPrompt(
+  contexts: SpaceContext_AI[],
+  annotationsList: FinancialAssessment[],
+  route: IntentRoute,
+): string {
   const spaceBlocks = contexts
     .map((ctx, i) => {
       const assessment = annotationsList[i];
       return [
         `--- Space ${i + 1} of ${contexts.length} ---`,
         '=== FINANCIAL ASSESSMENT ===',
-        assessment ? serializeAssessmentBlock(assessment) : '(no assessment available)',
+        assessment ? serializeAssessmentBlock(assessment, analysisWindowNote(ctx)) : '(no assessment available)',
         '=== END ASSESSMENT ===',
         serializeContextBlock(ctx),
       ].join('\n');
@@ -497,6 +1124,14 @@ function buildMasterSystemPrompt(contexts: SpaceContext_AI[], annotationsList: F
     KNOWLEDGE_GAPS_RULES,
     '',
     buildMasterAliasGuidance(contexts),
+    '',
+    EXECUTIVE_SUMMARY_DOCTRINE,
+    '',
+    EXPLAINABILITY_DOCTRINE,
+    '',
+    '=== QUESTION ROUTING ===',
+    serializeRoutingBlock(route),
+    '=== END ROUTING ===',
     '',
     '=== SPACE CONTEXTS ===',
     spaceBlocks,
@@ -575,6 +1210,38 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // the client can render structured input UI without parsing assistant text.
   let gapsForResponse: KnowledgeGap[] = [];
 
+  // Layer 0 (D4): classify the latest user message into routing metadata.
+  // Injected into the system prompt as === QUESTION ROUTING ===.
+  const intentRoute = routeForMessages(messages);
+
+  // D6 dynamic windows (with carry-forward): an optional explicit transaction
+  // window derived from the user's wording ("this year", "last 6 months", …).
+  // The latest message's own window wins; a follow-up ("month by month",
+  // "what about January") inherits the most recent explicit window instead of
+  // resetting to the default. Undefined for unrelated general prompts, which
+  // keeps the assembler's default 30/90-day window.
+  const transactionWindow = resolveTransactionWindow(messages, new Date());
+
+  // ── Ambiguity guard ────────────────────────────────────────────────────────
+  // An antecedent-less breakdown follow-up ("break it down", "month by month",
+  // "what about January") with no window of its own and no prior financial topic
+  // is genuinely ambiguous — there is no subject for "it". Ask what to break down
+  // rather than guessing (which previously produced a default-90-day Apr–Jun
+  // table). The clarification is space-agnostic and exposes no financial data.
+  const latestUser = [...messages].reverse().find((m) => m.role === 'user');
+  if (
+    latestUser &&
+    transactionWindow === undefined &&
+    isAmbiguousBreakdownFollowUp(latestUser.content) &&
+    !hasPriorFinancialContext(messages, new Date())
+  ) {
+    return NextResponse.json({
+      message:          buildBreakdownClarification(latestUser.content),
+      knowledgeGaps:    [],
+      knowledgeGapMode: 'clarification',
+    });
+  }
+
   if (spaceId === 'master') {
     // ── Master mode: aggregate all eligible Spaces ─────────────────────────
     // Enumerate OWNER/ADMIN/MEMBER memberships only. VIEWER excluded.
@@ -598,7 +1265,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     const contextResults = await Promise.allSettled(
       memberships.map((m) =>
-        buildContext(m.spaceId, user.id, { scopeHint: 'full' }),
+        buildContext(m.spaceId, user.id, { scopeHint: 'full', transactionWindow }),
       ),
     );
 
@@ -626,8 +1293,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
 
-    systemPrompt = buildMasterSystemPrompt(contexts, contexts.map(computeAssessment));
-    gapsForResponse = contexts.flatMap(extractKnowledgeGaps);
+    systemPrompt = buildMasterSystemPrompt(contexts, contexts.map(computeAssessment), intentRoute);
+    gapsForResponse = filterGapsByIntent(
+      contexts.flatMap(extractKnowledgeGaps),
+      detectsPayoffIntent(messages),
+    );
 
   } else {
     // ── Specific Space: verify membership, reject VIEWER ──────────────────
@@ -656,7 +1326,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // buildContext carries a second membership guard internally.
     let ctx: SpaceContext_AI;
     try {
-      ctx = await buildContext(spaceId, user.id, { scopeHint: 'full' });
+      ctx = await buildContext(spaceId, user.id, { scopeHint: 'full', transactionWindow });
     } catch (err) {
       console.error('[api/ai/chat] buildContext error:', err);
       return NextResponse.json(
@@ -665,9 +1335,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
 
-    systemPrompt = buildSpaceSystemPrompt(ctx, computeAssessment(ctx));
-    gapsForResponse = extractKnowledgeGaps(ctx);
+    systemPrompt = buildSpaceSystemPrompt(ctx, computeAssessment(ctx), intentRoute);
+    gapsForResponse = filterGapsByIntent(
+      extractKnowledgeGaps(ctx),
+      detectsPayoffIntent(messages),
+    );
   }
+
+  // ── Gap mode ─────────────────────────────────────────────────────────────
+  // "form"          — user explicitly asked to update a field; render full card immediately.
+  // "clarification" — context has gaps but user didn't ask to update; render lightweight prompt.
+  const gapMode: 'clarification' | 'form' =
+    detectsExplicitUpdateIntent(messages) ? 'form' : 'clarification';
 
   // ── LLM call ──────────────────────────────────────────────────────────────
   // generateChatReply is the only sanctioned path to the OpenAI SDK.
@@ -695,5 +1374,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  return NextResponse.json({ message: reply, knowledgeGaps: gapsForResponse });
+  return NextResponse.json({
+    message:          reply,
+    knowledgeGaps:    gapsForResponse,
+    knowledgeGapMode: gapMode,
+  });
 }

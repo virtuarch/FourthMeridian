@@ -67,6 +67,14 @@ export interface BuildContextOptions {
    * should return condensed data; 'full' (default) returns everything.
    */
   scopeHint?: AssemblerOptions['scopeHint'];
+
+  /**
+   * Optional explicit transaction window (D6 dynamic windows). Threaded to the
+   * transactions assembler so a historical question ("this year", "last 6
+   * months") is summarized over the requested range. Absent → the assembler
+   * keeps its default 30/90-day window.
+   */
+  transactionWindow?: AssemblerOptions['transactionWindow'];
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +95,7 @@ export async function buildContext(
   options: BuildContextOptions = {},
 ): Promise<SpaceContext_AI> {
   const requestedAt = new Date().toISOString();
-  const { scopeOverride, scopeHint = 'full' } = options;
+  const { scopeOverride, scopeHint = 'full', transactionWindow } = options;
 
   // ── Step 1: Validate membership ─────────────────────────────────────────
   //
@@ -146,7 +154,10 @@ export async function buildContext(
   // Each assembler is called independently. A per-domain error is caught and
   // recorded in the skipped list — it must not abort other domains.
 
-  const assemblerOptions: AssemblerOptions = { scopeHint };
+  const assemblerOptions: AssemblerOptions = {
+    scopeHint,
+    ...(transactionWindow ? { transactionWindow } : {}),
+  };
 
   const domainResults = await Promise.all(
     resolvedDomains.map(async (domain) => {
@@ -209,6 +220,7 @@ export async function buildContext(
         skippedDomains,
         signalCount:     signals.length,
         scopeHint,
+        ...(transactionWindow ? { transactionWindow } : {}),
         ...(scopeOverride ? { scopeOverride } : {}),
       },
     },

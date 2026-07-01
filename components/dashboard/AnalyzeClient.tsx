@@ -1,13 +1,16 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
-import { KnowledgeAcquisitionCard } from "@/components/dashboard/KnowledgeAcquisitionCard";
+import {
+  KnowledgeAcquisitionCard,
+  KnowledgeClarificationCard,
+} from "@/components/dashboard/KnowledgeAcquisitionCard";
 import type { GapEntry } from "@/components/dashboard/KnowledgeAcquisitionCard";
-import { Brain, Send, Clock, Zap, BarChart2, MessageSquare, ChevronDown } from "lucide-react";
+import { Brain, Send, X, Clock, Zap, BarChart2, MessageSquare, ChevronDown } from "lucide-react";
 import type { AiAdvice, Snapshot } from "@/types";
 
 type Tab = "review" | "chat";
@@ -17,6 +20,13 @@ interface Message {
   content: string;
   /** Knowledge gaps present in context when this assistant response was generated. */
   knowledgeGaps?: GapEntry[];
+  /**
+   * How the client should render gaps for this message.
+   * "form"          — user explicitly asked to update a field; show full card immediately.
+   * "clarification" — gaps exist but user didn't ask to update; show lightweight card first.
+   * Absent when there are no gaps.
+   */
+  knowledgeGapMode?: "clarification" | "form";
 }
 
 interface SpaceOption {
@@ -36,11 +46,11 @@ interface Props {
 }
 
 const SUGGESTED_PROMPTS = [
-  "What should I do with my cash?",
   "How is my debt situation?",
-  "Review my crypto exposure",
-  "Am I ready to make a play?",
-  "What's my biggest risk right now?",
+  "Where can I cut spending?",
+  "Break down my 2026 spending.",
+  "Am I ready to invest?",
+  "What is my biggest risk?",
 ];
 
 const ELIGIBLE_ROLES = new Set(["OWNER", "ADMIN", "MEMBER"]);
@@ -50,40 +60,40 @@ const ELIGIBLE_ROLES = new Set(["OWNER", "ADMIN", "MEMBER"]);
 // Cast to `any` at the call site — react-markdown@8 component map types are
 // incompatible with React 19's JSX namespace changes.
 const MD_COMPONENTS = {
-  h1: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-base text-white mb-1">{children}</p>,
-  h2: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-sm text-white mb-1">{children}</p>,
-  h3: ({ children }: { children: React.ReactNode }) => <p className="font-semibold text-sm text-gray-100 mb-0.5">{children}</p>,
-  p:  ({ children }: { children: React.ReactNode }) => <p className="mb-2 last:mb-0">{children}</p>,
-  strong: ({ children }: { children: React.ReactNode }) => <strong className="font-semibold text-white">{children}</strong>,
+  h1: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-base text-white mt-4 first:mt-0 mb-2">{children}</p>,
+  h2: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-[15px] text-white mt-4 first:mt-0 mb-1.5">{children}</p>,
+  h3: ({ children }: { children: React.ReactNode }) => <p className="font-semibold text-sm text-gray-100 mt-3 first:mt-0 mb-1">{children}</p>,
+  p:  ({ children }: { children: React.ReactNode }) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
+  strong: ({ children }: { children: React.ReactNode }) => <strong className="font-semibold text-white tabular-nums">{children}</strong>,
   em: ({ children }: { children: React.ReactNode }) => <em className="italic text-gray-300">{children}</em>,
-  ul: ({ children }: { children: React.ReactNode }) => <ul className="list-disc pl-4 mb-2 space-y-0.5">{children}</ul>,
-  ol: ({ children }: { children: React.ReactNode }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
-  li: ({ children }: { children: React.ReactNode }) => <li className="text-gray-200">{children}</li>,
+  ul: ({ children }: { children: React.ReactNode }) => <ul className="list-disc pl-5 mb-3 last:mb-0 space-y-1.5 marker:text-gray-500">{children}</ul>,
+  ol: ({ children }: { children: React.ReactNode }) => <ol className="list-decimal pl-5 mb-3 last:mb-0 space-y-1.5 marker:text-gray-500">{children}</ol>,
+  li: ({ children }: { children: React.ReactNode }) => <li className="text-gray-200 leading-relaxed pl-1">{children}</li>,
   blockquote: ({ children }: { children: React.ReactNode }) => (
-    <blockquote className="border-l-2 border-blue-500/50 pl-3 text-gray-400 italic mb-2">{children}</blockquote>
+    <blockquote className="border-l-2 border-blue-500/50 pl-3 py-0.5 text-gray-400 italic mb-3">{children}</blockquote>
   ),
   // Fenced code blocks come through with a className like "language-js";
   // inline code has no className.
   code: ({ children, className }: { children: React.ReactNode; className?: string }) =>
     className ? (
-      <pre className="bg-gray-900 rounded-lg p-3 overflow-x-auto mb-2 text-xs text-green-300 font-mono">
+      <pre className="bg-gray-950 border border-gray-800 rounded-xl p-3 overflow-x-auto mb-3 text-xs text-green-300 font-mono leading-relaxed">
         <code>{children}</code>
       </pre>
     ) : (
-      <code className="bg-gray-900 rounded px-1 py-0.5 text-xs text-blue-300 font-mono">{children}</code>
+      <code className="bg-gray-950 rounded px-1.5 py-0.5 text-[13px] text-blue-300 font-mono tabular-nums">{children}</code>
     ),
   pre: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  hr: () => <hr className="border-gray-700 my-2" />,
+  hr: () => <hr className="border-gray-700/70 my-3" />,
   table: ({ children }: { children: React.ReactNode }) => (
-    <div className="overflow-x-auto mb-2">
-      <table className="min-w-full text-xs border-collapse">{children}</table>
+    <div className="overflow-x-auto my-3 rounded-xl border border-gray-700/70">
+      <table className="min-w-full text-[13px] border-collapse tabular-nums">{children}</table>
     </div>
   ),
-  thead: ({ children }: { children: React.ReactNode }) => <thead className="bg-gray-700/50">{children}</thead>,
-  tbody: ({ children }: { children: React.ReactNode }) => <tbody>{children}</tbody>,
-  tr: ({ children }: { children: React.ReactNode }) => <tr className="border-b border-gray-700/50">{children}</tr>,
-  th: ({ children }: { children: React.ReactNode }) => <th className="px-3 py-1.5 text-left font-semibold text-gray-200 whitespace-nowrap">{children}</th>,
-  td: ({ children }: { children: React.ReactNode }) => <td className="px-3 py-1.5 text-gray-300">{children}</td>,
+  thead: ({ children }: { children: React.ReactNode }) => <thead className="bg-gray-800/80">{children}</thead>,
+  tbody: ({ children }: { children: React.ReactNode }) => <tbody className="divide-y divide-gray-700/50">{children}</tbody>,
+  tr: ({ children }: { children: React.ReactNode }) => <tr>{children}</tr>,
+  th: ({ children }: { children: React.ReactNode }) => <th className="px-3.5 py-2 text-left font-semibold text-gray-200 whitespace-nowrap border-b border-gray-700/70">{children}</th>,
+  td: ({ children }: { children: React.ReactNode }) => <td className="px-3.5 py-2 text-gray-300 align-top whitespace-nowrap">{children}</td>,
 };
 
 export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, snapshotCount, assetClassCount, cryptoPct, userName }: Props) {
@@ -99,7 +109,49 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
   const [loading, setLoading] = useState(false);
   const [selectedSpaceId, setSelectedSpaceId] = useState<string>("master");
   const [spaces, setSpaces] = useState<SpaceOption[]>([]);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const bottomRef          = useRef<HTMLDivElement>(null);
+  /** Holds the AbortController for the in-flight /api/ai/chat request, if any. */
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // ── Knowledge Acquisition session state ────────────────────────────────────
+  // Both are session-only. Nothing is persisted. A page refresh resets them.
+
+  /**
+   * Gap keys the user has dismissed ("Not now") for this chat session.
+   * Key format: `${accountId}:${field}` — matches the key used in KnowledgeAcquisitionCard.
+   * Gaps in this set are hidden across all messages until the page is refreshed.
+   */
+  const [snoozedGapKeys, setSnoozedGapKeys] = useState<ReadonlySet<string>>(new Set());
+
+  /**
+   * Message indices where the user clicked "Update [field]" on a clarification card,
+   * expanding it to the full KnowledgeAcquisitionCard.
+   */
+  const [expandedGapIndices, setExpandedGapIndices] = useState<ReadonlySet<number>>(new Set());
+
+  /**
+   * Message indices where the user dismissed an explicit update form ("Not now" on a
+   * mode === "form" or expanded card). This closes only that specific form instance —
+   * it does NOT add to snoozedGapKeys, so the user can explicitly ask again and the
+   * form will reappear on the new message.
+   */
+  const [dismissedFormIndices, setDismissedFormIndices] = useState<ReadonlySet<number>>(new Set());
+
+  function gapKey(g: GapEntry): string {
+    return `${g.accountId}:${g.field}`;
+  }
+
+  function snoozeGaps(keys: string[]): void {
+    setSnoozedGapKeys((prev) => new Set([...prev, ...keys]));
+  }
+
+  function expandGapAt(index: number): void {
+    setExpandedGapIndices((prev) => new Set([...prev, index]));
+  }
+
+  function dismissFormAt(index: number): void {
+    setDismissedFormIndices((prev) => new Set([...prev, index]));
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -117,6 +169,12 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
       });
   }, []);
 
+  const stopGeneration = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setLoading(false);
+  }, []);
+
   async function sendMessage(text?: string) {
     const msg = text ?? input.trim();
     if (!msg || loading) return;
@@ -126,10 +184,14 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
     setMessages(nextMessages);
     setLoading(true);
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     try {
       const res = await fetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           spaceId: selectedSpaceId,
           // Send only user/assistant turns; skip the initial assistant greeting
@@ -139,14 +201,23 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
       });
 
       if (res.ok) {
-        const data = await res.json() as { message: string; knowledgeGaps?: GapEntry[] };
+        const data = await res.json() as {
+          message:          string;
+          knowledgeGaps?:   GapEntry[];
+          knowledgeGapMode?: "clarification" | "form";
+        };
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
             content: data.message,
-            // Only attach gaps when the context actually has missing fields.
-            ...(data.knowledgeGaps?.length ? { knowledgeGaps: data.knowledgeGaps } : {}),
+            // Only attach gaps / mode when the context actually has missing fields.
+            ...(data.knowledgeGaps?.length
+              ? {
+                  knowledgeGaps:    data.knowledgeGaps,
+                  knowledgeGapMode: data.knowledgeGapMode,
+                }
+              : {}),
           },
         ]);
       } else {
@@ -159,19 +230,43 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
           },
         ]);
       }
-    } catch {
+    } catch (err) {
+      // AbortError is intentional — user clicked Stop. Do not push an error message.
+      if (err instanceof Error && err.name === "AbortError") return;
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: "Network error. Please check your connection and try again." },
       ]);
     } finally {
+      abortControllerRef.current = null;
       setLoading(false);
     }
   }
 
+  // Composer key handling: Enter sends, Shift+Enter inserts a newline.
+  function handleComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }
+
+  const isChat = tab === "chat";
+
   return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-3">
+    // On the AI Chat tab the whole page becomes a native LLM workspace: a single
+    // flex column sized to the real remaining viewport height (100dvh minus the
+    // shell's top bar + <main>'s own padding — see DashboardChrome.tsx), so the
+    // conversation surface fills the space instead of living in a cramped, fixed
+    // card. The ML Review tab keeps its natural, scroll-with-the-page flow.
+    <div
+      className={
+        isChat
+          ? "flex flex-col gap-4 h-[calc(100dvh-172px)] lg:h-[calc(100dvh-108px)] min-h-[420px]"
+          : "space-y-5"
+      }
+    >
+      <div className="shrink-0 flex items-center gap-3">
         <div className="w-9 h-9 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center">
           <Brain size={18} className="text-blue-400" />
         </div>
@@ -179,7 +274,7 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
       </div>
 
       {/* Tab switcher */}
-      <div className="flex gap-1 p-1 bg-gray-900 rounded-xl w-fit">
+      <div className="shrink-0 flex gap-1 p-1 bg-gray-900 rounded-xl w-fit">
         <button
           onClick={() => setTab("review")}
           className={`flex items-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-all touch-manipulation ${
@@ -281,60 +376,113 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
         </div>
       )}
 
-      {/* AI Chat tab */}
+      {/* AI Chat tab — the workspace surface itself, filling all remaining
+          height. Full-bleed surface; the conversation + composer sit in a
+          centered reading column inside it (ChatGPT/Claude pattern) so text
+          stays readable while the surface uses the full Analyze content area. */}
       {tab === "chat" && (
-        <div className="flex flex-col h-[calc(100vh-180px)] min-h-[520px]">
-          {/* Space selector */}
-          <div className="mb-3 flex items-center gap-2">
-            <span className="text-xs text-gray-500 shrink-0">Context:</span>
-            <div className="relative flex-1 max-w-xs">
-              <select
-                value={selectedSpaceId}
-                onChange={(e) => setSelectedSpaceId(e.target.value)}
-                className="w-full appearance-none bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors pr-8"
-              >
-                <option value="master">All My Spaces</option>
-                {spaces.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-              <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+        <Card className="flex-1 min-h-0 flex flex-col overflow-hidden p-0">
+            {/* Assistant identity header */}
+            <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-gray-800 bg-gray-900/60 backdrop-blur-sm">
+              <div className="w-8 h-8 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center shrink-0">
+                <Brain size={15} className="text-blue-400" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-white leading-tight">Fourth Meridian AI</p>
+                <p className="flex items-center gap-1.5 text-xs text-gray-500 leading-tight mt-0.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+                  Connected to your financial context
+                </p>
+              </div>
+              {/* Context (Space) selector */}
+              <div className="relative shrink-0">
+                <select
+                  value={selectedSpaceId}
+                  onChange={(e) => setSelectedSpaceId(e.target.value)}
+                  aria-label="Analysis context"
+                  className="max-w-[10rem] appearance-none bg-gray-800/80 border border-gray-700 rounded-lg pl-3 pr-7 py-1.5 text-xs font-medium text-gray-200 focus:outline-none focus:border-blue-500 transition-colors truncate"
+                >
+                  <option value="master">All My Spaces</option>
+                  {spaces.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+                <ChevronDown size={13} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+              </div>
             </div>
-          </div>
 
-          <Card className="flex-1 flex flex-col overflow-hidden p-0">
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {/* Messages — the one primary conversation scroll container. */}
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 py-5">
+              <div className="max-w-3xl mx-auto w-full space-y-5">
               {messages.map((m, i) => (
                 <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                   {m.role === "assistant" ? (
                     <>
                       {/* Avatar — pinned to the top of the message group */}
-                      <div className="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center mr-2 mt-0.5 shrink-0">
+                      <div className="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center mr-2.5 mt-0.5 shrink-0">
                         <Brain size={13} className="text-blue-400" />
                       </div>
                       {/* Message bubble + optional Knowledge Acquisition card */}
-                      <div className="flex flex-col gap-2 max-w-[80%]">
-                        <div className="bg-gray-800 text-gray-200 rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed">
+                      <div className="flex flex-col gap-2 max-w-[88%]">
+                        <div className="bg-gray-800/80 border border-gray-700/50 text-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 text-sm">
                           {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                           <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS as any}>
                             {m.content}
                           </ReactMarkdown>
                         </div>
-                        {m.knowledgeGaps && m.knowledgeGaps.length > 0 && (
-                          <KnowledgeAcquisitionCard
-                            gaps={m.knowledgeGaps}
-                            onSaved={() =>
-                              sendMessage(
-                                "I saved the missing information. Please recalculate with the updated context.",
-                              )
-                            }
-                          />
-                        )}
+                        {(() => {
+                          if (!m.knowledgeGaps?.length) return null;
+
+                          // Explicit update: user asked to update a field (mode === "form")
+                          // or clicked "Update [field]" on a clarification card.
+                          // Snooze must NOT suppress explicit update requests — it only
+                          // hides automatic clarification cards for later passive prompts.
+                          const isExplicitUpdate =
+                            m.knowledgeGapMode === "form" || expandedGapIndices.has(i);
+
+                          // Explicit form dismissed via "Not now" on THIS instance.
+                          // Does not affect snoozedGapKeys, so the user can ask again
+                          // and a new message's form will render without restriction.
+                          if (isExplicitUpdate && dismissedFormIndices.has(i)) return null;
+
+                          // When explicit, bypass snooze and show all gaps.
+                          // When passive, filter out gaps the user already dismissed.
+                          const visibleGaps = isExplicitUpdate
+                            ? m.knowledgeGaps
+                            : m.knowledgeGaps.filter((g) => !snoozedGapKeys.has(gapKey(g)));
+
+                          if (visibleGaps.length === 0) return null;
+
+                          if (isExplicitUpdate) {
+                            return (
+                              <KnowledgeAcquisitionCard
+                                gaps={visibleGaps}
+                                // Dismiss closes only this form instance.
+                                // Does NOT snooze — explicit asks on future messages still show.
+                                onDismiss={() => dismissFormAt(i)}
+                                onSaved={() =>
+                                  sendMessage(
+                                    "I saved the missing information. Please recalculate with the updated context.",
+                                  )
+                                }
+                              />
+                            );
+                          }
+
+                          // Default: lightweight clarification prompt.
+                          // "Not now" snoozes the gap for the rest of this chat session.
+                          return (
+                            <KnowledgeClarificationCard
+                              gaps={visibleGaps}
+                              onExpand={() => expandGapAt(i)}
+                              onSnooze={() => snoozeGaps(visibleGaps.map(gapKey))}
+                            />
+                          );
+                        })()}
                       </div>
                     </>
                   ) : (
-                    <div className="max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed bg-blue-600 text-white rounded-br-sm">
+                    <div className="max-w-[85%] rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed bg-blue-600 text-white shadow-sm whitespace-pre-wrap break-words">
                       {m.content}
                     </div>
                   )}
@@ -342,10 +490,10 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
               ))}
               {loading && (
                 <div className="flex justify-start">
-                  <div className="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center mr-2 shrink-0">
+                  <div className="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center mr-2.5 shrink-0">
                     <Brain size={13} className="text-blue-400" />
                   </div>
-                  <div className="bg-gray-800 rounded-2xl rounded-bl-sm px-4 py-3">
+                  <div className="bg-gray-800/80 border border-gray-700/50 rounded-2xl rounded-tl-sm px-4 py-3">
                     <div className="flex gap-1.5 items-center h-4">
                       <span className="w-2 h-2 rounded-full bg-gray-500 animate-bounce" style={{ animationDelay: "0ms" }} />
                       <span className="w-2 h-2 rounded-full bg-gray-500 animate-bounce" style={{ animationDelay: "150ms" }} />
@@ -355,44 +503,66 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
                 </div>
               )}
               <div ref={bottomRef} />
+              </div>
             </div>
 
-            {/* Suggested prompts */}
+            {/* Suggested prompts — empty state */}
             {messages.length <= 1 && (
-              <div className="px-4 pb-2 flex gap-2 overflow-x-auto scrollbar-none">
-                {SUGGESTED_PROMPTS.map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => sendMessage(p)}
-                    className="shrink-0 text-xs text-blue-400 border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 rounded-full hover:bg-blue-500/20 transition-colors"
-                  >
-                    {p}
-                  </button>
-                ))}
+              <div className="shrink-0 px-4 pb-3">
+                <div className="max-w-3xl mx-auto w-full">
+                <p className="text-xs font-medium uppercase tracking-widest text-gray-500 mb-2">Try asking</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {SUGGESTED_PROMPTS.map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => sendMessage(p)}
+                      className="text-left text-sm text-gray-200 border border-gray-700/70 bg-gray-800/50 px-3.5 py-2.5 rounded-xl hover:bg-gray-800 hover:border-blue-500/40 transition-colors"
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+                </div>
               </div>
             )}
 
-            {/* Input */}
-            <div className="border-t border-gray-700 p-3 flex gap-2">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-                placeholder="Ask about your finances..."
-                className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
-              />
-              <button
-                onClick={() => sendMessage()}
-                disabled={!input.trim() || loading}
-                className="w-10 h-10 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
-              >
-                <Send size={16} className="text-white" />
-              </button>
+            {/* Composer — pinned to the bottom of the workspace. */}
+            <div className="shrink-0 border-t border-gray-800 p-3">
+              <div className="max-w-3xl mx-auto w-full">
+              <div className="flex items-end gap-2 rounded-2xl border border-gray-700 bg-gray-800/80 focus-within:border-blue-500 transition-colors p-1.5 pl-3">
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleComposerKeyDown}
+                  rows={1}
+                  placeholder="Ask about your finances…"
+                  className="flex-1 resize-none max-h-40 bg-transparent py-2 text-sm text-white placeholder-gray-500 focus:outline-none leading-relaxed"
+                />
+                {loading ? (
+                  <button
+                    onClick={stopGeneration}
+                    className="w-9 h-9 rounded-xl bg-gray-700 hover:bg-gray-600 flex items-center justify-center transition-colors shrink-0"
+                    aria-label="Stop generation"
+                  >
+                    <X size={16} className="text-white" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => sendMessage()}
+                    disabled={!input.trim()}
+                    aria-label="Send message"
+                    className="w-9 h-9 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
+                  >
+                    <Send size={16} className="text-white" />
+                  </button>
+                )}
+              </div>
+              <p className="mt-1.5 px-1 text-[11px] text-gray-600">
+                Enter to send · Shift+Enter for a new line
+              </p>
+              </div>
             </div>
           </Card>
-
-        </div>
       )}
     </div>
   );

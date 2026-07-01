@@ -67,6 +67,7 @@ import { SpaceComingSoonPanel } from "@/components/dashboard/widgets/SpaceComing
 import { KpiRow } from "@/components/dashboard/widgets/KpiRow";
 import { OverviewBriefPanel } from "@/components/dashboard/widgets/OverviewBriefPanel";
 import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
+import { SpaceTransactionsPanel } from "@/components/dashboard/widgets/SpaceTransactionsPanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type PersonalTab =
@@ -1192,13 +1193,14 @@ export function DashboardClient({
         />
       )}
 
-      {/* Transactions tab — placeholder, no standalone feature exists yet
-          (today, transactions only surface nested inside Credit/Debt). */}
+      {/* Transactions tab — unified transaction list for this Space.
+          Data comes from the existing getTransactions() fetch (same data that
+          feeds the Overview's RecentTransactionsPanel and AI context), so no
+          additional server request is needed. */}
       {isTransactions && (
-        <SpaceComingSoonPanel
-          icon={<Receipt size={20} />}
-          title="Transactions"
-          description="A unified transaction list across every account in this Space is coming soon."
+        <SpaceTransactionsPanel
+          transactions={transactions}
+          accounts={accounts}
         />
       )}
 

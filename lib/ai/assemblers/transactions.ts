@@ -53,6 +53,7 @@ import type {
   TransactionsSummaryData,
   CategorySpend,
   RecurringCandidate,
+  MonthlyBreakdownEntry,
 } from '@/lib/ai/types';
 import type { SpaceContext } from '@/lib/space';
 
@@ -91,6 +92,17 @@ const TRANSACTION_FETCH_LIMIT = 5_000;
 const WINDOW_BRIEF_DAYS = 30;
 const WINDOW_FULL_DAYS  = 90;
 
+/** Number of top categories surfaced per month in the monthly breakdown. */
+const MONTHLY_TOP_CATEGORIES = 3;
+
+/**
+ * Defensive ceiling on an explicit (D6) window. The routing layer already caps
+ * "last N months" at 24 months and YTD is naturally bounded, but this guards
+ * against any caller supplying an unbounded range: the window floor is never
+ * allowed to reach further back than this many days.
+ */
+const MAX_EXPLICIT_WINDOW_DAYS = 800; // ~26 months
+
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
@@ -112,11 +124,16 @@ async function assembleTransactions(
   options:  AssemblerOptions,
 ): Promise<ContextDomainSection | null> {
   const { spaceId } = spaceCtx;
-  const { scopeHint = 'full' } = options;
+  const { scopeHint = 'full', transactionWindow } = options;
   const assembledAt = new Date().toISOString();
 
-  const windowDays  = scopeHint === 'brief' ? WINDOW_BRIEF_DAYS : WINDOW_FULL_DAYS;
-  const windowStart = startOfDay(-windowDays);
+  // ── Resolve the analysis window ─────────────────────────────────────────────
+  // Default: rolling 30-day (brief) / 90-day (full) window, floor only.
+  // Explicit (D6): a caller-supplied inclusive [startDate, endDate] range. The
+  // floor is clamped to MAX_EXPLICIT_WINDOW_DAYS so a request can never reach
+  // unbounded history. windowDays is the inclusive day count — it feeds the
+  // downstream monthly-equivalent math unchanged (only the span widens).
+  const win = resolveWindow(scopeHint, transactionWindow);
 
   // ── Query ─────────────────────────────────────────────────────────────────
   // Mirrors the dual-path OR in lib/data/transactions.ts:
@@ -139,7 +156,8 @@ async function assembleTransactions(
       ],
       deletedAt: null,
       category:  { in: BANKING_CATEGORIES },
-      date:      { gte: windowStart },
+      // Floor always applied; ceiling only for an explicit past-bounded window.
+      date:      win.end ? { gte: win.start, lte: win.end } : { gte: win.start },
     },
     select: {
       date:     true,
@@ -243,10 +261,21 @@ async function assembleTransactions(
   // For brief scope: keep only top 5 categories (enough for a morning summary).
   const byCategoryOutput = scopeHint === 'brief' ? byCategory.slice(0, 5) : byCategory;
 
+  // ── Monthly rollups (D6 — deterministic, per calendar month) ──────────────
+  // Buckets are built directly from the queried rows so month-by-month answers
+  // never require the LLM to divide a window total by a month count. The
+  // effective ceiling is the explicit window end, or today for a rolling window,
+  // so partial-month detection reflects the actual coverage of the request.
+  const effectiveEndIso = win.endIso ?? new Date().toISOString().split('T')[0];
+  const monthlyBreakdown = buildMonthlyBreakdown(settled, pending, win.startIso, effectiveEndIso);
+
   // ── Date range ────────────────────────────────────────────────────────────
   // rows is ordered desc by date; last element is oldest in the window.
+  // For an explicit window the reported endDate is the requested ceiling so the
+  // provenance block shows the exact period asked for; otherwise it is the most
+  // recent transaction date (default rolling-window behavior, unchanged).
 
-  const newestDate = rows[0].date.toISOString().split('T')[0];
+  const newestDate = win.endIso ?? rows[0].date.toISOString().split('T')[0];
 
   // ── Recurring candidates (settled transactions, full scope only) ──────────
   // Heuristic: merchants appearing 2+ times in the window are candidates.
@@ -294,8 +323,8 @@ async function assembleTransactions(
   // ── Assemble payload ──────────────────────────────────────────────────────
 
   const data: TransactionsSummaryData = {
-    windowDays,
-    startDate:        windowStart.toISOString().split('T')[0],
+    windowDays:       win.days,
+    startDate:        win.startIso,
     endDate:          newestDate,
     transactionCount: rows.length,
 
@@ -311,6 +340,8 @@ async function assembleTransactions(
     pendingDebitTotal:  Math.round(pendingDebitTotal  * 100) / 100,
 
     byCategory: byCategoryOutput,
+
+    monthlyBreakdown,
 
     largestIncome: largestIncomeRow
       ? {
@@ -342,12 +373,176 @@ async function assembleTransactions(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** UTC calendar month key (YYYY-MM) for a Date. */
+function monthKey(d: Date): string {
+  return d.toISOString().slice(0, 7);
+}
+
+/** True when a YYYY-MM-DD date is the last calendar day of its UTC month. */
+function isLastDayOfMonth(iso: string): boolean {
+  const y   = Number(iso.slice(0, 4));
+  const mo  = Number(iso.slice(5, 7)); // 1–12
+  const day = Number(iso.slice(8, 10));
+  // Day 0 of the next month === last day of month `mo`.
+  const lastDay = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return day >= lastDay;
+}
+
+/**
+ * Build the deterministic per-calendar-month breakdown (D6).
+ *
+ * Money totals mirror the top-level cash-flow aggregation exactly and use
+ * SETTLED rows only. transactionCount includes pending rows so the per-month
+ * counts sum to the top-level transactionCount. A month is flagged `partial`
+ * when the window clips it — the first month if the floor lands after the 1st,
+ * or the last month if the ceiling lands before month-end (e.g. an in-progress
+ * current month on a rolling window). Result is ordered oldest → newest.
+ */
+function buildMonthlyBreakdown(
+  settled:  TxnRow[],
+  pending:  TxnRow[],
+  startIso: string,
+  endIso:   string,
+): MonthlyBreakdownEntry[] {
+  type Bucket = {
+    incomeTotal:      number;
+    expenseTotal:     number;
+    debtPaymentTotal: number;
+    transferTotal:    number;
+    transactionCount: number;
+    // Per-category signed sum + settled row count. Abs(signed) at output mirrors
+    // the top-level byCategory; count mirrors CategorySpend.count.
+    categoryAgg:      Map<string, { signed: number; count: number }>;
+  };
+
+  const buckets = new Map<string, Bucket>();
+
+  const bucketFor = (key: string): Bucket => {
+    let b = buckets.get(key);
+    if (!b) {
+      b = {
+        incomeTotal: 0, expenseTotal: 0, debtPaymentTotal: 0,
+        transferTotal: 0, transactionCount: 0, categoryAgg: new Map(),
+      };
+      buckets.set(key, b);
+    }
+    return b;
+  };
+
+  // Settled rows drive money totals + category sums (same rules as the main loop).
+  for (const txn of settled) {
+    const b = bucketFor(monthKey(txn.date));
+    b.transactionCount += 1;
+    const agg = b.categoryAgg.get(txn.category) ?? { signed: 0, count: 0 };
+    agg.signed += txn.amount;
+    agg.count  += 1;
+    b.categoryAgg.set(txn.category, agg);
+
+    if (txn.category === TransactionCategory.Transfer) {
+      b.transferTotal += Math.abs(txn.amount);
+    } else if (txn.category === TransactionCategory.Payment) {
+      if (txn.amount < 0) b.debtPaymentTotal += Math.abs(txn.amount);
+    } else if (INCOME_CATEGORIES.has(txn.category) && txn.amount > 0) {
+      b.incomeTotal += txn.amount;
+    } else if (txn.amount < 0) {
+      b.expenseTotal += Math.abs(txn.amount);
+    }
+  }
+
+  // Pending rows only bump the count (excluded from money totals, as top-level).
+  for (const txn of pending) {
+    bucketFor(monthKey(txn.date)).transactionCount += 1;
+  }
+
+  const startMonth   = startIso.slice(0, 7);
+  const startClipped = Number(startIso.slice(8, 10)) > 1;
+  const endMonth     = endIso.slice(0, 7);
+  const endClipped   = !isLastDayOfMonth(endIso);
+
+  return Array.from(buckets.entries())
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)) // oldest → newest
+    .map(([month, b]): MonthlyBreakdownEntry => {
+      // Full deterministic per-category totals for this month (all present
+      // categories, non-zero only). This is the authoritative per-month category
+      // source — absence means "no classified settled txns this month", never $0.
+      const byCategory: CategorySpend[] = Array.from(b.categoryAgg.entries())
+        .map(([category, { signed, count }]): CategorySpend => ({
+          category,
+          total: Math.round(Math.abs(signed) * 100) / 100,
+          count,
+        }))
+        .filter((c) => c.total > 0)
+        .sort((x, y) => y.total - x.total);
+
+      // topCategories stays a compact convenience slice of byCategory.
+      const topCategories = byCategory
+        .slice(0, MONTHLY_TOP_CATEGORIES)
+        .map(({ category, total }) => ({ category, total }));
+
+      const partial =
+        (month === startMonth && startClipped) ||
+        (month === endMonth && endClipped);
+
+      return {
+        month,
+        incomeTotal:      Math.round(b.incomeTotal      * 100) / 100,
+        expenseTotal:     Math.round(b.expenseTotal     * 100) / 100,
+        debtPaymentTotal: Math.round(b.debtPaymentTotal * 100) / 100,
+        transferTotal:    Math.round(b.transferTotal    * 100) / 100,
+        transactionCount: b.transactionCount,
+        ...(partial ? { partial: true } : {}),
+        byCategory,
+        ...(topCategories.length > 0 ? { topCategories } : {}),
+      };
+    });
+}
+
 /** Returns midnight UTC on the day N days ago. */
 function startOfDay(offsetDays: number): Date {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() + offsetDays);
   d.setUTCHours(0, 0, 0, 0);
   return d;
+}
+
+/** Whole UTC days (inclusive) between two YYYY-MM-DD dates, minimum 1. */
+function inclusiveDaySpan(startIso: string, endIso: string): number {
+  const start = Date.parse(`${startIso}T00:00:00.000Z`);
+  const end   = Date.parse(`${endIso}T00:00:00.000Z`);
+  return Math.max(1, Math.round((end - start) / 86_400_000) + 1);
+}
+
+/**
+ * Resolve the query window from scopeHint + an optional explicit request.
+ *
+ * Default (no explicit window): rolling floor only — 30 days (brief) / 90 days
+ * (full), matching the pre-D6 behavior exactly.
+ *
+ * Explicit (D6): inclusive [startDate, endDate]. The floor is clamped so it can
+ * never reach further back than MAX_EXPLICIT_WINDOW_DAYS. `days` is the
+ * inclusive day count used for downstream monthly-equivalent math.
+ */
+function resolveWindow(
+  scopeHint:         'full' | 'brief',
+  transactionWindow: AssemblerOptions['transactionWindow'],
+): { start: Date; end: Date | null; startIso: string; endIso: string | null; days: number } {
+  if (!transactionWindow) {
+    const days  = scopeHint === 'brief' ? WINDOW_BRIEF_DAYS : WINDOW_FULL_DAYS;
+    const start = startOfDay(-days);
+    return { start, end: null, startIso: start.toISOString().split('T')[0], endIso: null, days };
+  }
+
+  // Clamp the floor to the defensive maximum lookback.
+  const earliestAllowed = startOfDay(-MAX_EXPLICIT_WINDOW_DAYS);
+  let start = new Date(`${transactionWindow.startDate}T00:00:00.000Z`);
+  if (start < earliestAllowed) start = earliestAllowed;
+
+  const startIso = start.toISOString().split('T')[0];
+  const endIso   = transactionWindow.endDate;
+  // Inclusive ceiling: end of the requested day.
+  const end = new Date(`${endIso}T23:59:59.999Z`);
+
+  return { start, end, startIso, endIso, days: inclusiveDaySpan(startIso, endIso) };
 }
 
 // ---------------------------------------------------------------------------

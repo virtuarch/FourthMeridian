@@ -24,7 +24,7 @@
  */
 
 import { useState } from "react";
-import { PenLine, CheckCircle } from "lucide-react";
+import { PenLine, CheckCircle, Info } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -67,6 +67,56 @@ const FIELD_CONFIG: Record<GapEntry["field"], FieldConfig> = {
   },
 };
 
+// ── Clarification card ────────────────────────────────────────────────────────
+
+/**
+ * Lightweight inline prompt shown before the full KnowledgeAcquisitionCard.
+ * Prefers a one-line "I'm missing X for Y. Want to update it?" pattern.
+ * Clicking "Update" expands to the full form; "Not now" snoozes for the session.
+ */
+interface ClarificationProps {
+  gaps:     GapEntry[];
+  /** Expand to full KnowledgeAcquisitionCard. */
+  onExpand: () => void;
+  /** Snooze this gap for the current chat session. */
+  onSnooze: () => void;
+}
+
+export function KnowledgeClarificationCard({ gaps, onExpand, onSnooze }: ClarificationProps) {
+  const accountNames = [...new Set(gaps.map((g) => g.accountName))].join(", ");
+  const allSameField = gaps.length > 0 && gaps.every((g) => g.field === gaps[0].field);
+  const fieldLabel   = allSameField ? gaps[0].label : "missing information";
+  const updateLabel  = allSameField ? `Update ${gaps[0].label}` : "Update";
+
+  return (
+    <div className="border border-gray-700/60 bg-gray-800/30 rounded-xl px-3 py-2.5 flex items-start justify-between gap-3">
+      <div className="flex items-start gap-2 min-w-0">
+        <Info size={13} className="text-blue-400/70 mt-0.5 shrink-0" />
+        <p className="text-xs text-gray-400 leading-relaxed">
+          <span className="text-gray-200 font-medium">{fieldLabel}</span>
+          {" missing for "}
+          <span className="text-white">{accountNames}</span>
+          {" — adding it improves accuracy."}
+        </p>
+      </div>
+      <div className="flex gap-1.5 shrink-0 mt-0.5">
+        <button
+          onClick={onExpand}
+          className="text-xs text-blue-400 border border-blue-500/40 bg-blue-500/10 px-2.5 py-1 rounded-lg hover:bg-blue-500/20 transition-colors whitespace-nowrap"
+        >
+          {updateLabel}
+        </button>
+        <button
+          onClick={onSnooze}
+          className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-gray-700/50 transition-colors whitespace-nowrap"
+        >
+          Not now
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Save state ────────────────────────────────────────────────────────────────
 
 type SaveState = "idle" | "saving" | "saved" | "error";
@@ -74,13 +124,15 @@ type SaveState = "idle" | "saving" | "saved" | "error";
 // ── Component ─────────────────────────────────────────────────────────────────
 
 interface Props {
-  gaps:      GapEntry[];
+  gaps:       GapEntry[];
   /** Called after all PATCH requests succeed. Parent uses this to inject a
    *  follow-up user message so the AI recalculates with fresh context. */
-  onSaved?:  () => void;
+  onSaved?:   () => void;
+  /** Called when the user clicks "Not now". Parent handles session snooze state. */
+  onDismiss?: () => void;
 }
 
-export function KnowledgeAcquisitionCard({ gaps, onSaved }: Props) {
+export function KnowledgeAcquisitionCard({ gaps, onSaved, onDismiss }: Props) {
   // Input values keyed by `${accountId}:${field}`
   const [values, setValues] = useState<Record<string, string>>({});
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -216,20 +268,31 @@ export function KnowledgeAcquisitionCard({ gaps, onSaved }: Props) {
         <p className="text-xs text-red-400">{errorMsg}</p>
       )}
 
-      {/* Save / Saved */}
+      {/* Save / Saved / Not now */}
       {saveState === "saved" ? (
         <div className="flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-green-400">
           <CheckCircle size={13} />
           Saved
         </div>
       ) : (
-        <button
-          disabled={!canSave}
-          onClick={() => { void handleSave(); }}
-          className="w-full py-2 rounded-lg text-xs font-medium transition-colors bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white"
-        >
-          {saveState === "saving" ? "Saving…" : "Save"}
-        </button>
+        <div className="flex gap-2">
+          <button
+            disabled={!canSave}
+            onClick={() => { void handleSave(); }}
+            className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white"
+          >
+            {saveState === "saving" ? "Saving…" : "Save"}
+          </button>
+          {onDismiss && (
+            <button
+              onClick={onDismiss}
+              disabled={isBusy}
+              className="py-2 px-3 rounded-lg text-xs font-medium text-gray-500 hover:text-gray-300 hover:bg-gray-700/50 transition-colors disabled:opacity-40"
+            >
+              Not now
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

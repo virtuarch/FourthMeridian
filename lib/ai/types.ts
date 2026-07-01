@@ -79,6 +79,17 @@ export interface ContextDomainSection {
  */
 export interface AssemblerOptions {
   scopeHint?: 'full' | 'brief';
+  /**
+   * Optional explicit transaction window (D6 dynamic windows). When present,
+   * the transactions assembler summarizes this UTC date range instead of its
+   * default 30/90-day span. Both bounds are inclusive YYYY-MM-DD dates. Other
+   * assemblers ignore this field. Absent → default behavior is preserved.
+   */
+  transactionWindow?: {
+    startDate: string; // YYYY-MM-DD, inclusive floor
+    endDate:   string; // YYYY-MM-DD, inclusive ceiling
+    label?:    string; // human phrase for provenance ("year-to-date 2026")
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +256,50 @@ export interface CategorySpend {
 }
 
 /**
+ * Deterministic cash-flow rollup for a single calendar month (UTC).
+ *
+ * Buckets are computed directly from the transaction rows in the requested
+ * window — never inferred from a total divided by a month count. This is the
+ * authoritative source for any month-by-month question; the LLM must not
+ * fabricate monthly figures from window totals or averages.
+ *
+ * Money semantics mirror the top-level TransactionsSummaryData exactly:
+ *   incomeTotal      — positive amounts in Income + Interest categories
+ *   expenseTotal     — absolute negative amounts, excluding Transfer & Payment
+ *   debtPaymentTotal — absolute Payment-category outflows
+ *   transferTotal    — absolute Transfer-category movement (both directions)
+ * All money figures are settled-only (pending rows are excluded from totals but
+ * counted in transactionCount, matching the top-level count convention).
+ *
+ * `partial` is true when the requested window does not fully cover this calendar
+ * month (e.g. the current in-progress month, or a clipped first/last month) so
+ * the figure can be labeled as incomplete rather than compared like a full month.
+ */
+export interface MonthlyBreakdownEntry {
+  month:            string; // YYYY-MM (UTC)
+  incomeTotal:      number;
+  expenseTotal:     number;
+  debtPaymentTotal: number;
+  transferTotal:    number;
+  transactionCount: number; // settled + pending rows dated in this month
+  /** True when the window clips this month (partial coverage). */
+  partial?:         boolean;
+  /**
+   * Deterministic per-category settled totals for THIS month, computed directly
+   * from the queried rows (same rules as the top-level byCategory). Ordered by
+   * absolute total descending; only categories with a non-zero settled total in
+   * this month are present. A category absent from this list had no classified
+   * settled transactions in this month within the queried window — consumers
+   * must NOT render it as $0, invent it from an average, or fill a zero column.
+   * Always present (possibly empty).
+   */
+  byCategory:       CategorySpend[];
+  /** Top categories by absolute settled total in this month (≤3). Convenience
+   *  slice of `byCategory` — kept for compact summaries. */
+  topCategories?:   Array<{ category: string; total: number }>;
+}
+
+/**
  * A merchant that appears two or more times in the query window —
  * a deterministic, rule-based indicator of a recurring charge.
  * No ML or LLM required.
@@ -298,6 +353,15 @@ export interface TransactionsSummaryData {
 
   // ── By category ─────────────────────────────────────────────────────────
   byCategory: CategorySpend[];
+
+  // ── Monthly rollups (deterministic; D6) ─────────────────────────────────
+  /**
+   * Per-calendar-month cash-flow buckets for the requested window, oldest → newest.
+   * Only months inside the window appear. This is the authoritative answer to any
+   * month-by-month question — consumers must never derive monthly figures by
+   * dividing a window total by a month count.
+   */
+  monthlyBreakdown: MonthlyBreakdownEntry[];
 
   // ── Highlights ──────────────────────────────────────────────────────────
   largestIncome:  { merchant: string; amount: number; date: string } | null;

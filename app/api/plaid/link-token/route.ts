@@ -128,6 +128,22 @@ export async function GET(req: NextRequest) {
       // see LinkTokenCreateRequest docs). Default mode: unchanged from before.
       ...(accessToken ? { access_token: accessToken } : { products }),
       ...(redirectUri && { redirect_uri: redirectUri }),
+      // D4 — Request maximum available transaction history (up to 730 days /
+      // ~2 years) for every new Item. Plaid's default is 90 days when this
+      // field is omitted, which is what all Items linked before this change
+      // were initialized with.
+      //
+      // IMPORTANT — this value is immutable after the Transactions product is
+      // first initialized on an Item. Plaid permanently caps the history
+      // available for that Item at whatever was requested here. Clearing the
+      // PlaidItem.cursor and re-running syncTransactions only replays within
+      // that cap — it does NOT expand it. The only way to get deeper history
+      // on an already-linked Item is to call /item/remove (deletes the Item at
+      // Plaid) and send the user through Link again to create a new Item.
+      //
+      // This field is silently ignored when accessToken is present (Plaid
+      // update mode), so it is safe to include unconditionally.
+      transactions: { days_requested: 730 },
     });
 
     const token = response.data.link_token;

@@ -11,6 +11,26 @@
  * AccountConnection.syncStatus / FinancialAccount.syncStatus as a health
  * signal — see the checklist's Risks section for why those fields don't
  * reflect Plaid failures today.
+ *
+ * D4 Slice 0 — adds a per-row "Diagnostics" action that opens a client-side
+ * drawer (ProviderDiagnosticsDrawer). The drawer fetches extended data from
+ * POST /api/admin/plaid/diagnostics on open; this page stays a server
+ * component. ProviderActionsButton is the client leaf that owns drawer state.
+ *
+ * D4 Slice 2 — selects institutionId and account masks to compute
+ * expandHistoryEligible per row. Passed to ProviderActionsButton as
+ * serializable props (no functions, no class instances). The expand-history-
+ * token endpoint re-validates these conditions server-side before touching
+ * Plaid; the prop is a UX hint only.
+ *
+ * expandHistoryEligible is true when:
+ *   - item.status === ACTIVE
+ *   - at least one live AccountConnection exists
+ *   - every connected FinancialAccount has a non-null mask
+ *
+ * The cursor / institutionId server-side checks remain in the API endpoint.
+ * We intentionally do not select cursor here to avoid leaking the sync token
+ * into the server component render (consistent with the diagnostics endpoint).
  */
 
 import { getServerSession } from "next-auth";
@@ -18,6 +38,7 @@ import { authOptions } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { formatDate, formatDateTimeShort } from "@/lib/format";
+import { ProviderActionsButton } from "@/components/admin/ProviderActionsButton";
 
 function fmtDate(d: Date) {
   return formatDate(d.toISOString());
@@ -43,6 +64,7 @@ export default async function AdminProvidersPage() {
     select: {
       id:                  true,
       externalItemId:      true,
+      institutionId:       true,
       institutionName:     true,
       status:              true,
       errorCode:           true,
@@ -54,6 +76,17 @@ export default async function AdminProvidersPage() {
       },
       _count: {
         select: { connections: true },
+      },
+      // D4 Slice 2 — mask data for expandHistoryEligible computation.
+      // Only non-deleted connections; mask null-check determines whether
+      // resolveAccountByFingerprint can safely match after a fresh link.
+      connections: {
+        where:  { deletedAt: null },
+        select: {
+          financialAccount: {
+            select: { mask: true },
+          },
+        },
       },
     },
   });
@@ -80,12 +113,13 @@ export default async function AdminProvidersPage() {
                   <th className="px-4 py-3 font-medium hidden md:table-cell">Last synced</th>
                   <th className="px-4 py-3 font-medium hidden md:table-cell">Last manual refresh</th>
                   <th className="px-4 py-3 font-medium hidden lg:table-cell">Connected</th>
+                  <th className="px-4 py-3 font-medium"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
                 {plaidItems.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500">
+                    <td colSpan={8} className="px-4 py-8 text-center text-sm text-gray-500">
                       No provider connections yet.
                     </td>
                   </tr>
@@ -124,6 +158,20 @@ export default async function AdminProvidersPage() {
                       </td>
                       <td className="px-4 py-3 hidden lg:table-cell text-xs text-gray-500">
                         {fmtDate(item.createdAt)}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <ProviderActionsButton
+                          plaidItemId={item.id}
+                          institutionId={item.institutionId}
+                          institutionName={item.institutionName}
+                          expandHistoryEligible={
+                            item.status === "ACTIVE" &&
+                            item.connections.length > 0 &&
+                            item.connections.every(
+                              (c) => c.financialAccount.mask !== null,
+                            )
+                          }
+                        />
                       </td>
                     </tr>
                   ))
