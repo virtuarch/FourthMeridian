@@ -44,6 +44,7 @@ import { buildContext }              from '@/lib/ai/context-builder';
 import { generateChatReply }      from '@/lib/ai/provider';
 import type { ChatMessage }        from '@/lib/ai/provider';
 import type { SpaceContext_AI }    from '@/lib/ai/types';
+import { displaySpaceName }        from '@/lib/format';
 
 export const preferredRegion = 'sin1';
 export const runtime         = 'nodejs';
@@ -67,7 +68,7 @@ const ELIGIBLE_ROLES: SpaceMemberRole[] = [
 function serializeContextBlock(ctx: SpaceContext_AI): string {
   const lines: string[] = [];
 
-  lines.push(`Space: ${ctx.space.name} (${ctx.space.type}, ${ctx.space.category})`);
+  lines.push(`Space: ${displaySpaceName(ctx.space.name)}`);
   lines.push(`Your role: ${ctx.role}`);
   lines.push('');
 
@@ -113,6 +114,13 @@ function buildSpaceSystemPrompt(ctx: SpaceContext_AI): string {
     'If the context is insufficient to answer, say so clearly.',
     'Do not claim to execute actions, make trades, or modify any data.',
     '',
+    'Response style:',
+    '- Be conversational and direct. Lead with your answer in 1–2 sentences.',
+    '- Mention only the 2–4 numbers most relevant to the question.',
+    '- Use short paragraphs. Use a compact bullet list only when comparing 3+ items or when the user explicitly asks for a list.',
+    '- Do not enumerate every field in the context. Synthesize; do not dump data.',
+    '- Never expose internal field names, type codes, or category labels in your reply.',
+    '',
     '=== SPACE CONTEXT ===',
     serializeContextBlock(ctx),
     '=== END CONTEXT ===',
@@ -141,6 +149,13 @@ function buildMasterSystemPrompt(contexts: SpaceContext_AI[]): string {
     'If the context is insufficient to answer, say so clearly.',
     'Do not claim to execute actions, make trades, or modify any data.',
     'When referencing data, attribute it to the correct space by name.',
+    '',
+    'Response style:',
+    '- Be conversational and direct. Lead with your answer in 1–2 sentences.',
+    '- Mention only the 2–4 numbers most relevant to the question.',
+    '- Use short paragraphs. Use a compact bullet list only when comparing 3+ items or when the user explicitly asks for a list.',
+    '- Do not enumerate every field in the context. Synthesize; do not dump data.',
+    '- Never expose internal field names, type codes, or category labels in your reply.',
     '',
     '=== SPACE CONTEXTS ===',
     spaceBlocks,
