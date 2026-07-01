@@ -8,15 +8,32 @@
  *   NET_WORTH_DECLINED  — net worth trended down across the snapshot window
  *
  * Rules are deterministic:
- *   - At least 2 snapshots must exist (netWorthTrend !== null).
+ *   - At least MIN_SNAPSHOTS snapshots must exist.
+ *   - The oldest→newest date span must be at least MIN_SPAN_DAYS days.
  *   - Exactly one of INCREASED or DECLINED fires per assembly; never both.
  *   - A zero trend emits no signal (no meaningful change to report).
+ *
+ * Confidence guards (added Slice 6):
+ *   Sparse or very-short-span histories (e.g. after a fresh account import)
+ *   produced misleading signals like "Net worth down $1490 (-62%) over 2 days."
+ *   The guards below suppress signals until there is enough history to be
+ *   meaningful.
  */
 
 import { FinanceDomains } from '@/lib/ai/types';
 import type { ContextDomainSection, ContextSignal, SnapshotSectionData } from '@/lib/ai/types';
 import { SignalType } from '@/lib/ai/signals/types';
 import { registerDetector } from '@/lib/ai/signals/registry';
+
+// ---------------------------------------------------------------------------
+// Confidence thresholds
+// ---------------------------------------------------------------------------
+
+/** Minimum number of snapshots before emitting any trend signal. */
+const MIN_SNAPSHOTS = 3;
+
+/** Minimum calendar-day span (oldest→newest) before emitting any trend signal. */
+const MIN_SPAN_DAYS = 7;
 
 // ---------------------------------------------------------------------------
 // Detector
@@ -31,7 +48,17 @@ function detectSnapshotSignals(
 
   const data = section.data as SnapshotSectionData;
 
-  // Require at least 2 snapshots for a meaningful trend.
+  // Require enough snapshots and a sufficient date span before signalling a
+  // trend. Sparse histories (e.g. right after an account import) can show
+  // large-percentage swings over 1-2 days that are not genuine trends.
+  if (data.snapshotCount < MIN_SNAPSHOTS) return [];
+
+  if (data.oldestDate !== null && data.newestDate !== null) {
+    const spanMs   = Date.parse(data.newestDate) - Date.parse(data.oldestDate);
+    const spanDays = spanMs / 86_400_000;
+    if (spanDays < MIN_SPAN_DAYS) return [];
+  }
+
   if (data.netWorthTrend === null || data.netWorthTrend === 0) return [];
 
   const now  = new Date().toISOString();
