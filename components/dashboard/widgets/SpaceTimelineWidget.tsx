@@ -12,11 +12,12 @@
  * across every Space type and both dashboard implementations.
  *
  * Pure presenter: it never fetches. The host fetches real events from the
- * existing GET /api/spaces/[id]/activity route (unmodified) and may
- * concat lib/timeline-placeholder.ts's FUTURE_TIMELINE_EVENTS to demonstrate
- * event types with no backend aggregation yet. Preview rows
- * (`isPreview: true`) are visually de-emphasized and badged "Preview" so
- * they're never mistaken for real Space history.
+ * existing GET /api/spaces/[id]/activity route (unmodified). As of the
+ * v2.5 honesty slice, hosts no longer merge lib/timeline-placeholder.ts's
+ * FUTURE_TIMELINE_EVENTS into dashboard surfaces — the timeline shows only
+ * real Space history, and the empty state below is the honest zero. The
+ * `isPreview` rendering (de-emphasized + "Preview" badge) is retained in
+ * the presenter contract for non-dashboard demo contexts.
  *
  * `variant="preview"` renders a short, ungrouped list for the Overview tab
  * with a "View all" affordance. `variant="full"` renders the complete,

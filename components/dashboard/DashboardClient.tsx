@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
@@ -48,12 +48,11 @@ import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatDate, possessive } from "@/lib/format";
+import { formatDate, formatRelativeTime, possessive } from "@/lib/format";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { SPACE_TAB_LABELS, SpaceTabId } from "@/lib/space-nav";
 import { getPerspectivesForCategory, getCompositionSwitcherItems, PERSPECTIVE_GROUPS, type PerspectiveGroup } from "@/lib/perspectives";
 import { InlineFilter } from "@/components/atlas/InlineFilter";
-import { FUTURE_TIMELINE_EVENTS } from "@/lib/timeline-placeholder";
 import type { TimelineEvent } from "@/lib/timeline-types";
 import { PerspectivesWidget, PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
 import { PerspectiveSwitcher, COMPOSITION_ICON_MAP } from "@/components/dashboard/widgets/PerspectiveSwitcher";
@@ -460,6 +459,18 @@ export function DashboardClient({
     : null;
   const fmtAccountDate = newestAccountDate ? formatDate(newestAccountDate) : undefined;
 
+  // Data freshness for the header subtitle (v2.5 honesty slice) — relative
+  // time is client-local (formatRelativeTime is not SSR-safe, see its doc
+  // comment), and `accounts` arrives as an SSR prop here, so read it
+  // through useSyncExternalStore with a null server snapshot: the server
+  // renders nothing, the client fills in "· Updated 2 hr ago" at hydration.
+  // Same pattern as OverviewBriefPanel's getGreeting().
+  const dataUpdatedAgo = useSyncExternalStore(
+    () => () => {},
+    () => (newestAccountDate ? formatRelativeTime(newestAccountDate) : null),
+    () => null,
+  );
+
   // ── Overview KPI row derived data ─────────────────────────────────────────
   // Net Worth % change — same formula NetWorthCard already used (prevWorth =
   // current − Δ), just computed against the full-portfolio classification
@@ -555,12 +566,13 @@ export function DashboardClient({
   // has real content to show in place of the KPI/chart Overview body.
   const COMPOSITION_SWITCHING_ENABLED: boolean = false;
 
-  // ── Timeline (lib/timeline-types.ts + lib/timeline-placeholder.ts) ────────
-  // Real events come from the existing, unmodified activity route — the same
-  // one space Spaces already use — merged with placeholder rows for
-  // event types that have no real producer yet (document upload, AI
-  // recommendation, etc.). No new aggregation logic; this is just the first
-  // place Personal threads spaceId through to read it.
+  // ── Timeline (lib/timeline-types.ts) ───────────────────────────────────────
+  // Real events from the existing, unmodified activity route ONLY. v2.5
+  // honesty slice: FUTURE_TIMELINE_EVENTS preview rows are no longer merged
+  // in — the timeline shows what actually happened, and the presenter's
+  // built-in empty state takes over when that's nothing. Event types with
+  // no producer yet (document upload, AI recommendation, etc.) simply don't
+  // appear until their producers ship.
   useEffect(() => {
     let active = true;
     fetch(`/api/spaces/${spaceId}/activity`)
@@ -568,12 +580,10 @@ export function DashboardClient({
       .then((data) => {
         if (!active) return;
         const real: TimelineEvent[] = data?.events ?? [];
-        const merged = [...real, ...FUTURE_TIMELINE_EVENTS].sort(
-          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-        );
-        setTimelineEvents(merged);
+        real.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        setTimelineEvents(real);
       })
-      .catch(() => { if (active) setTimelineEvents(FUTURE_TIMELINE_EVENTS); });
+      .catch(() => { if (active) setTimelineEvents([]); });
     return () => { active = false; };
   }, [spaceId]);
 
@@ -970,6 +980,7 @@ export function DashboardClient({
           </h1>
           <p className="text-sm text-gray-500">
             Personal{memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : ""}
+            {dataUpdatedAgo ? ` · Updated ${dataUpdatedAgo}` : ""}
           </p>
         </div>
 
@@ -1051,7 +1062,13 @@ export function DashboardClient({
           onChange={handleFilterChange}
         />
 
-        {compositionItems.length > 1 && (
+        {/* v2.5 honesty slice: switcher renders only when a second REAL
+            composition exists (status "available") — same gate as
+            SpaceDashboard. While COMPOSITION_SWITCHING_ENABLED is false the
+            control was a no-op anyway; hiding it removes a dead control
+            rather than a working one. Re-appears when a Wealth/Cash Flow
+            composition ships as "available" in lib/perspectives.ts. */}
+        {compositionItems.filter((p) => p.status === "available").length > 1 && (
           <>
             <PerspectiveSwitcher items={compositionItems} value={composition} onChange={setComposition} />
             <span className="hidden sm:inline text-xs font-medium text-[var(--text-muted)] px-1 shrink-0">
@@ -1255,6 +1272,23 @@ export function DashboardClient({
                   title={activeComposition.label}
                   description={activeComposition.description}
                 />
+              ) : accounts.length === 0 ? (
+                /* Day-zero Overview (v2.5 honesty slice): one consolidated
+                   setup card instead of an all-zero KPI strip, empty charts,
+                   and empty previews. Uses the existing ConnectAccountButton
+                   — no new concepts. */
+                <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-8 text-center">
+                  <Landmark size={24} className="text-[var(--text-muted)] mx-auto mb-3" />
+                  <p className="text-base font-semibold text-[var(--text-primary)]">Connect your first account</p>
+                  <p className="text-sm text-[var(--text-secondary)] mt-1 max-w-md mx-auto leading-relaxed">
+                    Net worth, cash flow, and activity appear here once an account is
+                    connected. Everything on this dashboard is computed from real data —
+                    sections appear as their data exists.
+                  </p>
+                  <div className="flex justify-center mt-5">
+                    <ConnectAccountButton />
+                  </div>
+                </GlassPanel>
               ) : (
               <>
               {/* KPI strip — Net Worth, Assets, Liabilities, Cash Flow, Credit Score */}

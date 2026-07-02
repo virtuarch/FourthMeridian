@@ -28,7 +28,7 @@ import { ProgressWidget, type ProgressStat } from "@/components/space/widgets/Pr
 import { type BreakdownViewMode } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatDate, displaySpaceName } from "@/lib/format";
+import { formatDate, formatRelativeTime, displaySpaceName } from "@/lib/format";
 import { ManageSpaceModal } from "@/components/dashboard/ManageSpaceModal";
 import { simulatePayoff } from "@/components/space/sections/DebtPayoffSection";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
@@ -42,7 +42,6 @@ import {
 } from "@/lib/space-nav";
 import { getPerspectivesForCategory, getCompositionSwitcherItems } from "@/lib/perspectives";
 import { PerspectiveSwitcher, COMPOSITION_ICON_MAP } from "@/components/dashboard/widgets/PerspectiveSwitcher";
-import { FUTURE_TIMELINE_EVENTS } from "@/lib/timeline-placeholder";
 import type { TimelineEvent } from "@/lib/timeline-types";
 import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
 import { SpaceTimelinePanel } from "@/components/dashboard/widgets/SpaceTimelineWidget";
@@ -50,6 +49,7 @@ import { TimelineModal } from "@/components/dashboard/widgets/TimelineModal";
 import { SpaceMembersWidget } from "@/components/dashboard/widgets/SpaceMembersWidget";
 import { SpaceComingSoonPanel } from "@/components/dashboard/widgets/SpaceComingSoonPanel";
 import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
+import { GlassPanel } from "@/components/atlas/GlassPanel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -740,6 +740,52 @@ function GoalsCard({
 
 function ActivityCard({ spaceId }: { spaceId: string }) {
   return <TimelineWidget spaceId={spaceId} pageSize={10} />;
+}
+
+/**
+ * Day-zero Overview state (v2.5 honesty slice) — shown INSTEAD of the
+ * section-card stack when the Space has no shared accounts yet. Without
+ * this, a fresh Space renders a column of per-widget "share accounts to
+ * see X" cards that all say the same thing; one calm setup card is more
+ * honest and less inventory-like. Uses only existing affordances:
+ * ManageSpaceModal for adding accounts, AddGoalModal for goals.
+ */
+function OverviewSetupCard({
+  canManage,
+  onAddAccounts,
+  onAddGoal,
+}: {
+  canManage:     boolean;
+  onAddAccounts: () => void;
+  onAddGoal:     () => void;
+}) {
+  return (
+    <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-8 text-center">
+      <Landmark size={24} className="text-[var(--text-muted)] mx-auto mb-3" />
+      <p className="text-base font-semibold text-[var(--text-primary)]">No accounts shared yet</p>
+      <p className="text-sm text-[var(--text-secondary)] mt-1 max-w-md mx-auto leading-relaxed">
+        {canManage
+          ? "Share accounts with this Space to see balances, net worth, and activity here. Everything on this dashboard is computed from real data — sections appear as their data exists."
+          : "Once an Owner or Admin shares accounts with this Space, balances and activity appear here."}
+      </p>
+      {canManage && (
+        <div className="flex items-center justify-center gap-2 mt-5">
+          <button
+            onClick={onAddAccounts}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+          >
+            <Plus size={13} /> Add accounts
+          </button>
+          <button
+            onClick={onAddGoal}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-white hover:bg-gray-800 border border-gray-800 hover:border-gray-700 transition-colors"
+          >
+            <Target size={13} /> Add a goal
+          </button>
+        </div>
+      )}
+    </GlassPanel>
+  );
 }
 
 
@@ -1797,6 +1843,16 @@ export function SpaceDashboard({
   const canManage = ["OWNER", "ADMIN"].includes(myRole);
   const canLeave  = !canManage; // MEMBER and VIEWER can leave
 
+  // Data freshness — newest lastUpdated across this Space's shared accounts
+  // (existing field, no new fetch). Surfaced in the header subtitle so no
+  // balance is ever read without knowing how old it is (v2.5 honesty
+  // slice). Client-only by construction: `accounts` starts [] and is
+  // populated by a post-mount fetch, so formatRelativeTime (not SSR-safe,
+  // see its doc comment in lib/format.ts) never runs during SSR.
+  const newestAccountUpdate = accounts.length
+    ? accounts.reduce((best, a) => (a.lastUpdated > best ? a.lastUpdated : best), accounts[0].lastUpdated)
+    : null;
+
   // Fixed rail options — starts from railVisibleTabs("shared") (v2.5
   // honesty slice: placeholder tabs — Finances/Documents, plus Transactions
   // on non-personal Spaces — get no rail control until real; see
@@ -1869,8 +1925,12 @@ export function SpaceDashboard({
     return () => window.removeEventListener(SPACE_ACCOUNTS_CHANGED_EVENT, handleAccountsChanged);
   }, [loadAccounts]);
 
-  // Timeline tab data — real events merged with placeholder future event
-  // types (no backend aggregation yet beyond the existing activity route).
+  // Timeline data — real events from the existing activity route ONLY.
+  // v2.5 honesty slice: FUTURE_TIMELINE_EVENTS preview rows are no longer
+  // merged in — a Space's timeline shows what actually happened, and the
+  // presenter's built-in empty state ("Nothing has happened in this Space
+  // yet") takes over when that's nothing. Event types with no producer yet
+  // simply don't appear until their producers ship.
   useEffect(() => {
     let active = true;
     fetch(`/api/spaces/${spaceId}/activity`)
@@ -1878,12 +1938,10 @@ export function SpaceDashboard({
       .then((data) => {
         if (!active) return;
         const real: TimelineEvent[] = data?.events ?? [];
-        const merged = [...real, ...FUTURE_TIMELINE_EVENTS].sort(
-          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-        );
-        setTimelineEvents(merged);
+        real.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        setTimelineEvents(real);
       })
-      .catch(() => { if (active) setTimelineEvents(FUTURE_TIMELINE_EVENTS); });
+      .catch(() => { if (active) setTimelineEvents([]); });
     return () => { active = false; };
   }, [spaceId]);
 
@@ -2050,6 +2108,7 @@ export function SpaceDashboard({
             <h1 className="text-xl font-bold text-white">{displaySpaceName(spaceName)}</h1>
             <p className="text-sm text-gray-500">
               {catLabel} Space{memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : ""}
+              {newestAccountUpdate ? ` · Updated ${formatRelativeTime(newestAccountUpdate)}` : ""}
             </p>
           </div>
 
@@ -2162,10 +2221,15 @@ export function SpaceDashboard({
         )}
 
         {/* Composition switcher (IA refactor point 2/3) — Overview only;
-            swaps the canvas below in place. Only renders once there's a
-            second composition to switch to (a comingSoon Financial lens
-            alongside the default "overview"/Atlas one). */}
-        {activeTab === "OVERVIEW" && compositionItems.length > 1 && (
+            swaps the canvas below in place. v2.5 honesty slice: only
+            renders once there's a second REAL composition to switch to
+            (status "available"), matching Personal's disabled
+            COMPOSITION_SWITCHING_ENABLED flag — a switcher whose only
+            other options are coming-soon panels is an invitation to a
+            dead end. Re-enables itself the moment a Wealth or Cash Flow
+            composition ships as "available" in lib/perspectives.ts. */}
+        {activeTab === "OVERVIEW" &&
+         compositionItems.filter((p) => p.status === "available").length > 1 && (
           <div className="flex items-center px-1 mb-3">
             <PerspectiveSwitcher items={compositionItems} value={composition} onChange={setComposition} />
           </div>
@@ -2193,7 +2257,17 @@ export function SpaceDashboard({
          !PERSPECTIVE_ROUTED_TABS.includes(activeTab) &&
          !(activeTab === "OVERVIEW" && composition !== "overview") && (
           <div className="space-y-3">
-            {sectionsForTab.length === 0 ? (
+            {activeTab === "OVERVIEW" && !loading && accounts.length === 0 ? (
+              /* Day-zero Overview (v2.5 honesty slice): one consolidated
+                 setup card instead of a stack of per-widget empty states
+                 that all ask for the same thing. Other tabs keep their own
+                 per-section empty states. */
+              <OverviewSetupCard
+                canManage={canManage}
+                onAddAccounts={() => setShowManage(true)}
+                onAddGoal={() => setShowAddGoal(true)}
+              />
+            ) : sectionsForTab.length === 0 ? (
               <div className="text-center py-12">
                 <LayoutDashboard size={30} className="text-gray-700 mx-auto mb-3" />
                 <p className="text-sm text-gray-500">No sections on this tab</p>
@@ -2226,19 +2300,25 @@ export function SpaceDashboard({
                 computed above for the dedicated Perspectives/Timeline tabs. */}
             {activeTab === "OVERVIEW" && composition === "overview" && (
               <div className="space-y-3 pt-2">
-                <div>
-                  <div className="flex items-center justify-between px-1 mb-2">
-                    <p className="text-sm font-semibold text-white">Perspectives</p>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("PERSPECTIVES")}
-                      className="text-xs font-medium text-[var(--meridian-400)] hover:text-[var(--meridian-300)] transition-colors"
-                    >
-                      See all
-                    </button>
+                {/* Perspectives row hidden at day zero — every lens would
+                    open onto empty data; the setup card above is the one
+                    call to action. Recent activity stays: member joins and
+                    Space changes are real events worth showing from day one. */}
+                {accounts.length > 0 && (
+                  <div>
+                    <div className="flex items-center justify-between px-1 mb-2">
+                      <p className="text-sm font-semibold text-white">Perspectives</p>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("PERSPECTIVES")}
+                        className="text-xs font-medium text-[var(--meridian-400)] hover:text-[var(--meridian-300)] transition-colors"
+                      >
+                        See all
+                      </button>
+                    </div>
+                    <PerspectivesWidget items={perspectiveItems} variant="row" />
                   </div>
-                  <PerspectivesWidget items={perspectiveItems} variant="row" />
-                </div>
+                )}
 
                 <SpaceTimelinePanel
                   title="Recent activity"
