@@ -181,7 +181,8 @@ enum VisibilityLevel {
   FULL          // fully visible to all Space members (new canonical value)
 }
 
-/// Whether a WorkspaceAccountShare is currently active or has been revoked.
+/// Whether a SpaceAccountLink is currently active or has been revoked.
+/// (Originally introduced for WorkspaceAccountShare, retired v2.5-A Phase 4c.)
 enum ShareStatus {
   ACTIVE
   REVOKED
@@ -344,15 +345,8 @@ model User {
   // Goal creation
   createdGoals         SpaceGoal[]         @relation("GoalCreator")
 
-  // WorkspaceAccountShare — excluded from the Phase 1 Workspace->Space rename; this
-  // model has its own future replacement (SpaceAccountLink, Phase 3) with different
-  // semantics, so it deliberately keeps its current name and field/relation names
-  // here for now. Tracks who added/revoked shares.
-  addedShares          WorkspaceAccountShare[] @relation("ShareAdder")
-  revokedShares        WorkspaceAccountShare[] @relation("ShareRevoker")
-
-  // SpaceAccountLink (D3) — dual-written at every share mutation site and the primary
-  // read path for the AI assemblers and data layer; WAS cutover completes in v2.5.
+  // SpaceAccountLink (D3) — the sole account-link path since WorkspaceAccountShare
+  // was retired (v2.5-A Phase 4c). Tracks who added/revoked links.
   addedSpaceAccountLinks   SpaceAccountLink[] @relation("SpaceAccountLinkAdder")
   revokedSpaceAccountLinks SpaceAccountLink[] @relation("SpaceAccountLinkRevoker")
 
@@ -400,12 +394,8 @@ model Space {
   auditLogs     AuditLog[]
 
   // New financial account relations
-  // accountShares — excluded from this rename; still points at WorkspaceAccountShare
-  // (Phase 3 will replace it with SpaceAccountLink). The field name itself never
-  // contained "workspace" so it's unaffected either way.
-  accountShares         WorkspaceAccountShare[]
-  // SpaceAccountLink (D3) — dual-written at every share mutation site and the primary
-  // read path for the AI assemblers and data layer; WAS cutover completes in v2.5.
+  // SpaceAccountLink (D3) — the sole account-link path since WorkspaceAccountShare
+  // was retired (v2.5-A Phase 4c).
   accountLinks           SpaceAccountLink[]
   ownedFinancialAccounts FinancialAccount[]      @relation("SpaceOwnedFinancialAccounts")
   goals                  SpaceGoal[]
@@ -428,7 +418,7 @@ model Space {
 // Join table linking users to Spaces with roles.
 // status: ACTIVE (normal), REMOVED (kicked), LEFT (self-removed).
 // Rows are never deleted — status update preserves audit history.
-// When status becomes REMOVED or LEFT, all WorkspaceAccountShare records
+// When status becomes REMOVED or LEFT, all SpaceAccountLink records
 // contributed by that user are revoked.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -637,7 +627,9 @@ model ProviderAccountIdentity {
 // ─────────────────────────────────────────────────────────────────────────────
 // Account (LEGACY — kept temporarily during migration)
 // Will be removed once all data is migrated to FinancialAccount +
-// AccountConnection + WorkspaceAccountShare and validated in production.
+// AccountConnection + SpaceAccountLink and validated in production
+// (v2.5-B follow-up — gated on the Phase 0 prod counts; see
+// docs/investigations/V25A_PHASE0_SEAM_RETIREMENT_READINESS.md §6).
 // Do not add new features here; use FinancialAccount instead.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -763,13 +755,8 @@ model FinancialAccount {
   updatedAt        DateTime         @updatedAt
 
   connections           AccountConnection[]
-  // workspaceShares — excluded from the Phase 1 Workspace->Space rename; this
-  // field and the WorkspaceAccountShare model it points to have a separate
-  // future replacement (SpaceAccountLink, Phase 3) with different semantics,
-  // so the name deliberately stays as-is for now.
-  workspaceShares       WorkspaceAccountShare[]
-  // SpaceAccountLink (D3) — dual-written at every share mutation site and the primary
-  // read path for the AI assemblers and data layer; WAS cutover completes in v2.5.
+  // SpaceAccountLink (D3) — the sole account-link path since WorkspaceAccountShare
+  // was retired (v2.5-A Phase 4c).
   spaceAccountLinks     SpaceAccountLink[]
   duplicateCandidatesA  DuplicateAccountCandidate[] @relation("DuplicateCandidateA")
   duplicateCandidatesB  DuplicateAccountCandidate[] @relation("DuplicateCandidateB")
@@ -858,58 +845,23 @@ model AccountConnection {
   @@index([financialAccountId, isCanonical])
 }
 
+// WorkspaceAccountShare (retired v2.5-A Phase 4c) — model dropped after the D3
+// SAL backfill + read cutover completed and the Phase 0 gates confirmed every
+// WAS row was mirrored into SpaceAccountLink. A pre-drop pg_dump of the table
+// is the recovery artifact (attached to the retirement PR); WAS rows are also
+// 1:1 reconstructable from SAL kind=SHARED rows.
+
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceAccountShare
-// Controls which workspaces can see a FinancialAccount and at what fidelity.
-// One row per (workspace, financialAccount) pair.
-// A REVOKED share means the account is no longer visible to that workspace —
+// SpaceAccountLink (D3, Phase 2 → completed v2.5-A) — the sole account-link
+// path: consolidates the retired WorkspaceAccountShare and FinancialAccount's
+// ownerSpaceId/ownerUserId declared-owner pair into a single polymorphic link.
+// kind=HOME replaces the declared-owner pair, kind=SHARED replaces the old
+// WorkspaceAccountShare row. One row per (space, financialAccount) pair.
+// A REVOKED link means the account is no longer visible to that space —
 // typically triggered when the member who shared it is removed or leaves.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// NOTE: WorkspaceAccountShare is deliberately excluded from the Fourth Meridian
-// Phase 1 Workspace->Space rename — it has its own future replacement
-// (SpaceAccountLink, Phase 3) with different semantics, so its model name,
-// field names (workspaceId/workspace), and Prisma Client accessor all stay
-// exactly as they are. The `workspace` relation field's TYPE annotation below
-// is updated to `Space` purely because the `Workspace` model name no longer
-// exists — this is a mechanical necessity, not a scope change.
-model WorkspaceAccountShare {
-  id                 String           @id @default(cuid())
-  workspaceId        String
-  workspace          Space            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  financialAccountId String
-  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
-  addedByUserId      String
-  addedByUser        User             @relation("ShareAdder", fields: [addedByUserId], references: [id], onDelete: Cascade)
-  visibilityLevel    VisibilityLevel  @default(FULL)
-  status             ShareStatus      @default(ACTIVE)
-  revokedAt          DateTime?
-  revokedByUserId    String?
-  revokedByUser      User?            @relation("ShareRevoker", fields: [revokedByUserId], references: [id], onDelete: SetNull)
-
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
-
-  @@unique([workspaceId, financialAccountId])
-  @@index([workspaceId, status])
-  @@index([financialAccountId, status])
-  @@index([addedByUserId])
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SpaceAccountLink (D3, Phase 2 — LIVE: backfilled, dual-written at every
-// WorkspaceAccountShare mutation site (lib/accounts/space-account-link.ts), and
-// the primary read path for the AI assemblers, data layer, and most routes;
-// full WAS read cutover + retirement is scheduled v2.5 work).
-// Future consolidation of WorkspaceAccountShare and FinancialAccount's
-// ownerSpaceId/ownerUserId into a single polymorphic link: kind=HOME replaces
-// the declared-owner pair, kind=SHARED replaces a WorkspaceAccountShare row.
-// One row per (space, financialAccount) pair, same cardinality
-// WorkspaceAccountShare already has. Table is created empty in this step —
-// no backfill, no dual-write, no read cutover. See
-// docs/initiatives/d3/D3_SPACE_ACCOUNT_LINK_REVIEW.md for the full migration strategy and
-// open decisions (notably: the HOME/SHARED backfill collision rule) still to
-// be resolved before the next step.
+// See docs/initiatives/d3/D3_SPACE_ACCOUNT_LINK_REVIEW.md for the migration
+// history and docs/investigations/V25A_PHASE0_SEAM_RETIREMENT_READINESS.md
+// for the retirement gates.
 // ─────────────────────────────────────────────────────────────────────────────
 model SpaceAccountLink {
   id                 String               @id @default(cuid())
