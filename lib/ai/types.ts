@@ -90,6 +90,40 @@ export interface AssemblerOptions {
     endDate:   string; // YYYY-MM-DD, inclusive ceiling
     label?:    string; // human phrase for provenance ("year-to-date 2026")
   };
+  /**
+   * Optional transaction-drilldown request (D6 — category/merchant evidence
+   * retrieval). Present ONLY for explicit follow-up questions like "what is this
+   * Other category made up of?" or "show me the largest transactions". When set,
+   * the transactions assembler additionally returns a bounded list of the actual
+   * contributing transactions (TransactionDrilldown) for explainability. Absent
+   * on every ordinary prompt — raw rows are never surfaced by default. Other
+   * assemblers ignore this field.
+   *
+   * This is evidence retrieval, not a new calculation engine: it re-reads rows
+   * already inside the Space's visibility boundary. Raw rows are drawn from
+   * FULL-visibility accounts only (BALANCE_ONLY / SUMMARY_ONLY accounts never
+   * contribute line items).
+   */
+  drilldown?: {
+    /** Resolved TransactionCategory to filter to (e.g. "Other"). */
+    category?: string;
+    /** Free-text merchant query when the drilldown targets a specific merchant. */
+    merchant?: string;
+    /** Inclusive window floor (YYYY-MM-DD). Defaults to the summary window. */
+    startDate?: string;
+    /** Inclusive window ceiling (YYYY-MM-DD). Defaults to the summary window. */
+    endDate?: string;
+    /** Max rows to surface (defaults applied in the assembler). */
+    limit?: number;
+    /**
+     * When true, non-spending categories (Income / Interest / Transfer /
+     * Payment) are eligible — set only when the user explicitly asks about one
+     * of those. Default false: spending (amount < 0) only.
+     */
+    includeNonSpending?: boolean;
+    /** Short human label for provenance (e.g. "January 2026 · Other"). */
+    label?: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -300,31 +334,62 @@ export interface MonthlyBreakdownEntry {
 }
 
 /**
- * A canonicalized merchant rollup over the query window (D6.3A-1 — Merchant
- * Intelligence foundation). Rows are grouped by a deterministic canonical key
- * (see lib/transactions/merchant.ts); no ML or LLM is involved.
+ * A canonicalized SPENDING merchant rollup over the query window (D6.3A-1 —
+ * Merchant Intelligence foundation; D6.3 stabilization). Rows are grouped by a
+ * deterministic canonical key (see lib/transactions/merchant.ts); no ML or LLM
+ * is involved.
  *
- * Money semantics mirror the top-level cash-flow aggregation: `total` is the
- * absolute sum of SETTLED amounts for this merchant (pending rows are excluded,
- * matching byCategory / cash-flow conventions). `category` is the merchant's
- * dominant TransactionCategory (most transactions; ties broken by larger
- * absolute total). `firstSeen` / `lastSeen` bound the merchant's activity
- * inside the window.
+ * SPENDING-ONLY invariant (D6.3): this list represents money the user SPENT.
+ * It is built exclusively from settled EXPENSE rows — amount < 0, with the
+ * Income, Interest, Transfer, and Payment categories excluded. Payroll and
+ * other inflows therefore never appear here (they belong in `incomeSources`),
+ * and internal transfers and debt payments are likewise never reported as
+ * merchants. `total` is the absolute sum of these settled expense amounts.
+ * `category` is the merchant's dominant spending TransactionCategory (most
+ * transactions; ties broken by larger absolute total). `firstSeen` /
+ * `lastSeen` bound the merchant's activity inside the window.
  */
 export interface MerchantSummary {
   /** Display-safe canonical merchant name. */
   canonicalName: string;
   /** Uppercased grouping key the name collapses to (stable across spellings). */
   canonicalKey:  string;
-  /** Settled transaction count for this merchant in the window. */
+  /** Settled expense transaction count for this merchant in the window. */
   occurrences:   number;
-  /** Absolute sum of settled amounts (spend/flow magnitude). */
+  /** Absolute sum of settled expense amounts (spend magnitude). */
   total:         number;
-  /** Dominant TransactionCategory for this merchant. */
+  /** Dominant spending TransactionCategory for this merchant. */
   category:      string;
-  /** Earliest settled transaction date for this merchant (YYYY-MM-DD). */
+  /** Earliest settled expense date for this merchant (YYYY-MM-DD). */
   firstSeen:     string;
-  /** Latest settled transaction date for this merchant (YYYY-MM-DD). */
+  /** Latest settled expense date for this merchant (YYYY-MM-DD). */
+  lastSeen:      string;
+}
+
+/**
+ * A canonicalized INCOME-SOURCE rollup over the query window (D6.3 stabilization
+ * — companion to MerchantSummary). Grouped by the same deterministic canonical
+ * key (lib/transactions/merchant.ts).
+ *
+ * INCOME-ONLY invariant: built exclusively from settled INFLOW rows — amount > 0
+ * in the Income and Interest categories (the same INCOME_CATEGORIES set that
+ * feeds the top-level incomeTotal). Transfers are excluded. `total` is the
+ * (positive) sum of these settled inflow amounts. There is no `category` field:
+ * every entry is, by construction, an income/interest source. This is where
+ * payroll surfaces — it must never be described as a spending merchant.
+ */
+export interface IncomeSource {
+  /** Display-safe canonical income-source name (e.g. an employer/payer). */
+  canonicalName: string;
+  /** Uppercased grouping key the name collapses to (stable across spellings). */
+  canonicalKey:  string;
+  /** Settled inflow transaction count for this source in the window. */
+  occurrences:   number;
+  /** Positive sum of settled inflow amounts for this source. */
+  total:         number;
+  /** Earliest settled inflow date for this source (YYYY-MM-DD). */
+  firstSeen:     string;
+  /** Latest settled inflow date for this source (YYYY-MM-DD). */
   lastSeen:      string;
 }
 
@@ -338,6 +403,58 @@ export interface RecurringCandidate {
   occurrences:   number;
   typicalAmount: number; // mean amount across occurrences (negative = expense)
   category:      string;
+}
+
+/**
+ * A single transaction surfaced by a drilldown (D6 — category/merchant evidence).
+ * These are real line items, drawn ONLY from FULL-visibility accounts inside the
+ * resolved Space/window. `amount` keeps the signed convention (negative = spend).
+ * `accountName` is present only when the source account is FULL-visibility; it is
+ * omitted otherwise so no account identity leaks across a visibility boundary.
+ */
+export interface DrilldownTransaction {
+  date:         string;  // YYYY-MM-DD
+  merchant:     string;  // canonical display name
+  description?: string;  // raw provider description when available
+  amount:       number;  // signed (negative = spend)
+  category:     string;  // TransactionCategory value
+  accountName?: string;  // FULL-visibility source account only
+}
+
+/**
+ * Bounded evidence bundle answering a drilldown follow-up (D6 — "what is this
+ * category made up of?", "show me the largest transactions"). Retrieval only —
+ * no new aggregation semantics. Present on TransactionsSummaryData ONLY when the
+ * request was an explicit drilldown; omitted on every ordinary prompt.
+ *
+ * `transactions` is sorted by absolute amount descending and capped. `totalCount`
+ * / `matchedTotal` describe the FULL matching set in the window (pre-cap) so the
+ * consumer can state coverage; `truncated` is true when rows were omitted by the
+ * cap. `matchedTotal` and `shownTotal` are absolute sums.
+ */
+export interface TransactionDrilldown {
+  /** Resolved category filter, if the drilldown was category-based. */
+  category?:    string;
+  /** Resolved merchant query, if the drilldown was merchant-based. */
+  merchant?:    string;
+  /** Inclusive window floor actually used (YYYY-MM-DD). */
+  startDate:    string;
+  /** Inclusive window ceiling actually used (YYYY-MM-DD). */
+  endDate:      string;
+  /** Human label for provenance (e.g. "January 2026 · Other"). */
+  label?:       string;
+  /** Matching transactions, sorted by |amount| desc, capped to the limit. */
+  transactions: DrilldownTransaction[];
+  /** Number of rows in `transactions` (post-cap). */
+  shownCount:   number;
+  /** Total matching rows in the window (pre-cap). */
+  totalCount:   number;
+  /** Absolute sum of the shown rows. */
+  shownTotal:   number;
+  /** Absolute sum of ALL matching rows in the window (the category/merchant total). */
+  matchedTotal: number;
+  /** True when totalCount > shownCount (rows omitted by the cap). */
+  truncated:    boolean;
 }
 
 /**
@@ -401,12 +518,32 @@ export interface TransactionsSummaryData {
 
   // ── Merchant rollup (D6.3A-1; omitted on scopeHint='brief') ──────────────
   /**
-   * Canonicalized per-merchant rollup over the window, sorted by absolute total
-   * descending and capped to the top N merchants to bound prompt size. Grouped
-   * by deterministic canonical key (lib/transactions/merchant.ts). Omitted when
-   * scopeHint='brief'.
+   * Canonicalized per-merchant SPENDING rollup over the window, sorted by
+   * absolute total descending and capped to the top N merchants to bound prompt
+   * size. Grouped by deterministic canonical key (lib/transactions/merchant.ts).
+   * Settled expense rows only — income, interest, transfers, and debt payments
+   * are excluded (see MerchantSummary). Omitted when scopeHint='brief'.
    */
   merchants?: MerchantSummary[];
+
+  // ── Income-source rollup (D6.3 stabilization; omitted on scopeHint='brief') ─
+  /**
+   * Canonicalized per-source INCOME rollup over the window, sorted by total
+   * descending and capped to the top N sources to bound prompt size. Grouped by
+   * the same deterministic canonical key as `merchants`. Settled positive
+   * Income/Interest rows only (see IncomeSource). Payroll surfaces here — never
+   * in `merchants`. Omitted when scopeHint='brief'.
+   */
+  incomeSources?: IncomeSource[];
+
+  // ── Drilldown evidence (D6; present only on explicit drilldown follow-ups) ─
+  /**
+   * Bounded list of the actual transactions behind a category/merchant/period,
+   * returned ONLY when the request was an explicit drilldown ("what is this made
+   * up of?", "show the largest transactions"). Omitted on every ordinary prompt
+   * so raw rows are never surfaced by default. FULL-visibility accounts only.
+   */
+  drilldown?: TransactionDrilldown;
 }
 
 // ---------------------------------------------------------------------------

@@ -75,6 +75,14 @@ export interface BuildContextOptions {
    * keeps its default 30/90-day window.
    */
   transactionWindow?: AssemblerOptions['transactionWindow'];
+
+  /**
+   * Optional transaction-drilldown request (D6 — category/merchant evidence
+   * retrieval). Threaded to the transactions assembler for explicit follow-up
+   * questions ("what is this Other category made up of?"). Absent → no raw
+   * rows are surfaced. Other assemblers ignore this field.
+   */
+  drilldown?: AssemblerOptions['drilldown'];
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +103,7 @@ export async function buildContext(
   options: BuildContextOptions = {},
 ): Promise<SpaceContext_AI> {
   const requestedAt = new Date().toISOString();
-  const { scopeOverride, scopeHint = 'full', transactionWindow } = options;
+  const { scopeOverride, scopeHint = 'full', transactionWindow, drilldown } = options;
 
   // ── Step 1: Validate membership ─────────────────────────────────────────
   //
@@ -157,6 +165,7 @@ export async function buildContext(
   const assemblerOptions: AssemblerOptions = {
     scopeHint,
     ...(transactionWindow ? { transactionWindow } : {}),
+    ...(drilldown ? { drilldown } : {}),
   };
 
   const domainResults = await Promise.all(

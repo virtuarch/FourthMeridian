@@ -48,7 +48,7 @@ import { SpaceMemberRole }           from '@prisma/client';
 import { buildContext }              from '@/lib/ai/context-builder';
 import { generateChatReply }      from '@/lib/ai/provider';
 import type { ChatMessage }        from '@/lib/ai/provider';
-import type { SpaceContext_AI, KnowledgeGap, TransactionsSummaryData } from '@/lib/ai/types';
+import type { SpaceContext_AI, KnowledgeGap, TransactionsSummaryData, AssemblerOptions } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
 import { displaySpaceName }        from '@/lib/format';
 import { computeAssessment }        from '@/lib/ai/intelligence';
@@ -383,6 +383,167 @@ function buildBreakdownClarification(message: string): string {
   return 'What would you like broken down month by month — spending, income, debt payments, or cash flow?';
 }
 
+// ── Transaction drilldown detection (D6 — category/merchant evidence) ─────────
+// A drilldown is an explicit follow-up asking to SEE the transactions behind a
+// category / merchant / period ("what is Other made up of?", "show me the
+// largest transactions", "why is January so high?"). Detection is deterministic
+// and conservative: it only fires on drilldown phrasing, and it never runs on an
+// ordinary prompt — so raw rows are attached only when asked for.
+
+/** Month name (first three letters) → 1..12. */
+const MONTH_NUM: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+/** Free-text category word → canonical TransactionCategory string. */
+const CATEGORY_SYNONYMS: Record<string, string> = {
+  other: 'Other',
+  dining: 'Dining', restaurant: 'Dining', restaurants: 'Dining',
+  grocery: 'Groceries', groceries: 'Groceries',
+  shopping: 'Shopping',
+  travel: 'Travel',
+  subscription: 'Subscriptions', subscriptions: 'Subscriptions',
+  utility: 'Utilities', utilities: 'Utilities',
+  income: 'Income', payroll: 'Income',
+  interest: 'Interest',
+  transfer: 'Transfer', transfers: 'Transfer',
+  payment: 'Payment', payments: 'Payment',
+};
+
+/** Non-spending categories — a drilldown into one of these opts into inflows/
+ *  transfers/payments instead of the default spending-only (amount < 0) filter. */
+const NON_SPENDING_CATEGORY_SET = new Set(['Income', 'Interest', 'Transfer', 'Payment']);
+
+/** Subjects that are not a real merchant — a bare pronoun or generic noun. */
+const GENERIC_DRILLDOWN_SUBJECTS = new Set([
+  'it', 'this', 'that', 'them', 'these', 'those', 'everything', 'all',
+  'spending', 'expenses', 'my', 'my spending', 'my expenses', 'things',
+  'the numbers', 'costs', 'the category', 'the rest',
+]);
+
+/** Resolve the first category word present in the text, or null. */
+function detectDrilldownCategory(lowerText: string): string | null {
+  for (const [word, category] of Object.entries(CATEGORY_SYNONYMS)) {
+    if (new RegExp(`\\b${word}\\b`).test(lowerText)) return category;
+  }
+  return null;
+}
+
+/** Extract a merchant subject from "break down X" / "breakdown of X", or null. */
+function detectDrilldownMerchant(text: string): string | null {
+  const m =
+    text.match(/\bbreak(?:\s*down|\s+out)\s+(?:the\s+|my\s+)?(.+?)\s*[?.!]*$/i) ||
+    text.match(/\bbreakdown\s+of\s+(?:the\s+|my\s+)?(.+?)\s*[?.!]*$/i);
+  if (!m) return null;
+
+  const subject = m[1].trim().replace(/\s+(category|categories|spending|transactions?)$/i, '').trim();
+  if (!subject) return null;
+
+  const lower = subject.toLowerCase();
+  if (GENERIC_DRILLDOWN_SUBJECTS.has(lower)) return null;
+  if (detectDrilldownCategory(lower)) return null;      // a category — handled elsewhere
+  // A bare month ("break down January") is a window follow-up, not a merchant.
+  if (MONTH_NAME_RE.test(lower) && lower.split(/\s+/).length === 1) return null;
+
+  return subject;
+}
+
+/** Regexes that signal an explicit ask to see the underlying transactions. */
+const DRILLDOWN_EVIDENCE_PATTERNS: RegExp[] = [
+  /\bmade up of\b/,
+  /\bmade of\b/,
+  /\bwhat(?:'s| is| are)?\b[^?]*\bin\b\s+(?:the\s+)?(?:other|dining|grocer|shopping|travel|subscription|utilit|income|interest|transfer|payment)/,
+  /\bshow (?:me )?(?:the |all )?(?:transactions|purchases|charges|expenses)\b/,
+  /\b(?:what|which)\s+transactions\b/,
+  /\b(?:largest|biggest|top|highest)\s+(?:transactions|purchases|charges|expenses|spending)\b/,
+  /\bwhy (?:is|was|are|were)\b[^?]*\bso (?:high|expensive|big|much)\b/,
+  /\bwhat (?:caused|drove|made up|is driving|drove up)\b/,
+  /\bwhat made\b[^?]*\bexpensive\b/,
+  /\bwhat'?s? behind\b/,
+  /\bwhat (?:caused|made)\b[^?]*\bspike\b/,
+  /\bdrill (?:down|into)\b/,
+];
+
+/** Optional explicit result cap ("top 10", "largest 20"). */
+function detectDrilldownLimit(lowerText: string): number | undefined {
+  const m = lowerText.match(/\b(?:top|largest|biggest|first|highest)\s+(\d{1,2})\b/);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Resolve a transaction-drilldown request from the latest message, or undefined.
+ *
+ * Window resolution reuses the carry-forward window (so "what is January Other
+ * made up of?" after a 2026 breakdown inherits the 2026 year) and narrows to a
+ * named month when present. Category/merchant are resolved from the wording.
+ */
+function resolveDrilldown(
+  msgs: ChatMessage[],
+  now:  Date,
+): AssemblerOptions['drilldown'] | undefined {
+  const latest = [...msgs].reverse().find((m) => m.role === 'user');
+  if (!latest) return undefined;
+
+  const text  = latest.content;
+  const lower = text.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  const category = detectDrilldownCategory(lower);
+  const merchant = category ? null : detectDrilldownMerchant(text);
+
+  const evidenceAsk    = DRILLDOWN_EVIDENCE_PATTERNS.some((re) => re.test(lower));
+  const breakdownAsk   = /\bbreak\b/.test(lower) && (!!merchant || !!category);
+  if (!evidenceAsk && !breakdownAsk) return undefined;
+
+  // ── Resolve the window ──────────────────────────────────────────────────────
+  // Base = the conversation's carry-forward window (may be undefined). A named
+  // month narrows to that whole calendar month within the base window's year.
+  const base = resolveTransactionWindow(msgs, now);
+  const monthMatch = lower.match(MONTH_NAME_RE);
+
+  let startDate: string | undefined;
+  let endDate:   string | undefined;
+  let periodLabel: string | undefined;
+
+  if (monthMatch) {
+    const mo = MONTH_NUM[monthMatch[1].slice(0, 3)];
+    // Year: the base window's most recent year, else the current year.
+    const baseYear = base?.endDate ? Number(base.endDate.slice(0, 4)) : now.getUTCFullYear();
+    const mm = String(mo).padStart(2, '0');
+    const monthStart = `${baseYear}-${mm}-01`;
+    const lastDay = new Date(Date.UTC(baseYear, mo, 0)).getUTCDate();
+    let monthEnd = `${baseYear}-${mm}-${String(lastDay).padStart(2, '0')}`;
+    // Never look past today (an in-progress or future month).
+    const todayIso = now.toISOString().split('T')[0];
+    if (monthEnd > todayIso) monthEnd = todayIso;
+    startDate = monthStart;
+    endDate   = monthEnd;
+    periodLabel = `${MONTH_DISPLAY[monthMatch[1].slice(0, 3)]} ${baseYear}`;
+  } else if (base) {
+    startDate = base.startDate;
+    endDate   = base.endDate;
+    periodLabel = base.label;
+  }
+
+  const includeNonSpending = category ? NON_SPENDING_CATEGORY_SET.has(category) : false;
+
+  // Human label for provenance, e.g. "January 2026 · Other" or "Airbnb".
+  const subjectLabel = category ?? merchant ?? 'largest transactions';
+  const label = periodLabel ? `${periodLabel} · ${subjectLabel}` : subjectLabel;
+
+  return {
+    ...(category ? { category } : {}),
+    ...(merchant ? { merchant } : {}),
+    ...(startDate ? { startDate } : {}),
+    ...(endDate ? { endDate } : {}),
+    ...(detectDrilldownLimit(lower) ? { limit: detectDrilldownLimit(lower) } : {}),
+    includeNonSpending,
+    label,
+  };
+}
+
 /**
  * Returns true when the most recent user message signals a payoff-schedule intent.
  * Used to gate whether minimumPayment gaps are returned alongside APR gaps.
@@ -468,14 +629,85 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
       'If the user asks about a longer period, state plainly that only this window is available.',
     );
 
-    // Category breakdown polish (Goal 7): totals + monthly average together.
-    // monthlyEquivalent mirrors the existing total/windowDays*30 formula already
-    // used in the intelligence layer — presentation only, no stored value changes.
-    if (txn.byCategory.length > 0 && txn.windowDays > 0) {
-      lines.push('  Category figures for this window (total = exact sum; ≈/month = average across the window):');
+    // ── Spending aggregates: single source of truth (D6.3 Part B) ────────────
+    // Average monthly spending, month-by-month spending, and category averages
+    // ALL derive from the same deterministic monthlyBreakdown rows. Averages are
+    // taken over COMPLETE calendar months only (partial/clipped/in-progress
+    // months are excluded) so a January-through-June average never gets diluted
+    // by a partial July. The prior window-normalized estimate (total ÷ windowDays
+    // × 30) is gone — it could diverge from the monthly rows and let the model
+    // treat the two as separate data sources.
+    // Categories that are NOT discretionary spending. Excluded from every
+    // "spending" figure (monthly category lines AND category averages) so that
+    // per-month category totals always reconcile to that month's expenseTotal
+    // and can never exceed it.
+    const NON_SPENDING = new Set(['Income', 'Interest', 'Transfer', 'Payment']);
+
+    const completeMonths = txn.monthlyBreakdown.filter((m) => !m.partial);
+    const completeCount   = completeMonths.length;
+
+    if (completeCount > 0) {
+      const firstM = completeMonths[0].month;
+      const lastM  = completeMonths[completeCount - 1].month;
+      const monthsLabel = firstM === lastM
+        ? fmtMonthYear(`${firstM}-01`)
+        : `${fmtMonthYear(`${firstM}-01`)} – ${fmtMonthYear(`${lastM}-01`)}`;
+
+      const totalSpend = completeMonths.reduce((s, m) => s + m.expenseTotal, 0);
+      const avgSpend   = Math.round((totalSpend / completeCount) * 100) / 100;
+
+      lines.push(
+        `  AVERAGE MONTHLY SPENDING (deterministic — total spending across the ${completeCount} ` +
+        `complete month(s) ${monthsLabel}, divided by ${completeCount}): ${fmtMoney(avgSpend)}/month. ` +
+        'Use this exact figure for "average monthly spending". Do NOT recompute it from a window ' +
+        'total, and do NOT include partial months unless the user explicitly asks for a month-to-date figure.',
+      );
+
+      // Per-category spending averages over the SAME complete months, summed from
+      // each month's byCategory (the same rows the monthly section prints), so
+      // category averages reconcile with both the overall average and the monthly
+      // rows. Non-spending categories are excluded so nothing is mislabeled as
+      // spending. These are AVERAGES — never a substitute for a single month's value.
+      const catTotals = new Map<string, number>();
+      for (const m of completeMonths) {
+        for (const c of m.byCategory) {
+          if (NON_SPENDING.has(c.category)) continue;
+          catTotals.set(c.category, (catTotals.get(c.category) ?? 0) + c.total);
+        }
+      }
+
+      const catAverages = Array.from(catTotals.entries())
+        .map(([category, total]) => ({
+          category,
+          total,
+          avg: Math.round((total / completeCount) * 100) / 100,
+        }))
+        .sort((a, b) => b.avg - a.avg)
+        .slice(0, 8);
+
+      if (catAverages.length > 0) {
+        lines.push(
+          `  AVERAGE MONTHLY CATEGORY SPENDING (each category's total across the ${completeCount} ` +
+          'complete month(s) ÷ month count — these are AVERAGES, valid ONLY when the user asks for ' +
+          'a typical/average month; NEVER use them as any single month\'s value):',
+        );
+        for (const c of catAverages) {
+          lines.push(
+            `    ${c.category}: ${fmtMoney(c.avg)}/month ` +
+            `(${fmtMoney(Math.round(c.total * 100) / 100)} across ${completeCount} mo)`,
+          );
+        }
+      }
+    } else if (txn.byCategory.length > 0) {
+      // No complete calendar month in the window: present exact window totals and
+      // decline to assert a monthly average rather than fabricate one from a
+      // partial window.
+      lines.push(
+        '  Category totals for this window (exact sums; the window contains no complete calendar ' +
+        'month, so no monthly average is asserted — do not divide these by a month count):',
+      );
       for (const cat of txn.byCategory.slice(0, 8)) {
-        const monthly = Math.round((cat.total / txn.windowDays) * 30 * 100) / 100;
-        lines.push(`    ${cat.category}: ${fmtMoney(cat.total)} total ≈ ${fmtMoney(monthly)}/month (${cat.count} txn(s))`);
+        lines.push(`    ${cat.category}: ${fmtMoney(cat.total)} total (${cat.count} txn(s))`);
       }
     }
 
@@ -487,51 +719,59 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
     if (txn.monthlyBreakdown.length > 0) {
       lines.push('');
       lines.push(
-        'MONTHLY BREAKDOWN (deterministic per-calendar-month rollup — these are the ONLY valid ' +
-        'month-by-month figures; each line is summed directly from that month\'s transactions):',
+        'MONTHLY SPENDING BY MONTH (deterministic per-calendar-month rollup — these are the ONLY ' +
+        'valid month-by-month figures; each line is summed directly from that month\'s transactions). ' +
+        'For every month the listed categories are that month\'s OWN spending and always sum to ≤ ' +
+        'that month\'s "spending" total:',
       );
       for (const m of txn.monthlyBreakdown) {
         const flag = m.partial ? ' [PARTIAL month — window does not fully cover it]' : '';
+        // Per-month category line: SPENDING categories only (income, interest,
+        // transfers, debt payments excluded). This guarantees the categories
+        // reconcile to — and never exceed — this month's expenseTotal.
+        const spendingCats = (m.byCategory ?? []).filter((c) => !NON_SPENDING.has(c.category));
+        const catsStr = spendingCats.length > 0
+          ? spendingCats.map((c) => `${c.category} ${fmtMoney(c.total)}`).join(', ')
+          : '(no categorized spending this month)';
         lines.push(
-          `  ${m.month}${flag}: income ${fmtMoney(m.incomeTotal)}, ` +
-          `spending ${fmtMoney(m.expenseTotal)}, ` +
-          `debt payments ${fmtMoney(m.debtPaymentTotal)}, ` +
-          `transfers ${fmtMoney(m.transferTotal)} (${m.transactionCount} txn(s))`,
+          `  - ${m.month}${flag}: spending ${fmtMoney(m.expenseTotal)}; categories: ${catsStr}`,
         );
-        // Complete deterministic per-category totals for this month. Absent
-        // categories had NO classified settled transactions that month — they
-        // are intentionally not listed so the model cannot read them as $0.
-        const cats = m.byCategory && m.byCategory.length > 0
-          ? m.byCategory.map((c) => `${c.category} ${fmtMoney(c.total)} (${c.count} txn)`).join(', ')
-          : '(no categorized spending recorded this month)';
-        lines.push(`      categories: ${cats}`);
+        // Non-spending flows for the same month, bracketed separately so they can
+        // never be misread as spending categories.
+        lines.push(
+          `      [other flows this month — NOT spending: income ${fmtMoney(m.incomeTotal)}, ` +
+          `debt payments ${fmtMoney(m.debtPaymentTotal)}, transfers ${fmtMoney(m.transferTotal)}; ` +
+          `${m.transactionCount} txn(s)]`,
+        );
       }
       lines.push(
-        '  Rules for month-by-month questions: use these exact monthlyBreakdown values. ' +
-        'Do NOT divide a window total by a month count, do NOT label an average as a specific ' +
-        'month\'s figure, and do NOT report a month that is not listed above — it has no data ' +
-        'in the requested window. Describe any month flagged PARTIAL as incomplete.',
+        '  Rules for month-by-month questions: use these exact per-month values. For a month-by-month ' +
+        'table, each category value MUST come only from that same month\'s "categories:" line. NEVER ' +
+        'use an AVERAGE MONTHLY CATEGORY SPENDING value, a window total, or another month\'s value as a ' +
+        'monthly value. Do NOT divide a window total by a month count, and do NOT report a month not ' +
+        'listed above — it has no data in the requested window. Describe any month flagged PARTIAL as incomplete.',
       );
       lines.push(
-        '  Category rule (month-by-month category tables): the "categories:" line for each month is ' +
-        'the COMPLETE deterministic list of that month\'s classified spending. Use ONLY these values. ' +
-        'If a category is not listed for a month, it had no matching classified transactions that ' +
-        'month — leave the cell blank, write "—", or omit the column entirely. NEVER render an ' +
-        'unlisted category as $0, and NEVER infer or fill a category figure from an average, another ' +
-        'month, or a window total. Show only the categories actually present for each month.',
+        '  Category rule (month-by-month category tables): the "categories:" line for each month is the ' +
+        'COMPLETE deterministic list of that month\'s classified spending, and its entries sum to ≤ that ' +
+        'month\'s "spending" total. Use ONLY these values. If a category is not listed for a month, it had ' +
+        'no matching classified spending that month — leave the cell blank, write "—", or omit the column. ' +
+        'NEVER render an unlisted category as $0, and NEVER infer or fill a category figure from an average, ' +
+        'another month, or a window total. A single category can never exceed that month\'s spending total.',
       );
     }
 
-    // ── Merchant summary (D6.3A-1 deterministic merchant rollup) ─────────────
-    // Canonicalized per-merchant totals over the same window. Compact top-N by
-    // spend so the model can answer "who do I spend the most with" without
-    // parsing the raw JSON blob. Totals are absolute settled sums for the
-    // window above — same period and denominator caveats apply.
+    // ── Merchant summary (D6.3A-1 + D6.3 — top SPENDING merchants only) ──────
+    // Canonicalized per-merchant SPENDING totals over the same window. Settled
+    // expense rows only — income/payroll, transfers, and debt payments are
+    // excluded upstream, so this answers "who did I spend the most with" without
+    // ever surfacing payroll or a Chase/Amex payment as a merchant.
     if (txn.merchants && txn.merchants.length > 0) {
       lines.push('');
       lines.push(
-        'MERCHANT SUMMARY (top merchants by absolute settled spend in the window above — ' +
-        'grouped by canonical merchant name; totals are exact settled sums):',
+        'MERCHANT SUMMARY — TOP SPENDING MERCHANTS (settled expenses only in the window above; ' +
+        'grouped by canonical merchant name; totals are exact absolute settled spend). ' +
+        'Income/payroll, internal transfers, and debt payments are already EXCLUDED here:',
       );
       for (const mrc of txn.merchants.slice(0, 8)) {
         lines.push(
@@ -540,8 +780,65 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
         );
       }
       lines.push(
-        '  Use these exact merchant totals for merchant questions; they cover only the window ' +
-        'above and exclude pending transactions.',
+        '  Use these exact totals for "who did I spend the most with / top merchants" questions. ' +
+        'These are SPENDING merchants only — never describe an income source, transfer, or debt ' +
+        'payment as a spending merchant, and never pull a payroll/employer name into this list.',
+      );
+    }
+
+    // ── Income sources (D6.3 — inflow rollup, kept separate from merchants) ──
+    // Payroll and other inflows live here, NOT in the merchant summary above.
+    if (txn.incomeSources && txn.incomeSources.length > 0) {
+      lines.push('');
+      lines.push(
+        'INCOME SOURCES (settled inflows only — Income + Interest — in the window above; grouped ' +
+        'by canonical name; totals are exact settled sums). This is a SEPARATE list from spending merchants:',
+      );
+      for (const src of txn.incomeSources.slice(0, 8)) {
+        lines.push(
+          `  ${src.canonicalName}: ${fmtMoney(src.total)} across ${src.occurrences} txn(s), ` +
+          `${src.firstSeen} → ${src.lastSeen}`,
+        );
+      }
+      lines.push(
+        '  Use these for "top income sources / where does my money come from" questions. ' +
+        'Do NOT describe these as spending merchants and do NOT include them in spending totals or averages.',
+      );
+    }
+
+    // ── Transaction drilldown (D6 — evidence for a follow-up; only when present) ─
+    // The actual line items behind a resolved category/merchant/period. Attached
+    // only for explicit drilldown follow-ups, so it appears here rarely and never
+    // on ordinary prompts. Rows are FULL-visibility only.
+    if (txn.drilldown && txn.drilldown.transactions.length > 0) {
+      const d = txn.drilldown;
+      const scope = d.label
+        ? d.label
+        : d.category ?? d.merchant ?? 'largest transactions';
+      lines.push('');
+      lines.push(
+        `TRANSACTION DRILLDOWN — evidence for "${scope}" (${d.startDate} → ${d.endDate}; actual ` +
+        'transactions, FULL-visibility accounts only, sorted by amount, largest first):',
+      );
+      for (const t of d.transactions) {
+        const desc = t.description ? ` — ${t.description}` : '';
+        const acct = t.accountName ? ` · ${t.accountName}` : '';
+        lines.push(
+          `  ${t.date}  ${t.merchant}  ${fmtMoney(t.amount)}  (${t.category})${desc}${acct}`,
+        );
+      }
+      const coverage = d.truncated
+        ? `Showing the ${d.shownCount} largest of ${d.totalCount} matching transactions ` +
+          `(${d.totalCount - d.shownCount} more not shown).`
+        : `Showing all ${d.shownCount} matching transaction(s).`;
+      lines.push(
+        `  ${coverage} Shown total: ${fmtMoney(d.shownTotal)}. ` +
+        `Total for "${scope}" this period: ${fmtMoney(d.matchedTotal)}.`,
+      );
+      lines.push(
+        '  Use these exact rows to explain what the category/merchant is made up of. They are the ' +
+        'evidence behind the aggregate — do NOT invent transactions beyond this list, and if rows ' +
+        'were omitted by the cap, say so rather than implying the list is exhaustive.',
       );
     }
 
@@ -1390,6 +1687,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // keeps the assembler's default 30/90-day window.
   const transactionWindow = resolveTransactionWindow(messages, new Date());
 
+  // D6 transaction drilldown (evidence retrieval): present ONLY for an explicit
+  // drilldown follow-up ("what is this Other category made up of?", "show me the
+  // largest transactions"). Undefined otherwise — no raw rows on ordinary prompts.
+  const drilldown = resolveDrilldown(messages, new Date());
+
   // ── Ambiguity guard ────────────────────────────────────────────────────────
   // An antecedent-less breakdown follow-up ("break it down", "month by month",
   // "what about January") with no window of its own and no prior financial topic
@@ -1433,7 +1735,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     const contextResults = await Promise.allSettled(
       memberships.map((m) =>
-        buildContext(m.spaceId, user.id, { scopeHint: 'full', transactionWindow }),
+        buildContext(m.spaceId, user.id, { scopeHint: 'full', transactionWindow, drilldown }),
       ),
     );
 
@@ -1497,7 +1799,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // buildContext carries a second membership guard internally.
     let ctx: SpaceContext_AI;
     try {
-      ctx = await buildContext(spaceId, user.id, { scopeHint: 'full', transactionWindow });
+      ctx = await buildContext(spaceId, user.id, { scopeHint: 'full', transactionWindow, drilldown });
     } catch (err) {
       console.error('[api/ai/chat] buildContext error:', err);
       return NextResponse.json(
