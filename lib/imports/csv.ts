@@ -4,7 +4,7 @@
  * D2 Step 4D-1 — CSV import MVP. Pure parsing/normalization/classification
  * helpers for app/api/accounts/[id]/import/route.ts. Deliberately CSV-only
  * and deliberately not a generic "ImportAdapter" — see
- * docs/initiatives/d2/D2_STEP4D1_CSV_IMPORT_MVP_INVESTIGATION.md. A future
+ * docs/initiatives/d2/investigations/D2_STEP4D1_CSV_IMPORT_MVP_INVESTIGATION.md. A future
  * Excel/QuickBooks source (D2 Step 4D-2+) is expected to get its own
  * sibling module, not a forced shared interface bolted on here. (In
  * practice, lib/imports/excel.ts reuses detectColumns()/applyExplicitMapping()
@@ -14,11 +14,11 @@
  * to detectColumns() for the same column-resolution stage, used all-or-
  * nothing when supplied — and renamed NormalizedRow to NormalizedTransaction
  * (mechanical, compile-time-only; see
- * docs/initiatives/d2/D2_STEP4D5A_IMPLEMENTATION_PLAN.md). No change to
+ * docs/initiatives/d2/implementation/D2_STEP4D5A_IMPLEMENTATION_PLAN.md). No change to
  * HEADER_ALIASES, detectColumns()'s own logic, or normalizeRow()'s body.
  *
  * D2 Step 4D-5b added three things, all scoped to the column-resolution
- * stage only (see docs/initiatives/d2/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md and
+ * stage only (see docs/initiatives/d2/investigations/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md and
  * D2_STEP4D5B_IMPLEMENTATION_PLAN.md):
  *   1. validateResolvedColumns() — the three required-field rules
  *      detectColumns() and applyExplicitMapping() each separately
@@ -94,7 +94,7 @@ export function normalizeHeader(h: string): string {
  * them a third time. This owns the RULE, not the message — each caller
  * translates the returned code into its own pre-existing, distinct error
  * string, so this extraction changes no observable error text. See
- * docs/initiatives/d2/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §3 and
+ * docs/initiatives/d2/investigations/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §3 and
  * D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5.
  */
 export type ColumnValidationFailure = "date" | "merchantOrDescription" | "amountOrDebitCredit";
@@ -168,7 +168,7 @@ export function detectColumns(headers: string[]): CsvColumnMap | { error: string
  * balanceAfter/currency/rawMetadata are NOT supported here: they don't exist
  * on NormalizedTransaction yet, and nothing downstream reads them, so wiring
  * mapping support for them now would be dead plumbing. See
- * docs/initiatives/d2/D2_STEP4D5A_IMPLEMENTATION_PLAN.md §3. Kept as an
+ * docs/initiatives/d2/implementation/D2_STEP4D5A_IMPLEMENTATION_PLAN.md §3. Kept as an
  * explicit list (not derived from HEADER_ALIASES) so the accepted key set is
  * visible at a glance and decoupled from HEADER_ALIASES's own shape.
  */
@@ -270,7 +270,7 @@ export interface SavedMappingProfileLite {
  * lib/imports/excel.ts's parseExcelFile() delegate to this instead of each
  * independently writing the same
  * `explicitMapping ? applyExplicitMapping(...) : detectColumns(...)` ternary
- * — see docs/initiatives/d2/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §4 and
+ * — see docs/initiatives/d2/investigations/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §4 and
  * D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5.
  *
  * Priority (confirmed, not re-litigated, in the implementation plan):
@@ -540,7 +540,7 @@ export async function resolveFingerprintOutcome(
     // rollback must not be treated as an exact match, or re-importing the
     // same file after a rollback would silently no-op instead of recreating
     // the row. See
-    // docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
+    // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
     const exact = await db.transaction.findFirst({
       where:  { financialAccountId, externalTransactionId, deletedAt: null },
       select: { id: true },
@@ -594,7 +594,7 @@ export async function resolveFingerprintOutcome(
  * Returns null when every allow-listed field already matches — callers use
  * this to skip the write entirely (no updatedAt churn, no audit
  * contribution) rather than issuing a no-op UPDATE. See
- * docs/initiatives/d2/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §4/§5.
+ * docs/initiatives/d2/implementation/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §4/§5.
  *
  * Callers are responsible for gating *whether* this runs (source ===
  * QUICKBOOKS && matchedVia === "externalId") — this function only computes

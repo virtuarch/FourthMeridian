@@ -98,6 +98,33 @@ export function parsePlaidError(err: unknown, fallback: string): ParsedError {
   return { message: fallback, status: 500 };
 }
 
+/**
+ * Extracts the raw Plaid error_code from a caught error, or undefined when
+ * the error isn't an Axios-shaped Plaid API error. For flow-control checks
+ * like `getPlaidErrorCode(err) === "ADDITIONAL_CONSENT_REQUIRED"`.
+ */
+export function getPlaidErrorCode(err: unknown): string | undefined {
+  return isAxiosError(err) ? err.response?.data?.error_code : undefined;
+}
+
+/**
+ * One-line log summary of a caught Plaid/SDK error — error_code + Plaid's
+ * error_message when present, the Error message otherwise. For catch blocks
+ * that previously logged the raw error object: an AxiosError dumps its
+ * entire config/request/response graph into the logs, which drowns out the
+ * one line that matters.
+ */
+export function plaidErrorSummary(err: unknown): string {
+  if (isAxiosError(err)) {
+    const data = err.response?.data;
+    if (data?.error_code) {
+      return `${data.error_code}${data.error_message ? `: ${data.error_message}` : ""}`;
+    }
+    return `HTTP ${err.response?.status ?? "?"} (no Plaid error body)`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 // D2 Step 7A — connection health classification. Separate from
 // parsePlaidError() above: that function's `status` is an HTTP response
 // code for the client, not a health state to persist.
@@ -111,7 +138,7 @@ const NEEDS_REAUTH_CODES = new Set(["ITEM_LOGIN_REQUIRED", "INVALID_ACCESS_TOKEN
 // select status: ACTIVE, so moving a transient blip to ERROR would
 // permanently lock that item out of every existing sync path (no
 // retry/backoff or reconnect UI exists yet to recover it). See
-// docs/initiatives/d2/D2_STEP7A_CONNECTION_HEALTH_IMPLEMENTATION_CHECKLIST.md
+// docs/initiatives/d2/implementation/D2_STEP7A_CONNECTION_HEALTH_IMPLEMENTATION_CHECKLIST.md
 // §4/§7.
 const TRANSIENT_CODES = new Set([
   "ITEM_LOCKED",

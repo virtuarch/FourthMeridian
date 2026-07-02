@@ -6,9 +6,11 @@
  * best-effort and non-fatal. See docs/initiatives/d3/D3_STEP3_DUAL_WRITE_REVIEW.md for the
  * full design rationale.
  *
- * WorkspaceAccountShare remains the only table any read path consults.
- * SpaceAccountLink is written here purely so it stays a live, accurate
- * mirror ahead of a future read-cutover step — nothing reads it yet.
+ * SpaceAccountLink is now the PRIMARY read path for the AI assemblers, the
+ * data layer, and most account routes (see the D3 Step 4 read-cutover
+ * reports); WorkspaceAccountShare remains live at its final mutation site
+ * (app/api/spaces/[id]/accounts) and is mirrored here until the full WAS
+ * cutover + retirement scheduled for v2.5.
  *
  * Rules (docs/initiatives/d3/D3_STEP3_DUAL_WRITE_REVIEW.md §2, amended by
  * docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md):

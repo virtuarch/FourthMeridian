@@ -5,8 +5,8 @@
  * D2 Step 2 — extended to back-fill WALLET accounts too, now that D2 Step 1D
  * has corrected ProviderAccountIdentity's unique constraint to
  * (provider, externalAccountId, financialAccountId). See
- * docs/initiatives/d2/D2_STEP1D_PROVIDER_ACCOUNT_IDENTITY_MULTI_ACCOUNT_CORRECTION.md.
- * Design reference: docs/initiatives/d2/D2_STEP1C_PROVIDER_ACCOUNT_IDENTITY_BACKFILL_INVESTIGATION.md
+ * docs/initiatives/d2/implementation/D2_STEP1D_PROVIDER_ACCOUNT_IDENTITY_MULTI_ACCOUNT_CORRECTION.md.
+ * Design reference: docs/initiatives/d2/investigations/D2_STEP1C_PROVIDER_ACCOUNT_IDENTITY_BACKFILL_INVESTIGATION.md
  * (§B eligibility matrix, §C recommended backfill rules, §F smallest safe slice).
  *
  * Scope:

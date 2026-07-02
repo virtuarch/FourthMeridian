@@ -4,12 +4,12 @@
  * D2 Step 1C-B — companion validation script for
  * backfill-provider-account-identity.ts. Read-only: makes zero writes to any
  * table. Modeled directly on scripts/verify-space-account-link-backfill.ts.
- * Design reference: docs/initiatives/d2/D2_STEP1C_PROVIDER_ACCOUNT_IDENTITY_BACKFILL_INVESTIGATION.md §D.
+ * Design reference: docs/initiatives/d2/investigations/D2_STEP1C_PROVIDER_ACCOUNT_IDENTITY_BACKFILL_INVESTIGATION.md §D.
  *
  * D2 Step 2 — extended to verify WALLET alongside PLAID, now that D2 Step 1D
  * corrected ProviderAccountIdentity's unique constraint to (provider,
  * externalAccountId, financialAccountId). See
- * docs/initiatives/d2/D2_STEP1D_PROVIDER_ACCOUNT_IDENTITY_MULTI_ACCOUNT_CORRECTION.md.
+ * docs/initiatives/d2/implementation/D2_STEP1D_PROVIDER_ACCOUNT_IDENTITY_MULTI_ACCOUNT_CORRECTION.md.
  * No exclusion bucket for WALLET: every eligible active WALLET account is
  * checked exactly like PLAID is.
  *

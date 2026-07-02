@@ -71,12 +71,12 @@ export const AuditAction = {
   // ── Imports (D2 Step 4D-3) ───────────────────────────────────────────────────
   // Only the rollback action is added in this slice — IMPORT_BATCH_CREATED /
   // IMPORT_BATCH_COMPLETED are deliberately deferred (see
-  // docs/initiatives/d2/D2_STEP4D3_IMPORT_ROLLBACK_INVESTIGATION.md §8).
+  // docs/initiatives/d2/investigations/D2_STEP4D3_IMPORT_ROLLBACK_INVESTIGATION.md §8).
   IMPORT_BATCH_ROLLED_BACK: "IMPORT_BATCH_ROLLED_BACK",
   // D2 Step 4D-4 — one batch-level event when a QuickBooks externalId match
   // overwrites an existing Transaction's allow-listed fields. No per-row
   // entries, no before/after snapshots — see
-  // docs/initiatives/d2/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §8.
+  // docs/initiatives/d2/implementation/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §8.
   IMPORT_BATCH_UPDATED_ON_MATCH: "IMPORT_BATCH_UPDATED_ON_MATCH",
 
   // ── AI Context ───────────────────────────────────────────────────────────────

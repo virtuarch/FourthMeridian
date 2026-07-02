@@ -69,8 +69,4 @@ cloudflared/*.pem
 cloudflared/cert.pem
 
 # Deprecated stub files (superseded by lib/plaid/ and lib/db.ts)
-lib/plaid.ts
-lib/encryption.ts
-lib/prisma.ts
-app/api/plaid/create-link-token/
 .env*

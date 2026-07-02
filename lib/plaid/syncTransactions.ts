@@ -43,7 +43,7 @@
  *    transaction across separate sync runs (observed directly: two rows,
  *    same financialAccountId/date/amount/merchant, both pending:false,
  *    different plaidTransactionId, created on different sync runs — see
- *    docs/TRANSACTION_DUPLICATION_INVESTIGATION.md). When no row matches by
+ *    docs/initiatives/d2/investigations/D2_STEP4C_TRANSACTION_FINGERPRINTING_INVESTIGATION.md). When no row matches by
  *    plaidTransactionId, a fingerprint fallback (financialAccountId, date,
  *    amount, normalized merchant, pending) looks for an existing row before
  *    creating a new one — same shape as the account-level fallback in
@@ -56,7 +56,7 @@
  *    extracted unchanged from this file so future import sources (CSV,
  *    Excel, QuickBooks — Step 4D) can reuse the same matching logic instead
  *    of each writing their own. Behavior here is unchanged by the move —
- *    see docs/initiatives/d2/D2_STEP4C_TRANSACTION_FINGERPRINTING_INVESTIGATION.md.
+ *    see docs/initiatives/d2/investigations/D2_STEP4C_TRANSACTION_FINGERPRINTING_INVESTIGATION.md.
  *  - Writes `financialAccountId`, never the legacy `accountId` — Plaid-synced
  *    transactions only ever belong to a FinancialAccount.
  */

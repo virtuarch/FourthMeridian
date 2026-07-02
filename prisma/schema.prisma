@@ -58,6 +58,20 @@ enum PlaidItemStatus {
   REVOKED       // all accounts removed; itemRemove() was called
 }
 
+/// Per-Item Plaid Investments product consent state, derived from the `item`
+/// object returned by accountsGet (consented_products / available_products /
+/// billed_products) and, for pre-DTM Items, from probing
+/// investmentsHoldingsGet once. Gates the holdings step of refresh so we
+/// never repeatedly call an endpoint Plaid will reject with
+/// ADDITIONAL_CONSENT_REQUIRED. Re-derived on every refresh, so it self-heals
+/// after the user grants consent via Link update mode. See
+/// docs/investigations/PLAID_INVESTMENTS_CONSENT_INVESTIGATION.md.
+enum PlaidInvestmentsConsent {
+  ENABLED           // user consented to investments (or legacy probe succeeded)
+  CONSENT_REQUIRED  // supported, but user must grant consent via Link update mode
+  UNSUPPORTED       // Plaid Investments not available for this Item
+}
+
 /// D2 (Phase 2, Step 1A): generalizes PlaidItemStatus across all connection
 /// types. Mirrors PlaidItemStatus exactly. PlaidItem keeps its own enum
 /// unchanged — this is additive, not a replacement. Not yet used by any
@@ -303,8 +317,8 @@ model User {
   sentInvites          SpaceInvite[]     @relation("SentInvites")
   receivedInvites      SpaceInvite[]     @relation("ReceivedInvites")
   plaidItems           PlaidItem[]
-  connections          Connection[]      // D2 (Phase 2, Step 1A) — additive only, not yet populated
-  importBatches        ImportBatch[]     // D2 (Phase 2, Step 4B) — additive only, not yet populated
+  connections          Connection[]      // D2 — PLAID rows created/updated by lib/plaid/exchangeToken.ts; read by app/api/plaid/link-token
+  importBatches        ImportBatch[]     // D2 Step 4D — populated by the import pipeline (app/api/accounts/[id]/import)
   importMappingProfiles ImportMappingProfile[] // D2 (Phase 2, Step 4D-5b) — additive; display-only creator ref, not an authorization boundary
   ownedAccounts        Account[]         // legacy: accounts this user connected/created
   creditScores         CreditScore[]
@@ -332,7 +346,8 @@ model User {
   addedShares          WorkspaceAccountShare[] @relation("ShareAdder")
   revokedShares        WorkspaceAccountShare[] @relation("ShareRevoker")
 
-  // SpaceAccountLink (D3) — additive, not yet read/written by application code.
+  // SpaceAccountLink (D3) — dual-written at every share mutation site and the primary
+  // read path for the AI assemblers and data layer; WAS cutover completes in v2.5.
   addedSpaceAccountLinks   SpaceAccountLink[] @relation("SpaceAccountLinkAdder")
   revokedSpaceAccountLinks SpaceAccountLink[] @relation("SpaceAccountLinkRevoker")
 
@@ -384,7 +399,8 @@ model Space {
   // (Phase 3 will replace it with SpaceAccountLink). The field name itself never
   // contained "workspace" so it's unaffected either way.
   accountShares         WorkspaceAccountShare[]
-  // SpaceAccountLink (D3) — additive, not yet read/written by application code.
+  // SpaceAccountLink (D3) — dual-written at every share mutation site and the primary
+  // read path for the AI assemblers and data layer; WAS cutover completes in v2.5.
   accountLinks           SpaceAccountLink[]
   ownedFinancialAccounts FinancialAccount[]      @relation("SpaceOwnedFinancialAccounts")
   goals                  SpaceGoal[]
@@ -392,7 +408,7 @@ model Space {
   // ImportMappingProfile (D2, Phase 2, Step 4D-5b) — additive; Space-scoped
   // saved column mappings, auto-used by the import pipeline when they match
   // an upload's headers. See
-  // docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md.
+  // docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md.
   importMappingProfiles  ImportMappingProfile[]
 
   @@index([type])
@@ -510,6 +526,11 @@ model PlaidItem {
   // scheduled sync job). Gates the manual-refresh cooldown only; the
   // scheduler never reads or writes this field.
   lastManualRefreshAt DateTime?
+  // Investments consent state — null = unknown / never derived (all Items
+  // predating this column). Written by lib/plaid/refresh.ts and
+  // lib/plaid/exchangeToken.ts; the future "Enable Investment Holdings" UI
+  // renders when this is CONSENT_REQUIRED.
+  investmentsConsent PlaidInvestmentsConsent?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -520,8 +541,9 @@ model PlaidItem {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Connection (D2, Phase 2, Step 1A — additive only, not yet read or written
-// by any application code).
+// Connection (D2, Phase 2 — LIVE for PLAID: rows are created/updated by
+// lib/plaid/exchangeToken.ts and read by app/api/plaid/link-token; other
+// provider types not yet populated).
 // Provider-agnostic generalization of the credential/login layer PlaidItem
 // represents today. PlaidItem is NOT migrated or modified by this step — it
 // continues to serve all existing Plaid behavior unchanged. Connection exists
@@ -545,9 +567,9 @@ model Connection {
   updatedAt            DateTime         @updatedAt
 
   accountConnections        AccountConnection[]
-  // ProviderAccountIdentity (D2, Step 1B) — additive, not yet populated.
+  // ProviderAccountIdentity (D2) — populated (Step 1C backfill + Step 2 dual-write).
   providerAccountIdentities ProviderAccountIdentity[]
-  // ImportBatch (D2, Step 4B) — additive seam, not yet populated.
+  // ImportBatch (D2 Step 4D) — populated by the import pipeline.
   importBatches             ImportBatch[]
 
   @@index([userId])
@@ -563,9 +585,11 @@ model Connection {
 // externalAccountId). FinancialAccount's existing provider columns remain
 // the source of truth and are NOT removed by this step. WALLET is not yet
 // backfilled or dual-written — see
-// docs/initiatives/d2/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md. Still not
-// read by any application code as of Step 2A — write-only until a later
-// read-cutover step.
+// docs/initiatives/d2/investigations/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md. PLAID read
+// cutover is COMPLETE (Steps 3C–3F): sync, refresh, reconcile, and
+// exchange-token resolve identities here first, with a warn-and-fallback to the
+// legacy plaidAccountId lookup whose removal is gated on a production
+// observation window (D2 Step 7 Stabilization).
 // See docs/architecture/D2_PROVIDER_CONNECTION_ARCHITECTURE.md §2, §8, §9.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -590,7 +614,7 @@ model ProviderAccountIdentity {
   // @@unique([provider, externalAccountId]) alone, which made that
   // impossible (at most one FinancialAccount could ever hold a given
   // identity, globally). See
-  // docs/initiatives/d2/D2_STEP1D_PROVIDER_ACCOUNT_IDENTITY_MULTI_ACCOUNT_CORRECTION.md.
+  // docs/initiatives/d2/implementation/D2_STEP1D_PROVIDER_ACCOUNT_IDENTITY_MULTI_ACCOUNT_CORRECTION.md.
   // PLAID is unaffected: FinancialAccount.plaidAccountId already carries its
   // own independent @unique, so this relaxation doesn't change PLAID's
   // real-world uniqueness guarantee.
@@ -739,7 +763,8 @@ model FinancialAccount {
   // future replacement (SpaceAccountLink, Phase 3) with different semantics,
   // so the name deliberately stays as-is for now.
   workspaceShares       WorkspaceAccountShare[]
-  // SpaceAccountLink (D3) — additive, not yet read/written by application code.
+  // SpaceAccountLink (D3) — dual-written at every share mutation site and the primary
+  // read path for the AI assemblers and data layer; WAS cutover completes in v2.5.
   spaceAccountLinks     SpaceAccountLink[]
   duplicateCandidatesA  DuplicateAccountCandidate[] @relation("DuplicateCandidateA")
   duplicateCandidatesB  DuplicateAccountCandidate[] @relation("DuplicateCandidateB")
@@ -747,9 +772,9 @@ model FinancialAccount {
   debtProfile           DebtProfile?
   transactions          Transaction[]               @relation("FinancialAccountTransactions")
   holdings              Holding[]
-  // ProviderAccountIdentity (D2, Step 1B) — additive, not yet populated.
+  // ProviderAccountIdentity (D2) — populated (Step 1C backfill + Step 2 dual-write).
   providerIdentities    ProviderAccountIdentity[]
-  // ImportBatch (D2, Step 4B) — additive, not yet populated.
+  // ImportBatch (D2 Step 4D) — populated by the import pipeline.
   importBatches         ImportBatch[]
 
   @@index([ownerUserId])
@@ -807,9 +832,9 @@ model AccountConnection {
   plaidItemDbId      String?
   plaidItem          PlaidItem?       @relation(fields: [plaidItemDbId], references: [id], onDelete: SetNull)
 
-  // D2 (Phase 2, Step 1A) — additive only, not yet read or written by any
-  // application code. Parallel path to plaidItemDbId for non-Plaid
-  // providers; does not change existing Plaid/manual/wallet behavior.
+  // D2 — populated for PLAID by lib/plaid/exchangeToken.ts alongside
+  // plaidItemDbId. Parallel path to plaidItemDbId for future non-Plaid
+  // providers; existing Plaid/manual/wallet behavior unchanged.
   connectionId       String?
   connection         Connection?      @relation(fields: [connectionId], references: [id], onDelete: SetNull)
 
@@ -867,8 +892,10 @@ model WorkspaceAccountShare {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SpaceAccountLink (D3, Phase 2 — additive, not yet read or written by any
-// application code).
+// SpaceAccountLink (D3, Phase 2 — LIVE: backfilled, dual-written at every
+// WorkspaceAccountShare mutation site (lib/accounts/space-account-link.ts), and
+// the primary read path for the AI assemblers, data layer, and most routes;
+// full WAS read cutover + retirement is scheduled v2.5 work).
 // Future consolidation of WorkspaceAccountShare and FinancialAccount's
 // ownerSpaceId/ownerUserId into a single polymorphic link: kind=HOME replaces
 // the declared-owner pair, kind=SHARED replaces a WorkspaceAccountShare row.
@@ -1155,21 +1182,21 @@ model Transaction {
 
   plaidTransactionId String? @unique // prevents duplicate inserts on re-sync
 
-  // D2 (Phase 2, Step 4B) — additive only, not yet read or written by any
-  // application code (that's Step 4D). Generic sibling of plaidTransactionId
+  // D2 Step 4D — written by the import pipeline ("externalId" match
+  // resolution in app/api/accounts/[id]/import). Generic sibling of plaidTransactionId
   // for files/exports that carry their own stable row id. Deliberately no
   // unique constraint yet — a CSV export's own id is only guaranteed unique
   // within that one file/institution, not globally; real uniqueness shape
   // (e.g. scoped to [financialAccountId, externalTransactionId]) is decided
   // at Step 4D implementation time, not assumed here. See
-  // docs/initiatives/d2/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §3.
+  // docs/initiatives/d2/investigations/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §3.
   importBatchId         String?
   importBatch            ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   externalTransactionId String?
 
-  // D2 (Phase 2, Step 4B) — net-new soft-delete column. Nothing sets this yet;
-  // the rollback path that would (ImportBatch.status = ROLLED_BACK) is Step 4D,
-  // not part of this slice. See D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §1.
+  // D2 Step 4D-3 — soft-delete set by import rollback
+  // (app/api/imports/[id]/rollback → ImportBatch.status = ROLLED_BACK).
+  // See D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §1.
   deletedAt              DateTime?
 
   createdAt DateTime @default(now())
@@ -1195,8 +1222,8 @@ model Transaction {
 // AccountConnection.connectionId / ProviderAccountIdentity.connectionId —
 // nullable, unpopulated until D2's later Adapter/ProviderCatalog work exists;
 // ImportBatch does not depend on that work existing.
-// See docs/initiatives/d2/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md
-// and docs/initiatives/d2/D2_STEP4A_IMPORT_HISTORY_FOUNDATION_INVESTIGATION.md.
+// See docs/initiatives/d2/investigations/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md
+// and docs/initiatives/d2/investigations/D2_STEP4A_IMPORT_HISTORY_FOUNDATION_INVESTIGATION.md.
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum ImportSource {
@@ -1230,7 +1257,7 @@ model ImportBatch {
   // batch's columns. Set only on the saved-profile-matched path; null for
   // the explicit-mapping and auto-detect paths. onDelete: SetNull so
   // deleting a profile later never deletes the historical batches that used
-  // it. See docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §2.
+  // it. See docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §2.
   mappingProfileId   String?
   mappingProfile     ImportMappingProfile? @relation(fields: [mappingProfileId], references: [id], onDelete: SetNull)
 
@@ -1245,7 +1272,7 @@ model ImportBatch {
   // Transaction (no new row written) — distinct from skippedCount, which
   // covers rows skipped for other reasons (e.g. an ambiguous fingerprint
   // match). failedCount: rows that could not be parsed/validated at all. See
-  // docs/initiatives/d2/D2_STEP4D1_CSV_IMPORT_MVP_INVESTIGATION.md §8.
+  // docs/initiatives/d2/investigations/D2_STEP4D1_CSV_IMPORT_MVP_INVESTIGATION.md §8.
   matchedCount       Int               @default(0)
   failedCount        Int               @default(0)
   errorSummary       Json?
@@ -1278,12 +1305,12 @@ model ImportBatch {
 // call, not a caller's raw/partial input. Matching a profile against a new
 // upload is a trial-application of that same mapping via
 // applyExplicitMapping(), never a comparison of the file's full header set —
-// see docs/initiatives/d2/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §5/§6 for why a
+// see docs/initiatives/d2/investigations/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §5/§6 for why a
 // header-signature hash was considered and rejected. source/institutionLabel
 // are informational/display only, never consulted by the matcher. No CRUD
 // route exists for this model yet (4D-5b is auto-use only, over rows seeded
 // directly via the database client) — see
-// docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §7/§8.
+// docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §7/§8.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model ImportMappingProfile {

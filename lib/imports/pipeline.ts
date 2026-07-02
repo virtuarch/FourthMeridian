@@ -7,7 +7,7 @@
  * app/api/accounts/[id]/import/route.ts previously inlined directly across
  * its CSV/Excel branches. Extracted so the future preview route (D2 Step
  * 4D-5c-2) can call this identical logic instead of duplicating it. See
- * docs/initiatives/d2/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md.
+ * docs/initiatives/d2/implementation/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md.
  *
  * Deliberately excludes (left in route.ts, unchanged):
  *   - Saved ImportMappingProfile loading. This module receives
@@ -41,7 +41,7 @@
  * D2 Step 4D-5c-3 — when column resolution fails but the header row itself
  * parsed successfully, the returned error now also carries `rawHeaders` so
  * the preview route's suggestion engine (lib/imports/suggest.ts) has
- * something to score. See docs/initiatives/d2/D2_STEP4D5C3_IMPLEMENTATION_PLAN.md.
+ * something to score. See docs/initiatives/d2/implementation/D2_STEP4D5C3_IMPLEMENTATION_PLAN.md.
  * Additive only — the confirm route only ever reads `.error` off this same
  * return value, so it is unaffected.
  */

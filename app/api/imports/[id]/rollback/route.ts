@@ -21,11 +21,11 @@
  * updated rows in their post-update state. There is no revert capability for
  * those overwrites — no snapshot table, no versioning, no schema change.
  * This is a known, accepted limitation (see
- * docs/initiatives/d2/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §7),
+ * docs/initiatives/d2/implementation/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §7),
  * not a gap introduced by this file.
  *
  * Implements the design in
- * docs/initiatives/d2/D2_STEP4D3_IMPORT_ROLLBACK_INVESTIGATION.md exactly:
+ * docs/initiatives/d2/investigations/D2_STEP4D3_IMPORT_ROLLBACK_INVESTIGATION.md exactly:
  *   - The Transaction soft-delete is filtered by importBatchId +
  *     deletedAt: null only — never financialAccountId. An account merge
  *     (lib/accounts/reconcile.ts's mergeArchivedDuplicateIntoCanonical)

@@ -9,7 +9,7 @@
  * behavior are unchanged from the pre-4C implementation that lived inline
  * in syncTransactions.ts.
  *
- * See docs/initiatives/d2/D2_STEP4C_TRANSACTION_FINGERPRINTING_INVESTIGATION.md
+ * See docs/initiatives/d2/investigations/D2_STEP4C_TRANSACTION_FINGERPRINTING_INVESTIGATION.md
  * for the investigation and design rationale behind this shape, and for the
  * questions this step deliberately does NOT resolve (a persisted
  * fingerprintHash column, merchant-or-description precedence for sources
@@ -68,7 +68,7 @@ export async function findByFingerprint(
     // transaction with no error surfaced anywhere. Same rationale applies to
     // lib/imports/csv.ts's resolveFingerprintOutcome(), the other caller of
     // this helper. See
-    // docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
+    // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
     where:  { financialAccountId, date, amount, pending, deletedAt: null },
     select: { id: true, merchant: true, plaidTransactionId: true },
   });

@@ -7,16 +7,12 @@
  *   import { computeAssessment } from '@/lib/ai/intelligence';
  *   import type { FinancialAssessment } from '@/lib/ai/intelligence';
  *
- * Backward-compat aliases:
- *   computeAnnotations  → computeAssessment
- *   FinancialAnnotations → FinancialAssessment
  */
 
-export { computeAssessment, computeAnnotations, computeSpendingTrends } from './annotations';
+export { computeAssessment, computeSpendingTrends } from './annotations';
 
 export type {
   FinancialAssessment,
-  FinancialAnnotations,
   DataQualitySection,
   CashFlowSection,
   DebtSection,

@@ -5,7 +5,7 @@
  * (workbook/worksheet loading, header coercion) and a typed-value-aware row
  * normalizer that produces the same `NormalizedTransaction` shape
  * `lib/imports/csv.ts` already produces for CSV — see
- * docs/initiatives/d2/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md.
+ * docs/initiatives/d2/investigations/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md.
  *
  * Deliberately reuses, unmodified, the source-agnostic pieces of csv.ts:
  * `detectColumns`, `mapCategory`, `parseDate`, `parseAmount`, and the shared
@@ -20,7 +20,7 @@
  * identically to how the CSV branch of the import route uses it. `csv.ts`'s
  * `NormalizedRow` was also renamed to `NormalizedTransaction` in that same
  * step (mechanical, compile-time-only) — see
- * docs/initiatives/d2/D2_STEP4D5A_IMPLEMENTATION_PLAN.md.
+ * docs/initiatives/d2/implementation/D2_STEP4D5A_IMPLEMENTATION_PLAN.md.
  *
  * D2 Step 4D-5b replaced this file's internal
  * `explicitMapping ? applyExplicitMapping(...) : detectColumns(...)` ternary
@@ -30,7 +30,7 @@
  * ImportMappingProfile rows can be trial-applied here too. `ParsedExcel` now
  * also returns the resolved `columns` (for `ImportBatch.resolvedColumnMapping`)
  * and `matchedProfileId` (for `ImportBatch.mappingProfileId`) alongside
- * `rows`. See docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5.
+ * `rows`. See docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5.
  *
  * Scope notes (see the investigation doc for full rationale):
  * - First worksheet only (`workbook.worksheets[0]`) — no multi-sheet

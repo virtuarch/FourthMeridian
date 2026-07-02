@@ -4,8 +4,8 @@
  * D2 Step 4D-5c-3 — Suggestions. Fuzzy best-guess column mapping for the
  * import preview route's unresolved case (no auto-detect hit, no explicit
  * mapping, no saved-profile match — see
- * docs/initiatives/d2/D2_STEP4D5C_PREVIEW_INVESTIGATION.md §11 and
- * docs/initiatives/d2/D2_STEP4D5C3_IMPLEMENTATION_PLAN.md).
+ * docs/initiatives/d2/investigations/D2_STEP4D5C_PREVIEW_INVESTIGATION.md §11 and
+ * docs/initiatives/d2/implementation/D2_STEP4D5C3_IMPLEMENTATION_PLAN.md).
  *
  * Pre-fill only. Never read by detectColumns(), resolveColumns(), or the
  * confirm route, and never auto-applied anywhere in this codebase. A caller

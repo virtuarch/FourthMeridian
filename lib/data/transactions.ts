@@ -22,7 +22,7 @@
  * excluding rows soft-deleted by an import rollback. This is the row's own
  * soft-delete and is independent of (ANDed with) the financialAccount.deletedAt
  * account-level guard above — both must hold for a transaction to be visible.
- * See docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md.
+ * See docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md.
  */
 
 import { db } from "@/lib/db";

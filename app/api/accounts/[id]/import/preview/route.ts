@@ -19,9 +19,9 @@
  *
  * This route never calls db.importBatch.create, db.transaction.create, or
  * db.importMappingProfile.update — by construction, not by a runtime guard.
- * See docs/initiatives/d2/D2_STEP4D5C2_IMPLEMENTATION_PLAN.md (approved
+ * See docs/initiatives/d2/implementation/D2_STEP4D5C2_IMPLEMENTATION_PLAN.md (approved
  * checklist this route implements) and
- * docs/initiatives/d2/D2_STEP4D5C_PREVIEW_INVESTIGATION.md (architecture
+ * docs/initiatives/d2/investigations/D2_STEP4D5C_PREVIEW_INVESTIGATION.md (architecture
  * investigation this step is sequenced from).
  *
  * Body (multipart/form-data) — identical to the confirm route:

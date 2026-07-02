@@ -131,7 +131,7 @@ export function providerIdentityOf(fa: {
  * directly, with a fallback to the legacy lookup if no identity row exists
  * yet. Fallback-first, not a hard replacement — mirrors Step 3C's
  * exchange-token cutover. See
- * docs/initiatives/d2/D2_STEP3A_PROVIDER_ACCOUNT_IDENTITY_READ_CUTOVER_INVESTIGATION.md
+ * docs/initiatives/d2/investigations/D2_STEP3A_PROVIDER_ACCOUNT_IDENTITY_READ_CUTOVER_INVESTIGATION.md
  * §B (Risk 1: coverage gaps) and §C (Step 3D). A fallback hit is logged so
  * coverage gaps are visible before the fallback is ever removed (Step 3G).
  * The WALLET branch is unchanged by this step.
@@ -282,7 +282,7 @@ async function pickCanonicalAndMerge(
     // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import
     // rollback must not count as "history" when deciding which duplicate-
     // account candidate is canonical. See
-    // docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §2.
+    // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §2.
     const count = await db.transaction.count({ where: { financialAccountId: c.id, deletedAt: null } });
     counts.set(c.id, count);
     if (count > canonicalCount) {
@@ -415,7 +415,7 @@ export async function mergeArchivedDuplicateIntoCanonical(
   // and could resurface incorrectly if that loser is ever individually
   // restored. This is the one Transaction call site the D2 Step 4D-R audit
   // identified as needing to keep ignoring deletedAt — see
-  // docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §5.
+  // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §5.
   await db.transaction.updateMany({
     where: { financialAccountId: loserId },
     data:  { financialAccountId: winnerId },

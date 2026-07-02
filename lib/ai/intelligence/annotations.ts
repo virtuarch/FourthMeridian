@@ -14,7 +14,7 @@
  *   - Each section carries its own confidence level.
  *   - New: advisorHeuristics — deterministic typed flags (no prose).
  *   - New: priorities — ranked, severity-coded hints for the LLM.
- *   - computeAnnotations is kept as a backward-compat alias.
+ *   - The former computeAnnotations / FinancialAnnotations compat aliases were removed (0 consumers).
  *
  * Design constraints (unchanged from Slice 1):
  *   - Pure function. No DB queries, no LLM calls, no side effects.
@@ -563,14 +563,6 @@ export interface FinancialAssessment {
   /** Ranked list of active priorities — deterministic hints, not recommendations. */
   priorities:            AssessmentPriority[];
 }
-
-/**
- * Backward-compat alias.
- * Slice 1 callers that imported FinancialAnnotations still compile; they must
- * update field access from flat (annotations.incomeConfidence) to nested
- * (assessment.dataQuality.incomeConfidence).
- */
-export type FinancialAnnotations = FinancialAssessment;
 
 // ── Thresholds ────────────────────────────────────────────────────────────────
 
@@ -2062,8 +2054,3 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   };
 }
 
-/**
- * Backward-compat alias for Slice 1 call sites.
- * Prefer computeAssessment() in new code.
- */
-export const computeAnnotations = computeAssessment;

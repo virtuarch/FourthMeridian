@@ -43,7 +43,7 @@ export async function GET(
       // deletedAt: null — D2 Step 4D-R: excludes rows soft-deleted by an
       // import rollback, the same Transaction-level guard the dashboard
       // reads in lib/data/transactions.ts apply. See
-      // docs/initiatives/d2/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md.
+      // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md.
       deletedAt: null,
     },
     orderBy: { date: "desc" },

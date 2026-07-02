@@ -6,7 +6,7 @@
  * `source === ImportSource.QUICKBOOKS` check in
  * app/api/accounts/[id]/import/route.ts and its read-only parity check in
  * app/api/accounts/[id]/import/preview/route.ts. See
- * docs/initiatives/d2/D2_STEP5_ADAPTER_INTERFACE_INVESTIGATION.md §6-§7 for
+ * docs/initiatives/d2/investigations/D2_STEP5_ADAPTER_INTERFACE_INVESTIGATION.md §6-§7 for
  * why this is a flat per-source registry rather than a
  * discoverAccounts/syncActivity/normalizeProviderData-style adapter object:
  * import sources have no Connection, no credential, and no second

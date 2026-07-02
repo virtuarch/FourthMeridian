@@ -2,7 +2,7 @@
  * lib/accounts/provider-identity.ts
  *
  * D2 Step 2A — dual-write helper for ProviderAccountIdentity.
- * Design reference: docs/initiatives/d2/D2_STEP2A_PLAID_DUAL_WRITE_INVESTIGATION.md (§B).
+ * Design reference: docs/initiatives/d2/investigations/D2_STEP2A_PLAID_DUAL_WRITE_INVESTIGATION.md (§B).
  *
  * Scope, deliberately narrow:
  *   - Called only from app/api/plaid/exchange-token/route.ts, only with
@@ -15,7 +15,7 @@
  *     app/api/accounts/wallet/route.ts's active-match, archived-match, and
  *     fresh-create branches (provider=WALLET, externalAccountId=walletAddress).
  *     The owner-scoped wallet dedup vs. this table's global unique constraint
- *     question raised in docs/initiatives/d2/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md
+ *     question raised in docs/initiatives/d2/investigations/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md
  *     applies to WALLET backfill and read cutover, not to dual-write — see
  *     docs/initiatives/d2/D2_ROADMAP.md's "Required notes" for the current
  *     status of each.

@@ -9,7 +9,7 @@
  * ImportBatch + any newly-created Transaction rows.
  *
  * Format is sniffed from the uploaded file's name/MIME type — see
- * docs/initiatives/d2/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md §5:
+ * docs/initiatives/d2/investigations/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md §5:
  *   - `.xlsx` extension, or the OOXML spreadsheet MIME type → Excel branch
  *     (lib/imports/excel.ts).
  *   - Legacy binary `.xls` → rejected with a 400 (exceljs, the parsing
@@ -59,7 +59,7 @@
  * profile's lastUsedAt/useCount are bumped after the import completes. No
  * request shape change — there is still no route to create/edit/list
  * profiles in this slice; see
- * docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md.
+ * docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md.
  *
  * D2 Step 4D-5c-1 — the format-sniff → parse → resolveColumns() → normalize
  * sequence above has been extracted into lib/imports/pipeline.ts's
@@ -71,7 +71,7 @@
  * preview route (D2 Step 4D-5c-2) can call the same pipeline instead of
  * duplicating it. Classification (resolveFingerprintOutcome, below) and all
  * persistence deliberately stay here, unmodified — see
- * docs/initiatives/d2/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md §3 on why
+ * docs/initiatives/d2/implementation/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md §3 on why
  * classification can't be hoisted into that helper without breaking the
  * sequential within-file duplicate-detection invariant documented in the
  * paragraph below.
@@ -84,7 +84,7 @@
  * runImportPipeline() and resolveFingerprintOutcome() exactly as this route
  * does but never creates an ImportBatch/Transaction or bumps a profile's
  * usage counters. Zero behavior change here. See
- * docs/initiatives/d2/D2_STEP4D5C2_IMPLEMENTATION_PLAN.md.
+ * docs/initiatives/d2/implementation/D2_STEP4D5C2_IMPLEMENTATION_PLAN.md.
  *
  * Per-row outcome (see lib/imports/csv.ts for the classification logic,
  * shared unmodified by the Excel branch):
@@ -105,7 +105,7 @@
  *             merchant/description). Recorded in errorSummary.
  *
  * Explicitly out of scope for this slice (see
- * docs/initiatives/d2/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md):
+ * docs/initiatives/d2/investigations/D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md):
  * rollback, any UI, background/async processing, a generic
  * provider-adapter abstraction, multi-sheet selection. Rows are processed
  * sequentially (not Promise.all) — later rows must see earlier rows'
@@ -186,7 +186,7 @@ export const POST = withApiHandler(async (
   // used all-or-nothing in place of detectColumns()'s alias-based
   // auto-detection by applyExplicitMapping() below (field-name/header
   // validation happens there, not here). Absent → today's exact behavior,
-  // unchanged. See docs/initiatives/d2/D2_STEP4D5A_IMPLEMENTATION_PLAN.md.
+  // unchanged. See docs/initiatives/d2/implementation/D2_STEP4D5A_IMPLEMENTATION_PLAN.md.
   const columnMappingRaw = formData.get("columnMapping");
   let explicitMapping: Record<string, string | null | undefined> | undefined;
   if (typeof columnMappingRaw === "string" && columnMappingRaw.trim() !== "") {
@@ -214,11 +214,11 @@ export const POST = withApiHandler(async (
   // Fetched once per request, passed into runImportPipeline() below rather
   // than fetched by it — the pipeline helper is deliberately DB-free (D2
   // Step 4D-5c-1, see
-  // docs/initiatives/d2/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md §2). Sorted
+  // docs/initiatives/d2/implementation/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md §2). Sorted
   // lastUsedAt desc (nulls last) then createdAt desc so the most-recently-
   // used matching profile wins when more than one of this Space's profiles
   // would trial-apply successfully — see
-  // docs/initiatives/d2/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5's tie-break.
+  // docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §5's tie-break.
   // Every Space with zero saved profiles (every Space today — no route
   // creates one yet) gets an empty array here, which makes the saved-profile
   // branch of resolveColumns() a no-op — identical to pre-4D-5b behavior.
@@ -244,7 +244,7 @@ export const POST = withApiHandler(async (
   // D2_STEP4D2_EXCEL_IMPORT_INVESTIGATION.md §3/§5. Extracted into
   // runImportPipeline() so the future preview route (D2 Step 4D-5c-2) can
   // call the identical logic instead of duplicating it — see
-  // docs/initiatives/d2/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md. Deliberately
+  // docs/initiatives/d2/implementation/D2_STEP4D5C1_IMPLEMENTATION_PLAN.md. Deliberately
   // does not classify rows against existing Transaction history or write
   // anything — that stays below, in the sequential loop, unchanged (see
   // this route's module header above on why classification can't be

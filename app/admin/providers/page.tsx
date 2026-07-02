@@ -3,7 +3,7 @@
  *
  * Read-only health view over every PlaidItem: status, last error, last
  * sync/refresh times, and linked account count. D2 Step 7F — see
- * docs/initiatives/d2/D2_STEP7F_PROVIDER_DIAGNOSTICS_CHECKLIST.md.
+ * docs/initiatives/d2/implementation/D2_STEP7F_PROVIDER_DIAGNOSTICS_CHECKLIST.md.
  *
  * Data is fetched directly from the DB (server component), same pattern as
  * app/admin/page.tsx. No actions, no mutations — diagnostics only. Never
