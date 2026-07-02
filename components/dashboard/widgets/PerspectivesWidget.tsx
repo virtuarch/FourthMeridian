@@ -18,14 +18,37 @@
  * for this pass) — clicking an "available" card just switches the host's
  * existing internal tab state to wherever that real feature already
  * lives; clicking a "comingSoon" card does nothing but show its copy.
+ *
+ * Perspective Engine (commit 6): a card may now carry an optional
+ * `result` — a LensResult computed by lib/perspective-engine (hosts fetch
+ * it from /api/spaces/[id]/perspectives and attach it by lensId; this
+ * component stays a pure presenter and never fetches). Rendering rules:
+ *
+ *   result.status === "ok"    → verdict replaces the static description;
+ *                               the headline metric renders as a value line
+ *                               (tone via components/atlas/tones.ts,
+ *                               "est." marker when estimated); an "As of"
+ *                               line renders from provenance.dataAsOf.
+ *   result.status === "empty" → the lens's own safe empty copy.
+ *   result absent / "error"   → today's static description, unchanged —
+ *                               a route failure degrades to exactly the
+ *                               pre-engine card (rollback property from
+ *                               the foundation investigation §7.4).
+ *
+ * Lens-backed cards (item.lensId set) NEVER show the "Soon" chip: a
+ * computed answer — even "nothing to measure yet" — is not a promise.
+ * Cards without a lensId keep the exact pre-existing behavior.
  */
 
 import {
   Gem, Waves, TrendingUp, CreditCard, PiggyBank, Target, FileText, Home,
-  Briefcase, Compass, ArrowRight, Sparkles,
+  Briefcase, Compass, Droplets, ArrowRight, Sparkles,
 } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { TONE_VALUE } from "@/components/atlas/tones";
+import { formatCurrency, formatDate, formatPercent } from "@/lib/format";
 import type { PerspectiveDef } from "@/lib/perspectives";
+import type { LensMetric, LensResult } from "@/lib/perspective-engine/types";
 
 // Compass (the "overview"/Atlas lens) is included for completeness, even
 // though in practice items passed here should already have "overview"
@@ -33,12 +56,28 @@ import type { PerspectiveDef } from "@/lib/perspectives";
 // being rendered as a card. Keeping it mapped avoids a silent Sparkles
 // fallback if a host ever forgets that filter.
 const ICON_MAP: Record<string, React.ElementType> = {
-  Gem, Waves, TrendingUp, CreditCard, PiggyBank, Target, FileText, Home, Briefcase, Compass,
+  Gem, Waves, TrendingUp, CreditCard, PiggyBank, Target, FileText, Home, Briefcase, Compass, Droplets,
 };
 
 export interface PerspectiveCardItem extends PerspectiveDef {
   /** Present only when this lens routes to a real, already-working tab. */
   onSelect?: () => void;
+  /**
+   * Present when the host fetched a Perspective Engine answer for this
+   * card's lensId. Absent → static rendering, exactly as before.
+   */
+  result?: LensResult;
+}
+
+/** Render a LensMetric value per its declared format (shared lib/format). */
+function formatMetricValue(m: LensMetric): string {
+  switch (m.format) {
+    case "currency": return formatCurrency(Number(m.value));
+    case "percent":  return formatPercent(Number(m.value));
+    case "date":     return formatDate(String(m.value));
+    case "count":    return String(m.value);
+    default:         return String(m.value);
+  }
 }
 
 export function PerspectivesWidget({
@@ -68,6 +107,23 @@ export function PerspectivesWidget({
 function PerspectiveCard({ item, compact }: { item: PerspectiveCardItem; compact: boolean }) {
   const Icon = ICON_MAP[item.icon] ?? Sparkles;
   const clickable = !!item.onSelect;
+  const lensBacked = !!item.lensId;
+
+  // Engine answer, when the host attached one. "error" (and absence)
+  // degrade to the static description; "empty" shows the lens's safe copy.
+  const result  = item.result;
+  const ok      = result?.status === "ok";
+  const headline = ok ? result.headline : undefined;
+  const bodyText = ok && result.verdict
+    ? result.verdict
+    : result?.status === "empty" && result.empty
+      ? `${result.empty.headline}. ${result.empty.subline}`
+      : item.description;
+  const asOf = ok && result.provenance.dataAsOf ? formatDate(result.provenance.dataAsOf) : null;
+
+  // A computed answer is never "Soon" — the chip is reserved for cards that
+  // are neither clickable nor lens-backed (true placeholders).
+  const showSoonChip = !clickable && !lensBacked;
 
   return (
     <GlassPanel
@@ -81,7 +137,11 @@ function PerspectiveCard({ item, compact }: { item: PerspectiveCardItem; compact
       className={[
         "text-left shrink-0",
         compact ? "w-[210px] p-4" : "p-5",
-        clickable ? "cursor-pointer hover:bg-[var(--surface-hover)]" : "opacity-80 cursor-default",
+        clickable
+          ? "cursor-pointer hover:bg-[var(--surface-hover)]"
+          : lensBacked
+            ? "cursor-default" // an answered card is first-class, not dimmed
+            : "opacity-80 cursor-default",
       ].join(" ")}
     >
       <div className="flex items-start justify-between gap-2">
@@ -90,16 +150,29 @@ function PerspectiveCard({ item, compact }: { item: PerspectiveCardItem; compact
         </div>
         {clickable ? (
           <ArrowRight size={14} className="text-[var(--text-muted)] mt-1.5" />
-        ) : (
+        ) : showSoonChip ? (
           <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-full px-2 py-1 mt-0.5">
             Soon
           </span>
-        )}
+        ) : null}
       </div>
       <p className="text-sm font-semibold text-[var(--text-primary)] mt-3">{item.label}</p>
+      {headline && (
+        <p className={`text-lg leading-tight mt-1 ${TONE_VALUE[headline.tone ?? "neutral"]}`}>
+          {formatMetricValue(headline)}
+          {headline.estimated && (
+            <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] align-middle">
+              est.
+            </span>
+          )}
+        </p>
+      )}
       <p className={`text-xs text-[var(--text-secondary)] mt-1 ${compact ? "line-clamp-2" : ""}`}>
-        {item.description}
+        {bodyText}
       </p>
+      {asOf && (
+        <p className="text-[10px] text-[var(--text-muted)] mt-1.5">As of {asOf}</p>
+      )}
     </GlassPanel>
   );
 }
