@@ -58,7 +58,8 @@ import { classifyFinancialIntent, serializeRoutingBlock } from '@/lib/ai/intent'
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
-import { validateOutput } from '@/lib/ai/output-validator';
+import { validateOutput, applyEnforcement } from '@/lib/ai/output-validator';
+import type { ValidationResult, EnforcementMode } from '@/lib/ai/output-validator';
 import { AuditAction }               from '@/lib/audit-actions';
 import type { Prisma }               from '@prisma/client';
 
@@ -121,25 +122,43 @@ async function logShadowSelectionPlans(
   }
 }
 
-// ── Shadow-mode output validation (AI-4 / KD-2) ──────────────────────────────
+// ── Output validation + live enforcement (AI-4 / KD-2) ───────────────────────
 //
 // Deterministically checks that every numeric claim in the LLM reply reconciles
 // to a number present in the grounded system prompt (membership-with-tolerance,
-// lib/ai/output-validator.ts). SHADOW ONLY: the reply is already returned to the
-// caller unchanged; this writes an AuditLog row ONLY when unreconciled numbers
-// exist, so it adds no per-message write amplification (KD-12) and can never
-// alter, delay, or fail the response. All errors are swallowed.
-async function logOutputValidation(
+// lib/ai/output-validator.ts), then returns the result so the caller can apply
+// the configured enforcement behavior (applyEnforcement + AI_OUTPUT_VALIDATION_MODE).
+//
+// Logging is preserved from shadow mode: an AuditLog row is written ONLY when
+// unreconciled numbers exist, so this still adds no per-message write
+// amplification (KD-12). All errors are swallowed and yield a CLEAN result, so a
+// validator failure deterministically means "no enforcement" — never a broken or
+// delayed chat response.
+const CLEAN_VALIDATION: ValidationResult = { unreconciled: [], checkedCount: 0, sourceCount: 0 };
+
+/**
+ * Enforcement mode from the environment. Defaults to live 'annotate' (KD-2
+ * promotion); an unset or unrecognized value falls back to 'annotate'. Set
+ * AI_OUTPUT_VALIDATION_MODE=shadow to revert to observational (kill switch), or
+ * =block to suppress unreconciled replies.
+ */
+function outputEnforcementMode(): EnforcementMode {
+  const raw = (process.env.AI_OUTPUT_VALIDATION_MODE ?? 'annotate').toLowerCase();
+  return raw === 'shadow' || raw === 'block' ? raw : 'annotate';
+}
+
+async function runOutputValidation(
   userId:       string,
   spaceId:      string,
   reply:        string,
   systemPrompt: string,
   messages:     ChatMessage[],
-): Promise<void> {
+  mode:         EnforcementMode,
+): Promise<ValidationResult> {
   try {
     const userMessages = messages.filter((m) => m.role === 'user').map((m) => m.content);
     const result = validateOutput(reply, systemPrompt, userMessages);
-    if (result.unreconciled.length === 0) return; // clean — write nothing.
+    if (result.unreconciled.length === 0) return result; // clean — write nothing.
 
     await db.auditLog.create({
       data: {
@@ -149,6 +168,7 @@ async function logOutputValidation(
         spaceId:  spaceId === 'master' ? null : spaceId,
         metadata: {
           mode:         spaceId === 'master' ? 'master' : 'space',
+          enforcement:  mode,
           unreconciled: result.unreconciled,
           checkedCount: result.checkedCount,
           sourceCount:  result.sourceCount,
@@ -156,9 +176,12 @@ async function logOutputValidation(
       },
       select: { id: true },
     });
+    return result;
   } catch (err) {
-    // Non-fatal: shadow validation must never break the chat response.
-    console.error('[api/ai/chat] shadow output validation failed (non-fatal):', err);
+    // Non-fatal: validation must never break the chat response. A swallowed
+    // error yields a clean result, so enforcement deterministically no-ops.
+    console.error('[api/ai/chat] output validation failed (non-fatal):', err);
+    return CLEAN_VALIDATION;
   }
 }
 
@@ -1850,9 +1873,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // Shadow-mode output validation (AI-4 / KD-2): observational only. Runs after
-  // the reply exists and before it is returned; the reply below is unchanged.
-  await logOutputValidation(user.id, spaceId, reply, systemPrompt, messages);
+  // Output validation + live enforcement (AI-4 / KD-2). Validation runs after
+  // the reply exists; enforcement then deterministically annotates (or, if
+  // configured, blocks) a reply containing a figure that could not be reconciled
+  // to context. Pure string work — no extra I/O, negligible latency.
+  const enforcementMode = outputEnforcementMode();
+  const validation = await runOutputValidation(
+    user.id, spaceId, reply, systemPrompt, messages, enforcementMode,
+  );
+  reply = applyEnforcement(reply, validation, enforcementMode);
 
   return NextResponse.json({
     message:          reply,

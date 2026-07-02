@@ -12,7 +12,12 @@
  * Exits 0 when all cases pass and 1 on failure, so it can be wired into CI.
  */
 
-import { validateOutput } from './output-validator';
+import {
+  validateOutput,
+  applyEnforcement,
+  UNVERIFIED_FIGURE_NOTICE,
+  BLOCKED_REPLY_NOTICE,
+} from './output-validator';
 
 let failures = 0;
 
@@ -134,6 +139,46 @@ check('number-free reply is clean',
 // 13. $0 reconciles when the prompt carries a zero balance.
 check('$0 reconciles against $0.00 in context',
   run('That account holds $0.').unreconciled.length === 0);
+
+// 14. Live enforcement (KD-2): applyEnforcement is pure and deterministic.
+{
+  const flagged = run('You could save $9,999.99 next month.'); // unreconciled.length > 0
+  const clean   = run('You are managing your finances well.'); // unreconciled.length === 0
+
+  // shadow — never changes the reply, flagged or clean.
+  check('enforce/shadow leaves flagged reply unchanged',
+    applyEnforcement('reply with $9,999.99', flagged, 'shadow') === 'reply with $9,999.99');
+
+  // annotate + clean result — reply unchanged (no notice on a clean reply).
+  check('enforce/annotate leaves clean reply unchanged',
+    applyEnforcement('all good', clean, 'annotate') === 'all good');
+
+  // annotate + flagged — appends the notice exactly once, append-only.
+  const once = applyEnforcement('You could save $9,999.99.', flagged, 'annotate');
+  check('enforce/annotate appends notice to flagged reply',
+    once === `You could save $9,999.99.\n\n${UNVERIFIED_FIGURE_NOTICE}`, once);
+  check('enforce/annotate preserves original model text',
+    once.startsWith('You could save $9,999.99.'));
+  check('enforce/annotate is idempotent (no double notice)',
+    applyEnforcement(once, flagged, 'annotate') === once);
+
+  // block + flagged — replaces the reply with the fixed blocked notice.
+  check('enforce/block replaces flagged reply with blocked notice',
+    applyEnforcement('You could save $9,999.99.', flagged, 'block') === BLOCKED_REPLY_NOTICE);
+  // block + clean — passes the reply through untouched.
+  check('enforce/block passes clean reply through',
+    applyEnforcement('all good', clean, 'block') === 'all good');
+
+  // The blocked notice must carry no flag-eligible figure of its own (so it can
+  // never re-trigger the validator downstream).
+  check('blocked notice contains no unreconciled figure',
+    validateOutput(BLOCKED_REPLY_NOTICE, SYSTEM_PROMPT).unreconciled.length === 0);
+
+  // determinism — identical inputs always yield identical output.
+  check('enforce is deterministic across calls',
+    applyEnforcement('x $9,999.99', flagged, 'annotate')
+      === applyEnforcement('x $9,999.99', flagged, 'annotate'));
+}
 
 // ---------------------------------------------------------------------------
 

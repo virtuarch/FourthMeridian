@@ -197,3 +197,59 @@ export function validateOutput(
     sourceCount:  sources.length,
   };
 }
+
+// ── Live enforcement (KD-2) ─────────────────────────────────────────────────
+//
+// The validator was promoted from shadow (observational) to live enforcement.
+// `applyEnforcement` is the single deterministic decision function that turns a
+// ValidationResult into the reply actually shown to the user. It is PURE: the
+// same (reply, result, mode) always yields the same string — no I/O, no clock,
+// no randomness. The env-backed mode selector lives in the caller (the chat
+// route), keeping this module pure and unit-testable.
+
+/** How an unreconciled figure affects the user-facing reply. */
+export type EnforcementMode = 'shadow' | 'annotate' | 'block';
+
+/**
+ * Appended (verbatim, once) to a reply that contains an unreconciled figure when
+ * mode is 'annotate'. Append-only: the model's own text is never edited or
+ * removed, so a false positive costs a redundant caveat, never a corrupted
+ * answer.
+ */
+export const UNVERIFIED_FIGURE_NOTICE =
+  'Note: one or more figures above could not be automatically verified against ' +
+  'your account data. Please double-check them before relying on them.';
+
+/**
+ * Returned in place of the model reply when mode is 'block' and a figure is
+ * unreconciled. Deterministic, self-contained, and carries no numeric tokens of
+ * its own (so it cannot re-trigger the validator).
+ */
+export const BLOCKED_REPLY_NOTICE =
+  'I cannot give a reliable answer to that right now, because I could not verify ' +
+  'one or more of the figures against your account data. Please try rephrasing, ' +
+  'or check the figures on your dashboard.';
+
+/**
+ * Deterministically apply the enforcement decision to a reply.
+ *
+ *   - 'shadow'   → reply unchanged (observational; upstream logging still runs).
+ *   - clean result (no unreconciled figures) → reply unchanged in every mode.
+ *   - 'annotate' → append UNVERIFIED_FIGURE_NOTICE once (idempotent, append-only).
+ *   - 'block'    → replace the reply with BLOCKED_REPLY_NOTICE.
+ *
+ * Pure and total: never throws on ordinary string input.
+ */
+export function applyEnforcement(
+  reply:  string,
+  result: ValidationResult,
+  mode:   EnforcementMode,
+): string {
+  if (mode === 'shadow') return reply;
+  if (result.unreconciled.length === 0) return reply;
+  if (mode === 'block') return BLOCKED_REPLY_NOTICE;
+
+  // annotate — append once; never mutate the model's own text.
+  if (reply.includes(UNVERIFIED_FIGURE_NOTICE)) return reply;
+  return `${reply}\n\n${UNVERIFIED_FIGURE_NOTICE}`;
+}
