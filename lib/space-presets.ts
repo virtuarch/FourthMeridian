@@ -289,10 +289,12 @@ const PRESET_MAP: Record<SpaceCategory, SectionPreset[]> = {
   ],
 
   // Property story: "what is it worth minus what we owe" — hero is equity;
-  // signature = the two components.
+  // signature = the two components, BOTH on the Overview under the hero
+  // (template polish D4: the mortgage is half of the equity story — it
+  // can't live behind the Debt perspective modal).
   [SpaceCategory.PROPERTY]: [
     PROPERTY_VALUE,
-    MORTGAGE_TRACKER,
+    { ...MORTGAGE_TRACKER, tab: SpaceDashboardTab.OVERVIEW, order: 1 },
   ],
 
   [SpaceCategory.VEHICLE]: [
@@ -342,11 +344,15 @@ const PRESET_MAP: Record<SpaceCategory, SectionPreset[]> = {
     EMERGENCY_FUND_PROGRESS,
   ],
 
-  // Goal story: "how close am I" — the universal Goals section IS the
-  // hero (ProgressWidget family); intentionally no chart until goal
+  // Goal story: "how close am I" — the Goals section (ProgressWidget
+  // family) IS the lede, so it lives on the Overview page itself (template
+  // polish D3: preset-wins dedupe in getPresetsForCategory overrides the
+  // universal GOALS-tab placement). Intentionally no chart until goal
   // history exists. Legacy category; goal-shaped types (TRIP/VEHICLE/
   // EQUIPMENT) are variants of the same template.
-  [SpaceCategory.GOAL]: [],
+  [SpaceCategory.GOAL]: [
+    { ...GOALS_SECTION, tab: SpaceDashboardTab.OVERVIEW },
+  ],
 
   // Blank slate — user builds their own
   [SpaceCategory.CUSTOM]: [],

@@ -85,7 +85,10 @@ export const SPACE_HERO_DEFS: Partial<Record<string, SpaceHeroDef>> = {
     scopeLabel: "Across debt accounts linked to this Space",
   },
   EMERGENCY_FUND: {
-    title:      "Savings balance",
+    // "Emergency fund" (not "Savings balance") — the headline switches
+    // between months-covered and the dollar balance depending on config,
+    // and this title is correct over either (template polish D5).
+    title:      "Emergency fund",
     value:      (s) => s.totalSavings,
     framing:    "up-good",
     chartType:  "monotone",

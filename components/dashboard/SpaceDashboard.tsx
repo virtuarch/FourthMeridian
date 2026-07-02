@@ -41,6 +41,7 @@ import {
   SPACE_ACCOUNTS_CHANGED_EVENT,
 } from "@/lib/space-nav";
 import { getPerspectivesForCategory, getCompositionSwitcherItems } from "@/lib/perspectives";
+import type { LensResult } from "@/lib/perspective-engine/types";
 import { PerspectiveSwitcher, COMPOSITION_ICON_MAP } from "@/components/dashboard/widgets/PerspectiveSwitcher";
 import type { TimelineEvent } from "@/lib/timeline-types";
 import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
@@ -1849,6 +1850,12 @@ export function SpaceDashboard({
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[] | null>(null);
   const [memberCount,    setMemberCount]    = useState<number | null>(null);
 
+  // Perspective Engine results (commit 7) — keyed by lensId, fetched once
+  // per Space from the batch route. null = not loaded / fetch failed; the
+  // cards then render their static description (graceful fallback is the
+  // widget's contract, not this host's job).
+  const [lensResults, setLensResults] = useState<Record<string, LensResult> | null>(null);
+
   // ── Space Template Redesign state ─────────────────────────────────────────
   // SpaceSnapshot history for the trend hero (chartable categories only)
   // and the KD-15-filtered transaction list (flow categories' Overview
@@ -1901,9 +1908,16 @@ export function SpaceDashboard({
         .filter((p) => p.id !== "overview")
         .map((p) => {
           const target = PERSPECTIVE_TARGET_TAB[p.id];
-          return target ? { ...p, onSelect: () => setActiveTab(target) } : p;
+          // Engine answer for lens-backed cards (liquidity, debt). Missing
+          // key (fetch pending/failed, or a lens that errored server-side
+          // returns status "error") → undefined → the widget renders the
+          // static description exactly as before.
+          const result = p.lensId ? lensResults?.[p.lensId] : undefined;
+          return target
+            ? { ...p, result, onSelect: () => setActiveTab(target) }
+            : { ...p, result };
         }),
-    [category]
+    [category, lensResults]
   );
 
   // Overview composition switcher options (IA refactor point 2/3) — see
@@ -1968,6 +1982,27 @@ export function SpaceDashboard({
     return () => { active = false; };
   }, [spaceId]);
 
+  // Perspective Engine results — one batch fetch against the membership-
+  // gated route (mirrors the activity fetch above). Failure of any kind
+  // (network, 403, malformed) resolves to null: lens-backed cards then
+  // keep their static descriptions — the engine's rollback property, live.
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/spaces/${spaceId}/perspectives`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!active) return;
+        const results: LensResult[] = Array.isArray(data?.results) ? data.results : [];
+        setLensResults(
+          results.length
+            ? Object.fromEntries(results.map((res) => [res.lensId, res]))
+            : null,
+        );
+      })
+      .catch(() => { if (active) setLensResults(null); });
+    return () => { active = false; };
+  }, [spaceId]);
+
   // Header member count — same endpoint SpaceMembersWidget/ManageSpaceModal use.
   useEffect(() => {
     let active = true;
@@ -2022,10 +2057,21 @@ export function SpaceDashboard({
       if (!initialTabSet.current) {
         initialTabSet.current = true;
         const enabledTabs = new Set(secs.filter((s) => s.enabled).map((s) => s.tab));
+        // Template polish: a Space with a trend hero has a real Overview
+        // even when its signature modules live on other tabs (post-
+        // curation Household/Business/Investment/Retirement) — open on it.
+        if (getSpaceHeroDef(category)) {
+          setActiveTab("OVERVIEW");
+          return;
+        }
         // ACTIVITY no longer has a rail button of its own — the fixed
         // Timeline tab (real activity feed + placeholder event types)
-        // covers it now, so skip straight past it here.
-        const firstTab = TAB_ORDER.find((t) => t !== "ACTIVITY" && enabledTabs.has(t));
+        // covers it now, so skip straight past it here. Also never open a
+        // Space directly into a Perspective-routed tab: those render as
+        // GlassModals now, and landing inside a modal is disorienting.
+        const firstTab = TAB_ORDER.find(
+          (t) => t !== "ACTIVITY" && !PERSPECTIVE_ROUTED_TABS.includes(t) && enabledTabs.has(t)
+        );
         if (firstTab) {
           setActiveTab(firstTab);
         } else if (enabledTabs.has("ACTIVITY")) {
@@ -2077,6 +2123,18 @@ export function SpaceDashboard({
   const heroPoints: HeroPoint[] = heroDef && snapshots
     ? snapshots.map((s) => ({ date: s.date, value: heroDef.value(s) }))
     : [];
+
+  // Debt Space preview = the PAYMENTS story (template polish D6): only
+  // rows on debt accounts. Pure render-phase filter over data already
+  // fetched; other flow categories pass the list through unchanged.
+  const previewTransactions: Transaction[] = (() => {
+    const txs = spaceTransactions ?? [];
+    if (category !== "DEBT_PAYOFF") return txs;
+    const debtIds = new Set(accounts.filter((a) => a.type === "debt").map((a) => a.id));
+    return txs.filter((t) => debtIds.has(t.accountId));
+  })();
+  const previewScopeNote =
+    category === "DEBT_PAYOFF" ? `Debt accounts · ${TX_SCOPE_NOTE.toLowerCase()}` : TX_SCOPE_NOTE;
 
   // Emergency-fund lede: "how long could I last" — months covered, computed
   // from the existing emergency_fund_progress section config. Only shown
@@ -2391,6 +2449,11 @@ export function SpaceDashboard({
                 onAddGoal={() => setShowAddGoal(true)}
               />
             ) : sectionsForTab.length === 0 ? (
+              // Template polish (D2): when the hero is rendering, hero +
+              // change preview + doorways IS the Overview composition — an
+              // empty-state card under the lede reads as breakage. Other
+              // tabs (and hero-less categories) keep the honest empty state.
+              activeTab === "OVERVIEW" && heroDef && accounts.length > 0 ? null : (
               <div className="text-center py-12">
                 <LayoutDashboard size={30} className="text-gray-700 mx-auto mb-3" />
                 <p className="text-sm text-gray-500">No sections on this tab</p>
@@ -2403,6 +2466,7 @@ export function SpaceDashboard({
                   </button>
                 )}
               </div>
+              )
             ) : (
               sectionsForTab.map((s) => (
                 <SectionCard
@@ -2438,9 +2502,9 @@ export function SpaceDashboard({
                       onViewAll={() => setActiveTab("TIMELINE")}
                     />
                     <RecentTransactionsPanel
-                      transactions={spaceTransactions ?? []}
+                      transactions={previewTransactions}
                       previewCount={5}
-                      scopeNote={TX_SCOPE_NOTE}
+                      scopeNote={previewScopeNote}
                       onViewAll={() => setActiveTab("TRANSACTIONS")}
                     />
                   </div>
