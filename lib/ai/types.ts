@@ -279,13 +279,23 @@ export interface AccountsSectionData {
 // ---------------------------------------------------------------------------
 
 /**
- * Spending/income total for a single transaction category.
- * `total` is always a positive number representing absolute value of spend
- * (for expense categories) or raw inflow (for income categories).
+ * Spending total for a single transaction category.
+ *
+ * KD-17 (universal debits-only rule): `total` is the sum of |amount| over the
+ * category's DEBIT rows only — the same population as expenseTotal and the
+ * drilldown's matchedTotal, so the three surfaces always agree. Credit-side
+ * rows (refunds, reimbursements, misclassified payment credits) are NEVER
+ * netted into `total`; when present they are disclosed via `creditTotal`.
+ * The rule is universal — it applies to non-spending categories too: Income's
+ * inflow figure lives in incomeTotal, not here (its byCategory entry exists
+ * for its `count`, read by lib/ai/intelligence/annotations.ts).
  */
 export interface CategorySpend {
   category: string; // TransactionCategory value
-  total:    number; // absolute value
+  total:    number; // debit-only sum, absolute value (KD-17)
+  /** Sum of positive-amount rows in this category, when > 0. Disclosure only —
+   *  never added to `total`, never counted as spending. (KD-17) */
+  creditTotal?: number;
   count:    number;
 }
 

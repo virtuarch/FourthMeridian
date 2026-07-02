@@ -58,6 +58,7 @@ import { classifyFinancialIntent, serializeRoutingBlock } from '@/lib/ai/intent'
 import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
+import { checkSpendingCategoryInvariant } from '@/lib/ai/assemblers/transactions';
 import { validateOutput, applyEnforcement } from '@/lib/ai/output-validator';
 import type { ValidationResult, EnforcementMode } from '@/lib/ai/output-validator';
 import { AuditAction }               from '@/lib/audit-actions';
@@ -566,6 +567,43 @@ function extractKnowledgeGaps(ctx: SpaceContext_AI): KnowledgeGap[] {
   return Array.isArray(data.knowledgeGaps) ? data.knowledgeGaps : [];
 }
 
+// ── Attribution honesty guardrail (KD-18) ────────────────────────────────────
+// Deterministic context exposes exact flow TOTALS (spending, income, debt
+// payments, transfers, interest) but does NOT carry the account/card/source/
+// destination dimension of those flows — the summary query discards account
+// identity and no per-account rollup exists. The membership validator cannot
+// catch a fabricated per-account split because the total is correct. These two
+// constants add honesty, not capability: a one-line context disclosure that the
+// dimension is absent, and a prompt rule forbidding any invented breakdown.
+// Both are named so tests can pin their presence, wording, and serialization.
+// Generalized (per the KD-18 refinement) to EVERY missing dimension, not just
+// debt payments. No schema, no aggregation, no new rollups. Capability for true
+// per-liability history is ratified into the v2.5.5 FlowType initiative.
+
+/** Emitted once in the transaction section of every serialized context block. */
+const ATTRIBUTION_DISCLOSURE =
+  'ATTRIBUTION LIMIT (read before any per-account question): the flow totals in ' +
+  'this context — spending, income, debt payments, transfers, and interest — are ' +
+  'exact in aggregate but are NOT attributed to specific accounts, cards, sources, ' +
+  'or destinations. This data does not record which specific card a debt payment ' +
+  'went to, which account a transfer came from or went to, or which account ' +
+  'produced a given income, interest, or spending total. Any split of these totals ' +
+  'across individual accounts or cards would be invented.';
+
+/** Injected into ADVISOR_PRINCIPLES (both space and master prompts). */
+const ATTRIBUTION_RULE = [
+  'Attribution honesty — never fabricate a dimension absent from context:',
+  '- If the user asks for a breakdown by account, card, source, destination, or any ' +
+    'other dimension that is NOT explicitly present in the deterministic context ' +
+    '(e.g. debt payments per card, transfers per account, income/interest/spending ' +
+    'per account): do NOT infer, allocate, or distribute the totals across accounts. ' +
+    'Any such split would be invented, and a correct total never licenses one.',
+  '- Instead: say plainly that per-account (per-card/per-source/per-destination) ' +
+    'attribution is not available in the data, give the exact totals you DO have, ' +
+    'and offer what CAN be answered.',
+  '- This applies to every dimension, not only debt payments.',
+].join('\n');
+
 /**
  * Serialize a single SpaceContext_AI into a compact text block.
  * Domain data is rendered as compact JSON; signals as a structured list;
@@ -599,6 +637,14 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
       'Do not describe it as "this year", "YTD", or any longer span unless the dates match. ' +
       'If the user asks about a longer period, state plainly that only this window is available.',
     );
+
+    // ── Attribution limit (KD-18) ────────────────────────────────────────────
+    // Every flow figure below (window totals AND per-month debt payments,
+    // transfers, income, spending) is an aggregate with the account/card/source/
+    // destination dimension stripped. Disclose once, up front, that these totals
+    // are not attributed — so a per-account question is answered with totals plus
+    // an explicit "attribution unavailable", never a fabricated per-account split.
+    lines.push(`  ${ATTRIBUTION_DISCLOSURE}`);
 
     // ── Fetch-cap coverage caveat (KD-7) ─────────────────────────────────────
     // When the summary was truncated, the totals/rollups/monthly figures below
@@ -694,11 +740,34 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
       // decline to assert a monthly average rather than fabricate one from a
       // partial window.
       lines.push(
-        '  Category totals for this window (exact sums; the window contains no complete calendar ' +
-        'month, so no monthly average is asserted — do not divide these by a month count):',
+        '  Category totals for this window (exact debit-only sums; the window contains no complete ' +
+        'calendar month, so no monthly average is asserted — do not divide these by a month count):',
       );
-      for (const cat of txn.byCategory.slice(0, 8)) {
-        lines.push(`    ${cat.category}: ${fmtMoney(cat.total)} total (${cat.count} txn(s))`);
+      // KD-17: totals are debit-only; zero-total entries (pure-credit or
+      // count-only categories such as Income, whose inflow is reported via the
+      // income figures above) are not printed as spending. Credits disclosed.
+      for (const cat of txn.byCategory.filter((c) => c.total > 0).slice(0, 8)) {
+        lines.push(
+          `    ${cat.category}: ${fmtMoney(cat.total)} total (${cat.count} txn(s))` +
+          (cat.creditTotal
+            ? ` (excludes ${fmtMoney(cat.creditTotal)} in credits/refunds — NOT spending)`
+            : ''),
+        );
+      }
+
+      // KD-17 checked invariant (window scope): same rule as the monthly lines.
+      const windowViolation = checkSpendingCategoryInvariant(
+        txn.byCategory.filter((c) => !NON_SPENDING.has(c.category)),
+        txn.expenseTotal, NON_SPENDING, 'window',
+      );
+      if (windowViolation) {
+        const msg =
+          `KD-17 invariant violated for window: spending categories sum to ` +
+          `${windowViolation.spendingCategorySum} > expenseTotal ${windowViolation.expenseTotal} ` +
+          `(excess ${windowViolation.excess}).`;
+        if (process.env.NODE_ENV !== 'production') throw new Error(msg);
+        console.error(msg);
+        lines.push('    [DATA INCONSISTENCY — category figures under review; do not present as exact]');
       }
     }
 
@@ -724,14 +793,45 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
             ? ' [PARTIAL month — window does not fully cover it]'
             : '';
         // Per-month category line: SPENDING categories only (income, interest,
-        // transfers, debt payments excluded). This guarantees the categories
-        // reconcile to — and never exceed — this month's expenseTotal.
+        // transfers, debt payments excluded). Category totals are debit-only
+        // (KD-17) — the same population as expenseTotal — so the categories
+        // reconcile to, and never exceed, this month's expenseTotal. Credits
+        // in a spending category (refunds, misclassified payment credits) are
+        // disclosed inline, never netted or summed as spending.
         const spendingCats = (m.byCategory ?? []).filter((c) => !NON_SPENDING.has(c.category));
         const catsStr = spendingCats.length > 0
-          ? spendingCats.map((c) => `${c.category} ${fmtMoney(c.total)}`).join(', ')
+          ? spendingCats
+              .map((c) =>
+                `${c.category} ${fmtMoney(c.total)}` +
+                (c.creditTotal
+                  ? ` (excludes ${fmtMoney(c.creditTotal)} in credits/refunds — NOT spending)`
+                  : ''),
+              )
+              .join(', ')
           : '(no categorized spending this month)';
+
+        // KD-17 checked invariant: Σ spending-category totals ≤ expenseTotal.
+        // Previously asserted as prose only, which let a sign-asymmetry defect
+        // serialize mathematically impossible figures as authoritative. Fail
+        // loud in dev/test; in prod log and annotate the line so the model
+        // never presents inconsistent figures as exact.
+        const violation = checkSpendingCategoryInvariant(
+          spendingCats, m.expenseTotal, NON_SPENDING, m.month,
+        );
+        let invariantFlag = '';
+        if (violation) {
+          const msg =
+            `KD-17 invariant violated for ${violation.scope}: spending categories sum to ` +
+            `${violation.spendingCategorySum} > expenseTotal ${violation.expenseTotal} ` +
+            `(excess ${violation.excess}). Category totals and expenseTotal aggregate ` +
+            'different populations — see docs/investigations/KD17_TRANSACTION_LEVEL_PROOF.md.';
+          if (process.env.NODE_ENV !== 'production') throw new Error(msg);
+          console.error(msg);
+          invariantFlag = ' [DATA INCONSISTENCY — category figures under review; do not present as exact]';
+        }
+
         lines.push(
-          `  - ${m.month}${flag}: spending ${fmtMoney(m.expenseTotal)}; categories: ${catsStr}`,
+          `  - ${m.month}${flag}${invariantFlag}: spending ${fmtMoney(m.expenseTotal)}; categories: ${catsStr}`,
         );
         // Non-spending flows for the same month, bracketed separately so they can
         // never be misread as spending categories.
@@ -915,6 +1015,8 @@ const ADVISOR_PRINCIPLES = [
   '- The debtPaymentTotal field represents intentional debt reduction, not a consumption expense. It is capital directed toward a financial goal.',
   '- When cash flow is negative and debt payments are a primary driver: say so plainly. Cross-reference any debt-reduction goals to confirm it is the user\'s strategy, not a problem.',
   '- Do not label high debt payments as overspending. Only flag a spending problem when expenses excluding debt payments are themselves high relative to income.',
+  '',
+  ATTRIBUTION_RULE,
   '',
   'Financial Assessment doctrine:',
   '- The === FINANCIAL ASSESSMENT === block above the space context contains deterministic pre-computed findings. Read it before drawing any conclusions from the raw context data.',
@@ -1673,7 +1775,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const MAX_TOTAL_CONTENT_CHARS = 24_000;
   if (messages.length > MAX_MESSAGES) {
     return NextResponse.json(
-      { error: `Too many messages in one request (max ${MAX_MESSAGES}).` },
+      {
+        error: `This conversation is too long to send at once. Please start a new conversation or shorten it to ${MAX_MESSAGES} messages or fewer, then try again.`,
+      },
       { status: 400 },
     );
   }

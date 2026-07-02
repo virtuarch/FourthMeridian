@@ -271,12 +271,19 @@ async function assembleTransactions(
   let largestIncomeRow:  TxnRow | null = null;
   let largestExpenseRow: TxnRow | null = null;
 
-  const categoryMap = new Map<string, { total: number; count: number }>();
+  // KD-17: debit and credit sums are tracked SEPARATELY per category. The old
+  // accumulator summed signed amounts and emitted |net| as "total", which let
+  // positive rows in a spending category (refunds, credit-card payment credits
+  // misclassified as e.g. Other) inflate or deflate the category "spending"
+  // figure relative to expenseTotal — which counts debit rows only. See
+  // docs/investigations/KD17_TRANSACTION_LEVEL_PROOF.md.
+  const categoryMap = new Map<string, { debitTotal: number; creditTotal: number; count: number }>();
 
   for (const txn of settled) {
     // Category bucket accumulator
-    const entry = categoryMap.get(txn.category) ?? { total: 0, count: 0 };
-    entry.total += txn.amount;
+    const entry = categoryMap.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
+    if (txn.amount < 0) entry.debitTotal += Math.abs(txn.amount);
+    else if (txn.amount > 0) entry.creditTotal += txn.amount;
     entry.count += 1;
     categoryMap.set(txn.category, entry);
 
@@ -327,12 +334,20 @@ async function assembleTransactions(
   }
 
   // ── By-category summary ───────────────────────────────────────────────────
-  // Sorted by absolute total descending — highest-spend categories first.
+  // KD-17 universal rule: `total` is the DEBIT-ONLY sum — the exact population
+  // expenseTotal and the drilldown aggregate — for every category, including
+  // non-spending ones (Income's inflow figure is carried by incomeTotal, not
+  // byCategory; its byCategory entry exists for its `count`, which
+  // lib/ai/intelligence/annotations.ts reads for incomeTransactionCount).
+  // Credits are disclosed separately via `creditTotal`, never netted.
+  // Zero-total entries are intentionally KEPT at the window level (count
+  // consumers); serialization filters them. Sorted by debit total descending.
 
   const byCategory: CategorySpend[] = Array.from(categoryMap.entries())
-    .map(([category, { total, count }]): CategorySpend => ({
+    .map(([category, { debitTotal, creditTotal, count }]): CategorySpend => ({
       category,
-      total: Math.round(Math.abs(total) * 100) / 100,
+      total: Math.round(debitTotal * 100) / 100,
+      ...(creditTotal > 0 ? { creditTotal: Math.round(creditTotal * 100) / 100 } : {}),
       count,
     }))
     .sort((a, b) => b.total - a.total);
@@ -648,7 +663,55 @@ function isLastDayOfMonth(iso: string): boolean {
  * or the last month if the ceiling lands before month-end (e.g. an in-progress
  * current month on a rolling window). Result is ordered oldest → newest.
  */
-function buildMonthlyBreakdown(
+/**
+ * KD-17 checked invariant — the reconciliation rule the prompt used to assert
+ * as prose only. For any category rollup whose `total` is debit-only (the
+ * KD-17 universal rule), the spending categories (caller passes its
+ * non-spending name set) must sum to ≤ expenseTotal: both sides aggregate the
+ * same debit-row population, and expenseTotal additionally contains debit rows
+ * of name-filtered categories (e.g. Interest charges), so equality is NOT
+ * expected — only ≤. A violation means the aggregation populations have
+ * diverged again (the KD-17 defect class) and the emitted figures cannot be
+ * trusted.
+ *
+ * Pure and side-effect free: returns a violation description or null. The
+ * caller decides how to fail (throw in dev, log + annotate in prod).
+ * Tolerance is one cent — inputs are 2-dp currency values, so anything larger
+ * than float noise is a real divergence.
+ */
+export interface SpendingInvariantViolation {
+  scope:                 string; // e.g. '2026-01' (monthly) or 'window'
+  spendingCategorySum:   number;
+  expenseTotal:          number;
+  excess:                number;
+}
+
+export function checkSpendingCategoryInvariant(
+  categories:  Pick<CategorySpend, 'category' | 'total'>[],
+  expenseTotal: number,
+  nonSpending:  ReadonlySet<string>,
+  scope:        string,
+): SpendingInvariantViolation | null {
+  const spendingCategorySum = categories
+    .filter((c) => !nonSpending.has(c.category))
+    .reduce((s, c) => s + c.total, 0);
+  const excess = spendingCategorySum - expenseTotal;
+  // Compare in whole cents so IEEE-754 noise at the boundary (e.g.
+  // 100.01 − 100.00 === 0.010000000000005) can never trip a false positive.
+  if (Math.round(excess * 100) > 1) {
+    return {
+      scope,
+      spendingCategorySum: Math.round(spendingCategorySum * 100) / 100,
+      expenseTotal:        Math.round(expenseTotal * 100) / 100,
+      excess:              Math.round(excess * 100) / 100,
+    };
+  }
+  return null;
+}
+
+// Exported for KD-17 regression tests (lib/ai/assemblers/transactions.kd17.test.ts)
+// — no runtime consumer outside this module.
+export function buildMonthlyBreakdown(
   settled:  TxnRow[],
   pending:  TxnRow[],
   startIso: string,
@@ -663,9 +726,10 @@ function buildMonthlyBreakdown(
     debtPaymentTotal: number;
     transferTotal:    number;
     transactionCount: number;
-    // Per-category signed sum + settled row count. Abs(signed) at output mirrors
-    // the top-level byCategory; count mirrors CategorySpend.count.
-    categoryAgg:      Map<string, { signed: number; count: number }>;
+    // KD-17: per-category debit sum + credit sum + settled row count, mirroring
+    // the top-level byCategory (debit-only `total`, credits disclosed
+    // separately — never a signed net). count mirrors CategorySpend.count.
+    categoryAgg:      Map<string, { debitTotal: number; creditTotal: number; count: number }>;
   };
 
   const buckets = new Map<string, Bucket>();
@@ -686,8 +750,9 @@ function buildMonthlyBreakdown(
   for (const txn of settled) {
     const b = bucketFor(monthKey(txn.date));
     b.transactionCount += 1;
-    const agg = b.categoryAgg.get(txn.category) ?? { signed: 0, count: 0 };
-    agg.signed += txn.amount;
+    const agg = b.categoryAgg.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
+    if (txn.amount < 0) agg.debitTotal += Math.abs(txn.amount);
+    else if (txn.amount > 0) agg.creditTotal += txn.amount;
     agg.count  += 1;
     b.categoryAgg.set(txn.category, agg);
 
@@ -716,12 +781,18 @@ function buildMonthlyBreakdown(
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)) // oldest → newest
     .map(([month, b]): MonthlyBreakdownEntry => {
       // Full deterministic per-category totals for this month (all present
-      // categories, non-zero only). This is the authoritative per-month category
-      // source — absence means "no classified settled txns this month", never $0.
+      // categories, non-zero debit total only). This is the authoritative
+      // per-month category source — absence means "no classified settled
+      // SPENDING (debit rows) this month", never $0. KD-17: `total` is the
+      // debit-only sum (same population as expenseTotal and the drilldown);
+      // credits are disclosed via `creditTotal`, never netted. A pure-credit
+      // category month (refund-only) is dropped rather than shown as phantom
+      // spending.
       const byCategory: CategorySpend[] = Array.from(b.categoryAgg.entries())
-        .map(([category, { signed, count }]): CategorySpend => ({
+        .map(([category, { debitTotal, creditTotal, count }]): CategorySpend => ({
           category,
-          total: Math.round(Math.abs(signed) * 100) / 100,
+          total: Math.round(debitTotal * 100) / 100,
+          ...(creditTotal > 0 ? { creditTotal: Math.round(creditTotal * 100) / 100 } : {}),
           count,
         }))
         .filter((c) => c.total > 0)
