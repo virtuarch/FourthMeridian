@@ -31,6 +31,7 @@ import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import {
   AccountType,
+  PlaidInvestmentsConsent,
   PlaidItemStatus,
   AccountOwnerType,
   ShareStatus,
@@ -44,6 +45,8 @@ import { AuditAction } from "@/lib/audit-actions";
 import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
+import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
+import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -334,13 +337,37 @@ export async function performPlaidTokenExchange(
     imported++;
   }
 
-  // 8. Investment holdings
+  // 8. Investment holdings — consent-gated (lib/plaid/investmentsConsent.ts).
+  // Link tokens request transactions only (see app/api/plaid/link-token/
+  // route.ts), so DTM Items arrive here without Investments consent: derive
+  // the state from the accountsGet payload already fetched above, seed
+  // PlaidItem.investmentsConsent (read by refresh + the future "Enable
+  // Investment Holdings" UI), and skip the guaranteed
+  // ADDITIONAL_CONSENT_REQUIRED call instead of making it.
   const investmentAccounts = plaidAccounts.filter(
     (a) => mapAccountType(a.type, a.subtype) === AccountType.investment,
   );
   let holdingsImported = 0;
 
+  let investmentsConsent: PlaidInvestmentsConsent | null = null;
   if (investmentAccounts.length > 0) {
+    investmentsConsent = deriveInvestmentsConsent(accountsRes.data.item);
+    if (investmentsConsent !== null) {
+      await db.plaidItem.update({
+        where: { id: plaidItem.id },
+        data:  { investmentsConsent },
+      });
+      if (investmentsConsent !== PlaidInvestmentsConsent.ENABLED) {
+        console.log(
+          `[plaid] institution "${institution_name}" — Investments consent ${investmentsConsent}; skipping holdings import`,
+        );
+      }
+    }
+  }
+  const holdingsCallable =
+    investmentsConsent === null || investmentsConsent === PlaidInvestmentsConsent.ENABLED;
+
+  if (investmentAccounts.length > 0 && holdingsCallable) {
     try {
       const holdingsRes = await plaidClient.investmentsHoldingsGet({ access_token });
       const { holdings, securities } = holdingsRes.data;
@@ -395,8 +422,28 @@ export async function performPlaidTokenExchange(
           holdingsImported++;
         }
       }
+
+      // Unknown (pre-DTM) probe succeeded — remember it.
+      if (investmentsConsent === null) {
+        await db.plaidItem.update({
+          where: { id: plaidItem.id },
+          data:  { investmentsConsent: PlaidInvestmentsConsent.ENABLED },
+        });
+      }
     } catch (holdingsErr) {
-      console.warn("[plaid] investmentsHoldingsGet failed (non-fatal):", holdingsErr);
+      if (getPlaidErrorCode(holdingsErr) === "ADDITIONAL_CONSENT_REQUIRED") {
+        // Expected for Items linked without Investments consent — remember it
+        // so refresh never re-attempts until consent is granted.
+        await db.plaidItem.update({
+          where: { id: plaidItem.id },
+          data:  { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED },
+        });
+        console.log(
+          `[plaid] institution "${institution_name}" lacks Investments consent — holdings skipped until granted via Link update mode`,
+        );
+      } else {
+        console.warn(`[plaid] investmentsHoldingsGet failed (non-fatal): ${plaidErrorSummary(holdingsErr)}`);
+      }
     }
   }
 

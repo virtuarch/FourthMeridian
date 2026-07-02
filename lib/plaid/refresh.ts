@@ -18,7 +18,10 @@
  *     investment-type accounts — same delete-then-recreate approach as
  *     exchange-token's initial import, cross-referenced via
  *     FinancialAccount.plaidAccountId (D11: Holding is now FK'd to
- *     FinancialAccount directly).
+ *     FinancialAccount directly). Consent-gated: skipped (and
+ *     PlaidItem.investmentsConsent maintained) when the Item lacks
+ *     Investments consent, so ADDITIONAL_CONSENT_REQUIRED is never hit
+ *     repeatedly — see lib/plaid/investmentsConsent.ts.
  *  3. Transactions, via the existing syncTransactionsForItem() — untouched,
  *     reused as-is so sync logic is never duplicated.
  *  4. SpaceSnapshot regeneration for every space this item's
@@ -34,12 +37,13 @@
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
-import { AccountType, PlaidItemStatus, ProviderType } from "@prisma/client";
+import { AccountType, PlaidInvestmentsConsent, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
-import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { classifyPlaidErrorForHealth, getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
 import { withPlaidRetry } from "@/lib/plaid/retry";
+import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
 
 // Mirrors app/api/plaid/exchange-token/route.ts's mapAccountType — kept as a
 // private copy here (not exported/shared) since refresh only needs it to
@@ -111,7 +115,7 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
     // FinancialAccount.plaidAccountId directly, with a fallback to the
     // legacy lookup if no identity row exists yet. Fallback-first, not a
     // hard replacement — mirrors Steps 3C/3D. See
-    // docs/initiatives/d2/D2_STEP3A_PROVIDER_ACCOUNT_IDENTITY_READ_CUTOVER_INVESTIGATION.md.
+    // docs/initiatives/d2/investigations/D2_STEP3A_PROVIDER_ACCOUNT_IDENTITY_READ_CUTOVER_INVESTIGATION.md.
     // D2 Step 1D — findFirst, not findUnique: see lib/accounts/reconcile.ts
     // for why (provider, externalAccountId) is no longer a named unique key).
     const plaidIdentity = await db.providerAccountIdentity.findFirst({
@@ -174,7 +178,35 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
     (a) => mapAccountType(a.type, a.subtype) === AccountType.investment
   );
 
+  // Consent gate — derive from the accountsGet payload just fetched (free;
+  // authoritative for DTM Items), falling back to the stored state for
+  // pre-DTM Items whose metadata is inconclusive. Persisted on change, so
+  // once an Item is known to lack consent the holdings call is skipped on
+  // every later refresh instead of failing with ADDITIONAL_CONSENT_REQUIRED
+  // each time. Re-derived every refresh → self-heals to ENABLED after the
+  // user grants consent via Link update mode.
+  let investmentsConsent: PlaidInvestmentsConsent | null = item.investmentsConsent;
   if (investmentPlaidAccounts.length > 0) {
+    const derived = deriveInvestmentsConsent(accountsRes.data.item);
+    if (derived !== null) {
+      if (derived !== item.investmentsConsent) {
+        await db.plaidItem.update({
+          where: { id: plaidItemDbId },
+          data:  { investmentsConsent: derived },
+        });
+        console.log(
+          `[refreshPlaidItem] investmentsConsent ${item.investmentsConsent ?? "unknown"} → ${derived} for item ${plaidItemDbId} ("${item.institutionName}")`
+        );
+      }
+      investmentsConsent = derived;
+    }
+  }
+  // null = still unknown (pre-DTM Item, never probed) — attempt once below;
+  // the outcome is persisted either way, so the probe never repeats.
+  const holdingsCallable =
+    investmentsConsent === null || investmentsConsent === PlaidInvestmentsConsent.ENABLED;
+
+  if (investmentPlaidAccounts.length > 0 && holdingsCallable) {
     try {
       const holdingsRes      = await withPlaidRetry(
         () => plaidClient.investmentsHoldingsGet({ access_token: accessToken }),
@@ -247,11 +279,32 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
           holdingsUpdated++;
         }
       }
+
+      // Unknown (pre-DTM) probe succeeded — remember it so the derivation
+      // fallback above resolves without ambiguity on every later refresh.
+      if (investmentsConsent === null) {
+        await db.plaidItem.update({
+          where: { id: plaidItemDbId },
+          data:  { investmentsConsent: PlaidInvestmentsConsent.ENABLED },
+        });
+      }
     } catch (holdingsErr) {
-      console.warn(
-        `[refreshPlaidItem] investmentsHoldingsGet failed for item ${plaidItemDbId} (non-fatal):`,
-        holdingsErr
-      );
+      if (getPlaidErrorCode(holdingsErr) === "ADDITIONAL_CONSENT_REQUIRED") {
+        // Expected for Items linked without Investments consent — not an
+        // application error. Remember it so this call is skipped from now on
+        // (until the user re-consents via Link update mode).
+        await db.plaidItem.update({
+          where: { id: plaidItemDbId },
+          data:  { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED },
+        });
+        console.log(
+          `[refreshPlaidItem] item ${plaidItemDbId} ("${item.institutionName}") lacks Investments consent — holdings skipped until granted via Link update mode`
+        );
+      } else {
+        console.warn(
+          `[refreshPlaidItem] investmentsHoldingsGet failed for item ${plaidItemDbId} (non-fatal): ${plaidErrorSummary(holdingsErr)}`
+        );
+      }
     }
   }
 
