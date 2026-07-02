@@ -52,9 +52,10 @@ import type { ChatMessage }        from '@/lib/ai/provider';
 import type { SpaceContext_AI, KnowledgeGap, TransactionsSummaryData, AssemblerOptions } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
 import { displaySpaceName }        from '@/lib/format';
-import { computeAssessment }        from '@/lib/ai/intelligence';
+import { computeAssessment, computeAverageMonthlySpending, reliableMonths } from '@/lib/ai/intelligence';
 import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { classifyFinancialIntent, serializeRoutingBlock } from '@/lib/ai/intent';
+import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
 import { validateOutput } from '@/lib/ai/output-validator';
@@ -176,38 +177,11 @@ const GAP_IMPACT: Record<string, string> = {
   minimumPayment: 'affects payoff timeline',
 };
 
-/**
- * Keywords that signal the user is asking a payoff-schedule or payoff-timeline question.
- * Only when these are present is minimumPayment included in the knowledge gaps response.
- * APR is always included — it is durable account metadata, not operational data.
- */
-const PAYOFF_INTENT_KEYWORDS = [
-  'payoff', 'pay off', 'pay-off',
-  'timeline', 'how long',
-  'debt free', 'debt-free',
-  'minimum payment',
-  'monthly payment',
-  'paydown', 'pay down',
-  'when will', 'how many months',
-  'amortize', 'amortization',
-  'schedule',
-];
-
-/**
- * Action verbs that signal the user wants to explicitly enter or update a gap field.
- * Must be paired with UPDATE_FIELD_KEYWORDS to confirm the intent is field-related.
- */
-const UPDATE_ACTION_KEYWORDS = [
-  'update', 'save', 'set', 'add', 'change', 'enter', 'edit', 'fix', 'correct',
-];
-
-/**
- * Field nouns identifying knowledge-gap fields the user might want to update.
- */
-const UPDATE_FIELD_KEYWORDS = [
-  'apr', 'interest rate', 'rate', 'minimum payment', 'min payment',
-];
-
+// ── Knowledge-gap gating heuristics (KD-11) ───────────────────────────────────
+// detectsPayoffIntent / detectsExplicitUpdateIntent, and their keyword arrays,
+// now live in lib/ai/intent/gap-intent.ts (relocated verbatim so they are
+// importable and covered by characterization tests). They are imported at the
+// top of this file and used unchanged in the route handler below.
 
 /**
  * Layer 0 (D4) — classify the most recent user message into an IntentRoute.
@@ -546,33 +520,6 @@ function resolveDrilldown(
 }
 
 /**
- * Returns true when the most recent user message signals a payoff-schedule intent.
- * Used to gate whether minimumPayment gaps are returned alongside APR gaps.
- */
-function detectsPayoffIntent(msgs: ChatMessage[]): boolean {
-  const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
-  if (!lastUser) return false;
-  const lower = lastUser.content.toLowerCase();
-  return PAYOFF_INTENT_KEYWORDS.some((kw) => lower.includes(kw));
-}
-
-/**
- * Returns true when the most recent user message explicitly asks to update or save
- * a gap field (APR, minimum payment, interest rate, etc.).
- * Requires both an action verb AND a field noun to avoid false positives.
- * Used to gate whether the knowledge gap card renders as a full form immediately
- * (vs. the lighter clarification card).
- */
-function detectsExplicitUpdateIntent(msgs: ChatMessage[]): boolean {
-  const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
-  if (!lastUser) return false;
-  const lower = lastUser.content.toLowerCase();
-  const hasAction = UPDATE_ACTION_KEYWORDS.some((kw) => lower.includes(kw));
-  const hasField  = UPDATE_FIELD_KEYWORDS.some((kw) => lower.includes(kw));
-  return hasAction && hasField;
-}
-
-/**
  * Filter knowledge gaps by field relevance.
  *
  * APR       — always returned (durable metadata; affects interest cost in any advisory context).
@@ -662,7 +609,8 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
     const NON_SPENDING = new Set(['Income', 'Interest', 'Transfer', 'Payment']);
 
     // KD-7: exclude fetch-cap truncated months from averages, same as partial.
-    const completeMonths = txn.monthlyBreakdown.filter((m) => !m.partial && !m.truncated);
+    // KD-10: reliableMonths is the shared predicate the assessment also uses.
+    const completeMonths = reliableMonths(txn);
     const completeCount   = completeMonths.length;
 
     if (completeCount > 0) {
@@ -672,8 +620,9 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
         ? fmtMonthYear(`${firstM}-01`)
         : `${fmtMonthYear(`${firstM}-01`)} – ${fmtMonthYear(`${lastM}-01`)}`;
 
-      const totalSpend = completeMonths.reduce((s, m) => s + m.expenseTotal, 0);
-      const avgSpend   = Math.round((totalSpend / completeCount) * 100) / 100;
+      // KD-10: single authoritative value shared with the assessment block.
+      // Non-null here because completeCount > 0.
+      const avgSpend   = computeAverageMonthlySpending(txn) ?? 0;
 
       lines.push(
         `  AVERAGE MONTHLY SPENDING (deterministic — total spending across the ${completeCount} ` +

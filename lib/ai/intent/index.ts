@@ -19,3 +19,13 @@ export {
 
 export { classifyFinancialIntent } from './classifier';
 export { serializeRoutingBlock, confidenceBand, type RoutingConfidenceBand } from './prompt';
+
+// KD-11: knowledge-gap gating heuristics (relocated from the chat route) and the
+// authoritative keyword vocabulary now owned by this module.
+export {
+  detectsPayoffIntent,
+  detectsExplicitUpdateIntent,
+  PAYOFF_INTENT_KEYWORDS,
+  UPDATE_ACTION_KEYWORDS,
+  UPDATE_FIELD_KEYWORDS,
+} from './gap-intent';

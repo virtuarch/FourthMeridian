@@ -9,7 +9,7 @@
  *
  */
 
-export { computeAssessment, computeSpendingTrends } from './annotations';
+export { computeAssessment, computeSpendingTrends, computeAverageMonthlySpending, reliableMonths } from './annotations';
 
 export type {
   FinancialAssessment,

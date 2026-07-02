@@ -31,9 +31,11 @@ const SYSTEM_PROMPT = [
   'Liquid cash: $12,500.00 (2 account(s))',
   'Total liabilities: $8,432.10',
   'Implied monthly income: $5,000.00/mo',
-  // KD-10: two competing monthly-expense figures legitimately coexist.
-  'Est. monthly expenses (assessment): $1,850.00/mo',
-  'Est. monthly expenses (context): $2,100.00/mo',
+  // KD-10 (resolved): a SINGLE authoritative monthly-expense value. The assessment
+  // and context blocks now emit the same complete-month figure, so only one value
+  // appears across the prompt (different labels, identical number).
+  'Est. monthly expenses: $2,100.00/mo',
+  'AVERAGE MONTHLY SPENDING (deterministic): $2,100.00/month',
   'Coverage: 3.2 months',
   'Investment value: $1,200,000.00',
   'Interest rate: 12.3%',
@@ -98,11 +100,12 @@ check('coverage months (3.2 months) reconciles',
     `checked=${r.checkedCount} unreconciled=${JSON.stringify(r.unreconciled)}`);
 }
 
-// 9. KD-10 dual figures: membership means BOTH competing values reconcile.
-check('KD-10 figure A ($1,850.00) reconciles',
-  run('Monthly expenses are $1,850.00.').unreconciled.length === 0);
-check('KD-10 figure B ($2,100.00) reconciles',
+// 9. KD-10 (resolved): one authoritative figure reconciles; the old competing
+//    window-normalized value no longer exists in the prompt, so it is flagged.
+check('KD-10 authoritative figure ($2,100.00) reconciles',
   run('Monthly expenses are $2,100.00.').unreconciled.length === 0);
+check('KD-10 retired competing figure ($1,850.00) is flagged',
+  run('Monthly expenses are $1,850.00.').unreconciled.some((u) => u.value === 1850));
 
 // 10. A number present only in the user's own message reconciles (echo).
 {

@@ -183,24 +183,65 @@ export async function dualWriteSpaceAccountLink(params: {
   // (every existing dual-write call site still passes it) but is no longer
   // used to compute kind — see computeLinkKind()'s doc comment.
   const kind = await computeLinkKind(params.spaceId, params.financialAccountId, client);
-  await client.spaceAccountLink.upsert({
-    where: {
-      spaceId_financialAccountId: {
+  try {
+    await client.spaceAccountLink.upsert({
+      where: {
+        spaceId_financialAccountId: {
+          spaceId:            params.spaceId,
+          financialAccountId: params.financialAccountId,
+        },
+      },
+      create: {
         spaceId:            params.spaceId,
         financialAccountId: params.financialAccountId,
+        kind,
+        ...params.create,
       },
-    },
-    create: {
-      spaceId:            params.spaceId,
-      financialAccountId: params.financialAccountId,
-      kind,
-      ...params.create,
-    },
-    update: {
-      kind,
-      ...params.update,
-    },
-  });
+      update: {
+        kind,
+        ...params.update,
+      },
+    });
+  } catch (err) {
+    // KD-5 — the partial unique index `SpaceAccountLink_one_home_per_account`
+    // (one HOME per FinancialAccount, WHERE kind = 'HOME') rejects a second,
+    // concurrently-racing HOME insert that computeLinkKind() could not see:
+    // two transactions both counted zero rows under Read Committed and both
+    // chose HOME. When we are NOT inside a caller-supplied transaction,
+    // recompute against the now-committed winner and retry once — the loser
+    // recomputes to SHARED. Inside a caller transaction the violation has
+    // already aborted that transaction, so we rethrow and let the surrounding
+    // db.$transaction roll back cleanly; the DB has still prevented the
+    // duplicate HOME. Semantics are unchanged: the retry reuses the same
+    // computeLinkKind() decision, never a hard-coded kind.
+    if (
+      !params.client &&
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      const retryKind = await computeLinkKind(params.spaceId, params.financialAccountId, client);
+      await client.spaceAccountLink.upsert({
+        where: {
+          spaceId_financialAccountId: {
+            spaceId:            params.spaceId,
+            financialAccountId: params.financialAccountId,
+          },
+        },
+        create: {
+          spaceId:            params.spaceId,
+          financialAccountId: params.financialAccountId,
+          kind: retryKind,
+          ...params.create,
+        },
+        update: {
+          kind: retryKind,
+          ...params.update,
+        },
+      });
+      return;
+    }
+    throw err;
+  }
 }
 
 /**

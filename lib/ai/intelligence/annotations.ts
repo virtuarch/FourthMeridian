@@ -916,6 +916,32 @@ function computeMetricTrend(
 }
 
 /**
+ * KD-10: reliable months for spending derivations — complete calendar months
+ * that were NOT truncated by the KD-7 fetch cap. This is the single predicate
+ * both the assessment and the prompt context block use, so they can never drift.
+ */
+export function reliableMonths(
+  txn: TransactionsSummaryData | null,
+): MonthlyBreakdownEntry[] {
+  return (txn?.monthlyBreakdown ?? []).filter((m) => !m.partial && !m.truncated);
+}
+
+/**
+ * KD-10: the single authoritative monthly-spending value — the average of each
+ * reliable month's expenseTotal. Returns null when no reliable month exists, so
+ * every caller preserves the "no complete month => UNKNOWN" behavior instead of
+ * falling back to a window-normalized estimate (the old competing figure).
+ */
+export function computeAverageMonthlySpending(
+  txn: TransactionsSummaryData | null,
+): number | null {
+  const months = reliableMonths(txn);
+  if (months.length === 0) return null;
+  const total = months.reduce((s, m) => s + m.expenseTotal, 0);
+  return Math.round((total / months.length) * 100) / 100;
+}
+
+/**
  * 2.3B Spending Trends Engine.
  *
  * Deterministically derives month-over-month deltas, a 3-month rolling average,
@@ -1782,9 +1808,9 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     ? Math.round((incomeTotal / windowDays * 30) * 100) / 100
     : null;
 
-  const estimatedMonthlyExpenses: number | null = txn && windowDays > 0 && expenseTotal > 0
-    ? Math.round((expenseTotal / windowDays * 30) * 100) / 100
-    : null;
+  // KD-10: authoritative monthly spending (reliable-month average). Replaces the
+  // window-normalized estimate that competed with the prompt context block.
+  const estimatedMonthlyExpenses: number | null = computeAverageMonthlySpending(txn);
 
   const estimatedMonthlyDebtPayments: number | null = txn && windowDays > 0 && debtPaymentTotal > 0
     ? Math.round((debtPaymentTotal / windowDays * 30) * 100) / 100
@@ -1941,9 +1967,9 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   const hasAccountsDomain:  boolean = accts !== null;
   const noLiquidAccountsInSpace = hasAccountsDomain && liquidAccountCount === 0;
 
-  const estimatedMonthlyExpense: number | null = txn && windowDays > 0 && expenseTotal > 0
-    ? Math.round((expenseTotal / windowDays * 30) * 100) / 100
-    : null;
+  // KD-10: same authoritative value as cash flow — one source of truth. Coverage
+  // below divides liquid cash by this figure, so both stay consistent.
+  const estimatedMonthlyExpense: number | null = computeAverageMonthlySpending(txn);
 
   let liquidityCoverageMonths: number | null = null;
   let liquidityCoverageClassification: LiquidityCoverageClassification;

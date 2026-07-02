@@ -188,12 +188,17 @@ enum ShareStatus {
 }
 
 /// D3 (Phase 2): which role a SpaceAccountLink row plays for its account.
-/// Exactly one HOME row should exist per financialAccountId (the account's
+/// Exactly one HOME row exists per financialAccountId (the account's
 /// primary/owning Space, replacing ownerSpaceId/ownerUserId); any number of
-/// SHARED rows may exist (replacing WorkspaceAccountShare). Not yet enforced
-/// by a DB constraint — Prisma has no partial-unique-index syntax, so this
-/// invariant is application-level only until a raw-SQL partial unique index
-/// is added in the backfill/dual-write step.
+/// SHARED rows may exist (replacing WorkspaceAccountShare). Enforced at the DB
+/// level (KD-5) by the partial unique index
+/// `SpaceAccountLink_one_home_per_account` — UNIQUE (financialAccountId) WHERE
+/// kind = 'HOME' — added via a raw-SQL migration because Prisma has no
+/// partial-unique-index syntax (see
+/// prisma/migrations/20260702170000_kd5_home_partial_unique_index).
+/// computeLinkKind in lib/accounts/space-account-link.ts remains the source of
+/// HOME/SHARED assignment; the index only backstops it against concurrent
+/// HOME races.
 enum SpaceAccountLinkKind {
   HOME
   SHARED

@@ -24,6 +24,11 @@
 
 import { FinanceDomains } from '@/lib/ai/types';
 import {
+  PAYOFF_ROUTING_WORDS,
+  UPDATE_ACTION_ROUTING_WORDS,
+  UPDATE_FIELD_ROUTING_WORDS,
+} from './keywords';
+import {
   FinancialIntents,
   TemporalFrames,
   AnswerStyles,
@@ -51,23 +56,14 @@ const INVEST_WORDS = [
   'market', 'brokerage', 'shares', 'buy stock',
 ];
 
-const PAYOFF_WORDS = [
-  'pay off', 'pay-off', 'payoff', 'paid off', 'debt free', 'debt-free',
-  'how long', 'how many months', 'when will i', 'when will my',
-  'timeline', 'time line', 'paydown', 'pay down', 'pay it down',
-  'amortiz', 'schedule to pay', 'plan to pay', 'get out of debt',
-];
-
-const UPDATE_ACTION_WORDS = [
-  'update', 'change', 'set', 'correct', 'edit', 'fix', 'save',
-  'record', 'enter', 'adjust', 'modify',
-];
-
-const UPDATE_FIELD_WORDS = [
-  'apr', 'interest rate', 'rate', 'minimum payment', 'min payment',
-  'balance', 'limit', 'credit limit', 'due date', 'statement',
-  'my chase', 'my card', 'my account',
-];
+// KD-11: payoff / update-action / update-field vocabulary is owned by the
+// authoritative ./keywords.ts (shared, single source of truth). The imported
+// *_ROUTING_* lists are token-for-token identical to the pre-KD-11 arrays, so
+// classifier semantics are unchanged. Aliased to the original local names to
+// keep the rule definitions below untouched.
+const PAYOFF_WORDS        = PAYOFF_ROUTING_WORDS;
+const UPDATE_ACTION_WORDS = UPDATE_ACTION_ROUTING_WORDS;
+const UPDATE_FIELD_WORDS  = UPDATE_FIELD_ROUTING_WORDS;
 
 const SPENDING_CUT_WORDS = [
   'cut spending', 'cut back', 'cut down', 'reduce spending',
