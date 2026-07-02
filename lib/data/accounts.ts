@@ -21,7 +21,7 @@
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { Account, Holding } from "@/types";
-import { ShareStatus, PlaidItemStatus } from "@prisma/client";
+import { ShareStatus, PlaidItemStatus, type VisibilityLevel } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
 // KD-19 — visibility-tier enforcement on the UI account/holdings read paths.
 // grantsAccountDetail + TRANSACTION_DETAIL_VISIBILITY share the FULL gate the
@@ -31,7 +31,28 @@ import { grantsAccountDetail, TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/vis
 import { sanitizeForBalanceOnly } from "@/lib/account-privacy";
 
 /**
- * All accounts visible to the current space, via SpaceAccountLink.
+ * One visible account plus the SpaceAccountLink.visibilityLevel that
+ * produced it — the internal, server-side contract for deterministic
+ * consumers (Perspective Engine, future Meridian Analyst / Daily Brief /
+ * Health Reviews) that must distinguish FULL vs BALANCE_ONLY vs
+ * SUMMARY_ONLY without inferring it from sanitized/missing fields.
+ *
+ * The tier rides BESIDE the Account object, never on it: getAccounts()
+ * (below) strips it, so the Account shape that flows into pages/client
+ * components is byte-identical to before and the tier cannot end up in a
+ * client response unless a consumer explicitly plucks and serializes it.
+ * Reuses the existing VisibilityLevel model — do not introduce a parallel
+ * tier vocabulary on top of this.
+ */
+export interface AccountWithVisibility {
+  account:         Account;
+  visibilityLevel: VisibilityLevel;
+}
+
+/**
+ * All accounts visible to the current space, via SpaceAccountLink, each
+ * paired with the visibility tier that produced it (AccountWithVisibility
+ * above). Most callers want getAccounts() below instead.
  *
  * Pass `ctx` when the caller has already resolved space context for this
  * request (e.g. the dashboard page resolves it once and fans it out to all
@@ -47,7 +68,9 @@ import { sanitizeForBalanceOnly } from "@/lib/account-privacy";
  * `userId` from the request scope exactly as before; production behavior is
  * unchanged.
  */
-export async function getAccounts(ctx?: { spaceId: string; userId?: string }): Promise<Account[]> {
+export async function getAccountsWithVisibility(
+  ctx?: { spaceId: string; userId?: string },
+): Promise<AccountWithVisibility[]> {
   // Resolve spaceId + the current userId (used only for the reconnect badge
   // below). Call getSpaceContext() only when the caller hasn't supplied both —
   // it is cache()-memoized per request, so this is at most one call. When both
@@ -117,17 +140,20 @@ export async function getAccounts(ctx?: { spaceId: string; userId?: string }): P
         ownerFirstName,
       );
       return {
-        id:          safe.id,
-        name:        safe.name,
-        type:        safe.type as Account["type"],
-        institution: "",              // redacted — institution is identifying
-        balance:     safe.balance,
-        currency:    safe.currency,
-        lastUpdated: safe.lastUpdated,
-        // All other fields intentionally omitted (undefined) under the
-        // BALANCE_ONLY / SUMMARY_ONLY tier: no institution, no debt metadata,
-        // no Plaid/connection state, no wallet fields.
-      } as Account;
+        visibilityLevel: link.visibilityLevel as VisibilityLevel,
+        account: {
+          id:          safe.id,
+          name:        safe.name,
+          type:        safe.type as Account["type"],
+          institution: "",              // redacted — institution is identifying
+          balance:     safe.balance,
+          currency:    safe.currency,
+          lastUpdated: safe.lastUpdated,
+          // All other fields intentionally omitted (undefined) under the
+          // BALANCE_ONLY / SUMMARY_ONLY tier: no institution, no debt metadata,
+          // no Plaid/connection state, no wallet fields.
+        } as Account,
+      };
     }
 
     const profile = r.debtProfile ?? null;
@@ -157,6 +183,8 @@ export async function getAccounts(ctx?: { spaceId: string; userId?: string }): P
     }
 
     return {
+      visibilityLevel: link.visibilityLevel as VisibilityLevel,
+      account: {
       id:            r.id,
       // Resolution order: user override > Plaid's official name > Plaid's raw
       // name > whatever was already in `name` (covers manual/legacy accounts).
@@ -188,8 +216,19 @@ export async function getAccounts(ctx?: { spaceId: string; userId?: string }): P
       syncStatus:    r.syncStatus    as Account["syncStatus"]  ?? undefined,
       needsReauth:   !!reauthConnection,
       plaidItemId:   reauthConnection?.plaidItemDbId ?? undefined,
+      },
     };
   });
+}
+
+/**
+ * All accounts visible to the current space — the client-safe shape every
+ * existing caller uses. Delegates to getAccountsWithVisibility() and strips
+ * the server-side visibility tier, so this function's output is unchanged
+ * by the AccountWithVisibility addition.
+ */
+export async function getAccounts(ctx?: { spaceId: string; userId?: string }): Promise<Account[]> {
+  return (await getAccountsWithVisibility(ctx)).map((r) => r.account);
 }
 
 /**
