@@ -11,7 +11,7 @@
  *
  * Body: { code: string }  — 6-digit TOTP code
  *
- * TODO: rate-limit to ~5 attempts before locking out the setup flow.
+ * Rate limited per user (KD-3): 5 attempts / 15 min. SYSTEM_ADMIN exempt.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -21,10 +21,16 @@ import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
 import { verifyTOTP } from "@/lib/totp";
 import { requireUser } from "@/lib/session";
+import { limitByUser } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
   const [user, err] = await requireUser();
   if (err) return err;
+
+  if (user.role !== "SYSTEM_ADMIN") {
+    const limited = await limitByUser(user.id, "totp-verify", { limit: 5, windowSec: 900 });
+    if (limited) return limited;
+  }
 
   const body = await req.json();
   const code = (body.code as string | undefined)?.replace(/\s/g, "");

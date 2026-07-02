@@ -15,11 +15,15 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { db } from "@/lib/db";
 import { hashResetToken } from "@/lib/password-reset-token";
+import { limitByIp } from "@/lib/rate-limit";
 
 const TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 export async function POST(req: NextRequest) {
   try {
+    const limited = await limitByIp(req, "forgot-password", { limit: 5, windowSec: 900 });
+    if (limited) return limited;
+
     const { identifier } = await req.json();
     if (!identifier?.trim()) {
       return NextResponse.json({ error: "Email or username is required." }, { status: 400 });

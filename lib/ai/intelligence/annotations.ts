@@ -931,8 +931,12 @@ export function computeSpendingTrends(
   const breakdown = txn?.monthlyBreakdown ?? [];
 
   // monthlyBreakdown is already ordered oldest → newest by the assembler.
-  const partialMonthsExcluded = breakdown.filter((m) => m.partial).map((m) => m.month);
-  const complete              = breakdown.filter((m) => !m.partial);
+  // KD-7: fetch-cap truncated months have incomplete data and are excluded from
+  // trend analysis exactly like calendar-partial months.
+  const partialMonthsExcluded = breakdown
+    .filter((m) => m.partial || m.truncated)
+    .map((m) => m.month);
+  const complete              = breakdown.filter((m) => !m.partial && !m.truncated);
   const completeMonthsAnalyzed = complete.length;
 
   // Confidence reflects available complete-month history for this slice:

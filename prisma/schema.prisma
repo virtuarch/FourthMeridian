@@ -1500,3 +1500,23 @@ model PlatformSetting {
   updatedAt DateTime @updatedAt
   updatedById String?     // userId of last admin who changed this setting
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RateLimit  (KD-3)
+// Fixed-window request counter for endpoint-local rate limiting.
+// One row per (key, windowStart) bucket; count is incremented per request.
+// `key` encodes scope + endpoint + subject, e.g. "ip:pre-login:1.2.3.4" or
+// "user:ai-chat:<userId>". Used only when RATE_LIMIT_ENABLED=true in
+// production; local dev uses an in-memory backend (see lib/rate-limit.ts).
+// Expired buckets can be swept lazily or via a future cron — additive only.
+// ─────────────────────────────────────────────────────────────────────────────
+model RateLimit {
+  id          String   @id @default(cuid())
+  key         String   // scope:endpoint:subject
+  windowStart DateTime // start of the fixed-window bucket
+  count       Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@unique([key, windowStart])
+  @@index([windowStart])
+}

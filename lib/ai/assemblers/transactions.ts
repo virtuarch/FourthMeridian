@@ -204,7 +204,11 @@ async function assembleTransactions(
   //            BALANCE_ONLY / SUMMARY_ONLY accounts never contribute rows.
   // Both deletedAt guards (account-level and transaction-level) are applied.
 
-  const rows: TxnRow[] = await db.transaction.findMany({
+  // KD-7 truncation sentinel: fetch one row beyond the cap so we can detect
+  // deterministically whether the matching set exceeded TRANSACTION_FETCH_LIMIT.
+  // Rows are newest-first, so any overflow drops the OLDEST rows — which would
+  // silently deflate older-month totals, category/merchant rollups, and trends.
+  const fetched: TxnRow[] = await db.transaction.findMany({
     where: {
       OR: [
         {
@@ -236,8 +240,14 @@ async function assembleTransactions(
       pending:  true,
     },
     orderBy: { date: 'desc' },
-    take:    TRANSACTION_FETCH_LIMIT,
+    take:    TRANSACTION_FETCH_LIMIT + 1,
   });
+
+  // Truncated when the sentinel row came back; aggregate only the capped set.
+  const truncated = fetched.length > TRANSACTION_FETCH_LIMIT;
+  const rows: TxnRow[] = truncated
+    ? fetched.slice(0, TRANSACTION_FETCH_LIMIT)
+    : fetched;
 
   // No transactions in window — return null so the domain is noted as empty.
   if (rows.length === 0) return null;
@@ -336,7 +346,19 @@ async function assembleTransactions(
   // effective ceiling is the explicit window end, or today for a rolling window,
   // so partial-month detection reflects the actual coverage of the request.
   const effectiveEndIso = win.endIso ?? new Date().toISOString().split('T')[0];
-  const monthlyBreakdown = buildMonthlyBreakdown(settled, pending, win.startIso, effectiveEndIso);
+  // KD-7: when truncated, the oldest RETAINED row is the true coverage floor.
+  // Rows are date-desc, so the last element is the oldest kept row. The month it
+  // falls in had older rows dropped and is therefore incomplete.
+  const coverageStartIso = truncated
+    ? rows[rows.length - 1].date.toISOString().split('T')[0]
+    : win.startIso;
+  const monthlyBreakdown = buildMonthlyBreakdown(
+    settled,
+    pending,
+    win.startIso,
+    effectiveEndIso,
+    truncated ? coverageStartIso.slice(0, 7) : null,
+  );
 
   // ── Date range ────────────────────────────────────────────────────────────
   // rows is ordered desc by date; last element is oldest in the window.
@@ -548,6 +570,11 @@ async function assembleTransactions(
     endDate:          newestDate,
     transactionCount: rows.length,
 
+    // KD-7 fetch-cap coverage flags.
+    truncated,
+    coverageStartDate: coverageStartIso,
+    fetchLimit:        TRANSACTION_FETCH_LIMIT,
+
     incomeTotal:      Math.round(incomeTotal      * 100) / 100,
     expenseTotal:     Math.round(expenseTotal     * 100) / 100,
     debtPaymentTotal: Math.round(debtPaymentTotal * 100) / 100,
@@ -626,6 +653,9 @@ function buildMonthlyBreakdown(
   pending:  TxnRow[],
   startIso: string,
   endIso:   string,
+  // KD-7: YYYY-MM of the fetch-cap coverage floor, or null when not truncated.
+  // The month at this boundary had older rows dropped and is flagged incomplete.
+  truncatedMonth: string | null,
 ): MonthlyBreakdownEntry[] {
   type Bucket = {
     incomeTotal:      number;
@@ -706,6 +736,9 @@ function buildMonthlyBreakdown(
         (month === startMonth && startClipped) ||
         (month === endMonth && endClipped);
 
+      // KD-7: the coverage-floor month had older rows dropped by the fetch cap.
+      const monthTruncated = truncatedMonth !== null && month === truncatedMonth;
+
       return {
         month,
         incomeTotal:      Math.round(b.incomeTotal      * 100) / 100,
@@ -714,6 +747,7 @@ function buildMonthlyBreakdown(
         transferTotal:    Math.round(b.transferTotal    * 100) / 100,
         transactionCount: b.transactionCount,
         ...(partial ? { partial: true } : {}),
+        ...(monthTruncated ? { truncated: true } : {}),
         byCategory,
         ...(topCategories.length > 0 ? { topCategories } : {}),
       };
@@ -861,18 +895,25 @@ async function assembleDrilldown(
       financialAccount: { select: { name: true, displayName: true } },
     },
     orderBy: { date: 'desc' },
-    take:    TRANSACTION_FETCH_LIMIT,
+    // KD-7: same LIMIT+1 sentinel as the summary query so a fetch-cap hit here is
+    // detected rather than silently under-reporting matchedTotal/totalCount.
+    take:    TRANSACTION_FETCH_LIMIT + 1,
   });
 
   if (rows.length === 0) return undefined;
 
-  // matchedTotal / totalCount describe the FULL matching set (pre-cap).
-  const matchedTotal = rows.reduce((s, r) => s + Math.abs(r.amount), 0);
-  const totalCount   = rows.length;
+  const fetchTruncated = rows.length > TRANSACTION_FETCH_LIMIT;
+  const capped         = fetchTruncated ? rows.slice(0, TRANSACTION_FETCH_LIMIT) : rows;
+
+  // matchedTotal / totalCount describe the matching set actually aggregated. When
+  // fetchTruncated they are a lower bound (older rows beyond the cap are omitted);
+  // `truncated` below is forced true so the consumer never implies exhaustiveness.
+  const matchedTotal = capped.reduce((s, r) => s + Math.abs(r.amount), 0);
+  const totalCount   = capped.length;
 
   const limit = Math.min(request.limit ?? DRILLDOWN_DEFAULT_LIMIT, DRILLDOWN_MAX_LIMIT);
 
-  const shown = [...rows]
+  const shown = [...capped]
     .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
     .slice(0, limit);
 
@@ -902,7 +943,7 @@ async function assembleDrilldown(
     totalCount,
     shownTotal:   Math.round(shownTotal   * 100) / 100,
     matchedTotal: Math.round(matchedTotal * 100) / 100,
-    truncated:    totalCount > transactions.length,
+    truncated:    fetchTruncated || totalCount > transactions.length,
   };
 }
 

@@ -11,9 +11,13 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
 import { hashResetToken } from "@/lib/password-reset-token";
+import { limitByIp } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
   try {
+    const limited = await limitByIp(req, "reset-password", { limit: 10, windowSec: 900 });
+    if (limited) return limited;
+
     const { token, password } = await req.json();
 
     if (!token || !password) {

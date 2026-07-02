@@ -44,6 +44,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db }                        from '@/lib/db';
 import { requireUser }               from '@/lib/session';
+import { limitByUser }               from '@/lib/rate-limit';
 import { SpaceMemberRole }           from '@prisma/client';
 import { buildContext }              from '@/lib/ai/context-builder';
 import { generateChatReply }      from '@/lib/ai/provider';
@@ -629,6 +630,23 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
       'If the user asks about a longer period, state plainly that only this window is available.',
     );
 
+    // ── Fetch-cap coverage caveat (KD-7) ─────────────────────────────────────
+    // When the summary was truncated, the totals/rollups/monthly figures below
+    // cover only [coverageStartDate, endDate]. Tell the model the data is
+    // incomplete before that date so it never presents truncated historical
+    // figures as exact or compares the clipped earliest month like a full one.
+    if (txn.truncated) {
+      lines.push(
+        `  COVERAGE LIMIT (data cap): this Space has more transactions in the requested window ` +
+        `than the ${txn.fetchLimit}-row fetch cap allows, so only the most recent ${txn.fetchLimit} ` +
+        `were analyzed. Every total, category, merchant, income, and monthly figure below covers ONLY ` +
+        `${txn.coverageStartDate} – ${txn.endDate}; data before ${txn.coverageStartDate} is NOT included. ` +
+        'Do NOT present these figures as exact or as covering the full requested window, and treat the ' +
+        'earliest included month as incomplete. If the user asks about the full period, say plainly ' +
+        'that the older portion exceeds the current data limit.',
+      );
+    }
+
     // ── Spending aggregates: single source of truth (D6.3 Part B) ────────────
     // Average monthly spending, month-by-month spending, and category averages
     // ALL derive from the same deterministic monthlyBreakdown rows. Averages are
@@ -643,7 +661,8 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
     // and can never exceed it.
     const NON_SPENDING = new Set(['Income', 'Interest', 'Transfer', 'Payment']);
 
-    const completeMonths = txn.monthlyBreakdown.filter((m) => !m.partial);
+    // KD-7: exclude fetch-cap truncated months from averages, same as partial.
+    const completeMonths = txn.monthlyBreakdown.filter((m) => !m.partial && !m.truncated);
     const completeCount   = completeMonths.length;
 
     if (completeCount > 0) {
@@ -725,7 +744,13 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
         'that month\'s "spending" total:',
       );
       for (const m of txn.monthlyBreakdown) {
-        const flag = m.partial ? ' [PARTIAL month — window does not fully cover it]' : '';
+        // KD-7: a truncated boundary month had older rows dropped by the fetch
+        // cap — mark it incomplete so it is never compared as a full month.
+        const flag = m.truncated
+          ? ' [INCOMPLETE month — older transactions exceed the data cap; figure understated]'
+          : m.partial
+            ? ' [PARTIAL month — window does not fully cover it]'
+            : '';
         // Per-month category line: SPENDING categories only (income, interest,
         // transfers, debt payments excluded). This guarantees the categories
         // reconcile to — and never exceed — this month's expenseTotal.
@@ -1644,6 +1669,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const [user, authErr] = await requireUser();
   if (authErr) return authErr;
 
+  // ── Rate limit (KD-3) ───────────────────────────────────────────────────────
+  // Per-user cap to contain LLM cost abuse. SYSTEM_ADMIN is exempt.
+  if (user.role !== 'SYSTEM_ADMIN') {
+    const limited = await limitByUser(user.id, 'ai-chat', { limit: 30, windowSec: 60 });
+    if (limited) return limited;
+  }
+
   // ── Parse body ────────────────────────────────────────────────────────────
   let rawBody: unknown;
   try {
@@ -1661,6 +1693,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const { spaceId, messages } = body;
+
+  // ── Body guard (KD-3) ───────────────────────────────────────────────────────
+  // Cheap ceilings that bound prompt size independent of the rate limiter:
+  // reject oversized conversations before any context build or LLM call.
+  const MAX_MESSAGES            = 50;
+  const MAX_TOTAL_CONTENT_CHARS = 24_000;
+  if (messages.length > MAX_MESSAGES) {
+    return NextResponse.json(
+      { error: `Too many messages in one request (max ${MAX_MESSAGES}).` },
+      { status: 400 },
+    );
+  }
+  const totalContentChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+  if (totalContentChars > MAX_TOTAL_CONTENT_CHARS) {
+    return NextResponse.json(
+      { error: `Message content too large (max ${MAX_TOTAL_CONTENT_CHARS} characters).` },
+      { status: 400 },
+    );
+  }
 
   // Must have at least one user message
   if (!messages.some((m) => m.role === 'user')) {

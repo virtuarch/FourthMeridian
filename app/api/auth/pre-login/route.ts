@@ -13,12 +13,13 @@
  * Security notes:
  *   - Timing-safe: always runs bcrypt even when user is not found (dummy hash).
  *   - Does NOT distinguish "user not found" from "wrong password" to avoid enumeration.
- *   - TODO: add rate limiting (e.g. 10 attempts/min per IP) before public deployment.
+ *   - Rate limited per IP (KD-3): 10 attempts / minute.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
+import { limitByIp } from "@/lib/rate-limit";
 
 // Dummy hash used when the user is not found, to keep timing consistent.
 const DUMMY_HASH =
@@ -26,6 +27,9 @@ const DUMMY_HASH =
 
 export async function POST(req: NextRequest) {
   try {
+    const limited = await limitByIp(req, "pre-login", { limit: 10, windowSec: 60 });
+    if (limited) return limited;
+
     const body       = await req.json();
     const identifier = (body.identifier as string | undefined)?.toLowerCase().trim() ?? "";
     const password   = (body.password   as string | undefined) ?? "";

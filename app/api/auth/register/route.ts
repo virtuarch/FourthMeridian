@@ -24,12 +24,16 @@ import { db } from "@/lib/db";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { possessive } from "@/lib/format";
 import { EmploymentStatus, UseCase, SpaceMemberRole } from "@prisma/client";
+import { limitByIp } from "@/lib/rate-limit";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
 
 export async function POST(req: NextRequest) {
   try {
+    const limited = await limitByIp(req, "register", { limit: 5, windowSec: 900 });
+    if (limited) return limited;
+
     const body = await req.json();
 
     const {

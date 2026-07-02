@@ -319,6 +319,14 @@ export interface MonthlyBreakdownEntry {
   /** True when the window clips this month (partial coverage). */
   partial?:         boolean;
   /**
+   * True when this month sits at the fetch-cap coverage floor and older rows
+   * within it were dropped by TRANSACTION_FETCH_LIMIT truncation (KD-7).
+   * Distinct from `partial` (calendar clipping): a truncated month has
+   * incomplete data and must be excluded from averages and month-over-month
+   * trends and never presented as a complete month's figure.
+   */
+  truncated?:       boolean;
+  /**
    * Deterministic per-category settled totals for THIS month, computed directly
    * from the queried rows (same rules as the top-level byCategory). Ordered by
    * absolute total descending; only categories with a non-zero settled total in
@@ -474,9 +482,28 @@ export interface TransactionDrilldown {
  */
 export interface TransactionsSummaryData {
   windowDays:       number;
-  startDate:        string; // YYYY-MM-DD — window floor
+  startDate:        string; // YYYY-MM-DD — window floor (requested)
   endDate:          string; // YYYY-MM-DD — most recent transaction date (or today)
-  transactionCount: number; // settled + pending
+  transactionCount: number; // settled + pending (of the rows actually aggregated)
+
+  // ── Fetch-cap coverage (KD-7) ────────────────────────────────────────────
+  /**
+   * True when the number of matching rows exceeded `fetchLimit` and the OLDEST
+   * rows were dropped (rows are fetched newest-first). When true, every total,
+   * category/merchant rollup, and monthly figure covers only [coverageStartDate,
+   * endDate] — figures before coverageStartDate are incomplete and must not be
+   * presented as exact or compared month-over-month. Detected deterministically
+   * via a LIMIT+1 sentinel fetch.
+   */
+  truncated:         boolean;
+  /**
+   * YYYY-MM-DD — the oldest date actually aggregated. Equals `startDate` when
+   * `truncated` is false; when truncated it is the date of the oldest retained
+   * row (the true coverage floor).
+   */
+  coverageStartDate: string;
+  /** The row cap in force for this assembly (TRANSACTION_FETCH_LIMIT). */
+  fetchLimit:        number;
 
   // ── Cash flow totals ────────────────────────────────────────────────────
   /** Sum of positive amounts in Income + Interest categories. */
