@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { ShareStatus } from "@prisma/client";
+import { grantsTransactionDetail } from "@/lib/ai/visibility";
 
 export async function GET(
   _req: NextRequest,
@@ -22,7 +23,7 @@ export async function GET(
   // visibility decision either way. See docs/initiatives/d3/D3_STEP4_READ_CUTOVER_REVIEW.md.
   const link = await db.spaceAccountLink.findFirst({
     where:  { spaceId, financialAccountId: id, status: ShareStatus.ACTIVE },
-    select: { id: true },
+    select: { visibilityLevel: true },
   });
 
   if (!link) {
@@ -33,6 +34,17 @@ export async function GET(
     if (!legacyAccount) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
+    // Legacy Account rows are the Space's own accounts — FULL by definition.
+  } else if (!grantsTransactionDetail(link.visibilityLevel)) {
+    // KD-15: the account IS shared into this Space (so it's not "not found"),
+    // but at a visibility tier that does not grant transaction detail
+    // (BALANCE_ONLY / SUMMARY_ONLY). The account's balance is exposed via the
+    // accounts path; its transaction rows must never leak here. Return an empty
+    // list (200) so the modal renders cleanly rather than erroring. Mirrors the
+    // TRANSACTION_DETAIL_VISIBILITY predicate the dashboard lists and AI context
+    // use, so no UI read path can disagree. See
+    // docs/initiatives/kd15/KD-15_IMPLEMENTATION_CHECKLIST.md.
+    return NextResponse.json({ transactions: [] });
   }
 
   // Match either FK — Plaid-synced transactions carry financialAccountId,

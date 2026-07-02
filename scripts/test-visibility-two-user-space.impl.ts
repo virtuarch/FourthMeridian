@@ -1,7 +1,12 @@
 /**
  * scripts/test-visibility-two-user-space.impl.ts
  *
- * KD-1 end-to-end privacy regression — two-user shared Space. TEST BODY.
+ * KD-1 + KD-15 end-to-end privacy regression — two-user shared Space. TEST BODY.
+ *
+ * KD-1 covers the AI-context assembler path; KD-15 (block 6 below) covers the UI
+ * read paths (lib/data/transactions.ts and the account-modal route decision)
+ * against the identical seeded scenario, so AI and UI cannot disagree on what a
+ * BALANCE_ONLY / SUMMARY_ONLY / REVOKED account may expose.
  *
  * DO NOT run this file directly. Run the launcher, which installs the
  * `server-only` resolver shim before any app module loads:
@@ -64,6 +69,9 @@ import '@/lib/ai/assemblers';
 import { getAssembler } from '@/lib/ai/assembler-registry';
 import { getDomainManifest } from '@/lib/ai/domain-manifest';
 import { runSignalDetectors } from '@/lib/ai/signals';
+// KD-15: the real UI list read path + the predicate the account-modal route uses.
+import { getTransactions } from '@/lib/data/transactions';
+import { grantsTransactionDetail } from '@/lib/ai/visibility';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
   AssemblerOptions,
@@ -267,6 +275,58 @@ async function main(): Promise<void> {
       !drillJson.includes('leakcanaryz') &&
       !drillJson.includes('leakcanaryw'),
   );
+
+  // ── 6. KD-15 — UI read paths ──────────────────────────────────────────────
+  // The dashboard/banking list read path (lib/data/transactions.ts) must obey
+  // the SAME visibility rule as the AI context. Same seeded scenario:
+  //   X FULL → rows visible · Y BALANCE_ONLY / Z SUMMARY_ONLY / W REVOKED → none.
+  const uiRows = await getTransactions({ spaceId: space.id });
+  const uiJson = JSON.stringify(uiRows).toLowerCase();
+
+  check(
+    'getTransactions() returns canary X rows (FULL link)',
+    uiJson.includes('leakcanaryx'),
+    'FULL-visibility rows missing from the UI list — fix may be over-redacting',
+  );
+  check(
+    'getTransactions() leaks no canary Y (BALANCE_ONLY)',
+    !uiJson.includes('leakcanaryy'),
+    'BALANCE_ONLY transaction rows leaked into the UI list',
+  );
+  check(
+    'getTransactions() leaks no canary Z (SUMMARY_ONLY)',
+    !uiJson.includes('leakcanaryz'),
+    'SUMMARY_ONLY transaction rows leaked into the UI list',
+  );
+  check(
+    'getTransactions() leaks no canary W (REVOKED FULL)',
+    !uiJson.includes('leakcanaryw'),
+    'REVOKED link transaction rows leaked into the UI list',
+  );
+
+  // Account-modal route decision (app/api/accounts/[id]/transactions/route.ts):
+  // its gate accepts any ACTIVE link, then returns rows only when the link
+  // grants transaction detail. Validate that decision against the real seeded
+  // links: X → detail granted (rows), Y/Z → active but detail withheld (empty
+  // list, not 404). This is the exact predicate the handler branches on.
+  const links = await prisma.spaceAccountLink.findMany({
+    where:  { spaceId: space.id, status: ShareStatus.ACTIVE },
+    select: { financialAccountId: true, visibilityLevel: true },
+  });
+  const linkFor = (id: string) => links.find((l) => l.financialAccountId === id);
+
+  check(
+    'modal route would return rows for account X (FULL link grants detail)',
+    grantsTransactionDetail(linkFor(acctX.id)!.visibilityLevel),
+  );
+  check(
+    'modal route would return an empty list for account Y (BALANCE_ONLY link, active but no detail)',
+    linkFor(acctY.id) !== undefined && !grantsTransactionDetail(linkFor(acctY.id)!.visibilityLevel),
+  );
+  check(
+    'modal route would return an empty list for account Z (SUMMARY_ONLY link, active but no detail)',
+    linkFor(acctZ.id) !== undefined && !grantsTransactionDetail(linkFor(acctZ.id)!.visibilityLevel),
+  );
 }
 
 async function cleanup(): Promise<void> {
@@ -305,6 +365,6 @@ main()
     }
     await prisma.$disconnect();
     console.log('');
-    console.log(failures === 0 ? 'All KD-1 end-to-end privacy cases passed.' : `${failures} failure(s).`);
+    console.log(failures === 0 ? 'All KD-1 + KD-15 end-to-end privacy cases passed.' : `${failures} failure(s).`);
     process.exit(failures === 0 ? 0 : 1);
   });
