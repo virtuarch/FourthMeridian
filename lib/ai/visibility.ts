@@ -19,14 +19,14 @@
  *   SUMMARY_ONLY → qualitative summary only — never rows, never raw numbers
  *   PRIVATE      → nothing (should not exist on a link row at all)
  *   SHARED       → legacy value ("maps to FULL" per schema comment) —
- *                  EXCLUDED here. Data audit on 2026-07-02 (dev + prod, via
- *                  scripts/audit-visibility-levels.ts) confirmed zero SHARED
- *                  rows on SpaceAccountLink, and no current write path can
- *                  produce one (share route validates [BALANCE_ONLY, FULL];
- *                  all other SAL writes hardcode FULL). If SHARED ever
+ *                  EXCLUDED here. An ad-hoc data audit on 2026-07-02 (dev +
+ *                  prod) confirmed zero SHARED rows on SpaceAccountLink, and no
+ *                  current write path can produce one (share route validates
+ *                  [BALANCE_ONLY, FULL]; all other SAL writes hardcode FULL).
+ *                  That audit query is not committed to the repo. If SHARED ever
  *                  reappears, this predicate fails CLOSED: the account's
- *                  transactions are over-redacted, never leaked. Run the audit
- *                  script before widening this list.
+ *                  transactions are over-redacted, never leaked. Re-run an audit
+ *                  of SpaceAccountLink.visibilityLevel before widening this list.
  *
  * Absence of a grant always fails closed.
  *

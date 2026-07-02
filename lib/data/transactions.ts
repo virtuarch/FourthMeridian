@@ -35,7 +35,7 @@
  * lists. The legacy Account path (account.spaceId) is the Space's own accounts
  * and is FULL by definition, so it is left unfiltered. Fails closed: absence of
  * a transaction-detail grant excludes the rows, never leaks them.
- * See docs/initiatives/kd15/KD-15_IMPLEMENTATION_CHECKLIST.md.
+ * KD-15 is tracked in STATUS.md (known defects register).
  */
 
 import { db } from "@/lib/db";

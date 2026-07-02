@@ -164,7 +164,7 @@ export async function buildContext(
       const assembler = getAssembler(domain);
 
       if (!assembler) {
-        // No assembler registered yet — Slice 1 has none. Log and skip.
+        // No assembler registered for this domain. Log and skip.
         return { domain, section: null, skipped: true, reason: 'no_assembler' } as const;
       }
 
@@ -202,7 +202,7 @@ export async function buildContext(
 
   // ── Step 5: Detect signals ───────────────────────────────────────────────
   //
-  // Runs after all assemblers complete. No detectors exist in Slice 1.
+  // Runs after all assemblers complete, over the registered signal detectors.
 
   const signals = runSignalDetectors(domains, spaceId);
 

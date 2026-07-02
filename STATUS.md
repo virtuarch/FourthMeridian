@@ -6,7 +6,7 @@ If this file conflicts with any other document, this file wins. If it conflicts 
 
 | | |
 |---|---|
-| Last verified | 2026-07-02, against commit `1680aeb` |
+| Last verified | 2026-07-02, against commit `f565a7e` |
 | Maintenance rule | Any PR that changes system behavior updates this file, or states in the PR why not |
 | Supersedes | `ROADMAP.md`, `docs/operations/PROJECT_STATE.md`, and the status tables in `docs/architecture/PHASE_2_CANONICAL_ROADMAP_AUDIT.md` |
 
@@ -23,16 +23,16 @@ What exists and works today:
 - **AI analyst** — Space-scoped chat: deterministic intent routing, dynamic transaction windows with follow-up carry-forward, deterministic monthly rollups / merchant normalization / spending trends, a deterministic financial assessment engine (data quality, cash flow, debt, liquidity, capital allocation, risk/opportunity), knowledge-gap capture, provenance-first prompting. LLM: OpenAI gpt-4o-mini behind a single provider boundary.
 - **Security** — AES-256-GCM with HKDF per-purpose key derivation, hashed password-reset tokens, TOTP + recovery codes, session management with revocation cache, append-only audit log, SYSTEM_ADMIN role with a fully separate admin surface and redacted provider diagnostics.
 
-What does **not** exist yet: automated background jobs beyond one daily bank-sync cron (scheduler entrypoint never invoked; AI advice job is a stub), output validation on LLM replies, meaningful test coverage (1 test file), rate limiting, billing, production Plaid credentials.
+What does **not** exist yet: automated background jobs beyond one daily bank-sync cron (scheduler entrypoint never invoked; AI advice job is a stub), *live* output validation on LLM replies (a shadow validator is landed but observational only — see AI-4), broad test coverage (4 test files: output validator, two privacy suites, intent classifier), rate limiting, billing, production Plaid credentials.
 
 ## 2. Current version
 
 | | |
 |---|---|
-| Architecture phase | v2.4 — Architecture Foundation (complete; declaring closed per §5) |
+| Architecture phase | v2.4 — Architecture Foundation — **architecture-complete; only branch merge/closeout remains** (see §5) |
 | package.json | `2.4.0` |
 | Latest tag | `v2.4.0` |
-| Active branch | `feature/phase-2-architecture` (4 modified files + 1 untracked script uncommitted as of last verification) |
+| Active branch | `feature/phase-2-architecture` (working tree clean; all foundation work committed through `f565a7e`; not yet merged) |
 | Baseline of record | `v2.3.0` (Workspace → Space rename merged) |
 
 ## 3. Initiative ledger
@@ -65,7 +65,7 @@ Statuses: **Complete · Active · Planned · Parked · Deprecated**
 | AI-1 | Context Builder + domain assemblers | Complete | `buildContext()`, assembler/signal registries, accounts/transactions/goals/snapshot/holdings assemblers | `lib/ai/context-builder.ts`, `lib/ai/assemblers/` | — |
 | AI-2 | Deterministic assessment engine | Complete | Data quality, cash flow, debt, liquidity, allocation, debt strategy, spending, trends, goal alignment, readiness, risk/opportunity | `lib/ai/intelligence/annotations.ts` | — |
 | AI-3 | Intelligence expansion (formerly "D6.3") | Complete (pending stabilization) | Dynamic windows, carry-forward, ambiguity guard, drilldown, monthly rollups, merchant/income rollups, trends, shadow planner | `app/api/ai/chat/route.ts`; `lib/ai/context-priority/` | Closes only when AI-4 items in v2.4.5 land |
-| AI-4 | Verification layer | Planned | Deterministic output validation / number reconciliation on LLM replies; heuristics consolidated into tested modules; planner promoted from shadow to live budgeting | PE review (2026-07-02) | v2.4.5 (validator, tests); v2.6 (planner live) |
+| AI-4 | Verification layer | Active | Phase 0 **shadow** output validator landed (`f565a7e`): pure membership-based number reconciliation, wired into the chat route observationally — writes an AuditLog row on unreconciled figures, reply byte-for-byte unchanged (KD-2 remains Open; no live enforcement yet). Remaining: heuristics consolidated into tested modules; planner promoted from shadow to live budgeting | `lib/ai/output-validator.ts`; `docs/initiatives/ai4/AI-4_PHASE_0_INVESTIGATION.md`; PE review (2026-07-02) | v2.4.5 (promote validator to live enforcement + tests); v2.6 (planner live) |
 
 ### Other
 
@@ -92,9 +92,9 @@ The D-number collision is resolved by **freezing, not renumbering**. `PHASE_2_DE
 
 Phases are gated by **exit criteria**, not feature lists. The roadmap ends at launch; everything beyond it lives in §8.
 
-### v2.4 — Architecture Foundation — **COMPLETE**
-Shipped: provider lifecycle + Plaid sync/reconcile; AI-1..AI-3; D11/D13/D14; SAL dual-write; admin diagnostics; expand-history workflow.
-Remaining exit action: commit the pending working-tree changes on `feature/phase-2-architecture` and merge.
+### v2.4 — Architecture Foundation — **ARCHITECTURE-COMPLETE (merge/closeout pending)**
+Shipped: provider lifecycle + Plaid sync/reconcile; AI-1..AI-3; D11/D13/D14; SAL dual-write; admin diagnostics; expand-history workflow. Both critical transaction-visibility leaks — KD-1 (AI context) and KD-15 (UI reads) — are fixed and committed; AI-4 shadow validator and KD-13 hygiene landed.
+Remaining exit action: all foundation work is committed (working tree clean through `f565a7e`); the only open step is merging `feature/phase-2-architecture` and cutting the closeout. No architectural work outstanding — remaining defects are gated to v2.4.5+ and are not v2.4 blockers.
 
 ### v2.4.5 — Stabilization / Verification — **NEXT** (production-readiness gate)
 Scope: fix BALANCE_ONLY transaction leak (KD-1) → LLM output validator (AI-4) → test suites (merchant normalization, window/rollup math, privacy sanitizers, follow-up heuristics) → `db.$transaction` around merges/dual-writes → HOME partial-unique index → observability counters (fallback hits, sync stats, LLM tokens) → rate limiting (auth + chat) → repo hygiene.
@@ -120,11 +120,11 @@ Scope: billing/subscription (D10 ban lifts here only); onboarding funnel; Plaid 
 
 **Blockers (must fix before any external user):**
 
-1. BALANCE_ONLY transaction leak: AI context fixed (KD-1, 2026-07-02); UI read paths still open (KD-15)
-2. No LLM output validation — numeric fidelity rests entirely on prompt obedience of gpt-4o-mini (KD-2)
+1. BALANCE_ONLY transaction leak: **both paths fixed and committed** — AI context (KD-1) and UI reads (KD-15), 2026-07-02, via the shared canonical predicate `lib/ai/visibility.ts`
+2. No *live* LLM output validation — a shadow validator is landed (AI-4, `f565a7e`) but observational only; numeric fidelity still rests on prompt obedience of gpt-4o-mini until enforcement is promoted (KD-2)
 3. No rate limiting on auth or chat (KD-3)
 4. Non-transactional dual-writes + unenforced HOME uniqueness (KD-4, KD-5)
-5. Effectively no test coverage on privacy sanitizers and financial math
+5. Thin test coverage (4 files: output validator, two privacy suites, intent classifier) — merchant-normalization, window/rollup math, and follow-up-heuristic suites still absent
 6. LLM data-processing posture undefined (retention terms, user disclosure)
 
 **Known risks:** five migration seams open concurrently; verification debt (invariants asserted in comments, not checked in code); solo-maintainer bus factor; `Float` for money; documentation weight exceeding maintenance capacity (this file is the countermeasure).
@@ -133,8 +133,8 @@ Scope: billing/subscription (D10 ban lifts here only); onboarding funnel; Plaid 
 
 | ID | Issue | Severity | Owner milestone | Status |
 |---|---|---|---|---|
-| KD-1 | Transactions-summary assembler ignores `visibilityLevel`; BALANCE_ONLY accounts' merchants/amounts enter AI prompts (`lib/ai/assemblers/transactions.ts` SAL filter) | **Critical** | v2.4.5 | **Fixed** 2026-07-02 (in working tree) — canonical predicate `lib/ai/visibility.ts` (FULL-only; SHARED audit clean in dev+prod via `scripts/audit-visibility-levels.ts`) applied to summary + drilldown; tests: `lib/ai/assemblers/transactions.privacy.test.ts`, `scripts/test-visibility-two-user-space.ts` |
-| KD-2 | No deterministic validation of LLM output figures against context | High | v2.4.5 (AI-4) | Open |
+| KD-1 | Transactions-summary assembler ignores `visibilityLevel`; BALANCE_ONLY accounts' merchants/amounts enter AI prompts (`lib/ai/assemblers/transactions.ts` SAL filter) | **Critical** | v2.4.5 | **Fixed & committed** 2026-07-02 (`cea8220`) — canonical predicate `lib/ai/visibility.ts` (FULL-only; ad-hoc SHARED audit clean in dev+prod) applied to summary + drilldown; tests: `lib/ai/assemblers/transactions.privacy.test.ts`, `scripts/test-visibility-two-user-space.ts` |
+| KD-2 | No deterministic validation of LLM output figures against context | High | v2.4.5 (AI-4) | Open — shadow validator landed (`f565a7e`, observational only); closes when promoted to live enforcement |
 | KD-3 | No rate limiting (auth endpoints, `/api/ai/chat`) | High | v2.4.5 | Open |
 | KD-4 | No `db.$transaction` around merges/dual-writes; WAS↔SAL mirrors can desync on partial failure | High | v2.4.5 | Open |
 | KD-5 | "One HOME per account" unenforced; `computeLinkKind` count-then-write race | High | v2.4.5 | Open |
@@ -145,9 +145,9 @@ Scope: billing/subscription (D10 ban lifts here only); onboarding funnel; Plaid 
 | KD-10 | Two competing "monthly expense" figures in one prompt (assessment block vs context block) | Medium | v2.4.5 | Open |
 | KD-11 | Duplicated, drifting keyword heuristics between chat route and intent classifier; only classifier is tested | Medium | v2.4.5 | Open |
 | KD-12 | Audit-log write amplification: 2 rows per chat message per Space (shadow plans in metadata) | Low | v2.6 | Open |
-| KD-13 | Repo hygiene: personal photos at root, committed `" 2"` Finder-duplicate dirs, uncommitted branch changes, `.env` docs name `ANTHROPIC_API_KEY` while code requires `OPENAI_API_KEY` | Low | v2.4.5 | Open |
+| KD-13 | Repo hygiene: personal photos at root, committed `" 2"` Finder-duplicate dirs, uncommitted branch changes, `.env` docs name `ANTHROPIC_API_KEY` while code requires `OPENAI_API_KEY` | Low | v2.4.5 | **Effectively resolved** (`5aba9cb`, plus clean tree at `f565a7e`) — personal jpegs removed, `.env.example` uses `OPENAI_API_KEY`, stray `signal-registry.ts` deleted, branch committed. Only residue is gitignored `.next` build-cache `* 2` files (not tracked) |
 | KD-14 | Scheduler entrypoint never invoked; `run-ai-advice`/`sync-crypto` stubs; `AiAdvice` has never had a write path | High (blocks v2.6) | v2.6 entry | Open |
-| KD-15 | UI transaction read paths ignore `visibilityLevel`: `lib/data/transactions.ts` (`getTransactions`/`getDebtTransactions`/`getInvestmentTransactions`) filter SAL on `status: ACTIVE` only, so BALANCE_ONLY/SUMMARY_ONLY accounts' rows reach dashboard pages and `app/api/accounts/[id]/transactions` — same defect class as KD-1, discovered during the KD-1 impact map (2026-07-02). Violates the `VisibilityLevel` enum contract ("BALANCE_ONLY — … no transactions"). Fix should reuse `lib/ai/visibility.ts` | **Critical** | v2.4.5 | Open |
+| KD-15 | UI transaction read paths ignore `visibilityLevel`: `lib/data/transactions.ts` (`getTransactions`/`getDebtTransactions`/`getInvestmentTransactions`) filter SAL on `status: ACTIVE` only, so BALANCE_ONLY/SUMMARY_ONLY accounts' rows reach dashboard pages and `app/api/accounts/[id]/transactions` — same defect class as KD-1, discovered during the KD-1 impact map (2026-07-02). Violates the `VisibilityLevel` enum contract ("BALANCE_ONLY — … no transactions"). Fix reuses `lib/ai/visibility.ts` | **Critical** | v2.4.5 | **Fixed & committed** 2026-07-02 (`98e3ab0`) — `getTransactions`/`getDebtTransactions`/`getInvestmentTransactions` and `app/api/accounts/[id]/transactions` now filter the SAL path on `TRANSACTION_DETAIL_VISIBILITY` (same predicate as KD-1); tests: `lib/data/transactions.privacy.test.ts` |
 
 ## 8. Parked ideas
 
@@ -193,19 +193,19 @@ No documents were edited or deleted. Recommended dispositions:
 | `docs/investigations/D6_3*.md` | **Keep** (do not move/rename) | Alias table (§4) maps them to AI-3 |
 | `docs/README.md` | **Keep, trim** | Folder index only; remove status language; point here |
 | `docs/archive/` gitignore status | **Decide** | An untracked archive isn't an archive. Recommend tracking (excluding images with personal content) |
-| Stale code comments (`space-account-link.ts` "nothing reads SAL yet"; `context-builder.ts` "No detectors exist in Slice 1") | **Supersede** | Fix opportunistically in v2.4.5 hygiene pass — comments-as-governance must not lie |
+| Stale code comments (`context-builder.ts` "Slice 1 has none / no detectors exist"; `visibility.ts` citing uncommitted `scripts/audit-visibility-levels.ts`; `transactions.ts` citing missing `docs/initiatives/kd15/…`) | **Done** | Superseded 2026-07-02 in the status/comment truth-up — comments now reflect reality; `space-account-link.ts` "nothing reads SAL yet" comment already gone |
 | Root-level personal photos, `" 2"` duplicate dirs | **Archive/remove** | KD-13, v2.4.5 hygiene |
 
 ## 11. Executive summary
 
 **Architecture maturity: high for its stage.** The expensive-to-retrofit boundaries — tenancy, encryption, auth chokepoints, the LLM provider seam — are correct and consistently enforced. The AI layer's deterministic-first design (the model narrates pre-computed, provenance-carrying facts; it never calculates) is a genuine differentiator executed above industry norm.
 
-**Launch readiness: not yet, by design.** The gap is not features — it is verification. One test file, no output validation, invariants asserted in comments, one live privacy defect (KD-1), and five migration seams open at once. v2.4.5 exists precisely to convert prose guarantees into checked ones, and the roadmap gates every subsequent phase on it.
+**Launch readiness: not yet, by design.** The gap is not features — it is verification. Thin test coverage (4 files), only shadow (not live) output validation, invariants still asserted in comments, and five migration seams open at once. The critical privacy defects (KD-1, KD-15) are now closed, but the enforcement discipline behind them is not yet systematized. v2.4.5 exists precisely to convert prose guarantees into checked ones, and the roadmap gates every subsequent phase on it.
 
 **Largest strengths:** deterministic AI assessment pipeline; Plaid failure-mode resilience; migration discipline; security architecture fundamentals.
 
 **Largest weaknesses:** verification debt; concurrent seam count; solo bus factor; no operational substrate for scheduled intelligence yet.
 
-**Biggest risks:** shipping shared Spaces with the BALANCE_ONLY leak unfixed; ambient features speaking unprompted before output validation exists; documentation reverting to fragmentation if this file is not maintained.
+**Biggest risks:** ambient features speaking unprompted before *live* output validation exists (shadow validator is not enforcement); the SAL dual-write desyncing under partial failure before its transaction wrapper lands (KD-4), corrupting the v2.5 read-cutover; documentation reverting to fragmentation if this file is not maintained. (The BALANCE_ONLY leak that previously headed this list is now closed — KD-1 and KD-15 fixed and committed.)
 
 **Recommendation:** close v2.4 now; execute v2.4.5 without scope additions; define v2.5 as seam-closure plus design foundation; let v2.6 earn ambient behavior behind the validator; launch at v3.0 with zero new surface. Everything else stays in §8 until the market says otherwise.
