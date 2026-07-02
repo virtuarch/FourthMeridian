@@ -129,29 +129,34 @@ export const DELETE = withApiHandler(async (
   const now       = new Date();
   const newStatus = isSelf ? SpaceMemberStatus.LEFT : SpaceMemberStatus.REMOVED;
 
-  // ── 1. Soft-update SpaceMember ────────────────────────────────────────
-  await db.spaceMember.update({
-    where: { spaceId_userId: { spaceId, userId: targetUserId } },
-    data: {
-      status:      newStatus,
-      revokedAt:   now,
-      revokedById: isSelf ? null : user.id,
-    },
-  });
-
-  // ── 2. D3 Stage B4 — Revoke all active SpaceAccountLink rows the member added
-  await db.spaceAccountLink.updateMany({
-    where: {
-      spaceId,
-      addedByUserId: targetUserId,
-      status:        ShareStatus.ACTIVE,
-    },
-    data: {
-      status:          ShareStatus.REVOKED,
-      revokedAt:       now,
-      revokedByUserId: isSelf ? targetUserId : user.id,
-    },
-  });
+  // ── KD-4 Phase 3 — the member soft-update and the revoke of the links they
+  //    added commit together. Previously non-atomic: a failed SAL revoke after
+  //    the member flip left a departed member's shared accounts visible to the
+  //    remaining members (a privacy gap). Snapshot regen below stays OUTSIDE.
+  await db.$transaction([
+    // 1. Soft-update SpaceMember
+    db.spaceMember.update({
+      where: { spaceId_userId: { spaceId, userId: targetUserId } },
+      data: {
+        status:      newStatus,
+        revokedAt:   now,
+        revokedById: isSelf ? null : user.id,
+      },
+    }),
+    // 2. D3 Stage B4 — Revoke all active SpaceAccountLink rows the member added
+    db.spaceAccountLink.updateMany({
+      where: {
+        spaceId,
+        addedByUserId: targetUserId,
+        status:        ShareStatus.ACTIVE,
+      },
+      data: {
+        status:          ShareStatus.REVOKED,
+        revokedAt:       now,
+        revokedByUserId: isSelf ? targetUserId : user.id,
+      },
+    }),
+  ]);
 
   // ── 2a. Regenerate SpaceSnapshot now that this space's active shares have
   //       changed (the departing/removed member's shares were just revoked

@@ -125,28 +125,34 @@ export async function POST(req: NextRequest) {
   });
 
   if (archivedFa) {
-    await db.financialAccount.update({
-      where: { id: archivedFa.id },
-      data:  { deletedAt: null, syncStatus: "pending" },
-    });
-    await db.accountConnection.updateMany({
-      where: { financialAccountId: archivedFa.id, deletedAt: { not: null } },
-      data:  { deletedAt: null },
-    });
-    // D3 Stage B3 — SpaceAccountLink is the sole write target.
-    await dualWriteSpaceAccountLink({
-      spaceId,
-      financialAccountId: archivedFa.id,
-      create: {
-        addedByUserId:   userId,
-        visibilityLevel: VisibilityLevel.FULL,
-        status:          ShareStatus.ACTIVE,
-      },
-      update: {
-        status:          ShareStatus.ACTIVE,
-        revokedAt:       null,
-        revokedByUserId: null,
-      },
+    // KD-4 Phase 3 — reactivate FinancialAccount + AccountConnection + SAL
+    // atomically. The providerIdentity mirror, snapshot regen, and the audit
+    // write below stay OUTSIDE the transaction.
+    await db.$transaction(async (tx) => {
+      await tx.financialAccount.update({
+        where: { id: archivedFa.id },
+        data:  { deletedAt: null, syncStatus: "pending" },
+      });
+      await tx.accountConnection.updateMany({
+        where: { financialAccountId: archivedFa.id, deletedAt: { not: null } },
+        data:  { deletedAt: null },
+      });
+      // D3 Stage B3 — SpaceAccountLink is the sole write target.
+      await dualWriteSpaceAccountLink({
+        spaceId,
+        financialAccountId: archivedFa.id,
+        client:          tx,
+        create: {
+          addedByUserId:   userId,
+          visibilityLevel: VisibilityLevel.FULL,
+          status:          ShareStatus.ACTIVE,
+        },
+        update: {
+          status:          ShareStatus.ACTIVE,
+          revokedAt:       null,
+          revokedByUserId: null,
+        },
+      });
     });
 
     // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
@@ -172,49 +178,56 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, accountId: archivedFa.id }, { status: 200 });
   }
 
-  // ── Create new FinancialAccount ────────────────────────────────────────────
-  const fa = await db.financialAccount.create({
-    data: {
-      ownerType:     AccountOwnerType.USER,
-      ownerUserId:   userId,
-      createdByUserId: userId, // D11 — human-accountable creator
-      name:          name.trim(),
-      type:          AccountType.crypto,
-      institution:   "Self-custodied",
-      balance:       0,
-      currency:      "USD",
-      walletAddress: walletAddress.trim(),
-      walletChain:   chain,
-      nativeBalance: 0,
-      syncStatus:    "pending",
-    },
-  });
+  // ── KD-4 Phase 3 — new FinancialAccount + AccountConnection + SAL commit
+  //    atomically. The providerIdentity mirror, snapshot regen, and audit
+  //    write below stay OUTSIDE the transaction.
+  const fa = await db.$transaction(async (tx) => {
+    const created = await tx.financialAccount.create({
+      data: {
+        ownerType:     AccountOwnerType.USER,
+        ownerUserId:   userId,
+        createdByUserId: userId, // D11 — human-accountable creator
+        name:          name.trim(),
+        type:          AccountType.crypto,
+        institution:   "Self-custodied",
+        balance:       0,
+        currency:      "USD",
+        walletAddress: walletAddress.trim(),
+        walletChain:   chain,
+        nativeBalance: 0,
+        syncStatus:    "pending",
+      },
+    });
 
-  // ── Create AccountConnection (manual, no PlaidItem) ────────────────────────
-  await db.accountConnection.create({
-    data: {
-      financialAccountId: fa.id,
-      connectedByUserId:  userId,
-      syncStatus:         "pending",
-      isCanonical:        true,
-    },
-  });
+    // AccountConnection (manual, no PlaidItem)
+    await tx.accountConnection.create({
+      data: {
+        financialAccountId: created.id,
+        connectedByUserId:  userId,
+        syncStatus:         "pending",
+        isCanonical:        true,
+      },
+    });
 
-  // ── D3 Stage B3 — SpaceAccountLink is the sole write target ─────────────
-  await dualWriteSpaceAccountLink({
-    spaceId,
-    financialAccountId: fa.id,
-    creatorUserId:       fa.createdByUserId ?? fa.ownerUserId,
-    create: {
-      addedByUserId:   userId,
-      visibilityLevel: VisibilityLevel.FULL,
-      status:          ShareStatus.ACTIVE,
-    },
-    update: {
-      status:          ShareStatus.ACTIVE,
-      revokedAt:       null,
-      revokedByUserId: null,
-    },
+    // D3 Stage B3 — SpaceAccountLink is the sole write target
+    await dualWriteSpaceAccountLink({
+      spaceId,
+      financialAccountId: created.id,
+      creatorUserId:       created.createdByUserId ?? created.ownerUserId,
+      client:              tx,
+      create: {
+        addedByUserId:   userId,
+        visibilityLevel: VisibilityLevel.FULL,
+        status:          ShareStatus.ACTIVE,
+      },
+      update: {
+        status:          ShareStatus.ACTIVE,
+        revokedAt:       null,
+        revokedByUserId: null,
+      },
+    });
+
+    return created;
   });
 
   // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). New row, so

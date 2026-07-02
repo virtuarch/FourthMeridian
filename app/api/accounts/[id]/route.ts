@@ -149,27 +149,32 @@ export const DELETE = withApiHandler(async (
 
     const now = new Date();
 
-    // ── 1. Soft-delete the FinancialAccount ───────────────────────────────────
-    await db.financialAccount.update({
-      where: { id },
-      data:  { deletedAt: now },
-    });
-
-    // ── 2. Soft-delete all AccountConnections ─────────────────────────────────
-    await db.accountConnection.updateMany({
-      where: { financialAccountId: id, deletedAt: null },
-      data:  { deletedAt: now },
-    });
-
-    // ── 3. Revoke all active SpaceAccountLink rows ────────────────────────────
-    // Capture before revocation so snapshot regen knows which spaces are affected.
-    const activeLinks = await db.spaceAccountLink.findMany({
-      where:  { financialAccountId: id, status: ShareStatus.ACTIVE },
-      select: { spaceId: true },
-    });
-    await db.spaceAccountLink.updateMany({
-      where: { financialAccountId: id, status: ShareStatus.ACTIVE },
-      data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: user.id },
+    // ── KD-4 Phase 3 — soft-delete + connection close + SAL revoke commit
+    //    atomically. The affected-space capture (a read of ACTIVE links, needed
+    //    by snapshot regen below) runs inside the transaction, before the
+    //    revoke, so it observes pre-revocation state; its result is returned for
+    //    use outside. Snapshot regen and the Plaid disconnect stay OUTSIDE.
+    const activeLinks = await db.$transaction(async (tx) => {
+      // 1. Soft-delete the FinancialAccount
+      await tx.financialAccount.update({
+        where: { id },
+        data:  { deletedAt: now },
+      });
+      // 2. Soft-delete all AccountConnections
+      await tx.accountConnection.updateMany({
+        where: { financialAccountId: id, deletedAt: null },
+        data:  { deletedAt: now },
+      });
+      // 3. Capture active links (for snapshot regen), then revoke them
+      const links = await tx.spaceAccountLink.findMany({
+        where:  { financialAccountId: id, status: ShareStatus.ACTIVE },
+        select: { spaceId: true },
+      });
+      await tx.spaceAccountLink.updateMany({
+        where: { financialAccountId: id, status: ShareStatus.ACTIVE },
+        data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: user.id },
+      });
+      return links;
     });
 
     // ── 3a. Regenerate SpaceSnapshot for every space this account was active

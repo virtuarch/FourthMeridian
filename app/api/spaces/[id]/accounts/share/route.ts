@@ -71,33 +71,38 @@ export const POST = withApiHandler(async (
     return NextResponse.json({ error: "You do not own this account" }, { status: 403 });
   }
 
+  // KD-4 Phase 3 — the share write (SAL upsert) and its audit row commit
+  // together. Snapshot regen below stays OUTSIDE.
   // D3 Stage B3 — SpaceAccountLink is the sole write target.
   // Upsert the link — if one exists (even REVOKED), re-activate it.
-  await dualWriteSpaceAccountLink({
-    spaceId,
-    financialAccountId,
-    create: {
-      addedByUserId:   userId,
-      visibilityLevel: visibilityLevel as VisibilityLevel,
-      status:          ShareStatus.ACTIVE,
-    },
-    update: {
-      addedByUserId:   userId,
-      visibilityLevel: visibilityLevel as VisibilityLevel,
-      status:          ShareStatus.ACTIVE,
-      revokedAt:       null,
-      revokedByUserId: null,
-    },
-  });
-
-  await db.auditLog.create({
-    data: {
-      userId,
+  await db.$transaction(async (tx) => {
+    await dualWriteSpaceAccountLink({
       spaceId,
-      action:    "ACCOUNT_SHARE",
-      metadata:  { financialAccountId, accountName: fa.name, visibilityLevel },
-      ipAddress: getClientIp(req),
-    },
+      financialAccountId,
+      client: tx,
+      create: {
+        addedByUserId:   userId,
+        visibilityLevel: visibilityLevel as VisibilityLevel,
+        status:          ShareStatus.ACTIVE,
+      },
+      update: {
+        addedByUserId:   userId,
+        visibilityLevel: visibilityLevel as VisibilityLevel,
+        status:          ShareStatus.ACTIVE,
+        revokedAt:       null,
+        revokedByUserId: null,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        userId,
+        spaceId,
+        action:    "ACCOUNT_SHARE",
+        metadata:  { financialAccountId, accountName: fa.name, visibilityLevel },
+        ipAddress: getClientIp(req),
+      },
+    });
   });
 
   // Regenerate SpaceSnapshot now that this space has a new active share —
@@ -162,23 +167,27 @@ export const DELETE = withApiHandler(async (
 
   const revokedAt = new Date();
 
-  await db.spaceAccountLink.update({
-    where: { spaceId_financialAccountId: { spaceId, financialAccountId } },
-    data: {
-      status:          ShareStatus.REVOKED,
-      revokedAt,
-      revokedByUserId: userId,
-    },
-  });
+  // KD-4 Phase 3 — the revoke write and its audit row commit together.
+  // Snapshot regen below stays OUTSIDE.
+  await db.$transaction(async (tx) => {
+    await tx.spaceAccountLink.update({
+      where: { spaceId_financialAccountId: { spaceId, financialAccountId } },
+      data: {
+        status:          ShareStatus.REVOKED,
+        revokedAt,
+        revokedByUserId: userId,
+      },
+    });
 
-  await db.auditLog.create({
-    data: {
-      userId,
-      spaceId,
-      action:    "ACCOUNT_SHARE_REVOKE",
-      metadata:  { financialAccountId, accountName: link.financialAccount?.name ?? null },
-      ipAddress: getClientIp(req),
-    },
+    await tx.auditLog.create({
+      data: {
+        userId,
+        spaceId,
+        action:    "ACCOUNT_SHARE_REVOKE",
+        metadata:  { financialAccountId, accountName: link.financialAccount?.name ?? null },
+        ipAddress: getClientIp(req),
+      },
+    });
   });
 
   // Regenerate SpaceSnapshot now that this space lost an active share —

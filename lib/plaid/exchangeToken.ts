@@ -284,53 +284,65 @@ export async function performPlaidTokenExchange(
     // all three resolution branches above. Best-effort / non-fatal.
     await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
 
-    // ── Upsert AccountConnection ──────────────────────────────────────────────
-    const existingConn = await db.accountConnection.findFirst({
-      where: {
-        financialAccountId: fa.id,
-        connectedByUserId:  userId,
-        plaidItemDbId:      plaidItem.id,
-      },
-    });
-
-    if (!existingConn) {
-      await db.accountConnection.create({
-        data: {
-          financialAccountId: fa.id,
+    // ── KD-4 Phase 3 — AccountConnection upsert + SAL link commit atomically.
+    //    The FinancialAccount resolve/create/update above stays OUTSIDE this
+    //    transaction: resolveAccountByFingerprint() self-manages its own
+    //    interactive transaction (Phase 2) and must never be nested, and each
+    //    fa write there is a single atomic statement. The ProviderAccountIdentity
+    //    mirror write (above) is idempotent/non-fatal and also stays outside.
+    //    Fields are captured into locals so the closure doesn't rely on
+    //    control-flow narrowing of the `let fa`.
+    const faId = fa.id;
+    const faCreatorUserId = fa.createdByUserId ?? fa.ownerUserId;
+    await db.$transaction(async (tx) => {
+      const existingConn = await tx.accountConnection.findFirst({
+        where: {
+          financialAccountId: faId,
           connectedByUserId:  userId,
           plaidItemDbId:      plaidItem.id,
-          connectionId:       connectionId,
-          syncStatus:         "synced",
-          isCanonical:        true,
         },
       });
-    } else {
-      await db.accountConnection.update({
-        where: { id: existingConn.id },
-        data: {
-          syncStatus:   "synced",
-          lastSyncedAt: new Date(),
-          deletedAt:    null,
-          ...(connectionId && !existingConn.connectionId && { connectionId }),
-        },
-      });
-    }
 
-    // D3 Stage B3 — SpaceAccountLink is the sole write target
-    await dualWriteSpaceAccountLink({
-      spaceId,
-      financialAccountId: fa.id,
-      creatorUserId:      fa.createdByUserId ?? fa.ownerUserId,
-      create: {
-        addedByUserId:   userId,
-        visibilityLevel: VisibilityLevel.FULL,
-        status:          ShareStatus.ACTIVE,
-      },
-      update: {
-        status:          ShareStatus.ACTIVE,
-        revokedAt:       null,
-        revokedByUserId: null,
-      },
+      if (!existingConn) {
+        await tx.accountConnection.create({
+          data: {
+            financialAccountId: faId,
+            connectedByUserId:  userId,
+            plaidItemDbId:      plaidItem.id,
+            connectionId:       connectionId,
+            syncStatus:         "synced",
+            isCanonical:        true,
+          },
+        });
+      } else {
+        await tx.accountConnection.update({
+          where: { id: existingConn.id },
+          data: {
+            syncStatus:   "synced",
+            lastSyncedAt: new Date(),
+            deletedAt:    null,
+            ...(connectionId && !existingConn.connectionId && { connectionId }),
+          },
+        });
+      }
+
+      // D3 Stage B3 — SpaceAccountLink is the sole write target
+      await dualWriteSpaceAccountLink({
+        spaceId,
+        financialAccountId: faId,
+        creatorUserId:      faCreatorUserId,
+        client:             tx,
+        create: {
+          addedByUserId:   userId,
+          visibilityLevel: VisibilityLevel.FULL,
+          status:          ShareStatus.ACTIVE,
+        },
+        update: {
+          status:          ShareStatus.ACTIVE,
+          revokedAt:       null,
+          revokedByUserId: null,
+        },
+      });
     });
 
     importedIds.push(fa.id);

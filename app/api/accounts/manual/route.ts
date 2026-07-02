@@ -102,61 +102,69 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     }
   }
 
-  // ── Create FinancialAccount ────────────────────────────────────────────────
-  const fa = await db.financialAccount.create({
-    data: {
-      ownerType:   AccountOwnerType.USER,
-      ownerUserId: userId,
-      createdByUserId: userId, // D11 — human-accountable creator
-      name:        name.trim(),
-      type:        AccountType.other,
-      institution: "Manual Entry",
-      balance,
-      currency:    currency.toUpperCase(),
-      syncStatus:  "manual",
-      lastUpdated: new Date(),
-    },
-  });
-
-  // ── Create AccountConnection (no PlaidItem, no walletAddress) ─────────────
-  await db.accountConnection.create({
-    data: {
-      financialAccountId: fa.id,
-      connectedByUserId:  userId,
-      syncStatus:         "manual",
-      isCanonical:        true,
-    },
-  });
-
   // ── D3 Stage B3 — SpaceAccountLink is the sole write target ─────────────
   // Sequential, NOT Promise.all: computeLinkKind() inside
   // dualWriteSpaceAccountLink() decides HOME vs SHARED by counting existing
-  // links with no transaction or lock. Run concurrently, every call could
-  // read count === 0 before any commit, assigning HOME to more than one
-  // target. Awaiting each write serially removes the race: shareTargets[0]
-  // (always personalSpaceId) commits first and becomes HOME; subsequent
-  // targets see that committed row and become SHARED. See
+  // links. Run concurrently, every call could read count === 0 before any
+  // commit, assigning HOME to more than one target. Awaiting each write
+  // serially removes the race: shareTargets[0] (always personalSpaceId)
+  // becomes HOME; subsequent targets see the prior row and become SHARED. See
   // docs/initiatives/d3/D3_STEP4C_REGRESSION_ROOT_CAUSE.md ("Secondary finding") and
-  // docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md.
+  // docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md. The KD-5 ordering guard
+  // above is preserved: the loop stays sequential inside the transaction.
   const shareTargets = [personalSpaceId, ...additionalIds];
-  for (const wsId of shareTargets) {
-    await dualWriteSpaceAccountLink({
-      spaceId:            wsId,
-      financialAccountId: fa.id,
-      creatorUserId:       userId,
-      create: {
-        addedByUserId:    userId,
-        visibilityLevel:  VisibilityLevel.FULL,
-        status:           ShareStatus.ACTIVE,
-      },
-      update: {
-        status:           ShareStatus.ACTIVE,
-        visibilityLevel:  VisibilityLevel.FULL,
-        revokedAt:        null,
-        revokedByUserId:  null,
+
+  // ── KD-4 Phase 3 — FinancialAccount + AccountConnection + SAL links commit
+  //    atomically. A partial failure previously could leave an account with no
+  //    links (invisible/orphaned) or shared into some spaces but not others.
+  const fa = await db.$transaction(async (tx) => {
+    const created = await tx.financialAccount.create({
+      data: {
+        ownerType:   AccountOwnerType.USER,
+        ownerUserId: userId,
+        createdByUserId: userId, // D11 — human-accountable creator
+        name:        name.trim(),
+        type:        AccountType.other,
+        institution: "Manual Entry",
+        balance,
+        currency:    currency.toUpperCase(),
+        syncStatus:  "manual",
+        lastUpdated: new Date(),
       },
     });
-  }
+
+    // AccountConnection (no PlaidItem, no walletAddress)
+    await tx.accountConnection.create({
+      data: {
+        financialAccountId: created.id,
+        connectedByUserId:  userId,
+        syncStatus:         "manual",
+        isCanonical:        true,
+      },
+    });
+
+    for (const wsId of shareTargets) {
+      await dualWriteSpaceAccountLink({
+        spaceId:            wsId,
+        financialAccountId: created.id,
+        creatorUserId:       userId,
+        client:              tx,
+        create: {
+          addedByUserId:    userId,
+          visibilityLevel:  VisibilityLevel.FULL,
+          status:           ShareStatus.ACTIVE,
+        },
+        update: {
+          status:           ShareStatus.ACTIVE,
+          visibilityLevel:  VisibilityLevel.FULL,
+          revokedAt:        null,
+          revokedByUserId:  null,
+        },
+      });
+    }
+
+    return created;
+  });
 
   // Regenerate SpaceSnapshot for every space this asset was just shared into
   // — same best-effort/non-fatal pattern as the existing archive/restore/

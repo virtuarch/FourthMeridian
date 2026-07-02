@@ -80,8 +80,12 @@ export const POST = withApiHandler(async (
     return NextResponse.json({ ok: true, accountId: canonical.id });
   }
 
-  // ── Restore in parallel ───────────────────────────────────────────────────
-  await Promise.all([
+  // ── Restore atomically ─────────────────────────────────────────────────────
+  // KD-4 Phase 3 — the three restore writes commit together. Previously a
+  // Promise.all (concurrent, NOT atomic): a failed SAL reactivate could leave
+  // the account un-deleted but its links still REVOKED — a ghost active account
+  // visible in no space.
+  await db.$transaction([
     // 1. Restore FinancialAccount
     db.financialAccount.update({
       where: { id },
