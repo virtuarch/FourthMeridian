@@ -8,9 +8,13 @@
  *
  * SpaceAccountLink is now the PRIMARY read path for the AI assemblers, the
  * data layer, and most account routes (see the D3 Step 4 read-cutover
- * reports); WorkspaceAccountShare remains live at its final mutation site
- * (app/api/spaces/[id]/accounts) and is mirrored here until the full WAS
- * cutover + retirement scheduled for v2.5.
+ * reports), AND the SOLE runtime write target for account↔space visibility.
+ * [UPDATED KD-4 Phase 1] The WorkspaceAccountShare (WAS) dual-write has been
+ * retired from every runtime path — WAS is written only by prisma/seed.ts now.
+ * The "dual-write" naming in this module is historical; these helpers no
+ * longer mirror anything. Full WAS model retirement remains scheduled for
+ * v2.5. See docs/investigations/KD4_ATOMIC_SPACE_ACCOUNT_LINK_WRITES_INVESTIGATION.md
+ * §1 for the grounding.
  *
  * Rules (docs/initiatives/d3/D3_STEP3_DUAL_WRITE_REVIEW.md §2, amended by
  * docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md):
@@ -37,12 +41,35 @@
  *            errors and logged via console.warn without throwing. Removed
  *            so that SpaceAccountLink failures surface to the caller now
  *            that SAL is the primary write target.
- *   Rule 7 — no db.$transaction (see review doc §4 — none used anywhere in
- *            this codebase today).
+ *   Rule 7 — [UPDATED KD-4 Phase 1] Each write helper accepts an optional
+ *            transaction client (DbClient, above), defaulting to the `db`
+ *            singleton. Callers that need atomicity across several tables wrap
+ *            their DB-only write group in db.$transaction(async (tx) => …) and
+ *            pass `tx` into these helpers. External side-effects (Plaid
+ *            itemRemove, snapshot regen) and mirror writes stay OUTSIDE the
+ *            transaction. The route/merge wrapping itself is KD-4 Phase 2/3 —
+ *            this module only provides the threading seam. (The prior wording,
+ *            "no db.$transaction anywhere in this codebase," is obsolete:
+ *            transactions are used in auth/imports/totp/etc., and are being
+ *            introduced here by KD-4.)
  */
 
 import { db } from "@/lib/db";
-import { SpaceAccountLinkKind, ShareStatus, VisibilityLevel } from "@prisma/client";
+import { Prisma, SpaceAccountLinkKind, ShareStatus, VisibilityLevel } from "@prisma/client";
+
+/**
+ * A Prisma client handle that is either the module-level singleton `db` or an
+ * interactive-transaction client (`tx`) from `db.$transaction(async (tx) => …)`.
+ *
+ * KD-4 Phase 1 — every write helper below accepts one of these (defaulting to
+ * `db`) so a caller can thread its own transaction through, without any
+ * existing call site having to change. Wrapping DB-only write groups in a
+ * transaction, and threading `tx` into these helpers, is what makes the
+ * multi-table SpaceAccountLink write sequences atomic (see
+ * docs/investigations/KD4_ATOMIC_SPACE_ACCOUNT_LINK_WRITES_CHECKLIST.md).
+ * Exported so lib/accounts/reconcile.ts (Phase 2) can reuse the same type.
+ */
+export type DbClient = Prisma.TransactionClient | typeof db;
 
 /**
  * Resolve a user's personal Space — same lookup used by
@@ -67,8 +94,11 @@ export async function resolvePersonalSpaceId(userId: string): Promise<string | n
  * Resolve a FinancialAccount's creator per the D3 Step 2 convention:
  * createdByUserId ?? ownerUserId.
  */
-export async function resolveAccountCreatorUserId(financialAccountId: string): Promise<string | null> {
-  const fa = await db.financialAccount.findUnique({
+export async function resolveAccountCreatorUserId(
+  financialAccountId: string,
+  client: DbClient = db,
+): Promise<string | null> {
+  const fa = await client.financialAccount.findUnique({
     where:  { id: financialAccountId },
     select: { createdByUserId: true, ownerUserId: true },
   });
@@ -100,15 +130,16 @@ export async function resolveAccountCreatorUserId(financialAccountId: string): P
 export async function computeLinkKind(
   spaceId: string,
   financialAccountId: string,
+  client: DbClient = db,
 ): Promise<SpaceAccountLinkKind> {
-  const existingLinkCount = await db.spaceAccountLink.count({
+  const existingLinkCount = await client.spaceAccountLink.count({
     where: { financialAccountId },
   });
   if (existingLinkCount === 0) {
     return SpaceAccountLinkKind.HOME;
   }
 
-  const existingHome = await db.spaceAccountLink.findFirst({
+  const existingHome = await client.spaceAccountLink.findFirst({
     where:  { financialAccountId, kind: SpaceAccountLinkKind.HOME },
     select: { spaceId: true },
   });
@@ -141,12 +172,18 @@ export async function dualWriteSpaceAccountLink(params: {
   creatorUserId?:     string | null;
   create:             SpaceAccountLinkWriteFields;
   update:             Partial<SpaceAccountLinkWriteFields>;
+  // KD-4 Phase 1 — optional transaction client. When a caller wraps a
+  // multi-table write group in db.$transaction, it passes `tx` here so the
+  // kind read and the upsert run inside that same transaction. Defaults to
+  // the `db` singleton, so every existing call site is unchanged.
+  client?:            DbClient;
 }): Promise<void> {
+  const client = params.client ?? db;
   // params.creatorUserId is accepted for call-site backward compatibility
   // (every existing dual-write call site still passes it) but is no longer
   // used to compute kind — see computeLinkKind()'s doc comment.
-  const kind = await computeLinkKind(params.spaceId, params.financialAccountId);
-  await db.spaceAccountLink.upsert({
+  const kind = await computeLinkKind(params.spaceId, params.financialAccountId, client);
+  await client.spaceAccountLink.upsert({
     where: {
       spaceId_financialAccountId: {
         spaceId:            params.spaceId,
@@ -182,12 +219,14 @@ export async function dualWriteFromShare(
     revokedAt:           Date | null;
     revokedByUserId:     string | null;
   },
-  creatorUserId?: string | null
+  creatorUserId?: string | null,
+  client?: DbClient
 ): Promise<void> {
   await dualWriteSpaceAccountLink({
     spaceId:            share.workspaceId,
     financialAccountId: share.financialAccountId,
     creatorUserId,
+    client,
     create: {
       addedByUserId:   share.addedByUserId,
       visibilityLevel: share.visibilityLevel,
@@ -219,10 +258,11 @@ export async function dualWriteFromShares(
     revokedAt:           Date | null;
     revokedByUserId:     string | null;
   }>,
-  creatorUserId?: string | null
+  creatorUserId?: string | null,
+  client?: DbClient
 ): Promise<void> {
   for (const share of shares) {
-    await dualWriteFromShare(share, creatorUserId);
+    await dualWriteFromShare(share, creatorUserId, client);
   }
 }
 
@@ -304,6 +344,9 @@ export async function ensureHomeLink(params: {
  *
  * Throws on failure — callers are responsible for error handling.
  */
-export async function dualDeleteSpaceAccountLinks(financialAccountId: string): Promise<void> {
-  await db.spaceAccountLink.deleteMany({ where: { financialAccountId } });
+export async function dualDeleteSpaceAccountLinks(
+  financialAccountId: string,
+  client: DbClient = db,
+): Promise<void> {
+  await client.spaceAccountLink.deleteMany({ where: { financialAccountId } });
 }
