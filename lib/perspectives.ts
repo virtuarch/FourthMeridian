@@ -28,6 +28,11 @@
  * being host-agnostic, the same separation lib/space-presets.ts uses.
  */
 
+// Type-only import — erased at compile time, so this client-safe config file
+// pulls no engine (server) code into any bundle. The engine itself never
+// imports this file; the coupling is one-directional and nominal.
+import type { LensId } from "@/lib/perspective-engine/types";
+
 export type PerspectiveStatus = "available" | "comingSoon";
 
 /**
@@ -50,6 +55,17 @@ export interface PerspectiveDef {
   status: PerspectiveStatus;
   /** Sub-nav bucket on the full Perspectives tab — see PERSPECTIVE_GROUPS. */
   group: PerspectiveGroup;
+  /**
+   * Present when this lens is backed by a Perspective Engine lens
+   * (lib/perspective-engine) that computes a real deterministic answer for
+   * its card. Invariant (guard-tested in lib/perspectives.test.ts): an
+   * entry with a lensId must be status "available" — a computed answer can
+   * never be "coming soon" — and must have a matching registered lens
+   * module at lib/perspective-engine/lenses/<lensId>.ts. Entries WITHOUT a
+   * lensId keep today's behavior exactly (host tab routing or comingSoon
+   * placeholder).
+   */
+  lensId?: LensId;
 }
 
 export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
@@ -81,6 +97,18 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
   debt: {
     id: "debt", label: "Debt", icon: "CreditCard", status: "available", group: "Financial",
     description: "Balances, payoff pace, and credit health.",
+    lensId: "debt",
+  },
+  /**
+   * First library entry born lens-backed: no host tab behind it, no
+   * comingSoon placeholder — its card content IS the engine's answer
+   * (verdict + headline via /api/spaces/[id]/perspectives). Until hosts
+   * render lens results, the card falls back to this static description.
+   */
+  liquidity: {
+    id: "liquidity", label: "Liquidity", icon: "Droplets", status: "available", group: "Financial",
+    description: "How much you could get at, and how fast.",
+    lensId: "liquidity",
   },
   retirement: {
     id: "retirement", label: "Retirement", icon: "PiggyBank", status: "available", group: "Retirement",
@@ -110,16 +138,21 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
  * so adding a category here is a one-line change, not a new code path.
  */
 const PERSPECTIVES_BY_CATEGORY: Record<string, string[]> = {
-  PERSONAL:        ["overview", "wealth", "cashFlow", "investments", "debt", "goals"],
-  HOUSEHOLD:       ["overview", "wealth", "cashFlow", "goals", "debt"],
-  FAMILY:          ["overview", "wealth", "cashFlow", "goals", "debt"],
+  // Liquidity (first lens-backed entry) joins a deliberately conservative
+  // category set — the categories where "what could I get at, how fast?"
+  // is a daily question (see PERSPECTIVE_ENGINE_FOUNDATION_INVESTIGATION.md
+  // §2.5). Other categories can adopt it later as one-line changes here.
+  PERSONAL:        ["overview", "wealth", "cashFlow", "liquidity", "investments", "debt", "goals"],
+  HOUSEHOLD:       ["overview", "wealth", "cashFlow", "liquidity", "goals", "debt"],
+  FAMILY:          ["overview", "wealth", "cashFlow", "liquidity", "goals", "debt"],
   RETIREMENT:      ["overview", "wealth", "retirement", "investments", "cashFlow"],
   INVESTMENT:      ["overview", "investments", "wealth", "cashFlow"],
   PROPERTY:        ["overview", "property", "cashFlow", "wealth"],
   VEHICLE:         ["overview", "wealth", "cashFlow"],
-  BUSINESS:        ["overview", "businessHealth", "cashFlow", "wealth"],
+  BUSINESS:        ["overview", "businessHealth", "cashFlow", "liquidity", "wealth"],
   DEBT_PAYOFF:     ["overview", "debt", "cashFlow", "wealth"],
-  EMERGENCY_FUND:  ["overview", "wealth", "goals", "cashFlow"],
+  // Emergency funds exist to BE liquidity — the lens sits right up front.
+  EMERGENCY_FUND:  ["overview", "liquidity", "wealth", "goals", "cashFlow"],
   GOAL:            ["overview", "goals", "wealth", "cashFlow"],
   TRIP:            ["overview", "cashFlow", "goals"],
   EQUIPMENT:       ["overview", "wealth", "cashFlow"],
