@@ -149,13 +149,21 @@ check(
   'ATTRIBUTION_RULE const missing from route.ts',
 );
 
+// Doctrine (refined): refuse only the missing dimension, not the whole question —
+// answer every deterministic portion FIRST, disclose the missing dimension SECOND,
+// offer the nearest truthful alternative, and never fabricate a split. These
+// phrases pin that wording so the answer-first behavior cannot silently regress
+// back to a refusal-first rule.
 const RULE_PHRASES = [
-  'Attribution honesty — never fabricate a dimension absent from context:',
-  'breakdown by account, card, source, destination, or any ',
-  'do NOT infer, allocate, or distribute the totals across accounts',
-  'Any such split would be invented',
-  'attribution is not available in the data',
-  'offer what CAN be answered.',
+  'Attribution honesty — refuse only the missing dimension, never the whole question:',
+  'Do not lead with a refusal',
+  'FIRST, answer every deterministic portion the context DOES contain',
+  'Never withhold a correct total because one requested dimension is missing.',
+  'THEN disclose, plainly and once, that per-account',
+  'attribution is not available in this data.',
+  'Offer the nearest truthful alternative you can answer',
+  'Never infer, allocate, or distribute a total across accounts or cards',
+  'any such split would be invented',
   'This applies to every dimension, not only debt payments.',
 ];
 for (const phrase of RULE_PHRASES) {
@@ -172,6 +180,24 @@ check(
     src.includes('transfers per account') &&
     src.includes('not only debt payments'),
   'rule appears narrowed to debt payments only',
+);
+
+// Answer-first doctrine: the instruction to answer the deterministic portion must
+// come BEFORE the instruction to disclose the missing dimension. This is the whole
+// point of the refinement — refuse the dimension, not the question.
+const ruleArr = arrayLiteral(src, 'ATTRIBUTION_RULE');
+const answerFirstIdx = ruleArr.indexOf('FIRST, answer every deterministic portion');
+const discloseIdx = ruleArr.indexOf('attribution is not available in this data');
+const alternativeIdx = ruleArr.indexOf('Offer the nearest truthful alternative');
+check(
+  'rule answers the deterministic portion BEFORE disclosing the missing dimension',
+  answerFirstIdx !== -1 && discloseIdx !== -1 && answerFirstIdx < discloseIdx,
+  'rule discloses the missing dimension before answering what is known (refusal-first)',
+);
+check(
+  'rule offers the nearest truthful alternative after the disclosure',
+  alternativeIdx !== -1 && alternativeIdx > discloseIdx,
+  'rule does not offer a truthful alternative after the disclosure',
 );
 
 // ---------------------------------------------------------------------------

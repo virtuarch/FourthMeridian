@@ -592,15 +592,23 @@ const ATTRIBUTION_DISCLOSURE =
 
 /** Injected into ADVISOR_PRINCIPLES (both space and master prompts). */
 const ATTRIBUTION_RULE = [
-  'Attribution honesty — never fabricate a dimension absent from context:',
-  '- If the user asks for a breakdown by account, card, source, destination, or any ' +
-    'other dimension that is NOT explicitly present in the deterministic context ' +
-    '(e.g. debt payments per card, transfers per account, income/interest/spending ' +
-    'per account): do NOT infer, allocate, or distribute the totals across accounts. ' +
-    'Any such split would be invented, and a correct total never licenses one.',
-  '- Instead: say plainly that per-account (per-card/per-source/per-destination) ' +
-    'attribution is not available in the data, give the exact totals you DO have, ' +
-    'and offer what CAN be answered.',
+  'Attribution honesty — refuse only the missing dimension, never the whole question:',
+  '- Many questions ask for a breakdown along a dimension the deterministic context ' +
+    'does NOT carry — spending per card, debt payments per card, ' +
+    'transfers per account, income/interest/spending per account. These are NOT ' +
+    'unanswerable. Do not lead with a refusal, and never discard a truthful total ' +
+    'just because one requested dimension is unavailable. Answer in this order:',
+  '  1. FIRST, answer every deterministic portion the context DOES contain that bears ' +
+    'on the question: the exact overall total(s) for the requested period, plus any ' +
+    'truthful breakdown along a dimension that IS present (by category, by month, by ' +
+    'merchant). Never withhold a correct total because one requested dimension is missing.',
+  '  2. THEN disclose, plainly and once, that per-account (per-card / per-source / ' +
+    'per-destination) attribution is not available in this data.',
+  '  3. Offer the nearest truthful alternative you can answer (for example, the same ' +
+    'figure broken down by category or by month).',
+  '- Never infer, allocate, or distribute a total across accounts or cards to fill the ' +
+    'missing dimension — any such split would be invented, and a correct total never ' +
+    'licenses one.',
   '- This applies to every dimension, not only debt payments.',
 ].join('\n');
 
