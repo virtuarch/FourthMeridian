@@ -23,6 +23,12 @@ import { getSpaceContext } from "@/lib/space";
 import { Account, Holding } from "@/types";
 import { ShareStatus, PlaidItemStatus } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
+// KD-19 — visibility-tier enforcement on the UI account/holdings read paths.
+// grantsAccountDetail + TRANSACTION_DETAIL_VISIBILITY share the FULL gate the
+// AI assemblers use, so no read surface can disagree; sanitizeForBalanceOnly
+// is the same single-account redactor the shared-Space accounts route uses.
+import { grantsAccountDetail, TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
+import { sanitizeForBalanceOnly } from "@/lib/account-privacy";
 
 /**
  * All accounts visible to the current space, via SpaceAccountLink.
@@ -32,13 +38,25 @@ import { estimateMinimumPayment } from "@/lib/debt";
  * its data helpers) to avoid a redundant getSpaceContext() call. Falls
  * back to resolving it internally (now cached per-request via React's
  * cache()) when called standalone, so existing callers keep working.
+ *
+ * `ctx.userId` is an optional internal/test seam: `getSpaceContext()` reads
+ * next-auth `headers()` and therefore cannot run outside a Next request scope
+ * (e.g. a standalone tsx privacy-proof script). A caller that already knows the
+ * viewing user — and only such a caller — may pass `userId` to skip that
+ * resolution. Production callers pass at most `{ spaceId }`, so they resolve
+ * `userId` from the request scope exactly as before; production behavior is
+ * unchanged.
  */
-export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]> {
-  const { spaceId } = ctx ?? (await getSpaceContext());
+export async function getAccounts(ctx?: { spaceId: string; userId?: string }): Promise<Account[]> {
+  // Resolve spaceId + the current userId (used only for the reconnect badge
+  // below). Call getSpaceContext() only when the caller hasn't supplied both —
+  // it is cache()-memoized per request, so this is at most one call. When both
+  // are provided (internal/test), no request scope is touched.
+  const needsResolve = !ctx?.spaceId || !ctx?.userId;
+  const resolved = needsResolve ? await getSpaceContext() : null;
+  const spaceId = ctx?.spaceId ?? resolved!.spaceId;
   // D2-7E — current user, for the reconnect-badge ownership check below.
-  // getSpaceContext() is cache()-memoized per request, so this costs nothing
-  // extra even when the caller already passed a resolved `ctx`.
-  const { userId } = await getSpaceContext();
+  const userId = ctx?.userId ?? resolved!.userId;
 
   const links = await db.spaceAccountLink.findMany({
     where: {
@@ -47,6 +65,9 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
       financialAccount: { deletedAt: null },
     },
     include: {
+      // KD-19 — owner first name for the generic label on sanitized
+      // (BALANCE_ONLY / SUMMARY_ONLY) rows, matching normalizeSharedAccounts.
+      addedByUser: { select: { firstName: true, name: true } },
       financialAccount: {
         include: {
           debtProfile: true,
@@ -70,7 +91,45 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return links.map(({ financialAccount: r }: any) => {
+  return links.map((link: any) => {
+    const r = link.financialAccount;
+
+    // KD-19 — only FULL links may expose account metadata (institution, real
+    // name, credit limit, debt fields). BALANCE_ONLY exposes the balance total
+    // alone; SUMMARY_ONLY / PRIVATE / SHARED fail closed. Mirrors the AI
+    // accounts assembler and lib/account-privacy.ts so no read surface can
+    // disagree. Returns the same minimal safe shape the shared-Space accounts
+    // route already serves to the UI.
+    if (!grantsAccountDetail(link.visibilityLevel)) {
+      const ownerFirstName =
+        link.addedByUser?.firstName?.trim() ||
+        link.addedByUser?.name?.trim().split(" ")[0] ||
+        null;
+      const safe = sanitizeForBalanceOnly(
+        {
+          id:          r.id,
+          type:        r.type,
+          debtSubtype: r.debtSubtype ?? null,
+          balance:     r.balance,
+          currency:    r.currency,
+          lastUpdated: r.lastUpdated,
+        },
+        ownerFirstName,
+      );
+      return {
+        id:          safe.id,
+        name:        safe.name,
+        type:        safe.type as Account["type"],
+        institution: "",              // redacted — institution is identifying
+        balance:     safe.balance,
+        currency:    safe.currency,
+        lastUpdated: safe.lastUpdated,
+        // All other fields intentionally omitted (undefined) under the
+        // BALANCE_ONLY / SUMMARY_ONLY tier: no institution, no debt metadata,
+        // no Plaid/connection state, no wallet fields.
+      } as Account;
+    }
+
     const profile = r.debtProfile ?? null;
 
     // D2-7E — reconnect badge. Only true for the connection *this* user made
@@ -157,7 +216,18 @@ export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]>
         financialAccountId: { not: null },
         financialAccount: {
           deletedAt: null,
-          spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } },
+          // KD-19 — individual positions are per-item DETAIL and require a
+          // FULL link. BALANCE_ONLY / SUMMARY_ONLY accounts contribute their
+          // balance (via getAccounts) but never expose symbols/quantities.
+          // Same FULL-only gate the transaction read paths use, so positions
+          // and rows can never disagree.
+          spaceAccountLinks: {
+            some: {
+              spaceId,
+              status:          ShareStatus.ACTIVE,
+              visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
+            },
+          },
         },
       },
     }),

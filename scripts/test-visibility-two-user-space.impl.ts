@@ -71,6 +71,8 @@ import { getDomainManifest } from '@/lib/ai/domain-manifest';
 import { runSignalDetectors } from '@/lib/ai/signals';
 // KD-15: the real UI list read path + the predicate the account-modal route uses.
 import { getTransactions } from '@/lib/data/transactions';
+// KD-19: the real UI account + holdings read paths.
+import { getAccounts, getHoldings } from '@/lib/data/accounts';
 import { grantsTransactionDetail } from '@/lib/ai/visibility';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
@@ -90,6 +92,16 @@ const CANARY_X = `LEAKCANARYX ${RUN_ID}`;
 const CANARY_Y = `LEAKCANARYY ${RUN_ID}`;
 const CANARY_Z = `LEAKCANARYZ ${RUN_ID}`;
 const CANARY_W = `LEAKCANARYW ${RUN_ID}`;
+
+// KD-19 — per-account institution canaries (identifying metadata that
+// BALANCE_ONLY / SUMMARY_ONLY must redact from getAccounts()), and per-position
+// holding-symbol canaries (per-item detail getHoldings() must gate on FULL).
+const INST_X = `INSTCANARYX${RUN_ID}`;
+const INST_Y = `INSTCANARYY${RUN_ID}`;
+const INST_Z = `INSTCANARYZ${RUN_ID}`;
+const INST_W = `INSTCANARYW${RUN_ID}`;
+const HOLD_X = `HOLDCANARYX${RUN_ID}`; // on FULL account X → must appear
+const HOLD_Y = `HOLDCANARYY${RUN_ID}`; // on BALANCE_ONLY account Y → must not
 
 const Y_BALANCE = 7777.77;
 
@@ -160,23 +172,23 @@ async function main(): Promise<void> {
     },
   });
 
-  const mkAccount = (name: string, balance: number) =>
+  const mkAccount = (name: string, balance: number, institution: string) =>
     prisma.financialAccount.create({
       data: {
         ownerType:   AccountOwnerType.USER,
         ownerUserId: userB.id,
         name,
         type:        AccountType.checking,
-        institution: 'KD1 Test Bank',
+        institution,
         balance,
       },
     });
 
   const [acctX, acctY, acctZ, acctW] = await Promise.all([
-    mkAccount(`KD1 X ${RUN_ID}`, 1000),
-    mkAccount(`KD1 Y ${RUN_ID}`, Y_BALANCE),
-    mkAccount(`KD1 Z ${RUN_ID}`, 2000),
-    mkAccount(`KD1 W ${RUN_ID}`, 3000),
+    mkAccount(`KD1 X ${RUN_ID}`, 1000,      INST_X),
+    mkAccount(`KD1 Y ${RUN_ID}`, Y_BALANCE, INST_Y),
+    mkAccount(`KD1 Z ${RUN_ID}`, 2000,      INST_Z),
+    mkAccount(`KD1 W ${RUN_ID}`, 3000,      INST_W),
   ]);
 
   const mkLink = (financialAccountId: string, visibilityLevel: VisibilityLevel, status: ShareStatus) =>
@@ -212,6 +224,16 @@ async function main(): Promise<void> {
       { financialAccountId: acctZ.id, date: daysAgo(7),  merchant: CANARY_Z, category: TransactionCategory.Shopping,  amount:  -888.88 },
       // W (REVOKED, FULL) — must never appear.
       { financialAccountId: acctW.id, date: daysAgo(8),  merchant: CANARY_W, category: TransactionCategory.Travel,    amount:  -999.99 },
+    ],
+  });
+
+  // KD-19 — one position on the FULL account X (must surface in getHoldings)
+  // and one on the BALANCE_ONLY account Y (positions are per-item detail — must
+  // NOT surface, even though Y's balance is still exposed via getAccounts).
+  await prisma.holding.createMany({
+    data: [
+      { financialAccountId: acctX.id, symbol: HOLD_X, name: HOLD_X, quantity: 1, price: 10, value: 10 },
+      { financialAccountId: acctY.id, symbol: HOLD_Y, name: HOLD_Y, quantity: 1, price: 20, value: 20 },
     ],
   });
 
@@ -327,6 +349,66 @@ async function main(): Promise<void> {
     'modal route would return an empty list for account Z (SUMMARY_ONLY link, active but no detail)',
     linkFor(acctZ.id) !== undefined && !grantsTransactionDetail(linkFor(acctZ.id)!.visibilityLevel),
   );
+
+  // ── 7. KD-19 — UI account metadata read path (lib/data/accounts.ts) ────────
+  // getAccounts() must obey the SAME visibility rule: FULL exposes real name +
+  // institution + debt metadata; BALANCE_ONLY / SUMMARY_ONLY expose the balance
+  // total only (generic name, no institution/debt fields); REVOKED links are
+  // absent entirely. Account balances are unique per account, so rows are
+  // identified by balance.
+  // userId is passed explicitly: getAccounts() otherwise resolves it via
+  // getSpaceContext() (next-auth headers()), which cannot run in this
+  // standalone tsx harness. userA is the *viewer* (the non-owner member), so
+  // this exercises the cross-member visibility path.
+  const accts    = await getAccounts({ spaceId: space.id, userId: userA.id });
+  const acctsUi  = JSON.stringify(accts).toLowerCase();
+  const rowFor   = (bal: number) => accts.find((a) => a.balance === bal);
+  const rowX = rowFor(1000), rowY = rowFor(Y_BALANCE), rowZ = rowFor(2000), rowW = rowFor(3000);
+
+  check(
+    'getAccounts() exposes FULL account X institution + real name',
+    !!rowX && rowX.institution === INST_X && rowX.name.includes('KD1 X'),
+    `rowX institution=${rowX?.institution} name=${rowX?.name}`,
+  );
+  check(
+    'getAccounts() reports Y balance (BALANCE_ONLY grants the balance total — no over-redaction)',
+    !!rowY,
+    'BALANCE_ONLY account Y missing entirely — fix is over-redacting the balance',
+  );
+  check(
+    'getAccounts() redacts Y institution (BALANCE_ONLY)',
+    !!rowY && rowY.institution !== INST_Y && !acctsUi.includes(INST_Y.toLowerCase()),
+    `rowY institution leaked: ${rowY?.institution}`,
+  );
+  check(
+    'getAccounts() redacts Y real name (BALANCE_ONLY)',
+    !!rowY && !rowY.name.includes('KD1 Y'),
+    `rowY name leaked: ${rowY?.name}`,
+  );
+  check(
+    'getAccounts() redacts Z institution + real name (SUMMARY_ONLY)',
+    !!rowZ && rowZ.institution !== INST_Z && !rowZ.name.includes('KD1 Z') && !acctsUi.includes(INST_Z.toLowerCase()),
+    `rowZ institution=${rowZ?.institution} name=${rowZ?.name}`,
+  );
+  check(
+    'getAccounts() excludes REVOKED account W entirely',
+    !rowW && !acctsUi.includes(INST_W.toLowerCase()),
+    'REVOKED link account leaked into the UI account list',
+  );
+
+  // ── 8. KD-19 — UI holdings read path (positions are per-item detail) ───────
+  const holdings   = await getHoldings({ spaceId: space.id });
+  const holdingsUi = JSON.stringify(holdings).toLowerCase();
+  check(
+    'getHoldings() surfaces positions from FULL account X',
+    holdingsUi.includes(HOLD_X.toLowerCase()),
+    'FULL-visibility position missing — fix is over-redacting holdings',
+  );
+  check(
+    'getHoldings() leaks no positions from BALANCE_ONLY account Y',
+    !holdingsUi.includes(HOLD_Y.toLowerCase()),
+    'BALANCE_ONLY position leaked into the UI holdings list',
+  );
 }
 
 async function cleanup(): Promise<void> {
@@ -365,6 +447,6 @@ main()
     }
     await prisma.$disconnect();
     console.log('');
-    console.log(failures === 0 ? 'All KD-1 + KD-15 end-to-end privacy cases passed.' : `${failures} failure(s).`);
+    console.log(failures === 0 ? 'All KD-1 + KD-15 + KD-19 end-to-end privacy cases passed.' : `${failures} failure(s).`);
     process.exit(failures === 0 ? 0 : 1);
   });

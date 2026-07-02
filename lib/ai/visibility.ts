@@ -49,3 +49,20 @@ export const TRANSACTION_DETAIL_VISIBILITY: VisibilityLevel[] = [
 export function grantsTransactionDetail(level: VisibilityLevel): boolean {
   return TRANSACTION_DETAIL_VISIBILITY.includes(level);
 }
+
+/**
+ * True when the link grants a requesting Space full account DETAIL — account
+ * metadata (institution, real name, credit limit, debt fields) AND per-item
+ * detail (investment positions). FULL only; BALANCE_ONLY exposes the balance
+ * total alone, SUMMARY_ONLY/PRIVATE/SHARED fail closed.
+ *
+ * Deliberately shares the FULL gate with grantsTransactionDetail /
+ * TRANSACTION_DETAIL_VISIBILITY so the data layer (lib/data/accounts.ts) and
+ * the AI assemblers can never disagree about who sees an account's identifying
+ * fields (KD-19, same discipline as KD-1/KD-15 for transactions). If the
+ * detail rule ever needs to differ from the transaction rule, split this into
+ * its own constant then — do not let two copies drift.
+ */
+export function grantsAccountDetail(level: VisibilityLevel): boolean {
+  return grantsTransactionDetail(level);
+}
