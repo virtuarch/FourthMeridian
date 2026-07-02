@@ -21,10 +21,18 @@ import { ReactNode, ElementType } from "react";
 import { X } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 
+// v2.5 modal usability pass: md/lg/xl size to their CONTENT on desktop
+// (sm:h-auto) and only cap at the viewport-based max-height — matching the
+// recipe NetWorthChartModal already uses (`sm:h-auto sm:max-h-[88dvh]`).
+// Previously the outer h-[94dvh] applied at every breakpoint, so a modal
+// with three rows of content still rendered as an ~88dvh sheet of mostly
+// empty glass. "full" keeps a fixed height by design (Timeline). On mobile
+// every size remains a full-height bottom sheet (h-[94dvh] below), same as
+// the rest of the app's modals.
 const SIZE_CLASS: Record<NonNullable<GlassModalProps["size"]>, string> = {
-  md:   "sm:max-w-xl sm:max-h-[88dvh]",
-  lg:   "sm:max-w-3xl sm:max-h-[88dvh]",
-  xl:   "sm:max-w-5xl sm:max-h-[90dvh]",
+  md:   "sm:h-auto sm:max-w-xl sm:max-h-[88dvh]",
+  lg:   "sm:h-auto sm:max-w-3xl sm:max-h-[88dvh]",
+  xl:   "sm:h-auto sm:max-w-5xl sm:max-h-[90dvh]",
   full: "sm:max-w-[96vw] sm:h-[92dvh]",
 };
 
@@ -68,7 +76,10 @@ export function GlassModal({
         className={`w-full h-[94dvh] ${SIZE_CLASS[size]} flex flex-col`}
         onClick={(e: React.MouseEvent) => e.stopPropagation()}
       >
-        <div className="h-full flex flex-col p-5">
+        {/* min-h-0 lets this flex item shrink inside the max-h-capped panel
+            so the body below actually scrolls instead of overflowing the
+            sheet when content is taller than the viewport cap. */}
+        <div className="h-full min-h-0 flex flex-col p-5">
           {/* Header */}
           <div className="flex items-center justify-between gap-3 mb-1 shrink-0">
             <div className="flex items-center gap-2.5 min-w-0">
