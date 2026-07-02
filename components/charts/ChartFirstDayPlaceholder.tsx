@@ -13,8 +13,8 @@ interface Props {
 }
 
 /**
- * Shown instead of a line/area chart when a workspace has only one
- * WorkspaceSnapshot row on record (typically right after its first Plaid
+ * Shown instead of a line/area chart when a space has only one
+ * SpaceSnapshot row on record (typically right after its first Plaid
  * refresh). A single point can't draw a trend line, so this explains the
  * day-one state with a real number rather than rendering a near-empty chart.
  */

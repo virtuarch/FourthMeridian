@@ -28,7 +28,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <div className="w-7 h-7 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center">
             <Shield size={14} className="text-red-400" />
           </div>
-          <span className="text-sm font-bold text-white tracking-tight">FinTracker Admin</span>
+          <span className="text-sm font-bold text-white tracking-tight">Fourth Meridian Admin</span>
           <span className="hidden sm:inline text-xs font-medium text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full">
             SYSTEM_ADMIN
           </span>

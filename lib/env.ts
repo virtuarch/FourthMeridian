@@ -41,7 +41,7 @@ const _e = {
   PLAID_SECRET:         process.env.PLAID_SECRET,
   PLAID_ENV:            process.env.PLAID_ENV,
 
-  ANTHROPIC_API_KEY:    process.env.ANTHROPIC_API_KEY,
+  OPENAI_API_KEY:       process.env.OPENAI_API_KEY,
   ETHERSCAN_API_KEY:    process.env.ETHERSCAN_API_KEY,
   HELIUS_API_KEY:       process.env.HELIUS_API_KEY,
 
@@ -104,7 +104,10 @@ export const env = {
   get PLAID_ENV()       { return (_e.PLAID_ENV ?? "sandbox") as "sandbox" | "development" | "production"; },
 
   // ── AI ────────────────────────────────────────────────────────────────────
-  get ANTHROPIC_API_KEY()  { return _e.ANTHROPIC_API_KEY; },
+  // NOTE: lib/ai/provider.ts (the only OpenAI SDK import site) reads
+  // process.env.OPENAI_API_KEY directly so it can fail loudly at call time;
+  // this accessor exists for feature-flag checks, not for the SDK client.
+  get OPENAI_API_KEY()  { return _e.OPENAI_API_KEY; },
 
   // ── Crypto ────────────────────────────────────────────────────────────────
   get ETHERSCAN_API_KEY()  { return _e.ETHERSCAN_API_KEY; },
@@ -117,8 +120,8 @@ export const env = {
   // ── Feature flags ─────────────────────────────────────────────────────────
   /** Plaid integration is available when both credentials are set. */
   get isPlaidEnabled()    { return !!_e.PLAID_CLIENT_ID && !!_e.PLAID_SECRET; },
-  /** AI advice engine is available when the Anthropic key is set. */
-  get isAiEnabled()       { return !!_e.ANTHROPIC_API_KEY; },
+  /** AI chat/advice is available when the OpenAI key is set (see lib/ai/provider.ts). */
+  get isAiEnabled()       { return !!_e.OPENAI_API_KEY; },
   /** Ethereum on-chain data is available when the Etherscan key is set. */
   get isEthEnabled()      { return !!_e.ETHERSCAN_API_KEY; },
   /** Solana on-chain data is available when the Helius key is set. */

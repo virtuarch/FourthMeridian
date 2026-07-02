@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight } from "lucide-react";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { TotpSection } from "@/components/dashboard/TotpSection";
+import { displaySpaceName } from "@/lib/format";
 import Link from "next/link";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -17,10 +18,10 @@ interface Profile {
   employmentStatus:     string;
   useCase:              string;
   hasDob:               boolean;
-  preferredWorkspaceId: string | null;
+  preferredSpaceId: string | null;
 }
 
-interface WorkspaceOption {
+interface SpaceOption {
   id:   string;
   name: string;
   type: string;
@@ -28,7 +29,7 @@ interface WorkspaceOption {
 
 interface Props {
   initialProfile: Profile;
-  workspaces:     WorkspaceOption[];
+  spaces:     SpaceOption[];
 }
 
 interface SelectOption { value: string; label: string; }
@@ -185,14 +186,14 @@ function InlineField({
   );
 }
 
-// ── Preferred workspace card ─────────────────────────────────────────────────
+// ── Preferred space card ─────────────────────────────────────────────────
 
-function PreferredWorkspaceCard({
-  workspaces,
+function PreferredSpaceCard({
+  spaces,
   initialPreferredId,
   saveField,
 }: {
-  workspaces:          WorkspaceOption[];
+  spaces:          SpaceOption[];
   initialPreferredId:  string | null;
   saveField:           (payload: Record<string, string>) => Promise<string | null>;
 }) {
@@ -201,12 +202,12 @@ function PreferredWorkspaceCard({
   const [error,       setError]       = useState("");
   const [flash,       setFlash]       = useState(false);
 
-  const currentName = workspaces.find((w) => w.id === preferredId)?.name ?? "";
+  const currentName = spaces.find((w) => w.id === preferredId)?.name ?? "";
 
   async function handleSave(newId: string) {
     setSaving(true);
     setError("");
-    const err = await saveField({ preferredWorkspaceId: newId || "" });
+    const err = await saveField({ preferredSpaceId: newId || "" });
     setSaving(false);
     if (err) {
       setError(err);
@@ -225,10 +226,10 @@ function PreferredWorkspaceCard({
     <Card>
       <div className="flex items-center gap-2 mb-1">
         <LayoutDashboard size={15} className="text-gray-400" />
-        <CardTitle>Default Workspace</CardTitle>
+        <CardTitle>Default Space</CardTitle>
       </div>
       <p className="text-xs text-gray-600 mb-4">
-        The workspace you land on after every login. Defaults to your Personal workspace if not set.
+        The Space that&apos;s active by default when you continue in from your Daily Brief. Defaults to your Personal Space if not set.
       </p>
 
       {error && (
@@ -244,9 +245,9 @@ function PreferredWorkspaceCard({
           disabled={saving}
           className={selectCls + " flex-1"}
         >
-          <option value="">Personal workspace (default)</option>
-          {workspaces.filter((w) => w.type !== "PERSONAL").map((w) => (
-            <option key={w.id} value={w.id}>{w.name}</option>
+          <option value="">Personal Space (default)</option>
+          {spaces.filter((w) => w.type !== "PERSONAL").map((w) => (
+            <option key={w.id} value={w.id}>{displaySpaceName(w.name)}</option>
           ))}
         </select>
         {saving && <Loader2 size={14} className="animate-spin text-gray-500 shrink-0" />}
@@ -270,7 +271,7 @@ function PreferredWorkspaceCard({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function SettingsClient({ initialProfile, workspaces }: Props) {
+export function SettingsClient({ initialProfile, spaces }: Props) {
   const { update: updateSession } = useSession();
 
   async function saveField(payload: Record<string, string>): Promise<string | null> {
@@ -393,10 +394,10 @@ export function SettingsClient({ initialProfile, workspaces }: Props) {
         />
       </Card>
 
-      {/* ── Preferred workspace ── */}
-      <PreferredWorkspaceCard
-        workspaces={workspaces}
-        initialPreferredId={initialProfile.preferredWorkspaceId}
+      {/* ── Preferred space ── */}
+      <PreferredSpaceCard
+        spaces={spaces}
+        initialPreferredId={initialProfile.preferredSpaceId}
         saveField={saveField}
       />
 
@@ -500,7 +501,7 @@ export function SettingsClient({ initialProfile, workspaces }: Props) {
           <CardTitle>Data & Archive</CardTitle>
         </div>
         <p className="text-xs text-gray-600 mb-4">
-          Manage archived accounts and workspaces. Restore them, or remove them permanently.
+          Manage archived accounts and Spaces. Restore them, or remove them permanently.
         </p>
 
         <Link
@@ -513,7 +514,7 @@ export function SettingsClient({ initialProfile, workspaces }: Props) {
             </div>
             <div>
               <p className="text-sm font-medium text-white">Archive &amp; Trash</p>
-              <p className="text-xs text-gray-500">Archived accounts, archived workspaces, and trash</p>
+              <p className="text-xs text-gray-500">Archived accounts, archived Spaces, and trash</p>
             </div>
           </div>
           <ChevronRight size={15} className="text-gray-600 group-hover:text-gray-400 transition-colors" />

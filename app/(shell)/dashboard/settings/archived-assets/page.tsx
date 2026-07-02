@@ -5,8 +5,8 @@ import { redirect }         from "next/navigation";
 import {
   ArchiveBinClient,
   type ArchivedAsset,
-  type ArchivedWorkspace,
-  type TrashedWorkspace,
+  type ArchivedSpace,
+  type TrashedSpace,
 } from "@/components/dashboard/ArchivedAssetsClient";
 
 // Derive a display source from the fields that already distinguish how a
@@ -46,35 +46,43 @@ export default async function ArchivedAssetsPage() {
         syncStatus:    true,
         walletAddress: true,
         institution:   true,
-        workspaceShares: {
+        // D3 Step 4E read cutover — replaces the prior workspaceShares
+        // (WorkspaceAccountShare) include. SpaceAccountLink is kept in sync
+        // with it by the D3 Step 3 dual-write
+        // (lib/accounts/space-account-link.ts), so this read returns the
+        // same set of spaces either way. No status filter, matching the
+        // prior workspaceShares behavior (active and revoked links both
+        // surface here). Response shape (spaces: {id, name}[]) is unchanged
+        // — see docs/initiatives/d3/D3_LEGACY_RETIREMENT_AUDIT.md.
+        spaceAccountLinks: {
           select: {
-            workspace: { select: { id: true, name: true } },
+            space: { select: { id: true, name: true } },
           },
         },
       },
       orderBy: { deletedAt: "desc" },
     }),
 
-    // Archived (not yet trashed) workspaces the user is still an active
+    // Archived (not yet trashed) spaces the user is still an active
     // member of. Shown to any member; restore/trash actions are gated to
     // OWNER in the client.
-    db.workspaceMember.findMany({
-      where: { userId, status: "ACTIVE", workspace: { archivedAt: { not: null }, deletedAt: null } },
+    db.spaceMember.findMany({
+      where: { userId, status: "ACTIVE", space: { archivedAt: { not: null }, deletedAt: null } },
       select: {
         role:      true,
-        workspace: { select: { id: true, name: true, type: true, category: true, archivedAt: true } },
+        space: { select: { id: true, name: true, type: true, category: true, archivedAt: true } },
       },
-      orderBy: { workspace: { archivedAt: "desc" } },
+      orderBy: { space: { archivedAt: "desc" } },
     }),
 
-    // Trashed workspaces the user is still an active member of.
-    db.workspaceMember.findMany({
-      where: { userId, status: "ACTIVE", workspace: { deletedAt: { not: null } } },
+    // Trashed spaces the user is still an active member of.
+    db.spaceMember.findMany({
+      where: { userId, status: "ACTIVE", space: { deletedAt: { not: null } } },
       select: {
         role:      true,
-        workspace: { select: { id: true, name: true, type: true, category: true, deletedAt: true } },
+        space: { select: { id: true, name: true, type: true, category: true, deletedAt: true } },
       },
-      orderBy: { workspace: { deletedAt: "desc" } },
+      orderBy: { space: { deletedAt: "desc" } },
     }),
   ]);
 
@@ -86,35 +94,35 @@ export default async function ArchivedAssetsPage() {
     deletedAt:   a.deletedAt!.toISOString(),
     institution: a.institution,
     source:      deriveSource(a),
-    workspaces: a.workspaceShares.map((s) => ({
-      id:   s.workspace.id,
-      name: s.workspace.name,
+    spaces: a.spaceAccountLinks.map((l) => ({
+      id:   l.space.id,
+      name: l.space.name,
     })),
   }));
 
-  const archivedWorkspaces: ArchivedWorkspace[] = archivedMemberships.map((m) => ({
-    id:         m.workspace.id,
-    name:       m.workspace.name,
-    type:       m.workspace.type,
-    category:   m.workspace.category,
-    archivedAt: m.workspace.archivedAt!.toISOString(),
+  const archivedSpaces: ArchivedSpace[] = archivedMemberships.map((m) => ({
+    id:         m.space.id,
+    name:       m.space.name,
+    type:       m.space.type,
+    category:   m.space.category,
+    archivedAt: m.space.archivedAt!.toISOString(),
     myRole:     m.role,
   }));
 
-  const trashedWorkspaces: TrashedWorkspace[] = trashedMemberships.map((m) => ({
-    id:        m.workspace.id,
-    name:      m.workspace.name,
-    type:      m.workspace.type,
-    category:  m.workspace.category,
-    deletedAt: m.workspace.deletedAt!.toISOString(),
+  const trashedSpaces: TrashedSpace[] = trashedMemberships.map((m) => ({
+    id:        m.space.id,
+    name:      m.space.name,
+    type:      m.space.type,
+    category:  m.space.category,
+    deletedAt: m.space.deletedAt!.toISOString(),
     myRole:    m.role,
   }));
 
   return (
     <ArchiveBinClient
       assets={assets}
-      archivedWorkspaces={archivedWorkspaces}
-      trashedWorkspaces={trashedWorkspaces}
+      archivedSpaces={archivedSpaces}
+      trashedSpaces={trashedSpaces}
     />
   );
 }

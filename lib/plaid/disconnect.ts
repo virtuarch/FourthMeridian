@@ -17,7 +17,7 @@
 
 import { db } from "@/lib/db";
 import { plaidClient } from "@/lib/plaid/client";
-import { decrypt } from "@/lib/plaid/encryption";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 
 export async function disconnectPlaidItemIfOrphaned(plaidItemDbId: string): Promise<void> {
   // Count remaining non-deleted connections on this PlaidItem
@@ -34,7 +34,7 @@ export async function disconnectPlaidItemIfOrphaned(plaidItemDbId: string): Prom
   if (!item) return;
 
   try {
-    const accessToken = decrypt(item.encryptedToken);
+    const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
     await plaidClient.itemRemove({ access_token: accessToken });
   } catch (plaidErr) {
     console.error("[disconnectPlaidItemIfOrphaned] Plaid itemRemove failed:", plaidErr);

@@ -34,7 +34,7 @@
  *    don't recognize (e.g. an account type we don't import) are skipped with
  *    a warning, not an error — one unmapped account can't abort the sync.
  *  - Flips the amount sign: Plaid uses positive = money out (debit),
- *    negative = money in (credit). FinTracker's convention (see
+ *    negative = money in (credit). Fourth Meridian's convention (see
  *    prisma/schema.prisma Transaction model comment) is the opposite:
  *    positive = money in (credit), negative = money out (debit).
  *  - Upserts on the unique `plaidTransactionId` field so re-running a sync
@@ -43,7 +43,7 @@
  *    transaction across separate sync runs (observed directly: two rows,
  *    same financialAccountId/date/amount/merchant, both pending:false,
  *    different plaidTransactionId, created on different sync runs — see
- *    docs/TRANSACTION_DUPLICATION_INVESTIGATION.md). When no row matches by
+ *    docs/initiatives/d2/investigations/D2_STEP4C_TRANSACTION_FINGERPRINTING_INVESTIGATION.md). When no row matches by
  *    plaidTransactionId, a fingerprint fallback (financialAccountId, date,
  *    amount, normalized merchant, pending) looks for an existing row before
  *    creating a new one — same shape as the account-level fallback in
@@ -51,15 +51,23 @@
  *    heuristic reuse of an existing row, not a uniqueness constraint:
  *    genuinely repeated same-day/same-amount/same-merchant transactions are
  *    valid data and are never blocked from being created.
+ *  - D2 Step 4C — the fingerprint fallback itself (`findByFingerprint`/
+ *    `normalizeMerchantKey`) now lives in lib/transactions/fingerprint.ts,
+ *    extracted unchanged from this file so future import sources (CSV,
+ *    Excel, QuickBooks — Step 4D) can reuse the same matching logic instead
+ *    of each writing their own. Behavior here is unchanged by the move —
+ *    see docs/initiatives/d2/investigations/D2_STEP4C_TRANSACTION_FINGERPRINTING_INVESTIGATION.md.
  *  - Writes `financialAccountId`, never the legacy `accountId` — Plaid-synced
  *    transactions only ever belong to a FinancialAccount.
  */
 
 import { plaidClient } from "@/lib/plaid/client";
-import { decrypt } from "@/lib/plaid/encryption";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
-import { TransactionCategory } from "@prisma/client";
+import { TransactionCategory, ProviderType, PlaidItemStatus } from "@prisma/client";
 import type { Transaction as PlaidTransaction } from "plaid";
+import { findByFingerprint } from "@/lib/transactions/fingerprint";
+import { withPlaidRetry } from "@/lib/plaid/retry";
 
 export interface SyncTransactionsResult {
   /** Count of transactions Plaid reported in its `added` array this run (Plaid's own count, unchanged semantics). */
@@ -78,55 +86,6 @@ export interface SyncTransactionsResult {
   updatedByFingerprint:  number;
   /** Transactions dropped because no FinancialAccount matched the Plaid account_id. */
   skippedMissingAccount: number;
-}
-
-/**
- * Normalizes a merchant/description string for fingerprint comparison —
- * trims, collapses internal whitespace, uppercases. Deliberately
- * conservative: it does not strip reference/trace numbers, so two distinct
- * real transactions that merely share a date and amount but differ in their
- * merchant text are never merged.
- */
-function normalizeMerchantKey(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toUpperCase();
-}
-
-/**
- * Fingerprint fallback for the case plaidTransactionId alone misses: the
- * same real-world transaction reappearing with a brand-new transaction_id on
- * a later sync run. Scoped first by (financialAccountId, date, amount,
- * pending) — financialAccountId+date is already indexed
- * (@@index([financialAccountId, date])) — then narrowed by normalized
- * merchant in memory, since the DB doesn't store a normalized column.
- * Candidate sets here are always small (a handful of same-day transactions
- * per account at most).
- *
- * Returns the first match, logging a warning if more than one candidate
- * matches (unexpected, but handled deterministically rather than erroring).
- */
-async function findByFingerprint(
-  financialAccountId: string,
-  date: Date,
-  amount: number,
-  merchant: string,
-  pending: boolean
-): Promise<{ id: string; plaidTransactionId: string | null } | null> {
-  const candidates = await db.transaction.findMany({
-    where:  { financialAccountId, date, amount, pending },
-    select: { id: true, merchant: true, plaidTransactionId: true },
-  });
-  if (candidates.length === 0) return null;
-
-  const target  = normalizeMerchantKey(merchant);
-  const matches = candidates.filter((c) => normalizeMerchantKey(c.merchant) === target);
-  if (matches.length === 0) return null;
-
-  if (matches.length > 1) {
-    console.warn(
-      `[plaid sync] fingerprint match ambiguous — ${matches.length} existing rows match financialAccountId=${financialAccountId} date=${date.toISOString().slice(0, 10)} amount=${amount} merchant="${merchant}"; using the first (id=${matches[0].id})`
-    );
-  }
-  return matches[0];
 }
 
 /**
@@ -186,7 +145,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
     throw new Error(`syncTransactionsForItem: PlaidItem ${plaidItemDbId} not found`);
   }
 
-  const accessToken = decrypt(item.encryptedToken);
+  const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
 
   let cursor: string | undefined = item.cursor ?? undefined;
   let added = 0;
@@ -204,20 +163,46 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   const accountIdCache = new Map<string, string | null>();
   async function resolveFinancialAccountId(plaidAccountId: string): Promise<string | null> {
     if (accountIdCache.has(plaidAccountId)) return accountIdCache.get(plaidAccountId)!;
-    const fa = await db.financialAccount.findUnique({
-      where:  { plaidAccountId },
-      select: { id: true },
+
+    // D2 Step 3F — resolved primarily via ProviderAccountIdentity (provider=
+    // PLAID, externalAccountId=plaidAccountId) rather than
+    // FinancialAccount.plaidAccountId directly, with a fallback to the
+    // legacy lookup if no identity row exists yet. Fallback-first, not a
+    // hard replacement — mirrors Steps 3C/3D/3E. The resolved id (from
+    // either path) is cached exactly as before.
+    // D2 Step 1D — findFirst, not findUnique: see lib/accounts/reconcile.ts
+    // for why (provider, externalAccountId) is no longer a named unique key).
+    const plaidIdentity = await db.providerAccountIdentity.findFirst({
+      where:  { provider: ProviderType.PLAID, externalAccountId: plaidAccountId },
+      select: { financialAccount: { select: { id: true } } },
     });
+
+    let fa = plaidIdentity?.financialAccount ?? null;
+    if (!fa) {
+      fa = await db.financialAccount.findUnique({
+        where:  { plaidAccountId },
+        select: { id: true },
+      });
+      if (fa) {
+        console.warn(
+          `[plaid][D2-3F] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${plaidAccountId}. Coverage gap; investigate before removing fallback.`
+        );
+      }
+    }
+
     const resolved = fa?.id ?? null;
     accountIdCache.set(plaidAccountId, resolved);
     return resolved;
   }
 
   while (hasMore) {
-    const resp = await plaidClient.transactionsSync({
-      access_token: accessToken,
-      ...(cursor ? { cursor } : {}),
-    });
+    const resp = await withPlaidRetry(
+      () => plaidClient.transactionsSync({
+        access_token: accessToken,
+        ...(cursor ? { cursor } : {}),
+      }),
+      "transactionsSync"
+    );
     const { added: addedTxns, modified: modifiedTxns, removed: removedTxns, has_more, next_cursor } = resp.data;
 
     for (const txn of [...addedTxns, ...modifiedTxns]) {
@@ -231,7 +216,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       }
 
       // Plaid: positive = debit (money out), negative = credit (money in).
-      // FinTracker: positive = credit (money in), negative = debit (money out).
+      // Fourth Meridian: positive = credit (money in), negative = debit (money out).
       const amount      = -txn.amount;
       const category    = mapPlaidCategory(txn);
       const date         = new Date(txn.date);
@@ -292,7 +277,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
 
   await db.plaidItem.update({
     where: { id: plaidItemDbId },
-    data:  { cursor: cursor ?? null, lastSyncedAt: new Date() },
+    data:  { cursor: cursor ?? null, lastSyncedAt: new Date(), status: PlaidItemStatus.ACTIVE, errorCode: null },
   });
 
   console.log(

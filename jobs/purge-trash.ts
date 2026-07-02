@@ -1,7 +1,7 @@
 /**
  * jobs/purge-trash.ts
  *
- * Permanently deletes WorkspaceGoal rows that have been in the trash
+ * Permanently deletes SpaceGoal rows that have been in the trash
  * (deletedAt IS NOT NULL) for more than 7 days.
  *
  * Run daily via the scheduler. Safe to run multiple times — idempotent.
@@ -15,7 +15,7 @@ export async function purgeTrash(): Promise<void> {
   const cutoff = new Date(Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = await (db as any).workspaceGoal.deleteMany({
+  const result = await (db as any).spaceGoal.deleteMany({
     where: {
       deletedAt: { not: null, lte: cutoff },
     },

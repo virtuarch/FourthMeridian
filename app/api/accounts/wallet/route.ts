@@ -1,13 +1,18 @@
 /**
  * POST /api/accounts/wallet
  *
- * Manually adds a self-custodied crypto wallet to the user's workspace.
+ * Manually adds a self-custodied crypto wallet to the user's space.
  * Balance starts at 0 — the sync job will populate it on next run.
  *
  * Creates:
  *   FinancialAccount   — canonical account row (ownerType=USER, no plaidAccountId)
  *   AccountConnection  — manual/wallet connection (no plaidItemDbId)
- *   WorkspaceAccountShare — makes the account visible in the active workspace
+ *   SpaceAccountLink      — makes the account visible in the active space
+ *   ProviderAccountIdentity (mirror) — best-effort dual-write, provider=WALLET.
+ *     D2 Step 2. See lib/accounts/provider-identity.ts. Owner-scoped lookups
+ *     below are unchanged: a wallet address is a public external fact, but
+ *     each FinancialAccount's row here stays private to its own owner — no
+ *     cross-owner sharing, reuse, or collision handling (D2 Step 1D).
  *
  * Body: {
  *   name:          string   // display name, e.g. "Ledger BTC"
@@ -18,10 +23,14 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getWorkspaceContext } from "@/lib/workspace";
-import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel } from "@prisma/client";
+import { getSpaceContext } from "@/lib/space";
+import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource, ProviderType } from "@prisma/client";
 import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
+import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
+import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -40,7 +49,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Unsupported chain. Use: ${SUPPORTED_CHAINS.join(", ")}` }, { status: 400 });
   }
 
-  const { workspaceId, userId } = await getWorkspaceContext();
+  const { spaceId, userId } = await getSpaceContext();
 
   // ── Automatic duplicate reconciliation ────────────────────────────────────
   // Same provider-identity check as Plaid reconnect: never create a second
@@ -52,19 +61,57 @@ export async function POST(req: NextRequest) {
   });
 
   if (activeFa) {
-    // Already exists and active — re-share into this workspace if needed and
+    // Already exists and active — re-share into this space if needed and
     // return success silently. No 409, no "already connected" message.
-    await db.workspaceAccountShare.upsert({
-      where:  { workspaceId_financialAccountId: { workspaceId, financialAccountId: activeFa.id } },
-      update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
+    // D3 Stage B3 — SpaceAccountLink is the sole write target.
+    await dualWriteSpaceAccountLink({
+      spaceId,
+      financialAccountId: activeFa.id,
       create: {
-        workspaceId,
-        financialAccountId: activeFa.id,
-        addedByUserId:      userId,
-        visibilityLevel:    VisibilityLevel.FULL,
-        status:             ShareStatus.ACTIVE,
+        addedByUserId:   userId,
+        visibilityLevel: VisibilityLevel.FULL,
+        status:          ShareStatus.ACTIVE,
+      },
+      update: {
+        status:          ShareStatus.ACTIVE,
+        revokedAt:       null,
+        revokedByUserId: null,
       },
     });
+
+    // D2 Step 2 — WALLET dual-write (best-effort, non-fatal; see
+    // lib/accounts/provider-identity.ts). Owner-scoped lookup above is
+    // unchanged — this only mirrors activeFa's own identity, never another
+    // owner's FinancialAccount, per the D2 Step 1D corrected model.
+    await dualWriteProviderAccountIdentity(activeFa.id, ProviderType.WALLET, walletAddress.trim());
+
+    // walletAddress has no DB-level unique constraint, so an archived row
+    // for this same address can exist alongside the active one (e.g. a
+    // previous soft-delete that never got cleaned up). Before this fix,
+    // that archived row was left permanently orphaned — nothing ever found
+    // or merged it, since this branch returned immediately. Fold it into
+    // the active row now, the same way the restore routes do.
+    const archivedDup = await db.financialAccount.findFirst({
+      where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: { not: null } },
+      select: { id: true },
+    });
+    if (archivedDup) {
+      await mergeArchivedDuplicateIntoCanonical(
+        archivedDup.id,
+        activeFa.id,
+        DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH,
+        spaceId
+      );
+    }
+
+    // Regenerate SpaceSnapshot now that the share is active in this space —
+    // same best-effort/non-fatal pattern as the reactivation branch below.
+    try {
+      await regenerateSnapshotsForAccounts([activeFa.id]);
+    } catch (snapshotErr) {
+      console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${activeFa.id} (non-fatal):`, snapshotErr);
+    }
+
     return NextResponse.json({ success: true, accountId: activeFa.id }, { status: 200 });
   }
 
@@ -78,29 +125,52 @@ export async function POST(req: NextRequest) {
   });
 
   if (archivedFa) {
-    await db.financialAccount.update({
-      where: { id: archivedFa.id },
-      data:  { deletedAt: null, syncStatus: "pending" },
-    });
-    await db.accountConnection.updateMany({
-      where: { financialAccountId: archivedFa.id, deletedAt: { not: null } },
-      data:  { deletedAt: null },
-    });
-    await db.workspaceAccountShare.upsert({
-      where:  { workspaceId_financialAccountId: { workspaceId, financialAccountId: archivedFa.id } },
-      update: { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
-      create: {
-        workspaceId,
+    // KD-4 Phase 3 — reactivate FinancialAccount + AccountConnection + SAL
+    // atomically. The providerIdentity mirror, snapshot regen, and the audit
+    // write below stay OUTSIDE the transaction.
+    await db.$transaction(async (tx) => {
+      await tx.financialAccount.update({
+        where: { id: archivedFa.id },
+        data:  { deletedAt: null, syncStatus: "pending" },
+      });
+      await tx.accountConnection.updateMany({
+        where: { financialAccountId: archivedFa.id, deletedAt: { not: null } },
+        data:  { deletedAt: null },
+      });
+      // D3 Stage B3 — SpaceAccountLink is the sole write target.
+      await dualWriteSpaceAccountLink({
+        spaceId,
         financialAccountId: archivedFa.id,
-        addedByUserId:      userId,
-        visibilityLevel:    VisibilityLevel.FULL,
-        status:             ShareStatus.ACTIVE,
-      },
+        client:          tx,
+        create: {
+          addedByUserId:   userId,
+          visibilityLevel: VisibilityLevel.FULL,
+          status:          ShareStatus.ACTIVE,
+        },
+        update: {
+          status:          ShareStatus.ACTIVE,
+          revokedAt:       null,
+          revokedByUserId: null,
+        },
+      });
     });
+
+    // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
+    // this user's own archived account — no cross-owner behavior involved.
+    await dualWriteProviderAccountIdentity(archivedFa.id, ProviderType.WALLET, walletAddress.trim());
+
+    // Regenerate SpaceSnapshot now that the share is active again — see
+    // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
+    try {
+      await regenerateSnapshotsForAccounts([archivedFa.id]);
+    } catch (snapshotErr) {
+      console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${archivedFa.id} (non-fatal):`, snapshotErr);
+    }
+
     await db.auditLog.create({
       data: {
         userId,
-        workspaceId,
+        spaceId,
         action:   AuditAction.ACCOUNT_RESTORE,
         metadata: { name: name.trim(), chain, address: walletAddress.trim() },
       },
@@ -108,48 +178,84 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, accountId: archivedFa.id }, { status: 200 });
   }
 
-  // ── Create new FinancialAccount ────────────────────────────────────────────
-  const fa = await db.financialAccount.create({
-    data: {
-      ownerType:     AccountOwnerType.USER,
-      ownerUserId:   userId,
-      name:          name.trim(),
-      type:          AccountType.crypto,
-      institution:   "Self-custodied",
-      balance:       0,
-      currency:      "USD",
-      walletAddress: walletAddress.trim(),
-      walletChain:   chain,
-      nativeBalance: 0,
-      syncStatus:    "pending",
-    },
+  // ── KD-4 Phase 3 — new FinancialAccount + AccountConnection + SAL commit
+  //    atomically. The providerIdentity mirror, snapshot regen, and audit
+  //    write below stay OUTSIDE the transaction.
+  const fa = await db.$transaction(async (tx) => {
+    const created = await tx.financialAccount.create({
+      data: {
+        ownerType:     AccountOwnerType.USER,
+        ownerUserId:   userId,
+        createdByUserId: userId, // D11 — human-accountable creator
+        name:          name.trim(),
+        type:          AccountType.crypto,
+        institution:   "Self-custodied",
+        balance:       0,
+        currency:      "USD",
+        walletAddress: walletAddress.trim(),
+        walletChain:   chain,
+        nativeBalance: 0,
+        syncStatus:    "pending",
+      },
+    });
+
+    // AccountConnection (manual, no PlaidItem)
+    await tx.accountConnection.create({
+      data: {
+        financialAccountId: created.id,
+        connectedByUserId:  userId,
+        syncStatus:         "pending",
+        isCanonical:        true,
+      },
+    });
+
+    // D3 Stage B3 — SpaceAccountLink is the sole write target
+    await dualWriteSpaceAccountLink({
+      spaceId,
+      financialAccountId: created.id,
+      creatorUserId:       created.createdByUserId ?? created.ownerUserId,
+      client:              tx,
+      create: {
+        addedByUserId:   userId,
+        visibilityLevel: VisibilityLevel.FULL,
+        status:          ShareStatus.ACTIVE,
+      },
+      update: {
+        status:          ShareStatus.ACTIVE,
+        revokedAt:       null,
+        revokedByUserId: null,
+      },
+    });
+
+    return created;
   });
 
-  // ── Create AccountConnection (manual, no PlaidItem) ────────────────────────
-  await db.accountConnection.create({
-    data: {
-      financialAccountId: fa.id,
-      connectedByUserId:  userId,
-      syncStatus:         "pending",
-      isCanonical:        true,
-    },
-  });
+  // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). New row, so
+  // dualWriteProviderAccountIdentity's find-by-{financialAccountId,
+  // provider} lookup finds nothing and creates — no collision handling
+  // needed: another owner's FinancialAccount for the same address (if any)
+  // is an entirely separate row under the D2 Step 1D corrected model.
+  await dualWriteProviderAccountIdentity(fa.id, ProviderType.WALLET, walletAddress.trim());
+  // D3 Step 3 HOME Semantics Correction — no separate HOME backfill call
+  // needed here. computeLinkKind() (inside dualWriteSpaceAccountLink above)
+  // now assigns HOME to the Space a brand-new account's first link is
+  // written at — i.e. spaceId, the actually-active Space — rather than
+  // synthesizing an extra HOME link at the creator's personal Space. See
+  // docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
 
-  // ── Create WorkspaceAccountShare ───────────────────────────────────────────
-  await db.workspaceAccountShare.create({
-    data: {
-      workspaceId,
-      financialAccountId: fa.id,
-      addedByUserId:      userId,
-      visibilityLevel:    VisibilityLevel.FULL,
-      status:             ShareStatus.ACTIVE,
-    },
-  });
+  // Regenerate SpaceSnapshot now that this new wallet is shared in —
+  // same best-effort/non-fatal pattern as every other account-create/
+  // reactivate path (see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
+  try {
+    await regenerateSnapshotsForAccounts([fa.id]);
+  } catch (snapshotErr) {
+    console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${fa.id} (non-fatal):`, snapshotErr);
+  }
 
   await db.auditLog.create({
     data: {
       userId,
-      workspaceId,
+      spaceId,
       action:   "WALLET_ADD",
       metadata: { name: fa.name, chain, address: walletAddress.trim() },
     },

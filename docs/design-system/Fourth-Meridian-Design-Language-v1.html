@@ -1,0 +1,1105 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fourth Meridian — Design Language v1</title>
+<style>
+
+/* ============================================================
+   FOURTH MERIDIAN DESIGN LANGUAGE v1
+   Canonical design tokens + living style guide.
+   Every value below is the source of truth. Future pages should
+   reference these tokens rather than inventing new ones.
+   ============================================================ */
+
+@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/0/css/font-awesome.min.css');
+
+* { box-sizing: border-box; }
+
+:root{
+  /* ---------- NEUTRAL — "Atlas Ink" (cool navy neutral) ---------- */
+  --ink-0:   #FFFFFF;
+  --ink-50:  #F5F7FA;
+  --ink-100: #E7EAF1;
+  --ink-200: #C9CEDC;
+  --ink-300: #9CA4BC;
+  --ink-400: #6E7896;
+  --ink-500: #4D5774;
+  --ink-600: #38415A;
+  --ink-700: #262E42;
+  --ink-800: #161C2C;
+  --ink-900: #0C111D;
+  --ink-950: #060911;
+
+  /* ---------- BRASS — brand gold, from the 4M mark ---------- */
+  --brass-100:#FBF1D6;
+  --brass-200:#F2D675;
+  --brass-300:#E8C158;
+  --brass-400:#D4A938;
+  --brass-500:#C9A227;
+  --brass-600:#A6841E;
+  --brass-700:#806416;
+
+  /* ---------- MERIDIAN — primary interactive blue ---------- */
+  --meridian-100:#DCE9FF;
+  --meridian-200:#AECBFF;
+  --meridian-300:#7FAEFF;
+  --meridian-400:#5896FB;
+  --meridian-500:#3B82F6;
+  --meridian-600:#2563EB;
+  --meridian-700:#1D4ED8;
+
+  /* ---------- EMERALD — success / gain ---------- */
+  --emerald-100:#D6F5E3;
+  --emerald-300:#5EE0A3;
+  --emerald-400:#34D399;
+  --emerald-500:#22C55E;
+  --emerald-600:#16A34A;
+  --emerald-700:#15803D;
+
+  /* ---------- CORAL — danger / loss ---------- */
+  --coral-100:#FDE2DF;
+  --coral-300:#F6968D;
+  --coral-400:#F2746A;
+  --coral-500:#ED5247;
+  --coral-600:#D43426;
+  --coral-700:#B91C1C;
+
+  /* ---------- VIOLET — secondary data category ---------- */
+  --violet-100:#EDE5FF;
+  --violet-300:#C4AAFC;
+  --violet-400:#A78BFA;
+  --violet-500:#8B5CF6;
+  --violet-600:#7C3AED;
+  --violet-700:#6D28D9;
+
+  /* ---------- PAPER — light mode base ---------- */
+  --paper-0:  #FBFAF7;
+  --paper-50: #F2F1ED;
+  --paper-100:#E8E6E0;
+
+  /* ---------- RADIUS ---------- */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-full: 999px;
+
+  /* ---------- SPACING — 4px base unit, 8pt rhythm ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 48px;
+  --space-10: 64px;
+  --space-11: 80px;
+  --space-12: 96px;
+
+  /* ---------- MOTION — "Meridian Motion" ---------- */
+  --ease-standard: cubic-bezier(.4,0,.2,1);
+  --ease-enter:    cubic-bezier(.2,0,0,1);
+  --ease-exit:     cubic-bezier(.4,0,1,1);
+  --ease-spring:   cubic-bezier(.34,1.25,.64,1);
+  --dur-instant: 100ms;
+  --dur-fast:    180ms;
+  --dur-base:    240ms;
+  --dur-moderate:320ms;
+  --dur-slow:    480ms;
+  --dur-ambient: 2400ms;
+
+  /* ---------- TYPE ---------- */
+  --font-ui: -apple-system, "SF Pro Display", "SF Pro Text", "Inter", system-ui, "Segoe UI", sans-serif;
+  --font-data: -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif;
+
+  /* ---------- THEME-INDEPENDENT SHADOW RECIPES ---------- */
+  --shadow-e1: 0 1px 2px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.05) inset;
+  --shadow-e2: 0 10px 28px rgba(0,0,0,.38), 0 0 0 1px rgba(255,255,255,.06) inset;
+  --shadow-e3: 0 18px 44px rgba(0,0,0,.46), 0 0 0 1px rgba(255,255,255,.08) inset;
+  --shadow-e4: 0 28px 70px rgba(0,0,0,.56), 0 0 0 1px rgba(255,255,255,.10) inset;
+}
+
+/* ============ THEME: DARK (default) ============ */
+html[data-theme="dark"]{
+  --bg-base: var(--ink-900);
+  --bg-deep: var(--ink-950);
+  --text-primary: var(--ink-50);
+  --text-secondary: var(--ink-300);
+  --text-muted: var(--ink-400);
+  --border-hairline: rgba(255,255,255,.08);
+  --border-hairline-strong: rgba(255,255,255,.14);
+  --glass-ultrathin: rgba(255,255,255,.05);
+  --glass-thin: rgba(18,24,38,.55);
+  --glass-regular: rgba(14,19,31,.72);
+  --glass-thick: rgba(10,14,23,.88);
+  --specular-edge: rgba(255,255,255,.16);
+  --scrim: rgba(3,5,10,.62);
+}
+
+/* ============ THEME: LIGHT ============ */
+html[data-theme="light"]{
+  --bg-base: var(--paper-0);
+  --bg-deep: var(--paper-50);
+  --text-primary: #11151F;
+  --text-secondary: #4B5468;
+  --text-muted: #7A8295;
+  --border-hairline: rgba(17,21,31,.09);
+  --border-hairline-strong: rgba(17,21,31,.16);
+  --glass-ultrathin: rgba(255,255,255,.5);
+  --glass-thin: rgba(255,255,255,.62);
+  --glass-regular: rgba(255,255,255,.78);
+  --glass-thick: rgba(255,255,255,.92);
+  --specular-edge: rgba(255,255,255,.7);
+  --scrim: rgba(20,22,28,.3);
+}
+
+html,body{ margin:0; padding:0; }
+body{
+  font-family: var(--font-ui);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  min-height:100vh;
+  transition: background var(--dur-slow) var(--ease-standard), color var(--dur-slow) var(--ease-standard);
+  overflow-x:hidden;
+}
+
+/* ---------- Ambient background field ---------- */
+.atlas-field{
+  position:fixed; inset:0; z-index:-1; overflow:hidden;
+  background: radial-gradient(ellipse 120% 80% at 50% -10%, var(--bg-deep), var(--bg-base) 60%);
+}
+html[data-theme="light"] .atlas-field{
+  background: radial-gradient(ellipse 120% 80% at 50% -10%, var(--paper-50), var(--paper-0) 60%);
+}
+.atlas-field .blob{
+  position:absolute; border-radius:50%; filter: blur(70px);
+  animation: drift 32s var(--ease-standard) infinite alternate;
+  opacity:.35;
+}
+html[data-theme="light"] .atlas-field .blob{ opacity:.18; }
+.blob-1{ width:46vw; height:46vw; left:-12vw; top:-10vw; background: var(--meridian-600); animation-duration: 36s; }
+.blob-2{ width:38vw; height:38vw; right:-10vw; top:18vw; background: var(--brass-500); animation-duration: 44s; animation-delay:-8s;}
+.blob-3{ width:34vw; height:34vw; left:18vw; bottom:-14vw; background: var(--violet-600); animation-duration: 40s; animation-delay:-20s;}
+@keyframes drift{
+  0%{ transform: translate(0,0) scale(1); }
+  100%{ transform: translate(4vw,-3vw) scale(1.12); }
+}
+@media (prefers-reduced-motion: reduce){
+  .atlas-field .blob{ animation: none; }
+}
+
+/* ---------- Layout shell ---------- */
+.wrap{ max-width:1280px; margin:0 auto; padding: 0 var(--space-9); }
+@media (max-width: 860px){ .wrap{ padding: 0 var(--space-5); } }
+
+header.topbar{
+  position:sticky; top:0; z-index:50;
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  background: var(--glass-thin);
+  border-bottom:1px solid var(--border-hairline);
+}
+.topbar-inner{ display:flex; align-items:center; gap:var(--space-5); padding: var(--space-3) var(--space-9); max-width:1280px; margin:0 auto; }
+.topbar-brand{ display:flex; align-items:center; gap:var(--space-2); font-weight:600; font-size:14px; letter-spacing:.01em; white-space:nowrap; }
+.topbar-brand img{ width:24px; height:24px; border-radius:6px; }
+.topbar-nav{ display:flex; gap: var(--space-1); overflow-x:auto; flex:1; scrollbar-width:none; }
+.topbar-nav::-webkit-scrollbar{ display:none; }
+.topbar-nav a{
+  font-size:12.5px; font-weight:500; color:var(--text-secondary); text-decoration:none;
+  padding: 7px 12px; border-radius: var(--radius-full); white-space:nowrap;
+  transition: color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
+}
+.topbar-nav a:hover{ color:var(--text-primary); background: rgba(255,255,255,.06); }
+.theme-toggle{
+  display:flex; align-items:center; gap:6px; padding:6px 12px; border-radius:var(--radius-full);
+  border:1px solid var(--border-hairline-strong); background: rgba(255,255,255,.04); cursor:pointer;
+  color:var(--text-primary); font-size:12.5px; font-weight:600; font-family:inherit;
+  transition: background var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-standard);
+}
+.theme-toggle:hover{ background: rgba(255,255,255,.09); }
+.theme-toggle:active{ transform: scale(.96); }
+
+main{ padding-bottom: var(--space-12); }
+
+/* ---------- Section scaffold ---------- */
+section{ padding: var(--space-11) 0; border-bottom:1px solid var(--border-hairline); }
+section:last-of-type{ border-bottom:none; }
+.eyebrow{
+  font-size:11.5px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+  color: var(--meridian-400); margin:0 0 var(--space-3);
+}
+.sec-title{ font-size:32px; font-weight:650; letter-spacing:-.015em; margin:0 0 var(--space-3); line-height:1.15; }
+.sec-desc{ font-size:16px; line-height:1.6; color:var(--text-secondary); max-width:680px; margin:0 0 var(--space-8); }
+.sec-head{ margin-bottom: var(--space-8); }
+
+/* ---------- Glass panel base ("Atlas Glass") ---------- */
+.panel{
+  position:relative;
+  border-radius: var(--radius-lg);
+  border:1px solid var(--border-hairline);
+  background: var(--glass-thin);
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  box-shadow: var(--shadow-e2);
+  overflow:hidden;
+}
+.panel::before{
+  content:""; position:absolute; inset:0 0 auto 0; height:1px;
+  background: linear-gradient(90deg, transparent, var(--specular-edge), transparent);
+  opacity:.5;
+}
+.panel-pad{ padding: var(--space-6); }
+
+.grid{ display:grid; gap: var(--space-5); }
+.g-2{ grid-template-columns: repeat(2,1fr); }
+.g-3{ grid-template-columns: repeat(3,1fr); }
+.g-4{ grid-template-columns: repeat(4,1fr); }
+.g-6{ grid-template-columns: repeat(6,1fr); }
+@media (max-width:980px){ .g-3,.g-4,.g-6{ grid-template-columns: repeat(2,1fr); } }
+@media (max-width:600px){ .g-2,.g-3,.g-4,.g-6{ grid-template-columns: 1fr; } }
+
+code, .mono{ font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* ---------- Swatches ---------- */
+.swatch{
+  border-radius: var(--radius-md); overflow:hidden; cursor:pointer; border:1px solid var(--border-hairline);
+  transition: transform var(--dur-base) var(--ease-standard);
+}
+.swatch:hover{ transform: translateY(-3px); }
+.swatch .fill{ height:64px; }
+.swatch .label{ padding:8px 10px; background:var(--glass-thin); }
+.swatch .label .name{ font-size:12px; font-weight:600; }
+.swatch .label .hex{ font-size:11px; color:var(--text-muted); }
+
+/* ---------- Buttons ---------- */
+.btn{
+  display:inline-flex; align-items:center; gap:8px; font-family:inherit; font-weight:600; font-size:14px;
+  padding:10px 18px; border-radius: var(--radius-sm); border:none; cursor:pointer;
+  transition: transform var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard), filter var(--dur-fast) var(--ease-standard);
+}
+.btn:active{ transform: scale(.97); }
+.btn-primary{ background: var(--meridian-600); color:#fff; box-shadow: 0 6px 18px rgba(37,99,235,.35); }
+.btn-primary:hover{ filter:brightness(1.08); }
+.btn-success{ background:var(--emerald-700); color:#fff; }
+.btn-danger{ background:var(--coral-600); color:#fff; }
+.btn-brass{ background: linear-gradient(135deg,var(--brass-400),var(--brass-600)); color:#1a1304; }
+.btn-ghost{ background: rgba(255,255,255,.06); color:var(--text-primary); border:1px solid var(--border-hairline-strong); }
+.btn-ghost:hover{ background: rgba(255,255,255,.1); }
+
+/* ---------- Badges / chips ---------- */
+.badge{ display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; padding:4px 10px; border-radius:var(--radius-full); }
+.badge-info{ background: rgba(59,130,246,.14); color: var(--meridian-300); border:1px solid rgba(59,130,246,.3); }
+.badge-success{ background: rgba(34,197,94,.14); color: var(--emerald-400); border:1px solid rgba(34,197,94,.3); }
+.badge-warning{ background: rgba(212,169,56,.16); color: var(--brass-300); border:1px solid rgba(212,169,56,.32); }
+.badge-danger{ background: rgba(237,82,71,.14); color: var(--coral-400); border:1px solid rgba(237,82,71,.3); }
+.badge-premium{ background: linear-gradient(135deg, rgba(212,169,56,.22), rgba(232,193,88,.1)); color: var(--brass-300); border:1px solid rgba(212,169,56,.35); }
+
+.icon-chip{
+  width:40px; height:40px; border-radius: var(--radius-sm); display:flex; align-items:center; justify-content:center; flex-shrink:0;
+}
+.icon-chip svg{ width:20px; height:20px; }
+.chip-success{ background: rgba(34,197,94,.14); color:var(--emerald-400); }
+.chip-info{ background: rgba(59,130,246,.14); color:var(--meridian-400); }
+.chip-warning{ background: rgba(212,169,56,.16); color:var(--brass-300); }
+.chip-danger{ background: rgba(237,82,71,.14); color:var(--coral-400); }
+.chip-violet{ background: rgba(139,92,246,.14); color:var(--violet-400); }
+
+/* ---------- Pills (TOC) ---------- */
+.pill-nav{ display:flex; flex-wrap:wrap; gap:var(--space-2); }
+.pill-nav a{
+  font-size:13px; font-weight:600; color:var(--text-primary); text-decoration:none;
+  padding:9px 16px; border-radius: var(--radius-full); border:1px solid var(--border-hairline-strong);
+  background: rgba(255,255,255,.04);
+  transition: background var(--dur-base) var(--ease-standard), transform var(--dur-base) var(--ease-standard);
+}
+.pill-nav a:hover{ background: rgba(255,255,255,.1); transform: translateY(-2px); }
+
+/* ---------- Cover ---------- */
+.cover{ padding-top: var(--space-11); }
+.cover-mark{ width:88px; height:88px; border-radius:22px; box-shadow: var(--shadow-e3); margin-bottom: var(--space-6); }
+.cover h1{ font-size:56px; line-height:1.05; letter-spacing:-.02em; font-weight:650; margin:0 0 var(--space-4); }
+.cover h1 span{ color: var(--brass-300); }
+.cover p.lede{ font-size:18px; line-height:1.6; color:var(--text-secondary); max-width:640px; margin:0 0 var(--space-7); }
+.meta-row{ display:flex; gap:var(--space-6); flex-wrap:wrap; margin-bottom: var(--space-9); }
+.meta-item .k{ font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:4px; }
+.meta-item .v{ font-size:14px; font-weight:600; }
+
+/* ---------- Typography specimens ---------- */
+.specimen{ display:flex; align-items:baseline; gap:var(--space-6); padding: var(--space-4) 0; border-bottom:1px solid var(--border-hairline); }
+.specimen:last-child{ border-bottom:none; }
+.specimen .meta{ width:230px; flex-shrink:0; }
+.specimen .meta .name{ font-size:13px; font-weight:700; }
+.specimen .meta .spec{ font-size:12px; color:var(--text-muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.specimen .sample{ flex:1; min-width:0; }
+
+.t-display{ font-size:48px; line-height:56px; font-weight:650; letter-spacing:-.02em; }
+.t-title1{ font-size:34px; line-height:40px; font-weight:600; letter-spacing:-.015em; }
+.t-title2{ font-size:28px; line-height:34px; font-weight:600; letter-spacing:-.01em; }
+.t-title3{ font-size:22px; line-height:28px; font-weight:600; letter-spacing:-.008em; }
+.t-headline{ font-size:17px; line-height:24px; font-weight:600; }
+.t-body{ font-size:15px; line-height:22px; font-weight:400; }
+.t-body-em{ font-size:15px; line-height:22px; font-weight:600; }
+.t-subhead{ font-size:13px; line-height:18px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--meridian-400); }
+.t-footnote{ font-size:12px; line-height:16px; font-weight:400; color:var(--text-secondary); }
+.t-caption{ font-size:11px; line-height:14px; font-weight:500; color:var(--text-muted); }
+.t-data-lg{ font-size:32px; line-height:36px; font-weight:650; font-family:var(--font-data); font-variant-numeric: tabular-nums; letter-spacing:-.01em; }
+.t-data-table{ font-size:14px; line-height:20px; font-weight:500; font-family:var(--font-data); font-variant-numeric: tabular-nums; }
+
+/* ---------- Elevation demo ---------- */
+.elev-row{ display:flex; gap:var(--space-6); flex-wrap:wrap; }
+.elev-card{
+  width:180px; height:140px; border-radius:var(--radius-md); display:flex; flex-direction:column; justify-content:flex-end; padding:var(--space-4);
+  background: var(--glass-thin); border:1px solid var(--border-hairline);
+}
+.elev-card .lvl{ font-size:13px; font-weight:700; }
+.elev-card .desc{ font-size:11px; color:var(--text-muted); }
+.e0{ box-shadow:none; }
+.e1{ box-shadow: var(--shadow-e1); }
+.e2{ box-shadow: var(--shadow-e2); }
+.e3{ box-shadow: var(--shadow-e3); }
+.e4{ box-shadow: var(--shadow-e4); }
+
+/* ---------- Glass material demo ---------- */
+.material-stage{
+  position:relative; border-radius: var(--radius-lg); padding: var(--space-8); overflow:hidden;
+  background: linear-gradient(135deg, var(--meridian-700) 0%, var(--ink-900) 45%, var(--brass-700) 100%);
+  display:flex; gap:var(--space-5); flex-wrap:wrap;
+}
+.material-card{
+  width:200px; padding: var(--space-5); border-radius: var(--radius-md); color:#fff;
+  border:1px solid rgba(255,255,255,.18);
+}
+.material-card .nm{ font-weight:700; font-size:14px; margin-bottom:4px; }
+.material-card .sp{ font-size:11px; opacity:.8; font-family: ui-monospace, monospace; }
+.m-ultrathin{ background: rgba(255,255,255,.08); backdrop-filter: blur(16px) saturate(180%); -webkit-backdrop-filter: blur(16px) saturate(180%); }
+.m-thin{ background: rgba(16,22,35,.45); backdrop-filter: blur(28px) saturate(165%); -webkit-backdrop-filter: blur(28px) saturate(165%); }
+.m-regular{ background: rgba(12,17,28,.62); backdrop-filter: blur(40px) saturate(150%); -webkit-backdrop-filter: blur(40px) saturate(150%); }
+.m-thick{ background: rgba(8,12,20,.82); backdrop-filter: blur(60px) saturate(140%); -webkit-backdrop-filter: blur(60px) saturate(140%); }
+
+.tint-row{ display:flex; gap:var(--space-4); flex-wrap:wrap; margin-top:var(--space-6); }
+.tint-card{
+  width:160px; height:88px; border-radius:var(--radius-md); border:1px solid var(--border-hairline);
+  display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600;
+  backdrop-filter: blur(26px); -webkit-backdrop-filter: blur(26px);
+}
+.tint-neutral{ background: rgba(255,255,255,.06); }
+.tint-meridian{ background: rgba(59,130,246,.16); color:var(--meridian-300); }
+.tint-brass{ background: rgba(212,169,56,.18); color:var(--brass-300); }
+.tint-emerald{ background: rgba(34,197,94,.16); color:var(--emerald-400); }
+.tint-coral{ background: rgba(237,82,71,.16); color:var(--coral-400); }
+
+/* ---------- Radius demo ---------- */
+.radius-row{ display:flex; gap:var(--space-6); align-items:end; flex-wrap:wrap; }
+.radius-box{ width:96px; height:96px; background: linear-gradient(160deg, var(--meridian-500), var(--violet-600)); display:flex; align-items:flex-end; justify-content:center; padding-bottom:8px; font-size:11px; font-weight:700; color:#fff;}
+.nest-demo{ width:220px; padding: 18px; background: var(--glass-thin); border:1px solid var(--border-hairline); border-radius: var(--radius-lg); }
+.nest-demo .inner{ background: var(--meridian-600); color:#fff; text-align:center; padding:12px; border-radius: var(--radius-md); font-size:13px; font-weight:600; }
+
+/* ---------- Spacing ruler ---------- */
+.space-row{ display:flex; align-items:center; gap:var(--space-3); margin-bottom:10px; }
+.space-row .bar{ background: var(--meridian-500); height:14px; border-radius:4px; }
+.space-row .nm{ width:90px; font-size:12px; font-family: ui-monospace, monospace; color:var(--text-secondary); flex-shrink:0; }
+.space-row .px{ font-size:12px; color:var(--text-muted); margin-left:8px; }
+
+.density-row{ display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border-hairline); font-size:14px; }
+.density-comfortable .density-row{ padding: 14px 4px; }
+.density-compact .density-row{ padding: 7px 4px; font-size:13px; }
+
+/* ---------- Motion section ---------- */
+.curve-card{ background: var(--glass-thin); border:1px solid var(--border-hairline); border-radius: var(--radius-md); padding: var(--space-5); }
+.curve-card svg{ width:100%; height:120px; }
+.curve-card .nm{ font-weight:700; font-size:13px; margin-bottom:2px; }
+.curve-card .sp{ font-size:11.5px; color:var(--text-muted); font-family: ui-monospace, monospace; }
+
+.dur-row{ display:flex; align-items:center; gap:var(--space-4); margin-bottom:12px; }
+.dur-row .nm{ width:110px; font-size:12.5px; font-family: ui-monospace, monospace; color:var(--text-secondary); }
+.dur-track{ flex:1; height:6px; background: rgba(255,255,255,.08); border-radius:3px; position:relative; max-width:420px; }
+.dur-fill{ position:absolute; left:0; top:0; height:100%; border-radius:3px; background: var(--meridian-500); }
+.dur-row .ms{ font-size:12px; color:var(--text-muted); width:60px; text-align:right; }
+
+.demo-row{ display:flex; gap: var(--space-6); flex-wrap:wrap; align-items:center; }
+.hover-card{
+  width:180px; padding:var(--space-5); border-radius: var(--radius-md); background: var(--glass-thin);
+  border:1px solid var(--border-hairline); box-shadow: var(--shadow-e1);
+  transition: transform var(--dur-base) var(--ease-standard), box-shadow var(--dur-base) var(--ease-standard);
+  text-align:center; font-size:13px; font-weight:600;
+}
+.hover-card:hover{ transform: translateY(-6px); box-shadow: var(--shadow-e3); }
+
+.pulse-dot{ width:14px; height:14px; border-radius:50%; background: var(--emerald-400); position:relative; }
+.pulse-dot::after{
+  content:""; position:absolute; inset:0; border-radius:50%; background: var(--emerald-400);
+  animation: pulseRing var(--dur-ambient) var(--ease-standard) infinite;
+}
+@keyframes pulseRing{ 0%{ transform:scale(1); opacity:.6;} 100%{ transform:scale(2.6); opacity:0; } }
+
+.odometer{ font-family: var(--font-data); font-variant-numeric: tabular-nums; font-size:32px; font-weight:700; }
+.odometer span{ display:inline-block; transition: color var(--dur-fast) var(--ease-standard); }
+
+.toggle-track{ width:46px; height:28px; border-radius:var(--radius-full); background: rgba(255,255,255,.12); position:relative; cursor:pointer; border:1px solid var(--border-hairline-strong); }
+.toggle-knob{ width:22px; height:22px; border-radius:50%; background:#fff; position:absolute; top:2px; left:2px; transition: transform var(--dur-fast) var(--ease-spring); box-shadow:0 2px 6px rgba(0,0,0,.3); }
+.toggle-track.on{ background: var(--meridian-600); }
+.toggle-track.on .toggle-knob{ transform: translateX(18px); }
+
+/* ---------- Icons ---------- */
+.icon-grid{ display:grid; grid-template-columns: repeat(8,1fr); gap: var(--space-4); }
+@media (max-width:860px){ .icon-grid{ grid-template-columns: repeat(4,1fr); } }
+.icon-tile{ display:flex; flex-direction:column; align-items:center; gap:8px; padding: var(--space-4) var(--space-2); border-radius: var(--radius-md); background: var(--glass-thin); border:1px solid var(--border-hairline); }
+.icon-tile svg{ width:24px; height:24px; stroke: var(--text-primary); }
+.icon-tile .lbl{ font-size:10.5px; color:var(--text-muted); text-align:center; }
+
+/* ---------- Charts ---------- */
+.chart-card{ background: var(--glass-thin); border:1px solid var(--border-hairline); border-radius: var(--radius-md); padding: var(--space-6); }
+.bars{ display:flex; align-items:flex-end; gap:14px; height:160px; }
+.bars .bar{ flex:1; border-radius: 6px 6px 0 0; position:relative; }
+.bars .bar span{ position:absolute; bottom:-22px; left:0; right:0; text-align:center; font-size:10.5px; color:var(--text-muted); }
+.seq-ramp, .div-ramp{ display:flex; border-radius: var(--radius-sm); overflow:hidden; height:36px; }
+.seq-ramp div, .div-ramp div{ flex:1; }
+
+/* ---------- A11y table ---------- */
+table.a11y{ width:100%; border-collapse: collapse; font-size:13.5px; }
+table.a11y th{ text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); padding:8px 10px; border-bottom:1px solid var(--border-hairline-strong); }
+table.a11y td{ padding:10px 10px; border-bottom:1px solid var(--border-hairline); }
+table.a11y tr:last-child td{ border-bottom:none; }
+.pass{ color: var(--emerald-400); font-weight:700; }
+.swatch-dot{ width:14px; height:14px; border-radius:4px; display:inline-block; margin-right:8px; vertical-align:-2px; border:1px solid rgba(255,255,255,.15); }
+
+.focus-demo button{ font-family:inherit; }
+.focus-demo button:focus-visible{ outline: 2px solid var(--meridian-400); outline-offset:2px; }
+
+footer{ padding: var(--space-9) 0 var(--space-11); text-align:center; }
+footer p{ font-size:12.5px; color:var(--text-muted); margin:4px 0; }
+
+.toast-note{ position:fixed; bottom:24px; right:24px; padding:10px 16px; border-radius:var(--radius-sm); background: var(--ink-800); color:#fff; font-size:13px; font-weight:600; box-shadow:var(--shadow-e3); opacity:0; transform: translateY(8px); transition: opacity var(--dur-base) var(--ease-standard), transform var(--dur-base) var(--ease-standard); pointer-events:none; z-index:100; }
+.toast-note.show{ opacity:1; transform: translateY(0); }
+
+::selection{ background: var(--meridian-600); color:#fff; }
+</style>
+</head>
+<body>
+
+<div class="atlas-field"><div class="blob blob-1"></div><div class="blob blob-2"></div><div class="blob blob-3"></div></div>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="topbar-brand"><img id="brandMark" src="assets/fm-mark-dark.png" alt=""> Fourth Meridian</div>
+    <nav class="topbar-nav">
+      <a href="#brand">Brand</a>
+      <a href="#color">Color</a>
+      <a href="#semantic">Semantic</a>
+      <a href="#type">Typography</a>
+      <a href="#elevation">Elevation</a>
+      <a href="#glass">Glass</a>
+      <a href="#radius">Radius</a>
+      <a href="#spacing">Spacing</a>
+      <a href="#motion">Motion</a>
+      <a href="#icons">Icons</a>
+      <a href="#charts">Charts</a>
+      <a href="#a11y">Accessibility</a>
+    </nav>
+    <button class="theme-toggle" id="themeToggle">
+      <span id="themeIcon">🌙</span> <span id="themeLabel">Dark</span>
+    </button>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- COVER -->
+  <section class="cover" id="cover" style="padding-top:64px;">
+    <img class="cover-mark" id="coverMark" src="assets/fm-mark-dark.png" alt="Fourth Meridian mark">
+    <h1>Fourth Meridian<br>Design <span>Language</span> v1</h1>
+    <p class="lede">The canonical visual and motion system for Fourth Meridian. Every color, type size, material, radius, spacing value, and animation curve a future page should use lives here. This document is the source of truth — not a page redesign.</p>
+    <div class="meta-row">
+      <div class="meta-item"><div class="k">Version</div><div class="v">1.0.0</div></div>
+      <div class="meta-item"><div class="k">Status</div><div class="v">Approved for implementation</div></div>
+      <div class="meta-item"><div class="k">Owner</div><div class="v">Staff Product Design</div></div>
+      <div class="meta-item"><div class="k">Default surface</div><div class="v">Dark — "Night Atlas"</div></div>
+      <div class="meta-item"><div class="k">Last updated</div><div class="v">June 19, 2026</div></div>
+    </div>
+    <div class="pill-nav">
+      <a href="#brand">Brand foundation</a>
+      <a href="#color">Color system</a>
+      <a href="#semantic">Semantic colors</a>
+      <a href="#type">Typography</a>
+      <a href="#elevation">Elevation</a>
+      <a href="#glass">Glass materials</a>
+      <a href="#radius">Border radius</a>
+      <a href="#spacing">Spacing</a>
+      <a href="#motion">Animation</a>
+      <a href="#icons">Iconography</a>
+      <a href="#charts">Chart colors</a>
+      <a href="#a11y">Accessibility</a>
+    </div>
+  </section>
+
+  <!-- BRAND FOUNDATION -->
+  <section id="brand">
+    <div class="sec-head">
+      <div class="eyebrow">01 — Foundation</div>
+      <h2 class="sec-title">Brand foundation</h2>
+      <p class="sec-desc">Fourth Meridian's mark is a globe crossed by meridian lines, fixed by a north star, rendered in brass and ink. Every design decision below — the deep navy surfaces, the brass accent, the precision of the grid — extends that mark rather than decorating around it.</p>
+    </div>
+    <div class="grid g-2" style="margin-bottom:var(--space-7);">
+      <div class="panel panel-pad" style="text-align:center; background:#0c0c0e;">
+        <img src="assets/fm-mark-dark.png" alt="Dark mark" style="width:120px; border-radius:26px; margin-bottom:12px;">
+        <div class="t-footnote">Primary mark — dark surfaces</div>
+      </div>
+      <div class="panel panel-pad" style="text-align:center; background:#f4f1ea;">
+        <img src="assets/fm-mark-light.png" alt="Light mark" style="width:120px; border-radius:26px; margin-bottom:12px;">
+        <div class="t-footnote" style="color:#5b5b5b;">Inverse mark — light surfaces</div>
+      </div>
+    </div>
+    <div class="panel panel-pad">
+      <div class="t-subhead" style="margin-bottom:14px;">Brand personality</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:24px;">
+        <span class="badge badge-info">Premium</span>
+        <span class="badge badge-info">Intelligent</span>
+        <span class="badge badge-info">Modern</span>
+        <span class="badge badge-success">Calm</span>
+        <span class="badge badge-success">Trustworthy</span>
+        <span class="badge badge-premium">Wealth</span>
+        <span class="badge badge-premium">Precision</span>
+        <span class="badge badge-warning">Atlas</span>
+        <span class="badge badge-warning">Navigation</span>
+        <span class="badge badge-warning">Meridian</span>
+      </div>
+      <div class="grid g-3">
+        <div>
+          <div class="t-body-em" style="margin-bottom:6px;">What this system is</div>
+          <div class="t-footnote">A locked set of tokens — color, type, elevation, glass, radius, spacing, motion, icon, chart, semantic, a11y — that every Fourth Meridian surface inherits from.</div>
+        </div>
+        <div>
+          <div class="t-body-em" style="margin-bottom:6px;">What it is not</div>
+          <div class="t-footnote">Not a page layout. Not a component library. No dashboards, no nav patterns, no screen flows are specified here — that is v2 work, scoped separately.</div>
+        </div>
+        <div>
+          <div class="t-body-em" style="margin-bottom:6px;">Voice alignment</div>
+          <div class="t-footnote">Calm, not urgent. Specific, not numerous. This visual language should read the same way Fourth Meridian's copy sounds — see <code>fourth-meridian-product-language.md</code>.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- COLOR SYSTEM -->
+  <section id="color">
+    <div class="sec-head">
+      <div class="eyebrow">02 — Foundation</div>
+      <h2 class="sec-title">Color system</h2>
+      <p class="sec-desc">Six ramps. Atlas Ink is the neutral spine; Brass is the brand accent lifted directly from the mark; Meridian is the primary interactive color. Click any swatch to copy its hex value. Dark is the default surface — Paper is the light-mode base.</p>
+    </div>
+
+    <div class="t-subhead" style="margin-bottom:12px;">Atlas Ink — neutral</div>
+    <div class="grid g-6" style="margin-bottom:var(--space-7);" id="rampInk"></div>
+
+    <div class="t-subhead" style="margin-bottom:12px;">Brass — brand accent</div>
+    <div class="grid g-6" style="margin-bottom:var(--space-7);" id="rampBrass"></div>
+
+    <div class="t-subhead" style="margin-bottom:12px;">Meridian — primary interactive</div>
+    <div class="grid g-6" style="margin-bottom:var(--space-7);" id="rampMeridian"></div>
+
+    <div class="grid g-2" style="margin-bottom:var(--space-7);">
+      <div>
+        <div class="t-subhead" style="margin-bottom:12px;">Emerald — success / gain</div>
+        <div class="grid g-3" id="rampEmerald"></div>
+      </div>
+      <div>
+        <div class="t-subhead" style="margin-bottom:12px;">Coral — danger / loss</div>
+        <div class="grid g-3" id="rampCoral"></div>
+      </div>
+    </div>
+
+    <div class="t-subhead" style="margin-bottom:12px;">Violet — secondary data category</div>
+    <div class="grid g-3" style="margin-bottom:var(--space-7);" id="rampViolet"></div>
+
+    <div class="t-subhead" style="margin-bottom:12px;">Paper — light mode base</div>
+    <div class="grid g-3" id="rampPaper"></div>
+
+    <div class="panel panel-pad" style="margin-top:var(--space-7);">
+      <div class="t-body-em" style="margin-bottom:8px;">Usage rules</div>
+      <div class="t-footnote" style="line-height:1.8;">
+        Meridian is the only color used for primary actions, links, and focus rings — never recolor a primary button with Brass or Violet. Brass is reserved for premium markers, the wordmark, and featured/AI surfaces — never for status or data. Emerald and Coral are reserved exclusively for actual gain/loss and pass/fail states — never reused for categorical chart series. At least 90% of any screen should be Atlas Ink; color is the exception, not the texture.
+      </div>
+    </div>
+  </section>
+
+  <!-- SEMANTIC -->
+  <section id="semantic">
+    <div class="sec-head">
+      <div class="eyebrow">03 — Foundation</div>
+      <h2 class="sec-title">Semantic colors</h2>
+      <p class="sec-desc">Five meanings, fixed mappings. Color is always paired with an icon and a sign or label — never the only signal, for accessibility and for clarity at a glance.</p>
+    </div>
+    <div class="grid g-4">
+      <div class="panel panel-pad">
+        <div class="icon-chip chip-success" style="margin-bottom:14px;">${ICO_TRENDUP}</div>
+        <div class="t-body-em">Success / Gain</div>
+        <div class="t-footnote" style="margin:6px 0 12px;">Positive deltas, completed states, healthy targets.</div>
+        <div class="t-data-lg" style="color:var(--emerald-400);">+$1,653</div>
+      </div>
+      <div class="panel panel-pad">
+        <div class="icon-chip chip-warning" style="margin-bottom:14px;">${ICO_ALERT}</div>
+        <div class="t-body-em">Warning / Attention</div>
+        <div class="t-footnote" style="margin:6px 0 12px;">Needs a look soon — not urgent, not broken.</div>
+        <div class="t-data-lg" style="color:var(--brass-300);">87%</div>
+      </div>
+      <div class="panel panel-pad">
+        <div class="icon-chip chip-danger" style="margin-bottom:14px;">${ICO_OCTAGON}</div>
+        <div class="t-body-em">Danger / Loss</div>
+        <div class="t-footnote" style="margin:6px 0 12px;">Negative deltas, failed sync, critical alerts.</div>
+        <div class="t-data-lg" style="color:var(--coral-400);">−$320</div>
+      </div>
+      <div class="panel panel-pad">
+        <div class="icon-chip chip-info" style="margin-bottom:14px;">${ICO_INFO}</div>
+        <div class="t-body-em">Info / Primary</div>
+        <div class="t-footnote" style="margin:6px 0 12px;">Links, primary actions, neutral highlights.</div>
+        <div class="t-data-lg" style="color:var(--meridian-400);">4 new</div>
+      </div>
+    </div>
+    <div class="panel panel-pad" style="margin-top:var(--space-5);">
+      <div style="display:flex; align-items:center; gap:14px;">
+        <div class="icon-chip" style="background:linear-gradient(135deg, rgba(212,169,56,.22), rgba(232,193,88,.08)); color:var(--brass-300);">${ICO_SPARK}</div>
+        <div>
+          <div class="t-body-em">Premium / Featured <span class="badge badge-premium" style="margin-left:8px;">Brass</span></div>
+          <div class="t-footnote">AI briefings, featured insights, premium-tier markers. The only semantic allowed to borrow the brand accent.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TYPOGRAPHY -->
+  <section id="type">
+    <div class="sec-head">
+      <div class="eyebrow">04 — Foundation</div>
+      <h2 class="sec-title">Typography scale</h2>
+      <p class="sec-desc">SF Pro on Apple platforms, falling back to Inter / system-ui everywhere else. Financial figures always use tabular numerals so columns of numbers align — non-negotiable for a Bloomberg-density table.</p>
+    </div>
+    <div class="panel panel-pad">
+      <div class="specimen"><div class="meta"><div class="name">Display</div><div class="spec">48 / 56 · 650 · −2%</div></div><div class="sample t-display">Net worth, clearly</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Title 1</div><div class="spec">34 / 40 · 600 · −1.5%</div></div><div class="sample t-title1">Your Family Space</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Title 2</div><div class="spec">28 / 34 · 600 · −1%</div></div><div class="sample t-title2">Since your last visit</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Title 3</div><div class="spec">22 / 28 · 600 · −0.8%</div></div><div class="sample t-title3">Today's insight</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Headline</div><div class="spec">17 / 24 · 600</div></div><div class="sample t-headline">Credit card utilization is high</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Body</div><div class="spec">15 / 22 · 400</div></div><div class="sample t-body">Your cash reserves improved, but debt still outweighs liquid assets.</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Body Emphasized</div><div class="spec">15 / 22 · 600</div></div><div class="sample t-body-em">Emergency fund is 68% to target.</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Subheadline</div><div class="spec">13 / 18 · 600 · caps</div></div><div class="sample t-subhead">Daily Brief</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Footnote</div><div class="spec">12 / 16 · 400</div></div><div class="sample t-footnote">Up $1,653 (1.2%) since last visit</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Caption</div><div class="spec">11 / 14 · 500</div></div><div class="sample t-caption">JUN 19 · 9:41 AM</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Data Large</div><div class="spec">32 / 36 · 650 · tabular</div></div><div class="sample t-data-lg">$214,902.18</div></div>
+      <div class="specimen"><div class="meta"><div class="name">Data Table</div><div class="spec">14 / 20 · 500 · tabular</div></div><div class="sample t-data-table">12,480.30&nbsp;&nbsp;&nbsp;8,204.11&nbsp;&nbsp;&nbsp;192.00</div></div>
+    </div>
+    <div class="grid g-2" style="margin-top:var(--space-6);">
+      <div class="panel panel-pad">
+        <div class="t-body-em" style="margin-bottom:8px;">Mobile adjustment</div>
+        <div class="t-footnote">Display drops to 36/42, Title 1 to 28/34, Title 2 to 24/30. Body, Footnote, and Caption stay fixed — 15px is the smallest legible body size on iOS, full stop.</div>
+      </div>
+      <div class="panel panel-pad">
+        <div class="t-body-em" style="margin-bottom:8px;">Tabular numerals, demonstrated</div>
+        <table class="a11y" style="font-family:var(--font-data); font-variant-numeric: tabular-nums;">
+          <tr><td>Checking</td><td style="text-align:right;">1,204.30</td></tr>
+          <tr><td>Brokerage</td><td style="text-align:right;">82,910.00</td></tr>
+          <tr><td>Mortgage</td><td style="text-align:right;">−312,004.18</td></tr>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ELEVATION -->
+  <section id="elevation">
+    <div class="sec-head">
+      <div class="eyebrow">05 — Foundation</div>
+      <h2 class="sec-title">Elevation</h2>
+      <p class="sec-desc">On near-black surfaces, drop shadow alone barely reads. Elevation here is communicated by border luminance and inner highlight as much as by shadow depth — five levels, lowest to highest.</p>
+    </div>
+    <div class="elev-row">
+      <div class="elev-card e0"><div class="lvl">E0 — Base</div><div class="desc">Page background. No shadow, no border.</div></div>
+      <div class="elev-card e1"><div class="lvl">E1 — Resting</div><div class="desc">Default card. Hairline border + 1px inset highlight.</div></div>
+      <div class="elev-card e2"><div class="lvl">E2 — Raised</div><div class="desc">Hover / interactive card. Soft 28px shadow.</div></div>
+      <div class="elev-card e3"><div class="lvl">E3 — Overlay</div><div class="desc">Popovers, menus. 44px shadow, stronger border.</div></div>
+      <div class="elev-card e4"><div class="lvl">E4 — Modal</div><div class="desc">Sheets, dialogs. 70px shadow + scrim behind.</div></div>
+    </div>
+  </section>
+
+  <!-- GLASS MATERIAL -->
+  <section id="glass">
+    <div class="sec-head">
+      <div class="eyebrow">06 — Foundation</div>
+      <h2 class="sec-title">Glass material system — "Atlas Glass"</h2>
+      <p class="sec-desc">Four blur weights, each with a specular top edge to simulate light catching a glass plane (iOS 26/27 liquid-glass inspired). Tint variants wash a 12–18% hue over the base material for status or premium surfaces.</p>
+    </div>
+    <div class="material-stage">
+      <div class="material-card m-ultrathin"><div class="nm">Ultrathin</div><div class="sp">blur 16px · sat 180%</div></div>
+      <div class="material-card m-thin"><div class="nm">Thin</div><div class="sp">blur 28px · sat 165%</div></div>
+      <div class="material-card m-regular"><div class="nm">Regular</div><div class="sp">blur 40px · sat 150%</div></div>
+      <div class="material-card m-thick"><div class="nm">Thick</div><div class="sp">blur 60px · sat 140%</div></div>
+    </div>
+    <div class="t-footnote" style="margin-top:14px;">Ultrathin → chrome bars &amp; tab bars. Thin → default cards. Regular → sheets &amp; modals. Thick → command palette &amp; full-screen overlays.</div>
+    <div class="t-subhead" style="margin:var(--space-6) 0 12px;">Tint variants</div>
+    <div class="tint-row">
+      <div class="tint-card tint-neutral">Neutral</div>
+      <div class="tint-card tint-meridian">Meridian</div>
+      <div class="tint-card tint-brass">Brass</div>
+      <div class="tint-card tint-emerald">Emerald</div>
+      <div class="tint-card tint-coral">Coral</div>
+    </div>
+  </section>
+
+  <!-- RADIUS -->
+  <section id="radius">
+    <div class="sec-head">
+      <div class="eyebrow">07 — Foundation</div>
+      <h2 class="sec-title">Border radius</h2>
+      <p class="sec-desc">A six-step scale. Radius nests concentrically — a child's radius equals its parent's radius minus its own padding, the same logic Apple uses for squircle continuity.</p>
+    </div>
+    <div class="radius-row" style="margin-bottom:var(--space-7);">
+      <div class="radius-box" style="border-radius:6px;">xs · 6</div>
+      <div class="radius-box" style="border-radius:10px;">sm · 10</div>
+      <div class="radius-box" style="border-radius:14px;">md · 14</div>
+      <div class="radius-box" style="border-radius:20px;">lg · 20</div>
+      <div class="radius-box" style="border-radius:28px;">xl · 28</div>
+      <div class="radius-box" style="border-radius:999px;">full</div>
+    </div>
+    <div class="t-subhead" style="margin-bottom:12px;">Concentric nesting</div>
+    <div class="nest-demo">
+      <div class="inner">parent lg (20px) − 18px padding ≈ child md (14px)</div>
+    </div>
+  </section>
+
+  <!-- SPACING -->
+  <section id="spacing">
+    <div class="sec-head">
+      <div class="eyebrow">08 — Foundation</div>
+      <h2 class="sec-title">Spacing system</h2>
+      <p class="sec-desc">4px base unit, 8pt rhythm. Two density modes: Comfortable for everyday screens, Compact for Bloomberg-density tables and power-user views.</p>
+    </div>
+    <div class="panel panel-pad" style="margin-bottom:var(--space-6);" id="spacingScale"></div>
+    <div class="grid g-2">
+      <div>
+        <div class="t-subhead" style="margin-bottom:10px;">Comfortable</div>
+        <div class="panel panel-pad density-comfortable">
+          <div class="density-row"><span>Checking — Chase</span><span class="mono">$4,210.18</span></div>
+          <div class="density-row"><span>Savings — Ally</span><span class="mono">$18,900.00</span></div>
+          <div class="density-row"><span>Brokerage — Fidelity</span><span class="mono">$82,310.44</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="t-subhead" style="margin-bottom:10px;">Compact</div>
+        <div class="panel panel-pad density-compact">
+          <div class="density-row"><span>Checking — Chase</span><span class="mono">$4,210.18</span></div>
+          <div class="density-row"><span>Savings — Ally</span><span class="mono">$18,900.00</span></div>
+          <div class="density-row"><span>Brokerage — Fidelity</span><span class="mono">$82,310.44</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MOTION -->
+  <section id="motion">
+    <div class="sec-head">
+      <div class="eyebrow">09 — Foundation</div>
+      <h2 class="sec-title">Animation system — "Meridian Motion"</h2>
+      <p class="sec-desc">Calm and physical, never bouncy. Transitions animate transform and opacity only. Numbers roll rather than snap. Hover the card and watch the digits below to see both principles live.</p>
+    </div>
+    <div class="grid g-3" style="margin-bottom:var(--space-7);">
+      <div class="curve-card" id="curveStandard"></div>
+      <div class="curve-card" id="curveEnter"></div>
+      <div class="curve-card" id="curveExit"></div>
+    </div>
+    <div class="t-subhead" style="margin-bottom:14px;">Duration scale</div>
+    <div style="margin-bottom:var(--space-7);">
+      <div class="dur-row"><div class="nm">instant</div><div class="dur-track"><div class="dur-fill" style="width:4%;"></div></div><div class="ms">100ms</div></div>
+      <div class="dur-row"><div class="nm">fast</div><div class="dur-track"><div class="dur-fill" style="width:7.5%;"></div></div><div class="ms">180ms</div></div>
+      <div class="dur-row"><div class="nm">base</div><div class="dur-track"><div class="dur-fill" style="width:10%;"></div></div><div class="ms">240ms</div></div>
+      <div class="dur-row"><div class="nm">moderate</div><div class="dur-track"><div class="dur-fill" style="width:13%;"></div></div><div class="ms">320ms</div></div>
+      <div class="dur-row"><div class="nm">slow</div><div class="dur-track"><div class="dur-fill" style="width:20%;"></div></div><div class="ms">480ms</div></div>
+      <div class="dur-row"><div class="nm">ambient</div><div class="dur-track"><div class="dur-fill" style="width:100%; background:var(--brass-400);"></div></div><div class="ms">2400ms</div></div>
+    </div>
+    <div class="t-subhead" style="margin-bottom:14px;">Live demonstration</div>
+    <div class="panel panel-pad demo-row">
+      <div class="hover-card">Hover to raise<br><span class="t-caption">E1 → E3, 240ms standard</span></div>
+      <div style="text-align:center;">
+        <div class="odometer" id="odo">$0.00</div>
+        <button class="btn btn-primary" id="odoBtn" style="margin-top:10px;">Roll the number</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <div class="pulse-dot"></div>
+        <div class="t-footnote">Ambient pulse, 2400ms loop — live data indicator</div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <div class="toggle-track" id="motionToggle"><div class="toggle-knob"></div></div>
+        <div class="t-footnote">Spring toggle, 180ms</div>
+      </div>
+    </div>
+    <div class="t-footnote" style="margin-top:14px;"><code>prefers-reduced-motion</code>: ambient loops stop, durations collapse to a single 1-frame opacity cross-fade.</div>
+  </section>
+
+  <!-- ICONOGRAPHY -->
+  <section id="icons">
+    <div class="sec-head">
+      <div class="eyebrow">10 — Foundation</div>
+      <h2 class="sec-title">Iconography rules</h2>
+      <p class="sec-desc">Line icons only, 1.5px stroke on a 24px grid, rounded joins and caps — SF Symbols-like. Filled icons are reserved for status dots and the brand mark. Semantic icons always inherit their semantic color.</p>
+    </div>
+    <div class="icon-grid">
+      <div class="icon-tile">${ICO_TRENDUP}<div class="lbl">trend-up</div></div>
+      <div class="icon-tile">${ICO_TRENDDOWN}<div class="lbl">trend-down</div></div>
+      <div class="icon-tile">${ICO_CHECK}<div class="lbl">check</div></div>
+      <div class="icon-tile">${ICO_INFO}<div class="lbl">info</div></div>
+      <div class="icon-tile">${ICO_ALERT}<div class="lbl">warning</div></div>
+      <div class="icon-tile">${ICO_OCTAGON}<div class="lbl">danger</div></div>
+      <div class="icon-tile">${ICO_CHEVRON}<div class="lbl">chevron</div></div>
+      <div class="icon-tile">${ICO_SPARK}<div class="lbl">ai / premium</div></div>
+      <div class="icon-tile">${ICO_LOCK}<div class="lbl">lock</div></div>
+      <div class="icon-tile">${ICO_SEARCH}<div class="lbl">search</div></div>
+      <div class="icon-tile">${ICO_GEAR}<div class="lbl">settings</div></div>
+      <div class="icon-tile">${ICO_GLOBE}<div class="lbl">space / atlas</div></div>
+      <div class="icon-tile">${ICO_PLUS}<div class="lbl">add</div></div>
+      <div class="icon-tile">${ICO_CLOSE}<div class="lbl">close</div></div>
+      <div class="icon-tile">${ICO_WALLET}<div class="lbl">account</div></div>
+      <div class="icon-tile">${ICO_STAR}<div class="lbl">meridian mark</div></div>
+    </div>
+    <div class="t-subhead" style="margin:var(--space-6) 0 12px;">Sizing scale &amp; icon chip pattern</div>
+    <div class="demo-row">
+      <div style="display:flex; align-items:center; gap:16px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </div>
+      <div class="icon-chip chip-info">${ICO_INFO}</div>
+      <div class="t-footnote">16 / 20 / 24 / 32 — redrawn per size, not scaled. Icon chips: squircle, tint bg at 14% opacity, full-strength glyph.</div>
+    </div>
+  </section>
+
+  <!-- CHARTS -->
+  <section id="charts">
+    <div class="sec-head">
+      <div class="eyebrow">11 — Foundation</div>
+      <h2 class="sec-title">Chart colors</h2>
+      <p class="sec-desc">A fixed eight-color categorical order — the same series always gets the same color across every view. Sequential and diverging ramps for heatmaps and density views. Red and green are reserved for real gain/loss, never for arbitrary categories.</p>
+    </div>
+    <div class="t-subhead" style="margin-bottom:12px;">Categorical — fixed order</div>
+    <div class="grid g-4" id="rampChart" style="margin-bottom:var(--space-7);"></div>
+
+    <div class="chart-card" style="margin-bottom:var(--space-7);">
+      <div class="t-body-em" style="margin-bottom:16px;">Example — allocation by category</div>
+      <div class="bars" id="exampleBars"></div>
+      <div style="height:24px;"></div>
+    </div>
+
+    <div class="grid g-2">
+      <div>
+        <div class="t-subhead" style="margin-bottom:10px;">Sequential — density / heatmap</div>
+        <div class="seq-ramp" id="seqRamp"></div>
+      </div>
+      <div>
+        <div class="t-subhead" style="margin-bottom:10px;">Diverging — gain ↔ loss</div>
+        <div class="div-ramp" id="divRamp"></div>
+      </div>
+    </div>
+    <div class="t-footnote" style="margin-top:14px;">Gridlines: Ink-700 at 12% opacity. Axis labels: Caption / Ink-300. Maximum six series per chart before splitting into small multiples.</div>
+  </section>
+
+  <!-- ACCESSIBILITY -->
+  <section id="a11y">
+    <div class="sec-head">
+      <div class="eyebrow">12 — Foundation</div>
+      <h2 class="sec-title">Accessibility requirements</h2>
+      <p class="sec-desc">Contrast ratios below are computed with the WCAG relative-luminance formula against this exact palette — not estimated.</p>
+    </div>
+    <div class="panel panel-pad" style="margin-bottom:var(--space-7); overflow-x:auto;">
+      <table class="a11y">
+        <tr><th>Foreground</th><th>Background</th><th>Ratio</th><th>WCAG AA</th></tr>
+        <tr><td><span class="swatch-dot" style="background:#F5F7FA;"></span>Ink-50 text</td><td>Ink-900 (dark base)</td><td class="mono">17.6 : 1</td><td class="pass">Pass — normal text</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#9CA4BC;"></span>Ink-300 muted</td><td>Ink-900 (dark base)</td><td class="mono">7.6 : 1</td><td class="pass">Pass — normal text</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#5896FB;"></span>Meridian-400 text</td><td>Ink-900</td><td class="mono">6.4 : 1</td><td class="pass">Pass — normal text</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#34D399;"></span>Emerald-400 text</td><td>Ink-900</td><td class="mono">9.8 : 1</td><td class="pass">Pass — normal text</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#F2746A;"></span>Coral-400 text</td><td>Ink-900</td><td class="mono">6.7 : 1</td><td class="pass">Pass — normal text</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#D4A938;"></span>Brass-400 text</td><td>Ink-900</td><td class="mono">8.6 : 1</td><td class="pass">Pass — normal text</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#FFFFFF;"></span>White label</td><td>Meridian-600 button</td><td class="mono">5.2 : 1</td><td class="pass">Pass — button label</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#FFFFFF;"></span>White label</td><td>Emerald-700 button</td><td class="mono">5.0 : 1</td><td class="pass">Pass — button label</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#FFFFFF;"></span>White label</td><td>Coral-600 button</td><td class="mono">4.9 : 1</td><td class="pass">Pass — button label</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#11151F;"></span>Ink text</td><td>Brass-500 button (gold uses dark text, not white)</td><td class="mono">7.5 : 1</td><td class="pass">Pass — button label</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#11151F;"></span>Ink-900 text</td><td>Paper-0 (light base)</td><td class="mono">17.5 : 1</td><td class="pass">Pass — normal text</td></tr>
+        <tr><td><span class="swatch-dot" style="background:#2563EB;"></span>Meridian-600 link</td><td>Paper-0 (light base)</td><td class="mono">5.0 : 1</td><td class="pass">Pass — normal text</td></tr>
+      </table>
+    </div>
+    <div class="grid g-2">
+      <div class="panel panel-pad">
+        <div class="t-body-em" style="margin-bottom:10px;">Focus &amp; touch targets</div>
+        <div class="focus-demo" style="margin-bottom:14px;"><button class="btn btn-ghost">Tab to me, then press Tab</button></div>
+        <div class="t-footnote">Every interactive element gets a visible 2px Meridian-400 ring, 2px offset — never removed without replacement. Minimum touch target 44×44pt; dense table row actions get an extended 32px hit area.</div>
+      </div>
+      <div class="panel panel-pad">
+        <div class="t-body-em" style="margin-bottom:10px;">Never color alone</div>
+        <div style="display:flex; gap:18px; margin-bottom:10px;">
+          <div style="display:flex; align-items:center; gap:6px; color:var(--emerald-400);">${ICO_TRENDUP} <strong>+1.2%</strong></div>
+          <div style="display:flex; align-items:center; gap:6px; color:var(--coral-400);">${ICO_TRENDDOWN} <strong>−0.8%</strong></div>
+        </div>
+        <div class="t-footnote">Direction is always carried by an icon and a +/− sign, never by hue alone — this keeps the system legible under deuteranopia and protanopia. prefers-contrast and forced-colors get bumped border/text contrast variants.</div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p><strong>Fourth Meridian Design Language v1.0.0</strong> — approved for implementation</p>
+    <p>This document defines tokens only. No page layouts, components, or screen flows are specified — that work follows in a separate phase.</p>
+  </div>
+</footer>
+
+<div class="toast-note" id="toast">Copied to clipboard</div>
+
+<script>
+// ---------- Icon library (inline, 24px grid, 1.5px stroke) ----------
+const ICONS = {
+  trendup: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>',
+  trenddown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l6 6 4-4 8 8"/><path d="M15 17h6v-6"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg>',
+  info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.1"/></svg>',
+  alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 3 20h18L12 4Z"/><path d="M12 10v4.5M12 17.2v.1"/></svg>',
+  octagon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h8l5 5v8l-5 5H8l-5-5V8l5-5Z"/><path d="M12 8v5.5M12 16.2v.1"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>',
+  spark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><path d="M12 8.5 14 12l-2 3.5L10 12l2-3.5Z"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l1.8-1.4-2-3.4-2.1.7a7.7 7.7 0 0 0-2.6-1.5L14 2h-4l-.5 2.2a7.7 7.7 0 0 0-2.6 1.5l-2.1-.7-2 3.4L4.6 10a7.6 7.6 0 0 0 0 3l-1.8 1.5 2 3.4 2.1-.7c.76.66 1.64 1.17 2.6 1.5L10 22h4l.5-2.2c.96-.33 1.84-.84 2.6-1.5l2.1.7 2-3.4-1.8-1.5Z"/></svg>',
+  globe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13 13 0 0 1 0 18 13 13 0 0 1 0-18Z"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18M16 14h2.2"/></svg>',
+  star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 2.5 14 10l7.5 2L14 14l-2 7.5-2-7.5L2.5 12 10 10l2-7.5Z"/></svg>',
+};
+document.querySelectorAll('section, div').forEach(()=>{}); // no-op safeguard
+
+function injectIcons(){
+  const map = {
+    '${ICO_TRENDUP}': ICONS.trendup, '${ICO_TRENDDOWN}': ICONS.trenddown, '${ICO_CHECK}': ICONS.check,
+    '${ICO_INFO}': ICONS.info, '${ICO_ALERT}': ICONS.alert, '${ICO_OCTAGON}': ICONS.octagon,
+    '${ICO_CHEVRON}': ICONS.chevron, '${ICO_SPARK}': ICONS.spark, '${ICO_LOCK}': ICONS.lock,
+    '${ICO_SEARCH}': ICONS.search, '${ICO_GEAR}': ICONS.gear, '${ICO_GLOBE}': ICONS.globe,
+    '${ICO_PLUS}': ICONS.plus, '${ICO_CLOSE}': ICONS.close, '${ICO_WALLET}': ICONS.wallet, '${ICO_STAR}': ICONS.star,
+  };
+  document.body.innerHTML = Object.keys(map).reduce((html,key)=> html.split(key).join(map[key]), document.body.innerHTML);
+}
+injectIcons();
+
+// ---------- Theme toggle ----------
+const root = document.documentElement;
+const toggle = document.getElementById('themeToggle');
+const themeIcon = document.getElementById('themeIcon');
+const themeLabel = document.getElementById('themeLabel');
+function applyTheme(t){
+  root.setAttribute('data-theme', t);
+  themeIcon.textContent = t === 'dark' ? '🌙' : '☀️';
+  themeLabel.textContent = t === 'dark' ? 'Dark' : 'Light';
+  const markSrc = t === 'dark' ? 'assets/fm-mark-dark.png' : 'assets/fm-mark-light.png';
+  document.getElementById('brandMark').src = markSrc;
+  document.getElementById('coverMark').src = markSrc;
+}
+toggle.addEventListener('click', ()=>{
+  applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+});
+
+// ---------- Copy hex on swatch click ----------
+const toast = document.getElementById('toast');
+function showToast(msg){
+  toast.textContent = msg; toast.classList.add('show');
+  clearTimeout(window.__t); window.__t = setTimeout(()=> toast.classList.remove('show'), 1400);
+}
+function buildRamp(target, entries){
+  const el = document.getElementById(target);
+  entries.forEach(([name, hex])=>{
+    const d = document.createElement('div');
+    d.className = 'swatch';
+    d.innerHTML = `<div class="fill" style="background:${hex}"></div><div class="label"><div class="name">${name}</div><div class="hex mono">${hex}</div></div>`;
+    d.addEventListener('click', ()=>{
+      navigator.clipboard?.writeText(hex).catch(()=>{});
+      showToast(`Copied ${hex}`);
+    });
+    el.appendChild(d);
+  });
+}
+buildRamp('rampInk', [['ink-50','#F5F7FA'],['ink-100','#E7EAF1'],['ink-200','#C9CEDC'],['ink-300','#9CA4BC'],['ink-400','#6E7896'],['ink-500','#4D5774'],['ink-600','#38415A'],['ink-700','#262E42'],['ink-800','#161C2C'],['ink-900','#0C111D'],['ink-950','#060911'],['ink-0','#FFFFFF']]);
+buildRamp('rampBrass', [['brass-100','#FBF1D6'],['brass-200','#F2D675'],['brass-300','#E8C158'],['brass-400','#D4A938'],['brass-500','#C9A227'],['brass-600','#A6841E'],['brass-700','#806416']]);
+buildRamp('rampMeridian', [['meridian-100','#DCE9FF'],['meridian-200','#AECBFF'],['meridian-300','#7FAEFF'],['meridian-400','#5896FB'],['meridian-500','#3B82F6'],['meridian-600','#2563EB'],['meridian-700','#1D4ED8']]);
+buildRamp('rampEmerald', [['emerald-300','#5EE0A3'],['emerald-400','#34D399'],['emerald-500','#22C55E'],['emerald-600','#16A34A'],['emerald-700','#15803D']]);
+buildRamp('rampCoral', [['coral-300','#F6968D'],['coral-400','#F2746A'],['coral-500','#ED5247'],['coral-600','#D43426'],['coral-700','#B91C1C']]);
+buildRamp('rampViolet', [['violet-300','#C4AAFC'],['violet-400','#A78BFA'],['violet-500','#8B5CF6'],['violet-600','#7C3AED'],['violet-700','#6D28D9']]);
+buildRamp('rampPaper', [['paper-0','#FBFAF7'],['paper-50','#F2F1ED'],['paper-100','#E8E6E0']]);
+buildRamp('rampChart', [['1 · Meridian','#5896FB'],['2 · Brass','#D4A938'],['3 · Emerald','#34D399'],['4 · Violet','#A78BFA'],['5 · Coral','#F2746A'],['6 · Cyan','#38BDF8'],['7 · Rose','#F472B6'],['8 · Steel','#94A3B8']]);
+
+// ---------- Example bar chart ----------
+const barData = [
+  ['Equities', 42, '#5896FB'], ['Real estate', 24, '#D4A938'], ['Fixed income', 16, '#34D399'],
+  ['Cash', 9, '#A78BFA'], ['Crypto', 6, '#F2746A'], ['Other', 3, '#94A3B8'],
+];
+const bars = document.getElementById('exampleBars');
+barData.forEach(([label, pct, color])=>{
+  const b = document.createElement('div');
+  b.className = 'bar';
+  b.style.height = (pct/42*100) + '%';
+  b.style.background = color;
+  b.innerHTML = `<span>${label}</span>`;
+  bars.appendChild(b);
+});
+
+// ---------- Sequential / diverging ramps ----------
+const seq = document.getElementById('seqRamp');
+['#0c1a33','#13294f','#1b3c70','#2557a3','#3b82f6','#7fadff','#cfe1ff'].forEach(c=>{
+  const d = document.createElement('div'); d.style.background = c; seq.appendChild(d);
+});
+const div = document.getElementById('divRamp');
+['#B91C1C','#ED5247','#F6968D','#3a4256','#5EE0A3','#22C55E','#15803D'].forEach(c=>{
+  const d = document.createElement('div'); d.style.background = c; div.appendChild(d);
+});
+
+// ---------- Spacing scale ----------
+const spacingEl = document.getElementById('spacingScale');
+[['space-1',4],['space-2',8],['space-3',12],['space-4',16],['space-5',20],['space-6',24],['space-7',32],['space-8',40],['space-9',48],['space-10',64],['space-11',80],['space-12',96]].forEach(([name,px])=>{
+  const row = document.createElement('div'); row.className = 'space-row';
+  row.innerHTML = `<div class="nm">${name}</div><div class="bar" style="width:${px}px;"></div><div class="px">${px}px</div>`;
+  spacingEl.appendChild(row);
+});
+
+// ---------- Easing curve SVGs ----------
+function curveSVG(p0,p1,p2,p3){
+  // cubic bezier control points scaled to a 100x100 box, y flipped (CSS easing: x=time, y=progress)
+  const X0=10,Y0=90, X3=190,Y3=10;
+  const lerp=(a,b,t)=>a+(b-a)*t;
+  const cx1 = lerp(X0,X3,p0), cy1 = lerp(Y0,Y3,1-p1);
+  const cx2 = lerp(X0,X3,p2), cy2 = lerp(Y0,Y3,1-p3);
+  return `<svg viewBox="0 0 200 100"><path d="M${X0} ${Y0} C${cx1} ${cy1}, ${cx2} ${cy2}, ${X3} ${Y3}" fill="none" stroke="var(--meridian-400)" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="${X0}" y1="${Y0}" x2="${X3}" y2="${Y3}" stroke="rgba(255,255,255,.12)" stroke-width="1"/></svg>`;
+}
+document.getElementById('curveStandard').innerHTML = `<div class="nm">Standard</div><div class="sp">cubic-bezier(.4,0,.2,1)</div>` + curveSVG(.4,0,.2,1);
+document.getElementById('curveEnter').innerHTML = `<div class="nm">Emphasized enter</div><div class="sp">cubic-bezier(.2,0,0,1)</div>` + curveSVG(.2,0,0,1);
+document.getElementById('curveExit').innerHTML = `<div class="nm">Emphasized exit</div><div class="sp">cubic-bezier(.4,0,1,1)</div>` + curveSVG(.4,0,1,1);
+
+// ---------- Odometer demo ----------
+let odoVal = 0;
+document.getElementById('odoBtn').addEventListener('click', ()=>{
+  const target = Math.floor(Math.random()*90000)/100 + 1000;
+  const start = odoVal; const dur = 480; const t0 = performance.now();
+  function step(now){
+    const t = Math.min(1, (now-t0)/dur);
+    const eased = 1 - Math.pow(1-t, 3);
+    odoVal = start + (target-start)*eased;
+    document.getElementById('odo').textContent = '$' + odoVal.toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+    if(t<1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+});
+
+// ---------- Motion toggle ----------
+document.getElementById('motionToggle').addEventListener('click', (e)=> e.currentTarget.classList.toggle('on'));
+</script>
+</body>
+</html>

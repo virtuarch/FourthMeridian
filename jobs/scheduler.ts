@@ -53,7 +53,7 @@ function scheduleDaily(fn: () => Promise<void>, hourUTC: number, minuteUTC = 5) 
 }
 
 /** Runs `fn` after `initialDelayMs`, then repeatedly every `intervalMs`. */
-function scheduleInterval(fn: () => Promise<void>, intervalMs: number, initialDelayMs = 0) {
+function scheduleInterval(fn: () => Promise<unknown>, intervalMs: number, initialDelayMs = 0) {
   setTimeout(async () => {
     try { await fn(); } catch (e) { console.error("[scheduler]", e); }
     setInterval(async () => {

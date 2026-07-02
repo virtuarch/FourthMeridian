@@ -8,9 +8,9 @@ import { useState, useEffect, useMemo } from "react";
 import { Search, Filter, X, ShieldCheck, ShieldOff } from "lucide-react";
 import { formatDate } from "@/lib/format";
 
-type WorkspaceMembership = {
+type SpaceMembership = {
   role:      string;
-  workspace: { id: string; name: string; type: string; _count: { accounts: number } };
+  space: { id: string; name: string; type: string; _count: { accounts: number } };
 };
 
 type User = {
@@ -26,7 +26,7 @@ type User = {
   employmentStatus:       string | null;
   useCase:                string | null;
   createdAt:              string;
-  workspaces:             WorkspaceMembership[];
+  spaces:             SpaceMembership[];
   recoveryCodesRemaining: number;
 };
 
@@ -176,7 +176,7 @@ export default function AdminUsersPage() {
                 <th className="px-4 py-3 font-medium">Role</th>
                 <th className="px-4 py-3 font-medium hidden sm:table-cell">2FA</th>
                 <th className="px-4 py-3 font-medium hidden md:table-cell">Details</th>
-                <th className="px-4 py-3 font-medium hidden sm:table-cell">Workspaces</th>
+                <th className="px-4 py-3 font-medium hidden sm:table-cell">Spaces</th>
                 <th className="px-4 py-3 font-medium hidden lg:table-cell">Joined</th>
               </tr>
             </thead>
@@ -260,18 +260,18 @@ export default function AdminUsersPage() {
                       </div>
                     </td>
 
-                    {/* Workspaces */}
+                    {/* Spaces */}
                     <td className="px-4 py-3.5 hidden sm:table-cell">
-                      {u.workspaces.length === 0 ? (
-                        <span className="text-xs text-gray-600">No workspaces</span>
+                      {u.spaces.length === 0 ? (
+                        <span className="text-xs text-gray-600">No Spaces</span>
                       ) : (
                         <div className="space-y-1.5">
-                          {u.workspaces.map((m) => (
-                            <div key={m.workspace.id} className="flex items-center gap-1.5">
+                          {u.spaces.map((m) => (
+                            <div key={m.space.id} className="flex items-center gap-1.5">
                               <span className={`text-xs font-medium px-1.5 py-0.5 rounded border ${WS_ROLE_PILL[m.role] ?? WS_ROLE_PILL.MEMBER}`}>
                                 {m.role}
                               </span>
-                              <span className="text-xs text-gray-300">{m.workspace.name}</span>
+                              <span className="text-xs text-gray-300">{m.space.name}</span>
                             </div>
                           ))}
                         </div>

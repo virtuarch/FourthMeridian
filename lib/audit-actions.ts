@@ -11,7 +11,7 @@ export const AuditAction = {
   LOGIN:                    "LOGIN",
   LOGIN_FAILED:             "LOGIN_FAILED",
   LOGOUT:                   "LOGOUT",
-  WORKSPACE_SWITCH:         "WORKSPACE_SWITCH",
+  SPACE_SWITCH:         "SPACE_SWITCH",
 
   // ── Password ─────────────────────────────────────────────────────────────────
   PASSWORD_CHANGED:         "PASSWORD_CHANGED",
@@ -39,14 +39,14 @@ export const AuditAction = {
   GOAL_TRASHED:             "GOAL_TRASHED",
   GOAL_RESTORED:            "GOAL_RESTORED",
 
-  // ── Workspaces (lifecycle) ──────────────────────────────────────────────────
-  WORKSPACE_CREATE:         "WORKSPACE_CREATE",
-  WORKSPACE_UPDATE:         "WORKSPACE_UPDATE",
-  WORKSPACE_ARCHIVED:       "WORKSPACE_ARCHIVED",
-  WORKSPACE_UNARCHIVED:     "WORKSPACE_UNARCHIVED",
-  WORKSPACE_TRASHED:        "WORKSPACE_TRASHED",
-  WORKSPACE_RESTORED:       "WORKSPACE_RESTORED",
-  WORKSPACE_PERMANENT_DELETE: "WORKSPACE_PERMANENT_DELETE",
+  // ── Spaces (lifecycle) ──────────────────────────────────────────────────
+  SPACE_CREATE:         "SPACE_CREATE",
+  SPACE_UPDATE:         "SPACE_UPDATE",
+  SPACE_ARCHIVED:       "SPACE_ARCHIVED",
+  SPACE_UNARCHIVED:     "SPACE_UNARCHIVED",
+  SPACE_TRASHED:        "SPACE_TRASHED",
+  SPACE_RESTORED:       "SPACE_RESTORED",
+  SPACE_PERMANENT_DELETE: "SPACE_PERMANENT_DELETE",
 
   // ── Accounts ─────────────────────────────────────────────────────────────────
   ACCOUNT_SHARED:           "ACCOUNT_SHARED",
@@ -67,6 +67,27 @@ export const AuditAction = {
   ACCOUNT_ADD:              "ACCOUNT_ADD",
   ACCOUNT_REMOVE:           "ACCOUNT_REMOVE",
   REGISTER:                 "REGISTER",
+
+  // ── Imports (D2 Step 4D-3) ───────────────────────────────────────────────────
+  // Only the rollback action is added in this slice — IMPORT_BATCH_CREATED /
+  // IMPORT_BATCH_COMPLETED are deliberately deferred (see
+  // docs/initiatives/d2/investigations/D2_STEP4D3_IMPORT_ROLLBACK_INVESTIGATION.md §8).
+  IMPORT_BATCH_ROLLED_BACK: "IMPORT_BATCH_ROLLED_BACK",
+  // D2 Step 4D-4 — one batch-level event when a QuickBooks externalId match
+  // overwrites an existing Transaction's allow-listed fields. No per-row
+  // entries, no before/after snapshots — see
+  // docs/initiatives/d2/implementation/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §8.
+  IMPORT_BATCH_UPDATED_ON_MATCH: "IMPORT_BATCH_UPDATED_ON_MATCH",
+
+  // ── AI Context ───────────────────────────────────────────────────────────────
+  AI_CONTEXT_ASSEMBLED:     "AI_CONTEXT_ASSEMBLED",
+  // Shadow-mode selection plan (D6.3D-1). Records what a token-budgeted
+  // selection WOULD include/trim. Purely observational — no prompt is changed.
+  AI_CONTEXT_SELECTION_PLANNED: "AI_CONTEXT_SELECTION_PLANNED",
+  // Shadow-mode output validation (AI-4 / KD-2). Written ONLY when an LLM reply
+  // contains a numeric claim that cannot be reconciled to the grounding context.
+  // Observational only — the reply is returned byte-for-byte unchanged.
+  AI_OUTPUT_VALIDATION_FLAGGED: "AI_OUTPUT_VALIDATION_FLAGGED",
 } as const;
 
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];
@@ -82,7 +103,7 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
       AuditAction.LOGIN,
       AuditAction.LOGIN_FAILED,
       AuditAction.LOGOUT,
-      AuditAction.WORKSPACE_SWITCH,
+      AuditAction.SPACE_SWITCH,
     ],
   },
   {
@@ -121,15 +142,15 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
     ],
   },
   {
-    label: "Workspaces",
+    label: "Spaces",
     actions: [
-      AuditAction.WORKSPACE_CREATE,
-      AuditAction.WORKSPACE_UPDATE,
-      AuditAction.WORKSPACE_ARCHIVED,
-      AuditAction.WORKSPACE_UNARCHIVED,
-      AuditAction.WORKSPACE_TRASHED,
-      AuditAction.WORKSPACE_RESTORED,
-      AuditAction.WORKSPACE_PERMANENT_DELETE,
+      AuditAction.SPACE_CREATE,
+      AuditAction.SPACE_UPDATE,
+      AuditAction.SPACE_ARCHIVED,
+      AuditAction.SPACE_UNARCHIVED,
+      AuditAction.SPACE_TRASHED,
+      AuditAction.SPACE_RESTORED,
+      AuditAction.SPACE_PERMANENT_DELETE,
     ],
   },
   {
@@ -143,5 +164,9 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
   {
     label: "Accounts",
     actions: [AuditAction.ACCOUNT_SHARED, AuditAction.ACCOUNT_REVOKED],
+  },
+  {
+    label: "Imports",
+    actions: [AuditAction.IMPORT_BATCH_ROLLED_BACK, AuditAction.IMPORT_BATCH_UPDATED_ON_MATCH],
   },
 ];

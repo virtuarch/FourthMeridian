@@ -1,6 +1,6 @@
 {
-  "name": "FinTracker",
-  "short_name": "FinTracker",
+  "name": "Fourth Meridian",
+  "short_name": "Fourth Meridian",
   "description": "Personal finance dashboard",
   "start_url": "/dashboard",
   "display": "standalone",

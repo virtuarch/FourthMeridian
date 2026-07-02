@@ -2,7 +2,7 @@
  * GET /api/accounts/manual/archived
  *
  * Returns all soft-deleted manually-entered asset accounts owned by the
- * current user, along with the workspaces they were shared into (REVOKED).
+ * current user, along with the spaces they were shared into (REVOKED).
  *
  * Response: { assets: ArchivedAsset[] }
  */
@@ -18,7 +18,7 @@ export interface ArchivedAsset {
   balance:       number;
   currency:      string;
   deletedAt:     string;          // ISO string
-  workspaces: {
+  spaces: {
     id:   string;
     name: string;
   }[];
@@ -42,10 +42,16 @@ export const GET = withApiHandler(async () => {
       balance:   true,
       currency:  true,
       deletedAt: true,
-      workspaceShares: {
+      // D3 Step 4B read cutover: this used to include workspaceShares
+      // (WorkspaceAccountShare). SpaceAccountLink is kept in sync with it by
+      // the D3 Step 3 dual-write (lib/accounts/space-account-link.ts), so
+      // this read returns the same set of spaces either way. Response shape
+      // (ArchivedAsset.spaces: {id, name}[]) is unchanged — see
+      // docs/initiatives/d3/D3_STEP4_READ_CUTOVER_REVIEW.md.
+      spaceAccountLinks: {
         select: {
-          status:    true,
-          workspace: { select: { id: true, name: true } },
+          status: true,
+          space:  { select: { id: true, name: true } },
         },
       },
     },
@@ -58,9 +64,9 @@ export const GET = withApiHandler(async () => {
     balance:   a.balance,
     currency:  a.currency,
     deletedAt: a.deletedAt!.toISOString(),
-    workspaces: a.workspaceShares.map((s) => ({
-      id:   s.workspace.id,
-      name: s.workspace.name,
+    spaces: a.spaceAccountLinks.map((l) => ({
+      id:   l.space.id,
+      name: l.space.name,
     })),
   }));
 

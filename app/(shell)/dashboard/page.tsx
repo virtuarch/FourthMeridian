@@ -1,40 +1,31 @@
 import { Suspense }                                   from "react";
 import { DashboardClient }                             from "@/components/dashboard/DashboardClient";
-import { WorkspaceDashboard }                          from "@/components/dashboard/WorkspaceDashboard";
+import { SpaceDashboard }                          from "@/components/dashboard/SpaceDashboard";
 import { getAccounts, getHoldings, getFicoData }       from "@/lib/data/accounts";
 import { getRecentSnapshots }                          from "@/lib/data/snapshots";
 import { getLatestAdvice }                             from "@/lib/data/advice";
-import { getDebtTransactions }                         from "@/lib/data/transactions";
-import { getWorkspaceContext }                         from "@/lib/workspace";
+import { getDebtTransactions, getTransactions }        from "@/lib/data/transactions";
+import { getSpaceContext }                         from "@/lib/space";
 
 // Co-locate compute with the Singapore-region Supabase instance — see
-// lib/workspace.ts / perf audit notes. Applies to this page's serverless
+// lib/space.ts / perf audit notes. Applies to this page's serverless
 // function only; does not affect local dev (Vercel-only config).
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
 
 export default async function DashboardPage() {
-  // ── Timing instrumentation (temporary — perf audit) ─────────────────────
-  const t0 = Date.now();
-  const lap = (label: string, from: number) => {
-    console.log(`[page:dashboard] ${label}: ${Date.now() - from}ms`);
-    return Date.now();
-  };
+  const ctx = await getSpaceContext();
+  const isPersonal = ctx.space.type === "PERSONAL";
 
-  const ctx = await getWorkspaceContext();
-  let t = lap("getWorkspaceContext", t0);
-  const isPersonal = ctx.workspace.type === "PERSONAL";
-
-  // Non-personal workspaces render the planning dashboard (client-side data fetching)
+  // Non-personal spaces render the planning dashboard (client-side data fetching)
   if (!isPersonal) {
-    console.log(`[page:dashboard] total (shared-workspace branch): ${Date.now() - t0}ms`);
     return (
       <Suspense fallback={null}>
-        <WorkspaceDashboard
-          workspaceId={ctx.workspaceId}
-          workspaceName={ctx.workspace.name}
-          workspaceType={ctx.workspace.type}
-          category={ctx.workspace.category}
+        <SpaceDashboard
+          spaceId={ctx.spaceId}
+          spaceName={ctx.space.name}
+          spaceType={ctx.space.type}
+          category={ctx.space.category}
           myRole={ctx.role}
           currentUserId={ctx.userId}
         />
@@ -42,30 +33,30 @@ export default async function DashboardPage() {
     );
   }
 
-  // Personal workspace — existing full dashboard
+  // Personal space — existing full dashboard.
   // Context is resolved exactly once above (and cache()-deduped even if it
-  // weren't — see lib/workspace.ts). Pass the already-resolved
-  // workspaceId/userId into each helper below instead of letting them call
-  // getWorkspaceContext() again, so this page makes zero redundant context
+  // weren't — see lib/space.ts). Pass the already-resolved
+  // spaceId/userId into each helper below instead of letting them call
+  // getSpaceContext() again, so this page makes zero redundant context
   // lookups instead of relying solely on the cache() dedupe.
-  const time = <T,>(label: string, p: Promise<T>): Promise<T> => {
-    const s = Date.now();
-    return p.then((r) => { console.log(`[page:dashboard]   ${label}: ${Date.now() - s}ms`); return r; });
-  };
-  const [accounts, holdings, snapshots, advice, ficoData, debtTransactions] = await Promise.all([
-    time("getAccounts", getAccounts({ workspaceId: ctx.workspaceId })),
-    time("getHoldings", getHoldings({ workspaceId: ctx.workspaceId })),
-    time("getRecentSnapshots(365)", getRecentSnapshots(365, { workspaceId: ctx.workspaceId })),
-    time("getLatestAdvice", getLatestAdvice({ workspaceId: ctx.workspaceId })),
-    time("getFicoData", getFicoData({ userId: ctx.userId })),
-    time("getDebtTransactions", getDebtTransactions({ workspaceId: ctx.workspaceId })),
+  const [accounts, holdings, snapshots, advice, ficoData, debtTransactions, transactions] = await Promise.all([
+    getAccounts({ spaceId: ctx.spaceId }),
+    getHoldings({ spaceId: ctx.spaceId }),
+    getRecentSnapshots(365, { spaceId: ctx.spaceId }),
+    getLatestAdvice({ spaceId: ctx.spaceId }),
+    getFicoData({ userId: ctx.userId }),
+    getDebtTransactions({ spaceId: ctx.spaceId }),
+    getTransactions({ spaceId: ctx.spaceId }),
   ]);
-  t = lap("Promise.all [accounts, holdings, snapshots, advice, ficoData, debtTransactions] (wall clock)", t);
-  console.log(`[page:dashboard] total: ${Date.now() - t0}ms`);
 
   return (
     <Suspense fallback={null}>
       <DashboardClient
+        spaceId={ctx.spaceId}
+        spaceName={ctx.space.name}
+        category={ctx.space.category}
+        myRole={ctx.role}
+        currentUserId={ctx.userId}
         accounts={accounts}
         holdings={holdings}
         snapshots={snapshots}
@@ -73,6 +64,7 @@ export default async function DashboardPage() {
         ficoScore={ficoData.score}
         ficoUpdatedAt={ficoData.updatedAt}
         debtTransactions={debtTransactions}
+        transactions={transactions}
       />
     </Suspense>
   );

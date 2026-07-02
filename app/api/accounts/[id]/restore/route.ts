@@ -44,7 +44,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
-import { ShareStatus } from "@prisma/client";
+import { ShareStatus, DuplicateDetectionSource } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import {
@@ -53,6 +53,7 @@ import {
   resolveAccountByFingerprint,
   mergeArchivedDuplicateIntoCanonical,
 } from "@/lib/accounts/reconcile";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -91,6 +92,11 @@ export const POST = withApiHandler(async (
     // account's history into the active one instead — no conflict shown.
     const identity = providerIdentityOf(fa);
     let canonical: { id: string } | null = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
+    // Tracks which match found `canonical`, so the merge below is tagged with
+    // the right DuplicateDetectionSource. Default reflects the identity-match
+    // branch above; overwritten if the fingerprint fallback is the one that
+    // actually finds a match.
+    let mergeSource: DuplicateDetectionSource = DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH;
 
     // No exact identity match — Plaid can reissue plaidAccountId for the
     // same real-world account, so an active row (or other archived
@@ -116,11 +122,12 @@ export const POST = withApiHandler(async (
       );
       if (resolution?.matchedActive) {
         canonical = resolution.canonical;
+        mergeSource = DuplicateDetectionSource.FINGERPRINT_MATCH;
       }
     }
 
     if (canonical) {
-      await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id);
+      await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id, mergeSource);
 
       await db.auditLog.create({
         data: {
@@ -134,8 +141,12 @@ export const POST = withApiHandler(async (
       return NextResponse.json({ ok: true, accountId: canonical.id });
     }
 
-    // ── Restore in parallel ─────────────────────────────────────────────────
-    await Promise.all([
+    // ── Restore atomically ──────────────────────────────────────────────────
+    // KD-4 Phase 3 — the three restore writes commit together. Previously a
+    // Promise.all (concurrent, NOT atomic): a failed SAL reactivate could leave
+    // the account un-deleted but its links still REVOKED — a ghost active
+    // account visible in no space.
+    await db.$transaction([
       // 1. Restore FinancialAccount
       db.financialAccount.update({
         where: { id },
@@ -146,12 +157,23 @@ export const POST = withApiHandler(async (
         where: { financialAccountId: id, deletedAt: { not: null } },
         data:  { deletedAt: null },
       }),
-      // 3. Reactivate WorkspaceAccountShare rows that were revoked
-      db.workspaceAccountShare.updateMany({
+      // 3. D3 Stage B4 — Reactivate SpaceAccountLink rows that were revoked
+      db.spaceAccountLink.updateMany({
         where: { financialAccountId: id, status: ShareStatus.REVOKED },
         data:  { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
       }),
     ]);
+
+    // ── Regenerate SpaceSnapshot for every space this account is now active
+    //    in again. Shares were just reactivated above, so the existing
+    //    ACTIVE-share lookup inside regenerateSnapshotsForAccounts() finds the
+    //    right space(s). Best-effort/non-fatal — see
+    //    docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
+    try {
+      await regenerateSnapshotsForAccounts([id]);
+    } catch (snapshotErr) {
+      console.warn(`[POST /api/accounts/:id/restore] snapshot regen failed for account ${id} (non-fatal):`, snapshotErr);
+    }
 
     // ── Audit log ────────────────────────────────────────────────────────────
     await db.auditLog.create({

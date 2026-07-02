@@ -1,27 +1,352 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0a0f1e;
-  --surface: #111827;
-  --surface2: #1f2937;
-  --border: #374151;
-  --text: #f9fafb;
-  --muted: #9ca3af;
-  --accent: #3b82f6;
-  --green: #10b981;
-  --red: #ef4444;
-  --yellow: #f59e0b;
+  /* ============================================================
+     Fourth Meridian Design Language v1 — canonical tokens.
+     Mirrors docs/design-system/Fourth-Meridian-Design-Language-v1.html
+     exactly. Do not invent new tokens here — extend the design
+     language doc first, then port the value down.
+     ============================================================ */
+
+  /* ---------- NEUTRAL — "Atlas Ink" (cool navy neutral) ---------- */
+  --ink-0:   #FFFFFF;
+  --ink-50:  #F5F7FA;
+  --ink-100: #E7EAF1;
+  --ink-200: #C9CEDC;
+  --ink-300: #9CA4BC;
+  --ink-400: #6E7896;
+  --ink-500: #4D5774;
+  --ink-600: #38415A;
+  --ink-700: #262E42;
+  --ink-800: #161C2C;
+  --ink-900: #0C111D;
+  --ink-950: #060911;
+
+  /* ---------- BRASS — brand gold, from the 4M mark ---------- */
+  --brass-100:#FBF1D6;
+  --brass-200:#F2D675;
+  --brass-300:#E8C158;
+  --brass-400:#D4A938;
+  --brass-500:#C9A227;
+  --brass-600:#A6841E;
+  --brass-700:#806416;
+
+  /* ---------- MERIDIAN — primary interactive blue ---------- */
+  --meridian-100:#DCE9FF;
+  --meridian-200:#AECBFF;
+  --meridian-300:#7FAEFF;
+  --meridian-400:#5896FB;
+  --meridian-500:#3B82F6;
+  --meridian-600:#2563EB;
+  --meridian-700:#1D4ED8;
+
+  /* ---------- EMERALD — success / gain ---------- */
+  --emerald-100:#D6F5E3;
+  --emerald-300:#5EE0A3;
+  --emerald-400:#34D399;
+  --emerald-500:#22C55E;
+  --emerald-600:#16A34A;
+  --emerald-700:#15803D;
+
+  /* ---------- CORAL — danger / loss / debt ---------- */
+  --coral-100:#FDE2DF;
+  --coral-300:#F6968D;
+  --coral-400:#F2746A;
+  --coral-500:#ED5247;
+  --coral-600:#D43426;
+  --coral-700:#B91C1C;
+
+  /* ---------- VIOLET — goals / secondary data category ---------- */
+  --violet-100:#EDE5FF;
+  --violet-300:#C4AAFC;
+  --violet-400:#A78BFA;
+  --violet-500:#8B5CF6;
+  --violet-600:#7C3AED;
+  --violet-700:#6D28D9;
+
+  /* ---------- PAPER — light mode base (reserved for future light theme) ---------- */
+  --paper-0:  #FBFAF7;
+  --paper-50: #F2F1ED;
+  --paper-100:#E8E6E0;
+
+  /* ---------- RADIUS ---------- */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-full: 999px;
+
+  /* ---------- SPACING — 4px base unit, 8pt rhythm ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 48px;
+  --space-10: 64px;
+  --space-11: 80px;
+  --space-12: 96px;
+
+  /* ---------- MOTION — "Meridian Motion" ---------- */
+  --ease-standard: cubic-bezier(.4,0,.2,1);
+  --ease-enter:    cubic-bezier(.2,0,0,1);
+  --ease-exit:     cubic-bezier(.4,0,1,1);
+  --ease-spring:   cubic-bezier(.34,1.25,.64,1);
+  --dur-instant: 100ms;
+  --dur-fast:    180ms;
+  --dur-base:    240ms;
+  --dur-moderate:320ms;
+  --dur-slow:    480ms;
+  --dur-ambient: 2400ms;
+
+  /* ---------- TYPE ---------- */
+  --font-ui:   -apple-system, "SF Pro Display", "SF Pro Text", "Inter", system-ui, "Segoe UI", sans-serif;
+  --font-data: -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif;
+
+  /* ---------- THEME-INDEPENDENT SHADOW RECIPES ---------- */
+  --shadow-e1: 0 1px 2px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.05) inset;
+  --shadow-e2: 0 10px 28px rgba(0,0,0,.38), 0 0 0 1px rgba(255,255,255,.06) inset;
+  --shadow-e3: 0 18px 44px rgba(0,0,0,.46), 0 0 0 1px rgba(255,255,255,.08) inset;
+  --shadow-e4: 0 28px 70px rgba(0,0,0,.56), 0 0 0 1px rgba(255,255,255,.10) inset;
+
+  /* ---------- AI MOTION — distinct identity for AI surfaces ----------
+     Slow, ambient, never a spinner. Used by the meridian-shimmer sweep
+     on AI surfaces (e.g. Today's Insight). Intentionally outside the
+     core --dur-* scale since it's a single-purpose ambient loop, not a
+     UI state transition. */
+  --dur-shimmer: 6000ms;
+}
+
+/* ============ THEME: DARK (default — only theme the app currently ships) ============ */
+html,
+html[data-theme="dark"] {
+  --bg-base: var(--ink-900);
+  --bg-deep: var(--ink-950);
+  --text-primary: var(--ink-50);
+  --text-secondary: var(--ink-300);
+  --text-muted: var(--ink-400);
+  --border-hairline: rgba(255,255,255,.08);
+  --border-hairline-strong: rgba(255,255,255,.14);
+  --glass-ultrathin: rgba(255,255,255,.05);
+  --glass-thin: rgba(18,24,38,.55);
+  --glass-regular: rgba(14,19,31,.72);
+  --glass-thick: rgba(10,14,23,.88);
+  --specular-edge: rgba(255,255,255,.16);
+  --scrim: rgba(3,5,10,.62);
+
+  /* ---------- SURFACE TINTS — theme-aware hover/static fills ----------
+     Shared replacement for the scattered hardcoded bg-white/[0.0n] hover
+     and chip-fill tints across Daily Brief components. Dark values match
+     the literals they replace exactly (Midnight stays pixel-identical);
+     light values are a dark-ink tint of equivalent weight so the same
+     "barely-there" surface reads as a visible tint on light glass instead
+     of vanishing as white-on-white. */
+  --surface-hover: rgba(255,255,255,.06);
+  --surface-hover-strong: rgba(255,255,255,.10);
+  --surface-muted: rgba(255,255,255,.05);
+
+  /* ---------- MODAL SURFACE — BriefModal's one-off "smoked crystal" fill ----------
+     Kept separate from --glass-thick on purpose (see BriefModal.tsx header
+     comment) since modals want a lower-opacity, heavier-blur recipe than
+     the standard glass depths. */
+  --modal-surface: rgba(10,14,23,.55);
+}
+
+/* ============ THEME: LIGHT (reserved — not wired up to a toggle yet) ============ */
+html[data-theme="light"] {
+  --bg-base: var(--paper-0);
+  --bg-deep: var(--paper-50);
+  --text-primary: #11151F;
+  --text-secondary: #4B5468;
+  --text-muted: #7A8295;
+  --border-hairline: rgba(17,21,31,.09);
+  --border-hairline-strong: rgba(17,21,31,.16);
+  --glass-ultrathin: rgba(255,255,255,.5);
+  --glass-thin: rgba(255,255,255,.62);
+  --glass-regular: rgba(255,255,255,.78);
+  --glass-thick: rgba(255,255,255,.92);
+  --specular-edge: rgba(255,255,255,.7);
+  --scrim: rgba(20,22,28,.3);
+
+  /* See dark block above for rationale. */
+  --surface-hover: rgba(17,21,31,.05);
+  --surface-hover-strong: rgba(17,21,31,.08);
+  --surface-muted: rgba(17,21,31,.04);
+
+  /* Frosted white "smoked glass" — replaces the dark navy fill so the
+     modal reads as Light Glass instead of Midnight. */
+  --modal-surface: rgba(255,255,255,.75);
 }
 
 * { box-sizing: border-box; }
 
 body {
-  background-color: var(--background);
-  color: var(--text);
+  background-color: var(--bg-base);
+  color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: var(--border-hairline-strong); border-radius: 3px; }
+
+/* Hides the scrollbar on horizontally-overflowing native controls (e.g. the
+   SegmentedControl range strip) while keeping them scrollable by drag/swipe. */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* ---------- Atlas Field — ambient page background ----------
+   Phase G update: swapped from the generic Earth photography the Daily
+   Brief hero falls back to (oval-world.png / earth-europe-light.png) to the
+   dedicated Fourth Meridian Atlas artwork (fourth-meridian-dark.png /
+   fourth-meridian-light.png — brand globe, baked-in meridian lines, brass
+   horizon glow). Because this art is deliberate brand identity rather than
+   stock photography, it now runs lighter blur/darken than the old "disguise
+   a wallpaper photo" treatment — it's meant to be recognized, not hidden.
+   Positioned `absolute` rather than `fixed` so it fills its nearest
+   `position: relative` ancestor instead of the whole viewport. As of Phase
+   G that ancestor is the dashboard shell's content column (see
+   DashboardChrome.tsx), not just the page's own content wrapper — this is
+   what lets the field paint behind the header strip too, not only below it.
+   See components/atlas/AtlasField.tsx. */
+.atlas-field {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background: radial-gradient(ellipse 120% 80% at 50% -10%, var(--bg-deep), var(--bg-base) 60%);
+  /* Fades the whole field toward every edge so the globe/lines read as
+     atmospheric light bleeding into the page rather than a painted
+     rectangle — this mask, not the layers themselves, is what makes the
+     field feel infinite instead of contained/clipped. */
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 16%, black 30%, transparent 90%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 16%, black 30%, transparent 90%);
+}
+
+/* Subtle top-down dark overlay — re-darkens just the first quarter of the
+   field so header text/buttons stay legible now that the field extends up
+   behind the header strip (Phase G #2), then fades out before the title /
+   card canvas so the art still reads clearly through the rest of the page. */
+.atlas-field::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, var(--bg-deep) 0%, transparent 26%);
+  opacity: .8;
+  pointer-events: none;
+}
+
+/* Fourth Meridian Atlas artwork — brand globe with baked-in meridian grid
+   and brass horizon glow (Phase G #3, swapped in from the project's own
+   fourth-meridian-dark/light.png test assets). Lighter touch than the old
+   stock-photo disguise: less blur, a touch more brightness so the horizon
+   glow and city-light texture stay visible as "distant brand atlas," not
+   mush. Dark/light swap is pure CSS so AtlasField.tsx stays hook-free and
+   server-renderable. */
+.atlas-globe {
+  position: absolute;
+  top: -34%;
+  left: 50%;
+  width: 92vw;
+  max-width: 1500px;
+  aspect-ratio: 1.57;
+  transform: translateX(-50%);
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: center 22%;
+  filter: blur(2px) brightness(.52) saturate(1.15);
+  opacity: .6;
+  animation: atlas-globe-drift 70s var(--ease-standard) infinite alternate;
+  will-change: transform;
+}
+.atlas-globe-dark  { background-image: url("/fourth-meridian-dark.png"); }
+.atlas-globe-light { background-image: url("/fourth-meridian-light.png"); display: none; }
+html[data-theme="light"] .atlas-globe-dark  { display: none; }
+html[data-theme="light"] .atlas-globe-light {
+  display: block;
+  opacity: .32;
+  filter: blur(2px) brightness(.94) saturate(1.05);
+}
+@keyframes atlas-globe-drift {
+  0%   { transform: translateX(-50%) translateY(0)    scale(1);    }
+  100% { transform: translateX(-50%) translateY(1.2%) scale(1.04); }
+}
+
+/* Meridian / latitude line art — faint globe-grid geometry (see the inline
+   <svg> in AtlasField.tsx), not a new image asset. Kept extremely subtle —
+   this should read as "structure in the distance," never compete with the
+   card canvas it sits behind. */
+.atlas-meridians {
+  position: absolute;
+  top: -4%;
+  left: 50%;
+  width: 108%;
+  height: 62%;
+  transform: translateX(-50%);
+  color: var(--ink-100);
+  opacity: .14;
+}
+html[data-theme="light"] .atlas-meridians {
+  color: var(--ink-500);
+  opacity: .20;
+}
+
+/* ---------- Presence pulse — small "active" status dot ----------
+   Very subtle breathing opacity/scale, no glow/box-shadow ring — the
+   emphasis is presence, not status-bar urgency. Used by the Spaces header
+   and the Sidebar's active-Space row. */
+@keyframes presence-pulse {
+  0%, 100% { opacity: 1;  transform: scale(1); }
+  50%      { opacity: .5; transform: scale(0.82); }
+}
+.presence-dot {
+  animation: presence-pulse 2.6s var(--ease-standard) infinite;
+}
+
+/* ---------- AI shimmer — soft Meridian→Brass sweep, AI surfaces only ---------- */
+@keyframes meridian-shimmer {
+  0%   { transform: translateX(-40%); opacity: 0; }
+  35%  { opacity: .55; }
+  65%  { opacity: .55; }
+  100% { transform: translateX(140%); opacity: 0; }
+}
+.ai-shimmer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.ai-shimmer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  background: linear-gradient(
+    100deg,
+    transparent,
+    rgba(88,150,251,.10) 35%,
+    rgba(201,162,39,.10) 60%,
+    transparent
+  );
+  animation: meridian-shimmer var(--dur-shimmer) var(--ease-standard) infinite;
+}
+
+/* ---------- Reduced motion — global accessibility rule ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .atlas-globe { animation: none; }
+  .presence-dot { animation: none; }
+}

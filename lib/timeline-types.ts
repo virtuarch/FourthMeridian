@@ -2,13 +2,13 @@
  * lib/timeline-types.ts
  *
  * Canonical TimelineEvent contract shared between:
- *   - GET /api/workspaces/[id]/activity  (producer)
+ *   - GET /api/spaces/[id]/activity  (producer)
  *   - TimelineWidget                      (consumer)
  *   - Future: Daily Briefing engine       (consumer)
  *   - Future: Notifications               (consumer)
  *
  * The widget never cares where an event came from — AuditLog,
- * WorkspaceGoal, account sync, or any other source. It only renders
+ * SpaceGoal, account sync, or any other source. It only renders
  * a normalized event list.
  */
 
@@ -79,4 +79,16 @@ export interface TimelineEvent {
    * Use relative paths only (e.g. "/dashboard/settings/archived-assets").
    */
   href?: string;
+
+  /**
+   * True for events that demonstrate a future Timeline event type
+   * (document upload, AI recommendation, wallet added, recurring payment,
+   * investment milestone, note, reminder, ...) that has no real backend
+   * aggregation yet — see lib/timeline-placeholder.ts. Real producers
+   * (the activity route, future Daily Briefing engine) never set this;
+   * it defaults to falsy. Consumers that care about real vs. preview rows
+   * (e.g. the new SpaceTimelineWidget) badge these distinctly so nobody
+   * mistakes a preview row for actual Space history.
+   */
+  isPreview?: boolean;
 }

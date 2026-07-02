@@ -20,28 +20,28 @@ export default async function SettingsPage() {
         employmentStatus:     true,
         useCase:              true,
         dateOfBirthEncrypted: true,
-        preferredWorkspaceId: true,
+        preferredSpaceId: true,
       },
     }) as Promise<{
       email: string; username: string | null; firstName: string | null;
       lastName: string | null; employmentStatus: string | null; useCase: string | null;
-      dateOfBirthEncrypted: string | null; preferredWorkspaceId: string | null;
+      dateOfBirthEncrypted: string | null; preferredSpaceId: string | null;
     } | null>,
-    db.workspaceMember.findMany({
-      // Archived/trashed workspaces can't be set as the default landing
-      // workspace — exclude them from this picker.
-      where:   { userId: session.user.id, status: "ACTIVE", workspace: { archivedAt: null, deletedAt: null } },
-      include: { workspace: { select: { id: true, name: true, type: true } } },
+    db.spaceMember.findMany({
+      // Archived/trashed spaces can't be set as the default landing
+      // space — exclude them from this picker.
+      where:   { userId: session.user.id, status: "ACTIVE", space: { archivedAt: null, deletedAt: null } },
+      include: { space: { select: { id: true, name: true, type: true } } },
       orderBy: { joinedAt: "asc" },
     }),
   ]);
 
   if (!user) redirect("/login");
 
-  const workspaces = memberships.map((m) => ({
-    id:   m.workspace.id,
-    name: m.workspace.name,
-    type: m.workspace.type,
+  const spaces = memberships.map((m) => ({
+    id:   m.space.id,
+    name: m.space.name,
+    type: m.space.type,
   }));
 
   return (
@@ -54,9 +54,9 @@ export default async function SettingsPage() {
         employmentStatus:     user.employmentStatus     ?? "",
         useCase:              user.useCase              ?? "",
         hasDob:               !!user.dateOfBirthEncrypted,
-        preferredWorkspaceId: user.preferredWorkspaceId ?? null,
+        preferredSpaceId: user.preferredSpaceId ?? null,
       }}
-      workspaces={workspaces}
+      spaces={spaces}
     />
   );
 }

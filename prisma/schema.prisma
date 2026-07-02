@@ -58,13 +58,56 @@ enum PlaidItemStatus {
   REVOKED       // all accounts removed; itemRemove() was called
 }
 
-enum WorkspaceType {
-  PERSONAL
-  SHARED
+/// Per-Item Plaid Investments product consent state, derived from the `item`
+/// object returned by accountsGet (consented_products / available_products /
+/// billed_products) and, for pre-DTM Items, from probing
+/// investmentsHoldingsGet once. Gates the holdings step of refresh so we
+/// never repeatedly call an endpoint Plaid will reject with
+/// ADDITIONAL_CONSENT_REQUIRED. Re-derived on every refresh, so it self-heals
+/// after the user grants consent via Link update mode. See
+/// docs/investigations/PLAID_INVESTMENTS_CONSENT_INVESTIGATION.md.
+enum PlaidInvestmentsConsent {
+  ENABLED           // user consented to investments (or legacy probe succeeded)
+  CONSENT_REQUIRED  // supported, but user must grant consent via Link update mode
+  UNSUPPORTED       // Plaid Investments not available for this Item
 }
 
-/// Semantic category for a workspace — drives default UI labels, section presets, and AI context.
-enum WorkspaceCategory {
+/// D2 (Phase 2, Step 1A): generalizes PlaidItemStatus across all connection
+/// types. Mirrors PlaidItemStatus exactly. PlaidItem keeps its own enum
+/// unchanged — this is additive, not a replacement. Not yet used by any
+/// application code.
+enum ConnectionStatus {
+  ACTIVE        // syncing normally / valid credential
+  NEEDS_REAUTH  // user must re-authenticate
+  ERROR         // unrecoverable error — see errorCode
+  REVOKED       // credential revoked / connection removed
+}
+
+/// D2 (Phase 2, Step 1A): identifies which kind of provider a Connection
+/// represents. Extensible — new values can be appended later without a
+/// breaking migration. Not yet used by any application code.
+enum ProviderType {
+  PLAID
+  MANUAL
+  WALLET
+  CSV
+  EXCHANGE
+  BROKERAGE
+}
+
+/// Renamed from Workspace -> Space (Fourth Meridian Phase 1 naming migration).
+/// @@map keeps the underlying Postgres enum type name unchanged so this is a
+/// code/Prisma-Client-only rename — no DDL required.
+enum SpaceType {
+  PERSONAL
+  SHARED
+
+  @@map("WorkspaceType")
+}
+
+/// Semantic category for a Space — drives default UI labels, section presets, and AI context.
+/// Renamed from WorkspaceCategory -> SpaceCategory; @@map preserves the DB type name.
+enum SpaceCategory {
   PERSONAL
   HOUSEHOLD
   FAMILY
@@ -80,11 +123,14 @@ enum WorkspaceCategory {
   EMERGENCY_FUND
   CUSTOM
   OTHER
+
+  @@map("WorkspaceCategory")
 }
 
-/// Tabs available on the workspace planning dashboard.
-/// Each WorkspaceDashboardSection belongs to one tab.
-enum WorkspaceDashboardTab {
+/// Tabs available on the Space planning dashboard.
+/// Each SpaceDashboardSection belongs to one tab.
+/// Renamed from WorkspaceDashboardTab -> SpaceDashboardTab; @@map preserves the DB type name.
+enum SpaceDashboardTab {
   OVERVIEW
   GOALS
   ACCOUNTS
@@ -93,21 +139,29 @@ enum WorkspaceDashboardTab {
   RETIREMENT
   ACTIVITY
   SETTINGS
+
+  @@map("WorkspaceDashboardTab")
 }
 
-enum WorkspaceMemberRole {
+/// Renamed from WorkspaceMemberRole -> SpaceMemberRole; @@map preserves the DB type name.
+enum SpaceMemberRole {
   OWNER
   ADMIN
   MEMBER
   VIEWER
+
+  @@map("WorkspaceMemberRole")
 }
 
 /// Soft-membership state. REMOVED = kicked by OWNER/ADMIN. LEFT = self-removed.
 /// Row is never deleted so audit history is preserved.
-enum WorkspaceMemberStatus {
+/// Renamed from WorkspaceMemberStatus -> SpaceMemberStatus; @@map preserves the DB type name.
+enum SpaceMemberStatus {
   ACTIVE
   REMOVED
   LEFT
+
+  @@map("WorkspaceMemberStatus")
 }
 
 enum InviteStatus {
@@ -116,15 +170,15 @@ enum InviteStatus {
   DECLINED
 }
 
-/// Controls how a FinancialAccount is visible to a workspace it has been shared into.
+/// Controls how a FinancialAccount is visible to a Space it has been shared into.
 /// BALANCE_ONLY added for privacy-sensitive sharing (e.g. a partner sees total but not institution).
 /// FULL replaces the old SHARED value; SHARED kept temporarily for Account (legacy) rows.
 enum VisibilityLevel {
-  PRIVATE       // only the owning workspace can see this account
-  BALANCE_ONLY  // other workspace sees the balance total, no institution or transactions
+  PRIVATE       // only the owning Space can see this account
+  BALANCE_ONLY  // other Space sees the balance total, no institution or transactions
   SUMMARY_ONLY  // qualitative summary, no raw numbers
   SHARED        // legacy — maps to FULL; kept for backward compat with Account model
-  FULL          // fully visible to all workspace members (new canonical value)
+  FULL          // fully visible to all Space members (new canonical value)
 }
 
 /// Whether a WorkspaceAccountShare is currently active or has been revoked.
@@ -133,8 +187,29 @@ enum ShareStatus {
   REVOKED
 }
 
+/// D3 (Phase 2): which role a SpaceAccountLink row plays for its account.
+/// Exactly one HOME row exists per financialAccountId (the account's
+/// primary/owning Space, replacing ownerSpaceId/ownerUserId); any number of
+/// SHARED rows may exist (replacing WorkspaceAccountShare). Enforced at the DB
+/// level (KD-5) by the partial unique index
+/// `SpaceAccountLink_one_home_per_account` — UNIQUE (financialAccountId) WHERE
+/// kind = 'HOME' — added via a raw-SQL migration because Prisma has no
+/// partial-unique-index syntax (see
+/// prisma/migrations/20260702170000_kd5_home_partial_unique_index).
+/// computeLinkKind in lib/accounts/space-account-link.ts remains the source of
+/// HOME/SHARED assignment; the index only backstops it against concurrent
+/// HOME races.
+enum SpaceAccountLinkKind {
+  HOME
+  SHARED
+}
+
 /// Lifecycle of a suspected duplicate pair surfaced by the system.
-/// NEVER auto-merged — user must confirm.
+/// CONFIRMED_DUPLICATE is written automatically today by the merge path in
+/// lib/accounts/reconcile.ts (mergeArchivedDuplicateIntoCanonical) — there is
+/// no gate that blocks a merge pending review. PENDING / NOT_DUPLICATE /
+/// IGNORED are not written by any code path today; they're kept, unused, in
+/// case a future manual-review feature is layered on top of this ledger.
 enum DuplicateStatus {
   PENDING              // flagged, awaiting user review
   CONFIRMED_DUPLICATE  // user confirmed these are the same real-world account
@@ -142,10 +217,25 @@ enum DuplicateStatus {
   IGNORED              // user dismissed without deciding
 }
 
-/// Whether a FinancialAccount is owned by an individual user or by a workspace entity.
+/// How an automatic merge in lib/accounts/reconcile.ts was detected. Always
+/// populated on rows written by that path — there is no ambiguous/unset case
+/// today.
+enum DuplicateDetectionSource {
+  PROVIDER_IDENTITY_MATCH  // exact plaidAccountId or walletAddress match
+  FINGERPRINT_MATCH        // loose institution + mask + type + name match
+  SIBLING_CONSOLIDATION    // multiple matching rows reduced to one canonical row, independent of the top-level trigger
+}
+
+/// Whether a FinancialAccount is owned by an individual user or by a Space entity.
+/// SPACE was renamed from WORKSPACE in the Fourth Meridian Phase 1 naming migration —
+/// this is a real `ALTER TYPE ... RENAME VALUE` migration (see
+/// prisma/migrations/*_rename_account_owner_type_workspace_to_space/), not a @map,
+/// because the existing label is genuinely renamed end-to-end. The rename is
+/// metadata-only in Postgres: existing rows keep referencing the same enum OID,
+/// so no row data is rewritten and no UPDATE statement is needed.
 enum AccountOwnerType {
-  USER       // personal account owned by a single user
-  WORKSPACE  // workspace-level account (e.g. a joint or business account)
+  USER   // personal account owned by a single user
+  SPACE  // Space-level account (e.g. a joint or business account)
 }
 
 enum UserRole {
@@ -183,7 +273,7 @@ enum GoalCategory {
   GENERAL
 }
 
-/// Lifecycle state of a WorkspaceGoal.
+/// Lifecycle state of a SpaceGoal.
 enum GoalStatus {
   ACTIVE
   PAUSED
@@ -191,7 +281,7 @@ enum GoalStatus {
   CANCELLED
 }
 
-/// Governs which fields and tracking mode apply to a WorkspaceGoal.
+/// Governs which fields and tracking mode apply to a SpaceGoal.
 enum GoalType {
   FINANCIAL       // Save $X by a target date
   HABIT           // Behavioral goal tracked by streak / check-ins
@@ -220,7 +310,7 @@ model User {
   totpSecret           String?           // TOTP seed, stored encrypted (used in M3)
   totpEnabled          Boolean           @default(false)
   role                 UserRole          @default(USER)
-  preferredWorkspaceId String?           // soft ref — workspace the user lands on after login
+  preferredSpaceId     String?           @map("preferredWorkspaceId") // soft ref — Space the user lands on after login
   passwordResetToken   String?           @unique
   passwordResetExpiry  DateTime?
   forcePasswordReset   Boolean           @default(false) // set true by admin; user must change on next login
@@ -228,10 +318,13 @@ model User {
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
 
-  workspaces           WorkspaceMember[]
-  sentInvites          WorkspaceInvite[] @relation("SentInvites")
-  receivedInvites      WorkspaceInvite[] @relation("ReceivedInvites")
+  spaces               SpaceMember[]
+  sentInvites          SpaceInvite[]     @relation("SentInvites")
+  receivedInvites      SpaceInvite[]     @relation("ReceivedInvites")
   plaidItems           PlaidItem[]
+  connections          Connection[]      // D2 — PLAID rows created/updated by lib/plaid/exchangeToken.ts; read by app/api/plaid/link-token
+  importBatches        ImportBatch[]     // D2 Step 4D — populated by the import pipeline (app/api/accounts/[id]/import)
+  importMappingProfiles ImportMappingProfile[] // D2 (Phase 2, Step 4D-5b) — additive; display-only creator ref, not an authorization boundary
   ownedAccounts        Account[]         // legacy: accounts this user connected/created
   creditScores         CreditScore[]
   auditLogs            AuditLog[]
@@ -243,148 +336,180 @@ model User {
   // New financial account relations
   financialAccounts    FinancialAccount[]  @relation("UserOwnedFinancialAccounts")
   accountConnections   AccountConnection[] @relation("UserConnectedAccounts")
+  createdFinancialAccounts FinancialAccount[] @relation("FinancialAccountCreator") // D11 — accounts this user created/connected, independent of ownerType
 
   // Member revocation (who revoked whom)
-  revokedMembers       WorkspaceMember[]   @relation("RevokedByUser")
+  revokedMembers       SpaceMember[]       @relation("RevokedByUser")
 
   // Goal creation
-  createdGoals         WorkspaceGoal[]     @relation("GoalCreator")
+  createdGoals         SpaceGoal[]         @relation("GoalCreator")
 
-  // WorkspaceAccountShare — tracks who added/revoked shares
+  // WorkspaceAccountShare — excluded from the Phase 1 Workspace->Space rename; this
+  // model has its own future replacement (SpaceAccountLink, Phase 3) with different
+  // semantics, so it deliberately keeps its current name and field/relation names
+  // here for now. Tracks who added/revoked shares.
   addedShares          WorkspaceAccountShare[] @relation("ShareAdder")
   revokedShares        WorkspaceAccountShare[] @relation("ShareRevoker")
+
+  // SpaceAccountLink (D3) — dual-written at every share mutation site and the primary
+  // read path for the AI assemblers and data layer; WAS cutover completes in v2.5.
+  addedSpaceAccountLinks   SpaceAccountLink[] @relation("SpaceAccountLinkAdder")
+  revokedSpaceAccountLinks SpaceAccountLink[] @relation("SpaceAccountLinkRevoker")
 
   // DuplicateAccountCandidate — tracks who resolved the review
   resolvedDuplicates   DuplicateAccountCandidate[] @relation("DuplicateResolver")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Workspace
+// Space (renamed from Workspace — Fourth Meridian Phase 1 naming migration)
 // Container for all financial data. Every user auto-receives one PERSONAL
-// workspace on registration. Additional SHARED workspaces can be created or
+// Space on registration. Additional SHARED Spaces can be created or
 // joined (Hogan Family, Atlanta Duplex LLC, etc.)
-// category provides semantic context for the workspace (e.g. HOUSEHOLD, BUSINESS).
+// category provides semantic context for the Space (e.g. HOUSEHOLD, BUSINESS).
+// @@map keeps the underlying "Workspace" table name unchanged — this is a
+// Prisma-Client-only rename, no DDL required.
 // ─────────────────────────────────────────────────────────────────────────────
 
-model Workspace {
-  id          String            @id @default(cuid())
+model Space {
+  id          String        @id @default(cuid())
   name        String
   description String?
-  type        WorkspaceType     @default(PERSONAL)
-  category    WorkspaceCategory @default(PERSONAL)
-  isPublic    Boolean           @default(false)  // SHARED workspaces can be listed publicly
+  type        SpaceType     @default(PERSONAL)
+  category    SpaceCategory @default(PERSONAL)
+  isPublic    Boolean       @default(false)  // SHARED Spaces can be listed publicly
 
-  // ── Lifecycle (mirrors WorkspaceGoal's archive/trash pattern) ─────────────
+  // ── Lifecycle (mirrors SpaceGoal's archive/trash pattern) ─────────────────
   // archivedAt: hidden from normal nav, fully intact, restorable any time.
   // deletedAt:  moved to trash, hidden from normal nav, restorable until
   //             permanently deleted. Trashing always clears archivedAt so a
-  //             workspace is never in both states at once. PERSONAL
-  //             workspaces cannot be archived, trashed, or permanently
+  //             Space is never in both states at once. PERSONAL
+  //             Spaces cannot be archived, trashed, or permanently
   //             deleted (enforced in the API layer, not the schema).
   archivedAt  DateTime?
   deletedAt   DateTime?
 
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
-  members       WorkspaceMember[]
-  invites       WorkspaceInvite[]
-  accounts      Account[]           // legacy account relation
-  snapshots     WorkspaceSnapshot[]
+  members       SpaceMember[]
+  invites       SpaceInvite[]
+  accounts      Account[]       // legacy account relation
+  snapshots     SpaceSnapshot[]
   aiAgent       AiAgent?
   adviceHistory AiAdvice[]
   auditLogs     AuditLog[]
 
   // New financial account relations
+  // accountShares — excluded from this rename; still points at WorkspaceAccountShare
+  // (Phase 3 will replace it with SpaceAccountLink). The field name itself never
+  // contained "workspace" so it's unaffected either way.
   accountShares         WorkspaceAccountShare[]
-  ownedFinancialAccounts FinancialAccount[]     @relation("WorkspaceOwnedFinancialAccounts")
-  goals                 WorkspaceGoal[]
-  dashboardSections     WorkspaceDashboardSection[]
+  // SpaceAccountLink (D3) — dual-written at every share mutation site and the primary
+  // read path for the AI assemblers and data layer; WAS cutover completes in v2.5.
+  accountLinks           SpaceAccountLink[]
+  ownedFinancialAccounts FinancialAccount[]      @relation("SpaceOwnedFinancialAccounts")
+  goals                  SpaceGoal[]
+  dashboardSections      SpaceDashboardSection[]
+  // ImportMappingProfile (D2, Phase 2, Step 4D-5b) — additive; Space-scoped
+  // saved column mappings, auto-used by the import pipeline when they match
+  // an upload's headers. See
+  // docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md.
+  importMappingProfiles  ImportMappingProfile[]
 
   @@index([type])
   @@index([isPublic])
   @@index([archivedAt])
   @@index([deletedAt])
+  @@map("Workspace")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceMember
-// Join table linking users to workspaces with roles.
+// SpaceMember (renamed from WorkspaceMember)
+// Join table linking users to Spaces with roles.
 // status: ACTIVE (normal), REMOVED (kicked), LEFT (self-removed).
 // Rows are never deleted — status update preserves audit history.
 // When status becomes REMOVED or LEFT, all WorkspaceAccountShare records
 // contributed by that user are revoked.
 // ─────────────────────────────────────────────────────────────────────────────
 
-model WorkspaceMember {
-  id          String                @id @default(cuid())
-  workspaceId String
-  workspace   Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role        WorkspaceMemberRole   @default(MEMBER)
-  status      WorkspaceMemberStatus @default(ACTIVE)
-  joinedAt    DateTime              @default(now())
+model SpaceMember {
+  id       String           @id @default(cuid())
+  spaceId  String           @map("workspaceId")
+  space    Space            @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     SpaceMemberRole  @default(MEMBER)
+  status   SpaceMemberStatus @default(ACTIVE)
+  joinedAt DateTime         @default(now())
 
   // Populated when status transitions to REMOVED or LEFT
   revokedAt   DateTime?
   revokedById String?
-  revokedBy   User?                 @relation("RevokedByUser", fields: [revokedById], references: [id], onDelete: SetNull)
+  revokedBy   User?         @relation("RevokedByUser", fields: [revokedById], references: [id], onDelete: SetNull)
 
-  @@unique([workspaceId, userId])
-  @@index([workspaceId])
+  @@unique([spaceId, userId])
+  @@index([spaceId])
   @@index([userId])
-  @@index([workspaceId, status])
+  @@index([spaceId, status])
+  @@map("WorkspaceMember")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceInvite
+// SpaceInvite (renamed from WorkspaceInvite)
 // Grant-only access. Only existing members with OWNER or ADMIN role can invite.
 // Users cannot request access — they can only accept or decline an invite.
 // ─────────────────────────────────────────────────────────────────────────────
 
-model WorkspaceInvite {
-  id            String              @id @default(cuid())
-  workspaceId   String
-  workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+model SpaceInvite {
+  id            String          @id @default(cuid())
+  spaceId       String          @map("workspaceId")
+  space         Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   invitedById   String
-  invitedBy     User                @relation("SentInvites",     fields: [invitedById],   references: [id], onDelete: Cascade)
+  invitedBy     User            @relation("SentInvites",     fields: [invitedById],   references: [id], onDelete: Cascade)
   invitedUserId String
-  invitedUser   User                @relation("ReceivedInvites", fields: [invitedUserId], references: [id], onDelete: Cascade)
-  role          WorkspaceMemberRole @default(MEMBER)
-  status        InviteStatus        @default(PENDING)
-  createdAt     DateTime            @default(now())
+  invitedUser   User            @relation("ReceivedInvites", fields: [invitedUserId], references: [id], onDelete: Cascade)
+  role          SpaceMemberRole @default(MEMBER)
+  status        InviteStatus    @default(PENDING)
+  createdAt     DateTime        @default(now())
   expiresAt     DateTime?
-  seenAt        DateTime?           // set when invited user first views the invite
+  seenAt        DateTime?       // set when invited user first views the invite
 
-  @@unique([workspaceId, invitedUserId])
+  @@unique([spaceId, invitedUserId])
   @@index([invitedUserId])
-  @@index([workspaceId])
+  @@index([spaceId])
+  @@map("WorkspaceInvite")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AiAgent
-// One agent per workspace. Owns all advice and (future) memory for that
-// workspace. Created automatically when a workspace is created.
+// One agent per Space. Owns all advice and (future) memory for that
+// Space. Created automatically when a Space is created.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model AiAgent {
   id           String    @id @default(cuid())
-  workspaceId  String    @unique
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  spaceId      String    @unique @map("workspaceId")
+  space        Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   name         String
+  // D4 — optional restriction layer for AI context assembly.
+  // When empty (default), the full template manifest is used.
+  // When set, the builder assembles the intersection of the template manifest
+  // and these keys. Values are ContextDomain string keys (e.g. "accounts").
+  // NOT the primary declaration — the domain manifest (derived from SpaceCategory
+  // or, after D9, from SpaceTemplate.contextDomains) is authoritative.
+  agentScope   String[]
   lastActiveAt DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   adviceHistory AiAdvice[]
 
-  @@index([workspaceId])
+  @@index([spaceId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PlaidItem
-// Stays on User — it is a credential (OAuth token), not a workspace asset.
+// Stays on User — it is a credential (OAuth token), not a Space asset.
 // One item per institution; a single token covers all accounts at that bank.
 // Accounts derived from this item are created as FinancialAccount rows.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -401,6 +526,16 @@ model PlaidItem {
   cursor          String?                  // /transactions/sync cursor for incremental sync
   errorCode       String?                  // last Plaid error code when status = ERROR
   lastSyncedAt    DateTime?
+  // D2 Step 7B — last manual "Refresh"/"Sync Now" attempt (success or
+  // failure), distinct from lastSyncedAt above (also written by the
+  // scheduled sync job). Gates the manual-refresh cooldown only; the
+  // scheduler never reads or writes this field.
+  lastManualRefreshAt DateTime?
+  // Investments consent state — null = unknown / never derived (all Items
+  // predating this column). Written by lib/plaid/refresh.ts and
+  // lib/plaid/exchangeToken.ts; the future "Enable Investment Holdings" UI
+  // renders when this is CONSENT_REQUIRED.
+  investmentsConsent PlaidInvestmentsConsent?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -408,6 +543,95 @@ model PlaidItem {
   connections AccountConnection[] // new relation
 
   @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Connection (D2, Phase 2 — LIVE for PLAID: rows are created/updated by
+// lib/plaid/exchangeToken.ts and read by app/api/plaid/link-token; other
+// provider types not yet populated).
+// Provider-agnostic generalization of the credential/login layer PlaidItem
+// represents today. PlaidItem is NOT migrated or modified by this step — it
+// continues to serve all existing Plaid behavior unchanged. Connection exists
+// so future, non-Plaid providers (wallets with xpub/watch-only, exchanges,
+// brokerages, CSV) have a home that isn't shaped like Plaid.
+// See docs/architecture/D2_PROVIDER_CONNECTION_ARCHITECTURE.md.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Connection {
+  id                   String           @id @default(cuid())
+  userId               String
+  user                 User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider             ProviderType
+  externalConnectionId String?                    // provider's login/connection id, where one exists
+  credential           String?                    // encrypted; null for MANUAL; xpub/descriptor for WALLET watch-only — NEVER a private key
+  status               ConnectionStatus @default(ACTIVE)
+  cursor               String?                    // sync cursor, where the provider supports one
+  errorCode            String?
+  lastSyncedAt         DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  accountConnections        AccountConnection[]
+  // ProviderAccountIdentity (D2) — populated (Step 1C backfill + Step 2 dual-write).
+  providerAccountIdentities ProviderAccountIdentity[]
+  // ImportBatch (D2 Step 4D) — populated by the import pipeline.
+  importBatches             ImportBatch[]
+
+  @@index([userId])
+  @@index([provider])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProviderAccountIdentity (D2, Phase 2, Step 1B schema; Step 1C-A backfilled
+// PLAID rows; Step 2A added a PLAID-only dual-write — see
+// app/api/plaid/exchange-token/route.ts and lib/accounts/provider-identity.ts).
+// Generalizes the ad hoc provider-identity columns on FinancialAccount
+// (plaidAccountId, walletAddress) into one row per (provider,
+// externalAccountId). FinancialAccount's existing provider columns remain
+// the source of truth and are NOT removed by this step. WALLET is not yet
+// backfilled or dual-written — see
+// docs/initiatives/d2/investigations/D2_STEP1C_C_WALLET_IDENTITY_COLLISION_INVESTIGATION.md. PLAID read
+// cutover is COMPLETE (Steps 3C–3F): sync, refresh, reconcile, and
+// exchange-token resolve identities here first, with a warn-and-fallback to the
+// legacy plaidAccountId lookup whose removal is gated on a production
+// observation window (D2 Step 7 Stabilization).
+// See docs/architecture/D2_PROVIDER_CONNECTION_ARCHITECTURE.md §2, §8, §9.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ProviderAccountIdentity {
+  id                 String           @id @default(cuid())
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  connectionId       String?
+  connection         Connection?      @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  provider           ProviderType
+  externalAccountId  String
+  metadata           Json?
+  createdAt          DateTime         @default(now())
+
+  // D2 Step 1D — multi-account correction. A provider identity (e.g. a
+  // wallet address) is a public external fact; a FinancialAccount is a
+  // private Fourth Meridian object. Multiple FinancialAccount rows
+  // (different owners' private interpretations of the same address, or
+  // future public/watch-Space interpretations) may legitimately share one
+  // externalAccountId — each gets its own row here, distinguished by
+  // financialAccountId. The constraint below was previously
+  // @@unique([provider, externalAccountId]) alone, which made that
+  // impossible (at most one FinancialAccount could ever hold a given
+  // identity, globally). See
+  // docs/initiatives/d2/implementation/D2_STEP1D_PROVIDER_ACCOUNT_IDENTITY_MULTI_ACCOUNT_CORRECTION.md.
+  // PLAID is unaffected: FinancialAccount.plaidAccountId already carries its
+  // own independent @unique, so this relaxation doesn't change PLAID's
+  // real-world uniqueness guarantee.
+  @@unique([provider, externalAccountId, financialAccountId])
+  // Defense-in-depth: at most one identity row per (provider,
+  // financialAccountId) — formalizes an invariant
+  // dualWriteProviderAccountIdentity() already relies on (find-by-
+  // {financialAccountId, provider}, then create-or-update-in-place; never
+  // creates a second row for the same pair).
+  @@unique([provider, financialAccountId])
+  @@index([financialAccountId])
+  @@index([connectionId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -419,8 +643,8 @@ model PlaidItem {
 
 model Account {
   id               String          @id @default(cuid())
-  workspaceId      String
-  workspace        Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  spaceId          String          @map("workspaceId")
+  space            Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   ownerId          String?                          // who connected this account; nullable (SetNull on user delete)
   owner            User?           @relation(fields: [ownerId], references: [id], onDelete: SetNull)
   visibilityLevel  VisibilityLevel @default(PRIVATE)
@@ -451,8 +675,8 @@ model Account {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([workspaceId])
-  @@index([workspaceId, type])
+  @@index([spaceId])
+  @@index([spaceId, type])
   @@index([ownerId])
   @@index([plaidItemDbId])
 }
@@ -461,8 +685,8 @@ model Account {
 // FinancialAccount
 // Canonical representation of a single real-world financial account.
 // One row per real-world account — never duplicated.
-// ownerType / ownerUserId / ownerWorkspaceId track who "owns" the account
-// in the FinTracker sense (not necessarily the legal bank account holder).
+// ownerType / ownerUserId / ownerSpaceId track who "owns" the account
+// in the Fourth Meridian sense (not necessarily the legal bank account holder).
 // Balance values here are always canonical — sourced from the isCanonical
 // AccountConnection on each sync cycle.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -472,8 +696,19 @@ model FinancialAccount {
   ownerType        AccountOwnerType
   ownerUserId      String?
   ownerUser        User?            @relation("UserOwnedFinancialAccounts", fields: [ownerUserId], references: [id], onDelete: SetNull)
-  ownerWorkspaceId String?
-  ownerWorkspace   Workspace?       @relation("WorkspaceOwnedFinancialAccounts", fields: [ownerWorkspaceId], references: [id], onDelete: SetNull)
+  ownerSpaceId     String?          @map("ownerWorkspaceId")
+  ownerSpace       Space?           @relation("SpaceOwnedFinancialAccounts", fields: [ownerSpaceId], references: [id], onDelete: SetNull)
+
+  // D11 (Phase 2 schema modernization): the human-accountable party independent
+  // of the visibility owner. For ownerType=USER this is normally the same
+  // person as ownerUserId; for ownerType=SPACE, ownerUserId is null by design
+  // (visibility, not accountability), so this field is the only required
+  // answer to "who connected this account on behalf of the Space." Additive,
+  // nullable — backfilled from ownerUserId (falling back to the earliest
+  // AccountConnection.connectedByUserId) for existing rows; set at creation
+  // time for every new FinancialAccount going forward.
+  createdByUserId  String?
+  createdByUser    User?            @relation("FinancialAccountCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   // Canonical values — written by the AccountConnection with isCanonical = true
   name             String
@@ -485,7 +720,16 @@ model FinancialAccount {
   availableBalance Float?
   creditLimit      Float?
   currency         String           @default("USD")
-  lastUpdated      DateTime         @default(now())
+  lastUpdated           DateTime         @default(now())
+  // D4 Balance Freshness Provenance — the timestamp Plaid reported for when
+  // the balance itself was last fetched from the institution. Distinct from
+  // lastUpdated (which records when Fourth Meridian wrote to this row).
+  // Populated from AccountBalance.last_updated_datetime on each Plaid refresh;
+  // null for institutions that do not supply this field (currently most — Plaid
+  // documents support only for ins_128026 / Capital One, but the field is typed
+  // as optional on all AccountBalance responses). Never backfilled for existing
+  // rows; null means "provenance unknown", not "balance is current".
+  balanceLastUpdatedAt  DateTime?
 
   // Plaid deduplication key
   plaidAccountId   String?          @unique
@@ -519,15 +763,28 @@ model FinancialAccount {
   updatedAt        DateTime         @updatedAt
 
   connections           AccountConnection[]
+  // workspaceShares — excluded from the Phase 1 Workspace->Space rename; this
+  // field and the WorkspaceAccountShare model it points to have a separate
+  // future replacement (SpaceAccountLink, Phase 3) with different semantics,
+  // so the name deliberately stays as-is for now.
   workspaceShares       WorkspaceAccountShare[]
+  // SpaceAccountLink (D3) — dual-written at every share mutation site and the primary
+  // read path for the AI assemblers and data layer; WAS cutover completes in v2.5.
+  spaceAccountLinks     SpaceAccountLink[]
   duplicateCandidatesA  DuplicateAccountCandidate[] @relation("DuplicateCandidateA")
   duplicateCandidatesB  DuplicateAccountCandidate[] @relation("DuplicateCandidateB")
   goalContributions     GoalContribution[]
   debtProfile           DebtProfile?
   transactions          Transaction[]               @relation("FinancialAccountTransactions")
+  holdings              Holding[]
+  // ProviderAccountIdentity (D2) — populated (Step 1C backfill + Step 2 dual-write).
+  providerIdentities    ProviderAccountIdentity[]
+  // ImportBatch (D2 Step 4D) — populated by the import pipeline.
+  importBatches         ImportBatch[]
 
   @@index([ownerUserId])
-  @@index([ownerWorkspaceId])
+  @@index([ownerSpaceId])
+  @@index([createdByUserId])
   @@index([type])
   @@index([deletedAt])
 }
@@ -580,6 +837,12 @@ model AccountConnection {
   plaidItemDbId      String?
   plaidItem          PlaidItem?       @relation(fields: [plaidItemDbId], references: [id], onDelete: SetNull)
 
+  // D2 — populated for PLAID by lib/plaid/exchangeToken.ts alongside
+  // plaidItemDbId. Parallel path to plaidItemDbId for future non-Plaid
+  // providers; existing Plaid/manual/wallet behavior unchanged.
+  connectionId       String?
+  connection         Connection?      @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+
   syncStatus         String           @default("pending")
   isCanonical        Boolean          @default(true)   // authoritative balance source for this account
   lastSyncedAt       DateTime?
@@ -591,6 +854,7 @@ model AccountConnection {
   @@index([financialAccountId])
   @@index([connectedByUserId])
   @@index([plaidItemDbId])
+  @@index([connectionId])
   @@index([financialAccountId, isCanonical])
 }
 
@@ -602,10 +866,17 @@ model AccountConnection {
 // typically triggered when the member who shared it is removed or leaves.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// NOTE: WorkspaceAccountShare is deliberately excluded from the Fourth Meridian
+// Phase 1 Workspace->Space rename — it has its own future replacement
+// (SpaceAccountLink, Phase 3) with different semantics, so its model name,
+// field names (workspaceId/workspace), and Prisma Client accessor all stay
+// exactly as they are. The `workspace` relation field's TYPE annotation below
+// is updated to `Space` purely because the `Workspace` model name no longer
+// exists — this is a mechanical necessity, not a scope change.
 model WorkspaceAccountShare {
   id                 String           @id @default(cuid())
   workspaceId        String
-  workspace          Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace          Space            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   financialAccountId String
   financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
   addedByUserId      String
@@ -626,45 +897,107 @@ model WorkspaceAccountShare {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SpaceAccountLink (D3, Phase 2 — LIVE: backfilled, dual-written at every
+// WorkspaceAccountShare mutation site (lib/accounts/space-account-link.ts), and
+// the primary read path for the AI assemblers, data layer, and most routes;
+// full WAS read cutover + retirement is scheduled v2.5 work).
+// Future consolidation of WorkspaceAccountShare and FinancialAccount's
+// ownerSpaceId/ownerUserId into a single polymorphic link: kind=HOME replaces
+// the declared-owner pair, kind=SHARED replaces a WorkspaceAccountShare row.
+// One row per (space, financialAccount) pair, same cardinality
+// WorkspaceAccountShare already has. Table is created empty in this step —
+// no backfill, no dual-write, no read cutover. See
+// docs/initiatives/d3/D3_SPACE_ACCOUNT_LINK_REVIEW.md for the full migration strategy and
+// open decisions (notably: the HOME/SHARED backfill collision rule) still to
+// be resolved before the next step.
+// ─────────────────────────────────────────────────────────────────────────────
+model SpaceAccountLink {
+  id                 String               @id @default(cuid())
+  spaceId            String
+  space              Space                @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  financialAccountId String
+  financialAccount   FinancialAccount     @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  kind               SpaceAccountLinkKind
+  addedByUserId      String
+  addedByUser        User                 @relation("SpaceAccountLinkAdder", fields: [addedByUserId], references: [id], onDelete: Cascade)
+  visibilityLevel    VisibilityLevel      @default(FULL)
+  status             ShareStatus          @default(ACTIVE)
+  revokedAt          DateTime?
+  revokedByUserId    String?
+  revokedByUser      User?                @relation("SpaceAccountLinkRevoker", fields: [revokedByUserId], references: [id], onDelete: SetNull)
+
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  @@unique([spaceId, financialAccountId])
+  @@index([spaceId, status])
+  @@index([financialAccountId, status])
+  @@index([financialAccountId, kind])
+  @@index([addedByUserId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DuplicateAccountCandidate
-// Passive infrastructure for surfacing potentially duplicate FinancialAccounts
-// to the user for manual review. NEVER auto-merges accounts.
-// Created by the sync job when heuristics detect possible duplicates
-// (same institution + mask + type, similar balance, etc.).
+// Audit ledger of automatic duplicate-account merges performed by
+// lib/accounts/reconcile.ts (mergeArchivedDuplicateIntoCanonical). Rows are
+// written AFTER a merge has already happened — this table does not gate or
+// block any merge, and nothing reads it back yet (no review UI exists).
+// D1 (see docs/initiatives/d1/D1_DUPLICATE_ACCOUNT_CANDIDATE_DESIGN_REVIEW.md) repurposed
+// this model from an unused human-review-queue design — the original comment
+// here claimed "NEVER auto-merges," which was already false of the running
+// code before D1 — into the audit ledger described above.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model DuplicateAccountCandidate {
-  id                String           @id @default(cuid())
-  workspaceId       String
+  id                String                    @id @default(cuid())
+  // Nullable: mergeArchivedDuplicateIntoCanonical doesn't always have a space
+  // in scope (the restore routes resolve by account ownership, not by Space).
+  // A merge is a fact about an account pair, not inherently scoped to one
+  // Space. Populated when the caller has a space in context (e.g. Plaid
+  // import); null otherwise (e.g. the generic/manual restore routes).
+  spaceId           String?                   @map("workspaceId")
+  // Directional by convention, not by name: accountA is always the
+  // surviving canonical ("winner") row, accountB is always the archived row
+  // whose history was folded into it ("loser"). See
+  // mergeArchivedDuplicateIntoCanonical in lib/accounts/reconcile.ts.
   accountAId        String
-  accountA          FinancialAccount @relation("DuplicateCandidateA", fields: [accountAId], references: [id], onDelete: Cascade)
+  accountA          FinancialAccount          @relation("DuplicateCandidateA", fields: [accountAId], references: [id], onDelete: Cascade)
   accountBId        String
-  accountB          FinancialAccount @relation("DuplicateCandidateB", fields: [accountBId], references: [id], onDelete: Cascade)
-  status            DuplicateStatus  @default(PENDING)
-  detectedAt        DateTime         @default(now())
+  accountB          FinancialAccount          @relation("DuplicateCandidateB", fields: [accountBId], references: [id], onDelete: Cascade)
+  status            DuplicateStatus           @default(PENDING)
+  detectionSource   DuplicateDetectionSource
+  detectedAt        DateTime                  @default(now())
+  // resolvedAt/resolvedByUserId predate D1 and still read as "a human
+  // reviewed this." For every row written by the automatic merge path,
+  // resolvedByUserId is null (no human in the loop) and resolvedAt is set to
+  // the same instant as detectedAt — there is no review gap to measure.
   resolvedAt        DateTime?
   resolvedByUserId  String?
-  resolvedByUser    User?            @relation("DuplicateResolver", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+  resolvedByUser    User?                     @relation("DuplicateResolver", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
 
-  createdAt         DateTime         @default(now())
+  createdAt         DateTime                  @default(now())
 
+  // Kept as a true unique constraint, not relaxed to append-only: a later
+  // re-merge of the same (winner, loser) pair (e.g. a second restore attempt
+  // on an already-merged loser) upserts this row (bumping detectedAt)
+  // instead of inserting a second one. See lib/accounts/reconcile.ts.
   @@unique([accountAId, accountBId])
-  @@index([workspaceId, status])
+  @@index([spaceId, status])
   @@index([accountAId])
   @@index([accountBId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceGoal
-// A financial goal belonging to a workspace. Members contribute accounts to the
+// SpaceGoal (renamed from WorkspaceGoal)
+// A financial goal belonging to a Space. Members contribute accounts to the
 // goal via GoalContribution. Progress is computed from the sum of contributing
 // account balances (or a subset of those balances).
 // ─────────────────────────────────────────────────────────────────────────────
 
-model WorkspaceGoal {
+model SpaceGoal {
   id              String        @id @default(cuid())
-  workspaceId     String
-  workspace       Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  spaceId         String        @map("workspaceId")
+  space           Space         @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   createdByUserId String
   createdBy       User          @relation("GoalCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
   name            String
@@ -703,9 +1036,10 @@ model WorkspaceGoal {
   contributions   GoalContribution[]
   checkIns        GoalCheckIn[]
 
-  @@index([workspaceId, status])
-  @@index([workspaceId, category])
-  @@index([workspaceId, goalType])
+  @@index([spaceId, status])
+  @@index([spaceId, category])
+  @@index([spaceId, goalType])
+  @@map("WorkspaceGoal")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -714,11 +1048,11 @@ model WorkspaceGoal {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model GoalCheckIn {
-  id        String        @id @default(cuid())
+  id        String    @id @default(cuid())
   goalId    String
-  goal      WorkspaceGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  goal      SpaceGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
   note      String?
-  checkedAt DateTime      @default(now())
+  checkedAt DateTime  @default(now())
 
   @@index([goalId])
   @@index([goalId, checkedAt])
@@ -726,14 +1060,14 @@ model GoalCheckIn {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GoalContribution
-// Links a FinancialAccount to a WorkspaceGoal. includeBalance controls whether
+// Links a FinancialAccount to a SpaceGoal. includeBalance controls whether
 // the account's balance counts toward the goal's currentAmount.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model GoalContribution {
   id                 String           @id @default(cuid())
   goalId             String
-  goal               WorkspaceGoal    @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  goal               SpaceGoal        @relation(fields: [goalId], references: [id], onDelete: Cascade)
   financialAccountId String
   financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
   includeBalance     Boolean          @default(true)
@@ -746,10 +1080,10 @@ model GoalContribution {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceDashboardSection
-// Controls which sections/cards appear on the workspace planning dashboard and
-// in what order. Generated automatically from the workspace category preset on
-// workspace creation. Members with OWNER/ADMIN role can toggle, reorder, or
+// SpaceDashboardSection (renamed from WorkspaceDashboardSection)
+// Controls which sections/cards appear on the Space planning dashboard and
+// in what order. Generated automatically from the Space category preset on
+// Space creation. Members with OWNER/ADMIN role can toggle, reorder, or
 // add custom sections.
 // key: machine-readable identifier (e.g. "net_worth", "debt_payoff_tracker")
 // label: display name shown in the UI (overrideable by user)
@@ -759,34 +1093,50 @@ model GoalContribution {
 // config: arbitrary JSON for section-specific settings (e.g. chart type, filters)
 // ─────────────────────────────────────────────────────────────────────────────
 
-model WorkspaceDashboardSection {
-  id          String                 @id @default(cuid())
-  workspaceId String
-  workspace   Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  key         String                 // e.g. "net_worth", "goals_progress", "debt_payoff"
-  label       String                 // display label
-  tab         WorkspaceDashboardTab  @default(OVERVIEW)
-  enabled     Boolean                @default(true)
-  order       Int                    @default(0)
-  config      Json?                  // section-specific settings
+model SpaceDashboardSection {
+  id        String             @id @default(cuid())
+  spaceId   String             @map("workspaceId")
+  space     Space              @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  key       String             // e.g. "net_worth", "goals_progress", "debt_payoff"
+  label     String             // display label
+  tab       SpaceDashboardTab  @default(OVERVIEW)
+  enabled   Boolean            @default(true)
+  order     Int                @default(0)
+  config    Json?              // section-specific settings
 
-  createdAt   DateTime               @default(now())
-  updatedAt   DateTime               @updatedAt
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
 
-  @@unique([workspaceId, key])
-  @@index([workspaceId, tab])
-  @@index([workspaceId, enabled])
+  @@unique([spaceId, key])
+  @@index([spaceId, tab])
+  @@index([spaceId, enabled])
+  @@map("WorkspaceDashboardSection")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Holding
-// One row per position (stock / ETF / crypto) per account. Unchanged.
+// One row per position (stock / ETF / crypto) per account.
+//
+// D11 (Phase 2 schema modernization): accountId (legacy Account FK) and
+// financialAccountId (canonical FK) are both optional; exactly one is expected
+// to be set per row — the same dual-FK pattern already used by Transaction
+// (867–892 below). Legacy/seed-created rows keep accountId. Holdings synced
+// for real Plaid-linked investment accounts (which only ever have a
+// FinancialAccount, not a legacy Account) set financialAccountId instead.
+// accountId was loosened from required to optional to allow this — no
+// existing data is affected, every pre-existing row already has accountId set.
+// Read-layer code (lib/data/accounts.ts getHoldings()) normalizes both back
+// to a single accountId field on read, same as Transaction's pattern.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Holding {
-  id        String  @id @default(cuid())
-  accountId String
-  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id        String   @id @default(cuid())
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  financialAccountId String?
+  financialAccount   FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+
   symbol    String
   name      String
   quantity  Float
@@ -800,8 +1150,11 @@ model Holding {
   updatedAt DateTime @updatedAt
 
   @@unique([accountId, symbol])
+  @@unique([financialAccountId, symbol])
   @@index([accountId])
   @@index([accountId, isCash])
+  @@index([financialAccountId])
+  @@index([financialAccountId, isCash])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -834,6 +1187,23 @@ model Transaction {
 
   plaidTransactionId String? @unique // prevents duplicate inserts on re-sync
 
+  // D2 Step 4D — written by the import pipeline ("externalId" match
+  // resolution in app/api/accounts/[id]/import). Generic sibling of plaidTransactionId
+  // for files/exports that carry their own stable row id. Deliberately no
+  // unique constraint yet — a CSV export's own id is only guaranteed unique
+  // within that one file/institution, not globally; real uniqueness shape
+  // (e.g. scoped to [financialAccountId, externalTransactionId]) is decided
+  // at Step 4D implementation time, not assumed here. See
+  // docs/initiatives/d2/investigations/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §3.
+  importBatchId         String?
+  importBatch            ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  externalTransactionId String?
+
+  // D2 Step 4D-3 — soft-delete set by import rollback
+  // (app/api/imports/[id]/rollback → ImportBatch.status = ROLLED_BACK).
+  // See D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §1.
+  deletedAt              DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -842,19 +1212,151 @@ model Transaction {
   @@index([financialAccountId])
   @@index([financialAccountId, date])
   @@index([date])
+  @@index([importBatchId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WorkspaceSnapshot
-// Renamed from DailySnapshot. Written once per day by the background sync job.
-// workspaceId replaces userId — snapshots belong to the workspace, not the user.
+// ImportBatch (D2, Phase 2, Step 4B)
+// One row per CSV/Excel/QuickBooks upload. Additive, schema-only — nothing
+// reads or writes this table yet; the upload/parse/import pipeline is Step 4D.
+// financialAccountId is required: the user always selects an existing target
+// account before importing (no fingerprint-based auto-account-creation from
+// file contents — see Step 4A §5). createdByUserId is nullable, mirroring
+// FinancialAccount.createdByUserId's own D11 precedent, so that onDelete:
+// SetNull is valid. connectionId is a forward-compatible seam mirroring
+// AccountConnection.connectionId / ProviderAccountIdentity.connectionId —
+// nullable, unpopulated until D2's later Adapter/ProviderCatalog work exists;
+// ImportBatch does not depend on that work existing.
+// See docs/initiatives/d2/investigations/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md
+// and docs/initiatives/d2/investigations/D2_STEP4A_IMPORT_HISTORY_FOUNDATION_INVESTIGATION.md.
 // ─────────────────────────────────────────────────────────────────────────────
 
-model WorkspaceSnapshot {
-  id          String    @id @default(cuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  date        DateTime  @db.Date
+enum ImportSource {
+  CSV
+  EXCEL
+  QUICKBOOKS
+}
+
+enum ImportBatchStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  ROLLED_BACK
+  FAILED
+}
+
+model ImportBatch {
+  id                 String            @id @default(cuid())
+
+  financialAccountId String
+  financialAccount   FinancialAccount  @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+
+  createdByUserId    String?
+  createdByUser      User?             @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  connectionId       String?
+  connection         Connection?       @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+
+  // D2 Step 4D-5b — which ImportMappingProfile (if any) resolved this
+  // batch's columns. Set only on the saved-profile-matched path; null for
+  // the explicit-mapping and auto-detect paths. onDelete: SetNull so
+  // deleting a profile later never deletes the historical batches that used
+  // it. See docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §2.
+  mappingProfileId   String?
+  mappingProfile     ImportMappingProfile? @relation(fields: [mappingProfileId], references: [id], onDelete: SetNull)
+
+  source             ImportSource
+  originalFilename   String?
+  status             ImportBatchStatus @default(PENDING)
+  rowCount           Int               @default(0)
+  importedCount      Int               @default(0)
+  skippedCount       Int               @default(0)
+  // D2 Step 4D-1 — additive counters needed once a real classifier (CSV
+  // import) exists. matchedCount: rows that resolved to an already-existing
+  // Transaction (no new row written) — distinct from skippedCount, which
+  // covers rows skipped for other reasons (e.g. an ambiguous fingerprint
+  // match). failedCount: rows that could not be parsed/validated at all. See
+  // docs/initiatives/d2/investigations/D2_STEP4D1_CSV_IMPORT_MVP_INVESTIGATION.md §8.
+  matchedCount       Int               @default(0)
+  failedCount        Int               @default(0)
+  errorSummary       Json?
+  // D2 Step 4D-5b — snapshot of the actual resolved CsvColumnMap, written on
+  // every import regardless of which resolver path produced it (auto-detect,
+  // explicit mapping, or saved profile). Exists so a profile that's later
+  // edited never retroactively changes what a historical batch is recorded
+  // as having used — see D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §2.
+  resolvedColumnMapping Json?
+
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  completedAt        DateTime?
+
+  transactions       Transaction[]
+
+  @@index([financialAccountId])
+  @@index([createdByUserId])
+  @@index([connectionId])
+  @@index([mappingProfileId])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ImportMappingProfile (D2, Phase 2, Step 4D-5b)
+// Space-scoped, saved column mapping for recurring import sources (e.g. one
+// specific bank's CSV/Excel export shape). `mapping` stores the *resolved*
+// CsvColumnMap (lib/imports/csv.ts) — all 8 keys present, each a header
+// string or null — produced by a prior successful applyExplicitMapping()
+// call, not a caller's raw/partial input. Matching a profile against a new
+// upload is a trial-application of that same mapping via
+// applyExplicitMapping(), never a comparison of the file's full header set —
+// see docs/initiatives/d2/investigations/D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §5/§6 for why a
+// header-signature hash was considered and rejected. source/institutionLabel
+// are informational/display only, never consulted by the matcher. No CRUD
+// route exists for this model yet (4D-5b is auto-use only, over rows seeded
+// directly via the database client) — see
+// docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §7/§8.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ImportMappingProfile {
+  id               String       @id @default(cuid())
+
+  spaceId          String
+  space            Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  name             String
+  source           ImportSource // informational only — NOT part of the matching key
+  institutionLabel String?      // informational only, e.g. "Chase"
+
+  mapping          Json         // resolved CsvColumnMap shape — see module comment above
+
+  createdByUserId  String?
+  createdByUser    User?        @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  lastUsedAt       DateTime?
+  useCount         Int          @default(0)
+
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  importBatches    ImportBatch[]
+
+  @@unique([spaceId, name])
+  @@index([spaceId])
+  @@index([createdByUserId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SpaceSnapshot (renamed from WorkspaceSnapshot, itself renamed from DailySnapshot)
+// Written once per day by the background sync job.
+// spaceId replaces userId — snapshots belong to the Space, not the user.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model SpaceSnapshot {
+  id      String   @id @default(cuid())
+  spaceId String   @map("workspaceId")
+  space   Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  date    DateTime @db.Date
 
   // Portfolio breakdown
   stocks Float @default(0) // sum of investment account balances
@@ -874,20 +1376,21 @@ model WorkspaceSnapshot {
 
   createdAt DateTime @default(now())
 
-  @@unique([workspaceId, date])
-  @@index([workspaceId, date])
+  @@unique([spaceId, date])
+  @@index([spaceId, date])
+  @@map("WorkspaceSnapshot")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AiAdvice
-// One record per advice engine run. Belongs to a workspace and is attributed
-// to the workspace's AiAgent. userId removed — advice is workspace-scoped.
+// One record per advice engine run. Belongs to a Space and is attributed
+// to the Space's AiAgent. userId removed — advice is Space-scoped.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model AiAdvice {
   id          String    @id @default(cuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  spaceId     String    @map("workspaceId")
+  space       Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   agentId     String
   agent       AiAgent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
   summary     String
@@ -897,7 +1400,7 @@ model AiAdvice {
   generatedAt DateTime  @default(now())
   createdAt   DateTime  @default(now())
 
-  @@index([workspaceId, generatedAt])
+  @@index([spaceId, generatedAt])
   @@index([agentId, generatedAt])
 }
 
@@ -922,24 +1425,24 @@ model CreditScore {
 // ─────────────────────────────────────────────────────────────────────────────
 // AuditLog
 // Append-only log of security-relevant events. NEVER cascade-deleted when a
-// user or workspace is removed — userId and workspaceId are SET NULL instead.
+// user or Space is removed — userId and spaceId are SET NULL instead.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model AuditLog {
-  id                String     @id @default(cuid())
+  id                String   @id @default(cuid())
   userId            String?
-  user              User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
-  workspaceId       String?
-  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
-  action            String     // See AuditAction constants in lib/audit-actions.ts
-  metadata          Json?      // e.g. { institution: "Chase", accountCount: 3 }
+  user              User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  spaceId           String?  @map("workspaceId")
+  space             Space?   @relation(fields: [spaceId], references: [id], onDelete: SetNull)
+  action            String   // See AuditAction constants in lib/audit-actions.ts
+  metadata          Json?    // e.g. { institution: "Chase", accountCount: 3 }
   ipAddress         String?
   userAgent         String?
-  performedByAdminId String?   // set when a SYSTEM_ADMIN performs an action on behalf of another user
-  createdAt         DateTime   @default(now())
+  performedByAdminId String? // set when a SYSTEM_ADMIN performs an action on behalf of another user
+  createdAt         DateTime @default(now())
 
   @@index([userId, createdAt])
-  @@index([workspaceId, createdAt])
+  @@index([spaceId, createdAt])
   @@index([action, createdAt])
 }
 
@@ -1001,4 +1504,24 @@ model PlatformSetting {
   value     String        // "true" | "false" | numeric string
   updatedAt DateTime @updatedAt
   updatedById String?     // userId of last admin who changed this setting
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RateLimit  (KD-3)
+// Fixed-window request counter for endpoint-local rate limiting.
+// One row per (key, windowStart) bucket; count is incremented per request.
+// `key` encodes scope + endpoint + subject, e.g. "ip:pre-login:1.2.3.4" or
+// "user:ai-chat:<userId>". Used only when RATE_LIMIT_ENABLED=true in
+// production; local dev uses an in-memory backend (see lib/rate-limit.ts).
+// Expired buckets can be swept lazily or via a future cron — additive only.
+// ─────────────────────────────────────────────────────────────────────────────
+model RateLimit {
+  id          String   @id @default(cuid())
+  key         String   // scope:endpoint:subject
+  windowStart DateTime // start of the fixed-window bucket
+  count       Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@unique([key, windowStart])
+  @@index([windowStart])
 }

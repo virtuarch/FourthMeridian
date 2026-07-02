@@ -48,7 +48,7 @@ export function CashChart({ snapshots, interval, onIntervalChange, investableCas
 
   const hasInvestable = investableCash > 0;
 
-  // Only one snapshot exists yet (e.g. right after a workspace's first
+  // Only one snapshot exists yet (e.g. right after a space's first
   // refresh) — a single point can't draw a trend line, so show the day-one
   // explainer instead of a near-empty chart.
   if (snapshots.length === 1) {

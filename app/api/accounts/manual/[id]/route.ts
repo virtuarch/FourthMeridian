@@ -13,6 +13,7 @@ import { NextRequest, NextResponse }   from "next/server";
 import { db }                          from "@/lib/db";
 import { requireUser }                 from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { ShareStatus }                 from "@prisma/client";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -131,14 +132,10 @@ export const DELETE = withApiHandler(async (
 
   const now = new Date();
 
-  // ── 1. Revoke WorkspaceAccountShare rows ─────────────────────────────────
-  await db.workspaceAccountShare.updateMany({
+  // ── 1. D3 Stage B4 — Revoke all SpaceAccountLink rows ────────────────────
+  await db.spaceAccountLink.updateMany({
     where: { financialAccountId: id },
-    data:  {
-      status:          "REVOKED",
-      revokedAt:       now,
-      revokedByUserId: userId,
-    },
+    data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: userId },
   });
 
   // ── 2. Soft-delete AccountConnection rows ─────────────────────────────────

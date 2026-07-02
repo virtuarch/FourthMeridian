@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Eye, EyeOff, Loader2, ShieldCheck } from "lucide-react";
+import { AppLogo } from "@/components/ui/AppLogo";
 
 function ResetPasswordForm() {
   const router       = useRouter();
@@ -136,7 +137,9 @@ export default function ResetPasswordPage() {
     <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
-          <img src="/logo-full.png" alt="FinTracker" className="h-10 w-auto object-contain mx-auto mb-4" />
+          <div className="flex items-center justify-center mb-4">
+            <AppLogo size={32} withWordmark wordmarkClassName="text-white text-lg" forceTheme="dark" priority />
+          </div>
           <h1 className="text-2xl font-bold text-white">Set new password</h1>
           <p className="text-gray-400 text-sm mt-1">Choose a strong password for your account</p>
         </div>

@@ -1,7 +1,7 @@
 /**
  * app/admin/page.tsx  —  Admin Overview
  *
- * Stat cards + quick-look tables for users and workspaces.
+ * Stat cards + quick-look tables for users and spaces.
  * Data is fetched directly from the DB (server component) — no cookie
  * forwarding needed.
  */
@@ -33,17 +33,17 @@ export default async function AdminOverviewPage() {
   const session = await getServerSession(authOptions);
   if (!session || session.user.role !== "SYSTEM_ADMIN") redirect("/dashboard");
 
-  const [users, workspaces, totalAccounts, totalAuditLogs] = await Promise.all([
+  const [users, spaces, totalAccounts, totalAuditLogs] = await Promise.all([
     db.user.findMany({
       orderBy: { createdAt: "desc" },
       select: {
         id: true, email: true, username: true, name: true, role: true, createdAt: true,
-        workspaces: {
-          select: { role: true, workspace: { select: { id: true, name: true, type: true } } },
+        spaces: {
+          select: { role: true, space: { select: { id: true, name: true, type: true } } },
         },
       },
     }),
-    db.workspace.findMany({
+    db.space.findMany({
       orderBy: { createdAt: "desc" },
       select: {
         id: true, name: true, type: true, createdAt: true,
@@ -59,7 +59,7 @@ export default async function AdminOverviewPage() {
 
   const STAT_CARDS = [
     { label: "Users",      value: users.length,      icon: Users,      color: "text-blue-400",    bg: "bg-blue-500/10"    },
-    { label: "Workspaces", value: workspaces.length,  icon: Building2,  color: "text-violet-400",  bg: "bg-violet-500/10"  },
+    { label: "Spaces",     value: spaces.length,  icon: Building2,  color: "text-violet-400",  bg: "bg-violet-500/10"  },
     { label: "Accounts",   value: totalAccounts,      icon: CreditCard, color: "text-emerald-400", bg: "bg-emerald-500/10" },
     { label: "Audit Logs", value: totalAuditLogs,     icon: ScrollText, color: "text-amber-400",   bg: "bg-amber-500/10"   },
   ];
@@ -68,7 +68,7 @@ export default async function AdminOverviewPage() {
     <div className="space-y-8 max-w-6xl">
       <div>
         <h1 className="text-2xl font-bold text-white">Overview</h1>
-        <p className="text-sm text-gray-400 mt-0.5">System-wide snapshot of all users, workspaces, and activity.</p>
+        <p className="text-sm text-gray-400 mt-0.5">System-wide snapshot of all users, Spaces, and activity.</p>
       </div>
 
       {/* ── Stat cards ── */}
@@ -101,7 +101,7 @@ export default async function AdminOverviewPage() {
                 <tr className="border-b border-gray-800 text-xs text-gray-500 text-left">
                   <th className="px-4 py-3 font-medium">User</th>
                   <th className="px-4 py-3 font-medium">Role</th>
-                  <th className="px-4 py-3 font-medium hidden sm:table-cell">Workspace</th>
+                  <th className="px-4 py-3 font-medium hidden sm:table-cell">Space</th>
                   <th className="px-4 py-3 font-medium hidden md:table-cell">Joined</th>
                 </tr>
               </thead>
@@ -123,13 +123,13 @@ export default async function AdminOverviewPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3 hidden sm:table-cell">
-                      {u.workspaces.length === 0 ? (
+                      {u.spaces.length === 0 ? (
                         <span className="text-xs text-gray-600">—</span>
                       ) : (
                         <div className="space-y-0.5">
-                          {u.workspaces.map((w) => (
-                            <p key={w.workspace.id} className="text-xs text-gray-300">
-                              {w.workspace.name}
+                          {u.spaces.map((w) => (
+                            <p key={w.space.id} className="text-xs text-gray-300">
+                              {w.space.name}
                               <span className="text-gray-600 ml-1.5">({w.role})</span>
                             </p>
                           ))}
@@ -147,11 +147,11 @@ export default async function AdminOverviewPage() {
         </div>
       </section>
 
-      {/* ── Workspaces table ── */}
+      {/* ── Spaces table ── */}
       <section>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-base font-semibold text-white">Workspaces</h2>
-          <Link href="/admin/workspaces" className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors">
+          <h2 className="text-base font-semibold text-white">Spaces</h2>
+          <Link href="/admin/spaces" className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors">
             View all <ChevronRight size={13} />
           </Link>
         </div>
@@ -168,10 +168,10 @@ export default async function AdminOverviewPage() {
                 </tr>
               </thead>
               <tbody>
-                {workspaces.map((w, idx) => (
+                {spaces.map((w, idx) => (
                   <tr
                     key={w.id}
-                    className={`${idx < workspaces.length - 1 ? "border-b border-gray-800/60" : ""} hover:bg-gray-800/40 transition-colors`}
+                    className={`${idx < spaces.length - 1 ? "border-b border-gray-800/60" : ""} hover:bg-gray-800/40 transition-colors`}
                   >
                     <td className="px-4 py-3">
                       <p className="font-medium text-white">{w.name}</p>

@@ -11,6 +11,9 @@ import { Account, Holding, Transaction, TransactionCategory, AccountType } from 
 import { CoinIcon } from "@/components/ui/CoinIcon";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { GlassButton } from "@/components/atlas/GlassButton";
+import { useTheme } from "@/components/theme/ThemeProvider";
 
 // ── Stock / crypto logo ───────────────────────────────────────────────────────
 function AssetLogo({
@@ -142,9 +145,10 @@ interface Props {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
-  const router       = useRouter();
-  const isInvestment = account.type === "investment" || account.type === "crypto";
-  const isDebt       = account.type === "debt";
+  const router         = useRouter();
+  const { resolvedTheme } = useTheme();
+  const isInvestment   = account.type === "investment" || account.type === "crypto";
+  const isDebt         = account.type === "debt";
 
   const [activeTab,       setActiveTab]       = useState<ModalTab>("holdings");
   const [confirmRemove,   setConfirmRemove]   = useState(false);
@@ -168,7 +172,16 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
   const [nameError,    setNameError]    = useState("");
   const originalName = account.officialName ?? account.plaidName; // frozen Plaid value, for the "originally ..." hint
 
-  useEffect(() => { setLocalName(account.name); }, [account.id, account.name]);
+  useEffect(() => {
+    // Resyncs the optimistic `localName` override whenever the parent passes
+    // a different account (id changed) or a freshly-resolved name for the
+    // same account (e.g. after router.refresh() lands) — same accepted
+    // suppression already used a few lines below for the transactions-reset
+    // effect, since this is the same "resync local state from props" shape.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLocalName(account.name);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [account.id, account.name]);
 
   // Account-level holdings
   const accountHoldings = useMemo(
@@ -281,15 +294,25 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
   const iconCls = TYPE_ICON_CLS[account.type as AccountType] ?? "bg-gray-500/10 text-gray-400";
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-
+    <div
+      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4"
+      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
       {/* Panel */}
-      <div className="relative bg-gray-900 border border-gray-700 rounded-3xl w-full sm:max-w-2xl max-h-[88dvh] flex flex-col shadow-2xl">
+      <GlassPanel
+        depth="thick"
+        elevation="e4"
+        radius="xl"
+        className="w-full sm:max-w-2xl max-h-[88dvh] flex flex-col"
+        onClick={(e: React.MouseEvent) => e.stopPropagation()}
+      >
 
         {/* ── Header ── */}
-        <div className="flex items-center gap-3 px-5 pt-5 pb-4 border-b border-gray-800 shrink-0">
+        <div
+          className="flex items-center gap-3 px-5 pt-5 pb-4 shrink-0"
+          style={{ borderBottom: "1px solid var(--border-hairline)" }}
+        >
           {account.type === "crypto" ? (
             <CoinIcon
               symbol={account.walletChain ?? exchangeSymbol(account.institution)}
@@ -314,12 +337,13 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
                   onKeyDown={(e) => { if (e.key === "Escape") { setEditingName(false); setNameError(""); } }}
                   maxLength={120}
                   placeholder={originalName ?? account.name}
-                  className="flex-1 min-w-0 bg-gray-800 border border-blue-500 rounded-lg px-2 py-1 text-sm font-bold text-white placeholder-gray-600 focus:outline-none"
+                  className="flex-1 min-w-0 rounded-[var(--radius-xs)] px-2 py-1 text-sm font-bold text-[var(--text-primary)] focus:outline-none"
+                  style={{ background: "var(--surface-muted)", border: "1px solid var(--meridian-400)" }}
                 />
                 <button
                   type="submit"
                   disabled={nameSaving}
-                  className="p-1 text-emerald-400 hover:text-emerald-300 disabled:opacity-50 shrink-0"
+                  className="p-1 text-[var(--emerald-400)] hover:text-[var(--emerald-300)] disabled:opacity-50 shrink-0"
                 >
                   {nameSaving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
                 </button>
@@ -327,7 +351,7 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
                   type="button"
                   onClick={() => { setEditingName(false); setNameError(""); }}
                   disabled={nameSaving}
-                  className="p-1 text-gray-500 hover:text-white shrink-0"
+                  className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0"
                 >
                   <X size={13} />
                 </button>
@@ -337,27 +361,27 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
                 onClick={() => { setNameInput(account.displayName ?? ""); setNameError(""); setEditingName(true); }}
                 className="group flex items-center gap-1.5 max-w-full text-left"
               >
-                <p className="text-sm font-bold text-white leading-tight truncate">{localName}</p>
-                <Pencil size={11} className="text-gray-600 group-hover:text-gray-400 shrink-0" />
+                <p className="text-sm font-bold text-[var(--text-primary)] leading-tight truncate">{localName}</p>
+                <Pencil size={11} className="text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] shrink-0" />
               </button>
             )}
-            <p className="text-xs text-gray-500 leading-tight mt-0.5 truncate">
+            <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5 truncate">
               {account.institution}
               {originalName && localName !== originalName && (
-                <span className="text-gray-600"> · originally &quot;{originalName}&quot;</span>
+                <span className="text-[var(--text-muted)]"> · originally &quot;{originalName}&quot;</span>
               )}
             </p>
-            {nameError && <p className="text-xs text-red-400 leading-tight mt-0.5">{nameError}</p>}
+            {nameError && <p className="text-xs text-[var(--coral-400)] leading-tight mt-0.5">{nameError}</p>}
           </div>
           <div className="text-right shrink-0 mr-2">
-            <p className={`text-sm font-bold tabular-nums ${isDebt && account.balance > 0 ? "text-red-400" : "text-white"}`}>
+            <p className={`text-sm font-bold tabular-nums ${isDebt && account.balance > 0 ? "text-[var(--coral-400)]" : "text-[var(--text-primary)]"}`}>
               {isDebt && account.balance > 0 ? "−" : ""}{fmtCompact(account.balance)}
             </p>
-            <p className="text-xs text-gray-600 mt-0.5">balance</p>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">balance</p>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-800 rounded-xl transition-colors shrink-0"
+            className="p-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
           >
             <X size={16} />
           </button>
@@ -370,11 +394,16 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
               <button
                 key={t}
                 onClick={() => setActiveTab(t)}
-                className={`px-4 py-2 rounded-full text-xs font-semibold border transition-all capitalize ${
+                className={`px-4 py-2 rounded-[var(--radius-full)] text-xs font-semibold border transition-all capitalize ${
                   activeTab === t
-                    ? "bg-blue-600 border-blue-600 text-white"
-                    : "bg-transparent border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white"
+                    ? "text-[var(--meridian-400)]"
+                    : "bg-transparent border-[var(--border-hairline-strong)] text-[var(--text-muted)] hover:border-[var(--border-hairline-strong)] hover:text-[var(--text-primary)]"
                 }`}
+                style={
+                  activeTab === t
+                    ? { background: "rgba(59,130,246,.14)", borderColor: "rgba(125,168,255,.32)" }
+                    : undefined
+                }
               >
                 {t}
               </button>
@@ -386,13 +415,13 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
         {activeTab === "holdings" && isInvestment && (
           <div className="overflow-y-auto flex-1 px-5 py-4 space-y-1">
             {accountHoldings.length === 0 ? (
-              <p className="text-sm text-gray-500 text-center py-10">No positions found.</p>
+              <p className="text-sm text-[var(--text-muted)] text-center py-10">No positions found.</p>
             ) : (
               accountHoldings.map((h) => (
                 <button
                   key={h.id}
                   onClick={() => setChartHolding(h)}
-                  className="w-full flex items-center gap-3 py-3 border-b border-gray-800/60 last:border-0 hover:bg-gray-800/40 -mx-2 px-2 rounded-xl transition-colors touch-manipulation text-left"
+                  className="w-full flex items-center gap-3 py-3 border-b border-[var(--border-hairline)] last:border-0 hover:bg-[var(--surface-hover)] -mx-2 px-2 rounded-[var(--radius-sm)] transition-colors touch-manipulation text-left"
                 >
                   {/* Logo */}
                   <AssetLogo symbol={h.symbol} accountType={account.type} size={36} />
@@ -400,35 +429,35 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
                   {/* Name + symbol */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-semibold text-white leading-tight">{h.symbol}</p>
-                      <ExternalLink size={10} className="text-gray-600" />
+                      <p className="text-sm font-semibold text-[var(--text-primary)] leading-tight">{h.symbol}</p>
+                      <ExternalLink size={10} className="text-[var(--text-muted)]" />
                     </div>
-                    <p className="text-xs text-gray-500 leading-tight mt-0.5 truncate">{h.name}</p>
+                    <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5 truncate">{h.name}</p>
                   </div>
 
                   {/* Stats */}
                   <div className="flex items-center gap-4 shrink-0 text-right">
                     <div>
-                      <p className="text-[10px] text-gray-600 mb-0.5">Qty</p>
-                      <p className="text-xs font-semibold text-gray-300 tabular-nums">
+                      <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Qty</p>
+                      <p className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums">
                         {h.quantity % 1 === 0 ? h.quantity.toFixed(0) : h.quantity.toFixed(4)}
                       </p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-gray-600 mb-0.5">Price</p>
-                      <p className="text-xs font-semibold text-gray-300 tabular-nums">{fmtCompact(h.price)}</p>
+                      <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Price</p>
+                      <p className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums">{fmtCompact(h.price)}</p>
                     </div>
                     {h.change24h !== 0 && (
                       <div>
-                        <p className="text-[10px] text-gray-600 mb-0.5">24h</p>
-                        <p className={`text-xs font-semibold tabular-nums ${h.change24h >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                        <p className="text-[10px] text-[var(--text-muted)] mb-0.5">24h</p>
+                        <p className={`text-xs font-semibold tabular-nums ${h.change24h >= 0 ? "text-[var(--emerald-400)]" : "text-[var(--coral-400)]"}`}>
                           {h.change24h >= 0 ? "+" : ""}{h.change24h.toFixed(2)}%
                         </p>
                       </div>
                     )}
                     <div>
-                      <p className="text-[10px] text-gray-600 mb-0.5">Value</p>
-                      <p className="text-sm font-bold text-white tabular-nums">{fmtCompact(h.value)}</p>
+                      <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Value</p>
+                      <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums">{fmtCompact(h.value)}</p>
                     </div>
                   </div>
                 </button>
@@ -439,32 +468,41 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
 
         {/* ── TradingView chart overlay ── */}
         {chartHolding && (
-          <div className="fixed inset-0 z-[110] bg-gray-900 flex flex-col overflow-hidden">
+          <div
+            className="fixed inset-0 z-[110] flex flex-col overflow-hidden"
+            style={{ background: "var(--glass-thick)", backdropFilter: "blur(30px) saturate(160%)", WebkitBackdropFilter: "blur(30px) saturate(160%)" }}
+          >
             {/* Chart header */}
-            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800 shrink-0">
+            <div
+              className="flex items-center justify-between px-5 pt-5 pb-3 shrink-0"
+              style={{ borderBottom: "1px solid var(--border-hairline)" }}
+            >
               <div>
-                <p className="text-sm font-bold text-white">{chartHolding.symbol}</p>
-                <p className="text-xs text-gray-500 truncate max-w-[200px]">{chartHolding.name}</p>
+                <p className="text-sm font-bold text-[var(--text-primary)]">{chartHolding.symbol}</p>
+                <p className="text-xs text-[var(--text-muted)] truncate max-w-[200px]">{chartHolding.name}</p>
               </div>
               <button
                 onClick={() => setChartHolding(null)}
-                className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-800 rounded-xl transition-colors"
+                className="p-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors"
               >
                 <X size={16} />
               </button>
             </div>
 
             {/* Position summary row */}
-            <div className="grid grid-cols-4 divide-x divide-gray-800 border-b border-gray-800 shrink-0">
+            <div
+              className="grid grid-cols-4 divide-x divide-[var(--border-hairline)] shrink-0"
+              style={{ borderBottom: "1px solid var(--border-hairline)" }}
+            >
               {[
-                { label: "Value",  value: fmtUSD(chartHolding.value),  cls: "text-white" },
-                { label: "Price",  value: fmtUSD(chartHolding.price),  cls: "text-white" },
+                { label: "Value",  value: fmtUSD(chartHolding.value),  cls: "text-[var(--text-primary)]" },
+                { label: "Price",  value: fmtUSD(chartHolding.price),  cls: "text-[var(--text-primary)]" },
                 {
                   label: "Qty",
                   value: chartHolding.quantity % 1 === 0
                     ? chartHolding.quantity.toFixed(0)
                     : chartHolding.quantity.toFixed(4),
-                  cls: "text-white",
+                  cls: "text-[var(--text-primary)]",
                 },
                 {
                   label: "24h",
@@ -472,24 +510,27 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
                     ? `${chartHolding.change24h >= 0 ? "+" : ""}${chartHolding.change24h.toFixed(2)}%`
                     : "—",
                   cls: chartHolding.change24h > 0
-                    ? "text-emerald-400"
+                    ? "text-[var(--emerald-400)]"
                     : chartHolding.change24h < 0
-                      ? "text-red-400"
-                      : "text-gray-500",
+                      ? "text-[var(--coral-400)]"
+                      : "text-[var(--text-muted)]",
                 },
               ].map(({ label, value, cls }) => (
                 <div key={label} className="flex flex-col items-center justify-center py-3 px-2">
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">{label}</p>
+                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">{label}</p>
                   <p className={`text-sm font-bold tabular-nums ${cls}`}>{value}</p>
                 </div>
               ))}
             </div>
 
-            {/* TradingView iframe */}
+            {/* TradingView iframe — theme param tracks the app's own
+                Midnight/Light Glass mode (resolvedTheme) instead of a
+                hardcoded "dark", so the embedded widget doesn't clash with
+                Light Glass. */}
             <div className="flex-1 min-h-0">
               <iframe
-                key={chartHolding.symbol}
-                src={`https://www.tradingview.com/widgetembed/?symbol=${encodeURIComponent(toTVSymbol(chartHolding.symbol, account.type))}&interval=D&theme=dark&locale=en&style=1&hidesidetoolbar=0&withdateranges=1&saveimage=0&toolbarbg=1e2130`}
+                key={`${chartHolding.symbol}-${resolvedTheme}`}
+                src={`https://www.tradingview.com/widgetembed/?symbol=${encodeURIComponent(toTVSymbol(chartHolding.symbol, account.type))}&interval=D&theme=${resolvedTheme}&locale=en&style=1&hidesidetoolbar=0&withdateranges=1&saveimage=0&toolbarbg=${resolvedTheme === "light" ? "ffffff" : "1e2130"}`}
                 className="w-full h-full border-0"
                 allow="clipboard-write"
                 title={`${chartHolding.symbol} chart`}
@@ -498,12 +539,9 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
 
             {/* Back button */}
             <div className="px-5 pb-5 pt-2 shrink-0">
-              <button
-                onClick={() => setChartHolding(null)}
-                className="w-full py-3 rounded-2xl text-sm font-semibold text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 transition-colors"
-              >
+              <GlassButton tone="neutral" fullWidth onClick={() => setChartHolding(null)}>
                 ← Back to Holdings
-              </button>
+              </GlassButton>
             </div>
           </div>
         )}
@@ -512,18 +550,26 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
         {(activeTab === "transactions" || !isInvestment) && (
           <>
             {/* Filters */}
-            <div className="px-4 pt-2.5 pb-2 border-b border-gray-800 space-y-2 shrink-0">
+            <div
+              className="px-4 pt-2.5 pb-2 space-y-2 shrink-0"
+              style={{ borderBottom: "1px solid var(--border-hairline)" }}
+            >
               {/* Date presets */}
               <div className="flex gap-1.5 flex-wrap">
                 {(["7D", "1M", "3M", "6M", "1Y", "All"] as DatePreset[]).map((p) => (
                   <button
                     key={p}
                     onClick={() => { setDatePreset(p); resetPage(); }}
-                    className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-colors ${
+                    className={`text-xs font-semibold px-3 py-1.5 rounded-[var(--radius-full)] border transition-colors ${
                       datePreset === p
-                        ? "bg-blue-600 border-blue-500 text-white"
-                        : "bg-gray-900 border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white"
+                        ? "text-[var(--meridian-400)]"
+                        : "text-[var(--text-muted)] border-[var(--border-hairline-strong)] hover:border-[var(--border-hairline-strong)] hover:text-[var(--text-primary)]"
                     }`}
+                    style={
+                      datePreset === p
+                        ? { background: "rgba(59,130,246,.14)", borderColor: "rgba(125,168,255,.32)" }
+                        : { background: "transparent" }
+                    }
                   >
                     {p}
                   </button>
@@ -532,18 +578,19 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
 
               {/* Search */}
               <div className="relative">
-                <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+                <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
                 <input
                   type="text"
                   placeholder="Search merchant…"
                   value={search}
                   onChange={(e) => { setSearch(e.target.value); resetPage(); }}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-xl pl-7 pr-7 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                  className="w-full rounded-[var(--radius-sm)] pl-7 pr-7 py-1.5 text-xs text-[var(--text-primary)] focus:outline-none transition-colors"
+                  style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
                 />
                 {search && (
                   <button
                     onClick={() => { setSearch(""); resetPage(); }}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                   >
                     <X size={11} />
                   </button>
@@ -555,7 +602,8 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
                 <select
                   value={catFilter ?? ""}
                   onChange={(e) => { setCatFilter((e.target.value as TransactionCategory) || null); resetPage(); }}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors"
+                  className="w-full rounded-[var(--radius-sm)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none transition-colors"
+                  style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
                 >
                   <option value="">All categories</option>
                   {availableCategories.map((c) => (
@@ -565,44 +613,47 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
               )}
 
               {txs && (
-                <p className="text-xs text-gray-500">
-                  <span className="font-semibold text-white">{filtered.length}</span> transaction{filtered.length !== 1 ? "s" : ""}
+                <p className="text-xs text-[var(--text-muted)]">
+                  <span className="font-semibold text-[var(--text-primary)]">{filtered.length}</span> transaction{filtered.length !== 1 ? "s" : ""}
                 </p>
               )}
             </div>
 
             {/* Transaction list */}
-            <div className="overflow-y-auto flex-1 divide-y divide-gray-800/40 pt-1">
+            <div className="overflow-y-auto flex-1 divide-y divide-[var(--border-hairline)] pt-1">
               {!txs && !loadError && (
-                <div className="flex items-center justify-center py-12 gap-2 text-gray-500">
+                <div className="flex items-center justify-center py-12 gap-2 text-[var(--text-muted)]">
                   <Loader2 size={16} className="animate-spin" />
                   <span className="text-sm">Loading…</span>
                 </div>
               )}
               {loadError && (
-                <p className="text-sm text-red-400 text-center py-10">Failed to load transactions.</p>
+                <p className="text-sm text-[var(--coral-400)] text-center py-10">Failed to load transactions.</p>
               )}
               {txs && filtered.length === 0 && (
-                <p className="text-sm text-gray-500 text-center py-10">No transactions match your filters.</p>
+                <p className="text-sm text-[var(--text-muted)] text-center py-10">No transactions match your filters.</p>
               )}
               {txs && pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} isDebt={isDebt} />)}
             </div>
 
             {/* Pagination */}
             {totalPages > 1 && (
-              <div className="flex items-center justify-between px-5 py-3 border-t border-gray-800 shrink-0">
+              <div
+                className="flex items-center justify-between px-5 py-3 shrink-0"
+                style={{ borderTop: "1px solid var(--border-hairline)" }}
+              >
                 <button
                   onClick={() => setPage((p) => Math.max(0, p - 1))}
                   disabled={page === 0}
-                  className="flex items-center gap-1 text-xs font-semibold text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center gap-1 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 >
                   <ChevronLeft size={14} /> Prev
                 </button>
-                <span className="text-xs text-gray-500">{page + 1} / {totalPages}</span>
+                <span className="text-xs text-[var(--text-muted)]">{page + 1} / {totalPages}</span>
                 <button
                   onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
                   disabled={page === totalPages - 1}
-                  className="flex items-center gap-1 text-xs font-semibold text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center gap-1 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 >
                   Next <ChevronRight size={14} />
                 </button>
@@ -615,51 +666,50 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
         <div className="px-5 pb-5 pt-2 shrink-0 space-y-2">
           {/* Inline remove confirmation */}
           {confirmRemove ? (
-            <div className="rounded-2xl border border-red-500/30 bg-red-500/5 p-4 space-y-3">
-              <p className="text-sm font-semibold text-white">Remove this account?</p>
-              <p className="text-xs text-gray-400">
+            <div
+              className="rounded-[var(--radius-lg)] p-4 space-y-3"
+              style={{ background: "rgba(237,82,71,.06)", border: "1px solid rgba(237,82,71,.25)" }}
+            >
+              <p className="text-sm font-semibold text-[var(--text-primary)]">Remove this account?</p>
+              <p className="text-xs text-[var(--text-muted)]">
                 {account.institution === "Self-custodied"
-                  ? "This wallet will be removed from your workspace. No on-chain data is affected."
+                  ? "This wallet will be removed from your Space. No on-chain data is affected."
                   : "This account will be disconnected. Transaction history is preserved but the account won't refresh."}
               </p>
-              {removeError && <p className="text-xs text-red-400">{removeError}</p>}
+              {removeError && <p className="text-xs text-[var(--coral-400)]">{removeError}</p>}
               <div className="flex gap-2">
-                <button
+                <GlassButton
+                  tone="neutral"
+                  fullWidth
                   onClick={() => { setConfirmRemove(false); setRemoveError(""); }}
                   disabled={removing}
-                  className="flex-1 py-2 rounded-xl text-sm font-medium text-gray-400 border border-gray-700 hover:border-gray-500 hover:text-white transition-colors"
                 >
                   Cancel
-                </button>
-                <button
+                </GlassButton>
+                <GlassButton
+                  tone="danger"
+                  fullWidth
                   onClick={handleRemove}
                   disabled={removing}
-                  className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-semibold text-white bg-red-600 hover:bg-red-500 disabled:opacity-50 transition-colors"
                 >
                   {removing ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
                   {removing ? "Removing…" : "Yes, remove"}
-                </button>
+                </GlassButton>
               </div>
             </div>
           ) : (
             <div className="flex gap-2">
-              <button
-                onClick={onClose}
-                className="flex-1 py-3 rounded-2xl text-sm font-semibold text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 transition-colors"
-              >
+              <GlassButton tone="neutral" fullWidth size="md" onClick={onClose}>
                 Close
-              </button>
-              <button
-                onClick={() => setConfirmRemove(true)}
-                className="flex items-center gap-1.5 px-4 py-3 rounded-2xl text-sm font-semibold text-red-400 hover:text-white hover:bg-red-500/15 border border-red-500/20 hover:border-red-500/40 transition-colors"
-              >
+              </GlassButton>
+              <GlassButton tone="danger" size="md" onClick={() => setConfirmRemove(true)}>
                 <Trash2 size={14} />
                 Remove
-              </button>
+              </GlassButton>
             </div>
           )}
         </div>
-      </div>
+      </GlassPanel>
     </div>
   );
 }
@@ -679,13 +729,13 @@ function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
   const secondaryLabel = tx.description && tx.description !== tx.merchant ? tx.description : null;
 
   return (
-    <div className="flex items-center gap-3 px-5 py-3 hover:bg-gray-800/40 transition-colors">
+    <div className="flex items-center gap-3 px-5 py-3 hover:bg-[var(--surface-hover)] transition-colors">
       {/* Date */}
       <div className="w-9 shrink-0 text-center">
-        <p className="text-xs font-semibold text-gray-300 leading-none">
+        <p className="text-xs font-semibold text-[var(--text-secondary)] leading-none">
           {dateObj.toLocaleDateString("en-US", { day: "numeric" })}
         </p>
-        <p className="text-xs text-gray-600 mt-0.5">
+        <p className="text-xs text-[var(--text-muted)] mt-0.5">
           {dateObj.toLocaleDateString("en-US", { month: "short" })}
         </p>
       </div>
@@ -693,7 +743,7 @@ function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
       {/* Description */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <p className="text-sm font-semibold text-white truncate leading-tight">{primaryLabel}</p>
+          <p className="text-sm font-semibold text-[var(--text-primary)] truncate leading-tight">{primaryLabel}</p>
           {tx.pending && (
             <span className="text-xs bg-yellow-500/15 text-yellow-400 px-1.5 py-0.5 rounded-full shrink-0">
               Pending
@@ -703,7 +753,7 @@ function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
         <div className="flex items-center gap-2 mt-0.5">
           <span className={`text-xs px-1.5 py-0.5 rounded-full ${catCls}`}>{tx.category}</span>
           {secondaryLabel && (
-            <span className="text-xs text-gray-600 truncate">{secondaryLabel}</span>
+            <span className="text-xs text-[var(--text-muted)] truncate">{secondaryLabel}</span>
           )}
         </div>
       </div>
@@ -712,8 +762,8 @@ function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
       <div className="shrink-0 text-right">
         <p className={`text-sm font-bold tabular-nums ${
           isInvestmentTx
-            ? tx.amount < 0 ? "text-red-400" : "text-emerald-400"
-            : isCredit ? "text-emerald-400" : "text-white"
+            ? tx.amount < 0 ? "text-[var(--coral-400)]" : "text-[var(--emerald-400)]"
+            : isCredit ? "text-[var(--emerald-400)]" : "text-[var(--text-primary)]"
         }`}>
           {isCredit ? "+" : "−"}{fmtUSD(tx.amount)}
         </p>

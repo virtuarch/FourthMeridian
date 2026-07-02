@@ -29,7 +29,8 @@ import {
 import { useRouter } from "next/navigation";
 
 interface PlaidContextValue {
-  openLink:        (onDone?: () => void) => void;
+  /** plaidItemId (optional): D2-7E reconnect — opens Link in update mode for that item. */
+  openLink:        (onDone?: () => void, plaidItemId?: string) => void;
   isLoading:       boolean;
   error:           string;
   cancelled:       boolean;
@@ -162,13 +163,16 @@ export function PlaidProvider({ children }: { children: React.ReactNode }) {
     if (linkToken && ready) open();
   }, [linkToken, ready, open]);
 
-  const openLink = useCallback(async (onDone?: () => void) => {
+  const openLink = useCallback(async (onDone?: () => void, plaidItemId?: string) => {
     setError("");
     setCancelled(false);
     setFetching(true);
     onDoneRef.current = onDone;
     try {
-      const res  = await fetch("/api/plaid/link-token");
+      const url  = plaidItemId
+        ? `/api/plaid/link-token?plaidItemId=${encodeURIComponent(plaidItemId)}`
+        : "/api/plaid/link-token";
+      const res  = await fetch(url);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Could not start Plaid Link.");
       // Store in sessionStorage so /plaid-oauth-return can re-initialise Link

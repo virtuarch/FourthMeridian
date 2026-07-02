@@ -124,7 +124,7 @@ function SetupModal({ onClose, onEnabled, enforced = false }: { onClose: () => v
                   <div>
                     <p className="text-xs font-semibold text-amber-400">Two-factor authentication is required</p>
                     <p className="text-xs text-gray-400 mt-0.5">
-                      Your organization requires 2FA. Set it up now to continue using FinTracker.
+                      Your organization requires 2FA. Set it up now to continue using Fourth Meridian.
                     </p>
                   </div>
                 </div>
@@ -540,7 +540,7 @@ export function TotpSection() {
           <div>
             <p className="text-xs font-semibold text-amber-400">Two-factor authentication required</p>
             <p className="text-xs text-gray-400 mt-0.5">
-              Your account requires 2FA before you can access FinTracker. Click &quot;Enable 2FA&quot; to set it up.
+              Your account requires 2FA before you can access Fourth Meridian. Click &quot;Enable 2FA&quot; to set it up.
             </p>
           </div>
         </div>

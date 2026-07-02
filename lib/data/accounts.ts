@@ -4,36 +4,65 @@
  * Server-only. All functions query Prisma and return plain serialisable objects
  * (no Date instances) so they can be passed safely from Server → Client components.
  *
- * getAccounts() now queries via WorkspaceAccountShare → FinancialAccount.
- * getHoldings() still queries the legacy Account → Holding path until Holding
- * FKs are migrated to AccountConnection in a future milestone.
+ * getAccounts() queries via SpaceAccountLink → FinancialAccount (D3 Step 4C
+ * read cutover — see docs/initiatives/d3/D3_STEP4C_CORE_DASHBOARD_REVIEW.md). Visibility is
+ * status: ACTIVE on the link, same as the WorkspaceAccountShare query this
+ * replaced; `kind` (HOME vs SHARED) is not filtered on — both confer
+ * visibility, only ownership semantics differ, and only after the D3 Step 3
+ * HOME Semantics Correction (docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md) is
+ * the link set here guaranteed to agree with WorkspaceAccountShare's.
+ * getHoldings() reads both Holding anchors during the D11 migration: legacy
+ * rows still pointing at Account (spaceId direct), and current/new rows
+ * pointing at FinancialAccount (visibility via SpaceAccountLink, same join
+ * getAccounts() uses). Output is normalized back to a single `accountId`
+ * field so existing UI call sites need no changes.
  */
 
 import { db } from "@/lib/db";
-import { getWorkspaceContext } from "@/lib/workspace";
+import { getSpaceContext } from "@/lib/space";
 import { Account, Holding } from "@/types";
-import { ShareStatus } from "@prisma/client";
+import { ShareStatus, PlaidItemStatus } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
 
 /**
- * All accounts visible to the current workspace, via WorkspaceAccountShare.
+ * All accounts visible to the current space, via SpaceAccountLink.
  *
- * Pass `ctx` when the caller has already resolved workspace context for this
+ * Pass `ctx` when the caller has already resolved space context for this
  * request (e.g. the dashboard page resolves it once and fans it out to all
- * its data helpers) to avoid a redundant getWorkspaceContext() call. Falls
+ * its data helpers) to avoid a redundant getSpaceContext() call. Falls
  * back to resolving it internally (now cached per-request via React's
  * cache()) when called standalone, so existing callers keep working.
  */
-export async function getAccounts(ctx?: { workspaceId: string }): Promise<Account[]> {
-  const { workspaceId } = ctx ?? (await getWorkspaceContext());
+export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]> {
+  const { spaceId } = ctx ?? (await getSpaceContext());
+  // D2-7E — current user, for the reconnect-badge ownership check below.
+  // getSpaceContext() is cache()-memoized per request, so this costs nothing
+  // extra even when the caller already passed a resolved `ctx`.
+  const { userId } = await getSpaceContext();
 
-  const shares = await db.workspaceAccountShare.findMany({
+  const links = await db.spaceAccountLink.findMany({
     where: {
-      workspaceId,
+      spaceId,
       status:           ShareStatus.ACTIVE,
       financialAccount: { deletedAt: null },
     },
-    include: { financialAccount: { include: { debtProfile: true } } },
+    include: {
+      financialAccount: {
+        include: {
+          debtProfile: true,
+          // D2-7E — only enough to compute needsReauth/plaidItemId below.
+          // No other change to this query.
+          connections: {
+            where:  { deletedAt: null, plaidItemDbId: { not: null } },
+            select: {
+              connectedByUserId: true,
+              plaidItemDbId:     true,
+              plaidItem:         { select: { status: true } },
+            },
+          },
+        },
+      },
+    },
     orderBy: [
       { financialAccount: { type: "asc" } },
       { financialAccount: { name: "asc" } },
@@ -41,8 +70,17 @@ export async function getAccounts(ctx?: { workspaceId: string }): Promise<Accoun
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return shares.map(({ financialAccount: r }: any) => {
+  return links.map(({ financialAccount: r }: any) => {
     const profile = r.debtProfile ?? null;
+
+    // D2-7E — reconnect badge. Only true for the connection *this* user made
+    // themselves (AccountConnection.connectedByUserId), never for a Space
+    // member viewing an account shared by someone else — a joint account can
+    // have one healthy connection and one broken one.
+    const reauthConnection = (r.connections ?? []).find(
+      (c: { connectedByUserId: string; plaidItem: { status: PlaidItemStatus } | null }) =>
+        c.connectedByUserId === userId && c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH
+    );
 
     // Effective APR/minimum payment: DebtProfile (new, richer source) takes
     // precedence over the legacy flat columns when present.
@@ -89,27 +127,50 @@ export async function getAccounts(ctx?: { workspaceId: string }): Promise<Accoun
       walletChain:   r.walletChain   as Account["walletChain"] ?? undefined,
       nativeBalance: r.nativeBalance ?? undefined,
       syncStatus:    r.syncStatus    as Account["syncStatus"]  ?? undefined,
+      needsReauth:   !!reauthConnection,
+      plaidItemId:   reauthConnection?.plaidItemDbId ?? undefined,
     };
   });
 }
 
 /**
  * All holdings across all investment accounts.
- * Still queries via the legacy Account → Holding path until Holding FKs are
- * moved to AccountConnection in a future milestone.
+ *
+ * D11: Holding now has two possible anchors — legacy Account (accountId) and
+ * FinancialAccount (financialAccountId) — while the migration is in
+ * progress. Queried separately because each anchor resolves space visibility
+ * differently (Account.spaceId is direct; FinancialAccount visibility goes
+ * through an active SpaceAccountLink, mirroring getAccounts() above), then
+ * merged. A given row only ever has one of the two FKs set, so there's no
+ * double-counting. Once every Holding is confirmed migrated off Account,
+ * the legacy branch can be deleted — not done here (additive-only for D11).
  */
-export async function getHoldings(ctx?: { workspaceId: string }): Promise<Holding[]> {
-  const { workspaceId } = ctx ?? (await getWorkspaceContext());
+export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]> {
+  const { spaceId } = ctx ?? (await getSpaceContext());
 
-  const rows = await db.holding.findMany({
-    where: { account: { workspaceId } },
-    orderBy: { value: "desc" },
-  });
+  const [legacyRows, financialAccountRows] = await Promise.all([
+    db.holding.findMany({
+      where: { accountId: { not: null }, account: { spaceId } },
+    }),
+    db.holding.findMany({
+      where: {
+        financialAccountId: { not: null },
+        financialAccount: {
+          deletedAt: null,
+          spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } },
+        },
+      },
+    }),
+  ]);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rows.map((r: any) => ({
+  const rows = [...legacyRows, ...financialAccountRows].sort((a, b) => b.value - a.value);
+
+  return rows.map((r) => ({
     id:        r.id,
-    accountId: r.accountId,
+    // Exactly one of accountId/financialAccountId is set per row — normalize
+    // to a single field so downstream UI (which matches holdings to accounts
+    // by this id) needs no changes.
+    accountId: (r.accountId ?? r.financialAccountId) as string,
     symbol:    r.symbol,
     name:      r.name,
     quantity:  r.quantity,
@@ -122,10 +183,10 @@ export async function getHoldings(ctx?: { workspaceId: string }): Promise<Holdin
 
 /**
  * Latest credit score for the current user.
- * CreditScore is user-owned (not workspace-owned) since it is personal identity data.
+ * CreditScore is user-owned (not space-owned) since it is personal identity data.
  */
 export async function getFicoData(ctx?: { userId: string }): Promise<{ score: number | null; updatedAt: string | null }> {
-  const { userId } = ctx ?? (await getWorkspaceContext());
+  const { userId } = ctx ?? (await getSpaceContext());
 
   const row = await db.creditScore.findFirst({
     where:   { userId },

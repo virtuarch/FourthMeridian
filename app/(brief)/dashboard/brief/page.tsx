@@ -9,7 +9,7 @@ import { Suspense }          from "react";
 import { DailyBriefClient } from "@/components/brief/DailyBriefClient";
 
 export const metadata = {
-  title: "Daily Brief · FinTracker",
+  title: "Daily Brief · Fourth Meridian",
 };
 
 function BriefFallback() {

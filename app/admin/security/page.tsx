@@ -634,7 +634,7 @@ export default function AdminSecurityPage() {
             </div>
 
             {([
-              { key: "require_totp_admins"     as const, label: "Require TOTP for all Admins", desc: "Any ADMIN workspace role must have 2FA enabled." },
+              { key: "require_totp_admins"     as const, label: "Require TOTP for all Admins", desc: "Any ADMIN Space role must have 2FA enabled." },
               { key: "require_totp_all_users"  as const, label: "Require TOTP for all users",  desc: "All users must set up 2FA before accessing the dashboard." },
               { key: "recovery_codes_enabled"  as const, label: "Recovery codes enabled",       desc: "Users can generate one-time backup codes as a 2FA fallback." },
             ]).map(({ key, label, desc }) => (

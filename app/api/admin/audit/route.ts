@@ -8,7 +8,7 @@
  *   userEmail    – exact or partial email filter
  *   username     – exact or partial username filter
  *   action       – exact action string (e.g. "LOGIN_FAILED")
- *   workspaceId  – filter by workspace id
+ *   spaceId  – filter by space id
  *   from         – ISO date string (inclusive start)
  *   to           – ISO date string (inclusive end, padded to end of day)
  *   securityOnly – "true" → only auth/2FA/session/password events
@@ -42,7 +42,7 @@ export const GET = withApiHandler(async (req: NextRequest) => {
   const userEmail    = p.get("userEmail")?.trim()    || undefined;
   const username     = p.get("username")?.trim()     || undefined;
   const action       = p.get("action")?.trim()       || undefined;
-  const workspaceId  = p.get("workspaceId")?.trim()  || undefined;
+  const spaceId  = p.get("spaceId")?.trim()  || undefined;
   const from         = p.get("from")                 || undefined;
   const to           = p.get("to")                   || undefined;
   const securityOnly = p.get("securityOnly") === "true";
@@ -55,8 +55,8 @@ export const GET = withApiHandler(async (req: NextRequest) => {
   // Exact action match
   if (action) where.action = action;
 
-  // Workspace
-  if (workspaceId) where.workspaceId = workspaceId;
+  // Space
+  if (spaceId) where.spaceId = spaceId;
 
   // Date range
   if (from || to) {
@@ -120,7 +120,7 @@ export const GET = withApiHandler(async (req: NextRequest) => {
         id:                 true,
         action:             true,
         userId:             true,
-        workspaceId:        true,
+        spaceId:        true,
         metadata:           true,
         ipAddress:          true,
         userAgent:          true,
@@ -129,7 +129,7 @@ export const GET = withApiHandler(async (req: NextRequest) => {
         user: {
           select: { email: true, username: true, name: true, firstName: true, lastName: true, role: true },
         },
-        workspace: {
+        space: {
           select: { name: true },
         },
       },

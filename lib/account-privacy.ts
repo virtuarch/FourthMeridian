@@ -5,7 +5,7 @@
  * API-response level.
  *
  * BALANCE_ONLY
- *   The sharing user has chosen to expose only a balance total to workspace
+ *   The sharing user has chosen to expose only a balance total to space
  *   members.  No identifying information must leak:
  *     - real account name (user-set or institution-derived)
  *     - institution name
@@ -27,6 +27,7 @@
  */
 
 import "server-only";
+import { possessive } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -152,7 +153,7 @@ export function genericAccountName({ type, debtSubtype, ownerFirstName }: Accoun
       base = "Other Account";
   }
 
-  return ownerFirstName ? `${ownerFirstName}'s ${base}` : base;
+  return ownerFirstName ? `${possessive(ownerFirstName)} ${base}` : base;
 }
 
 // ── Single-account sanitizer ──────────────────────────────────────────────────
@@ -195,7 +196,7 @@ export function sanitizeForBalanceOnly(
 
 /**
  * Converts a raw list of WorkspaceAccountShare rows into a normalised account
- * array safe for every workspace widget to consume.
+ * array safe for every space widget to consume.
  *
  * Rules:
  *  - FULL shares pass through as individual records with all fields intact.
@@ -284,7 +285,7 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
   const aggregatedRows: NormalizedAccount[] = [];
   for (const [key, g] of groups) {
     const displayBase = g.count > 1 ? pluralizeBase(g.baseLabel) : g.baseLabel;
-    const displayName = g.ownerFirstName ? `${g.ownerFirstName}'s ${displayBase}` : displayBase;
+    const displayName = g.ownerFirstName ? `${possessive(g.ownerFirstName)} ${displayBase}` : displayBase;
 
     aggregatedRows.push({
       id:          `balance-only:${key}`,

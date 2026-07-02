@@ -3,14 +3,14 @@
  * Creates a new CreditScore record for the current user.
  * Body: { score: number, source?: string }
  *
- * CreditScore is user-scoped (not workspace-scoped) because it is personal
+ * CreditScore is user-scoped (not space-scoped) because it is personal
  * identity data. Each call appends a new time-series row — scores are never
  * mutated in place.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getWorkspaceContext } from "@/lib/workspace";
+import { getSpaceContext } from "@/lib/space";
 
 export async function PATCH(req: NextRequest) {
   try {
@@ -20,7 +20,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "Score must be 300–850" }, { status: 400 });
     }
 
-    const { userId } = await getWorkspaceContext();
+    const { userId } = await getSpaceContext();
 
     const record = await db.creditScore.create({
       data: { userId, score, source },

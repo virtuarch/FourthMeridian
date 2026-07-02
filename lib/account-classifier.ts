@@ -21,10 +21,10 @@
  * ── Usage ─────────────────────────────────────────────────────────────────────
  *   import { classifyAccounts } from "@/lib/account-classifier";
  *
- *   // Works with Account[], WorkspaceAccount[], or any superset:
+ *   // Works with Account[], SpaceAccount[], or any superset:
  *   const c = classifyAccounts(accounts);
  *   c.netWorth           // total assets - total liabilities
- *   c.liabilities        // Account[] (or WorkspaceAccount[]) for debt accounts
+ *   c.liabilities        // Account[] (or SpaceAccount[]) for debt accounts
  *   c.totalInvestments   // pre-summed investment balances
  * ──────────────────────────────────────────────────────────────────────────────
  */
@@ -34,14 +34,14 @@
 /**
  * Minimum account fields required for classification.
  * Structurally compatible with both Account (types/index.ts) and
- * WorkspaceAccount (WorkspaceDashboard.tsx local type).
+ * SpaceAccount (SpaceDashboard.tsx local type).
  */
 export interface ClassifiableAccount {
   type:        string;
   balance:     number;
   /**
    * Optional — only present on Account (personal dashboard).
-   * WorkspaceAccount does not carry this field, so it will be undefined.
+   * SpaceAccount does not carry this field, so it will be undefined.
    * The classifier treats ALL type='other' accounts as realAssets regardless
    * of syncStatus, since 'other' has no other semantic meaning in the current schema.
    */
@@ -53,7 +53,7 @@ export interface ClassifiableAccount {
 /**
  * Full classification result.
  * T is inferred from the input array type so bucket arrays preserve the
- * original account shape (Account[], WorkspaceAccount[], etc.).
+ * original account shape (Account[], SpaceAccount[], etc.).
  */
 export interface AccountClassification<T extends ClassifiableAccount = ClassifiableAccount> {
   // ── Classified buckets ──────────────────────────────────────────────────────

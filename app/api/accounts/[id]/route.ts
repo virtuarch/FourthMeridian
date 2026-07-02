@@ -23,6 +23,7 @@ import { ShareStatus } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -126,9 +127,6 @@ export const DELETE = withApiHandler(async (
           where: { deletedAt: null },
           include: { plaidItem: true },
         },
-        workspaceShares: {
-          where: { status: ShareStatus.ACTIVE },
-        },
       },
     });
 
@@ -136,33 +134,61 @@ export const DELETE = withApiHandler(async (
       return NextResponse.json({ error: "Account not found" }, { status: 404 });
     }
 
-    // Verify the session user has an active share for this account (owns it or added it)
-    const userShare = fa.workspaceShares.find(
-      (s) => s.addedByUserId === user.id
-    );
-    if (!userShare) {
+    // D3 Stage A — authorization read on SpaceAccountLink.
+    const userLink = await db.spaceAccountLink.findFirst({
+      where: {
+        financialAccountId: id,
+        addedByUserId:      user.id,
+        status:             ShareStatus.ACTIVE,
+      },
+      select: { spaceId: true },
+    });
+    if (!userLink) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const now = new Date();
 
-    // ── 1. Soft-delete the FinancialAccount ───────────────────────────────────
-    await db.financialAccount.update({
-      where: { id },
-      data:  { deletedAt: now },
+    // ── KD-4 Phase 3 — soft-delete + connection close + SAL revoke commit
+    //    atomically. The affected-space capture (a read of ACTIVE links, needed
+    //    by snapshot regen below) runs inside the transaction, before the
+    //    revoke, so it observes pre-revocation state; its result is returned for
+    //    use outside. Snapshot regen and the Plaid disconnect stay OUTSIDE.
+    const activeLinks = await db.$transaction(async (tx) => {
+      // 1. Soft-delete the FinancialAccount
+      await tx.financialAccount.update({
+        where: { id },
+        data:  { deletedAt: now },
+      });
+      // 2. Soft-delete all AccountConnections
+      await tx.accountConnection.updateMany({
+        where: { financialAccountId: id, deletedAt: null },
+        data:  { deletedAt: now },
+      });
+      // 3. Capture active links (for snapshot regen), then revoke them
+      const links = await tx.spaceAccountLink.findMany({
+        where:  { financialAccountId: id, status: ShareStatus.ACTIVE },
+        select: { spaceId: true },
+      });
+      await tx.spaceAccountLink.updateMany({
+        where: { financialAccountId: id, status: ShareStatus.ACTIVE },
+        data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: user.id },
+      });
+      return links;
     });
 
-    // ── 2. Soft-delete all AccountConnections ─────────────────────────────────
-    await db.accountConnection.updateMany({
-      where: { financialAccountId: id, deletedAt: null },
-      data:  { deletedAt: now },
-    });
-
-    // ── 3. Revoke all active WorkspaceAccountShare rows ───────────────────────
-    await db.workspaceAccountShare.updateMany({
-      where: { financialAccountId: id, status: ShareStatus.ACTIVE },
-      data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: user.id },
-    });
+    // ── 3a. Regenerate SpaceSnapshot for every space this account was active
+    //       in — captured above before revocation. Best-effort/non-fatal: a
+    //       snapshot regen failure must never block the archive itself. See
+    //       docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
+    const affectedSpaceIds = [...new Set(activeLinks.map((l) => l.spaceId))];
+    for (const spaceId of affectedSpaceIds) {
+      try {
+        await regenerateSpaceSnapshot(spaceId);
+      } catch (snapshotErr) {
+        console.warn(`[DELETE /api/accounts/:id] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
+      }
+    }
 
     // ── 4. If this was a Plaid account, check whether we should revoke the item ──
     //    (see lib/plaid/disconnect.ts — extracted seam for future provider-agnostic
@@ -179,7 +205,7 @@ export const DELETE = withApiHandler(async (
     await db.auditLog.create({
       data: {
         userId:      user.id,
-        workspaceId: userShare.workspaceId,
+        spaceId: userLink.spaceId,
         action:      "ACCOUNT_REMOVE",
         metadata:    { accountName: fa.name, accountType: fa.type },
         ipAddress:   getClientIp(req),

@@ -19,6 +19,7 @@ import { NextRequest, NextResponse }   from "next/server";
 import { db }                          from "@/lib/db";
 import { requireUser }                 from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { dualDeleteSpaceAccountLinks } from "@/lib/accounts/space-account-link";
 
 export const DELETE = withApiHandler(async (
   req: NextRequest,
@@ -67,9 +68,15 @@ export const DELETE = withApiHandler(async (
   });
 
   // ── Hard delete in FK-safe order ──────────────────────────────────────────
-  await db.workspaceAccountShare.deleteMany({ where: { financialAccountId: id } });
-  await db.accountConnection.deleteMany({ where: { financialAccountId: id } });
-  await db.financialAccount.delete({ where: { id } });
+  // D3 Stage B4 — SpaceAccountLink is the sole target; WorkspaceAccountShare
+  // write retired here.
+  // KD-4 Phase 3 — the three deletes commit atomically. The audit row above is
+  // written before deletion (to retain the name) and stays OUTSIDE.
+  await db.$transaction(async (tx) => {
+    await dualDeleteSpaceAccountLinks(id, tx);
+    await tx.accountConnection.deleteMany({ where: { financialAccountId: id } });
+    await tx.financialAccount.delete({ where: { id } });
+  });
 
   return NextResponse.json({ ok: true, accountId: id });
 }, "DELETE /api/accounts/manual/[id]/permanent");

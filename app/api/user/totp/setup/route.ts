@@ -19,7 +19,7 @@
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { encrypt } from "@/lib/plaid/encryption";
+import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { AuditAction } from "@/lib/audit-actions";
 import { generateSecret, otpauthUri } from "@/lib/totp";
 import QRCode from "qrcode";
@@ -45,7 +45,7 @@ export async function POST() {
 
   // Generate fresh 160-bit secret and the otpauth:// URI for the QR code
   const secret     = generateSecret(20);
-  const encrypted  = encrypt(secret);
+  const encrypted  = encryptWithPurpose(secret, EncryptionPurpose.TOTP_SECRET);
   const otpauthUrl = otpauthUri(dbUser.email, secret);
 
   // Generate QR code as a base64 data URL (rendered in <img> by the client)

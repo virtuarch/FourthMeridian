@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, Building2, ScrollText, ShieldAlert } from "lucide-react";
+import { LayoutDashboard, Users, Building2, Plug, ScrollText, ShieldAlert } from "lucide-react";
 
 const NAV = [
   { label: "Overview",   href: "/admin",           icon: LayoutDashboard },
   { label: "Users",      href: "/admin/users",      icon: Users           },
-  { label: "Workspaces", href: "/admin/workspaces", icon: Building2       },
+  { label: "Spaces",     href: "/admin/spaces", icon: Building2       },
+  { label: "Providers",  href: "/admin/providers",  icon: Plug            },
   { label: "Audit Log",  href: "/admin/audit",      icon: ScrollText      },
   { label: "Security",   href: "/admin/security",   icon: ShieldAlert     },
 ];

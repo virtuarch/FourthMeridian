@@ -7,7 +7,7 @@
  * Previously this trigger + modal were duplicated in the Banking and
  * Investments tab headers — moved here since account removal is account
  * management, not a banking- or investment-specific action. `accounts` is
- * the full cross-type list (Plaid, manual, wallet — anything the workspace
+ * the full cross-type list (Plaid, manual, wallet — anything the space
  * shares to the current user via WorkspaceAccountShare), same shape
  * RemoveAccountModal already expected.
  */

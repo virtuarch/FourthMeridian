@@ -1,7 +1,11 @@
 # Fourth Meridian — Product Language & Naming Guide
 
 **Status:** v2.0.2 draft — product language & rebrand prep
-**Scope:** This document defines the vocabulary, naming hierarchy, and voice for Fourth Meridian. It is a planning artifact for the FinTracker → Fourth Meridian bridge. It does not require any code or schema changes.
+**Scope:** This document defines the vocabulary, naming hierarchy, and voice for Fourth Meridian. It is a planning artifact for the FinTracker → Fourth Meridian bridge.
+
+**Update (Phase 1, post-v2.1.0):** the Prisma model/client layer has since been renamed to match this guide (`Workspace`→`Space`, `WorkspaceMember`→`SpaceMember`, `WorkspaceSnapshot`→`SpaceSnapshot`, etc.) via `@@map`/`@map` — a zero-DDL rename, so physical Postgres table/column names are untouched and no migration risk was introduced. `WorkspaceAccountShare` (model, accessor, and its own `workspaceId` field) was deliberately left unrenamed for compatibility and is out of scope until a future, separately-approved migration. §3 below has been updated to reflect this current state.
+
+**Update (naming cleanup pass, post-v2.1.0):** the earlier "Module" framing below has been superseded. FinTracker is no longer described as a cross-cutting module layered on every Space — it is the **default Space Template**: the built-in preset used when a user creates a general-purpose finance Space. Fourth Meridian is the product; FinTracker is one built-in template among others (TaxFlow, Heritage, Crypto, future templates). AI is not a Space Template — it's a platform-level capability that surfaces briefings across whichever Spaces a user has, independent of template. The app/package name has also been renamed from `fintracker` to `fourth-meridian` in this pass (see §3, §8).
 
 ---
 
@@ -10,21 +14,22 @@
 ```
 Fourth Meridian                    the platform
 └── Spaces                         the organizing primitive
-    ├── FinTracker (module)        day-to-day finance tracking
-    ├── TaxFlow (module)           tax planning & prep
-    ├── Heritage (module)          estate / legacy planning
-    ├── Crypto (module)            digital asset tracking
-    ├── AI (module)                ambient advice & briefings
-    └── future modules
+    ├── FinTracker (template)      day-to-day finance tracking — the default template
+    ├── TaxFlow (template)         tax planning & prep
+    ├── Heritage (template)        estate / legacy planning
+    ├── Crypto (template)          digital asset tracking
+    └── future templates
+
+AI                                  platform-level briefings & advice — not a Space Template
 ```
 
 Three nouns carry the entire system. Everything else is a variation on one of them:
 
 * **Fourth Meridian** — the platform. Never a feature, never plural.
 * **Space** — the organizing container for a person's, household's, or entity's financial life. A user can have several.
-* **Module** — a lens or capability applied inside a Space. FinTracker is the first module, not a synonym for the product.
+* **Space Template** — a preset that shapes what a Space tracks and how it's organized at creation. FinTracker is the default template, not a synonym for the product.
 
-A simple test for any new term: does it describe the *platform*, a *container of financial context*, or a *lens on that context*? If it doesn't fit one of those three, it probably doesn't belong in the top-level vocabulary.
+A simple test for any new term: does it describe the *platform*, a *container of financial context*, or a *preset shape for that context*? If it doesn't fit one of those three, it probably doesn't belong in the top-level vocabulary.
 
 ---
 
@@ -33,11 +38,12 @@ A simple test for any new term: does it describe the *platform*, a *container of
 | Term | Definition | Notes |
 |---|---|---|
 | **Fourth Meridian** | The overall product/platform name. | Always full name on first reference in any document; "the platform" is an acceptable short form in running text. |
-| **Space** | A financial, household, or planning context that holds accounts, assets, debts, goals, members, and history. The thing users create and live inside. | User-facing term only (see §3 — `Workspace` stays in code). |
-| **Module** | A capability or lens applied within a Space (FinTracker, TaxFlow, Heritage, Crypto, AI). | Modules read from the same Space data; they are views/tools, not separate data silos. |
-| **FinTracker** | The day-to-day finance tracking module: balances, holdings, transactions, snapshots, manual refresh. | The original product, now scoped down to one module. |
+| **Space** | A financial, household, or planning context that holds accounts, assets, debts, goals, members, and history. The thing users create and live inside. | Also the live Prisma model name as of Phase 1 (see §3). |
+| **Space Template** | A preset/blueprint applied when creating a Space (FinTracker, TaxFlow, Heritage, Crypto). | Replaces the earlier "Module" framing — see Phase-1-cleanup update above. Templates shape a Space at creation; they are not separate cross-cutting lenses applied to every Space at once. |
+| **FinTracker** | The default Space Template: day-to-day finance tracking — balances, holdings, transactions, snapshots, manual refresh. | The original product, now the default built-in template. |
+| **AI** | Ambient briefings and suggestions generated from a Space's context. | Platform-level capability, not a Space Template — surfaced via Daily Brief, independent of which template(s) a user's Spaces use. |
 | **Account** | A linked or manual financial account inside a Space (bank, brokerage, crypto, manual asset/debt). | Unchanged. |
-| **Snapshot** | A point-in-time aggregate of a Space's financial position. | Unchanged in meaning; `WorkspaceSnapshot` stays as the model name. |
+| **Snapshot** | A point-in-time aggregate of a Space's financial position. | Unchanged in meaning; the model is now named `SpaceSnapshot` (renamed from `WorkspaceSnapshot` in Phase 1, via `@@map` — no DDL). |
 | **Member** | A person with access to a Space. | Replaces "workspace member" in user-facing copy. |
 | **Briefing** | An AI-generated summary or set of suggestions surfaced ambiently (not a chat window). | New term — see §5, AI voice. |
 
@@ -45,26 +51,29 @@ A simple test for any new term: does it describe the *platform*, a *container of
 
 ## 3. Old Term → New Term Mapping
 
-This is the bridge table: what changes in **user-facing copy** now, and what is explicitly **frozen in code** until a controlled migration (see project constraints).
+This is the bridge table: what changed in **user-facing copy**, and what changed (or deliberately didn't) at the **Prisma/code** layer. As of Phase 1, the Prisma model/client layer was renamed alongside the copy — via `@@map`/`@map`, so physical Postgres table/column names are untouched and no DB migration was required.
 
 | Old / current | New (UI copy) | Code / schema | Status |
 |---|---|---|---|
-| Workspace | Space | `Workspace` model unchanged | UI copy only, no migration yet |
-| Workspace member | Member (of a Space) | `WorkspaceMember` unchanged | UI copy only |
-| WorkspaceSnapshot | Snapshot | `WorkspaceSnapshot` unchanged | UI copy only |
-| FinTracker (as the whole app) | Fourth Meridian (platform) / FinTracker (module) | App/package name unchanged for now | Product language only |
+| Workspace | Space | `Workspace` model renamed to `Space` (`@@map`, no DDL) | Done — Phase 1 |
+| Workspace member | Member (of a Space) | `WorkspaceMember` renamed to `SpaceMember` (`@@map`, no DDL) | Done — Phase 1 |
+| WorkspaceSnapshot | Snapshot | `WorkspaceSnapshot` renamed to `SpaceSnapshot` (`@@map`, no DDL) | Done — Phase 1 |
+| FinTracker (as the whole app) | Fourth Meridian (platform) / FinTracker (default Space Template) | npm package name renamed `fintracker` → `fourth-meridian`; branding strings, comments, and docs updated to match | Done — naming cleanup pass |
 | PlaidItem | Linked account / connection | `PlaidItem` unchanged | UI copy only, no provider abstraction yet |
 | Archive / Trash (workspace) | Archive / Trash (Space) | Lifecycle logic unchanged | UI copy only |
+| WorkspaceAccountShare | (no UI copy change — internal join table) | `WorkspaceAccountShare` deliberately **not** renamed | Out of scope until a separately-approved migration (see `docs/architecture/DATABASE_ARCHITECTURE_REVIEW.md` §2.C) |
 
-Rule of thumb: **rename in sentences, not in schemas.** Every row above is a copy change a designer or writer can make without touching Prisma, the database, or API contracts.
+Rule of thumb going forward for anything not yet renamed: **rename in sentences first; a code/schema rename only follows as its own controlled, explicitly-approved step.** `WorkspaceAccountShare` is the current example — its UI-facing concept ("which Spaces can see this account") already says "Space," but the model itself stays `WorkspaceAccountShare` until that step is separately approved.
+
+Compatibility-sensitive identifiers left unchanged in the naming cleanup pass (intentionally, not oversights): the local Postgres database/user name (`fintracker`), the `fintracker_space` cookie name read by `lib/space.ts` and `components/ui/Sidebar.tsx`, and the `virtuarch/fintracker` GitHub repo name (an external rename, not a file change). See §8.
 
 ---
 
-## 4. Module Directory
+## 4. Space Template Directory
 
 Short, consistent descriptions for use in nav, marketing, and onboarding. Each follows the same shape: *what it watches over → why it matters → tone note.*
 
-**FinTracker**
+**FinTracker** *(default template)*
 Tracks balances, holdings, and transactions across every linked and manual account in a Space.
 *The financial weather report — what's true right now.*
 
@@ -80,11 +89,9 @@ Estate and legacy planning — beneficiaries, documents, intentions, and long-ho
 Tracks digital assets and wallets as first-class accounts inside a Space, alongside everything else.
 *Crypto without a separate app to babysit.*
 
-**AI**
-Ambient briefings and suggestions generated from a Space's full context, not a generic chatbot.
-*Explains and suggests — never overwhelms.*
+Naming convention for future templates: one word, no suffix like "Template" or "Tool," and it should describe the *domain* (Tax, Heritage, Crypto) rather than the *feature* (Reports, Tracker) — FinTracker is the deliberate, grandfathered exception.
 
-Naming convention for future modules: one word, no suffix like "Module" or "Tool," and it should describe the *domain* (Tax, Heritage, Crypto) rather than the *feature* (Reports, Tracker) — FinTracker is the deliberate, grandfathered exception.
+**AI is not a Space Template.** It's a platform-level capability — ambient briefings and suggestions generated from a Space's full context, surfaced via Daily Brief, not a generic chatbot. See §2 and §5.
 
 ---
 
@@ -120,7 +127,7 @@ Don't: exclamation points, emoji, growth-hacker enthusiasm.
 
 * **Space names are user-chosen**, title case, no required suffix: "Personal," "The Hogan Family," "Debt Payoff," "123 Maple St." Don't force a "Space" suffix into the name itself — the word "Space" comes from UI chrome (e.g., a label or icon), not the name string.
 * Refer to **"a Space"** generically, **"your [Name] Space"** when specific: "your Personal Space," "the Family Space." Avoid "a workspace" anywhere in UI copy.
-* **Module names are fixed product nouns** (FinTracker, TaxFlow, Heritage, Crypto, AI) — never localized, pluralized, or used as verbs ("FinTracker it" is not a thing).
+* **Space Template names are fixed product nouns** (FinTracker, TaxFlow, Heritage, Crypto) — never localized, pluralized, or used as verbs ("FinTracker it" is not a thing). AI is named separately — see §2, §4 — and follows the same rule but is not itself a template.
 * Capitalize **Space** and **Fourth Meridian** when referring to the product concepts; lowercase "space" only in generic, non-product usage (rare — prefer rewording).
 * Avoid "dashboard," "workspace," and "portal" in new user-facing copy — they carry the enterprise-productivity tone this rebrand is moving away from. Prefer "Space," "overview," "briefing."
 
@@ -137,13 +144,15 @@ For use in onboarding, marketing surfaces, and the eventual v2.1 landing experie
 5. *"Fourth Meridian: where your money makes sense."*
 
 Short platform description (for app store / about copy):
-> Fourth Meridian organizes your financial life into Spaces — personal, family, or goal-based — and gives you focused modules like FinTracker, TaxFlow, and Heritage to understand and act on what's inside them, with AI that explains rather than overwhelms.
+> Fourth Meridian organizes your financial life into Spaces — personal, family, or goal-based — and gives you focused templates like FinTracker, TaxFlow, and Heritage to understand and act on what's inside them, with AI that explains rather than overwhelms.
 
 ---
 
-## 8. Guardrails (do not violate in this phase)
+## 8. Guardrails (current)
 
-* No database, Prisma schema, or model renames. `Workspace`, `WorkspaceMember`, `WorkspaceSnapshot`, and `PlaidItem` stay exactly as they are in code.
-* "Space" is a **UI copy concept** right now, not a refactor target.
-* FinTracker remains the app name in the repo and a valid module name — this doc does not rename the repo.
-* Nothing here authorizes touching the Refresh pipeline, reconciliation logic, or archive/trash lifecycle — this is language and IA planning only, per v2.0.2 scope.
+* Phase 1 (complete): `Workspace` → `Space`, `WorkspaceMember` → `SpaceMember`, `WorkspaceSnapshot` → `SpaceSnapshot` renamed at the Prisma model/client layer via `@@map`/`@map` — zero DDL, physical Postgres tables/columns unchanged, no API/auth/business-logic changes beyond the naming itself. `PlaidItem` stays exactly as it is in code (no rename proposed).
+* `WorkspaceAccountShare` is explicitly **not** renamed — model name, Prisma accessor, and its own `workspaceId` field/relation all stay as-is for compatibility. Any future rename of it (e.g. into a consolidated `SpaceAccountLink`, per `docs/architecture/DATABASE_ARCHITECTURE_REVIEW.md`) is a separate, not-yet-approved milestone.
+* No new backend architecture (`ProviderCatalog`, `Connection`, `SpaceAccountLink`) is in scope until separately approved.
+* FinTracker is no longer the app/package name (renamed `fintracker` → `fourth-meridian` in the naming cleanup pass) but remains a valid Space Template name — the default one. This doc does not rename the GitHub repo (`virtuarch/fintracker`) — that's an external rename, done outside the codebase if/when desired.
+* The local Postgres database/user name, the `fintracker_space` cookie, and any other compatibility-sensitive identifiers stay as `fintracker*` until a separately-approved migration — see §3.
+* Nothing here authorizes touching the Refresh pipeline, reconciliation logic, or archive/trash lifecycle beyond the naming pass — business logic is unchanged.

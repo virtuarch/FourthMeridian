@@ -18,7 +18,9 @@ import { NextRequest, NextResponse }   from "next/server";
 import { db }                          from "@/lib/db";
 import { requireUser }                 from "@/lib/session";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { ShareStatus, DuplicateDetectionSource } from "@prisma/client";
 import { providerIdentityOf, findActiveAccountByIdentity, mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -61,7 +63,10 @@ export const POST = withApiHandler(async (
   const canonical = identity ? await findActiveAccountByIdentity(identity, fa.id) : null;
 
   if (canonical) {
-    await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id);
+    // Only reachable via providerIdentityOf/findActiveAccountByIdentity in
+    // this route (no fingerprint fallback here — see comment above), so the
+    // source is always a provider-identity match.
+    await mergeArchivedDuplicateIntoCanonical(fa.id, canonical.id, DuplicateDetectionSource.PROVIDER_IDENTITY_MATCH);
 
     await db.auditLog.create({
       data: {
@@ -75,8 +80,12 @@ export const POST = withApiHandler(async (
     return NextResponse.json({ ok: true, accountId: canonical.id });
   }
 
-  // ── Restore in parallel ───────────────────────────────────────────────────
-  await Promise.all([
+  // ── Restore atomically ─────────────────────────────────────────────────────
+  // KD-4 Phase 3 — the three restore writes commit together. Previously a
+  // Promise.all (concurrent, NOT atomic): a failed SAL reactivate could leave
+  // the account un-deleted but its links still REVOKED — a ghost active account
+  // visible in no space.
+  await db.$transaction([
     // 1. Restore FinancialAccount
     db.financialAccount.update({
       where: { id },
@@ -87,16 +96,23 @@ export const POST = withApiHandler(async (
       where: { financialAccountId: id },
       data:  { deletedAt: null },
     }),
-    // 3. Reactivate all WorkspaceAccountShare rows that were revoked
-    db.workspaceAccountShare.updateMany({
-      where: { financialAccountId: id, status: "REVOKED" },
-      data:  {
-        status:          "ACTIVE",
-        revokedAt:       null,
-        revokedByUserId: null,
-      },
+    // 3. D3 Stage B4 — Reactivate SpaceAccountLink rows that were revoked
+    db.spaceAccountLink.updateMany({
+      where: { financialAccountId: id, status: ShareStatus.REVOKED },
+      data:  { status: ShareStatus.ACTIVE, revokedAt: null, revokedByUserId: null },
     }),
   ]);
+
+  // ── Regenerate SpaceSnapshot for every space this account is now active in
+  //    again. Shares were just reactivated above, so the existing ACTIVE-
+  //    share lookup inside regenerateSnapshotsForAccounts() finds the right
+  //    space(s). Best-effort/non-fatal — see
+  //    docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
+  try {
+    await regenerateSnapshotsForAccounts([id]);
+  } catch (snapshotErr) {
+    console.warn(`[POST /api/accounts/manual/:id/restore] snapshot regen failed for account ${id} (non-fatal):`, snapshotErr);
+  }
 
   // ── Audit log ──────────────────────────────────────────────────────────────
   await db.auditLog.create({

@@ -2,19 +2,19 @@
  * lib/data/advice.ts
  *
  * Server-only AI advice queries.
- * AiAdvice is now workspace-scoped — queries by workspaceId, not userId.
+ * AiAdvice is now space-scoped — queries by spaceId, not userId.
  */
 
 import { db } from "@/lib/db";
-import { getWorkspaceContext } from "@/lib/workspace";
+import { getSpaceContext } from "@/lib/space";
 import { AiAdvice } from "@/types";
 
-/** The most recent advice record for the current workspace, or null if none exists yet. */
-export async function getLatestAdvice(ctx?: { workspaceId: string }): Promise<AiAdvice | null> {
-  const { workspaceId } = ctx ?? (await getWorkspaceContext());
+/** The most recent advice record for the current space, or null if none exists yet. */
+export async function getLatestAdvice(ctx?: { spaceId: string }): Promise<AiAdvice | null> {
+  const { spaceId } = ctx ?? (await getSpaceContext());
 
   const row = await db.aiAdvice.findFirst({
-    where:   { workspaceId },
+    where:   { spaceId },
     orderBy: { generatedAt: "desc" },
   });
 
