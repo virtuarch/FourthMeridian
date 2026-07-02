@@ -49,7 +49,7 @@
 
 import { db } from "@/lib/db";
 import { AccountType, ShareStatus, DuplicateDetectionSource, DuplicateStatus, ProviderType } from "@prisma/client";
-import { dualWriteSpaceAccountLink, resolveAccountCreatorUserId } from "@/lib/accounts/space-account-link";
+import { dualWriteSpaceAccountLink, resolveAccountCreatorUserId, type DbClient } from "@/lib/accounts/space-account-link";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 
 /**
@@ -293,15 +293,24 @@ async function pickCanonicalAndMerge(
 
   for (const c of candidates) {
     if (c.id === canonical.id) continue;
-    await mergeArchivedDuplicateIntoCanonical(c.id, canonical.id, DuplicateDetectionSource.SIBLING_CONSOLIDATION, spaceId);
-    if (!c.deletedAt) {
-      // Was active under a different plaidAccountId — its history now lives
-      // on the canonical row, so archive it to remove the duplicate from view.
-      await db.financialAccount.update({ where: { id: c.id }, data: { deletedAt: new Date() } });
-    }
+    // KD-4 Phase 2 — the merge and the active-loser archive must commit
+    // together. Without one transaction, a failure between them could leave
+    // the loser's history moved to the canonical row while the loser stays
+    // active — a visible, empty duplicate (exactly the state this merge
+    // exists to prevent). The merge reuses this tx rather than opening its own.
+    await db.$transaction(async (tx) => {
+      await mergeArchivedDuplicateIntoCanonical(c.id, canonical.id, DuplicateDetectionSource.SIBLING_CONSOLIDATION, spaceId, tx);
+      if (!c.deletedAt) {
+        // Was active under a different plaidAccountId — its history now lives
+        // on the canonical row, so archive it to remove the duplicate from view.
+        await tx.financialAccount.update({ where: { id: c.id }, data: { deletedAt: new Date() } });
+      }
+    });
     // Lifecycle fix (Step A) — close out `c`'s own connections now that it's
     // being folded away as a loser, whether it was archived just above or
     // arrived already archived. See closeOutAccountConnections' doc comment.
+    // External Plaid itemRemove — MUST stay OUTSIDE the transaction; runs
+    // post-commit.
     await closeOutAccountConnections(c.id);
   }
 
@@ -404,9 +413,27 @@ export async function mergeArchivedDuplicateIntoCanonical(
   loserId: string,
   winnerId: string,
   source: DuplicateDetectionSource,
-  spaceId?: string | null
+  spaceId?: string | null,
+  client: DbClient = db,
 ) {
   if (loserId === winnerId) return;
+
+  // KD-4 Phase 2 — the entire re-point / contribution-move / debt-move /
+  // link-re-point / audit group below must commit or roll back together. When
+  // called at the top level (client === db) we open our own interactive
+  // transaction and re-enter with the tx client. When a caller already passes
+  // a tx (e.g. pickCanonicalAndMerge, which bundles the loser-archive into the
+  // same transaction), we reuse it — Prisma forbids nested interactive
+  // transactions, so we must never open a second one here. External
+  // side-effects (closeOutAccountConnections / Plaid itemRemove) live in the
+  // callers and stay OUTSIDE this transaction.
+  if (client === db) {
+    await db.$transaction(async (tx) => {
+      await mergeArchivedDuplicateIntoCanonical(loserId, winnerId, source, spaceId, tx);
+    });
+    return;
+  }
+  const tx = client;
 
   // Re-points ALL of the loser's transactions, including any soft-deleted by
   // an import rollback (Transaction.deletedAt) — intentionally NOT filtered
@@ -416,29 +443,29 @@ export async function mergeArchivedDuplicateIntoCanonical(
   // restored. This is the one Transaction call site the D2 Step 4D-R audit
   // identified as needing to keep ignoring deletedAt — see
   // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §5.
-  await db.transaction.updateMany({
+  await tx.transaction.updateMany({
     where: { financialAccountId: loserId },
     data:  { financialAccountId: winnerId },
   });
 
-  const loserContributions = await db.goalContribution.findMany({
+  const loserContributions = await tx.goalContribution.findMany({
     where:  { financialAccountId: loserId },
     select: { id: true, goalId: true },
   });
   for (const c of loserContributions) {
-    const collision = await db.goalContribution.findUnique({
+    const collision = await tx.goalContribution.findUnique({
       where: { goalId_financialAccountId: { goalId: c.goalId, financialAccountId: winnerId } },
     });
     if (!collision) {
-      await db.goalContribution.update({ where: { id: c.id }, data: { financialAccountId: winnerId } });
+      await tx.goalContribution.update({ where: { id: c.id }, data: { financialAccountId: winnerId } });
     }
     // else: winner already has a contribution row for this goal — leave the
     // loser's row where it is. It's on an archived account, so it's inert.
   }
 
-  const winnerDebtProfile = await db.debtProfile.findUnique({ where: { financialAccountId: winnerId } });
+  const winnerDebtProfile = await tx.debtProfile.findUnique({ where: { financialAccountId: winnerId } });
   if (!winnerDebtProfile) {
-    await db.debtProfile.updateMany({
+    await tx.debtProfile.updateMany({
       where: { financialAccountId: loserId },
       data:  { financialAccountId: winnerId },
     });
@@ -449,10 +476,10 @@ export async function mergeArchivedDuplicateIntoCanonical(
   // this merge path; WorkspaceAccountShare is no longer touched here.
   // `kind` is still recomputed per dualWriteSpaceAccountLink's Rule 1
   // (computeLinkKind), so the winner's first re-pointed link correctly becomes
-  // HOME if it had none before the merge.
-  const winnerCreatorUserId = await resolveAccountCreatorUserId(winnerId);
+  // HOME if it had none before the merge. Reads and writes here run on `tx`.
+  const winnerCreatorUserId = await resolveAccountCreatorUserId(winnerId, tx);
 
-  const loserLinks = await db.spaceAccountLink.findMany({
+  const loserLinks = await tx.spaceAccountLink.findMany({
     where:  { financialAccountId: loserId },
     select: { spaceId: true, addedByUserId: true, visibilityLevel: true },
   });
@@ -461,6 +488,7 @@ export async function mergeArchivedDuplicateIntoCanonical(
       spaceId:            l.spaceId,
       financialAccountId: winnerId,
       creatorUserId:      winnerCreatorUserId,
+      client:             tx,
       create: {
         addedByUserId:   l.addedByUserId,
         visibilityLevel: l.visibilityLevel,
@@ -475,7 +503,7 @@ export async function mergeArchivedDuplicateIntoCanonical(
   }
 
   const now = new Date();
-  await db.duplicateAccountCandidate.upsert({
+  await tx.duplicateAccountCandidate.upsert({
     where: { accountAId_accountBId: { accountAId: winnerId, accountBId: loserId } },
     update: { detectedAt: now },
     create: {
