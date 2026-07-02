@@ -6,7 +6,7 @@ If this file conflicts with any other document, this file wins. If it conflicts 
 
 | | |
 |---|---|
-| Last verified | 2026-07-02, against commit `f565a7e` |
+| Last verified | 2026-07-02, against commit `23a6387` |
 | Maintenance rule | Any PR that changes system behavior updates this file, or states in the PR why not |
 | Supersedes | `ROADMAP.md`, `docs/operations/PROJECT_STATE.md`, and the status tables in `docs/architecture/PHASE_2_CANONICAL_ROADMAP_AUDIT.md` |
 
@@ -93,11 +93,11 @@ The D-number collision is resolved by **freezing, not renumbering**. `PHASE_2_DE
 Phases are gated by **exit criteria**, not feature lists. The roadmap ends at launch; everything beyond it lives in §8.
 
 ### v2.4 — Architecture Foundation — **ARCHITECTURE-COMPLETE (merge/closeout pending)**
-Shipped: provider lifecycle + Plaid sync/reconcile; AI-1..AI-3; D11/D13/D14; SAL dual-write; admin diagnostics; expand-history workflow. Both critical transaction-visibility leaks — KD-1 (AI context) and KD-15 (UI reads) — are fixed and committed; AI-4 shadow validator and KD-13 hygiene landed.
+Shipped: provider lifecycle + Plaid sync/reconcile; AI-1..AI-3; D11/D13/D14; SAL dual-write; admin diagnostics; expand-history workflow. Both critical transaction-visibility leaks — KD-1 (AI context) and KD-15 (UI reads) — are fixed and committed; AI-4 shadow validator and KD-13 hygiene landed; KD-4 SAL write atomicity (Phases 1–3) fixed and committed.
 Remaining exit action: all foundation work is committed (working tree clean through `f565a7e`); the only open step is merging `feature/phase-2-architecture` and cutting the closeout. No architectural work outstanding — remaining defects are gated to v2.4.5+ and are not v2.4 blockers.
 
 ### v2.4.5 — Stabilization / Verification — **NEXT** (production-readiness gate)
-Scope: fix BALANCE_ONLY transaction leak (KD-1) → LLM output validator (AI-4) → test suites (merchant normalization, window/rollup math, privacy sanitizers, follow-up heuristics) → `db.$transaction` around merges/dual-writes → HOME partial-unique index → observability counters (fallback hits, sync stats, LLM tokens) → rate limiting (auth + chat) → repo hygiene.
+Scope: fix BALANCE_ONLY transaction leak (KD-1) ✅ → LLM output validator (AI-4) → test suites (merchant normalization, window/rollup math, privacy sanitizers, follow-up heuristics) → `db.$transaction` around merges/route write-groups (KD-4) ✅ → HOME partial-unique index (KD-5) → observability counters (fallback hits, sync stats, LLM tokens) → rate limiting (auth + chat) → repo hygiene.
 **Exit criteria:** privacy regression tests green · a reply quoting a number absent from context is detectably flagged · zero non-transactional multi-write flows · D2 fallback counters observable · rate limits live.
 **Hard rule: v2.5 does not open until every criterion is met. Fourth Meridian is not production-ready before this release.**
 
@@ -123,7 +123,7 @@ Scope: billing/subscription (D10 ban lifts here only); onboarding funnel; Plaid 
 1. BALANCE_ONLY transaction leak: **both paths fixed and committed** — AI context (KD-1) and UI reads (KD-15), 2026-07-02, via the shared canonical predicate `lib/ai/visibility.ts`
 2. No *live* LLM output validation — a shadow validator is landed (AI-4, `f565a7e`) but observational only; numeric fidelity still rests on prompt obedience of gpt-4o-mini until enforcement is promoted (KD-2)
 3. No rate limiting on auth or chat (KD-3)
-4. Non-transactional dual-writes + unenforced HOME uniqueness (KD-4, KD-5)
+4. Non-atomic `SpaceAccountLink` writes: **fixed and committed** (KD-4, 2026-07-02, Phases 1–3 — helper `tx` threading, merge atomicity, route-level `db.$transaction`). Unenforced HOME uniqueness under concurrency (KD-5) **remains open** — KD-4 provides the transaction seam but does not solve the `computeLinkKind` count-then-write race.
 5. Thin test coverage (4 files: output validator, two privacy suites, intent classifier) — merchant-normalization, window/rollup math, and follow-up-heuristic suites still absent
 6. LLM data-processing posture undefined (retention terms, user disclosure)
 
@@ -136,7 +136,7 @@ Scope: billing/subscription (D10 ban lifts here only); onboarding funnel; Plaid 
 | KD-1 | Transactions-summary assembler ignores `visibilityLevel`; BALANCE_ONLY accounts' merchants/amounts enter AI prompts (`lib/ai/assemblers/transactions.ts` SAL filter) | **Critical** | v2.4.5 | **Fixed & committed** 2026-07-02 (`cea8220`) — canonical predicate `lib/ai/visibility.ts` (FULL-only; ad-hoc SHARED audit clean in dev+prod) applied to summary + drilldown; tests: `lib/ai/assemblers/transactions.privacy.test.ts`, `scripts/test-visibility-two-user-space.ts` |
 | KD-2 | No deterministic validation of LLM output figures against context | High | v2.4.5 (AI-4) | Open — shadow validator landed (`f565a7e`, observational only); closes when promoted to live enforcement |
 | KD-3 | No rate limiting (auth endpoints, `/api/ai/chat`) | High | v2.4.5 | Open |
-| KD-4 | No `db.$transaction` around merges/dual-writes; WAS↔SAL mirrors can desync on partial failure | High | v2.4.5 | Open |
+| KD-4 | Multi-table `SpaceAccountLink`-related writes (create/restore/archive/revoke/merge/permanent) not atomic; a partial failure could leave orphaned/half-applied state | High | v2.4.5 | **Fixed & committed** 2026-07-02 (`a732986`, `55e0abb`, `23a6387`) — Phase 1 transaction-aware SAL helpers (optional `DbClient`/`tx` threading) complete; Phase 2 merge pipeline atomicity complete; Phase 3 route-level `db.$transaction` wrapping across 9 files complete. No nested interactive transactions; external calls (Plaid `itemRemove`), snapshot regen, and provider-identity mirror all kept outside transactions. Validation passed locally: `prisma generate`, `tsc --noEmit`, `lint`. **Caveat:** `exchangeToken` keeps `FinancialAccount` resolution outside the connection+SAL transaction (forced by the self-transactional fingerprint resolver) — residual orphan window is low severity and retry/self-healing. Note the earlier "WAS↔SAL mirror desync" framing was obsolete: WAS runtime writes were already retired, so KD-4 was multi-table SAL atomicity. KD-5 (HOME uniqueness under concurrency) is **not** solved by KD-4 and remains open. |
 | KD-5 | "One HOME per account" unenforced; `computeLinkKind` count-then-write race | High | v2.4.5 | Open |
 | KD-6 | v1 (root-key) ciphertexts not re-encrypted; D14 Slice 5 pending | Medium | v2.5 | Open |
 | KD-7 | 5,000-row desc-ordered fetch cap silently truncates oldest months of long windows while prompt asserts rollups are complete | High | v2.4.5 | Open |
@@ -206,6 +206,6 @@ No documents were edited or deleted. Recommended dispositions:
 
 **Largest weaknesses:** verification debt; concurrent seam count; solo bus factor; no operational substrate for scheduled intelligence yet.
 
-**Biggest risks:** ambient features speaking unprompted before *live* output validation exists (shadow validator is not enforcement); the SAL dual-write desyncing under partial failure before its transaction wrapper lands (KD-4), corrupting the v2.5 read-cutover; documentation reverting to fragmentation if this file is not maintained. (The BALANCE_ONLY leak that previously headed this list is now closed — KD-1 and KD-15 fixed and committed.)
+**Biggest risks:** ambient features speaking unprompted before *live* output validation exists (shadow validator is not enforcement); documentation reverting to fragmentation if this file is not maintained. (Two items previously headlining this list are now closed — the BALANCE_ONLY leak via KD-1/KD-15, and the non-atomic SAL writes via KD-4, all fixed and committed. HOME uniqueness under concurrency (KD-5) is still open but is a `kind`-correctness concern, not a visibility or read-cutover corruption risk.)
 
 **Recommendation:** close v2.4 now; execute v2.4.5 without scope additions; define v2.5 as seam-closure plus design foundation; let v2.6 earn ambient behavior behind the validator; launch at v3.0 with zero new surface. Everything else stays in §8 until the market says otherwise.
