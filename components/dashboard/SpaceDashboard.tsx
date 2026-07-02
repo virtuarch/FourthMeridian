@@ -50,6 +50,11 @@ import { SpaceMembersWidget } from "@/components/dashboard/widgets/SpaceMembersW
 import { SpaceComingSoonPanel } from "@/components/dashboard/widgets/SpaceComingSoonPanel";
 import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { SpaceTrendHero, type HeroPoint } from "@/components/dashboard/widgets/SpaceTrendHero";
+import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
+import { SpaceTransactionsPanel } from "@/components/dashboard/widgets/SpaceTransactionsPanel";
+import { getSpaceHeroDef } from "@/lib/space-hero";
+import type { Snapshot, Transaction, Account as PersonalAccount } from "@/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -162,6 +167,17 @@ const PERSPECTIVE_MODAL_META: Record<string, { title: string; icon: React.Elemen
 
 /** New tab ids that live entirely on the fixed rail (not section-driven). */
 const NEW_SPACE_TABS = ["PERSPECTIVES", "TIMELINE", "FINANCES", "TRANSACTIONS", "MEMBERS", "DOCUMENTS"];
+
+/** Flow-identified templates (Space Template Redesign): money movement is
+ *  part of these Spaces' story, so Transactions is a first-class Overview
+ *  preview module. Stock-identified categories (Investment / Property /
+ *  Goal / value trackers) reach transactions through the Transactions tab
+ *  doorway instead — never on the Overview. */
+const FLOW_TX_CATEGORIES = ["HOUSEHOLD", "FAMILY", "BUSINESS", "DEBT_PAYOFF"];
+
+/** Scope honesty label for shared-Space transaction lists — KD-15 filters
+ *  rows to FULL-visibility shares, so the list is structurally partial. */
+const TX_SCOPE_NOTE = "From fully shared accounts only";
 
 const GOAL_CATEGORY_LABELS: Record<string, string> = {
   EMERGENCY_FUND:   "Emergency Fund",
@@ -1833,6 +1849,13 @@ export function SpaceDashboard({
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[] | null>(null);
   const [memberCount,    setMemberCount]    = useState<number | null>(null);
 
+  // ── Space Template Redesign state ─────────────────────────────────────────
+  // SpaceSnapshot history for the trend hero (chartable categories only)
+  // and the KD-15-filtered transaction list (flow categories' Overview
+  // preview + every shared Space's Transactions tab doorway).
+  const [snapshots,         setSnapshots]         = useState<Snapshot[] | null>(null);
+  const [spaceTransactions, setSpaceTransactions] = useState<Transaction[] | null>(null);
+
   // Overview composition switcher (IA refactor point 2/3) — which
   // full-canvas Overview composition is shown. "overview" is the default,
   // real, always-available composition; any other value is a comingSoon
@@ -1955,6 +1978,37 @@ export function SpaceDashboard({
     return () => { active = false; };
   }, [spaceId]);
 
+  // ── Trend hero data (Space Template Redesign) ─────────────────────────────
+  // Only chartable categories (lib/space-hero.ts) fetch snapshot history.
+  const heroDef = getSpaceHeroDef(category);
+  useEffect(() => {
+    if (!heroDef) return;
+    let active = true;
+    fetch(`/api/spaces/${spaceId}/snapshots`)
+      .then((r) => (r.ok ? r.json() : { snapshots: [] }))
+      .then((data) => { if (active) setSnapshots(data?.snapshots ?? []); })
+      .catch(() => { if (active) setSnapshots([]); });
+    return () => { active = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spaceId, category]);
+
+  // ── Space transactions (KD-15-filtered on the server) ────────────────────
+  // Flow-identified templates show an Overview preview, so they fetch up
+  // front; every other category fetches lazily when the Transactions tab
+  // (doorway) is opened.
+  const isFlowCategory = FLOW_TX_CATEGORIES.includes(category);
+  useEffect(() => {
+    if (!isFlowCategory && activeTab !== "TRANSACTIONS") return;
+    if (spaceTransactions !== null) return;
+    let active = true;
+    fetch(`/api/spaces/${spaceId}/transactions`)
+      .then((r) => (r.ok ? r.json() : { transactions: [] }))
+      .then((data) => { if (active) setSpaceTransactions(data?.transactions ?? []); })
+      .catch(() => { if (active) setSpaceTransactions([]); });
+    return () => { active = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spaceId, isFlowCategory, activeTab, spaceTransactions === null]);
+
   useEffect(() => {
     Promise.all([
       fetch(`/api/spaces/${spaceId}/sections`).then((r) => r.ok ? r.json() : []),
@@ -1987,8 +2041,20 @@ export function SpaceDashboard({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaceId]);
 
+  // Template redesign: seeded section rows whose key has no SectionRegistry
+  // renderer (and no debt-space legacy override) previously fell through to
+  // a permanent ContextualCard "coming soon" body. Presets no longer seed
+  // such keys, but EXISTING Spaces still carry the rows — gate them out at
+  // render time ("nothing appears that the data cannot defend"). The rows
+  // themselves are untouched (still visible/toggleable in Settings), so a
+  // key regains its card the moment a renderer ships.
+  const isDebtSpaceCategory = category === "DEBT_PAYOFF";
+  const hasRenderer = (key: string) =>
+    key in SectionRegistry ||
+    (isDebtSpaceCategory && (key === "cash_flow" || key === "savings_rate"));
+
   // Derive tabs from enabled sections (plus Settings for admins)
-  const enabledSections = sections.filter((s) => s.enabled);
+  const enabledSections = sections.filter((s) => s.enabled && hasRenderer(s.key));
   const tabSet = Array.from(new Set(enabledSections.map((s) => s.tab)));
   const tabs   = TAB_ORDER.filter((t) => tabSet.includes(t));
   if (canManage) tabs.push("SETTINGS");
@@ -2006,6 +2072,27 @@ export function SpaceDashboard({
   const sectionsForTab = enabledSections
     .filter((s) => s.tab === activeTab)
     .sort((a, b) => a.order - b.order);
+
+  // ── Hero series (Space Template Redesign) ─────────────────────────────────
+  const heroPoints: HeroPoint[] = heroDef && snapshots
+    ? snapshots.map((s) => ({ date: s.date, value: heroDef.value(s) }))
+    : [];
+
+  // Emergency-fund lede: "how long could I last" — months covered, computed
+  // from the existing emergency_fund_progress section config. Only shown
+  // with its assumption disclosed (sublineNote); without config the hero
+  // falls back to the plain savings balance.
+  let heroHeadlineOverride: string | undefined;
+  let heroSublineNote:      string | undefined;
+  if (heroDef && category === "EMERGENCY_FUND" && heroPoints.length > 0) {
+    const efCfg      = sections.find((s) => s.key === "emergency_fund_progress")?.config;
+    const monthlyExp = Number(efCfg?.monthlyExpenses);
+    if (!isNaN(monthlyExp) && monthlyExp > 0) {
+      const months = heroPoints[heroPoints.length - 1].value / monthlyExp;
+      heroHeadlineOverride = `${months.toFixed(1)} months covered`;
+      heroSublineNote      = `at ${formatBalance(monthlyExp)}/mo expenses`;
+    }
+  }
 
   return (
     <>
@@ -2165,12 +2252,30 @@ export function SpaceDashboard({
             TimelineModal mount near the top of this component, instead of
             switching what renders in the rail's content area. */}
 
-        {/* Finances / Transactions / Documents — no rail control and no
-            body on this host (v2.5 honesty slice): these ids are gated off
-            the rail by railVisibleTabs("shared") in lib/space-nav.ts until
-            a real feature backs them, so nothing user-facing can set
-            activeTab to them anymore. The ids remain valid members of
+        {/* Finances / Documents — no rail control and no body on this host
+            (v2.5 honesty slice): gated off the rail by
+            railVisibleTabs("shared") in lib/space-nav.ts until a real
+            feature backs them. The ids remain valid members of
             NEW_SPACE_TABS so internal gating below keeps working. */}
+
+        {/* Transactions tab — real data (Space Template Redesign): the
+            doorway destination for every shared Space, and the "View all"
+            target of flow templates' Overview preview. Rows come from
+            GET /api/spaces/[id]/transactions, KD-15-filtered server-side,
+            hence the scope note. */}
+        {activeTab === "TRANSACTIONS" && (
+          spaceTransactions === null ? (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 size={18} className="animate-spin text-gray-600" />
+            </div>
+          ) : (
+            <SpaceTransactionsPanel
+              transactions={spaceTransactions}
+              accounts={accounts.map((a) => ({ ...a, type: a.type as PersonalAccount["type"] })) as PersonalAccount[]}
+              scopeNote={TX_SCOPE_NOTE}
+            />
+          )
+        )}
 
         {/* Members tab — real data. */}
         {activeTab === "MEMBERS" && (
@@ -2257,6 +2362,24 @@ export function SpaceDashboard({
          !PERSPECTIVE_ROUTED_TABS.includes(activeTab) &&
          !(activeTab === "OVERVIEW" && composition !== "overview") && (
           <div className="space-y-3">
+            {/* Hero — the template contract's slot 1 (One Space, One Lede):
+                headline + delta + this Space's primary trend, from its own
+                SpaceSnapshot history. Only chartable categories have a
+                heroDef; day-zero Spaces show the setup card instead. */}
+            {activeTab === "OVERVIEW" && composition === "overview" &&
+             accounts.length > 0 && heroDef && (
+              <SpaceTrendHero
+                title={heroDef.title}
+                points={heroPoints}
+                framing={heroDef.framing}
+                chartType={heroDef.chartType}
+                scopeLabel={heroDef.scopeLabel}
+                loading={snapshots === null}
+                headlineOverride={heroHeadlineOverride}
+                sublineNote={heroSublineNote}
+              />
+            )}
+
             {activeTab === "OVERVIEW" && !loading && accounts.length === 0 ? (
               /* Day-zero Overview (v2.5 honesty slice): one consolidated
                  setup card instead of a stack of per-widget empty states
@@ -2294,16 +2417,47 @@ export function SpaceDashboard({
               ))
             )}
 
-            {/* Overview gets the same Perspectives row + Timeline preview
-                Personal's dashboard has — composition, not duplication:
-                both read from the perspectiveItems/timelineEvents already
-                computed above for the dedicated Perspectives/Timeline tabs. */}
+            {/* Template contract slots 4 & 5 — change preview (Recent
+                activity + Recent transactions on flow templates), then
+                doorways (Perspectives row) LAST. Composition, not
+                duplication: everything reads data already fetched for the
+                dedicated tabs. */}
             {activeTab === "OVERVIEW" && composition === "overview" && (
               <div className="space-y-3 pt-2">
-                {/* Perspectives row hidden at day zero — every lens would
-                    open onto empty data; the setup card above is the one
-                    call to action. Recent activity stays: member joins and
-                    Space changes are real events worth showing from day one. */}
+                {isFlowCategory && accounts.length > 0 ? (
+                  /* Flow-identified templates: money movement is part of the
+                     story — Transactions is first-class, scope-labeled
+                     (KD-15 makes shared lists structurally partial). */
+                  <div className="md:grid md:grid-cols-2 md:gap-3 space-y-3 md:space-y-0">
+                    <SpaceTimelinePanel
+                      title="Recent activity"
+                      events={timelineEvents ?? []}
+                      loading={timelineEvents === null}
+                      variant="preview"
+                      previewCount={4}
+                      onViewAll={() => setActiveTab("TIMELINE")}
+                    />
+                    <RecentTransactionsPanel
+                      transactions={spaceTransactions ?? []}
+                      previewCount={5}
+                      scopeNote={TX_SCOPE_NOTE}
+                      onViewAll={() => setActiveTab("TRANSACTIONS")}
+                    />
+                  </div>
+                ) : (
+                  <SpaceTimelinePanel
+                    title="Recent activity"
+                    events={timelineEvents ?? []}
+                    loading={timelineEvents === null}
+                    variant="preview"
+                    previewCount={4}
+                    onViewAll={() => setActiveTab("TIMELINE")}
+                  />
+                )}
+
+                {/* Doorways — hidden at day zero (every lens would open
+                    onto empty data; the setup card is the one call to
+                    action). */}
                 {accounts.length > 0 && (
                   <div>
                     <div className="flex items-center justify-between px-1 mb-2">
@@ -2319,15 +2473,6 @@ export function SpaceDashboard({
                     <PerspectivesWidget items={perspectiveItems} variant="row" />
                   </div>
                 )}
-
-                <SpaceTimelinePanel
-                  title="Recent activity"
-                  events={timelineEvents ?? []}
-                  loading={timelineEvents === null}
-                  variant="preview"
-                  previewCount={4}
-                  onViewAll={() => setActiveTab("TIMELINE")}
-                />
               </div>
             )}
           </div>

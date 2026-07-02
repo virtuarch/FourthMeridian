@@ -26,7 +26,6 @@ import {
   Check,
   Loader2,
   Trash2,
-  Target,
   FolderOpen,
   ArrowUpRight,
   Receipt,
@@ -63,7 +62,6 @@ import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
 import { SpaceMembersWidget } from "@/components/dashboard/widgets/SpaceMembersWidget";
 import { SpaceComingSoonPanel } from "@/components/dashboard/widgets/SpaceComingSoonPanel";
 import { KpiRow } from "@/components/dashboard/widgets/KpiRow";
-import { OverviewBriefPanel } from "@/components/dashboard/widgets/OverviewBriefPanel";
 import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
 import { SpaceTransactionsPanel } from "@/components/dashboard/widgets/SpaceTransactionsPanel";
 
@@ -173,7 +171,7 @@ const MORE_MENU_ITEMS: { id: PersonalTab; label: string; icon: React.ElementType
 // coming-soon panel. The PersonalTab type members stay — this is
 // presentation-level gating only.
 const VALID_TABS: PersonalTab[] = [
-  "dashboard", "banking", "investments", "credit", "goals", "activity", "settings",
+  "dashboard", "banking", "investments", "credit", "activity", "settings",
   "perspectives", "timeline", "transactions", "members",
 ];
 
@@ -184,7 +182,13 @@ const VALID_TABS: PersonalTab[] = [
 const PERSONAL_PERSPECTIVE_TARGETS: Partial<Record<string, PersonalTab>> = {
   investments: "investments",
   debt:        "credit",
-  goals:       "goals",
+  // "goals" deliberately has no target on Personal (v2.5 modal usability
+  // pass): the Personal Space has no goals feature yet — the old target
+  // opened a modal whose only content was a coming-soon panel, so the card
+  // looked available but led nowhere. With no target, PerspectivesWidget
+  // renders it with the honest "Soon" badge instead. Goals stays fully
+  // real on shared Spaces (SpaceDashboard's GoalsCard). Restore the
+  // mapping when Personal goals ship.
 };
 
 // ── Filter config ─────────────────────────────────────────────────────────────
@@ -266,9 +270,12 @@ const fmtAbs = (n: number) =>
   }).format(Math.abs(n));
 
 // ── Component ─────────────────────────────────────────────────────────────────
+// `advice` stays in Props (the server page still passes it) but is no
+// longer destructured — the OverviewBriefPanel that consumed it was removed
+// until D5 makes the pipeline real (Space Template Redesign).
 export function DashboardClient({
   spaceId, spaceName, category, myRole, currentUserId,
-  accounts, holdings, snapshots, advice, ficoScore, ficoUpdatedAt, debtTransactions,
+  accounts, holdings, snapshots, ficoScore, ficoUpdatedAt, debtTransactions,
   transactions,
 }: Props) {
   const router        = useRouter();
@@ -507,7 +514,10 @@ export function DashboardClient({
   const isBanking      = filter === "banking";
   const isInvestments  = filter === "investments";
   const isCredit       = filter === "credit";
-  const isGoals        = filter === "goals";
+  // "goals" has no is* flag or render block on Personal (v2.5 modal
+  // usability pass) — it's absent from VALID_TABS and
+  // PERSONAL_PERSPECTIVE_TARGETS, so `filter` can never hold it. The
+  // PersonalTab member remains valid.
   const isActivity     = filter === "activity";
   const isSettings     = filter === "settings";
   const isPerspectives = filter === "perspectives";
@@ -519,7 +529,7 @@ export function DashboardClient({
   const isMembers      = filter === "members";
 
   const isStaticTab =
-    isGoals || isActivity || isSettings ||
+    isActivity || isSettings ||
     isPerspectives || isTimeline || isTransactions || isMembers;
 
   // ── Perspectives (lib/perspectives.ts) ────────────────────────────────────
@@ -1170,20 +1180,9 @@ export function DashboardClient({
         </GlassModal>
       )}
 
-      {/* Goals — Glass modal launched from the Goals Perspective card. No
-          real feature exists yet, so the body is just the shared
-          SpaceComingSoonPanel (same placeholder used for Finances/
-          Transactions/Documents) instead of the old hardcoded bg-gray-900
-          block — keeps the "coming soon" look consistent and theme-aware. */}
-      {isGoals && (
-        <GlassModal title="Goals" subtitle="Track what you're working toward" icon={Target} onClose={() => handleFilterChange("dashboard")}>
-          <SpaceComingSoonPanel
-            icon={<Target size={20} />}
-            title="Goals"
-            description="Financial goals are coming soon."
-          />
-        </GlassModal>
-      )}
+      {/* Goals — no modal on Personal (v2.5 modal usability pass): the
+          Goals Perspective card renders with a "Soon" badge instead of
+          opening a coming-soon modal. See PERSONAL_PERSPECTIVE_TARGETS. */}
 
       {/* Perspectives tab — full grid. Same library/routing as the Overview
           row, just every card instead of a scroller, plus a group sub-nav
@@ -1307,8 +1306,13 @@ export function DashboardClient({
                 onCreditClick={() => handleFilterChange("credit")}
               />
 
-              {/* Net Worth / Allocation / AI Daily Brief — three equal columns on desktop */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-stretch">
+              {/* Net Worth / Allocation — two columns on desktop. The AI
+                  Daily Brief panel was removed from this row (Space
+                  Template Redesign): its pipeline is a stub (D5 —
+                  run-ai-advice never runs), and a hero-adjacent slot can't
+                  be held by a placeholder. The slot returns as "Briefing"
+                  when D5 ships. */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-stretch">
                 <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4">
                   <div className="flex items-center justify-between px-1 mb-2">
                     <p className="text-sm font-semibold text-[var(--text-primary)]">Net Worth</p>
@@ -1338,7 +1342,6 @@ export function DashboardClient({
                   />
                 </GlassPanel>
 
-                <OverviewBriefPanel advice={advice} firstName={firstName || undefined} />
               </div>
 
               {/* Perspectives row — lenses into this Space's data, routed

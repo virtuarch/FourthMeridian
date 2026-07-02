@@ -84,10 +84,14 @@ const PENDING_LABELS: Record<PendingFilter, string> = {
 interface Props {
   transactions: Transaction[];
   accounts:     Account[];
+  /** Honesty label for shared Spaces, where KD-15 makes the list
+   *  structurally partial (FULL-visibility shares only) — e.g. "Showing
+   *  transactions from fully shared accounts only". Omit on Personal. */
+  scopeNote?:   string;
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
-export function SpaceTransactionsPanel({ transactions, accounts }: Props) {
+export function SpaceTransactionsPanel({ transactions, accounts, scopeNote }: Props) {
   const [search,        setSearch]        = useState("");
   const [catFilter,     setCatFilter]     = useState<TransactionCategory | null>(null);
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
@@ -173,6 +177,9 @@ export function SpaceTransactionsPanel({ transactions, accounts }: Props) {
     <div className="space-y-4">
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
+      {scopeNote && (
+        <p className="text-[11px] text-gray-500 px-1">{scopeNote}</p>
+      )}
       <div className="flex items-center justify-between flex-wrap gap-2 px-1">
         <div className="flex items-center gap-2 flex-wrap">
           <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">

@@ -83,8 +83,13 @@ export const PLACEHOLDER_SPACE_TABS: SpaceTabId[] = ["FINANCES", "DOCUMENTS"];
  *  or every other category (SpaceDashboard.tsx). */
 export type SpaceDashboardHost = "personal" | "shared";
 
-/** Tabs that are placeholders only on shared/non-personal Spaces. */
-export const SHARED_ONLY_PLACEHOLDER_TABS: SpaceTabId[] = ["TRANSACTIONS"];
+/** Tabs that are placeholders only on shared/non-personal Spaces.
+ *  TRANSACTIONS re-earned its slot in the Space Template Redesign:
+ *  SpaceDashboard now renders a real, KD-15-filtered SpaceTransactionsPanel
+ *  (GET /api/spaces/[id]/transactions) as the doorway for every shared
+ *  Space. Currently empty — kept so the gate (and its test) stand ready
+ *  for any future tab that ships personal-first again. */
+export const SHARED_ONLY_PLACEHOLDER_TABS: SpaceTabId[] = [];
 
 /**
  * Presentation-level gate: should this tab get a visible rail control on

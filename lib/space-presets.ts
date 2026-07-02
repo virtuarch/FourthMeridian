@@ -102,21 +102,12 @@ const NET_WORTH_SECTION: SectionPreset = {
   order:   0,
 };
 
-const CASH_FLOW_SECTION: SectionPreset = {
-  key:     "cash_flow",
-  label:   "Cash Flow",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   1,
-};
-
-const SAVINGS_RATE_SECTION: SectionPreset = {
-  key:     "savings_rate",
-  label:   "Savings Rate",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   2,
-};
+// Space Template Redesign (approved investigation): CASH_FLOW_SECTION,
+// SAVINGS_RATE_SECTION, MONTHLY_EXPENSES, and BUSINESS_CASH_FLOW were
+// removed from this file. Their keys have no SectionRegistry renderer, so
+// every preset that referenced them seeded a PERMANENT "coming soon" card
+// — a template promising a story the product can't tell ("the template
+// earns its modules"). Re-add each one only together with its real widget.
 
 const DEBT_SUMMARY_SECTION: SectionPreset = {
   key:     "debt_summary",
@@ -126,13 +117,9 @@ const DEBT_SUMMARY_SECTION: SectionPreset = {
   order:   0,
 };
 
-const DEBT_PAYOFF_TRACKER: SectionPreset = {
-  key:     "debt_payoff_tracker",
-  label:   "Payoff Tracker",
-  tab:     SpaceDashboardTab.DEBT,
-  enabled: true,
-  order:   1,
-};
+// DEBT_PAYOFF_TRACKER removed (template redesign): its key rendered a
+// debt-summary alias under a "Payoff Tracker" label — a real widget wearing
+// a misleading name. Re-add when a real payoff tracker exists.
 
 const DEBT_BREAKDOWN_SECTION: SectionPreset = {
   key:     "debt_breakdown_chart",
@@ -190,14 +177,6 @@ const EMERGENCY_FUND_PROGRESS: SectionPreset = {
   order:   0,
 };
 
-const MONTHLY_EXPENSES: SectionPreset = {
-  key:     "monthly_expenses",
-  label:   "Monthly Expenses",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   1,
-};
-
 const PROPERTY_VALUE: SectionPreset = {
   key:     "property_value",
   label:   "Property Value",
@@ -246,14 +225,6 @@ const TRIP_SAVINGS: SectionPreset = {
   order:   1,
 };
 
-const BUSINESS_CASH_FLOW: SectionPreset = {
-  key:     "business_cash_flow",
-  label:   "Cash Flow",
-  tab:     SpaceDashboardTab.OVERVIEW,
-  enabled: true,
-  order:   0,
-};
-
 const BUSINESS_ACCOUNTS: SectionPreset = {
   key:     "business_accounts",
   label:   "Business Accounts",
@@ -282,101 +253,106 @@ const UNIVERSAL_SECTIONS: SectionPreset[] = [
   ACTIVITY_SECTION,
 ];
 
+// ── Space Template Redesign (approved) ────────────────────────────────────────
+// Each preset below is an EDITED template, not a category's column-inches:
+// one lede per Space type (the hero, rendered by SpaceDashboard from
+// SpaceSnapshot — not a section), at most three signature modules, and no
+// section whose key lacks a SectionRegistry renderer. Universal sections
+// (Goals / Accounts / Activity) still append via getPresetsForCategory.
 const PRESET_MAP: Record<SpaceCategory, SectionPreset[]> = {
+  // Personal renders via DashboardClient, not sections — preset kept
+  // minimal + real for the SpaceDashboard fallback path.
   [SpaceCategory.PERSONAL]: [
     NET_WORTH_SECTION,
-    CASH_FLOW_SECTION,
-    SAVINGS_RATE_SECTION,
     DEBT_SUMMARY_SECTION,
     INVESTMENT_SUMMARY,
   ],
 
+  // Household story: "are WE on track" — hero is shared net worth;
+  // signature = shared goals (universal) + obligations. Allocation is
+  // deliberately NOT signature here (partial-scope allocation misleads);
+  // it stays reachable via Perspectives.
   [SpaceCategory.HOUSEHOLD]: [
-    NET_WORTH_SECTION,
-    CASH_FLOW_SECTION,
-    SAVINGS_RATE_SECTION,
     DEBT_SUMMARY_SECTION,
-    DEBT_PAYOFF_TRACKER,
   ],
 
   [SpaceCategory.FAMILY]: [
-    NET_WORTH_SECTION,
-    CASH_FLOW_SECTION,
-    SAVINGS_RATE_SECTION,
     DEBT_SUMMARY_SECTION,
   ],
 
+  // Business story: "do we have cash" — hero is cash position; signature =
+  // business accounts + obligations. investment_summary removed (edge case,
+  // not signature). business_cash_flow removed until a real widget exists.
   [SpaceCategory.BUSINESS]: [
-    BUSINESS_CASH_FLOW,
     BUSINESS_ACCOUNTS,
     DEBT_SUMMARY_SECTION,
-    INVESTMENT_SUMMARY,
   ],
 
+  // Property story: "what is it worth minus what we owe" — hero is equity;
+  // signature = the two components.
   [SpaceCategory.PROPERTY]: [
     PROPERTY_VALUE,
     MORTGAGE_TRACKER,
-    CASH_FLOW_SECTION,
   ],
 
   [SpaceCategory.VEHICLE]: [
     VEHICLE_VALUE,
     AUTO_LOAN_TRACKER,
-    CASH_FLOW_SECTION,
   ],
 
   [SpaceCategory.TRIP]: [
     TRIP_BUDGET,
     TRIP_SAVINGS,
-    CASH_FLOW_SECTION,
   ],
 
+  // Investment story: "what is the portfolio worth, what's it made of" —
+  // hero is portfolio value; net_worth removed (duplicates the hero with a
+  // broader, confusable scope).
   [SpaceCategory.INVESTMENT]: [
     INVESTMENT_SUMMARY,
     INVESTMENT_ALLOCATION,
-    NET_WORTH_SECTION,
-    CASH_FLOW_SECTION,
   ],
 
   [SpaceCategory.EQUIPMENT]: [
     EQUIPMENT_VALUE,
     DEBT_SUMMARY_SECTION,
-    CASH_FLOW_SECTION,
   ],
 
   [SpaceCategory.RETIREMENT]: [
     RETIREMENT_PROGRESS,
     RETIREMENT_ACCOUNTS,
     INVESTMENT_ALLOCATION,
-    NET_WORTH_SECTION,
   ],
 
+  // Debt story: "how far have I come, when am I free" — hero is the payoff
+  // arc (down-is-good); signature = composition ("what am I fighting") +
+  // planner. debt_payoff_tracker removed: it rendered a debt-summary alias
+  // under a misleading label.
   [SpaceCategory.DEBT_PAYOFF]: [
     DEBT_BREAKDOWN_SECTION,
     DEBT_PAYOFF_CALC_SECTION,
     DEBT_SUMMARY_SECTION,
-    DEBT_PAYOFF_TRACKER,
   ],
 
+  // Emergency-fund story: "how long could I last" — hero is the savings
+  // trend; signature = months-covered progress. monthly_expenses removed
+  // (config input masquerading as a module — it's collected in the
+  // progress widget's settings).
   [SpaceCategory.EMERGENCY_FUND]: [
     EMERGENCY_FUND_PROGRESS,
-    MONTHLY_EXPENSES,
-    SAVINGS_RATE_SECTION,
-    CASH_FLOW_SECTION,
   ],
 
-  // Legacy value — treat same as GENERAL/blank
-  [SpaceCategory.GOAL]: [
-    NET_WORTH_SECTION,
-    CASH_FLOW_SECTION,
-  ],
+  // Goal story: "how close am I" — the universal Goals section IS the
+  // hero (ProgressWidget family); intentionally no chart until goal
+  // history exists. Legacy category; goal-shaped types (TRIP/VEHICLE/
+  // EQUIPMENT) are variants of the same template.
+  [SpaceCategory.GOAL]: [],
 
   // Blank slate — user builds their own
   [SpaceCategory.CUSTOM]: [],
 
   [SpaceCategory.OTHER]: [
     NET_WORTH_SECTION,
-    CASH_FLOW_SECTION,
   ],
 };
 

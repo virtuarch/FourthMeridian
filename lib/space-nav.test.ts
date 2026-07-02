@@ -47,12 +47,18 @@ for (const host of HOSTS) {
   }
 }
 
-// 2. Shared-only placeholders: hidden on shared, visible on personal
-//    (Transactions is real in the Personal Space via SpaceTransactionsPanel).
+// 2. Shared-only placeholders: hidden on shared, visible on personal.
+//    (Space Template Redesign: TRANSACTIONS re-earned its shared slot —
+//    the list is currently empty; the loop stands ready for future
+//    personal-first tabs.)
 for (const id of SHARED_ONLY_PLACEHOLDER_TABS) {
   check(`${id} is hidden on shared`, !railVisibleTabs("shared").includes(id));
   check(`${id} is visible on personal`, railVisibleTabs("personal").includes(id));
 }
+
+// 2b. TRANSACTIONS is real on BOTH hosts now.
+check("TRANSACTIONS is visible on shared", railVisibleTabs("shared").includes("TRANSACTIONS"));
+check("TRANSACTIONS is visible on personal", railVisibleTabs("personal").includes("TRANSACTIONS"));
 
 // 3. Tabs with real content everywhere keep their rail slot on both hosts.
 const ALWAYS_REAL: SpaceTabId[] = [
@@ -77,10 +83,11 @@ for (const host of HOSTS) {
 }
 
 // 5. Exact expected rails (update deliberately when a tab re-earns its slot).
+//    TRANSACTIONS re-earned its shared slot in the Space Template Redesign.
 check(
-  "shared rail is exactly OVERVIEW/PERSPECTIVES/TIMELINE/ACCOUNTS/MEMBERS/SETTINGS",
+  "shared rail is exactly OVERVIEW/PERSPECTIVES/TIMELINE/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
   JSON.stringify(railVisibleTabs("shared")) ===
-    JSON.stringify(["OVERVIEW", "PERSPECTIVES", "TIMELINE", "ACCOUNTS", "MEMBERS", "SETTINGS"]),
+    JSON.stringify(["OVERVIEW", "PERSPECTIVES", "TIMELINE", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
   `got ${JSON.stringify(railVisibleTabs("shared"))}`,
 );
 check(

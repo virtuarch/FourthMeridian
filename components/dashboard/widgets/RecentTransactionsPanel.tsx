@@ -58,17 +58,27 @@ export function RecentTransactionsPanel({
   transactions,
   previewCount = 5,
   onViewAll,
+  scopeNote,
 }: {
   transactions: Transaction[];
   previewCount?: number;
   onViewAll?: () => void;
+  /** Honesty label for shared Spaces, where KD-15 makes the list
+   *  structurally partial (FULL-visibility shares only) — e.g. "From fully
+   *  shared accounts only". Omit on Personal, where the list is complete. */
+  scopeNote?: string;
 }) {
   const rows = transactions.slice(0, previewCount);
 
   return (
     <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4">
-      <div className="flex items-center justify-between px-1 mb-1">
-        <p className="text-sm font-semibold text-[var(--text-primary)]">Recent Transactions</p>
+      <div className="flex items-center justify-between gap-2 px-1 mb-1">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">Recent Transactions</p>
+          {scopeNote && (
+            <p className="text-[11px] text-[var(--text-muted)] mt-0.5 truncate">{scopeNote}</p>
+          )}
+        </div>
         {onViewAll && (
           <button
             type="button"
