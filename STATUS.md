@@ -120,7 +120,7 @@ Scope: billing/subscription (D10 ban lifts here only); onboarding funnel; Plaid 
 
 **Blockers (must fix before any external user):**
 
-1. BALANCE_ONLY transaction leak into AI context (KD-1)
+1. BALANCE_ONLY transaction leak: AI context fixed (KD-1, 2026-07-02); UI read paths still open (KD-15)
 2. No LLM output validation — numeric fidelity rests entirely on prompt obedience of gpt-4o-mini (KD-2)
 3. No rate limiting on auth or chat (KD-3)
 4. Non-transactional dual-writes + unenforced HOME uniqueness (KD-4, KD-5)
@@ -133,7 +133,7 @@ Scope: billing/subscription (D10 ban lifts here only); onboarding funnel; Plaid 
 
 | ID | Issue | Severity | Owner milestone | Status |
 |---|---|---|---|---|
-| KD-1 | Transactions-summary assembler ignores `visibilityLevel`; BALANCE_ONLY accounts' merchants/amounts enter AI prompts (`lib/ai/assemblers/transactions.ts` SAL filter) | **Critical** | v2.4.5 | Open |
+| KD-1 | Transactions-summary assembler ignores `visibilityLevel`; BALANCE_ONLY accounts' merchants/amounts enter AI prompts (`lib/ai/assemblers/transactions.ts` SAL filter) | **Critical** | v2.4.5 | **Fixed** 2026-07-02 (in working tree) — canonical predicate `lib/ai/visibility.ts` (FULL-only; SHARED audit clean in dev+prod via `scripts/audit-visibility-levels.ts`) applied to summary + drilldown; tests: `lib/ai/assemblers/transactions.privacy.test.ts`, `scripts/test-visibility-two-user-space.ts` |
 | KD-2 | No deterministic validation of LLM output figures against context | High | v2.4.5 (AI-4) | Open |
 | KD-3 | No rate limiting (auth endpoints, `/api/ai/chat`) | High | v2.4.5 | Open |
 | KD-4 | No `db.$transaction` around merges/dual-writes; WAS↔SAL mirrors can desync on partial failure | High | v2.4.5 | Open |
@@ -147,6 +147,7 @@ Scope: billing/subscription (D10 ban lifts here only); onboarding funnel; Plaid 
 | KD-12 | Audit-log write amplification: 2 rows per chat message per Space (shadow plans in metadata) | Low | v2.6 | Open |
 | KD-13 | Repo hygiene: personal photos at root, committed `" 2"` Finder-duplicate dirs, uncommitted branch changes, `.env` docs name `ANTHROPIC_API_KEY` while code requires `OPENAI_API_KEY` | Low | v2.4.5 | Open |
 | KD-14 | Scheduler entrypoint never invoked; `run-ai-advice`/`sync-crypto` stubs; `AiAdvice` has never had a write path | High (blocks v2.6) | v2.6 entry | Open |
+| KD-15 | UI transaction read paths ignore `visibilityLevel`: `lib/data/transactions.ts` (`getTransactions`/`getDebtTransactions`/`getInvestmentTransactions`) filter SAL on `status: ACTIVE` only, so BALANCE_ONLY/SUMMARY_ONLY accounts' rows reach dashboard pages and `app/api/accounts/[id]/transactions` — same defect class as KD-1, discovered during the KD-1 impact map (2026-07-02). Violates the `VisibilityLevel` enum contract ("BALANCE_ONLY — … no transactions"). Fix should reuse `lib/ai/visibility.ts` | **Critical** | v2.4.5 | Open |
 
 ## 8. Parked ideas
 

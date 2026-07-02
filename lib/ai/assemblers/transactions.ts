@@ -16,6 +16,14 @@
  * the migration period. Transaction.deletedAt is always filtered to null
  * (D2 Step 4D-R soft-delete guard).
  *
+ * KD-1 (2026-07-02): the SpaceAccountLink path additionally requires a
+ * visibilityLevel that grants transaction detail (TRANSACTION_DETAIL_VISIBILITY,
+ * lib/ai/visibility.ts — currently FULL only). BALANCE_ONLY / SUMMARY_ONLY
+ * links contribute balance / summary data via the accounts assembler only;
+ * their transaction rows, merchants, and amounts never enter AI context —
+ * neither directly nor through any aggregate in this summary. The legacy path
+ * is the Space's own accounts and is FULL by definition.
+ *
  * ── What is included ─────────────────────────────────────────────────────────
  * Banking categories only (Income, Transfer, Groceries, Dining, Shopping,
  * Travel, Subscriptions, Utilities, Interest, Payment, Other). Investment
@@ -33,19 +41,24 @@
  * ── Permissions ──────────────────────────────────────────────────────────────
  * buildContext() validates Space membership before invoking any assembler.
  * The OR query always scopes to the validated spaceId — no cross-Space rows
- * can appear. SpaceAccountLink.status = ACTIVE is enforced on the current path.
+ * can appear. SpaceAccountLink.status = ACTIVE and a transaction-detail-
+ * granting visibilityLevel (KD-1) are both enforced on the current path.
  *
  * ── Security invariants ──────────────────────────────────────────────────────
  * - Does NOT import lib/plaid/encryption or call any decrypt function.
  * - Does NOT query WorkspaceAccountShare.
  * - All queries filter by spaceCtx.spaceId.
  * - No raw transaction rows are returned in the ContextDomainSection.
+ * - Transaction rows are sourced only from accounts whose link grants
+ *   transaction detail (TRANSACTION_DETAIL_VISIBILITY — KD-1); summary and
+ *   drilldown share the same predicate constant.
  */
 
 import { db } from '@/lib/db';
 import { ShareStatus, TransactionCategory } from '@prisma/client';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
+import { TRANSACTION_DETAIL_VISIBILITY } from '@/lib/ai/visibility';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
   AssemblerOptions,
@@ -54,7 +67,10 @@ import type {
   CategorySpend,
   RecurringCandidate,
   MerchantSummary,
+  IncomeSource,
   MonthlyBreakdownEntry,
+  TransactionDrilldown,
+  DrilldownTransaction,
 } from '@/lib/ai/types';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
 import type { SpaceContext } from '@/lib/space';
@@ -85,6 +101,31 @@ const INCOME_CATEGORIES = new Set<TransactionCategory>([
 ]);
 
 /**
+ * Categories excluded from the SPENDING merchant rollup (D6.3 stabilization).
+ * These are not discretionary spend: Income + Interest are inflows, Transfer is
+ * an internal move, and Payment is debt repayment. Combined with the amount < 0
+ * expense filter, this guarantees payroll, transfers, and debt payments can
+ * never surface as "top spending merchants".
+ */
+const MERCHANT_EXCLUDED_CATEGORIES = new Set<TransactionCategory>([
+  TransactionCategory.Income,
+  TransactionCategory.Interest,
+  TransactionCategory.Transfer,
+  TransactionCategory.Payment,
+]);
+
+/**
+ * Discretionary SPENDING categories — banking categories minus the non-spending
+ * set above. Used as the default category filter for a drilldown that names no
+ * specific category (e.g. "why is January so high?" / "show me the largest
+ * transactions"), so payroll, transfers, and debt payments are excluded unless
+ * the user explicitly asks about one of those.
+ */
+const SPENDING_CATEGORIES: TransactionCategory[] = BANKING_CATEGORIES.filter(
+  (c) => !MERCHANT_EXCLUDED_CATEGORIES.has(c),
+);
+
+/**
  * Safety cap on rows fetched per assembly. Aggregation covers these rows;
  * if a Space has more than this many banking transactions in the window the
  * summary reflects the most recent TRANSACTION_FETCH_LIMIT rows only.
@@ -103,6 +144,17 @@ const MONTHLY_TOP_CATEGORIES = 3;
  * context payload stays bounded for Spaces with a long merchant tail.
  */
 const MERCHANT_ROLLUP_LIMIT = 25;
+
+/**
+ * Cap on income sources emitted in the (D6.3 stabilization) income rollup.
+ * Mirrors MERCHANT_ROLLUP_LIMIT: grouping is over all settled inflow rows; only
+ * the top N by total are serialized so the payload stays bounded.
+ */
+const INCOME_SOURCE_ROLLUP_LIMIT = 25;
+
+/** Default / maximum rows returned by a transaction drilldown (D6 evidence). */
+const DRILLDOWN_DEFAULT_LIMIT = 15;
+const DRILLDOWN_MAX_LIMIT     = 25;
 
 /**
  * Defensive ceiling on an explicit (D6) window. The routing layer already caps
@@ -147,7 +199,9 @@ async function assembleTransactions(
   // ── Query ─────────────────────────────────────────────────────────────────
   // Mirrors the dual-path OR in lib/data/transactions.ts:
   //   path 1 — legacy Account.spaceId
-  //   path 2 — FinancialAccount via active SpaceAccountLink (D3 canonical)
+  //   path 2 — FinancialAccount via active SpaceAccountLink (D3 canonical),
+  //            restricted to links granting transaction detail (KD-1) so
+  //            BALANCE_ONLY / SUMMARY_ONLY accounts never contribute rows.
   // Both deletedAt guards (account-level and transaction-level) are applied.
 
   const rows: TxnRow[] = await db.transaction.findMany({
@@ -159,7 +213,13 @@ async function assembleTransactions(
         {
           financialAccount: {
             deletedAt:         null,
-            spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } },
+            spaceAccountLinks: {
+              some: {
+                spaceId,
+                status:          ShareStatus.ACTIVE,
+                visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
+              },
+            },
           },
         },
       ],
@@ -329,21 +389,25 @@ async function assembleTransactions(
     );
   }
 
-  // ── Merchant rollup (D6.3A-1 — canonicalized, settled rows, full scope) ───
+  // ── Merchant rollup (D6.3A-1 + D6.3 stabilization — SPENDING merchants only) ─
   // Groups settled rows by the deterministic canonical merchant key
   // (lib/transactions/merchant.ts) so downstream consumers see one entry per
   // merchant instead of one per raw statement descriptor. `total` is the
-  // absolute settled sum (mirrors byCategory/cash-flow money conventions);
-  // `category` is the merchant's dominant category. All categories present in
-  // the query are included (the query already scopes to BANKING_CATEGORIES) —
-  // no additional category exclusions here, unlike recurringCandidates.
+  // absolute settled expense sum (mirrors byCategory/cash-flow money
+  // conventions); `category` is the merchant's dominant spending category.
+  //
+  // SPENDING-ONLY (D6.3): only settled EXPENSE rows are grouped here — amount < 0
+  // AND category not in MERCHANT_EXCLUDED_CATEGORIES (Income, Interest, Transfer,
+  // Payment). This is what keeps payroll, internal transfers, and debt payments
+  // out of "top merchants by spend"; inflows are rolled up separately into
+  // `incomeSources` below.
 
   let merchants: MerchantSummary[] | undefined;
 
   if (scopeHint !== 'brief') {
     type MerchantAgg = {
       canonicalName: string;
-      total:         number;                      // absolute settled sum
+      total:         number;                      // absolute settled expense sum
       occurrences:   number;
       firstSeen:     string;                      // YYYY-MM-DD
       lastSeen:      string;                      // YYYY-MM-DD
@@ -353,6 +417,11 @@ async function assembleTransactions(
     const merchantMap = new Map<string, MerchantAgg>();
 
     for (const txn of settled) {
+      // Spending merchants only: skip inflows/transfers/debt payments, and skip
+      // any non-negative amount (refunds/credits are not spend).
+      if (MERCHANT_EXCLUDED_CATEGORIES.has(txn.category)) continue;
+      if (txn.amount >= 0) continue;
+
       const { canonicalKey, canonicalName } = normalizeMerchant(txn.merchant);
       const iso = txn.date.toISOString().split('T')[0];
       const abs = Math.abs(txn.amount);
@@ -407,6 +476,70 @@ async function assembleTransactions(
       .slice(0, MERCHANT_ROLLUP_LIMIT);
   }
 
+  // ── Income-source rollup (D6.3 stabilization — INFLOW sources only) ───────
+  // Mirror image of the merchant rollup: groups settled INFLOW rows by the same
+  // canonical key. Included = positive amount in an INCOME_CATEGORIES bucket
+  // (Income + Interest — the same set that feeds the top-level incomeTotal, so
+  // the numbers reconcile). Transfers are excluded by construction (Transfer is
+  // not in INCOME_CATEGORIES). This is where payroll belongs — never `merchants`.
+
+  let incomeSources: IncomeSource[] | undefined;
+
+  if (scopeHint !== 'brief') {
+    type IncomeAgg = {
+      canonicalName: string;
+      total:         number;                      // positive settled inflow sum
+      occurrences:   number;
+      firstSeen:     string;                      // YYYY-MM-DD
+      lastSeen:      string;                      // YYYY-MM-DD
+    };
+
+    const incomeMap = new Map<string, IncomeAgg>();
+
+    for (const txn of settled) {
+      if (!INCOME_CATEGORIES.has(txn.category)) continue;
+      if (txn.amount <= 0) continue;
+
+      const { canonicalKey, canonicalName } = normalizeMerchant(txn.merchant);
+      const iso = txn.date.toISOString().split('T')[0];
+
+      const agg = incomeMap.get(canonicalKey) ?? {
+        canonicalName,
+        total:       0,
+        occurrences: 0,
+        firstSeen:   iso,
+        lastSeen:    iso,
+      };
+
+      agg.total       += txn.amount;
+      agg.occurrences += 1;
+      if (iso < agg.firstSeen) agg.firstSeen = iso;
+      if (iso > agg.lastSeen)  agg.lastSeen  = iso;
+
+      incomeMap.set(canonicalKey, agg);
+    }
+
+    incomeSources = Array.from(incomeMap.entries())
+      .map(([canonicalKey, agg]): IncomeSource => ({
+        canonicalName: agg.canonicalName,
+        canonicalKey,
+        occurrences:   agg.occurrences,
+        total:         Math.round(agg.total * 100) / 100,
+        firstSeen:     agg.firstSeen,
+        lastSeen:      agg.lastSeen,
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, INCOME_SOURCE_ROLLUP_LIMIT);
+  }
+
+  // ── Drilldown evidence (D6 — only when an explicit drilldown was requested) ─
+  // Re-reads real line items behind a category/merchant/period for explainability.
+  // Never runs on ordinary prompts (the option is absent) and only reads rows
+  // inside the Space's FULL-visibility boundary.
+  const drilldown = options.drilldown
+    ? await assembleDrilldown(spaceCtx, options.drilldown, win)
+    : undefined;
+
   // ── Assemble payload ──────────────────────────────────────────────────────
 
   const data: TransactionsSummaryData = {
@@ -448,6 +581,8 @@ async function assembleTransactions(
 
     ...(recurringCandidates !== undefined ? { recurringCandidates } : {}),
     ...(merchants !== undefined ? { merchants } : {}),
+    ...(incomeSources !== undefined ? { incomeSources } : {}),
+    ...(drilldown !== undefined ? { drilldown } : {}),
   };
 
   return {
@@ -631,6 +766,144 @@ function resolveWindow(
   const end = new Date(`${endIso}T23:59:59.999Z`);
 
   return { start, end, startIso, endIso, days: inclusiveDaySpan(startIso, endIso) };
+}
+
+/** Resolve a free-text category name to a TransactionCategory, or null. */
+function resolveCategory(raw: string | undefined): TransactionCategory | null {
+  if (!raw) return null;
+  const key = raw.trim().toLowerCase();
+  for (const c of BANKING_CATEGORIES) {
+    if (c.toLowerCase() === key) return c;
+  }
+  return null;
+}
+
+/**
+ * D6 transaction drilldown — bounded evidence retrieval, NOT a new aggregation
+ * engine. Re-reads the real transactions behind a resolved category / merchant /
+ * period so the AI can explain "what is this made up of?".
+ *
+ * Visibility: mirrors the summary's dual-path Space scoping. The
+ * FinancialAccount path is restricted to TRANSACTION_DETAIL_VISIBILITY
+ * (lib/ai/visibility.ts — the same predicate the summary query uses, so
+ * drilldown and summary can never disagree; KD-1) so BALANCE_ONLY /
+ * SUMMARY_ONLY accounts never contribute raw line items. The legacy Account
+ * path is the Space's own accounts (account.spaceId) and is treated as FULL.
+ * Because every surfaced row is FULL-visibility, the source account name is
+ * safe to include.
+ *
+ * Settled rows only (pending excluded) so the shown totals reconcile with the
+ * settled category totals elsewhere in the summary. Spending-only (amount < 0)
+ * unless the caller explicitly asked about a non-spending category.
+ */
+async function assembleDrilldown(
+  spaceCtx:  SpaceContext,
+  request:   NonNullable<AssemblerOptions['drilldown']>,
+  defaultWin: { startIso: string; endIso: string | null },
+): Promise<TransactionDrilldown | undefined> {
+  const { spaceId } = spaceCtx;
+
+  // Window: explicit drilldown bounds win, else fall back to the summary window.
+  const startIso = request.startDate ?? defaultWin.startIso;
+  const endIso   = request.endDate   ?? defaultWin.endIso ?? new Date().toISOString().split('T')[0];
+  const start = new Date(`${startIso}T00:00:00.000Z`);
+  const end   = new Date(`${endIso}T23:59:59.999Z`);
+
+  const resolvedCategory   = resolveCategory(request.category);
+  const includeNonSpending = request.includeNonSpending === true;
+  const merchantQuery      = request.merchant?.trim();
+
+  // Category constraint:
+  //   - a specific resolved category → exactly that category
+  //   - includeNonSpending           → any banking category
+  //   - default                      → discretionary spending categories only
+  const categoryWhere = resolvedCategory
+    ? { category: resolvedCategory }
+    : includeNonSpending
+      ? { category: { in: BANKING_CATEGORIES } }
+      : { category: { in: SPENDING_CATEGORIES } };
+
+  // Sign constraint: spending only (amount < 0) unless a non-spending category
+  // was explicitly requested (income is positive, etc.).
+  const amountWhere = includeNonSpending ? {} : { amount: { lt: 0 } };
+
+  const rows = await db.transaction.findMany({
+    where: {
+      OR: [
+        { account: { spaceId } },
+        {
+          financialAccount: {
+            deletedAt:         null,
+            spaceAccountLinks: {
+              some: {
+                spaceId,
+                status:          ShareStatus.ACTIVE,
+                visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
+              },
+            },
+          },
+        },
+      ],
+      deletedAt: null,
+      pending:   false,
+      date:      { gte: start, lte: end },
+      ...categoryWhere,
+      ...amountWhere,
+      ...(merchantQuery ? { merchant: { contains: merchantQuery, mode: 'insensitive' } } : {}),
+    },
+    select: {
+      date:        true,
+      merchant:    true,
+      description: true,
+      category:    true,
+      amount:      true,
+      account:          { select: { name: true } },
+      financialAccount: { select: { name: true, displayName: true } },
+    },
+    orderBy: { date: 'desc' },
+    take:    TRANSACTION_FETCH_LIMIT,
+  });
+
+  if (rows.length === 0) return undefined;
+
+  // matchedTotal / totalCount describe the FULL matching set (pre-cap).
+  const matchedTotal = rows.reduce((s, r) => s + Math.abs(r.amount), 0);
+  const totalCount   = rows.length;
+
+  const limit = Math.min(request.limit ?? DRILLDOWN_DEFAULT_LIMIT, DRILLDOWN_MAX_LIMIT);
+
+  const shown = [...rows]
+    .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+    .slice(0, limit);
+
+  const transactions: DrilldownTransaction[] = shown.map((r) => {
+    const accountName =
+      r.financialAccount?.displayName ?? r.financialAccount?.name ?? r.account?.name ?? undefined;
+    return {
+      date:     r.date.toISOString().split('T')[0],
+      merchant: normalizeMerchant(r.merchant).canonicalName,
+      ...(r.description ? { description: r.description } : {}),
+      amount:   Math.round(r.amount * 100) / 100,
+      category: r.category,
+      ...(accountName ? { accountName } : {}),
+    };
+  });
+
+  const shownTotal = shown.reduce((s, r) => s + Math.abs(r.amount), 0);
+
+  return {
+    ...(resolvedCategory ? { category: resolvedCategory } : {}),
+    ...(merchantQuery ? { merchant: merchantQuery } : {}),
+    startDate:    startIso,
+    endDate:      endIso,
+    ...(request.label ? { label: request.label } : {}),
+    transactions,
+    shownCount:   transactions.length,
+    totalCount,
+    shownTotal:   Math.round(shownTotal   * 100) / 100,
+    matchedTotal: Math.round(matchedTotal * 100) / 100,
+    truncated:    totalCount > transactions.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
