@@ -56,6 +56,7 @@ import type { FinancialAssessment }  from '@/lib/ai/intelligence';
 import { classifyFinancialIntent, serializeRoutingBlock } from '@/lib/ai/intent';
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
+import { validateOutput } from '@/lib/ai/output-validator';
 import { AuditAction }               from '@/lib/audit-actions';
 import type { Prisma }               from '@prisma/client';
 
@@ -115,6 +116,47 @@ async function logShadowSelectionPlans(
   } catch (err) {
     // Non-fatal: shadow logging must never break the chat response.
     console.error('[api/ai/chat] shadow selection-plan logging failed (non-fatal):', err);
+  }
+}
+
+// ── Shadow-mode output validation (AI-4 / KD-2) ──────────────────────────────
+//
+// Deterministically checks that every numeric claim in the LLM reply reconciles
+// to a number present in the grounded system prompt (membership-with-tolerance,
+// lib/ai/output-validator.ts). SHADOW ONLY: the reply is already returned to the
+// caller unchanged; this writes an AuditLog row ONLY when unreconciled numbers
+// exist, so it adds no per-message write amplification (KD-12) and can never
+// alter, delay, or fail the response. All errors are swallowed.
+async function logOutputValidation(
+  userId:       string,
+  spaceId:      string,
+  reply:        string,
+  systemPrompt: string,
+  messages:     ChatMessage[],
+): Promise<void> {
+  try {
+    const userMessages = messages.filter((m) => m.role === 'user').map((m) => m.content);
+    const result = validateOutput(reply, systemPrompt, userMessages);
+    if (result.unreconciled.length === 0) return; // clean — write nothing.
+
+    await db.auditLog.create({
+      data: {
+        action:   AuditAction.AI_OUTPUT_VALIDATION_FLAGGED,
+        userId,
+        // Master mode has no single Space — spaceId is nullable on AuditLog.
+        spaceId:  spaceId === 'master' ? null : spaceId,
+        metadata: {
+          mode:         spaceId === 'master' ? 'master' : 'space',
+          unreconciled: result.unreconciled,
+          checkedCount: result.checkedCount,
+          sourceCount:  result.sourceCount,
+        } as unknown as Prisma.InputJsonValue,
+      },
+      select: { id: true },
+    });
+  } catch (err) {
+    // Non-fatal: shadow validation must never break the chat response.
+    console.error('[api/ai/chat] shadow output validation failed (non-fatal):', err);
   }
 }
 
@@ -1505,6 +1547,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       { status: 502 },
     );
   }
+
+  // Shadow-mode output validation (AI-4 / KD-2): observational only. Runs after
+  // the reply exists and before it is returned; the reply below is unchanged.
+  await logOutputValidation(user.id, spaceId, reply, systemPrompt, messages);
 
   return NextResponse.json({
     message:          reply,

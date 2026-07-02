@@ -84,6 +84,10 @@ export const AuditAction = {
   // Shadow-mode selection plan (D6.3D-1). Records what a token-budgeted
   // selection WOULD include/trim. Purely observational — no prompt is changed.
   AI_CONTEXT_SELECTION_PLANNED: "AI_CONTEXT_SELECTION_PLANNED",
+  // Shadow-mode output validation (AI-4 / KD-2). Written ONLY when an LLM reply
+  // contains a numeric claim that cannot be reconciled to the grounding context.
+  // Observational only — the reply is returned byte-for-byte unchanged.
+  AI_OUTPUT_VALIDATION_FLAGGED: "AI_OUTPUT_VALIDATION_FLAGGED",
 } as const;
 
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];
