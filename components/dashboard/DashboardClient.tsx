@@ -30,7 +30,6 @@ import {
   FolderOpen,
   ArrowUpRight,
   Receipt,
-  FileText,
   Compass,
   Users,
 } from "lucide-react";
@@ -152,25 +151,31 @@ const PERSONAL_TABS: { key: PersonalTab; label: string }[] = [
 
 // "More" rail menu (far left of the rail) — the data-tabs that used to have
 // their own pill and still are fully real/reachable, just consolidated
-// behind one menu instead of four separate pills. Order matches the spec:
-// Accounts, Transactions, Members, Documents. Icons mirror each tab's own
-// section/content icon elsewhere in this file (Landmark/Receipt/Users/
-// FileText) for visual continuity.
+// behind one menu instead of separate pills. Order matches SPACE_TAB_ORDER:
+// Accounts, Transactions, Members. Icons mirror each tab's own
+// section/content icon elsewhere in this file (Landmark/Receipt/Users) for
+// visual continuity. Documents has no entry (v2.5 honesty slice — no real
+// feature exists yet; see PLACEHOLDER_SPACE_TABS / isRailTabVisible in
+// lib/space-nav.ts): a menu item whose only content is a coming-soon panel
+// is not real content. It re-earns its slot when the feature ships.
 const MORE_MENU_ITEMS: { id: PersonalTab; label: string; icon: React.ElementType }[] = [
   { id: RAIL_TO_INTERNAL.ACCOUNTS,     label: SPACE_TAB_LABELS.ACCOUNTS,     icon: Landmark },
   { id: RAIL_TO_INTERNAL.TRANSACTIONS, label: SPACE_TAB_LABELS.TRANSACTIONS, icon: Receipt },
   { id: RAIL_TO_INTERNAL.MEMBERS,      label: SPACE_TAB_LABELS.MEMBERS,      icon: Users },
-  { id: RAIL_TO_INTERNAL.DOCUMENTS,    label: SPACE_TAB_LABELS.DOCUMENTS,    icon: FileText },
 ];
 
 // Investments, Credit ("Debt"), and Goals are real, unmodified features that
 // no longer have a top-level button now that Perspectives is their entry
 // point (see PERSONAL_PERSPECTIVE_TARGETS below) — but they stay fully
 // reachable, not deleted. VALID_TABS keeps deep links (?tab=) working for
-// every id, old or new.
+// every id with real content behind it. "finances" and "documents" are
+// deliberately absent (v2.5 honesty slice): no feature exists yet, so a
+// stale ?tab= deep link falls back to Overview instead of landing on a
+// coming-soon panel. The PersonalTab type members stay — this is
+// presentation-level gating only.
 const VALID_TABS: PersonalTab[] = [
   "dashboard", "banking", "investments", "credit", "goals", "activity", "settings",
-  "perspectives", "timeline", "finances", "transactions", "members", "documents",
+  "perspectives", "timeline", "transactions", "members",
 ];
 
 // Perspective ids (lib/perspectives.ts) that route to an existing real
@@ -496,14 +501,15 @@ export function DashboardClient({
   const isSettings     = filter === "settings";
   const isPerspectives = filter === "perspectives";
   const isTimeline     = filter === "timeline";
-  const isFinances     = filter === "finances";
+  // "finances" / "documents" have no is* flag or render block anymore
+  // (v2.5 honesty slice) — they're absent from VALID_TABS and MORE_MENU_ITEMS,
+  // so `filter` can never hold them. The PersonalTab members remain valid.
   const isTransactions = filter === "transactions";
   const isMembers      = filter === "members";
-  const isDocuments    = filter === "documents";
 
   const isStaticTab =
     isGoals || isActivity || isSettings ||
-    isPerspectives || isTimeline || isFinances || isTransactions || isMembers || isDocuments;
+    isPerspectives || isTimeline || isTransactions || isMembers;
 
   // ── Perspectives (lib/perspectives.ts) ────────────────────────────────────
   // Routes to existing, real Personal tabs — no new business logic. Lenses
@@ -1184,14 +1190,10 @@ export function DashboardClient({
           just gate the TimelineModal mount below, instead of switching
           what renders in the tab content area. */}
 
-      {/* Finances tab — placeholder, no feature exists yet. */}
-      {isFinances && (
-        <SpaceComingSoonPanel
-          icon={<Landmark size={20} />}
-          title="Finances"
-          description="A unified budgeting and cash-flow view for this Space is coming soon."
-        />
-      )}
+      {/* Finances / Documents — no render block on this host (v2.5 honesty
+          slice): both ids are absent from VALID_TABS and MORE_MENU_ITEMS,
+          so `filter` can never hold them. See lib/space-nav.ts
+          PLACEHOLDER_SPACE_TABS. */}
 
       {/* Transactions tab — unified transaction list for this Space.
           Data comes from the existing getTransactions() fetch (same data that
@@ -1208,15 +1210,6 @@ export function DashboardClient({
           (same one ManageSpaceModal already uses). */}
       {isMembers && (
         <SpaceMembersWidget spaceId={spaceId} onManage={() => setManageSpaceOpen(true)} />
-      )}
-
-      {/* Documents tab — placeholder, no feature exists yet. */}
-      {isDocuments && (
-        <SpaceComingSoonPanel
-          icon={<FileText size={20} />}
-          title="Documents"
-          description="Statements, receipts, and shared files for this Space are coming soon."
-        />
       )}
 
       {/* Settings tab */}

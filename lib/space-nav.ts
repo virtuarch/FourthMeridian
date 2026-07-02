@@ -59,17 +59,54 @@ export const SPACE_TAB_LABELS: Record<SpaceTabId, string> = {
 /**
  * Tabs that don't yet have a real, working feature behind them anywhere in
  * the product (no API, no UI, in the shared-space dashboard implementation as
- * of this pass). Hosts render these with a calm "coming soon" placeholder
- * instead of pretending there's depth that isn't built yet.
+ * of this pass).
+ *
+ * v2.5 honesty slice: these tabs no longer get a rail control at all —
+ * "rail earns tabs by having real content" (see
+ * docs/investigations/SPACE_DASHBOARD_FUTURE_INVESTIGATION.md §2.9). The
+ * tab *ids* stay valid (types, deep-link handling, and internal gating
+ * still reference them); only their rail presence is gated, via
+ * isRailTabVisible/railVisibleTabs below. Fixed ORDER remains law for
+ * every tab that does appear.
  *
  * Note: TRANSACTIONS is real in the Personal Space (DashboardClient renders
- * SpaceTransactionsPanel). SpaceDashboard still shows a placeholder for
- * Transactions on shared/non-personal Spaces — that's a separate workstream.
+ * SpaceTransactionsPanel) but has no real implementation in SpaceDashboard
+ * (shared/non-personal Spaces) — hence the per-host gating below.
  *
  * FUTURE ENHANCEMENT: once Finances and Documents features exist, and
- * Transactions is wired for shared Spaces, remove entries here.
+ * Transactions is wired for shared Spaces, remove entries here so the tabs
+ * re-earn their rail slots.
  */
 export const PLACEHOLDER_SPACE_TABS: SpaceTabId[] = ["FINANCES", "DOCUMENTS"];
+
+/** Which dashboard implementation is asking — Personal (DashboardClient.tsx)
+ *  or every other category (SpaceDashboard.tsx). */
+export type SpaceDashboardHost = "personal" | "shared";
+
+/** Tabs that are placeholders only on shared/non-personal Spaces. */
+export const SHARED_ONLY_PLACEHOLDER_TABS: SpaceTabId[] = ["TRANSACTIONS"];
+
+/**
+ * Presentation-level gate: should this tab get a visible rail control on
+ * the given host? False for tabs whose only content would be a
+ * SpaceComingSoonPanel. This does NOT invalidate the tab id itself —
+ * routes, types, and internal activeTab values are untouched.
+ */
+export function isRailTabVisible(id: SpaceTabId, host: SpaceDashboardHost): boolean {
+  if (PLACEHOLDER_SPACE_TABS.includes(id)) return false;
+  if (host === "shared" && SHARED_ONLY_PLACEHOLDER_TABS.includes(id)) return false;
+  return true;
+}
+
+/**
+ * The rail for a host: SPACE_TAB_ORDER minus placeholder tabs, order
+ * preserved. Hosts may apply further presentation filters on top (e.g.
+ * SETTINGS only for managers, TIMELINE rendered as a modal launcher) but
+ * must never re-add a tab this function excludes, and must never reorder.
+ */
+export function railVisibleTabs(host: SpaceDashboardHost): SpaceTabId[] {
+  return SPACE_TAB_ORDER.filter((id) => isRailTabVisible(id, host));
+}
 
 /**
  * Cross-component CustomEvent names (window-level pub/sub between

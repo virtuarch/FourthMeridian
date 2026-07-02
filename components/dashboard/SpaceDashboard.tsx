@@ -19,7 +19,7 @@ import {
   Eye, EyeOff, ChevronDown, ChevronUp,
   CheckCircle2, Circle, Calendar, AlertCircle,
   X, MoreHorizontal, Archive, Trash2, RotateCcw, LogOut,
-  Receipt, FileText, Compass, PiggyBank,
+  Compass, PiggyBank,
 } from "lucide-react";
 import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
 import { getWidgetMeta } from "@/lib/widget-registry";
@@ -35,7 +35,7 @@ import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/componen
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import {
-  SPACE_TAB_ORDER,
+  railVisibleTabs,
   SPACE_TAB_LABELS,
   SPACE_GOALS_CHANGED_EVENT,
   SPACE_ACCOUNTS_CHANGED_EVENT,
@@ -1797,13 +1797,18 @@ export function SpaceDashboard({
   const canManage = ["OWNER", "ADMIN"].includes(myRole);
   const canLeave  = !canManage; // MEMBER and VIEWER can leave
 
-  // Fixed rail options — SETTINGS only renders a button for managers,
-  // matching the old tabs.push("SETTINGS") gate below. TIMELINE is excluded
-  // too: it's now a modal launched from Overview's "Recent activity"
-  // preview (IA refactor point 1), not its own rail page — "TIMELINE" stays
-  // a valid activeTab value (NEW_SPACE_TABS, setActiveTab("TIMELINE") below)
-  // that now opens the modal instead of switching rail pages.
-  const railOptions: { id: string; label: string }[] = SPACE_TAB_ORDER
+  // Fixed rail options — starts from railVisibleTabs("shared") (v2.5
+  // honesty slice: placeholder tabs — Finances/Documents, plus Transactions
+  // on non-personal Spaces — get no rail control until real; see
+  // lib/space-nav.ts). On top of that, SETTINGS only renders a button for
+  // managers, matching the old tabs.push("SETTINGS") gate below. TIMELINE
+  // is excluded too: it's now a modal launched from Overview's "Recent
+  // activity" preview (IA refactor point 1), not its own rail page —
+  // "TIMELINE" stays a valid activeTab value (NEW_SPACE_TABS,
+  // setActiveTab("TIMELINE") below) that now opens the modal instead of
+  // switching rail pages. Order is inherited from SPACE_TAB_ORDER — these
+  // filters never reorder.
+  const railOptions: { id: string; label: string }[] = railVisibleTabs("shared")
     .filter((id) => id !== "SETTINGS" || canManage)
     .filter((id) => id !== "TIMELINE")
     .map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
@@ -2101,36 +2106,16 @@ export function SpaceDashboard({
             TimelineModal mount near the top of this component, instead of
             switching what renders in the rail's content area. */}
 
-        {/* Finances tab — placeholder. */}
-        {activeTab === "FINANCES" && (
-          <SpaceComingSoonPanel
-            icon={<Landmark size={20} />}
-            title="Finances"
-            description="A unified budgeting and cash-flow view for this Space is coming soon."
-          />
-        )}
-
-        {/* Transactions tab — placeholder. */}
-        {activeTab === "TRANSACTIONS" && (
-          <SpaceComingSoonPanel
-            icon={<Receipt size={20} />}
-            title="Transactions"
-            description="A unified transaction list across every account in this Space is coming soon."
-          />
-        )}
+        {/* Finances / Transactions / Documents — no rail control and no
+            body on this host (v2.5 honesty slice): these ids are gated off
+            the rail by railVisibleTabs("shared") in lib/space-nav.ts until
+            a real feature backs them, so nothing user-facing can set
+            activeTab to them anymore. The ids remain valid members of
+            NEW_SPACE_TABS so internal gating below keeps working. */}
 
         {/* Members tab — real data. */}
         {activeTab === "MEMBERS" && (
           <SpaceMembersWidget spaceId={spaceId} onManage={() => setShowManage(true)} />
-        )}
-
-        {/* Documents tab — placeholder. */}
-        {activeTab === "DOCUMENTS" && (
-          <SpaceComingSoonPanel
-            icon={<FileText size={20} />}
-            title="Documents"
-            description="Statements, receipts, and shared files for this Space are coming soon."
-          />
         )}
 
         {/* Goals/Debt/Investments/Retirement — Glass modal (IA refactor
