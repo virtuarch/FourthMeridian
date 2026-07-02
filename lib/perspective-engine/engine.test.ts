@@ -59,8 +59,11 @@ const SCOPE: PerspectiveScope = { spaceId: "space_test_1", userId: "user_test_1"
 const FIXED_NOW = () => new Date("2026-07-03T12:00:00.000Z");
 
 // A deterministic, contract-conforming fake lens registered under the real
-// "liquidity" id (LensId is a closed union; commit 2 replaces this fake with
-// the real implementation — this test file will then register no fakes).
+// "liquidity" id. Deliberately a fake even though the real lens now exists
+// (lenses/liquidity.ts): importing the real lens module would pull the data
+// layer (and Prisma) into this pure engine-mechanics test. The real lenses
+// are fixture-tested in liquidity.test.ts / debt.test.ts; each tsx test runs
+// in its own process, so the ids never collide.
 const fakeLiquidity = async (
   scope: PerspectiveScope,
   options: ComputeOptions,
@@ -114,8 +117,8 @@ async function main(): Promise<void> {
     validateLensResult(unreg).join("; "));
 
   // Throwing lens: error text carrying a sentinel must never reach the
-  // result. Registered under the (as yet unimplemented) "debt" id — commit 3
-  // replaces this fake with the real lens and this test stops registering it.
+  // result. Registered under the "debt" id (fake for the same reason as the
+  // "liquidity" fake above — keep this test DB-free).
   const SENTINEL = "LEAKCANARY_CHASE_SAVINGS_9931";
   const throwingId = "debt" as const;
   registerLens(throwingId, async () => {
