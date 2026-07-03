@@ -151,14 +151,22 @@
      byte-identical. A later, separately-approved step adopts them.
      Rollback = delete this block (+ the --glass-floating fills and the
      .atlas-fresnel-edge utility below). ============================ */
-  --glass-blur-ultrathin: 16px;  --glass-sat-ultrathin: 180%;  --glass-bright-ultrathin: 1;
-  --glass-blur-thin:      28px;  --glass-sat-thin:      165%;  --glass-bright-thin:      1;
-  --glass-blur-regular:   40px;  --glass-sat-regular:   150%;  --glass-bright-regular:   .99;
-  --glass-blur-thick:     60px;  --glass-sat-thick:     140%;  --glass-bright-thick:     .97;
+  /* Phase 2 retune — the tiers were too close to read apart (thin 28 ≈ old
+     hardcoded 30, so Phase 1B "changed almost nothing"). The ladder is now
+     stepped wider so depth is visibly physical: thin lets more of the Earth
+     field read through (shallower frost = the pane floats over a visible
+     world), while regular/thick separate clearly and modal glass reads
+     genuinely thicker. Saturation still falls as thickness rises (more medium
+     between you and the background = less of its color survives). Blur is the
+     expensive axis, so only the rare thick/floating tiers carry the big radii. */
+  --glass-blur-ultrathin: 14px;  --glass-sat-ultrathin: 185%;  --glass-bright-ultrathin: 1;
+  --glass-blur-thin:      24px;  --glass-sat-thin:      170%;  --glass-bright-thin:      1;
+  --glass-blur-regular:   46px;  --glass-sat-regular:   150%;  --glass-bright-regular:   .99;
+  --glass-blur-thick:     68px;  --glass-sat-thick:     138%;  --glass-bright-thick:     .96;
   /* floating — new, rare, most-separated tier (hero / critical only).
      Brightness dips slightly (thicker medium darkens what's behind it);
      its "lift" comes from fill + edge + elevation, not a brighter background. */
-  --glass-blur-floating:  72px;  --glass-sat-floating:  135%;  --glass-bright-floating:  .95;
+  --glass-blur-floating:  84px;  --glass-sat-floating:  132%;  --glass-bright-floating:  .94;
 
   /* Convenience combined filters — one token an opt-in consumer/utility can
      feed to backdrop-filter, composing the three axes above. (Today's

@@ -62,12 +62,47 @@ const GLOW_RECIPES: Record<Exclude<GlassGlow, "none">, string> = {
     "radial-gradient(110% 90% at 92% 112%, rgba(201,162,39,0.13), transparent 55%)",
 };
 
+// Phase 2 — edge intensity scales with depth (Material Doctrine §4.3): thicker
+// glass reads as a more polished slab with a brighter, tighter lit edge; thin
+// stays restrained so cards (and DataCard, which is thin) keep a gentle edge,
+// not a hard outline. Feeds the .atlas-fresnel-edge utility's --atlas-edge-strength.
+const EDGE_STRENGTH: Record<GlassDepth, number> = {
+  ultrathin: 0.7,
+  thin: 0.85,
+  regular: 1,
+  thick: 1.25,
+  floating: 1.5,
+};
+
+// Phase 2 — neutral interior bloom: a soft pool of light INSIDE the pane,
+// positioned toward the same top-left light source as the Fresnel edge. This is
+// NOT the accent `glow` (which is brand-colored and scarce) — it is white and
+// barely there (~7%), and only defaults on for thick/floating so modals and
+// hero surfaces feel genuinely thicker without touching data cards.
+const INTERIOR_BLOOM =
+  "radial-gradient(135% 115% at 16% -12%, rgba(255,255,255,0.07), transparent 55%)";
+
 export interface GlassPanelOwnProps {
   as?: ElementType;
   depth?: GlassDepth;
   elevation?: GlassElevation;
   radius?: GlassRadius;
   glow?: GlassGlow;
+  /**
+   * Fresnel perimeter edge light (Phase 2). Default ON — every panel gets a
+   * lit border, brightest toward the top-left light source, at a depth-scaled
+   * intensity (thin restrained → thick/floating brighter). Set false to opt a
+   * surface out and keep only the legacy top-edge specular.
+   */
+  edge?: boolean;
+  /**
+   * Neutral interior bloom (Phase 2). Defaults to true for `thick`/`floating`
+   * (modals, hero) and false otherwise, so cards stay flat. Explicitly set to
+   * override the depth-based default.
+   */
+  bloom?: boolean;
+  /** Override the depth-scaled edge intensity (--atlas-edge-strength). */
+  edgeStrength?: number;
   /** Adds hover lift + brighten; pairs with role="button"/tabIndex on the host. */
   interactive?: boolean;
   className?: string;
@@ -87,6 +122,9 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
       elevation = "e2",
       radius = "lg",
       glow = "none",
+      edge = true,
+      bloom,
+      edgeStrength,
       interactive = false,
       className = "",
       style,
@@ -96,11 +134,16 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
 
     const Component = (as ?? "div") as ElementType;
 
+    // Bloom defaults on only for the thickest tiers; caller can override.
+    const showBloom = bloom ?? (depth === "thick" || depth === "floating");
+    const resolvedEdgeStrength = edgeStrength ?? EDGE_STRENGTH[depth as GlassDepth];
+
     return (
       <Component
         ref={ref}
         className={[
           "relative overflow-hidden",
+          edge ? "atlas-fresnel-edge" : "",
           interactive
             ? "transition-[transform,box-shadow,background-color] duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:-translate-y-[1px]"
             : "",
@@ -115,10 +158,23 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
           backdropFilter: `var(--glass-filter-${depth})`,
           WebkitBackdropFilter: `var(--glass-filter-${depth})`,
           boxShadow: `var(--shadow-${elevation})`,
+          ...(edge
+            ? ({ "--atlas-edge-strength": resolvedEdgeStrength } as CSSProperties)
+            : {}),
           ...(style as CSSProperties | undefined),
         }}
         {...rest}
       >
+        {/* Neutral interior bloom — soft interior light for thick/floating glass.
+            Distinct from the accent `glow` below; sits on the base, below content. */}
+        {showBloom && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-0"
+            style={{ background: INTERIOR_BLOOM }}
+          />
+        )}
+
         {/* Ambient lighting bloom — sits below content, above the base glass */}
         {glow !== "none" && (
           <div
