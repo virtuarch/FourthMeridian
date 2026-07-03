@@ -51,6 +51,7 @@ import { SpaceMembersWidget } from "@/components/dashboard/widgets/SpaceMembersW
 import { SpaceComingSoonPanel } from "@/components/dashboard/widgets/SpaceComingSoonPanel";
 import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { SpaceTrendHero, type HeroPoint } from "@/components/dashboard/widgets/SpaceTrendHero";
 import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
 import { SpaceTransactionsPanel } from "@/components/dashboard/widgets/SpaceTransactionsPanel";
@@ -2196,54 +2197,25 @@ export function SpaceDashboard({
         />
       )}
 
-      {/* ── Leave space modal ─────────────────────────────────────────── */}
+      {/* ── Leave space confirmation (Atlas ConfirmDialog, doctrine Phase 4) ── */}
       {confirmLeave && (
-        <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-          onClick={() => !leaveBusy && setConfirmLeave(false)}
-        >
-          <div
-            className="w-full sm:max-w-sm bg-[var(--modal-surface)] border border-[var(--border-hairline-strong)] rounded-2xl shadow-2xl overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Icon + title */}
-            <div className="px-5 pt-6 pb-4 text-center">
-              <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-4">
-                <LogOut size={20} className="text-[var(--accent-negative)]" />
-              </div>
-              <h2 className="text-base font-semibold text-white mb-1">
-                Leave {displaySpaceName(spaceName)}?
-              </h2>
-              <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
-                You&apos;ll lose access to this Space and all of its shared data.
-                To rejoin, an <span className="text-white font-medium">Owner</span> or{" "}
-                <span className="text-white font-medium">Admin</span> will need to manually
-                re-add you.
-              </p>
-            </div>
-
-            {/* Buttons */}
-            <div className="flex gap-2 px-5 pb-5">
-              <button
-                onClick={() => setConfirmLeave(false)}
-                disabled={leaveBusy}
-                className="flex-1 px-4 py-2.5 rounded-xl border border-[var(--border-hairline-strong)] text-sm font-medium text-[var(--text-secondary)] hover:text-white hover:border-[var(--border-hairline-strong)] disabled:opacity-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleLeave}
-                disabled={leaveBusy}
-                className="flex-1 px-4 py-2.5 rounded-xl bg-[var(--accent-negative)] text-sm font-medium text-white disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
-              >
-                {leaveBusy
-                  ? <Loader2 size={14} className="animate-spin" />
-                  : <LogOut size={14} />}
-                Leave Space
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          onClose={() => setConfirmLeave(false)}
+          onConfirm={handleLeave}
+          icon={LogOut}
+          title={`Leave ${displaySpaceName(spaceName)}?`}
+          message={
+            <>
+              You&apos;ll lose access to this Space and all of its shared data.
+              To rejoin, an <span className="text-white font-medium">Owner</span> or{" "}
+              <span className="text-white font-medium">Admin</span> will need to manually
+              re-add you.
+            </>
+          }
+          confirmLabel="Leave Space"
+          confirmIcon={<LogOut size={14} />}
+          busy={leaveBusy}
+        />
       )}
 
       <div className="max-w-5xl mx-auto">

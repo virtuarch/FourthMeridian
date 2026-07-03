@@ -53,6 +53,7 @@
 import { useEffect, useRef, useState } from "react";
 import { usePlaidLink, PlaidLinkOnSuccess, PlaidLinkOnExit } from "react-plaid-link";
 import { CheckCircle2, Loader2, AlertCircle } from "lucide-react";
+import { Dialog } from "@/components/atlas/Dialog";
 
 // ── Phase type ────────────────────────────────────────────────────────────────
 
@@ -230,17 +231,22 @@ export function AdminExpandHistoryFlow({
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
-
-      <div className="relative w-full max-w-sm bg-gray-900 border border-gray-700/80 rounded-2xl shadow-2xl overflow-hidden">
+    <Dialog
+      open
+      onClose={onClose}
+      title="Expand Transaction History"
+      hideHeader
+      size="sm"
+      preventClose
+      closeOnBackdrop={false}
+    >
 
         {/* ── Confirmation view ── */}
         {isConfirming && (
-          <div className="px-5 pt-5 pb-5 space-y-4">
+          <div className="space-y-4">
             {/* Header */}
             <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide font-medium">
+              <p className="text-xs text-[var(--text-muted)] uppercase tracking-wide font-medium">
                 Expand Transaction History
               </p>
               <p className="text-lg font-semibold text-white mt-0.5">{institutionName}</p>
@@ -248,17 +254,17 @@ export function AdminExpandHistoryFlow({
 
             {/* Main message */}
             <div>
-              <p className="text-sm text-gray-300">
+              <p className="text-sm text-[var(--text-secondary)]">
                 Reconnect {institutionName} to import additional historical transactions.
               </p>
-              <p className="text-sm font-semibold text-blue-400 mt-1">
+              <p className="text-sm font-semibold text-[var(--accent-info)] mt-1">
                 Up to 730 days of history
               </p>
             </div>
 
             {/* Preservation checklist */}
             <div>
-              <p className="text-xs font-medium text-gray-500 mb-2">What is preserved</p>
+              <p className="text-xs font-medium text-[var(--text-muted)] mb-2">What is preserved</p>
               <ul className="space-y-1.5">
                 {[
                   "Accounts matched and preserved",
@@ -267,8 +273,8 @@ export function AdminExpandHistoryFlow({
                   "Existing transactions deduplicated",
                   "Old connection retired after successful sync",
                 ].map((item) => (
-                  <li key={item} className="flex items-center gap-2 text-xs text-gray-400">
-                    <CheckCircle2 size={11} className="shrink-0 text-emerald-500/70" />
+                  <li key={item} className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                    <CheckCircle2 size={11} className="shrink-0 text-[var(--accent-positive)]" />
                     {item}
                   </li>
                 ))}
@@ -276,22 +282,22 @@ export function AdminExpandHistoryFlow({
             </div>
 
             {/* Plaid search callout */}
-            <p className="text-xs text-gray-500 border-l-2 border-gray-700 pl-3 leading-relaxed">
+            <p className="text-xs text-[var(--text-muted)] border-l-2 border-[var(--border-hairline-strong)] pl-3 leading-relaxed">
               Plaid will open its standard institution search.{" "}
-              Search for: <span className="text-gray-300 font-medium">{institutionName.toUpperCase()}</span>
+              Search for: <span className="text-[var(--text-secondary)] font-medium">{institutionName.toUpperCase()}</span>
             </p>
 
             {/* Actions */}
             <div className="flex gap-2 pt-1">
               <button
                 onClick={onClose}
-                className="flex-1 text-sm font-medium px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 transition-colors"
+                className="flex-1 text-sm font-medium px-4 py-2 rounded-lg bg-[var(--surface-inset)] hover:bg-[var(--surface-hover)] text-[var(--text-secondary)] border border-[var(--border-hairline-strong)] transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={handleContinue}
-                className="flex-1 text-sm font-medium px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                className="flex-1 text-sm font-medium px-4 py-2 rounded-lg bg-[var(--accent-info)] text-white transition-colors"
               >
                 Continue to Plaid
               </button>
@@ -301,10 +307,10 @@ export function AdminExpandHistoryFlow({
 
         {/* ── Progress view ── */}
         {!isConfirming && (
-          <div className="px-5 pt-5 pb-5 space-y-4">
+          <div className="space-y-4">
             {/* Compact header */}
             <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide font-medium">
+              <p className="text-xs text-[var(--text-muted)] uppercase tracking-wide font-medium">
                 Expand Transaction History
               </p>
               <p className="text-base font-semibold text-white mt-0.5">{institutionName}</p>
@@ -317,29 +323,29 @@ export function AdminExpandHistoryFlow({
                   ? "bg-red-500/10 border-red-500/20"
                   : isDone
                     ? "bg-emerald-500/10 border-emerald-500/20"
-                    : "bg-gray-800/60 border-gray-700/60"
+                    : "bg-[var(--surface-inset)] border-[var(--border-hairline)]"
               }`}
             >
               {isError ? (
-                <AlertCircle size={14} className="shrink-0 mt-0.5 text-red-400" />
+                <AlertCircle size={14} className="shrink-0 mt-0.5 text-[var(--accent-negative)]" />
               ) : isDone ? (
-                <CheckCircle2 size={14} className="shrink-0 mt-0.5 text-emerald-400" />
+                <CheckCircle2 size={14} className="shrink-0 mt-0.5 text-[var(--accent-positive)]" />
               ) : (
-                <Loader2 size={14} className="shrink-0 mt-0.5 text-gray-400 animate-spin" />
+                <Loader2 size={14} className="shrink-0 mt-0.5 text-[var(--text-secondary)] animate-spin" />
               )}
               <div className="space-y-1 min-w-0">
                 <p
                   className={`text-sm font-medium ${
-                    isError ? "text-red-400" : isDone ? "text-emerald-400" : "text-gray-200"
+                    isError ? "text-[var(--accent-negative)]" : isDone ? "text-[var(--accent-positive)]" : "text-[var(--text-primary)]"
                   }`}
                 >
                   {PROGRESS_STATUS[phase]}
                 </p>
                 {isError && error && (
-                  <p className="text-xs text-red-400/80 leading-relaxed">{error}</p>
+                  <p className="text-xs text-[var(--accent-negative)] leading-relaxed">{error}</p>
                 )}
                 {isDone && (
-                  <p className="text-xs text-emerald-400/70">
+                  <p className="text-xs text-[var(--accent-positive)]">
                     Refresh diagnostics to compare before/after transaction coverage.
                   </p>
                 )}
@@ -356,17 +362,17 @@ export function AdminExpandHistoryFlow({
                     <span
                       className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border text-[9px] font-bold ${
                         isStepDone
-                          ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-400"
+                          ? "bg-emerald-500/20 border-emerald-500/40 text-[var(--accent-positive)]"
                           : isStepActive
-                            ? "bg-blue-500/20 border-blue-500/40 text-blue-400"
-                            : "bg-gray-800 border-gray-700 text-gray-600"
+                            ? "bg-blue-500/20 border-blue-500/40 text-[var(--accent-info)]"
+                            : "bg-[var(--surface-inset)] border-[var(--border-hairline-strong)] text-[var(--text-faint)]"
                       }`}
                     >
                       {isStepDone ? "✓" : stepIdx + 1}
                     </span>
                     <span
                       className={
-                        isStepDone ? "text-gray-400" : isStepActive ? "text-gray-200" : "text-gray-600"
+                        isStepDone ? "text-[var(--text-secondary)]" : isStepActive ? "text-[var(--text-primary)]" : "text-[var(--text-faint)]"
                       }
                     >
                       {STEP_LABELS[stepPhase]}
@@ -382,8 +388,8 @@ export function AdminExpandHistoryFlow({
                 onClick={onClose}
                 className={`w-full text-sm font-medium px-4 py-2 rounded-lg transition-colors ${
                   isDone
-                    ? "bg-emerald-600 hover:bg-emerald-500 text-white"
-                    : "bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700"
+                    ? "bg-[var(--accent-positive)] text-white"
+                    : "bg-[var(--surface-inset)] hover:bg-[var(--surface-hover)] text-[var(--text-primary)] border border-[var(--border-hairline-strong)]"
                 }`}
               >
                 {isDone ? "Close" : "Dismiss"}
@@ -391,7 +397,6 @@ export function AdminExpandHistoryFlow({
             )}
           </div>
         )}
-      </div>
-    </div>
+    </Dialog>
   );
 }
