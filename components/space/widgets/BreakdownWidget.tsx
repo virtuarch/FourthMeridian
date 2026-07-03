@@ -126,13 +126,13 @@ function ListView({
           <div key={item.id} className="flex items-center gap-3 px-1 py-0.5">
             <div className="w-2 h-2 rounded-full shrink-0 mt-0.5" style={{ backgroundColor: item.color }} />
             <div className="flex-1 min-w-0">
-              <p className="text-sm text-white truncate">{item.label}</p>
-              {item.meta  && <p className="text-[10px] text-gray-500">{item.meta}</p>}
-              {item.meta2 && <p className="text-[10px] text-gray-600">{item.meta2}</p>}
+              <p className="text-sm truncate" style={{ color: "var(--text-primary)" }}>{item.label}</p>
+              {item.meta  && <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>{item.meta}</p>}
+              {item.meta2 && <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>{item.meta2}</p>}
             </div>
             <div className="text-right shrink-0">
-              <p className="text-sm font-medium text-white">{formatValue(item.value)}</p>
-              <p className="text-[10px] text-gray-600">{pct}%</p>
+              <p className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>{formatValue(item.value)}</p>
+              <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>{pct}%</p>
             </div>
           </div>
         );
@@ -162,15 +162,15 @@ function BarView({
           <div key={item.id} className="space-y-1">
             <div className="flex items-center justify-between gap-2 text-xs">
               <div className="min-w-0">
-                <span className="text-gray-300 truncate block">{item.label}</span>
-                {item.meta && <span className="text-gray-600">{item.meta}</span>}
+                <span className="truncate block" style={{ color: "var(--text-secondary)" }}>{item.label}</span>
+                {item.meta && <span style={{ color: "var(--text-faint)" }}>{item.meta}</span>}
               </div>
-              <span className="shrink-0 text-gray-400">
+              <span className="shrink-0" style={{ color: "var(--text-secondary)" }}>
                 {formatValue(item.value)}{" "}
-                <span className="text-gray-700">({pct}%)</span>
+                <span style={{ color: "var(--text-faint)" }}>({pct}%)</span>
               </span>
             </div>
-            <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-inset)" }}>
               <div
                 className="h-full rounded-full"
                 style={{ width: `${barPct}%`, backgroundColor: item.color }}
@@ -278,13 +278,13 @@ function DonutView({
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-4 text-center">
             {hovered ? (
               <>
-                <p className="text-xs text-gray-400 leading-tight truncate w-full text-center">
+                <p className="text-xs leading-tight truncate w-full text-center" style={{ color: "var(--text-secondary)" }}>
                   {hovered.label}
                 </p>
                 <p className="text-base font-bold leading-tight mt-0.5" style={{ color: hovered.color }}>
                   {formatValue(hovered.value)}
                 </p>
-                <p className="text-[10px] text-gray-500 leading-tight mt-0.5">
+                <p className="text-[10px] leading-tight mt-0.5" style={{ color: "var(--text-muted)" }}>
                   {(hovered.pct * 100).toFixed(1)}% of total
                 </p>
               </>
@@ -293,7 +293,7 @@ function DonutView({
                 <p className="text-lg font-bold leading-tight" style={{ color: totalColor }}>
                   {formatValue(total)}
                 </p>
-                <p className="text-[10px] text-gray-500 mt-0.5 leading-tight">
+                <p className="text-[10px] mt-0.5 leading-tight" style={{ color: "var(--text-muted)" }}>
                   {items.length} {pluralNoun}
                 </p>
               </>
@@ -318,17 +318,17 @@ function DonutView({
             >
               <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: seg.color }} />
               <div className="flex-1 min-w-0">
-                <p className="text-sm text-white truncate">{seg.label}</p>
+                <p className="text-sm truncate" style={{ color: "var(--text-primary)" }}>{seg.label}</p>
                 <div className="flex gap-2 items-center flex-wrap">
-                  {seg.meta  && <span className="text-[10px] text-gray-500">{seg.meta}</span>}
-                  {seg.meta2 && <span className="text-[10px] text-gray-600">{seg.meta2}</span>}
+                  {seg.meta  && <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>{seg.meta}</span>}
+                  {seg.meta2 && <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>{seg.meta2}</span>}
                 </div>
               </div>
               <div className="text-right shrink-0">
                 <p className="text-sm font-medium" style={{ color: seg.color }}>
                   {formatValue(seg.value)}
                 </p>
-                <p className="text-[10px] text-gray-600">{pct}%</p>
+                <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>{pct}%</p>
               </div>
             </div>
           );
@@ -352,11 +352,11 @@ export function BreakdownWidget({
   if (items.length === 0) {
     return (
       <div className="text-center py-5 space-y-1">
-        <p className="text-sm text-gray-400">
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
           {emptyHeadline ?? "No data to display."}
         </p>
         {emptySubline && (
-          <p className="text-xs text-gray-600 leading-relaxed max-w-xs mx-auto">
+          <p className="text-xs leading-relaxed max-w-xs mx-auto" style={{ color: "var(--text-faint)" }}>
             {emptySubline}
           </p>
         )}
