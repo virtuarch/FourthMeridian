@@ -105,10 +105,10 @@ export function renderDebtBreakdownChart(
       itemNoun="account"
       footer={totalMinPmt > 0 ? (
         <div className="text-center">
-          <p className="text-[11px] text-gray-500">Minimum monthly payments</p>
+          <p className="text-[11px] text-[var(--text-muted)]">Minimum monthly payments</p>
           <p className="text-sm font-semibold text-white mt-0.5">
             {formatBalance(totalMinPmt)}
-            <span className="text-[10px] text-gray-600 ml-0.5">/mo</span>
+            <span className="text-[10px] text-[var(--text-faint)] ml-0.5">/mo</span>
           </p>
         </div>
       ) : undefined}

@@ -29,7 +29,7 @@ export function ReconnectAccountButton({ plaidItemId }: Props) {
       <button
         onClick={() => openLink(undefined, plaidItemId)}
         disabled={isLoading}
-        className="flex items-center gap-1.5 text-xs font-semibold text-amber-400 border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 rounded-lg hover:bg-amber-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent-warning)] border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 rounded-lg hover:bg-amber-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {isLoading
           ? <Loader2       size={12} className="animate-spin" />
@@ -37,7 +37,7 @@ export function ReconnectAccountButton({ plaidItemId }: Props) {
         }
         {isLoading ? "Opening…" : "Reconnect"}
       </button>
-      {error && <p className="text-xs text-amber-400 mt-1">{error}</p>}
+      {error && <p className="text-xs text-[var(--accent-warning)] mt-1">{error}</p>}
     </div>
   );
 }

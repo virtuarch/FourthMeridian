@@ -29,8 +29,8 @@ export function FilterBar({ active, onChange }: Props) {
           onClick={() => onChange(key)}
           className={`shrink-0 px-4 py-2.5 rounded-full text-xs font-semibold border transition-all touch-manipulation ${
             active === key
-              ? "bg-blue-600 border-blue-600 text-white"
-              : "bg-transparent border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200"
+              ? "bg-[var(--accent-info)] border-[var(--accent-info)] text-white"
+              : "bg-transparent border-[var(--border-hairline-strong)] text-[var(--text-secondary)] hover:border-[var(--border-hairline-strong)] hover:text-[var(--text-primary)]"
           }`}
         >
           {label}

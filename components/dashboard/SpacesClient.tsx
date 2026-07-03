@@ -876,7 +876,7 @@ export function SpacesClient({
   return (
     <div className="min-h-[70vh]">
       {leftSpaceToast && (
-        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg border text-sm font-medium bg-emerald-500/10 border-emerald-500/30 text-emerald-400">
+        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg border text-sm font-medium bg-emerald-500/10 border-emerald-500/30 text-[var(--accent-positive)]">
           <Check size={14} />
           You left {leftSpaceToast}
         </div>

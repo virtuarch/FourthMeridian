@@ -36,7 +36,7 @@ export function RemoveAccountButton({ accounts }: Props) {
       )}
       <button
         onClick={() => setShowRemoveModal(true)}
-        className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 hover:text-red-400 border border-gray-700 hover:border-red-500/40 bg-gray-900 hover:bg-red-500/10 px-3 py-2 rounded-xl transition-colors"
+        className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--accent-negative)] border border-[var(--border-hairline-strong)] hover:border-red-500/40 bg-[var(--surface-inset)] hover:bg-red-500/10 px-3 py-2 rounded-xl transition-colors"
       >
         <Trash2 size={13} />
         Remove

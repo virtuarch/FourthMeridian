@@ -89,11 +89,11 @@ export function KnowledgeClarificationCard({ gaps, onExpand, onSnooze }: Clarifi
   const updateLabel  = allSameField ? `Update ${gaps[0].label}` : "Update";
 
   return (
-    <div className="border border-gray-700/60 bg-gray-800/30 rounded-xl px-3 py-2.5 flex items-start justify-between gap-3">
+    <div className="border border-[var(--border-hairline-strong)] bg-[var(--surface-inset)] rounded-xl px-3 py-2.5 flex items-start justify-between gap-3">
       <div className="flex items-start gap-2 min-w-0">
-        <Info size={13} className="text-blue-400/70 mt-0.5 shrink-0" />
-        <p className="text-xs text-gray-400 leading-relaxed">
-          <span className="text-gray-200 font-medium">{fieldLabel}</span>
+        <Info size={13} className="text-[var(--accent-info)] mt-0.5 shrink-0" />
+        <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+          <span className="text-[var(--text-primary)] font-medium">{fieldLabel}</span>
           {" missing for "}
           <span className="text-white">{accountNames}</span>
           {" — adding it improves accuracy."}
@@ -102,13 +102,13 @@ export function KnowledgeClarificationCard({ gaps, onExpand, onSnooze }: Clarifi
       <div className="flex gap-1.5 shrink-0 mt-0.5">
         <button
           onClick={onExpand}
-          className="text-xs text-blue-400 border border-blue-500/40 bg-blue-500/10 px-2.5 py-1 rounded-lg hover:bg-blue-500/20 transition-colors whitespace-nowrap"
+          className="text-xs text-[var(--accent-info)] border border-blue-500/40 bg-blue-500/10 px-2.5 py-1 rounded-lg hover:bg-blue-500/20 transition-colors whitespace-nowrap"
         >
           {updateLabel}
         </button>
         <button
           onClick={onSnooze}
-          className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-gray-700/50 transition-colors whitespace-nowrap"
+          className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] px-2 py-1 rounded-lg hover:bg-[var(--surface-inset)] transition-colors whitespace-nowrap"
         >
           Not now
         </button>
@@ -212,13 +212,13 @@ export function KnowledgeAcquisitionCard({ gaps, onSaved, onDismiss }: Props) {
   }
 
   return (
-    <div className="border border-gray-700 bg-gray-800/50 rounded-xl p-3 space-y-3">
+    <div className="border border-[var(--border-hairline-strong)] bg-[var(--surface-inset)] rounded-xl p-3 space-y-3">
       {/* Header */}
       <div className="flex items-center gap-2">
         <div className="w-5 h-5 rounded bg-blue-500/20 flex items-center justify-center shrink-0">
-          <PenLine size={11} className="text-blue-400" />
+          <PenLine size={11} className="text-[var(--accent-info)]" />
         </div>
-        <span className="text-xs font-semibold text-gray-300">
+        <span className="text-xs font-semibold text-[var(--text-secondary)]">
           Complete Missing Information
         </span>
       </div>
@@ -235,10 +235,10 @@ export function KnowledgeAcquisitionCard({ gaps, onSaved, onDismiss }: Props) {
               const cfg = FIELD_CONFIG[gap.field];
               return (
                 <div key={gap.field} className="space-y-1">
-                  <label className="block text-xs text-gray-400">{gap.label}</label>
+                  <label className="block text-xs text-[var(--text-secondary)]">{gap.label}</label>
                   <div className="flex items-center gap-1.5">
                     {cfg.prefix && (
-                      <span className="text-xs text-gray-500 select-none">{cfg.prefix}</span>
+                      <span className="text-xs text-[var(--text-muted)] select-none">{cfg.prefix}</span>
                     )}
                     <input
                       type="number"
@@ -250,10 +250,10 @@ export function KnowledgeAcquisitionCard({ gaps, onSaved, onDismiss }: Props) {
                       value={values[key] ?? ""}
                       onChange={(e) => handleChange(key, e.target.value)}
                       disabled={isBusy || saveState === "saved"}
-                      className="w-28 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      className="w-28 bg-[var(--surface-inset)] border border-[var(--border-hairline-strong)] rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
                     {cfg.suffix && (
-                      <span className="text-xs text-gray-500 select-none">{cfg.suffix}</span>
+                      <span className="text-xs text-[var(--text-muted)] select-none">{cfg.suffix}</span>
                     )}
                   </div>
                 </div>
@@ -265,12 +265,12 @@ export function KnowledgeAcquisitionCard({ gaps, onSaved, onDismiss }: Props) {
 
       {/* Inline error */}
       {saveState === "error" && errorMsg && (
-        <p className="text-xs text-red-400">{errorMsg}</p>
+        <p className="text-xs text-[var(--accent-negative)]">{errorMsg}</p>
       )}
 
       {/* Save / Saved / Not now */}
       {saveState === "saved" ? (
-        <div className="flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-green-400">
+        <div className="flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-[var(--accent-positive)]">
           <CheckCircle size={13} />
           Saved
         </div>
@@ -279,7 +279,7 @@ export function KnowledgeAcquisitionCard({ gaps, onSaved, onDismiss }: Props) {
           <button
             disabled={!canSave}
             onClick={() => { void handleSave(); }}
-            className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white"
+            className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors bg-[var(--accent-info)] disabled:opacity-40 disabled:cursor-not-allowed text-white"
           >
             {saveState === "saving" ? "Saving…" : "Save"}
           </button>
@@ -287,7 +287,7 @@ export function KnowledgeAcquisitionCard({ gaps, onSaved, onDismiss }: Props) {
             <button
               onClick={onDismiss}
               disabled={isBusy}
-              className="py-2 px-3 rounded-lg text-xs font-medium text-gray-500 hover:text-gray-300 hover:bg-gray-700/50 transition-colors disabled:opacity-40"
+              className="py-2 px-3 rounded-lg text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-inset)] transition-colors disabled:opacity-40"
             >
               Not now
             </button>

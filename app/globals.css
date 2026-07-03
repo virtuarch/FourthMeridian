@@ -170,6 +170,7 @@ html[data-theme="dark"] {
   --accent-negative: var(--coral-400);     /* real loss only */
   --accent-neutral:  var(--ink-300);       /* non-signalling default */
   --accent-info:     var(--meridian-400);  /* interactive / informational */
+  --accent-warning:  #FBBF24;              /* amber — genuine warnings only (reauth / medium severity) */
 
   /* ---------- MODAL SURFACE — BriefModal's one-off "smoked crystal" fill ----------
      Kept separate from --glass-thick on purpose (see BriefModal.tsx header
@@ -209,6 +210,7 @@ html[data-theme="light"] {
   --accent-negative: var(--coral-500);
   --accent-neutral:  var(--ink-600);
   --accent-info:     var(--meridian-500);
+  --accent-warning:  #B45309;              /* darker amber for contrast on light glass */
 
   /* Frosted white "smoked glass" — replaces the dark navy fill so the
      modal reads as Light Glass instead of Midnight. */
