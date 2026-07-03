@@ -1,4 +1,4 @@
-import { Card, CardTitle } from "@/components/ui/Card";
+import { DataCard } from "@/components/atlas/DataCard";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { Account } from "@/types";
 import { CoinIcon } from "@/components/ui/CoinIcon";
@@ -7,7 +7,7 @@ import { exchangeSymbol } from "@/lib/exchangeSymbol";
 interface Props {
   title:        string;
   accounts:     Account[];
-  color:        string;   // tailwind text colour class
+  color:        string;   // tailwind text colour class (caller-injected; removed in B7)
   lastUpdated?: string;
   maxItems?:    number;   // cap visible rows; shows "+N more" if exceeded
   compact?:     boolean;  // tighter layout for side-by-side cards
@@ -27,8 +27,7 @@ export function AccountGroupCard({ title, accounts, color, lastUpdated, maxItems
   const hidden   = maxItems != null ? sorted.length - visible.length : 0;
 
   return (
-    <Card className={compact ? "!p-3" : ""}>
-      <CardTitle>{title}</CardTitle>
+    <DataCard title={title} padding={compact ? "var(--space-3)" : "var(--space-4)"}>
       <p className={`font-bold mt-0.5 ${compact ? "text-xl" : "text-3xl"} ${color}`}>
         {fmt(total)}
       </p>
@@ -41,29 +40,29 @@ export function AccountGroupCard({ title, accounts, color, lastUpdated, maxItems
               <div className="flex items-center gap-1.5 min-w-0">
                 {isCrypto && <CoinIcon symbol={coinSymbol} size={compact ? 14 : 18} />}
                 <div className="min-w-0">
-                  <p className="text-xs font-medium text-white truncate leading-tight">{a.name}</p>
+                  <p className="text-xs font-medium truncate leading-tight" style={{ color: "var(--text-primary)" }}>{a.name}</p>
                   {!compact && (
-                    <p className="text-xs text-gray-500 truncate leading-tight">{a.institution}</p>
+                    <p className="text-xs truncate leading-tight" style={{ color: "var(--text-muted)" }}>{a.institution}</p>
                   )}
                 </div>
               </div>
               <div className="text-right shrink-0">
                 <p className={`text-xs font-semibold tabular-nums ${color}`}>{fmtFull(a.balance)}</p>
                 {!compact && a.nativeBalance != null && (
-                  <p className="text-xs text-gray-600">{a.nativeBalance} {a.walletChain}</p>
+                  <p className="text-xs" style={{ color: "var(--text-faint)" }}>{a.nativeBalance} {a.walletChain}</p>
                 )}
               </div>
             </div>
           );
         })}
         {hidden > 0 && (
-          <p className="text-xs text-gray-600">+{hidden} more</p>
+          <p className="text-xs" style={{ color: "var(--text-faint)" }}>+{hidden} more</p>
         )}
       </div>
 
       {lastUpdated && !compact && (
-        <p className="text-xs text-gray-600 mt-2">Updated {lastUpdated}</p>
+        <p className="text-xs mt-2" style={{ color: "var(--text-faint)" }}>Updated {lastUpdated}</p>
       )}
-    </Card>
+    </DataCard>
   );
 }
