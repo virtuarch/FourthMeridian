@@ -27,9 +27,9 @@ const ROOT = process.cwd();
 const SCAN_DIRS = ["components/dashboard", "components/space", "components/atlas"];
 const BASELINE = "lib/atlas/palette-ratchet.baseline.json";
 
-// Card.tsx is intentionally allowlisted (retired in Step B); charts/admin are
-// out of the initial scan by directory selection above.
-const ALLOWLIST_FILES = new Set<string>(["components/ui/Card.tsx"]);
+// No per-file allowlist entries remain (legacy components/ui/Card.tsx has been
+// retired). charts/admin are out of the initial scan by directory selection above.
+const ALLOWLIST_FILES = new Set<string>([]);
 
 const PATTERNS: RegExp[] = [
   /\bbg-gray-\d{2,3}\b/g,
