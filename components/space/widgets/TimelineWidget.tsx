@@ -16,12 +16,11 @@
  *   - Daily Briefing can reuse this widget with a different event array
  *   - Icon prop is a Lucide icon name string; the widget maps it to a component
  *
- * Tone → color mapping:
- *   positive → emerald
- *   info     → blue
- *   warning  → amber
- *   danger   → red
- *   neutral  → gray (default)
+ * Tone → colour mapping (Atlas tokens, Step B):
+ *   positive → --accent-positive
+ *   danger   → --accent-negative
+ *   info / warning / neutral → neutral ink (colour reserved for genuine
+ *     positive/negative severity; no warning token)
  */
 
 import { useState, useEffect } from "react";
@@ -60,22 +59,25 @@ function EventIcon({ name }: { name?: string }) {
   return <Icon size={14} />;
 }
 
-// ─── Tone → styles ────────────────────────────────────────────────────────────
+// ─── Tone → colour tokens ─────────────────────────────────────────────────────
+// Only genuine positive/negative severity carries colour; info/warning/neutral
+// resolve to ink. The icon chip is a uniform inset surface — tone shows on the
+// glyph and the actor dot, not a background wash.
 
-const TONE_ICON_CLS: Record<TimelineTone, string> = {
-  positive: "bg-emerald-500/15 text-emerald-400",
-  info:     "bg-blue-500/15    text-blue-400",
-  warning:  "bg-amber-500/15   text-amber-400",
-  danger:   "bg-red-500/15     text-red-400",
-  neutral:  "bg-gray-700/60    text-gray-400",
+const TONE_FG: Record<TimelineTone, string> = {
+  positive: "var(--accent-positive)",
+  danger:   "var(--accent-negative)",
+  info:     "var(--text-secondary)",
+  warning:  "var(--text-secondary)",
+  neutral:  "var(--text-secondary)",
 };
 
-const TONE_DOT_CLS: Record<TimelineTone, string> = {
-  positive: "bg-emerald-400",
-  info:     "bg-blue-400",
-  warning:  "bg-amber-400",
-  danger:   "bg-red-400",
-  neutral:  "bg-gray-600",
+const TONE_DOT: Record<TimelineTone, string> = {
+  positive: "var(--accent-positive)",
+  danger:   "var(--accent-negative)",
+  info:     "var(--text-muted)",
+  warning:  "var(--text-muted)",
+  neutral:  "var(--text-muted)",
 };
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
@@ -98,12 +100,12 @@ function timeAgo(iso: string): string {
 // ─── Single event row ─────────────────────────────────────────────────────────
 
 function EventRow({ event }: { event: TimelineEvent }) {
-  const tone    = event.tone ?? "neutral";
-  const iconCls = TONE_ICON_CLS[tone];
-  const dotCls  = TONE_DOT_CLS[tone];
+  const tone = event.tone ?? "neutral";
+  const fg   = TONE_FG[tone];
+  const dot  = TONE_DOT[tone];
 
   const titleNode = event.href ? (
-    <Link href={event.href} className="hover:text-blue-300 transition-colors">
+    <Link href={event.href} className="transition-colors" style={{ color: "var(--accent-info)" }}>
       {event.title}
     </Link>
   ) : (
@@ -113,25 +115,28 @@ function EventRow({ event }: { event: TimelineEvent }) {
   return (
     <div className="flex gap-3 py-3.5">
       {/* Left column: icon */}
-      <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${iconCls}`}>
+      <div
+        className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5"
+        style={{ background: "var(--surface-inset)", color: fg }}
+      >
         <EventIcon name={event.icon} />
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2">
-          <p className="text-sm font-medium text-white leading-snug">{titleNode}</p>
-          <span className="text-[11px] text-gray-600 shrink-0 mt-0.5 tabular-nums">
+          <p className="text-sm font-medium leading-snug" style={{ color: "var(--text-primary)" }}>{titleNode}</p>
+          <span className="text-[11px] shrink-0 mt-0.5 tabular-nums" style={{ color: "var(--text-faint)" }}>
             {timeAgo(event.date)}
           </span>
         </div>
         {event.subtitle && (
-          <p className="text-xs text-gray-500 mt-0.5 leading-snug">{event.subtitle}</p>
+          <p className="text-xs mt-0.5 leading-snug" style={{ color: "var(--text-muted)" }}>{event.subtitle}</p>
         )}
         {event.actorName && (
           <div className="flex items-center gap-1.5 mt-1">
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} />
-            <span className="text-[11px] text-gray-600">{event.actorName}</span>
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dot }} />
+            <span className="text-[11px]" style={{ color: "var(--text-faint)" }}>{event.actorName}</span>
           </div>
         )}
       </div>
@@ -144,11 +149,11 @@ function EventRow({ event }: { event: TimelineEvent }) {
 function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center py-10 text-center">
-      <div className="w-10 h-10 rounded-xl bg-gray-800/60 flex items-center justify-center mb-3">
-        <Clock size={18} className="text-gray-600" />
+      <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: "var(--surface-inset)" }}>
+        <Clock size={18} style={{ color: "var(--text-faint)" }} />
       </div>
-      <p className="text-sm text-gray-500 font-medium">No activity yet</p>
-      <p className="text-xs text-gray-600 mt-1 max-w-[200px]">
+      <p className="text-sm font-medium" style={{ color: "var(--text-muted)" }}>No activity yet</p>
+      <p className="text-xs mt-1 max-w-[200px]" style={{ color: "var(--text-faint)" }}>
         Space actions will appear here as they happen.
       </p>
     </div>
@@ -221,7 +226,7 @@ export function TimelineWidget({ events: propEvents, spaceId, pageSize = 10 }: P
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-10 gap-2 text-gray-600">
+      <div className="flex items-center justify-center py-10 gap-2" style={{ color: "var(--text-faint)" }}>
         <Loader2 size={15} className="animate-spin" />
         <span className="text-sm">Loading activity…</span>
       </div>
@@ -231,11 +236,12 @@ export function TimelineWidget({ events: propEvents, spaceId, pageSize = 10 }: P
   if (error) {
     return (
       <div className="py-6 text-center">
-        <p className="text-xs text-red-400">{error}</p>
+        <p className="text-xs" style={{ color: "var(--accent-negative)" }}>{error}</p>
         {spaceId && (
           <button
             onClick={() => setRetryCount((n) => n + 1)}
-            className="mt-2 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            className="mt-2 text-xs hover:text-[var(--text-secondary)] transition-colors"
+            style={{ color: "var(--text-muted)" }}
           >
             Retry
           </button>
@@ -248,7 +254,7 @@ export function TimelineWidget({ events: propEvents, spaceId, pageSize = 10 }: P
 
   return (
     <div>
-      <div className="divide-y divide-gray-800/60">
+      <div className="divide-y divide-[var(--border-hairline)]">
         {visible.map((event) => (
           <EventRow key={event.id} event={event} />
         ))}
@@ -256,21 +262,23 @@ export function TimelineWidget({ events: propEvents, spaceId, pageSize = 10 }: P
 
       {/* Pagination footer — only shown when there is more than one page */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between pt-3 mt-1 border-t border-gray-800/60">
+        <div className="flex items-center justify-between pt-3 mt-1 border-t" style={{ borderColor: "var(--border-hairline)" }}>
           <button
             onClick={() => setPage((p) => Math.max(0, p - 1))}
             disabled={safePage === 0}
-            className="text-xs text-gray-500 hover:text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-lg hover:bg-gray-800 transition-colors"
+            className="text-xs hover:text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
+            style={{ color: "var(--text-muted)" }}
           >
             ← Newer
           </button>
-          <span className="text-[11px] text-gray-600 tabular-nums">
+          <span className="text-[11px] tabular-nums" style={{ color: "var(--text-faint)" }}>
             {safePage + 1} / {totalPages}
           </span>
           <button
             onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
             disabled={safePage === totalPages - 1}
-            className="text-xs text-gray-500 hover:text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-lg hover:bg-gray-800 transition-colors"
+            className="text-xs hover:text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
+            style={{ color: "var(--text-muted)" }}
           >
             Older →
           </button>
