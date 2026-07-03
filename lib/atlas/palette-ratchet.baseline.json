@@ -21,7 +21,6 @@
   "components/space/sections/DebtPayoffSection.tsx": 87,
   "components/space/widgets/AssetValueWidget.tsx": 19,
   "components/space/widgets/ProgressWidget.tsx": 27,
-  "components/space/widgets/SummaryWidget.tsx": 19,
   "components/space/widgets/TimelineWidget.tsx": 27,
   "components/space/widgets/debt-adapters.tsx": 2
 }
