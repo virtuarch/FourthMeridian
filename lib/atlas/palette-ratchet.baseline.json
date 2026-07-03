@@ -9,7 +9,6 @@
   "components/dashboard/BankingClient.tsx": 69,
   "components/dashboard/DashboardClient.tsx": 88,
   "components/dashboard/DebtClient.tsx": 146,
-  "components/dashboard/FicoCard.tsx": 25,
   "components/dashboard/FilterBar.tsx": 4,
   "components/dashboard/InvestmentsClient.tsx": 78,
   "components/dashboard/KnowledgeAcquisitionCard.tsx": 23,
