@@ -1,6 +1,6 @@
 import { getLatestAdvice } from "@/lib/data/advice";
 import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
-import { Card } from "@/components/ui/Card";
+import { DataCard } from "@/components/atlas/DataCard";
 import { Clock } from "lucide-react";
 
 export const preferredRegion = "sin1";
@@ -13,18 +13,18 @@ export default async function AdvicePage() {
   return (
     <div className="space-y-4 pb-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-white">AI Advice</h1>
-        <div className="flex items-center gap-1.5 text-xs text-gray-500">
+        <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>AI Advice</h1>
+        <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
           <Clock size={12} />
           Runs 2× daily
         </div>
       </div>
 
-      <Card>
-        <p className="text-sm text-gray-400">
+      <DataCard>
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
           The advice engine reviews your cash position, debt load, portfolio allocation, crypto exposure, recent snapshots, and current market conditions twice daily on trading days and once daily on weekends. It produces conservative, non-automated suggestions.
         </p>
-      </Card>
+      </DataCard>
 
       {adviceHistory.map((advice) => (
         <div key={advice.id} className="space-y-1">
@@ -32,12 +32,12 @@ export default async function AdvicePage() {
         </div>
       ))}
 
-      <Card className="opacity-50">
+      <DataCard className="opacity-50">
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-gray-600 animate-pulse" />
-          <p className="text-sm text-gray-400">Next advice run: Today at 4:00 PM</p>
+          <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: "var(--text-faint)" }} />
+          <p className="text-sm" style={{ color: "var(--text-secondary)" }}>Next advice run: Today at 4:00 PM</p>
         </div>
-      </Card>
+      </DataCard>
     </div>
   );
 }

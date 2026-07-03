@@ -1,7 +1,7 @@
 import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { formatDate } from "@/lib/format";
 import { NetWorthChart } from "@/components/charts/NetWorthChart";
-import { Card, CardTitle } from "@/components/ui/Card";
+import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
@@ -15,13 +15,13 @@ export default async function HistoryPage() {
   if (snapshots.length === 0) {
     return (
       <div className="space-y-4 pb-4">
-        <h1 className="text-xl font-bold text-white">History</h1>
-        <Card>
-          <CardTitle>Net Worth — 30 Days</CardTitle>
-          <p className="text-sm text-gray-500 mt-2">
+        <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>History</h1>
+        <DataCard>
+          <DataCardTitle>Net Worth — 30 Days</DataCardTitle>
+          <p className="text-sm mt-2" style={{ color: "var(--text-muted)" }}>
             No history yet. Click Refresh to generate today&apos;s snapshot.
           </p>
-        </Card>
+        </DataCard>
       </div>
     );
   }
@@ -33,50 +33,50 @@ export default async function HistoryPage() {
 
   return (
     <div className="space-y-4 pb-4">
-      <h1 className="text-xl font-bold text-white">History</h1>
+      <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>History</h1>
 
-      <Card>
-        <CardTitle>Net Worth — 30 Days</CardTitle>
+      <DataCard>
+        <DataCardTitle>Net Worth — 30 Days</DataCardTitle>
         <div className="flex items-baseline gap-2 mt-1 mb-3">
-          <p className="text-2xl font-bold text-white">{fmt(latest.netWorth)}</p>
-          <span className={`text-sm font-semibold ${change >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+          <p className="text-2xl font-bold" style={{ color: "var(--text-primary)" }}>{fmt(latest.netWorth)}</p>
+          <span className="text-sm font-semibold" style={{ color: change >= 0 ? "var(--accent-positive)" : "var(--accent-negative)" }}>
             {change >= 0 ? "+" : ""}{fmt(change)} ({pct}%)
           </span>
         </div>
         <NetWorthChart snapshots={snapshots} interval="1M" onIntervalChange={() => {}} />
-      </Card>
+      </DataCard>
 
-      <Card>
-        <CardTitle>Snapshot History</CardTitle>
-        <div className="mt-2 divide-y divide-gray-800">
+      <DataCard>
+        <DataCardTitle>Snapshot History</DataCardTitle>
+        <div className="mt-2 divide-y divide-[var(--border-hairline)]">
           {[...snapshots].reverse().slice(0, 10).map((s) => (
             <div key={s.date} className="flex items-center justify-between py-2.5">
-              <p className="text-sm text-gray-400">{formatDate(s.date)}</p>
+              <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{formatDate(s.date)}</p>
               <div className="text-right">
-                <p className="text-sm font-semibold text-white">{fmt(s.netWorth)}</p>
-                <p className="text-xs text-gray-500">Cash: {fmt(s.totalCash)}</p>
+                <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(s.netWorth)}</p>
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Cash: {fmt(s.totalCash)}</p>
               </div>
             </div>
           ))}
         </div>
-      </Card>
+      </DataCard>
 
-      <Card>
-        <CardTitle>Debt Tracker</CardTitle>
+      <DataCard>
+        <DataCardTitle>Debt Tracker</DataCardTitle>
         <div className="mt-2">
           <div className="flex justify-between text-sm mb-2">
-            <span className="text-gray-400">Current Debt</span>
-            <span className="text-red-400 font-semibold">-{fmt(latest.totalDebt)}</span>
+            <span style={{ color: "var(--text-secondary)" }}>Current Debt</span>
+            <span className="font-semibold" style={{ color: "var(--accent-negative)" }}>-{fmt(latest.totalDebt)}</span>
           </div>
-          <div className="w-full bg-gray-800 rounded-full h-3">
+          <div className="w-full rounded-full h-3" style={{ background: "var(--surface-inset)" }}>
             <div
               className="h-3 rounded-full bg-gradient-to-r from-red-500 to-orange-400"
               style={{ width: `${Math.min((latest.totalDebt / 30000) * 100, 100)}%` }}
             />
           </div>
-          <p className="text-xs text-gray-500 mt-1">Target: $0 · Remaining: {fmt(latest.totalDebt)}</p>
+          <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Target: $0 · Remaining: {fmt(latest.totalDebt)}</p>
         </div>
-      </Card>
+      </DataCard>
     </div>
   );
 }

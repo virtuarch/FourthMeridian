@@ -1,5 +1,5 @@
 import { getAccounts, getHoldings } from "@/lib/data/accounts";
-import { Card, CardTitle } from "@/components/ui/Card";
+import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { TrendingUp, TrendingDown } from "lucide-react";
 
 export const preferredRegion = "sin1";
@@ -23,32 +23,32 @@ export default async function HoldingsPage() {
 
   return (
     <div className="space-y-4 pb-4">
-      <h1 className="text-xl font-bold text-white">Holdings</h1>
+      <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>Holdings</h1>
 
-      <Card>
-        <CardTitle>Total Holdings Value</CardTitle>
-        <p className="text-3xl font-bold text-white mt-1">{fmt(total)}</p>
-      </Card>
+      <DataCard>
+        <DataCardTitle>Total Holdings Value</DataCardTitle>
+        <p className="text-3xl font-bold mt-1" style={{ color: "var(--text-primary)" }}>{fmt(total)}</p>
+      </DataCard>
 
-      <Card>
-        <CardTitle>Positions</CardTitle>
-        <div className="mt-2 divide-y divide-gray-800">
+      <DataCard>
+        <DataCardTitle>Positions</DataCardTitle>
+        <div className="mt-2 divide-y divide-[var(--border-hairline)]">
           {holdings.map((h) => {
             const positive = h.change24h >= 0;
             return (
               <div key={h.id} className="flex items-center justify-between py-3">
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-gray-800 flex items-center justify-center">
-                    <span className="text-xs font-bold text-white">{h.symbol.slice(0, 2)}</span>
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "var(--surface-inset)" }}>
+                    <span className="text-xs font-bold" style={{ color: "var(--text-primary)" }}>{h.symbol.slice(0, 2)}</span>
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-white">{h.symbol}</p>
-                    <p className="text-xs text-gray-500">{h.name}</p>
+                    <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{h.symbol}</p>
+                    <p className="text-xs" style={{ color: "var(--text-muted)" }}>{h.name}</p>
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-semibold text-white">{fmt(h.value)}</p>
-                  <div className={`flex items-center justify-end gap-0.5 text-xs font-medium ${positive ? "text-emerald-400" : "text-red-400"}`}>
+                  <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(h.value)}</p>
+                  <div className="flex items-center justify-end gap-0.5 text-xs font-medium" style={{ color: positive ? "var(--accent-positive)" : "var(--accent-negative)" }}>
                     {positive ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
                     {positive ? "+" : ""}{h.change24h}% 24h
                   </div>
@@ -57,7 +57,7 @@ export default async function HoldingsPage() {
             );
           })}
         </div>
-      </Card>
+      </DataCard>
     </div>
   );
 }
