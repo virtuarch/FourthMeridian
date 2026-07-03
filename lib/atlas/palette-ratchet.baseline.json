@@ -18,6 +18,5 @@
   "components/dashboard/SpacesClient.tsx": 1,
   "components/dashboard/TotpSection.tsx": 107,
   "components/dashboard/widgets/SpaceTransactionsPanel.tsx": 50,
-  "components/space/sections/DebtPayoffSection.tsx": 87,
   "components/space/widgets/debt-adapters.tsx": 2
 }

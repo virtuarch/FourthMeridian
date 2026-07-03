@@ -43,6 +43,9 @@ function formatBalance(amount: number, currency = DEFAULT_DISPLAY_CURRENCY) {
   }).format(amount);
 }
 
+// Debt-account viz palette: a red gradient that ranks accounts by balance.
+// This is data visualisation (per-account differentiation), not card chrome —
+// intentionally preserved through the Atlas token migration.
 function debtColor(i: number, n: number): string {
   const t = n > 1 ? i / (n - 1) : 0;
   const r = Math.round(185 + (249 - 185) * t);
@@ -201,24 +204,26 @@ export function DebtPayoffSection({
   if (debtAccounts.length === 0) {
     return (
       <div className="text-center py-5">
-        <CreditCard size={22} className="text-gray-700 mx-auto mb-2" />
-        <p className="text-sm text-gray-500">No debt accounts shared yet</p>
-        <p className="text-xs text-gray-600 mt-1">Share debt accounts to use the payoff planner.</p>
+        <CreditCard size={22} className="mx-auto mb-2" style={{ color: "var(--text-faint)" }} />
+        <p className="text-sm" style={{ color: "var(--text-muted)" }}>No debt accounts shared yet</p>
+        <p className="text-xs mt-1" style={{ color: "var(--text-faint)" }}>Share debt accounts to use the payoff planner.</p>
       </div>
     );
   }
 
   // ── Shared sub-components used by both views ─────────────────────────────
   const freqToggle = (
-    <div className="flex rounded-lg overflow-hidden border border-gray-700">
+    <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: "var(--border-hairline)" }}>
       {(["month", "week"] as const).map((f) => (
         <button
           key={f}
           onClick={() => setFreq(f)}
           className={`text-[10px] font-semibold px-2.5 py-1 transition-colors ${
-            freq === f ? "text-white" : "text-gray-600 hover:text-gray-400 bg-transparent"
+            freq === f ? "" : "hover:text-[var(--text-secondary)]"
           }`}
-          style={freq === f ? { backgroundColor: "rgba(96,165,250,0.12)", color: "#93c5fd" } : {}}
+          style={freq === f
+            ? { backgroundColor: "var(--surface-hover-strong)", color: "var(--accent-info)" }
+            : { color: "var(--text-faint)" }}
         >
           {f === "month" ? "Mo" : "Wk"}
         </button>
@@ -227,15 +232,16 @@ export function DebtPayoffSection({
   );
 
   const paymentInput = (wide = false) => (
-    <div className={`flex items-center bg-gray-800 rounded-lg px-3 py-1.5 gap-1 ${wide ? "w-full" : ""}`}>
-      <span className="text-sm text-gray-500">$</span>
+    <div className={`flex items-center rounded-lg px-3 py-1.5 gap-1 ${wide ? "w-full" : ""}`} style={{ background: "var(--surface-inset)" }}>
+      <span className="text-sm" style={{ color: "var(--text-muted)" }}>$</span>
       <input
         type="text"
         inputMode="decimal"
         value={inputStr}
         onChange={(e) => handleInput(e.target.value)}
         onBlur={() => setInputStr(String(amount))}
-        className={`bg-transparent font-semibold text-white text-right outline-none ${wide ? "flex-1 text-lg" : "w-20 text-sm"}`}
+        className={`bg-transparent font-semibold text-right outline-none ${wide ? "flex-1 text-lg" : "w-20 text-sm"}`}
+        style={{ color: "var(--text-primary)" }}
       />
     </div>
   );
@@ -247,7 +253,7 @@ export function DebtPayoffSection({
   const slider = (
     <div className="relative w-full py-2">
       {/* Track */}
-      <div className="w-full h-1.5 rounded-full bg-gray-700 overflow-hidden">
+      <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-inset)" }}>
         <div
           className="h-full rounded-full"
           style={{
@@ -258,8 +264,8 @@ export function DebtPayoffSection({
       </div>
       {/* Thumb */}
       <div
-        className="absolute top-1/2 w-3.5 h-3.5 rounded-full bg-white shadow border border-gray-300 pointer-events-none -translate-y-1/2"
-        style={{ left: `calc(${sliderPct / 100} * (100% - 14px) + 7px)` }}
+        className="absolute top-1/2 w-3.5 h-3.5 rounded-full bg-white shadow border pointer-events-none -translate-y-1/2"
+        style={{ left: `calc(${sliderPct / 100} * (100% - 14px) + 7px)`, borderColor: "var(--border-hairline-strong)" }}
       />
       {/* Native input — invisible but handles interaction */}
       <input
@@ -275,28 +281,28 @@ export function DebtPayoffSection({
   );
 
   const breakdown = (
-    <div className="rounded-xl border border-gray-800 overflow-hidden">
-      <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest px-3 pt-3 pb-1.5">
+    <div className="rounded-xl border overflow-hidden" style={{ borderColor: "var(--border-hairline)" }}>
+      <p className="text-[10px] font-semibold uppercase tracking-widest px-3 pt-3 pb-1.5" style={{ color: "var(--text-faint)" }}>
         Estimated total paid
       </p>
-      <div className="divide-y divide-gray-800/60">
+      <div className="divide-y divide-[var(--border-hairline)]">
         <div className="flex items-center justify-between px-3 py-2">
-          <p className="text-xs text-gray-500">Principal</p>
-          <p className="text-sm font-medium text-white">{formatBalance(total)}</p>
+          <p className="text-xs" style={{ color: "var(--text-muted)" }}>Principal</p>
+          <p className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>{formatBalance(total)}</p>
         </div>
         <div className="flex items-center justify-between px-3 py-2">
-          <p className="text-xs text-gray-500">
+          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
             Interest{hasRates ? ` (${weightedApr!.toFixed(2)}% APR)` : ""}
           </p>
           {hasRates && totalInterest != null ? (
             <p className="text-sm font-medium" style={{ color: debtColor(Math.floor(sortedDebtAccounts.length / 2), sortedDebtAccounts.length) }}>+{formatBalance(totalInterest)}</p>
           ) : (
-            <p className="text-xs text-gray-600">— add APR to account for estimate</p>
+            <p className="text-xs" style={{ color: "var(--text-faint)" }}>— add APR to account for estimate</p>
           )}
         </div>
-        <div className="flex items-center justify-between px-3 py-2.5 bg-gray-800/30">
-          <p className="text-xs font-semibold text-gray-300">Total paid</p>
-          <p className="text-sm font-bold text-white">
+        <div className="flex items-center justify-between px-3 py-2.5" style={{ background: "var(--surface-muted)" }}>
+          <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>Total paid</p>
+          <p className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
             {totalPaid != null ? formatBalance(totalPaid) : formatBalance(total)}
           </p>
         </div>
@@ -305,7 +311,7 @@ export function DebtPayoffSection({
   );
 
   const disclaimer = (
-    <p className="text-[10px] text-gray-700 text-center">
+    <p className="text-[10px] text-center" style={{ color: "var(--text-faint)" }}>
       {hasRates
         ? "Estimate only · actual totals may vary based on billing cycles, fees, and rate changes"
         : "Simplified estimate · add APR to accounts for interest-aware calculation"}
@@ -315,21 +321,25 @@ export function DebtPayoffSection({
   // ── Full-screen modal ─────────────────────────────────────────────────────
   if (fullscreen) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/75 backdrop-blur-sm">
-        <div className="w-full sm:max-w-3xl bg-gray-950 border border-gray-800 rounded-2xl shadow-2xl flex flex-col max-h-[88dvh]">
+      <div className="fixed inset-0 z-50 flex items-center justify-center px-4 backdrop-blur-sm" style={{ background: "var(--scrim)" }}>
+        <div
+          className="w-full sm:max-w-3xl rounded-2xl shadow-2xl flex flex-col max-h-[88dvh] border"
+          style={{ background: "var(--modal-surface)", borderColor: "var(--border-hairline-strong)" }}
+        >
 
           {/* Header */}
-          <div className="flex items-start justify-between px-5 py-4 border-b border-gray-800 shrink-0">
+          <div className="flex items-start justify-between px-5 py-4 border-b shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
             <div>
-              <p className="text-base font-bold text-white">Payoff Planner</p>
-              <p className="text-xs text-gray-500 mt-0.5">
+              <p className="text-base font-bold" style={{ color: "var(--text-primary)" }}>Payoff Planner</p>
+              <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
                 {debtAccounts.length} account{debtAccounts.length !== 1 ? "s" : ""}
                 {hasRates ? ` · ${weightedApr!.toFixed(2)}% avg APR` : ""}
               </p>
             </div>
             <button
               onClick={onCloseFullscreen}
-              className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-500 hover:text-white transition-colors"
+              className="p-1.5 rounded-lg hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] transition-colors"
+              style={{ color: "var(--text-muted)" }}
             >
               <X size={18} />
             </button>
@@ -344,9 +354,9 @@ export function DebtPayoffSection({
               {debtAccounts.length > 1 && (
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
-                    <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest">Accounts</p>
+                    <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Accounts</p>
                     {!allSelected && (
-                      <button onClick={selectAll} className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors">
+                      <button onClick={selectAll} className="text-[10px] transition-colors" style={{ color: "var(--accent-info)" }}>
                         Select all
                       </button>
                     )}
@@ -358,12 +368,12 @@ export function DebtPayoffSection({
                         <button
                           key={a.id}
                           onClick={() => toggleAccount(a.id)}
-                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border whitespace-nowrap shrink-0 transition-colors ${
-                            on ? "" : "bg-gray-800 border-gray-700 text-gray-500"
-                          }`}
-                          style={on ? { backgroundColor: `${debtColorFor(a.id)}18`, borderColor: `${debtColorFor(a.id)}44`, color: debtColorFor(a.id) } : {}}
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border whitespace-nowrap shrink-0 transition-colors"
+                          style={on
+                            ? { backgroundColor: `${debtColorFor(a.id)}18`, borderColor: `${debtColorFor(a.id)}44`, color: debtColorFor(a.id) }
+                            : { background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-muted)" }}
                         >
-                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: on ? debtColorFor(a.id) : "#4b5563" }} />
+                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: on ? debtColorFor(a.id) : "var(--text-faint)" }} />
                           {a.name}
                         </button>
                       );
@@ -372,48 +382,48 @@ export function DebtPayoffSection({
                 </div>
               )}
 
-              <div className="flex items-center gap-3 text-xs border-b border-gray-800 pb-3">
+              <div className="flex items-center gap-3 text-xs border-b pb-3" style={{ borderColor: "var(--border-hairline)" }}>
                 <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Total</span>
+                  <span style={{ color: "var(--text-faint)" }}>Total</span>
                   <span className="font-semibold" style={{ color: DEBT_RED }}>{formatBalance(total)}</span>
                 </div>
                 {hasRates && (
                   <>
-                    <span className="text-gray-800">·</span>
+                    <span style={{ color: "var(--text-faint)" }}>·</span>
                     <div className="flex items-center gap-1">
-                      <span className="text-gray-600">APR</span>
+                      <span style={{ color: "var(--text-faint)" }}>APR</span>
                       <span className="font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</span>
                     </div>
                   </>
                 )}
                 {minPayment > 0 && (
                   <>
-                    <span className="text-gray-800">·</span>
+                    <span style={{ color: "var(--text-faint)" }}>·</span>
                     <div className="flex items-center gap-1">
-                      <span className="text-gray-600">Min</span>
-                      <span className="font-semibold text-gray-300">{formatBalance(minPayment)}/mo</span>
+                      <span style={{ color: "var(--text-faint)" }}>Min</span>
+                      <span className="font-semibold" style={{ color: "var(--text-secondary)" }}>{formatBalance(minPayment)}/mo</span>
                     </div>
                   </>
                 )}
               </div>
 
-              <div className={`rounded-2xl px-4 py-3 border ${months == null ? "bg-yellow-500/5 border-yellow-500/20" : "bg-gray-900 border-gray-800"}`}>
+              <div className="rounded-2xl px-4 py-3 border" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
                 <div className="flex items-end justify-between gap-2">
                   <div>
-                    <p className="text-[11px] text-gray-500">Debt-free in</p>
-                    <p className={`text-2xl font-bold leading-tight ${months == null ? "text-yellow-400" : "text-white"}`}>
+                    <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>Debt-free in</p>
+                    <p className="text-2xl font-bold leading-tight" style={{ color: "var(--text-primary)" }}>
                       {timeLabel()}
                     </p>
                   </div>
                   {payoffDate && (
                     <div className="text-right pb-0.5">
-                      <p className="text-[10px] text-gray-600">by</p>
-                      <p className="text-sm text-gray-300 font-medium" suppressHydrationWarning>{payoffDate}</p>
+                      <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>by</p>
+                      <p className="text-sm font-medium" style={{ color: "var(--text-secondary)" }} suppressHydrationWarning>{payoffDate}</p>
                     </div>
                   )}
                 </div>
                 {months != null && totalInterest != null && hasRates && (
-                  <p className="text-[11px] text-gray-600 mt-1.5 pt-1.5 border-t border-gray-800">
+                  <p className="text-[11px] mt-1.5 pt-1.5 border-t" style={{ color: "var(--text-faint)", borderColor: "var(--border-hairline)" }}>
                     {formatBalance(totalInterest)} in interest over {months} payment{months !== 1 ? "s" : ""}
                   </p>
                 )}
@@ -422,13 +432,13 @@ export function DebtPayoffSection({
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
-                    <p className="text-xs text-gray-400">{freqLabel} payment</p>
+                    <p className="text-xs" style={{ color: "var(--text-secondary)" }}>{freqLabel} payment</p>
                     {freqToggle}
                   </div>
                   {paymentInput()}
                 </div>
                 {slider}
-                <div className="flex justify-between text-[10px] text-gray-600">
+                <div className="flex justify-between text-[10px]" style={{ color: "var(--text-faint)" }}>
                   <span>$50 / {freq === "week" ? "week" : "month"}</span>
                   <span>{formatBalance(sliderMax)} / {freq === "week" ? "week" : "month"}</span>
                 </div>
@@ -439,14 +449,14 @@ export function DebtPayoffSection({
             </div>
 
             {/* ── Desktop layout (two columns) ──────────────────── */}
-            <div className="hidden sm:grid sm:grid-cols-[260px_1fr] divide-x divide-gray-800 min-h-full">
+            <div className="hidden sm:grid sm:grid-cols-[260px_1fr] divide-x divide-[var(--border-hairline)] min-h-full">
 
               {/* Left — account panel */}
               <div className="p-5 space-y-3 overflow-y-auto">
                 <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest">Accounts</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Accounts</p>
                   {!allSelected && (
-                    <button onClick={selectAll} className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors">
+                    <button onClick={selectAll} className="text-[10px] transition-colors" style={{ color: "var(--accent-info)" }}>
                       Select all
                     </button>
                   )}
@@ -460,26 +470,28 @@ export function DebtPayoffSection({
                         key={a.id}
                         onClick={() => toggleAccount(a.id)}
                         className={`w-full flex items-start gap-3 px-3 py-2.5 rounded-xl border text-left transition-colors ${
-                          on ? "" : "bg-gray-900 border-gray-800 hover:bg-gray-800/60 opacity-50"
+                          on ? "" : "hover:bg-[var(--surface-hover)] opacity-50"
                         }`}
-                        style={on ? { backgroundColor: `${debtColorFor(a.id)}10`, borderColor: `${debtColorFor(a.id)}30` } : {}}
+                        style={on
+                          ? { backgroundColor: `${debtColorFor(a.id)}10`, borderColor: `${debtColorFor(a.id)}30` }
+                          : { background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}
                       >
                         <span
                           className="mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors"
-                          style={on ? { borderColor: debtColorFor(a.id), backgroundColor: debtColorFor(a.id) } : { borderColor: "#4b5563", backgroundColor: "transparent" }}
+                          style={on ? { borderColor: debtColorFor(a.id), backgroundColor: debtColorFor(a.id) } : { borderColor: "var(--text-faint)", backgroundColor: "transparent" }}
                         >
                           {on && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
                         </span>
                         <div className="flex-1 min-w-0">
-                          <p className={`text-sm font-medium truncate ${on ? "text-white" : "text-gray-500"}`}>{a.name}</p>
-                          <p className="text-[10px] text-gray-600 truncate">{a.institution}</p>
+                          <p className="text-sm font-medium truncate" style={{ color: on ? "var(--text-primary)" : "var(--text-muted)" }}>{a.name}</p>
+                          <p className="text-[10px] truncate" style={{ color: "var(--text-faint)" }}>{a.institution}</p>
                           <div className="flex flex-wrap gap-x-2 mt-0.5">
                             <span className="text-xs font-semibold" style={{ color: debtColorFor(a.id) }}>{formatBalance(a.balance)}</span>
                             {a.interestRate != null && (
                               <span className="text-[10px]" style={{ color: `${debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length)}cc` }}>{a.interestRate.toFixed(2)}% APR</span>
                             )}
                             {a.minimumPayment != null && (
-                              <span className="text-[10px] text-gray-600">{formatBalance(a.minimumPayment)}/mo min</span>
+                              <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>{formatBalance(a.minimumPayment)}/mo min</span>
                             )}
                           </div>
                         </div>
@@ -488,21 +500,21 @@ export function DebtPayoffSection({
                   })}
                 </div>
 
-                <div className="pt-3 border-t border-gray-800 space-y-1.5">
+                <div className="pt-3 border-t space-y-1.5" style={{ borderColor: "var(--border-hairline)" }}>
                   <div className="flex justify-between text-xs">
-                    <span className="text-gray-500">Selected total</span>
+                    <span style={{ color: "var(--text-muted)" }}>Selected total</span>
                     <span className="font-semibold" style={{ color: DEBT_RED }}>{formatBalance(total)}</span>
                   </div>
                   {hasRates && (
                     <div className="flex justify-between text-xs">
-                      <span className="text-gray-500">Avg APR</span>
+                      <span style={{ color: "var(--text-muted)" }}>Avg APR</span>
                       <span className="font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</span>
                     </div>
                   )}
                   {minPayment > 0 && (
                     <div className="flex justify-between text-xs">
-                      <span className="text-gray-500">Min monthly payments</span>
-                      <span className="font-semibold text-gray-300">{formatBalance(minPayment)}</span>
+                      <span style={{ color: "var(--text-muted)" }}>Min monthly payments</span>
+                      <span className="font-semibold" style={{ color: "var(--text-secondary)" }}>{formatBalance(minPayment)}</span>
                     </div>
                   )}
                 </div>
@@ -510,14 +522,14 @@ export function DebtPayoffSection({
 
               {/* Right — simulator */}
               <div className="p-5 space-y-5 overflow-y-auto">
-                <div className={`rounded-2xl p-5 border ${months == null ? "bg-yellow-500/5 border-yellow-500/20" : "bg-gray-900 border-gray-800"}`}>
-                  <p className="text-xs text-gray-500 mb-1">Debt-free in</p>
-                  <p className={`text-3xl font-bold leading-tight ${months == null ? "text-yellow-400" : "text-white"}`}>
+                <div className="rounded-2xl p-5 border" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
+                  <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>Debt-free in</p>
+                  <p className="text-3xl font-bold leading-tight" style={{ color: "var(--text-primary)" }}>
                     {timeLabel()}
                   </p>
-                  {payoffDate && <p className="text-sm text-gray-400 mt-1" suppressHydrationWarning>by {payoffDate}</p>}
+                  {payoffDate && <p className="text-sm mt-1" style={{ color: "var(--text-secondary)" }} suppressHydrationWarning>by {payoffDate}</p>}
                   {months != null && totalInterest != null && hasRates && (
-                    <p className="text-xs text-gray-600 mt-2">
+                    <p className="text-xs mt-2" style={{ color: "var(--text-faint)" }}>
                       {formatBalance(totalInterest)} in interest over {months} payment{months !== 1 ? "s" : ""}
                     </p>
                   )}
@@ -526,18 +538,18 @@ export function DebtPayoffSection({
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
-                      <p className="text-sm text-gray-400">{freqLabel} payment</p>
+                      <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{freqLabel} payment</p>
                       {freqToggle}
                     </div>
                     {paymentInput()}
                   </div>
                   {slider}
-                  <div className="flex justify-between text-[10px] text-gray-600">
+                  <div className="flex justify-between text-[10px]" style={{ color: "var(--text-faint)" }}>
                     <span>$50 / {freq === "week" ? "week" : "month"}</span>
                     <span>{formatBalance(sliderMax)} / {freq === "week" ? "week" : "month"}</span>
                   </div>
                   {minPayment > 0 && (
-                    <p className="text-[10px] text-gray-600">Minimum payment: {formatBalance(minPayment)} / month</p>
+                    <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>Minimum payment: {formatBalance(minPayment)} / month</p>
                   )}
                 </div>
 
@@ -557,9 +569,9 @@ export function DebtPayoffSection({
       {debtAccounts.length > 1 && (
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest">Accounts</p>
+            <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--text-faint)" }}>Accounts</p>
             {!allSelected && (
-              <button onClick={selectAll} className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors">
+              <button onClick={selectAll} className="text-[10px] transition-colors" style={{ color: "var(--accent-info)" }}>
                 Select all
               </button>
             )}
@@ -572,11 +584,13 @@ export function DebtPayoffSection({
                   key={a.id}
                   onClick={() => toggleAccount(a.id)}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors border ${
-                    on ? "" : "bg-gray-800 border-gray-700 text-gray-600 hover:text-gray-400"
+                    on ? "" : "hover:text-[var(--text-secondary)]"
                   }`}
-                  style={on ? { backgroundColor: `${debtColorFor(a.id)}18`, borderColor: `${debtColorFor(a.id)}44`, color: debtColorFor(a.id) } : {}}
+                  style={on
+                    ? { backgroundColor: `${debtColorFor(a.id)}18`, borderColor: `${debtColorFor(a.id)}44`, color: debtColorFor(a.id) }
+                    : { background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-faint)" }}
                 >
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: on ? debtColorFor(a.id) : "#374151" }} />
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: on ? debtColorFor(a.id) : "var(--text-faint)" }} />
                   {a.name}
                 </button>
               );
@@ -587,14 +601,14 @@ export function DebtPayoffSection({
 
       <div className="flex items-end justify-between">
         <div>
-          <p className="text-[10px] text-gray-500 uppercase tracking-widest font-semibold mb-1">
+          <p className="text-[10px] uppercase tracking-widest font-semibold mb-1" style={{ color: "var(--text-muted)" }}>
             {allSelected ? "Total to pay off" : `${filtered.length} account${filtered.length !== 1 ? "s" : ""} selected`}
           </p>
           <p className="text-2xl font-bold" style={{ color: DEBT_RED }}>{formatBalance(total)}</p>
         </div>
         {hasRates && (
           <div className="text-right">
-            <p className="text-[10px] text-gray-600">Avg APR</p>
+            <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>Avg APR</p>
             <p className="text-sm font-semibold" style={{ color: debtColor(sortedDebtAccounts.length - 1, sortedDebtAccounts.length) }}>{weightedApr!.toFixed(2)}%</p>
           </div>
         )}
@@ -604,33 +618,33 @@ export function DebtPayoffSection({
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <p className="text-xs text-gray-400 shrink-0">{freqLabel} payment</p>
+              <p className="text-xs shrink-0" style={{ color: "var(--text-secondary)" }}>{freqLabel} payment</p>
               {freqToggle}
             </div>
             {minPayment > 0 && (
-              <p className="text-[10px] text-gray-600">min {formatBalance(minPayment)}/mo</p>
+              <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>min {formatBalance(minPayment)}/mo</p>
             )}
           </div>
           {paymentInput()}
         </div>
         {slider}
-        <div className="flex justify-between text-[10px] text-gray-600">
+        <div className="flex justify-between text-[10px]" style={{ color: "var(--text-faint)" }}>
           <span>$50/{freq === "week" ? "wk" : "mo"}</span>
           <span>{formatBalance(sliderMax)}/{freq === "week" ? "wk" : "mo"}</span>
         </div>
       </div>
 
-      <div className="bg-gray-800/50 rounded-xl px-4 py-3 flex items-center justify-between">
+      <div className="rounded-xl px-4 py-3 flex items-center justify-between" style={{ background: "var(--surface-inset)" }}>
         <div>
-          <p className="text-xs text-gray-500">Debt-free in</p>
-          <p className={`text-lg font-bold ${months == null ? "text-yellow-400" : "text-white"}`}>
+          <p className="text-xs" style={{ color: "var(--text-muted)" }}>Debt-free in</p>
+          <p className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>
             {timeLabel()}
           </p>
         </div>
         {payoffDate && (
           <div className="text-right">
-            <p className="text-xs text-gray-500">By</p>
-            <p className="text-sm font-medium text-gray-300" suppressHydrationWarning>{payoffDate}</p>
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>By</p>
+            <p className="text-sm font-medium" style={{ color: "var(--text-secondary)" }} suppressHydrationWarning>{payoffDate}</p>
           </div>
         )}
       </div>
