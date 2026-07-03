@@ -304,3 +304,65 @@ export function buildFlowWriteFields(
     merchantEntityId:         captured.merchantEntityId,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Row-sourced flow input (P4 backfill, Slice 1)
+//
+// The Phase B write path builds classifier inputs from a live Plaid txn
+// (buildPlaidFlowInput). The historical backfill has no Plaid payload — it must
+// assemble the SAME FlowClassificationInput + CapturedPlaidMetadata from the
+// Transaction's own stored columns + its owning account's type/debtSubtype. This
+// is pure marshalling only: it contains NO classification logic (classifyFlow
+// and buildFlowWriteFields are reused verbatim), invents nothing, and preserves
+// any stored pfc/merchant values by reading them straight off the row. See
+// docs/initiatives/flowtype/P4_BACKFILL_CHECKLIST.md §2.2.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The Transaction columns the classifier consumes, as stored on the row. */
+export interface FlowRowInput {
+  category:           string;
+  amount:             number;
+  merchant:           string | null;
+  description:        string | null;
+  pfcPrimary:         string | null;
+  pfcDetailed:        string | null;
+  pfcConfidenceLevel: string | null;
+  merchantEntityId:   string | null;
+}
+
+/** Account context resolved from whichever FK the row uses (FinancialAccount or legacy Account). */
+export interface FlowRowAccountContext {
+  accountType: string | null;   // FinancialAccount.type or Account.type
+  debtSubtype: string | null;   // FinancialAccount.debtSubtype only; null for legacy Account
+}
+
+/**
+ * Assembles classifier input + captured-metadata from a stored Transaction row.
+ * Mirrors buildPlaidFlowInput but sources from the DB row instead of a Plaid
+ * object. Pure; never throws. `counterparties` is always empty — counterparty
+ * data was never persisted (deny-listed in P2), so there is nothing to
+ * reconstruct, and no counterparty is ever inferred.
+ */
+export function buildFlowInputFromRow(
+  row:  FlowRowInput,
+  acct: FlowRowAccountContext,
+): PlaidFlowInputResult {
+  const input: FlowClassificationInput = {
+    category:    row.category,
+    amount:      row.amount,
+    accountType: acct.accountType ?? null,
+    debtSubtype: acct.debtSubtype ?? null,
+    merchant:    row.merchant ?? null,
+    description: row.description ?? null,
+    pfcPrimary:  row.pfcPrimary ?? null,
+    pfcDetailed: row.pfcDetailed ?? null,
+  };
+
+  const captured: CapturedPlaidMetadata = {
+    pfcConfidenceLevel: row.pfcConfidenceLevel ?? null,
+    merchantEntityId:   row.merchantEntityId ?? null,
+    counterparties:     [],
+  };
+
+  return { input, captured };
+}
