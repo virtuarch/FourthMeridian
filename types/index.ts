@@ -107,6 +107,22 @@ export interface InvestmentTransaction {
   amount:      number;       // negative = cost (buy), positive = proceeds/income
 }
 
+/**
+ * FlowType semantics (v2.5.5). Mirrors the Prisma enums, kept as local unions
+ * so this client-facing type module stays Prisma-free — the same convention
+ * `TransactionCategory` above already follows.
+ */
+export type FlowType =
+  | 'SPENDING' | 'INCOME' | 'REFUND' | 'DEBT_PAYMENT' | 'TRANSFER'
+  | 'INVESTMENT' | 'FEE' | 'INTEREST' | 'ADJUSTMENT' | 'UNKNOWN';
+
+export type FlowDirection = 'INFLOW' | 'OUTFLOW' | 'INTERNAL' | 'UNKNOWN';
+
+export type FlowClassificationReason =
+  | 'PLAID_PFC_DETAILED' | 'PLAID_PFC_PRIMARY' | 'CATEGORY_FLOW_VALUE'
+  | 'CATEGORY_INVESTMENT_VALUE' | 'ACCOUNT_TYPE_CONTEXT'
+  | 'SIGN_DEFAULT_SPENDING' | 'SIGN_DEFAULT_INFLOW' | 'AMBIGUOUS_UNKNOWN';
+
 export interface Transaction {
   id: string;
   accountId: string;
@@ -116,6 +132,15 @@ export interface Transaction {
   category: TransactionCategory;
   amount: number;         // positive = credit (money in), negative = debit (money out)
   pending: boolean;
+
+  // FlowType metadata (v2.5.5 P5 Slice 1 — additive read plumbing only).
+  // Nothing consumes these yet; all category/sign logic is unchanged. Null for
+  // any row not yet classified. Consumers arrive in later P5 slices.
+  flowType?: FlowType | null;
+  flowDirection?: FlowDirection | null;
+  classificationConfidence?: number | null;
+  classificationReason?: FlowClassificationReason | null;
+  classifierVersion?: number | null;
 }
 
 export interface AiAdvice {

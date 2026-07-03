@@ -83,6 +83,12 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
     category:    r.category as Transaction["category"],
     amount:      r.amount,
     pending:     r.pending,
+    // FlowType metadata (P5 Slice 1 — additive; not consumed anywhere yet).
+    flowType:                 r.flowType ?? null,
+    flowDirection:            r.flowDirection ?? null,
+    classificationConfidence: r.classificationConfidence ?? null,
+    classificationReason:     r.classificationReason ?? null,
+    classifierVersion:        r.classifierVersion ?? null,
   }));
 }
 
@@ -114,6 +120,12 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
     category:    r.category as Transaction["category"],
     amount:      r.amount,
     pending:     r.pending,
+    // FlowType metadata (P5 Slice 1 — additive; not consumed anywhere yet).
+    flowType:                 r.flowType ?? null,
+    flowDirection:            r.flowDirection ?? null,
+    classificationConfidence: r.classificationConfidence ?? null,
+    classificationReason:     r.classificationReason ?? null,
+    classifierVersion:        r.classifierVersion ?? null,
   }));
 }
 

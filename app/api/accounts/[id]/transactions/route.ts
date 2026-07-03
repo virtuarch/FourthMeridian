@@ -71,6 +71,12 @@ export async function GET(
     category:    r.category,
     amount:      r.amount,
     pending:     r.pending,
+    // FlowType metadata (P5 Slice 1 — additive; not consumed anywhere yet).
+    flowType:                 r.flowType ?? null,
+    flowDirection:            r.flowDirection ?? null,
+    classificationConfidence: r.classificationConfidence ?? null,
+    classificationReason:     r.classificationReason ?? null,
+    classifierVersion:        r.classifierVersion ?? null,
   }));
 
   return NextResponse.json({ transactions });
