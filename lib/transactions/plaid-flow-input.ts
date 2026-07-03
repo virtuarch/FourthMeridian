@@ -24,8 +24,18 @@ import type {
   FlowClassificationInput,
   FlowClassification,
   FlowType,
+  FlowDirection,
   FlowReason,
 } from "./flow-classifier";
+// Type-only imports — erased at runtime, so this module stays Prisma-free at
+// runtime (the pure tests run without the generated engine). They exist purely
+// to compile-guard the classifier→Postgres-enum mapping below: if the two ever
+// drift, tsc fails.
+import type {
+  FlowType as PrismaFlowType,
+  FlowDirection as PrismaFlowDirection,
+  FlowClassificationReason as PrismaFlowClassificationReason,
+} from "@prisma/client";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Captured metadata (P3 will persist this; P2 only holds it in memory)
@@ -194,4 +204,103 @@ export function summarizeShadow(acc: ShadowStats): string {
     `legacyBucketAgreement=${acc.legacyBucketAgreements}/${acc.legacyBucketComparisons} (${agreementPct}%) ` +
     `flowType{${flowParts}}`
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Flow write-fields (P3 Phase B) — maps classifier output to the Postgres
+// enum-valued Transaction columns for persistence on the sync write path.
+//
+// Compile-guarded parity: each map is `Record<classifierUnion, PrismaEnum>`, so
+// (a) the key set forces every classifier value to be mapped and (b) each value
+// must be assignable to the Prisma enum type — drift in either direction is a
+// tsc error. Values are string literals (not `Prisma.FlowType.X`) so the module
+// keeps no runtime dependency on the generated client.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const FLOW_TYPE_TO_PRISMA: Record<FlowType, PrismaFlowType> = {
+  SPENDING:     "SPENDING",
+  INCOME:       "INCOME",
+  REFUND:       "REFUND",
+  DEBT_PAYMENT: "DEBT_PAYMENT",
+  TRANSFER:     "TRANSFER",
+  INVESTMENT:   "INVESTMENT",
+  FEE:          "FEE",
+  INTEREST:     "INTEREST",
+  ADJUSTMENT:   "ADJUSTMENT",
+  UNKNOWN:      "UNKNOWN",
+};
+
+const FLOW_DIRECTION_TO_PRISMA: Record<FlowDirection, PrismaFlowDirection> = {
+  INFLOW:   "INFLOW",
+  OUTFLOW:  "OUTFLOW",
+  INTERNAL: "INTERNAL",
+  UNKNOWN:  "UNKNOWN",
+};
+
+const REASON_TO_PRISMA: Record<FlowReason, PrismaFlowClassificationReason> = {
+  PLAID_PFC_DETAILED:        "PLAID_PFC_DETAILED",
+  PLAID_PFC_PRIMARY:         "PLAID_PFC_PRIMARY",
+  CATEGORY_FLOW_VALUE:       "CATEGORY_FLOW_VALUE",
+  CATEGORY_INVESTMENT_VALUE: "CATEGORY_INVESTMENT_VALUE",
+  ACCOUNT_TYPE_CONTEXT:      "ACCOUNT_TYPE_CONTEXT",
+  SIGN_DEFAULT_SPENDING:     "SIGN_DEFAULT_SPENDING",
+  SIGN_DEFAULT_INFLOW:       "SIGN_DEFAULT_INFLOW",
+  AMBIGUOUS_UNKNOWN:         "AMBIGUOUS_UNKNOWN",
+};
+
+/** The exact subset of Transaction columns Phase B writes. All nullable. */
+export interface FlowWriteFields {
+  flowType:                 PrismaFlowType | null;
+  flowDirection:            PrismaFlowDirection | null;
+  counterpartyAccountId:    string | null;
+  classificationConfidence: number | null;
+  classificationReason:     PrismaFlowClassificationReason | null;
+  classifierVersion:        number | null;
+  pfcPrimary:               string | null;
+  pfcDetailed:              string | null;
+  pfcConfidenceLevel:       string | null;
+  merchantEntityId:         string | null;
+}
+
+/**
+ * All-null flow columns — written when classification fails, so the row still
+ * persists with its original fields and never blocks the sync.
+ */
+export const NULL_FLOW_WRITE_FIELDS: FlowWriteFields = {
+  flowType:                 null,
+  flowDirection:            null,
+  counterpartyAccountId:    null,
+  classificationConfidence: null,
+  classificationReason:     null,
+  classifierVersion:        null,
+  pfcPrimary:               null,
+  pfcDetailed:              null,
+  pfcConfidenceLevel:       null,
+  merchantEntityId:         null,
+};
+
+/**
+ * Builds the Transaction flow columns from a classification + its inputs.
+ * `counterpartyAccountId` is deliberately null in Phase B — deterministic
+ * destination attribution is a read-side rollup and source-side attribution is
+ * deferred (P4/P5); writing a guess would invent data.
+ */
+export function buildFlowWriteFields(
+  classification: FlowClassification,
+  input: FlowClassificationInput,
+  captured: CapturedPlaidMetadata,
+  version: number,
+): FlowWriteFields {
+  return {
+    flowType:                 FLOW_TYPE_TO_PRISMA[classification.flowType],
+    flowDirection:            FLOW_DIRECTION_TO_PRISMA[classification.flowDirection],
+    counterpartyAccountId:    null,
+    classificationConfidence: classification.confidence,
+    classificationReason:     REASON_TO_PRISMA[classification.reason],
+    classifierVersion:        version,
+    pfcPrimary:               input.pfcPrimary ?? null,
+    pfcDetailed:              input.pfcDetailed ?? null,
+    pfcConfidenceLevel:       captured.pfcConfidenceLevel,
+    merchantEntityId:         captured.merchantEntityId,
+  };
 }

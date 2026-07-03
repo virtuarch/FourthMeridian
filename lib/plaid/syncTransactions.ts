@@ -72,9 +72,11 @@ import { withPlaidRetry } from "@/lib/plaid/retry";
 // persisted or used to alter any write, total, or AI read; it exists solely to
 // exercise the P1 classifier against real Plaid inputs and emit a non-PII
 // distribution when FLOWTYPE_SHADOW is enabled. Default (off) is a no-op.
-import { classifyFlow } from "@/lib/transactions/flow-classifier";
+import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
 import {
   buildPlaidFlowInput,
+  buildFlowWriteFields,
+  NULL_FLOW_WRITE_FIELDS,
   createShadowStats,
   accumulateShadow,
   summarizeShadow,
@@ -169,19 +171,18 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   let updatedByFingerprint  = 0;
   let skippedMissingAccount = 0;
 
-  // FlowType P2 shadow — enabled only when FLOWTYPE_SHADOW != "off". When off,
-  // the shadow block in the loop is skipped entirely (no extra queries, no
-  // classification, no logging), so sync behavior is byte-identical to pre-P2.
+  // FlowType observability (FLOWTYPE_SHADOW). Classification itself now runs
+  // unconditionally (P3 Phase B — it feeds the write); this flag only controls
+  // the optional aggregate, non-PII distribution summary. Default off = no log.
   const shadowMode = (process.env.FLOWTYPE_SHADOW ?? "off").toLowerCase();
   const shadowEnabled = shadowMode !== "off";
   const shadowStats = createShadowStats();
 
-  // Shadow-only account-context cache. Populated lazily and ONLY when shadow is
-  // enabled — the classifier wants accountType/debtSubtype, which the write
-  // path does not otherwise load. Never affects the resolveFinancialAccountId
-  // path used by writes.
+  // Account-context cache for the classifier (accountType/debtSubtype), which
+  // the write path does not otherwise load. Populated lazily per account.
+  // Independent of the resolveFinancialAccountId path used by writes.
   const accountMetaCache = new Map<string, { type: string | null; debtSubtype: string | null }>();
-  async function resolveAccountMetaForShadow(financialAccountId: string): Promise<{ type: string | null; debtSubtype: string | null }> {
+  async function resolveAccountMeta(financialAccountId: string): Promise<{ type: string | null; debtSubtype: string | null }> {
     const cached = accountMetaCache.get(financialAccountId);
     if (cached) return cached;
     const fa = await db.financialAccount.findUnique({
@@ -258,25 +259,28 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       const merchant     = txn.merchant_name ?? txn.name;
       const description  = txn.name;
 
-      const fields = { financialAccountId, date, merchant, description, category, amount, pending: txn.pending };
-
-      // FlowType P2 shadow classification — READ-ONLY, PERSISTS NOTHING. Runs
-      // only when enabled; wrapped so a shadow failure can never affect the
-      // sync write below. Does not touch `fields`.
-      if (shadowEnabled) {
-        try {
-          const meta = await resolveAccountMetaForShadow(financialAccountId);
-          const { input } = buildPlaidFlowInput(txn, {
-            category,
-            amount,
-            accountType: meta.type,
-            debtSubtype: meta.debtSubtype,
-          });
-          accumulateShadow(shadowStats, classifyFlow(input), category, amount);
-        } catch (e) {
-          console.warn(`[flowtype-shadow] classification skipped for ${txn.transaction_id}:`, e);
-        }
+      // FlowType P3 Phase B — classify and persist the flow columns. Computed
+      // unconditionally (it feeds the write). Wrapped so a classification
+      // failure degrades to all-null flow columns and NEVER blocks the write:
+      // the row still persists with its original fields.
+      let flowFields = NULL_FLOW_WRITE_FIELDS;
+      try {
+        const meta = await resolveAccountMeta(financialAccountId);
+        const { input, captured } = buildPlaidFlowInput(txn, {
+          category,
+          amount,
+          accountType: meta.type,
+          debtSubtype: meta.debtSubtype,
+        });
+        const classification = classifyFlow(input);
+        flowFields = buildFlowWriteFields(classification, input, captured, FLOW_CLASSIFIER_VERSION);
+        if (shadowEnabled) accumulateShadow(shadowStats, classification, category, amount);
+      } catch (e) {
+        console.warn(`[flowtype] classification skipped for ${txn.transaction_id} — writing null flow columns:`, e);
       }
+
+      // The 7 original values are byte-identical; flow columns are additive.
+      const fields = { financialAccountId, date, merchant, description, category, amount, pending: txn.pending, ...flowFields };
 
       try {
         // 1. Exact match — same row Plaid is telling us about.

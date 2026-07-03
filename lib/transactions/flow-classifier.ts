@@ -39,6 +39,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Economic KIND of a movement. */
+/**
+ * Version of the classification LOGIC below. Persisted on each classified row
+ * (Transaction.classifierVersion) so a later, improved classifier can re-run
+ * over only stale rows (`WHERE classifierVersion < FLOW_CLASSIFIER_VERSION`)
+ * without disturbing higher-confidence ones. Bump this whenever the
+ * classification rules change. Additive constant — no logic depends on it here.
+ *   1 = P1 / P3 Phase B ruleset.
+ */
+export const FLOW_CLASSIFIER_VERSION = 1;
+
 export type FlowType =
   | 'SPENDING'      // discretionary/non-discretionary consumption (a real cost)
   | 'INCOME'        // earnings: payroll, dividends received, interest earned
