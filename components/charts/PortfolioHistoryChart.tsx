@@ -165,7 +165,7 @@ export function PortfolioHistoryChart({ data, series, activeKeys, title }: Props
 
           <XAxis
             dataKey="date"
-            tickFormatter={(v) => fmtAxisDate(v, effectiveInterval.days)}
+            tickFormatter={(v: string) => fmtAxisDate(v, effectiveInterval.days)}
             tick={{ fill: "#6b7280", fontSize: 11 }}
             axisLine={false}
             tickLine={false}

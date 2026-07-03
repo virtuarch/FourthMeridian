@@ -103,7 +103,7 @@ export function CashChart({ snapshots, interval, onIntervalChange, investableCas
           </defs>
           <XAxis
             dataKey="date"
-            tickFormatter={(v) => tickFormat(v, interval)}
+            tickFormatter={(v: string) => tickFormat(v, interval)}
             tick={{ fontSize: 10, fill: "#6b7280" }}
             tickLine={false}
             axisLine={false}

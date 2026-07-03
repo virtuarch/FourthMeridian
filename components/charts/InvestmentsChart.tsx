@@ -91,7 +91,7 @@ export function InvestmentsChart({ snapshots, interval, onIntervalChange }: Prop
         <LineChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
           <XAxis
             dataKey="date"
-            tickFormatter={(v) => tickFormat(v, interval)}
+            tickFormatter={(v: string) => tickFormat(v, interval)}
             tick={{ fontSize: 10, fill: "#6b7280" }}
             tickLine={false}
             axisLine={false}
