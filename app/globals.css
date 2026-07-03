@@ -113,6 +113,16 @@
   --shadow-e3: 0 18px 44px rgba(0,0,0,.46), 0 0 0 1px rgba(255,255,255,.08) inset;
   --shadow-e4: 0 28px 70px rgba(0,0,0,.56), 0 0 0 1px rgba(255,255,255,.10) inset;
 
+  /* ---------- LAYERING — named modal/overlay stacking scale ----------
+     Introduced by the Atlas Glass Modal Doctrine (Phase 1) to replace the
+     ad-hoc z-index ladder (z-50 / z-[100] / z-[110] / z-[150] / z-[9999]).
+     Consumed by OverlaySurface; existing modals migrate onto these tokens
+     in later phases. Additive — nothing references the removed literals yet. */
+  --z-modal:        100;  /* standard modal / overlay layer */
+  --z-modal-nested: 110;  /* a modal launched from within another modal */
+  --z-toast:        200;  /* transient notifications above modals */
+  --z-critical:     300;  /* critical/system-level interrupts */
+
   /* ---------- AI MOTION — distinct identity for AI surfaces ----------
      Slow, ambient, never a spinner. Used by the meridian-shimmer sweep
      on AI surfaces (e.g. Today's Insight). Intentionally outside the
