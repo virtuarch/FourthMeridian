@@ -126,12 +126,17 @@ export function buildPlaidFlowInput(
 // values are retained; only counts.
 // ─────────────────────────────────────────────────────────────────────────────
 
-type LegacyBucket = "income" | "expense" | "debtPayment" | "transfer" | "none";
+export type LegacyBucket = "income" | "expense" | "debtPayment" | "transfer" | "none";
 
 const LEGACY_INCOME_CATEGORIES = new Set(["Income", "Interest"]);
 
-/** Verbatim reproduction of the assembler's inline partition (read-only). */
-function legacyBucket(category: string, amount: number): LegacyBucket {
+/**
+ * Verbatim reproduction of the assembler's inline partition (read-only).
+ * Exported so diagnostic tooling can flag exactly the rows where the classifier
+ * fold disagrees with this legacy bucket — the same comparison accumulateShadow
+ * counts. No behavior change from exporting.
+ */
+export function legacyBucket(category: string, amount: number): LegacyBucket {
   if (category === "Transfer") return "transfer";
   if (category === "Payment")  return amount < 0 ? "debtPayment" : "none";
   if (LEGACY_INCOME_CATEGORIES.has(category) && amount > 0) return "income";
@@ -140,7 +145,7 @@ function legacyBucket(category: string, amount: number): LegacyBucket {
 }
 
 /** The documented fold from classifier flowType back onto the coarse buckets. */
-function classifierBucket(c: FlowClassification, amount: number): LegacyBucket {
+export function classifierBucket(c: FlowClassification, amount: number): LegacyBucket {
   if (c.flowType === "TRANSFER")     return "transfer";
   if (c.flowType === "DEBT_PAYMENT") return amount < 0 ? "debtPayment" : "none";
   if ((c.flowType === "INCOME" || c.flowType === "INTEREST") && amount > 0) return "income";
