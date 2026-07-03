@@ -12,9 +12,21 @@
  *   border-radius: var(--radius-lg)
  *   border: 1px solid var(--border-hairline)
  *   background: var(--glass-{depth})
- *   backdrop-filter: blur(30px) saturate(160%)
+ *   backdrop-filter: var(--glass-filter-{depth})   ← Material Engine Phase 1B
  *   box-shadow: var(--shadow-{elevation})
  *   + a 1px top-edge specular highlight
+ *
+ * Phase 1B (docs/design-system/ATLAS_GLASS_MATERIAL_DOCTRINE.md): the
+ * backdrop-filter now consumes the per-depth `--glass-filter-{depth}` tokens
+ * instead of a hardcoded `blur(30px) saturate(160%)`, so DEPTH is now physical
+ * thickness (blur + saturation + brightness scale with the tier) rather than a
+ * fill-opacity change alone. Practical effect on existing surfaces: `thin` is
+ * near-identical (28px vs 30px), `regular` blurs more (40px), and `thick`
+ * (modals) blurs noticeably more (60px) — the intended, doctrine-specified
+ * look. Under prefers-reduced-transparency the token resolves to `none`, so
+ * the surface drops backdrop-filter and leans on the opaque --glass-{depth}
+ * fill (an a11y improvement, not a regression). The new `floating` tier is the
+ * rarest/most-separated depth (hero / critical only).
  *
  * Optional `glow` adds a restrained ambient bloom behind the content,
  * matching the directive's per-surface-type ambient lighting rules
@@ -31,7 +43,7 @@
 
 import { CSSProperties, ElementType, ReactNode, forwardRef } from "react";
 
-export type GlassDepth = "ultrathin" | "thin" | "regular" | "thick";
+export type GlassDepth = "ultrathin" | "thin" | "regular" | "thick" | "floating";
 export type GlassElevation = "e1" | "e2" | "e3" | "e4";
 export type GlassRadius = "xs" | "sm" | "md" | "lg" | "xl";
 export type GlassGlow = "none" | "meridian" | "brass" | "coral" | "violet" | "ai";
@@ -100,8 +112,8 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
           borderRadius: `var(--radius-${radius})`,
           border: "1px solid var(--border-hairline)",
           background: `var(--glass-${depth})`,
-          backdropFilter: "blur(30px) saturate(160%)",
-          WebkitBackdropFilter: "blur(30px) saturate(160%)",
+          backdropFilter: `var(--glass-filter-${depth})`,
+          WebkitBackdropFilter: `var(--glass-filter-${depth})`,
           boxShadow: `var(--shadow-${elevation})`,
           ...(style as CSSProperties | undefined),
         }}
