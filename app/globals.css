@@ -129,6 +129,45 @@
      core --dur-* scale since it's a single-purpose ambient loop, not a
      UI state transition. */
   --dur-shimmer: 6000ms;
+
+  /* ============================================================
+     ATLAS GLASS MATERIAL ENGINE — PHASE 1 (additive, opt-in).
+     Governed by docs/design-system/ATLAS_GLASS_MATERIAL_DOCTRINE.md.
+
+     Per-depth material variables so "depth" becomes physical
+     THICKNESS (blur + saturation + brightness) instead of the
+     opacity-only difference the --glass-* FILLS carry today. Values
+     port the design language's own .m-* ladder
+     (Fourth-Meridian-Design-Language-v1.html): blur 16→28→40→60px,
+     saturation 180→140%, plus a new, rarer `floating` tier.
+
+     THEME-INDEPENDENT: blur/saturation/brightness are identical in
+     light and dark — only the --glass-* FILLS differ per theme, and
+     those already live in the theme blocks below (the one new fill,
+     --glass-floating, is added to both).
+
+     UNCONSUMED / NON-BREAKING: nothing references these yet. GlassPanel
+     is NOT repointed in Phase 1, so every existing surface stays
+     byte-identical. A later, separately-approved step adopts them.
+     Rollback = delete this block (+ the --glass-floating fills and the
+     .atlas-fresnel-edge utility below). ============================ */
+  --glass-blur-ultrathin: 16px;  --glass-sat-ultrathin: 180%;  --glass-bright-ultrathin: 1;
+  --glass-blur-thin:      28px;  --glass-sat-thin:      165%;  --glass-bright-thin:      1;
+  --glass-blur-regular:   40px;  --glass-sat-regular:   150%;  --glass-bright-regular:   .99;
+  --glass-blur-thick:     60px;  --glass-sat-thick:     140%;  --glass-bright-thick:     .97;
+  /* floating — new, rare, most-separated tier (hero / critical only).
+     Brightness dips slightly (thicker medium darkens what's behind it);
+     its "lift" comes from fill + edge + elevation, not a brighter background. */
+  --glass-blur-floating:  72px;  --glass-sat-floating:  135%;  --glass-bright-floating:  .95;
+
+  /* Convenience combined filters — one token an opt-in consumer/utility can
+     feed to backdrop-filter, composing the three axes above. (Today's
+     GlassPanel hardcodes `blur(30px) saturate(160%)` and is left untouched.) */
+  --glass-filter-ultrathin: blur(var(--glass-blur-ultrathin)) saturate(var(--glass-sat-ultrathin)) brightness(var(--glass-bright-ultrathin));
+  --glass-filter-thin:      blur(var(--glass-blur-thin))      saturate(var(--glass-sat-thin))      brightness(var(--glass-bright-thin));
+  --glass-filter-regular:   blur(var(--glass-blur-regular))   saturate(var(--glass-sat-regular))   brightness(var(--glass-bright-regular));
+  --glass-filter-thick:     blur(var(--glass-blur-thick))     saturate(var(--glass-sat-thick))     brightness(var(--glass-bright-thick));
+  --glass-filter-floating:  blur(var(--glass-blur-floating))  saturate(var(--glass-sat-floating))  brightness(var(--glass-bright-floating));
 }
 
 /* ============ THEME: DARK (default — only theme the app currently ships) ============ */
@@ -177,6 +216,11 @@ html[data-theme="dark"] {
      comment) since modals want a lower-opacity, heavier-blur recipe than
      the standard glass depths. */
   --modal-surface: rgba(10,14,23,.55);
+
+  /* Phase 1 material engine — new `floating` depth FILL (dark). One step more
+     separated/opaque than --glass-thick (.88); pairs with --glass-filter-floating.
+     Additive + unconsumed. */
+  --glass-floating: rgba(10,14,23,.92);
 }
 
 /* ============ THEME: LIGHT (reserved — not wired up to a toggle yet) ============ */
@@ -215,6 +259,9 @@ html[data-theme="light"] {
   /* Frosted white "smoked glass" — replaces the dark navy fill so the
      modal reads as Light Glass instead of Midnight. */
   --modal-surface: rgba(255,255,255,.75);
+
+  /* Phase 1 material engine — `floating` depth FILL (light-theme parity). */
+  --glass-floating: rgba(255,255,255,.95);
 }
 
 * { box-sizing: border-box; }
@@ -372,6 +419,70 @@ html[data-theme="light"] .atlas-meridians {
     transparent
   );
   animation: meridian-shimmer var(--dur-shimmer) var(--ease-standard) infinite;
+}
+
+/* ---------- Atlas Glass Material Engine — Fresnel edge utility (Phase 1) ----------
+   Full-perimeter edge highlight: a 1px light ring that follows the element's
+   border-radius, brightest toward the top-left (single notional light source per
+   the Material Doctrine) and dimmest opposite, with a faint counter-glow on the
+   lower edge. This is the doctrine's "edges brighter than center" law made real —
+   a superset of GlassPanel's current single TOP-edge specular.
+
+   OPT-IN / ADDITIVE: no existing component references this. Apply
+   `.atlas-fresnel-edge` to a positioned, radius-bearing glass surface (the ring
+   inherits border-radius). Per-surface intensity via `--atlas-edge-strength`
+   (default 1); thicker glass should set a higher value (doctrine §4.3).
+   Decorative only — pointer-inert, aria-invisible, no animation (so it is
+   unaffected by reduced-motion). Phase-1 scope: the light direction is a fixed
+   145deg; Phase 2's shared `--atlas-light-angle` model is intentionally NOT
+   introduced here. Rollback = delete this block. */
+.atlas-fresnel-edge { position: relative; }
+.atlas-fresnel-edge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    145deg,
+    rgba(255,255,255,calc(.22 * var(--atlas-edge-strength, 1))),
+    rgba(255,255,255,calc(.05 * var(--atlas-edge-strength, 1))) 42%,
+    rgba(255,255,255,0) 60%,
+    rgba(255,255,255,calc(.10 * var(--atlas-edge-strength, 1)))
+  );
+  /* Punch out the interior so only the 1px border band paints. */
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+/* Light theme: a plain white ring nearly vanishes on white glass, so brighten
+   the lit edge and add a faint DARK inner edge for definition (doctrine §4.6). */
+html[data-theme="light"] .atlas-fresnel-edge::after {
+  background: linear-gradient(
+    145deg,
+    rgba(255,255,255,calc(.85 * var(--atlas-edge-strength, 1))),
+    rgba(17,21,31,calc(.06 * var(--atlas-edge-strength, 1))) 46%,
+    rgba(17,21,31,0) 60%,
+    rgba(17,21,31,calc(.08 * var(--atlas-edge-strength, 1)))
+  );
+}
+
+/* ---------- Reduced transparency — Phase 1 material filters degrade to none ----------
+   Forward-compatible safety: under prefers-reduced-transparency the new per-depth
+   combined filters collapse to `none`, so any FUTURE adopter automatically drops
+   the GPU-heavy backdrop-filter and leans on the opaque --glass-* fill instead.
+   Inert today (nothing consumes these yet) — guarantees no a11y regression later.
+   Does not touch the current GlassPanel recipe. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-filter-ultrathin: none;
+    --glass-filter-thin:      none;
+    --glass-filter-regular:   none;
+    --glass-filter-thick:     none;
+    --glass-filter-floating:  none;
+  }
 }
 
 /* ---------- Reduced motion — global accessibility rule ---------- */
