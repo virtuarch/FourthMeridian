@@ -1262,20 +1262,17 @@ function SectionCard({
 }) {
   const [collapsed,        setCollapsed]        = useState(false);
   const [payoffFullscreen, setPayoffFullscreen] = useState(false);
-  // useState instead of useRef so the React Compiler doesn't flag the ref being
-  // referenced in functions passed through renderBody during render.
-  const [savedScrollY,    setSavedScrollY]     = useState(0);
   const isDebtSpace = category === "DEBT_PAYOFF";
 
+  // Scroll-position preservation now lives in DebtPayoffSection's shared
+  // useBodyScrollLock (doctrine §14), so the former manual scrollY save/restore
+  // workaround here is redundant and has been removed.
   function openPayoffFullscreen() {
-    setSavedScrollY(window.scrollY);
     setPayoffFullscreen(true);
   }
 
   function closePayoffFullscreen() {
     setPayoffFullscreen(false);
-    // rAF defers until after React's re-render commits, preventing scroll reset
-    requestAnimationFrame(() => window.scrollTo(0, savedScrollY));
   }
 
   // Override stale section labels for existing seeded debt spaces

@@ -63,6 +63,7 @@ import {
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
 
 export type OverlayIntent = "dialog" | "form" | "workspace";
 export type OverlaySize = "sm" | "md" | "lg" | "xl" | "full";
@@ -187,13 +188,10 @@ export function OverlaySurface({
     return () => document.removeEventListener("keydown", handler);
   }, [open, onClose, preventClose]);
 
-  // Body scroll lock.
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
-  }, [open]);
+  // Body scroll lock — shared nest-safe helper that also preserves and
+  // restores window.scrollY, so opening/closing never jumps the page to the
+  // top (see useBodyScrollLock / doctrine §14).
+  useBodyScrollLock(open);
 
   // Focus: capture the trigger, move focus in, restore on close.
   useEffect(() => {
@@ -204,11 +202,15 @@ export function OverlaySurface({
       const panel = panelRef.current;
       if (!panel) return;
       const first = panel.querySelector<HTMLElement>(FOCUSABLE);
-      (first ?? panel).focus();
+      // preventScroll: focusing must never scroll the page/panel into view —
+      // the surface is already fixed + centered (doctrine §14).
+      (first ?? panel).focus({ preventScroll: true });
     });
     return () => {
       cancelAnimationFrame(raf);
-      restoreFocusRef.current?.focus?.();
+      // preventScroll: restoring focus to the trigger must not scroll it into
+      // view / shift the page on close.
+      restoreFocusRef.current?.focus?.({ preventScroll: true });
     };
   }, [open]);
 

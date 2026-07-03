@@ -13,6 +13,7 @@ import { useState, useEffect } from "react";
 import { CreditCard, X } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatMonthYear } from "@/lib/format";
+import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -119,16 +120,18 @@ export function DebtPayoffSection({
   // Track explicit user deselections; new accounts auto-include, removed ones auto-exclude
   const [deselectedIds, setDeselectedIds] = useState<Set<string>>(new Set());
 
-  // ESC closes fullscreen; lock body scroll while open
+  // Lock body scroll while fullscreen — shared nest-safe helper that also
+  // preserves/restores window.scrollY (doctrine §14). Replaces the former
+  // bare `body.style.overflow` toggle, which is what SpaceDashboard used to
+  // compensate for with a manual scrollY save/restore.
+  useBodyScrollLock(fullscreen);
+
+  // ESC closes fullscreen
   useEffect(() => {
     if (!fullscreen) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onCloseFullscreen?.(); };
     document.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
-    };
+    return () => document.removeEventListener("keydown", onKey);
   }, [fullscreen, onCloseFullscreen]);
 
   function toggleAccount(id: string) {

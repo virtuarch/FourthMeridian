@@ -353,3 +353,26 @@ to carry the panel's height classes and drop `h-full`:
 **Validation before merge:** the full §12.1 checklist against `CreateSpaceModal` (tallest step) and `ManageSpaceModal`, plus a spot-check of `AddWalletModal`/`TotpSection`/`AddManualAssetModal`/`RemoveAccountModal` to confirm no size/centering regression.
 
 *Investigation complete. Root cause identified; fix proposed and scoped. No code changed — stopping here per instruction.*
+
+---
+
+## 14. Scroll-position doctrine (SCROLL-2)
+
+Opening or closing a modal must never move the page behind it. This is a hard rule, not a nicety.
+
+**Rules:**
+
+- **Opening a modal must not change the underlying page scroll position.**
+- **Closing a modal must restore the exact `window.scrollY`** the user was at when it opened.
+- **The page behind the modal stays locked** while the modal is open (no background scroll).
+- **The modal body scrolls internally** (see §6); the page never scrolls behind it.
+- **No route refresh or navigation on close** (`router.refresh()` / `router.push()` / hash change) **unless the feature explicitly requires it** (e.g. a post-mutation data refresh, or a deliberate navigation like Create Space → `/dashboard`). Closing a modal is not, by itself, a reason to refresh or navigate.
+
+**Mandated lock technique.** The app scrolls on the window, and its body is `min-h-full flex flex-col` under `html { height: 100% }`. A bare `document.body.style.overflow = "hidden"` on that layout collapses the flex body to viewport height and clips the overflow, which **forces `window.scrollY` to 0** — the page jumps to the top on open and reveals the top on close (SCROLL-2). Therefore:
+
+- **Never toggle `body { overflow }` directly in a modal shell.** Use the shared **`useBodyScrollLock(active)`** hook (`components/atlas/useBodyScrollLock.ts`), which captures `window.scrollY` on lock, sets `overflow: hidden`, and on release restores the previous overflow **and** `scrollTo`s back to the captured position. It is **reference-counted / nest-safe**: with several overlays open at once, only the first lock captures the position and only the last release restores it.
+- Every modal shell — `OverlaySurface` (all migrated modals), `GlassModal` (legacy shell), `BriefModal`, and full-screen instruments like `DebtPayoffSection` — locks through this one hook. Per-component `scrollY` save/restore workarounds are removed once the shell uses the hook (the former `SpaceDashboard` payoff-fullscreen workaround was retired this way).
+
+**Focus must not scroll.** Focus-in (on open) and focus-restore (on close) call `.focus({ preventScroll: true })`. The surface is already fixed + centered, so focus should never scroll the page or the trigger into view.
+
+*Implemented (SCROLL-2): shared `useBodyScrollLock` applied to `OverlaySurface`, `GlassModal`, `BriefModal`, `DebtPayoffSection`; `preventScroll` added to `OverlaySurface` focus calls; `SpaceDashboard` workaround retired.*

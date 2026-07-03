@@ -60,6 +60,7 @@ import { useEffect, useState, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
 
 interface BriefModalProps {
   open: boolean;
@@ -92,15 +93,9 @@ export function BriefModal({ open, onClose, title, children, wide, headerRight }
     return () => document.removeEventListener("keydown", handler);
   }, [open, onClose]);
 
-  // Body scroll lock
-  useEffect(() => {
-    if (open) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
-    return () => { document.body.style.overflow = ""; };
-  }, [open]);
+  // Body scroll lock — shared nest-safe helper that preserves/restores
+  // window.scrollY so open/close never jumps the page to the top (doctrine §14).
+  useBodyScrollLock(open);
 
   // Entrance trigger — mount hidden, then animate in on next frame.
   // Both branches set state inside the rAF callback (never synchronously in

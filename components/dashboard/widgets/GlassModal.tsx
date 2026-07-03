@@ -20,6 +20,7 @@
 import { ReactNode, ElementType } from "react";
 import { X } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
 
 // v2.5 modal usability pass: md/lg/xl size to their CONTENT on desktop
 // (sm:h-auto) and only cap at the viewport-based max-height — matching the
@@ -75,6 +76,11 @@ export function GlassModal({
   toolbar,
   size = "lg",
 }: GlassModalProps) {
+  // Lock background scroll while mounted (GlassModal is rendered only when
+  // open) and restore the exact scroll position on close, via the shared
+  // nest-safe helper — no jump-to-top (doctrine §14).
+  useBodyScrollLock(true);
+
   return (
     // Backdrop — translucent + blurred, matching the rest of the app's
     // glass-modal recipe (NetWorthChartModal/CreateSpaceModal/AccountModal).
