@@ -68,6 +68,17 @@ import { TransactionCategory, ProviderType, PlaidItemStatus } from "@prisma/clie
 import type { Transaction as PlaidTransaction } from "plaid";
 import { findByFingerprint } from "@/lib/transactions/fingerprint";
 import { withPlaidRetry } from "@/lib/plaid/retry";
+// FlowType P2 (import fidelity) — shadow classification only. Nothing below is
+// persisted or used to alter any write, total, or AI read; it exists solely to
+// exercise the P1 classifier against real Plaid inputs and emit a non-PII
+// distribution when FLOWTYPE_SHADOW is enabled. Default (off) is a no-op.
+import { classifyFlow } from "@/lib/transactions/flow-classifier";
+import {
+  buildPlaidFlowInput,
+  createShadowStats,
+  accumulateShadow,
+  summarizeShadow,
+} from "@/lib/transactions/plaid-flow-input";
 
 export interface SyncTransactionsResult {
   /** Count of transactions Plaid reported in its `added` array this run (Plaid's own count, unchanged semantics). */
@@ -158,6 +169,30 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   let updatedByFingerprint  = 0;
   let skippedMissingAccount = 0;
 
+  // FlowType P2 shadow — enabled only when FLOWTYPE_SHADOW != "off". When off,
+  // the shadow block in the loop is skipped entirely (no extra queries, no
+  // classification, no logging), so sync behavior is byte-identical to pre-P2.
+  const shadowMode = (process.env.FLOWTYPE_SHADOW ?? "off").toLowerCase();
+  const shadowEnabled = shadowMode !== "off";
+  const shadowStats = createShadowStats();
+
+  // Shadow-only account-context cache. Populated lazily and ONLY when shadow is
+  // enabled — the classifier wants accountType/debtSubtype, which the write
+  // path does not otherwise load. Never affects the resolveFinancialAccountId
+  // path used by writes.
+  const accountMetaCache = new Map<string, { type: string | null; debtSubtype: string | null }>();
+  async function resolveAccountMetaForShadow(financialAccountId: string): Promise<{ type: string | null; debtSubtype: string | null }> {
+    const cached = accountMetaCache.get(financialAccountId);
+    if (cached) return cached;
+    const fa = await db.financialAccount.findUnique({
+      where:  { id: financialAccountId },
+      select: { type: true, debtSubtype: true },
+    });
+    const meta = { type: (fa?.type as string | undefined) ?? null, debtSubtype: fa?.debtSubtype ?? null };
+    accountMetaCache.set(financialAccountId, meta);
+    return meta;
+  }
+
   // Cache plaidAccountId -> FinancialAccount.id within this run — avoids a
   // query per transaction when many transactions share a handful of accounts.
   const accountIdCache = new Map<string, string | null>();
@@ -225,6 +260,24 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
 
       const fields = { financialAccountId, date, merchant, description, category, amount, pending: txn.pending };
 
+      // FlowType P2 shadow classification — READ-ONLY, PERSISTS NOTHING. Runs
+      // only when enabled; wrapped so a shadow failure can never affect the
+      // sync write below. Does not touch `fields`.
+      if (shadowEnabled) {
+        try {
+          const meta = await resolveAccountMetaForShadow(financialAccountId);
+          const { input } = buildPlaidFlowInput(txn, {
+            category,
+            amount,
+            accountType: meta.type,
+            debtSubtype: meta.debtSubtype,
+          });
+          accumulateShadow(shadowStats, classifyFlow(input), category, amount);
+        } catch (e) {
+          console.warn(`[flowtype-shadow] classification skipped for ${txn.transaction_id}:`, e);
+        }
+      }
+
       try {
         // 1. Exact match — same row Plaid is telling us about.
         const existingByPlaidId = await db.transaction.findUnique({
@@ -283,6 +336,11 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   console.log(
     `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, skippedMissingAccount ${skippedMissingAccount}, removed ${removed}`
   );
+
+  // FlowType P2 shadow — one aggregate, non-PII summary line per run when enabled.
+  if (shadowEnabled) {
+    console.log(summarizeShadow(shadowStats));
+  }
 
   return {
     added,
