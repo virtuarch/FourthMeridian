@@ -4,7 +4,6 @@
   "components/dashboard/AdviceBanner.tsx": 46,
   "components/dashboard/AnalyzeClient.tsx": 71,
   "components/dashboard/ArchivedAssetsClient.tsx": 78,
-  "components/dashboard/AssetDrawer.tsx": 26,
   "components/dashboard/BankingClient.tsx": 69,
   "components/dashboard/DashboardClient.tsx": 88,
   "components/dashboard/DebtClient.tsx": 146,
