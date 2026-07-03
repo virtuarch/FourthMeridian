@@ -36,6 +36,21 @@ const SIZE_CLASS: Record<NonNullable<GlassModalProps["size"]>, string> = {
   full: "sm:max-w-[96vw] sm:h-[92dvh]",
 };
 
+// SCROLL-1 fix (doctrine §8.10/§13): the *height* half of SIZE_CLASS, applied
+// to the INNER flex column — not just the GlassPanel. GlassPanel wraps its
+// children in a plain `relative z-10` block (no flex, no height), which breaks
+// any height:100% chain passing through it; the inner div's former `h-full`
+// therefore collapsed to auto, the column became content-height, and the body's
+// `flex-1 min-h-0 overflow-y-auto` never bounded (tall modals clipped instead
+// of scrolling). These caps are viewport-relative (dvh) and thus definite, so
+// the body has a real height to overflow. Widths stay on the panel.
+const INNER_HEIGHT_CLASS: Record<NonNullable<GlassModalProps["size"]>, string> = {
+  md:   "sm:h-auto sm:max-h-[88dvh]",
+  lg:   "sm:h-auto sm:max-h-[88dvh]",
+  xl:   "sm:h-auto sm:max-h-[90dvh]",
+  full: "sm:h-[92dvh]",
+};
+
 export interface GlassModalProps {
   title: string;
   subtitle?: string;
@@ -76,10 +91,12 @@ export function GlassModal({
         className={`w-full h-[94dvh] ${SIZE_CLASS[size]} flex flex-col`}
         onClick={(e: React.MouseEvent) => e.stopPropagation()}
       >
-        {/* min-h-0 lets this flex item shrink inside the max-h-capped panel
-            so the body below actually scrolls instead of overflowing the
-            sheet when content is taller than the viewport cap. */}
-        <div className="h-full min-h-0 flex flex-col p-5">
+        {/* SCROLL-1 fix: carry the dvh height cap on THIS inner flex column
+            (see INNER_HEIGHT_CLASS) rather than relying on `h-full` through
+            GlassPanel's `relative z-10` wrapper, so min-h-0 can actually let
+            the body below shrink and scroll instead of clipping. Panel classes
+            are unchanged. */}
+        <div className={`h-[94dvh] ${INNER_HEIGHT_CLASS[size]} min-h-0 flex flex-col p-5`}>
           {/* Header */}
           <div className="flex items-center justify-between gap-3 mb-1 shrink-0">
             <div className="flex items-center gap-2.5 min-w-0">

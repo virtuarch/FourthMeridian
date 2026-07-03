@@ -307,6 +307,15 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
         className="w-full sm:max-w-2xl max-h-[88dvh] flex flex-col"
         onClick={(e: React.MouseEvent) => e.stopPropagation()}
       >
+        {/* SCROLL-1 fix (doctrine §8.10/§13): a single inner flex column with a
+            definite dvh max-height + min-h-0. GlassPanel wraps its children in a
+            plain `relative z-10` block, so the `flex flex-col` + max-h on the
+            GlassPanel itself never reach these children — the tab bodies below
+            (`overflow-y-auto flex-1`) previously clipped instead of scrolling.
+            They now bound because THIS column carries its own definite height.
+            The nested chart overlay (fixed inset-0), tabs, footer, network calls
+            and behavior are all unchanged. */}
+        <div className="flex flex-col min-h-0 max-h-[88dvh]">
 
         {/* ── Header ── */}
         <div
@@ -708,6 +717,7 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
               </GlassButton>
             </div>
           )}
+        </div>
         </div>
       </GlassPanel>
     </div>
