@@ -298,10 +298,16 @@ export function OverlaySurface({
         className={`w-full ${WIDTH_CLASS[size]} ${mobileHeight} ${desktopHeight} flex flex-col focus:outline-none ${className}`}
         style={panelStyle}
       >
-        {/* min-h-0 lets this flex item shrink inside the height-capped panel
-            so the body scrolls instead of overflowing the sheet. Mirrors the
-            proven GlassModal structure. */}
-        <div className="h-full min-h-0 flex flex-col p-5">
+        {/* SCROLL-1 fix (doctrine §8.10 / §13): carry the dvh-based height cap
+            on THIS inner flex container rather than relying on `h-full`.
+            GlassPanel wraps children in a plain `relative z-10` block (no flex,
+            no height), which breaks any height:100% chain passing through it —
+            so `h-full` here collapsed to auto, the column became content-height,
+            and the body's `flex-1 min-h-0 overflow-y-auto` never bounded (tall
+            modals like CreateSpace clipped instead of scrolling). The
+            viewport-relative caps are definite, so the body now has a real
+            height to overflow. Panel classes are unchanged. */}
+        <div className={`min-h-0 flex flex-col p-5 ${mobileHeight} ${desktopHeight}`}>
           {!hideHeader && (
             <div className="flex items-center justify-between gap-3 shrink-0">
               <div className="flex items-center gap-2.5 min-w-0">
