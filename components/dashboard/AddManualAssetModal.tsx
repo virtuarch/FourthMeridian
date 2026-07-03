@@ -15,20 +15,23 @@
  *
  * After success: calls onAdd() so the parent can refresh data (router.refresh()).
  *
- * Styling: ported to Atlas Glass (GlassPanel/GlassButton + theme tokens) to
- * match CreateSpaceModal — same backdrop, sheet, header, and footer recipe.
- * No functional changes from the previous version.
+ * Styling: migrated onto the Atlas Glass modal primitive (FormModal →
+ * OverlaySurface) per docs/design-system/ATLAS_GLASS_MODAL_DOCTRINE.md,
+ * doctrine Phase 3 (migration 3.1, retires recipe R3). The primitive owns the
+ * portal, focus-trap, body-scroll-lock, panel-level height cap, and z-scale;
+ * asset-type chips are neutral ink (decorative category colour dropped). No
+ * functional or API changes — same props, two-step flow, and /api call.
  */
 
 import { useState, useEffect } from "react";
 import { useRouter }           from "next/navigation";
 import {
-  X, ChevronRight, ChevronLeft, Loader2,
+  ChevronRight, ChevronLeft, Loader2,
   Home, Car, Wrench, Package,
 } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { displaySpaceName } from "@/lib/format";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { FormModal } from "@/components/atlas/FormModal";
 import { GlassButton } from "@/components/atlas/GlassButton";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -68,21 +71,21 @@ const KIND_OPTIONS: {
     label:       "Property",
     placeholder: "e.g. Austin Home, Lake Cabin",
     icon:        Home,
-    iconCls:     "bg-blue-500/15 text-blue-400",
+    iconCls:     "bg-[var(--surface-hover-strong)] text-[var(--text-muted)]",
   },
   {
     value:       "vehicle",
     label:       "Vehicle",
     placeholder: "e.g. 2022 Honda CR-V",
     icon:        Car,
-    iconCls:     "bg-emerald-500/15 text-emerald-400",
+    iconCls:     "bg-[var(--surface-hover-strong)] text-[var(--text-muted)]",
   },
   {
     value:       "equipment",
     label:       "Equipment",
     placeholder: "e.g. Freelance Business Equipment",
     icon:        Wrench,
-    iconCls:     "bg-violet-500/15 text-violet-400",
+    iconCls:     "bg-[var(--surface-hover-strong)] text-[var(--text-muted)]",
   },
   {
     value:       "other",
@@ -367,90 +370,62 @@ export function AddManualAssetModal({ onClose, onAdd, defaultSpaceIds, zIndex }:
     </div>
   );
 
-  // ─── Modal shell ──────────────────────────────────────────────────────────
+  // ─── Modal shell (Atlas Glass modal primitive: FormModal → OverlaySurface,
+  //     doctrine Phase 3 / migration 3.1). Portal + focus-trap + body-lock +
+  //     panel-level height cap + z-scale come from the primitive; the previous
+  //     hand-rolled `fixed inset-0` shell (recipe R3) is retired. No functional
+  //     or API changes — same props, same two-step flow, same /api call. The
+  //     `zIndex` override is still honoured so this stacks above the (not yet
+  //     migrated) CreateSpaceModal, which passes zIndex={300}. ────────────────
   return (
-    <div
-      className="fixed inset-0 flex items-end sm:items-center justify-center p-0 sm:p-4"
-      style={{
-        zIndex: zIndex ?? 100,
-        background: "rgba(0,0,0,0.55)",
-        backdropFilter: "blur(8px)",
-        WebkitBackdropFilter: "blur(8px)",
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget && !loading) onClose(); }}
-    >
-      <GlassPanel depth="thick" elevation="e4" radius="xl" className="w-full sm:max-w-md">
-        <div className="flex flex-col max-h-[92dvh] sm:max-h-[88dvh]">
+    <FormModal
+      open
+      onClose={() => { if (!loading) onClose(); }}
+      title="Add Asset"
+      subtitle={`Step ${step} of 2 — ${step === 1 ? "Basic details" : "Optional details & sharing"}`}
+      size="sm"
+      zIndex={zIndex}
+      preventClose={loading}
+      footer={
+        <div className="space-y-3">
+          {error && (
+            <p className="text-xs text-[var(--coral-400)] text-center">{error}</p>
+          )}
 
-          {/* ── Header ────────────────────────────────────────────────────────── */}
-          <div
-            className="flex items-center justify-between gap-3 px-6 pt-5 pb-3 shrink-0"
-            style={{ borderBottom: "1px solid var(--border-hairline)" }}
-          >
-            <div>
-              <h2 className="text-base font-semibold text-[var(--text-primary)]">Add Asset</h2>
-              <p className="text-xs text-[var(--text-muted)] mt-0.5">
-                Step {step} of 2 — {step === 1 ? "Basic details" : "Optional details & sharing"}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={loading}
-              aria-label="Close"
-              className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              <X size={16} />
-            </button>
-          </div>
-
-          {/* ── Body ──────────────────────────────────────────────────────────── */}
-          <div className="px-6 py-6 overflow-y-auto flex-1 min-h-0">
-            {step === 1 ? step1 : step2}
-          </div>
-
-          {/* ── Footer ────────────────────────────────────────────────────────── */}
-          <div
-            className="px-6 py-5 shrink-0 space-y-3"
-            style={{ borderTop: "1px solid var(--border-hairline)" }}
-          >
-            {error && (
-              <p className="text-xs text-[var(--coral-400)] text-center">{error}</p>
+          <div className="flex gap-3">
+            {step === 2 && (
+              <GlassButton onClick={() => setStep(1)} disabled={loading} tone="neutral">
+                <ChevronLeft size={14} />
+                Back
+              </GlassButton>
             )}
 
-            <div className="flex gap-3">
-              {step === 2 && (
-                <GlassButton onClick={() => setStep(1)} disabled={loading} tone="neutral">
-                  <ChevronLeft size={14} />
-                  Back
-                </GlassButton>
-              )}
-
-              {step === 1 ? (
-                <GlassButton
-                  onClick={() => { if (step1Valid) setStep(2); }}
-                  disabled={!step1Valid}
-                  tone="meridian"
-                  fullWidth
-                >
-                  Continue
-                  <ChevronRight size={14} />
-                </GlassButton>
-              ) : (
-                <GlassButton
-                  onClick={handleSubmit}
-                  disabled={loading || !step1Valid}
-                  tone="meridian"
-                  fullWidth
-                >
-                  {loading ? <Loader2 size={14} className="animate-spin" /> : null}
-                  {loading ? "Adding asset…" : "Add Asset"}
-                </GlassButton>
-              )}
-            </div>
+            {step === 1 ? (
+              <GlassButton
+                onClick={() => { if (step1Valid) setStep(2); }}
+                disabled={!step1Valid}
+                tone="meridian"
+                fullWidth
+              >
+                Continue
+                <ChevronRight size={14} />
+              </GlassButton>
+            ) : (
+              <GlassButton
+                onClick={handleSubmit}
+                disabled={loading || !step1Valid}
+                tone="meridian"
+                fullWidth
+              >
+                {loading ? <Loader2 size={14} className="animate-spin" /> : null}
+                {loading ? "Adding asset…" : "Add Asset"}
+              </GlassButton>
+            )}
           </div>
         </div>
-      </GlassPanel>
-    </div>
+      }
+    >
+      {step === 1 ? step1 : step2}
+    </FormModal>
   );
 }

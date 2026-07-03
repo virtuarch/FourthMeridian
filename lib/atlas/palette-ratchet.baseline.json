@@ -1,6 +1,5 @@
 {
   "components/dashboard/AccountModal.tsx": 27,
-  "components/dashboard/AddManualAssetModal.tsx": 3,
   "components/dashboard/AdviceBanner.tsx": 46,
   "components/dashboard/FilterBar.tsx": 4,
   "components/dashboard/KnowledgeAcquisitionCard.tsx": 23,
