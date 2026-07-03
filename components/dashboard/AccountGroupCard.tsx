@@ -7,7 +7,6 @@ import { exchangeSymbol } from "@/lib/exchangeSymbol";
 interface Props {
   title:        string;
   accounts:     Account[];
-  color:        string;   // tailwind text colour class (caller-injected; removed in B7)
   lastUpdated?: string;
   maxItems?:    number;   // cap visible rows; shows "+N more" if exceeded
   compact?:     boolean;  // tighter layout for side-by-side cards
@@ -19,7 +18,7 @@ const fmt = (n: number) =>
 const fmtFull = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(n);
 
-export function AccountGroupCard({ title, accounts, color, lastUpdated, maxItems, compact }: Props) {
+export function AccountGroupCard({ title, accounts, lastUpdated, maxItems, compact }: Props) {
   const total    = accounts.reduce((s, a) => s + a.balance, 0);
   const isCrypto = accounts.some((a) => a.type === "crypto");
   const sorted   = [...accounts].sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
@@ -28,7 +27,7 @@ export function AccountGroupCard({ title, accounts, color, lastUpdated, maxItems
 
   return (
     <DataCard title={title} padding={compact ? "var(--space-3)" : "var(--space-4)"}>
-      <p className={`font-bold mt-0.5 ${compact ? "text-xl" : "text-3xl"} ${color}`}>
+      <p className={`font-bold mt-0.5 ${compact ? "text-xl" : "text-3xl"}`} style={{ color: "var(--text-primary)" }}>
         {fmt(total)}
       </p>
 
@@ -47,7 +46,7 @@ export function AccountGroupCard({ title, accounts, color, lastUpdated, maxItems
                 </div>
               </div>
               <div className="text-right shrink-0">
-                <p className={`text-xs font-semibold tabular-nums ${color}`}>{fmtFull(a.balance)}</p>
+                <p className="text-xs font-semibold tabular-nums" style={{ color: "var(--text-primary)" }}>{fmtFull(a.balance)}</p>
                 {!compact && a.nativeBalance != null && (
                   <p className="text-xs" style={{ color: "var(--text-faint)" }}>{a.nativeBalance} {a.walletChain}</p>
                 )}
