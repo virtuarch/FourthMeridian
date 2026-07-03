@@ -219,9 +219,9 @@ function AccountsCard({ accounts }: { accounts: SpaceAccount[] }) {
   if (accounts.length === 0) {
     return (
       <div className="text-center py-4">
-        <Landmark size={22} className="text-gray-700 mx-auto mb-2" />
-        <p className="text-sm text-gray-500">No accounts shared yet</p>
-        <p className="text-xs text-gray-600 mt-0.5">Share accounts from the Spaces page.</p>
+        <Landmark size={22} className="text-[var(--text-faint)] mx-auto mb-2" />
+        <p className="text-sm text-[var(--text-muted)]">No accounts shared yet</p>
+        <p className="text-xs text-[var(--text-faint)] mt-0.5">Share accounts from the Spaces page.</p>
       </div>
     );
   }
@@ -235,15 +235,15 @@ function AccountsCard({ accounts }: { accounts: SpaceAccount[] }) {
     <div className="space-y-3">
       {Object.entries(grouped).map(([type, items]) => (
         <div key={type}>
-          <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-1">
+          <p className="text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-1">
             {ACCOUNT_TYPE_LABELS[type] ?? type}
           </p>
           <div className="space-y-1">
             {items.map((a) => (
-              <div key={a.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-gray-800/40">
+              <div key={a.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-[var(--surface-inset)]">
                 <div className="flex-1 min-w-0">
                   <p className="text-sm text-white truncate">{a.name}</p>
-                  <p className="text-xs text-gray-500 truncate">{a.institution}</p>
+                  <p className="text-xs text-[var(--text-muted)] truncate">{a.institution}</p>
                 </div>
                 <p className="text-sm font-medium text-white shrink-0">
                   {formatBalance(a.balance, a.currency)}
@@ -277,41 +277,41 @@ function TrashDrawer({ trashedGoals, trashLoading, openedAt, onClose, onRestore,
       onClick={onClose}
     >
       <div
-        className="w-full sm:max-w-md bg-gray-900 border border-gray-700 rounded-t-2xl shadow-2xl max-h-[70dvh] flex flex-col"
+        className="w-full sm:max-w-md bg-[var(--modal-surface)] border border-[var(--border-hairline-strong)] rounded-t-2xl shadow-2xl max-h-[70dvh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-hairline)] shrink-0">
           <p className="font-semibold text-white flex items-center gap-2">
-            <Trash2 size={14} className="text-gray-500" /> Trash
+            <Trash2 size={14} className="text-[var(--text-muted)]" /> Trash
           </p>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors">
+          <button onClick={onClose} className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors">
             <X size={16} />
           </button>
         </div>
         <div className="overflow-y-auto flex-1 px-4 py-3 space-y-2">
           {trashLoading ? (
-            <div className="flex justify-center py-6"><Loader2 size={16} className="animate-spin text-gray-600" /></div>
+            <div className="flex justify-center py-6"><Loader2 size={16} className="animate-spin text-[var(--text-faint)]" /></div>
           ) : trashedGoals.length === 0 ? (
-            <p className="text-sm text-gray-600 text-center py-6">Trash is empty</p>
+            <p className="text-sm text-[var(--text-faint)] text-center py-6">Trash is empty</p>
           ) : trashedGoals.map((g) => {
             const daysLeft = g.deletedAt
               ? Math.max(0, 7 - Math.floor((openedAt - new Date(g.deletedAt).getTime()) / 86_400_000))
               : 7;
             return (
-              <div key={g.id} className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-gray-800/40">
-                <p className="text-sm text-gray-400 flex-1 truncate">{g.name}</p>
-                <p className="text-[10px] text-gray-600 shrink-0">{daysLeft}d left</p>
+              <div key={g.id} className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-[var(--surface-inset)]">
+                <p className="text-sm text-[var(--text-secondary)] flex-1 truncate">{g.name}</p>
+                <p className="text-[10px] text-[var(--text-faint)] shrink-0">{daysLeft}d left</p>
                 <button
                   onClick={() => onRestore(g.id)}
                   title="Restore"
-                  className="p-1 rounded text-gray-600 hover:text-blue-400 transition-colors"
+                  className="p-1 rounded text-[var(--text-faint)] hover:text-[var(--accent-info)] transition-colors"
                 >
                   <RotateCcw size={12} />
                 </button>
                 <button
                   onClick={() => onDelete(g.id)}
                   title="Delete permanently"
-                  className="p-1 rounded text-gray-700 hover:text-red-400 transition-colors"
+                  className="p-1 rounded text-[var(--text-faint)] hover:text-[var(--accent-negative)] transition-colors"
                 >
                   <Trash2 size={12} />
                 </button>
@@ -319,7 +319,7 @@ function TrashDrawer({ trashedGoals, trashLoading, openedAt, onClose, onRestore,
             );
           })}
         </div>
-        <p className="text-[10px] text-gray-700 text-center pb-3 shrink-0">
+        <p className="text-[10px] text-[var(--text-faint)] text-center pb-3 shrink-0">
           Goals are permanently deleted after 7 days
         </p>
       </div>
@@ -423,7 +423,7 @@ function GoalsCard({
   if (loading) {
     return (
       <div className="flex items-center justify-center py-6">
-        <Loader2 size={16} className="animate-spin text-gray-600" />
+        <Loader2 size={16} className="animate-spin text-[var(--text-faint)]" />
       </div>
     );
   }
@@ -436,12 +436,12 @@ function GoalsCard({
   if (goals.length === 0 && archived.length === 0) {
     return (
       <div className="text-center py-5">
-        <Target size={22} className="text-gray-700 mx-auto mb-2" />
-        <p className="text-sm text-gray-500">No goals yet</p>
+        <Target size={22} className="text-[var(--text-faint)] mx-auto mb-2" />
+        <p className="text-sm text-[var(--text-muted)]">No goals yet</p>
         {canManage && (
           <button
             onClick={onAddGoal}
-            className="mt-2 flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors mx-auto"
+            className="mt-2 flex items-center gap-1 text-xs text-[var(--accent-info)] hover:text-[var(--accent-info)] transition-colors mx-auto"
           >
             <Plus size={12} /> Add a goal
           </button>
@@ -454,32 +454,32 @@ function GoalsCard({
   function GoalMenu({ g, isArchived = false }: { g: SpaceGoal; isArchived?: boolean }) {
     if (!canManage) return null;
     const menuOpen = openMenuId === g.id;
-    const menuBtnCls = "flex items-center gap-2 w-full px-3 py-2 text-left text-xs hover:bg-gray-800 transition-colors";
+    const menuBtnCls = "flex items-center gap-2 w-full px-3 py-2 text-left text-xs hover:bg-[var(--surface-hover)] transition-colors";
     return (
       <div className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
         <button
           onClick={() => setOpenMenuId(menuOpen ? null : g.id)}
-          className="p-1 rounded text-gray-700 hover:text-gray-400 hover:bg-gray-800 transition-colors"
+          className="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors"
         >
           <MoreHorizontal size={13} />
         </button>
         {menuOpen && (
-          <div className="absolute right-0 top-full mt-1 w-44 bg-gray-900 border border-gray-700 rounded-xl shadow-xl z-30 overflow-hidden py-1">
+          <div className="absolute right-0 top-full mt-1 w-44 bg-[var(--modal-surface)] border border-[var(--border-hairline-strong)] rounded-xl shadow-xl z-30 overflow-hidden py-1">
             {!isArchived && g.status !== "COMPLETED" && (
-              <button onClick={() => completeGoal(g.id)} className={`${menuBtnCls} text-green-400`}>
+              <button onClick={() => completeGoal(g.id)} className={`${menuBtnCls} text-[var(--accent-positive)]`}>
                 <CheckCircle2 size={12} /> Mark complete
               </button>
             )}
             {!isArchived ? (
-              <button onClick={() => archiveGoal(g.id)} className={`${menuBtnCls} text-gray-300`}>
+              <button onClick={() => archiveGoal(g.id)} className={`${menuBtnCls} text-[var(--text-secondary)]`}>
                 <Archive size={12} /> Archive
               </button>
             ) : (
-              <button onClick={() => unarchiveGoal(g.id)} className={`${menuBtnCls} text-gray-300`}>
+              <button onClick={() => unarchiveGoal(g.id)} className={`${menuBtnCls} text-[var(--text-secondary)]`}>
                 <RotateCcw size={12} /> Unarchive
               </button>
             )}
-            <button onClick={() => trashGoal(g.id)} className={`${menuBtnCls} text-red-400`}>
+            <button onClick={() => trashGoal(g.id)} className={`${menuBtnCls} text-[var(--accent-negative)]`}>
               <Trash2 size={12} /> Move to trash
             </button>
           </div>
@@ -510,11 +510,11 @@ function GoalsCard({
         <div className="space-y-2 flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              <Circle size={14} className="text-blue-400 shrink-0 mt-0.5" />
+              <Circle size={14} className="text-[var(--accent-info)] shrink-0 mt-0.5" />
               <div className="min-w-0">
                 <p className="text-sm font-medium text-white truncate">{g.name}</p>
                 {g.targetDate && (
-                  <p className={`text-[10px] flex items-center gap-1 mt-0.5 ${isOverdue ? "text-red-400" : "text-gray-500"}`}>
+                  <p className={`text-[10px] flex items-center gap-1 mt-0.5 ${isOverdue ? "text-[var(--accent-negative)]" : "text-[var(--text-muted)]"}`}>
                     {isOverdue && <AlertCircle size={10} />}<Calendar size={10} />{formatDate(g.targetDate)}
                   </p>
                 )}
@@ -522,13 +522,13 @@ function GoalsCard({
             </div>
             <div className="text-right shrink-0">
               <p className="text-sm font-medium text-white">{formatBalance(g.currentAmount)}</p>
-              <p className="text-[10px] text-gray-500">of {formatBalance(g.targetAmount ?? 0)}</p>
+              <p className="text-[10px] text-[var(--text-muted)]">of {formatBalance(g.targetAmount ?? 0)}</p>
             </div>
           </div>
-          <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+          <div className="h-1.5 bg-[var(--surface-inset)] rounded-full overflow-hidden">
             <div className={`h-full rounded-full transition-all ${pct >= 100 ? "bg-green-500" : isOverdue ? "bg-red-500" : "bg-blue-500"}`} style={{ width: `${pct}%` }} />
           </div>
-          <p className="text-[10px] text-gray-600 text-right">{pct.toFixed(0)}% complete</p>
+          <p className="text-[10px] text-[var(--text-faint)] text-right">{pct.toFixed(0)}% complete</p>
         </div>
       );
     }
@@ -544,40 +544,40 @@ function GoalsCard({
               <span className="text-base shrink-0">🔁</span>
               <div className="min-w-0">
                 <p className="text-sm font-medium text-white truncate">{g.name}</p>
-                <p className="text-[10px] text-gray-500 mt-0.5">Check in every {freqLabel}</p>
+                <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Check in every {freqLabel}</p>
               </div>
             </div>
             <button
               onClick={handleCheckIn}
               disabled={checkingIn}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-blue-500/10 border border-blue-500/30 text-blue-300 hover:bg-blue-500/20 transition-colors shrink-0 disabled:opacity-50"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-blue-500/10 border border-blue-500/30 text-[var(--accent-info)] hover:bg-blue-500/20 transition-colors shrink-0 disabled:opacity-50"
             >
               {checkingIn ? <Loader2 size={10} className="animate-spin" /> : <Plus size={10} />}
               Check in
             </button>
           </div>
-          <div className="flex items-center gap-3 px-3 py-2 rounded-xl bg-gray-800/40">
+          <div className="flex items-center gap-3 px-3 py-2 rounded-xl bg-[var(--surface-inset)]">
             <div className="text-center">
               <p className="text-base font-bold text-white">{g.currentStreak}</p>
-              <p className="text-[10px] text-gray-500">{g.currentStreak === 1 ? freqLabel : freqLabel + "s"} streak</p>
+              <p className="text-[10px] text-[var(--text-muted)]">{g.currentStreak === 1 ? freqLabel : freqLabel + "s"} streak</p>
             </div>
-            <div className="w-px h-6 bg-gray-700" />
+            <div className="w-px h-6 bg-[var(--border-hairline-strong)]" />
             <div className="text-center">
-              <p className="text-base font-bold text-gray-300">{g.longestStreak}</p>
-              <p className="text-[10px] text-gray-500">best streak</p>
+              <p className="text-base font-bold text-[var(--text-secondary)]">{g.longestStreak}</p>
+              <p className="text-[10px] text-[var(--text-muted)]">best streak</p>
             </div>
             {g.lastCheckIn && (
               <>
-                <div className="w-px h-6 bg-gray-700" />
+                <div className="w-px h-6 bg-[var(--border-hairline-strong)]" />
                 <div className="text-center">
-                  <p className="text-[10px] text-gray-400">Last check-in</p>
-                  <p className="text-[10px] text-gray-300">{formatDate(g.lastCheckIn)}</p>
+                  <p className="text-[10px] text-[var(--text-secondary)]">Last check-in</p>
+                  <p className="text-[10px] text-[var(--text-secondary)]">{formatDate(g.lastCheckIn)}</p>
                 </div>
               </>
             )}
           </div>
           {g.targetDate && (
-            <p className={`text-[10px] flex items-center gap-1 ${isOverdue ? "text-red-400" : "text-gray-500"}`}>
+            <p className={`text-[10px] flex items-center gap-1 ${isOverdue ? "text-[var(--accent-negative)]" : "text-[var(--text-muted)]"}`}>
               {isOverdue && <AlertCircle size={10} />}<Calendar size={10} />{formatDate(g.targetDate)}
             </p>
           )}
@@ -598,18 +598,18 @@ function GoalsCard({
               <span className="text-base shrink-0">🚦</span>
               <div className="min-w-0">
                 <p className="text-sm font-medium text-white truncate">{g.name}</p>
-                {g.spendingCategory && <p className="text-[10px] text-gray-500 mt-0.5">{g.spendingCategory}</p>}
+                {g.spendingCategory && <p className="text-[10px] text-[var(--text-muted)] mt-0.5">{g.spendingCategory}</p>}
               </div>
             </div>
             <div className="text-right shrink-0">
-              <p className={`text-sm font-medium ${overBudget ? "text-red-400" : "text-white"}`}>{formatBalance(spent)}</p>
-              <p className="text-[10px] text-gray-500">of {formatBalance(limit)}/mo</p>
+              <p className={`text-sm font-medium ${overBudget ? "text-[var(--accent-negative)]" : "text-white"}`}>{formatBalance(spent)}</p>
+              <p className="text-[10px] text-[var(--text-muted)]">of {formatBalance(limit)}/mo</p>
             </div>
           </div>
-          <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+          <div className="h-1.5 bg-[var(--surface-inset)] rounded-full overflow-hidden">
             <div className={`h-full rounded-full transition-all ${overBudget ? "bg-red-500" : pct > 80 ? "bg-yellow-500" : "bg-green-500"}`} style={{ width: `${pct}%` }} />
           </div>
-          <p className={`text-[10px] text-right ${overBudget ? "text-red-400" : "text-gray-600"}`}>
+          <p className={`text-[10px] text-right ${overBudget ? "text-[var(--accent-negative)]" : "text-[var(--text-faint)]"}`}>
             {overBudget ? `${formatBalance(spent - limit)} over budget` : `${formatBalance(limit - spent)} remaining`}
           </p>
         </div>
@@ -637,24 +637,24 @@ function GoalsCard({
               <span className="text-base shrink-0">📉</span>
               <div className="min-w-0">
                 <p className="text-sm font-medium text-white truncate">{g.name}</p>
-                {snapshot > 0 && <p className="text-[10px] text-gray-500 mt-0.5">Started at {formatBalance(snapshot)}</p>}
+                {snapshot > 0 && <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Started at {formatBalance(snapshot)}</p>}
               </div>
             </div>
             <div className="text-right shrink-0">
-              <p className="text-sm font-medium text-green-400">−{formatBalance(paid)}</p>
-              {target > 0 && <p className="text-[10px] text-gray-500">goal: −{formatBalance(target)}</p>}
+              <p className="text-sm font-medium text-[var(--accent-positive)]">−{formatBalance(paid)}</p>
+              {target > 0 && <p className="text-[10px] text-[var(--text-muted)]">goal: −{formatBalance(target)}</p>}
             </div>
           </div>
           {target > 0 && (
             <>
-              <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+              <div className="h-1.5 bg-[var(--surface-inset)] rounded-full overflow-hidden">
                 <div className={`h-full rounded-full transition-all ${pct >= 100 ? "bg-green-500" : "bg-blue-500"}`} style={{ width: `${pct}%` }} />
               </div>
-              <p className="text-[10px] text-gray-600 text-right">{pct.toFixed(0)}% paid down</p>
+              <p className="text-[10px] text-[var(--text-faint)] text-right">{pct.toFixed(0)}% paid down</p>
             </>
           )}
           {g.targetDate && (
-            <p className={`text-[10px] flex items-center gap-1 ${isOverdue ? "text-red-400" : "text-gray-500"}`}>
+            <p className={`text-[10px] flex items-center gap-1 ${isOverdue ? "text-[var(--accent-negative)]" : "text-[var(--text-muted)]"}`}>
               {isOverdue && <AlertCircle size={10} />}<Calendar size={10} />{formatDate(g.targetDate)}
             </p>
           )}
@@ -678,16 +678,16 @@ function GoalsCard({
 
         {/* Completed goals */}
         {completed.length > 0 && (
-          <div className="pt-1 border-t border-gray-800">
-            <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-2">Completed</p>
+          <div className="pt-1 border-t border-[var(--border-hairline)]">
+            <p className="text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-2">Completed</p>
             {completed.map((g) => (
-              <div key={g.id} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-gray-800/30">
-                <CheckCircle2 size={13} className="text-green-500 shrink-0" />
-                <p className="text-sm text-gray-400 flex-1 truncate">{g.name}</p>
+              <div key={g.id} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[var(--surface-inset)]">
+                <CheckCircle2 size={13} className="text-[var(--accent-positive)] shrink-0" />
+                <p className="text-sm text-[var(--text-secondary)] flex-1 truncate">{g.name}</p>
                 {g.goalType === "HABIT" ? (
-                  <p className="text-xs text-green-400 shrink-0">{g.longestStreak} streak</p>
+                  <p className="text-xs text-[var(--accent-positive)] shrink-0">{g.longestStreak} streak</p>
                 ) : g.targetAmount ? (
-                  <p className="text-xs text-green-400 shrink-0">{formatBalance(g.targetAmount)}</p>
+                  <p className="text-xs text-[var(--accent-positive)] shrink-0">{formatBalance(g.targetAmount)}</p>
                 ) : null}
                 <GoalMenu g={g} />
               </div>
@@ -697,10 +697,10 @@ function GoalsCard({
 
         {/* Archived goals */}
         {archived.length > 0 && (
-          <div className="pt-1 border-t border-gray-800">
+          <div className="pt-1 border-t border-[var(--border-hairline)]">
             <button
               onClick={() => setShowArchived((v) => !v)}
-              className="flex items-center gap-1.5 text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-2 hover:text-gray-500 transition-colors w-full"
+              className="flex items-center gap-1.5 text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-2 hover:text-[var(--text-muted)] transition-colors w-full"
             >
               <Archive size={10} />
               Archived ({archived.length})
@@ -709,9 +709,9 @@ function GoalsCard({
             {showArchived && (
               <div className="space-y-1.5">
                 {archived.map((g) => (
-                  <div key={g.id} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-gray-800/20">
-                    <Archive size={12} className="text-gray-700 shrink-0" />
-                    <p className="text-sm text-gray-600 flex-1 truncate">{g.name}</p>
+                  <div key={g.id} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[var(--surface-inset)]">
+                    <Archive size={12} className="text-[var(--text-faint)] shrink-0" />
+                    <p className="text-sm text-[var(--text-faint)] flex-1 truncate">{g.name}</p>
                     <GoalMenu g={g} isArchived />
                   </div>
                 ))}
@@ -725,7 +725,7 @@ function GoalsCard({
           {canManage && (
             <button
               onClick={onAddGoal}
-              className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+              className="flex items-center gap-1 text-xs text-[var(--accent-info)] hover:text-[var(--accent-info)] transition-colors"
             >
               <Plus size={12} /> Add a goal
             </button>
@@ -733,7 +733,7 @@ function GoalsCard({
           {canManage && (
             <button
               onClick={() => { setShowTrash(true); setTrashOpenedAt(Date.now()); loadTrash(); }}
-              className="flex items-center gap-1 text-[11px] text-gray-700 hover:text-gray-500 transition-colors"
+              className="flex items-center gap-1 text-[11px] text-[var(--text-faint)] hover:text-[var(--text-muted)] transition-colors"
             >
               <Trash2 size={11} /> Trash
             </button>
@@ -789,13 +789,13 @@ function OverviewSetupCard({
         <div className="flex items-center justify-center gap-2 mt-5">
           <button
             onClick={onAddAccounts}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-[var(--accent-info)] text-white transition-colors"
           >
             <Plus size={13} /> Add accounts
           </button>
           <button
             onClick={onAddGoal}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-white hover:bg-gray-800 border border-gray-800 hover:border-gray-700 transition-colors"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] transition-colors"
           >
             <Target size={13} /> Add a goal
           </button>
@@ -833,9 +833,9 @@ function ContextualCard({ sectionKey, label }: { sectionKey: string; label: stri
   if (msg) {
     return (
       <div className="text-center py-5">
-        <LayoutDashboard size={22} className="text-gray-700 mx-auto mb-2" />
-        <p className="text-sm text-gray-500">{msg.body}</p>
-        <p className="text-xs text-gray-600 mt-0.5">{msg.hint}</p>
+        <LayoutDashboard size={22} className="text-[var(--text-faint)] mx-auto mb-2" />
+        <p className="text-sm text-[var(--text-muted)]">{msg.body}</p>
+        <p className="text-xs text-[var(--text-faint)] mt-0.5">{msg.hint}</p>
       </div>
     );
   }
@@ -846,9 +846,9 @@ function ContextualCard({ sectionKey, label }: { sectionKey: string; label: stri
 
   return (
     <div className="text-center py-5">
-      <LayoutDashboard size={22} className="text-gray-700 mx-auto mb-2" />
-      <p className="text-sm text-gray-500">{widgetMeta?.label ?? label}</p>
-      <p className="text-xs text-gray-600 mt-0.5">{hint}</p>
+      <LayoutDashboard size={22} className="text-[var(--text-faint)] mx-auto mb-2" />
+      <p className="text-sm text-[var(--text-muted)]">{widgetMeta?.label ?? label}</p>
+      <p className="text-xs text-[var(--text-faint)] mt-0.5">{hint}</p>
     </div>
   );
 }
@@ -956,7 +956,7 @@ const renderNetWorth = (p: SectionRenderProps): React.ReactElement => {
       ] : undefined}
       emptyHeadline="No accounts shared yet"
       emptySubline="Share accounts on the Spaces page to see net worth."
-      emptyIcon={<LayoutDashboard size={22} className="text-gray-700" />}
+      emptyIcon={<LayoutDashboard size={22} className="text-[var(--text-faint)]" />}
     />
   );
 };
@@ -981,7 +981,7 @@ const renderDebtSummary = (p: SectionRenderProps): React.ReactElement => {
       }))}
       emptyHeadline="No debt accounts shared"
       emptySubline="Share debt accounts from the Spaces page."
-      emptyIcon={<CreditCard size={22} className="text-gray-700" />}
+      emptyIcon={<CreditCard size={22} className="text-[var(--text-faint)]" />}
     />
   );
 };
@@ -1006,7 +1006,7 @@ const renderInvestmentSummary = (p: SectionRenderProps): React.ReactElement => {
       }))}
       emptyHeadline="No investment accounts shared"
       emptySubline="Share investment accounts from the Spaces page."
-      emptyIcon={<TrendingUp size={22} className="text-gray-700" />}
+      emptyIcon={<TrendingUp size={22} className="text-[var(--text-faint)]" />}
     />
   );
 };
@@ -1336,7 +1336,7 @@ function SectionCard({
   // ── Non-collapsible header (Debt Breakdown) ─────────────────────────────────
   if (isDebtBreakdown) {
     return (
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+      <div className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-2xl overflow-hidden">
         <div className="px-4 py-3">
           <p className="text-sm font-semibold text-white">{displayLabel}</p>
         </div>
@@ -1349,7 +1349,7 @@ function SectionCard({
 
   // ── Collapsible header (all others) ────────────────────────────────────────
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+    <div className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-2xl overflow-hidden">
       <div className="flex items-start px-4 py-3">
         {/* Title + collapsed summary — clicking toggles collapse */}
         <button
@@ -1359,7 +1359,7 @@ function SectionCard({
         >
           <p className="text-sm font-semibold text-white">{displayLabel}</p>
           {collapsed && payoffSummary && (
-            <p className="text-[11px] text-gray-500 mt-0.5 leading-snug">{payoffSummary}</p>
+            <p className="text-[11px] text-[var(--text-muted)] mt-0.5 leading-snug">{payoffSummary}</p>
           )}
         </button>
 
@@ -1369,7 +1369,7 @@ function SectionCard({
             <button
               type="button"
               onClick={openPayoffFullscreen}
-              className="text-[11px] font-medium text-blue-400 hover:text-blue-300 transition-colors"
+              className="text-[11px] font-medium text-[var(--accent-info)] hover:text-[var(--accent-info)] transition-colors"
             >
               Expand
             </button>
@@ -1377,7 +1377,7 @@ function SectionCard({
           <button
             type="button"
             onClick={() => setCollapsed((p) => !p)}
-            className="text-gray-600 hover:text-gray-400 transition-colors"
+            className="text-[var(--text-faint)] hover:text-[var(--text-secondary)] transition-colors"
           >
             {collapsed
               ? <ChevronDown size={14} />
@@ -1429,19 +1429,19 @@ function SettingsTab({
 
   return (
     <div className="space-y-5">
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-[var(--text-muted)]">
         Toggle sections to show or hide them on this Space&apos;s dashboard. Changes apply to all members.
       </p>
       {Object.entries(byTab).map(([tab, items]) => (
         <div key={tab}>
-          <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-2">
+          <p className="text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-2">
             {TAB_LABELS[tab] ?? tab}
           </p>
           <div className="space-y-1">
             {items.map((s) => (
-              <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-gray-800/40">
+              <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--surface-inset)]">
                 <div className="flex-1 min-w-0">
-                  <p className={`text-sm truncate ${s.enabled ? "text-white" : "text-gray-500"}`}>
+                  <p className={`text-sm truncate ${s.enabled ? "text-white" : "text-[var(--text-muted)]"}`}>
                     {s.label}
                   </p>
                 </div>
@@ -1450,8 +1450,8 @@ function SettingsTab({
                   disabled={togglingId === s.id}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
                     s.enabled
-                      ? "bg-blue-600/20 text-blue-400 hover:bg-blue-600/30"
-                      : "bg-gray-700 text-gray-500 hover:bg-gray-600"
+                      ? "bg-blue-600/20 text-[var(--accent-info)] hover:bg-blue-600/30"
+                      : "bg-[var(--surface-inset)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
                   }`}
                 >
                   {togglingId === s.id
@@ -1606,17 +1606,17 @@ function AddGoalModal({
     }
   }
 
-  const inputCls = "w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500";
-  const selectCls = "w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500";
+  const inputCls = "w-full bg-[var(--surface-inset)] border border-[var(--border-hairline-strong)] rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-[var(--accent-info)]";
+  const selectCls = "w-full bg-[var(--surface-inset)] border border-[var(--border-hairline-strong)] rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[var(--accent-info)]";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/60 backdrop-blur-sm">
-      <div className="w-full sm:max-w-md bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl max-h-[88dvh] flex flex-col">
+      <div className="w-full sm:max-w-md bg-[var(--modal-surface)] border border-[var(--border-hairline-strong)] rounded-2xl shadow-2xl max-h-[88dvh] flex flex-col">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 shrink-0">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-hairline)] shrink-0">
           <p className="font-semibold text-white">Add a goal</p>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors">
+          <button onClick={onClose} className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors">
             <X size={16} />
           </button>
         </div>
@@ -1626,7 +1626,7 @@ function AddGoalModal({
 
             {/* Goal type picker */}
             <div>
-              <label className="text-xs font-medium text-gray-400 block mb-2">Goal type</label>
+              <label className="text-xs font-medium text-[var(--text-secondary)] block mb-2">Goal type</label>
               <div className="grid grid-cols-2 gap-2">
                 {Object.entries(GOAL_TYPE_META).map(([key, meta]) => (
                   <button
@@ -1636,12 +1636,12 @@ function AddGoalModal({
                     className={`flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-xl border text-left transition-colors ${
                       goalType === key
                         ? "bg-blue-500/10 border-blue-500/40 text-white"
-                        : "bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600"
+                        : "bg-[var(--surface-inset)] border-[var(--border-hairline-strong)] text-[var(--text-secondary)] hover:border-[var(--border-hairline-strong)]"
                     }`}
                   >
                     <span className="text-base leading-none">{meta.icon}</span>
                     <span className="text-xs font-semibold mt-1">{meta.label}</span>
-                    <span className="text-[10px] text-gray-500 leading-snug">{meta.description}</span>
+                    <span className="text-[10px] text-[var(--text-muted)] leading-snug">{meta.description}</span>
                   </button>
                 ))}
               </div>
@@ -1649,7 +1649,7 @@ function AddGoalModal({
 
             {/* Goal name */}
             <div>
-              <label className="text-xs font-medium text-gray-400 block mb-1">Goal name</label>
+              <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Goal name</label>
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -1666,7 +1666,7 @@ function AddGoalModal({
             {/* Category — only for non-specific spaces */}
             {showCategoryPicker && (
               <div>
-                <label className="text-xs font-medium text-gray-400 block mb-1">Category</label>
+                <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Category</label>
                 <select value={category} onChange={(e) => setCategory(e.target.value)} className={selectCls}>
                   {Object.entries(GOAL_CATEGORY_LABELS).map(([k, v]) => (
                     <option key={k} value={k}>{v}</option>
@@ -1679,7 +1679,7 @@ function AddGoalModal({
             {goalType === "FINANCIAL" && (
               <>
                 <div>
-                  <label className="text-xs font-medium text-gray-400 block mb-1">Target amount ({displayCurrency})</label>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Target amount ({displayCurrency})</label>
                   <input
                     type="text" inputMode="decimal"
                     value={targetAmount}
@@ -1689,8 +1689,8 @@ function AddGoalModal({
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-400 block mb-1">Target date <span className="text-gray-600">(optional)</span></label>
-                  <div className="w-full bg-gray-800 border border-gray-700 rounded-xl overflow-hidden focus-within:border-blue-500 transition-colors">
+                  <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Target date <span className="text-[var(--text-faint)]">(optional)</span></label>
+                  <div className="w-full bg-[var(--surface-inset)] border border-[var(--border-hairline-strong)] rounded-xl overflow-hidden focus-within:border-[var(--accent-info)] transition-colors">
                     <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)}
                       className="block w-full bg-transparent px-3 py-2.5 text-sm text-white focus:outline-none" />
                   </div>
@@ -1702,24 +1702,24 @@ function AddGoalModal({
             {goalType === "HABIT" && (
               <>
                 <div>
-                  <label className="text-xs font-medium text-gray-400 block mb-1">Check-in frequency</label>
-                  <div className="flex rounded-xl overflow-hidden border border-gray-700">
+                  <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Check-in frequency</label>
+                  <div className="flex rounded-xl overflow-hidden border border-[var(--border-hairline-strong)]">
                     {Object.entries(HABIT_FREQ_LABELS).map(([k, v]) => (
                       <button
                         key={k} type="button"
                         onClick={() => setHabitFrequency(k)}
                         className={`flex-1 py-2 text-xs font-semibold transition-colors ${
                           habitFrequency === k
-                            ? "bg-blue-500/15 text-blue-300"
-                            : "text-gray-500 hover:text-gray-300"
+                            ? "bg-blue-500/15 text-[var(--accent-info)]"
+                            : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
                         }`}
                       >{v}</button>
                     ))}
                   </div>
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-400 block mb-1">Target date <span className="text-gray-600">(optional)</span></label>
-                  <div className="w-full bg-gray-800 border border-gray-700 rounded-xl overflow-hidden focus-within:border-blue-500 transition-colors">
+                  <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Target date <span className="text-[var(--text-faint)]">(optional)</span></label>
+                  <div className="w-full bg-[var(--surface-inset)] border border-[var(--border-hairline-strong)] rounded-xl overflow-hidden focus-within:border-[var(--accent-info)] transition-colors">
                     <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)}
                       className="block w-full bg-transparent px-3 py-2.5 text-sm text-white focus:outline-none" />
                   </div>
@@ -1731,7 +1731,7 @@ function AddGoalModal({
             {goalType === "SPENDING_LIMIT" && (
               <>
                 <div>
-                  <label className="text-xs font-medium text-gray-400 block mb-1">Spending category <span className="text-gray-600">(optional)</span></label>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Spending category <span className="text-[var(--text-faint)]">(optional)</span></label>
                   <input
                     value={spendingCategory}
                     onChange={(e) => setSpendingCategory(e.target.value)}
@@ -1740,7 +1740,7 @@ function AddGoalModal({
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-400 block mb-1">Monthly limit ({displayCurrency})</label>
+                  <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Monthly limit ({displayCurrency})</label>
                   <input
                     type="text" inputMode="decimal"
                     value={monthlyLimit}
@@ -1756,12 +1756,12 @@ function AddGoalModal({
             {goalType === "DEBT_REDUCTION" && (
               <>
                 {debtAccounts.length === 0 ? (
-                  <p className="text-xs text-gray-500 bg-gray-800 rounded-xl px-3 py-3">
+                  <p className="text-xs text-[var(--text-muted)] bg-[var(--surface-inset)] rounded-xl px-3 py-3">
                     No debt accounts found in this Space. Add a debt account first.
                   </p>
                 ) : (
                   <div>
-                    <label className="text-xs font-medium text-gray-400 block mb-1">Account to pay down</label>
+                    <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Account to pay down</label>
                     <select value={linkedAccountId} onChange={(e) => setLinkedAccountId(e.target.value)} className={selectCls}>
                       {debtAccounts.map((a) => (
                         <option key={a.id} value={a.id}>{a.name} — {formatBalance(a.balance)}</option>
@@ -1770,12 +1770,12 @@ function AddGoalModal({
                   </div>
                 )}
                 <div>
-                  <label className="text-xs font-medium text-gray-400 block mb-2">Reduction target</label>
-                  <div className="flex rounded-xl overflow-hidden border border-gray-700 mb-2">
+                  <label className="text-xs font-medium text-[var(--text-secondary)] block mb-2">Reduction target</label>
+                  <div className="flex rounded-xl overflow-hidden border border-[var(--border-hairline-strong)] mb-2">
                     {(["amount", "pct"] as const).map((m) => (
                       <button key={m} type="button" onClick={() => setReductionMode(m)}
                         className={`flex-1 py-2 text-xs font-semibold transition-colors ${
-                          reductionMode === m ? "bg-blue-500/15 text-blue-300" : "text-gray-500 hover:text-gray-300"
+                          reductionMode === m ? "bg-blue-500/15 text-[var(--accent-info)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
                         }`}
                       >{m === "amount" ? `$ Amount` : "% Percent"}</button>
                     ))}
@@ -1788,12 +1788,12 @@ function AddGoalModal({
                     className={inputCls}
                   />
                   {reductionMode === "pct" && (
-                    <p className="text-[10px] text-gray-600 mt-1">Enter a number between 1 and 100</p>
+                    <p className="text-[10px] text-[var(--text-faint)] mt-1">Enter a number between 1 and 100</p>
                   )}
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-400 block mb-1">Target date <span className="text-gray-600">(optional)</span></label>
-                  <div className="w-full bg-gray-800 border border-gray-700 rounded-xl overflow-hidden focus-within:border-blue-500 transition-colors">
+                  <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Target date <span className="text-[var(--text-faint)]">(optional)</span></label>
+                  <div className="w-full bg-[var(--surface-inset)] border border-[var(--border-hairline-strong)] rounded-xl overflow-hidden focus-within:border-[var(--accent-info)] transition-colors">
                     <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)}
                       className="block w-full bg-transparent px-3 py-2.5 text-sm text-white focus:outline-none" />
                   </div>
@@ -1801,17 +1801,17 @@ function AddGoalModal({
               </>
             )}
 
-            {error && <p className="text-xs text-red-400">{error}</p>}
+            {error && <p className="text-xs text-[var(--accent-negative)]">{error}</p>}
           </div>
 
           {/* Pinned buttons */}
-          <div className="px-5 py-4 border-t border-gray-800 flex gap-2 shrink-0">
+          <div className="px-5 py-4 border-t border-[var(--border-hairline)] flex gap-2 shrink-0">
             <button type="button" onClick={onClose}
-              className="flex-1 px-4 py-2.5 rounded-xl border border-gray-700 text-sm font-medium text-gray-400 hover:text-white hover:border-gray-600 transition-colors">
+              className="flex-1 px-4 py-2.5 rounded-xl border border-[var(--border-hairline-strong)] text-sm font-medium text-[var(--text-secondary)] hover:text-white hover:border-[var(--border-hairline-strong)] transition-colors">
               Cancel
             </button>
             <button type="submit" disabled={busy}
-              className="flex-1 px-4 py-2.5 rounded-xl bg-blue-600 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
+              className="flex-1 px-4 py-2.5 rounded-xl bg-[var(--accent-info)] text-sm font-medium text-white disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
               {busy ? <Loader2 size={14} className="animate-spin" /> : null}
               Create goal
             </button>
@@ -2110,7 +2110,7 @@ export function SpaceDashboard({
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
-        <Loader2 size={20} className="animate-spin text-gray-600" />
+        <Loader2 size={20} className="animate-spin text-[var(--text-faint)]" />
       </div>
     );
   }
@@ -2203,18 +2203,18 @@ export function SpaceDashboard({
           onClick={() => !leaveBusy && setConfirmLeave(false)}
         >
           <div
-            className="w-full sm:max-w-sm bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden"
+            className="w-full sm:max-w-sm bg-[var(--modal-surface)] border border-[var(--border-hairline-strong)] rounded-2xl shadow-2xl overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Icon + title */}
             <div className="px-5 pt-6 pb-4 text-center">
               <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-4">
-                <LogOut size={20} className="text-red-400" />
+                <LogOut size={20} className="text-[var(--accent-negative)]" />
               </div>
               <h2 className="text-base font-semibold text-white mb-1">
                 Leave {displaySpaceName(spaceName)}?
               </h2>
-              <p className="text-sm text-gray-400 leading-relaxed">
+              <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
                 You&apos;ll lose access to this Space and all of its shared data.
                 To rejoin, an <span className="text-white font-medium">Owner</span> or{" "}
                 <span className="text-white font-medium">Admin</span> will need to manually
@@ -2227,14 +2227,14 @@ export function SpaceDashboard({
               <button
                 onClick={() => setConfirmLeave(false)}
                 disabled={leaveBusy}
-                className="flex-1 px-4 py-2.5 rounded-xl border border-gray-700 text-sm font-medium text-gray-400 hover:text-white hover:border-gray-600 disabled:opacity-50 transition-colors"
+                className="flex-1 px-4 py-2.5 rounded-xl border border-[var(--border-hairline-strong)] text-sm font-medium text-[var(--text-secondary)] hover:text-white hover:border-[var(--border-hairline-strong)] disabled:opacity-50 transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={handleLeave}
                 disabled={leaveBusy}
-                className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                className="flex-1 px-4 py-2.5 rounded-xl bg-[var(--accent-negative)] text-sm font-medium text-white disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
               >
                 {leaveBusy
                   ? <Loader2 size={14} className="animate-spin" />
@@ -2251,7 +2251,7 @@ export function SpaceDashboard({
         <div className="flex items-start justify-between mb-5">
           <div>
             <h1 className="text-xl font-bold text-white">{displaySpaceName(spaceName)}</h1>
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-[var(--text-muted)]">
               {catLabel} Space{memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : ""}
               {newestAccountUpdate ? ` · Updated ${formatRelativeTime(newestAccountUpdate)}` : ""}
             </p>
@@ -2261,7 +2261,7 @@ export function SpaceDashboard({
             {canManage && (
               <button
                 onClick={() => setShowManage(true)}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-white hover:bg-gray-800 transition-colors border border-gray-800 hover:border-gray-700"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] transition-colors border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"
               >
                 <Settings size={13} />
                 Manage
@@ -2271,7 +2271,7 @@ export function SpaceDashboard({
             {canLeave && (
               <button
                 onClick={() => setConfirmLeave(true)}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors border border-gray-800 hover:border-red-500/30"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--text-muted)] hover:text-[var(--accent-negative)] hover:bg-red-500/10 transition-colors border border-[var(--border-hairline)] hover:border-red-500/30"
               >
                 <LogOut size={13} />
                 Leave
@@ -2324,7 +2324,7 @@ export function SpaceDashboard({
         {activeTab === "TRANSACTIONS" && (
           spaceTransactions === null ? (
             <div className="flex items-center justify-center py-16">
-              <Loader2 size={18} className="animate-spin text-gray-600" />
+              <Loader2 size={18} className="animate-spin text-[var(--text-faint)]" />
             </div>
           ) : (
             <SpaceTransactionsPanel
@@ -2355,12 +2355,12 @@ export function SpaceDashboard({
             <div className="space-y-3">
               {sectionsForTab.length === 0 ? (
                 <div className="text-center py-12">
-                  <LayoutDashboard size={30} className="text-gray-700 mx-auto mb-3" />
-                  <p className="text-sm text-gray-500">No sections on this tab</p>
+                  <LayoutDashboard size={30} className="text-[var(--text-faint)] mx-auto mb-3" />
+                  <p className="text-sm text-[var(--text-muted)]">No sections on this tab</p>
                   {canManage && (
                     <button
                       onClick={() => setActiveTab("SETTINGS")}
-                      className="mt-2 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                      className="mt-2 text-xs text-[var(--accent-info)] hover:text-[var(--accent-info)] transition-colors"
                     >
                       Manage sections →
                     </button>
@@ -2455,12 +2455,12 @@ export function SpaceDashboard({
               // tabs (and hero-less categories) keep the honest empty state.
               activeTab === "OVERVIEW" && heroDef && accounts.length > 0 ? null : (
               <div className="text-center py-12">
-                <LayoutDashboard size={30} className="text-gray-700 mx-auto mb-3" />
-                <p className="text-sm text-gray-500">No sections on this tab</p>
+                <LayoutDashboard size={30} className="text-[var(--text-faint)] mx-auto mb-3" />
+                <p className="text-sm text-[var(--text-muted)]">No sections on this tab</p>
                 {canManage && (
                   <button
                     onClick={() => setActiveTab("SETTINGS")}
-                    className="mt-2 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                    className="mt-2 text-xs text-[var(--accent-info)] hover:text-[var(--accent-info)] transition-colors"
                   >
                     Manage sections →
                   </button>
@@ -2547,10 +2547,10 @@ export function SpaceDashboard({
         {tabs.length === 0 && !loading && activeTab !== "SETTINGS" && activeTab !== "ACTIVITY" &&
          !NEW_SPACE_TABS.includes(activeTab) && !PERSPECTIVE_ROUTED_TABS.includes(activeTab) && (
           <div className="text-center py-12">
-            <LayoutDashboard size={30} className="text-gray-700 mx-auto mb-3" />
-            <p className="text-sm text-gray-500">No dashboard sections configured</p>
+            <LayoutDashboard size={30} className="text-[var(--text-faint)] mx-auto mb-3" />
+            <p className="text-sm text-[var(--text-muted)]">No dashboard sections configured</p>
             {canManage && (
-              <p className="text-xs text-gray-600 mt-1">This Space was created without a template.</p>
+              <p className="text-xs text-[var(--text-faint)] mt-1">This Space was created without a template.</p>
             )}
           </div>
         )}
