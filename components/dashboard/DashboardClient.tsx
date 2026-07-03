@@ -230,13 +230,15 @@ const TYPE_ICON: Record<AccountType, React.ElementType> = {
   other:      Wallet,
 };
 
+// Step C: account-type icon tint neutralised to a single ink chip — colour is
+// reserved for financial state (account-type precedent from AccountCard).
 const TYPE_ICON_CLS: Record<AccountType, string> = {
-  checking:   "bg-blue-500/10 text-blue-400",
-  savings:    "bg-emerald-500/10 text-emerald-400",
-  investment: "bg-violet-500/10 text-violet-400",
-  crypto:     "bg-yellow-500/10 text-yellow-400",
-  debt:       "bg-red-500/10 text-red-400",
-  other:      "bg-teal-500/10 text-teal-400",
+  checking:   "bg-[var(--surface-inset)] text-[var(--text-secondary)]",
+  savings:    "bg-[var(--surface-inset)] text-[var(--text-secondary)]",
+  investment: "bg-[var(--surface-inset)] text-[var(--text-secondary)]",
+  crypto:     "bg-[var(--surface-inset)] text-[var(--text-secondary)]",
+  debt:       "bg-[var(--surface-inset)] text-[var(--text-secondary)]",
+  other:      "bg-[var(--surface-inset)] text-[var(--text-secondary)]",
 };
 
 // ── Section card wrapper ──────────────────────────────────────────────────────
@@ -252,7 +254,7 @@ function PersonalSectionCard({
   fill?:      boolean;
 }) {
   return (
-    <div className={`bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden${fill ? " flex flex-col h-full" : ""}`}>
+    <div className={`bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-2xl overflow-hidden${fill ? " flex flex-col h-full" : ""}`}>
       <div className="flex items-center justify-between px-4 pt-3.5 pb-0 shrink-0">
         <p className="text-sm font-semibold text-white">{title}</p>
         {rightSlot}
@@ -677,7 +679,7 @@ export function DashboardClient({
         const isOpen  = !sectionCollapsed[type];
         const isDebt  = type === "debt";
         const Icon    = TYPE_ICON[type as AccountType] ?? Building2;
-        const iconCls = TYPE_ICON_CLS[type as AccountType] ?? "bg-gray-500/10 text-gray-400";
+        const iconCls = TYPE_ICON_CLS[type as AccountType] ?? "bg-[var(--surface-inset)] text-[var(--text-secondary)]";
 
         const sectionTotal = accts.reduce((s, a) => s + a.balance, 0);
         const newestSync   = !isEmpty
@@ -687,7 +689,7 @@ export function DashboardClient({
         return (
           <div
             key={type}
-            className="rounded-2xl border border-gray-800 bg-gray-900 overflow-hidden"
+            className="rounded-2xl border border-[var(--border-hairline)] bg-[var(--surface-muted)] overflow-hidden"
           >
             {/*
               Section header — a <div> rather than <button> so we can embed
@@ -708,7 +710,7 @@ export function DashboardClient({
               className={`w-full flex items-center justify-between px-4 py-3.5 transition-colors touch-manipulation select-none ${
                 isEmpty
                   ? "cursor-default"
-                  : "hover:bg-gray-800/70 active:bg-gray-800 cursor-pointer"
+                  : "hover:bg-[var(--surface-hover)] active:bg-[var(--surface-hover-strong)] cursor-pointer"
               }`}
             >
               <div className="flex items-center gap-3">
@@ -717,7 +719,7 @@ export function DashboardClient({
                 </div>
                 <div className="text-left">
                   <p className="text-sm font-semibold text-white leading-tight">{label}</p>
-                  <p className="text-xs text-gray-500 leading-tight mt-0.5">
+                  <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5">
                     {isEmpty
                       ? "No accounts linked yet"
                       : `${accts.length} account${accts.length !== 1 ? "s" : ""} · Updated ${formatDate(newestSync!)}`
@@ -730,7 +732,7 @@ export function DashboardClient({
                 {!isEmpty && (
                   <p className={`text-sm font-semibold tabular-nums ${
                     isDebt
-                      ? sectionTotal > 0 ? "text-red-400" : "text-emerald-400"
+                      ? sectionTotal > 0 ? "text-[var(--accent-negative)]" : "text-[var(--accent-positive)]"
                       : "text-white"
                   }`}>
                     {fmtAbs(Math.abs(sectionTotal))}
@@ -740,26 +742,26 @@ export function DashboardClient({
                 {type === "other" && (
                   <button
                     onClick={(e) => { e.stopPropagation(); setAssetOpen(true); }}
-                    className="text-[11px] font-semibold text-teal-400 hover:text-teal-300 bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/20 hover:border-teal-500/40 px-2 py-1 rounded-lg transition-colors leading-none"
+                    className="text-[11px] font-semibold text-[var(--accent-info)] hover:text-[var(--accent-info)] bg-[var(--surface-inset)] hover:bg-[var(--surface-hover)] border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] px-2 py-1 rounded-lg transition-colors leading-none"
                   >
                     + Add
                   </button>
                 )}
                 {!isEmpty && (
                   isOpen
-                    ? <ChevronUp   size={16} className="text-gray-500 shrink-0" />
-                    : <ChevronDown size={16} className="text-gray-500 shrink-0" />
+                    ? <ChevronUp   size={16} className="text-[var(--text-muted)] shrink-0" />
+                    : <ChevronDown size={16} className="text-[var(--text-muted)] shrink-0" />
                 )}
               </div>
             </div>
 
             {isEmpty && (
-              <div className="border-t border-gray-800/60 px-4 py-3 flex flex-wrap items-center gap-2">
+              <div className="border-t border-[var(--border-hairline)] px-4 py-3 flex flex-wrap items-center gap-2">
                 {type !== "other" && <ConnectAccountButton />}
                 {type === "crypto" && (
                   <button
                     onClick={() => setWalletOpen(true)}
-                    className="flex items-center gap-1.5 text-xs font-semibold text-gray-300 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-gray-600 px-3 py-2 rounded-xl transition-colors"
+                    className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-secondary)] bg-[var(--surface-inset)] hover:bg-[var(--surface-hover-strong)] border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] px-3 py-2 rounded-xl transition-colors"
                   >
                     + Add Wallet
                   </button>
@@ -767,7 +769,7 @@ export function DashboardClient({
                 {type === "other" && (
                   <button
                     onClick={() => setAssetOpen(true)}
-                    className="flex items-center gap-1.5 text-xs font-semibold text-teal-300 bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/30 hover:border-teal-500/50 px-3 py-2 rounded-xl transition-colors"
+                    className="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent-info)] bg-[var(--surface-inset)] hover:bg-[var(--surface-hover)] border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] px-3 py-2 rounded-xl transition-colors"
                   >
                     + Add Asset
                   </button>
@@ -784,12 +786,12 @@ export function DashboardClient({
                 }}
               >
                 <div className="overflow-hidden" style={{ minHeight: 0 }}>
-                  <div className="border-t border-gray-700/60 bg-gray-950/60">
+                  <div className="border-t border-[var(--border-hairline)] bg-[var(--surface-muted)]">
                     {accts.map((a, idx) => {
                       const coinSymbol  = a.walletChain ?? exchangeSymbol(a.institution);
                       const isManual    = a.syncStatus === "manual";
                       const isEditing   = editingAssetId === a.id;
-                      const borderCls   = idx < accts.length - 1 ? "border-b border-gray-800/50" : "";
+                      const borderCls   = idx < accts.length - 1 ? "border-b border-[var(--border-hairline)]" : "";
 
                       // Manual asset row — shows inline "Update value" editor instead of AccountModal
                       if (isManual) {
@@ -804,7 +806,7 @@ export function DashboardClient({
                                 </div>
                                 <div>
                                   <p className="text-sm font-medium text-white leading-tight">{a.name}</p>
-                                  <p className="text-xs text-gray-500 leading-tight mt-0.5">Manual · Updated {formatDate(a.lastUpdated)}</p>
+                                  <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5">Manual · Updated {formatDate(a.lastUpdated)}</p>
                                 </div>
                               </div>
                               <div className="flex items-center gap-1 shrink-0 ml-3">
@@ -813,14 +815,14 @@ export function DashboardClient({
                                     <p className="text-sm font-semibold tabular-nums text-white mr-1">{fmtAbs(a.balance)}</p>
                                     <button
                                       onClick={() => { setEditingAssetId(a.id); setEditingAssetVal(String(a.balance)); }}
-                                      className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:text-teal-400 hover:bg-teal-500/10 transition-colors"
+                                      className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--accent-info)] hover:bg-[var(--surface-inset)] transition-colors"
                                       title="Update value"
                                     >
                                       <Pencil size={13} />
                                     </button>
                                     <button
                                       onClick={() => setConfirmDeleteId(a.id)}
-                                      className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                      className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--accent-negative)] hover:bg-[var(--surface-hover)] transition-colors"
                                       title="Delete asset"
                                     >
                                       <Trash2 size={13} />
@@ -837,20 +839,20 @@ export function DashboardClient({
                                   value={editingAssetVal}
                                   onChange={(e) => setEditingAssetVal(e.target.value)}
                                   onKeyDown={(e) => { if (e.key === "Enter") saveAssetBalance(a.id); if (e.key === "Escape") { setEditingAssetId(null); } }}
-                                  className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/30"
+                                  className="flex-1 bg-[var(--surface-inset)] border border-[var(--border-hairline)] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-[var(--accent-info)] focus:ring-1 focus:ring-[var(--border-hairline-strong)]"
                                   placeholder="New value"
                                   autoFocus
                                 />
                                 <button
                                   onClick={() => saveAssetBalance(a.id)}
                                   disabled={savingAsset}
-                                  className="w-8 h-8 flex items-center justify-center rounded-xl bg-teal-600 hover:bg-teal-500 text-white transition-colors disabled:opacity-50"
+                                  className="w-8 h-8 flex items-center justify-center rounded-xl bg-[var(--accent-info)] text-white transition-colors disabled:opacity-50"
                                 >
                                   {savingAsset ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
                                 </button>
                                 <button
                                   onClick={() => setEditingAssetId(null)}
-                                  className="text-xs text-gray-500 hover:text-gray-400 px-2"
+                                  className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] px-2"
                                 >
                                   Cancel
                                 </button>
@@ -859,19 +861,19 @@ export function DashboardClient({
                             {/* Inline delete confirmation row */}
                             {isConfirmingDelete && (
                               <div className="pb-3.5 flex items-center justify-between gap-3">
-                                <p className="text-xs text-gray-400">Archive <span className="text-white font-medium">{a.name}</span>? You can restore it from <span className="text-gray-300">Settings → Archived Assets</span>.</p>
+                                <p className="text-xs text-[var(--text-secondary)]">Archive <span className="text-white font-medium">{a.name}</span>? You can restore it from <span className="text-[var(--text-secondary)]">Settings → Archived Assets</span>.</p>
                                 <div className="flex items-center gap-2 shrink-0">
                                   <button
                                     onClick={() => setConfirmDeleteId(null)}
                                     disabled={deletingAsset}
-                                    className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-50"
+                                    className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] px-2 py-1 rounded-lg hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
                                   >
                                     Cancel
                                   </button>
                                   <button
                                     onClick={() => deleteAsset(a.id)}
                                     disabled={deletingAsset}
-                                    className="flex items-center gap-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                                    className="flex items-center gap-1.5 text-xs font-semibold text-white bg-[var(--accent-negative)] px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
                                   >
                                     {deletingAsset ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
                                     {deletingAsset ? "Archiving…" : "Archive"}
@@ -888,7 +890,7 @@ export function DashboardClient({
                         <button
                           key={a.id}
                           onClick={() => setSelectedAccount(a)}
-                          className={`w-full flex items-center justify-between pl-6 pr-4 py-3.5 hover:bg-gray-800/40 active:bg-gray-800 transition-colors touch-manipulation text-left ${borderCls}`}
+                          className={`w-full flex items-center justify-between pl-6 pr-4 py-3.5 hover:bg-[var(--surface-hover)] active:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation text-left ${borderCls}`}
                         >
                           <div className="flex items-center gap-3">
                             {type === "crypto" ? (
@@ -900,18 +902,18 @@ export function DashboardClient({
                             )}
                             <div>
                               <p className="text-sm font-medium text-white leading-tight">{a.name}</p>
-                              <p className="text-xs text-gray-500 leading-tight mt-0.5">{a.institution}</p>
+                              <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5">{a.institution}</p>
                             </div>
                           </div>
                           <div className="text-right shrink-0 ml-3">
                             <p className={`text-sm font-semibold tabular-nums ${
                               isDebt
-                                ? a.balance > 0 ? "text-red-400" : "text-emerald-400"
+                                ? a.balance > 0 ? "text-[var(--accent-negative)]" : "text-[var(--accent-positive)]"
                                 : "text-white"
                             }`}>
                               {fmtAbs(Math.abs(a.balance))}
                             </p>
-                            <p className="text-xs text-gray-600 mt-0.5">{formatDate(a.lastUpdated)}</p>
+                            <p className="text-xs text-[var(--text-faint)] mt-0.5">{formatDate(a.lastUpdated)}</p>
                           </div>
                         </button>
                       );
@@ -935,29 +937,29 @@ export function DashboardClient({
         );
 
         return (
-          <div className="rounded-2xl border border-gray-800 bg-gray-900 overflow-hidden">
+          <div className="rounded-2xl border border-[var(--border-hairline)] bg-[var(--surface-muted)] overflow-hidden">
             <button
               onClick={() => toggleSection(sectionKey)}
-              className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-gray-800/70 active:bg-gray-800 transition-colors touch-manipulation select-none"
+              className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-[var(--surface-hover)] active:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation select-none"
             >
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 bg-violet-500/10">
-                  <TrendingUp size={15} className="text-violet-400" />
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--surface-inset)" }}>
+                  <TrendingUp size={15} style={{ color: "var(--text-secondary)" }} />
                 </div>
                 <div className="text-left">
                   <p className="text-sm font-semibold text-white leading-tight">Brokerage Cash</p>
-                  <p className="text-xs text-gray-500 leading-tight mt-0.5">
+                  <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5">
                     {investableAccounts.length} account{investableAccounts.length !== 1 ? "s" : ""} · Updated {formatDate(newestSync)}
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                <p className="text-sm font-semibold tabular-nums text-violet-400">
+                <p className="text-sm font-semibold tabular-nums" style={{ color: "var(--text-primary)" }}>
                   {fmtAbs(sectionTotal)}
                 </p>
                 {isOpen
-                  ? <ChevronUp   size={16} className="text-gray-500 shrink-0" />
-                  : <ChevronDown size={16} className="text-gray-500 shrink-0" />
+                  ? <ChevronUp   size={16} className="text-[var(--text-muted)] shrink-0" />
+                  : <ChevronDown size={16} className="text-[var(--text-muted)] shrink-0" />
                 }
               </div>
             </button>
@@ -970,35 +972,35 @@ export function DashboardClient({
               }}
             >
               <div className="overflow-hidden" style={{ minHeight: 0 }}>
-                <div className="border-t border-gray-700/60 bg-gray-950/60">
+                <div className="border-t border-[var(--border-hairline)] bg-[var(--surface-muted)]">
                   {investableAccounts.map(({ account: a, cashAmount }, idx) => {
                     const coinSymbol = a.walletChain ?? exchangeSymbol(a.institution);
                     return (
                       <button
                         key={a.id}
                         onClick={() => setSelectedAccount(a)}
-                        className={`w-full flex items-center justify-between pl-6 pr-4 py-3.5 hover:bg-gray-800/40 active:bg-gray-800 transition-colors touch-manipulation text-left ${
-                          idx < investableAccounts.length - 1 ? "border-b border-gray-800/50" : ""
+                        className={`w-full flex items-center justify-between pl-6 pr-4 py-3.5 hover:bg-[var(--surface-hover)] active:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation text-left ${
+                          idx < investableAccounts.length - 1 ? "border-b border-[var(--border-hairline)]" : ""
                         }`}
                       >
                         <div className="flex items-center gap-3">
                           {a.type === "crypto" ? (
                             <CoinIcon symbol={coinSymbol} size={28} />
                           ) : (
-                            <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-violet-500/10">
-                              <TrendingUp size={13} className="text-violet-400" />
+                            <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: "var(--surface-inset)" }}>
+                              <TrendingUp size={13} style={{ color: "var(--text-secondary)" }} />
                             </div>
                           )}
                           <div>
                             <p className="text-sm font-medium text-white leading-tight">{a.name}</p>
-                            <p className="text-xs text-gray-500 leading-tight mt-0.5">{a.institution}</p>
+                            <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5">{a.institution}</p>
                           </div>
                         </div>
                         <div className="text-right shrink-0 ml-3">
-                          <p className="text-sm font-semibold tabular-nums text-violet-400">
+                          <p className="text-sm font-semibold tabular-nums" style={{ color: "var(--text-primary)" }}>
                             {fmtAbs(cashAmount)}
                           </p>
-                          <p className="text-xs text-gray-600 mt-0.5">{formatDate(a.lastUpdated)}</p>
+                          <p className="text-xs text-[var(--text-faint)] mt-0.5">{formatDate(a.lastUpdated)}</p>
                         </div>
                       </button>
                     );
@@ -1022,7 +1024,7 @@ export function DashboardClient({
           <h1 className="text-xl font-bold text-white">
             {firstName ? `${possessive(firstName)} Space` : "My Space"}
           </h1>
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-[var(--text-muted)]">
             Personal{memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : ""}
             {dataUpdatedAgo ? ` · Updated ${dataUpdatedAgo}` : ""}
           </p>
@@ -1032,7 +1034,7 @@ export function DashboardClient({
           <div className="relative">
             <button
               onClick={() => setManageOpen((o) => !o)}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-white hover:bg-gray-800 transition-colors border border-gray-800 hover:border-gray-700"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] transition-colors border border-[var(--border-hairline)] hover:border-[var(--border-hairline)]"
             >
               <FolderOpen size={13} />
               Manage
@@ -1043,41 +1045,41 @@ export function DashboardClient({
               {/* Backdrop */}
               <div className="fixed inset-0 z-30" onClick={() => setManageOpen(false)} />
               {/* Dropdown */}
-              <div className="absolute right-0 top-full mt-1.5 z-40 w-56 bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden">
+              <div className="absolute right-0 top-full mt-1.5 z-40 w-56 border rounded-2xl shadow-2xl overflow-hidden" style={{ background: "var(--modal-surface)", borderColor: "var(--border-hairline-strong)" }}>
                 <Link
                   href="/dashboard/accounts"
                   onClick={() => setManageOpen(false)}
-                  className="flex items-center justify-between px-4 py-3 hover:bg-gray-800 transition-colors"
+                  className="flex items-center justify-between px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors"
                 >
                   <div>
                     <p className="text-sm font-medium text-white">Accounts</p>
-                    <p className="text-xs text-gray-500 mt-0.5">Manage linked accounts</p>
+                    <p className="text-xs text-[var(--text-muted)] mt-0.5">Manage linked accounts</p>
                   </div>
-                  <ArrowUpRight size={14} className="text-gray-500 shrink-0" />
+                  <ArrowUpRight size={14} className="text-[var(--text-muted)] shrink-0" />
                 </Link>
-                <div className="border-t border-gray-800">
+                <div className="border-t border-[var(--border-hairline)]">
                   <button
                     onClick={() => { setManageOpen(false); setAssetOpen(true); }}
-                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-800 transition-colors"
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors"
                   >
                     <div className="text-left">
                       <p className="text-sm font-medium text-white">Add Manual Asset</p>
-                      <p className="text-xs text-gray-500 mt-0.5">Real estate, vehicles, etc.</p>
+                      <p className="text-xs text-[var(--text-muted)] mt-0.5">Real estate, vehicles, etc.</p>
                     </div>
-                    <ArrowUpRight size={14} className="text-gray-500 shrink-0" />
+                    <ArrowUpRight size={14} className="text-[var(--text-muted)] shrink-0" />
                   </button>
                 </div>
-                <div className="border-t border-gray-800">
+                <div className="border-t border-[var(--border-hairline)]">
                   <Link
                     href="/dashboard/settings/archived-assets"
                     onClick={() => setManageOpen(false)}
-                    className="flex items-center justify-between px-4 py-3 hover:bg-gray-800 transition-colors"
+                    className="flex items-center justify-between px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors"
                   >
                     <div>
                       <p className="text-sm font-medium text-white">Archived Assets</p>
-                      <p className="text-xs text-gray-500 mt-0.5">Restore or delete</p>
+                      <p className="text-xs text-[var(--text-muted)] mt-0.5">Restore or delete</p>
                     </div>
-                    <ArrowUpRight size={14} className="text-gray-500 shrink-0" />
+                    <ArrowUpRight size={14} className="text-[var(--text-muted)] shrink-0" />
                   </Link>
                 </div>
               </div>
@@ -1264,7 +1266,7 @@ export function DashboardClient({
 
       {/* Settings tab */}
       {isSettings && (
-        <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden divide-y divide-gray-800">
+        <div className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-2xl overflow-hidden divide-y divide-[var(--border-hairline)]">
           {[
             { href: "/dashboard/settings", label: "Settings",  sub: "Profile, password, and account preferences" },
             { href: "/dashboard/advice",   label: "AI Advice", sub: "View your latest financial insights" },
@@ -1272,13 +1274,13 @@ export function DashboardClient({
             <Link
               key={href}
               href={href}
-              className="flex items-center justify-between px-4 py-3.5 hover:bg-gray-800/60 active:bg-gray-800 transition-colors"
+              className="flex items-center justify-between px-4 py-3.5 hover:bg-[var(--surface-hover)] active:bg-[var(--surface-hover-strong)] transition-colors"
             >
               <div>
                 <p className="text-sm font-medium text-white">{label}</p>
-                <p className="text-xs text-gray-500 mt-0.5">{sub}</p>
+                <p className="text-xs text-[var(--text-muted)] mt-0.5">{sub}</p>
               </div>
-              <ArrowUpRight size={15} className="text-gray-500 shrink-0" />
+              <ArrowUpRight size={15} className="text-[var(--text-muted)] shrink-0" />
             </Link>
           ))}
         </div>
