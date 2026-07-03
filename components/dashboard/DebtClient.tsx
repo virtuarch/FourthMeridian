@@ -4,7 +4,7 @@ import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Transaction, TransactionCategory } from "@/types";
 import { FicoCard } from "@/components/dashboard/FicoCard";
-import { Card, CardTitle } from "@/components/ui/Card";
+import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import {
   ShieldCheck, Save, Loader2, CreditCard, Pencil, X,
   Check, Search, ChevronLeft, ChevronRight, ChevronDown,
@@ -20,26 +20,18 @@ const fmtUSD = (n: number) =>
 const fmtFull = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
 
-// ── Category badge colors ─────────────────────────────────────────────────────
-const CAT_COLORS: Partial<Record<TransactionCategory, string>> = {
-  Income:        "bg-emerald-500/15 text-emerald-400",
-  Transfer:      "bg-blue-500/15 text-blue-400",
-  Groceries:     "bg-lime-500/15 text-lime-400",
-  Dining:        "bg-orange-500/15 text-orange-400",
-  Shopping:      "bg-purple-500/15 text-purple-400",
-  Travel:        "bg-sky-500/15 text-sky-400",
-  Subscriptions: "bg-violet-500/15 text-violet-400",
-  Utilities:     "bg-slate-500/15 text-slate-400",
-  Interest:      "bg-teal-500/15 text-teal-400",
-  Payment:       "bg-gray-500/15 text-gray-400",
-  Other:         "bg-gray-600/15 text-gray-500",
-};
+// ── Category badge ─────────────────────────────────────────────────────────────
+// Step C: category colour-coding neutralised to a single ink chip; the label
+// carries the meaning. Amount direction is still state-coloured in TxRow.
+const CAT_CHIP = "bg-[var(--surface-inset)] text-[var(--text-secondary)]";
 
 // Income, Transfer, Interest excluded — not relevant for credit card review
 const ALL_CATEGORIES: TransactionCategory[] = [
   "Groceries","Dining","Shopping","Travel","Subscriptions","Utilities","Payment","Other",
 ];
 
+// Score-range legend — a reference data-visualisation of the FICO bands; the
+// dot colours are preserved as viz (not card chrome).
 const SCORE_RANGES = [
   { label: "Poor",        range: "300–579", color: "bg-red-500"     },
   { label: "Fair",        range: "580–669", color: "bg-orange-400"  },
@@ -74,10 +66,18 @@ function formatDate(iso: string | null): string {
 }
 
 // ── Utilization bar color ─────────────────────────────────────────────────────
+// Status data-viz for the utilisation fill — preserved as a health gauge.
 function utilColor(pct: number) {
   if (pct >= 70) return "bg-red-500";
   if (pct >= 30) return "bg-yellow-400";
   return "bg-emerald-400";
+}
+
+// Utilisation text tone → Atlas accents (high = negative, mid = neutral, low = positive).
+function utilTextColor(pct: number): string {
+  if (pct >= 70) return "var(--accent-negative)";
+  if (pct >= 30) return "var(--text-secondary)";
+  return "var(--accent-positive)";
 }
 
 // ── Day-of-month ordinal (1st, 2nd, 3rd, 15th, ...) ───────────────────────────
@@ -106,6 +106,10 @@ interface Props {
   accounts:      Account[];       // debt accounts only
   transactions:  Transaction[];   // debt account transactions
 }
+
+// Shared input styling (Atlas tokens).
+const INPUT_CLS = "focus:outline-none focus:border-[var(--accent-info)] transition-colors placeholder:text-[var(--text-faint)]";
+const inputStyle: React.CSSProperties = { background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-primary)" };
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions }: Props) {
@@ -428,26 +432,26 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-white">Credit</h1>
+      <h1 className="text-2xl font-bold" style={{ color: "var(--text-primary)" }}>Credit</h1>
 
       {/* ── 1. FICO score — always at top ── */}
       <section className="space-y-4">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <FicoCard score={score} lastUpdated={formatDate(updatedAt)} />
           {/* ── Update Your Score — collapsible ── */}
-          <Card>
+          <DataCard>
             <button
               onClick={() => setUpdateScoreOpen((v) => !v)}
               className="w-full flex items-center justify-between gap-2 touch-manipulation"
             >
               <div className="flex items-center gap-2">
-                <ShieldCheck size={15} className="text-blue-400" />
-                <CardTitle>Update Your Score</CardTitle>
+                <ShieldCheck size={15} style={{ color: "var(--accent-info)" }} />
+                <DataCardTitle>Update Your Score</DataCardTitle>
               </div>
               <ChevronDown
                 size={15}
-                className="text-gray-500 transition-transform duration-200 shrink-0"
-                style={{ transform: updateScoreOpen ? "rotate(180deg)" : "rotate(0deg)" }}
+                className="transition-transform duration-200 shrink-0"
+                style={{ color: "var(--text-muted)", transform: updateScoreOpen ? "rotate(180deg)" : "rotate(0deg)" }}
               />
             </button>
             <div
@@ -455,11 +459,11 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
               style={{ maxHeight: updateScoreOpen ? 400 : 0, opacity: updateScoreOpen ? 1 : 0 }}
             >
               <div className="pt-4 space-y-3">
-                <p className="text-xs text-gray-400">
+                <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
                   Check your free FICO score via Chase, Amex, or Experian and enter it here. Updating monthly keeps your dashboard accurate.
                 </p>
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1.5">FICO Score (300–850)</label>
+                  <label className="block text-xs mb-1.5" style={{ color: "var(--text-secondary)" }}>FICO Score (300–850)</label>
                   <input
                     type="text" inputMode="decimal" pattern="[0-9]*"
                     value={inputVal}
@@ -471,42 +475,42 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                       if (!isNaN(n)) setInputVal(String(Math.max(300, Math.min(850, n))));
                     }}
                     onKeyDown={(e) => e.key === "Enter" && handleSaveFico()}
-                    className={`w-full bg-gray-800 border rounded-xl px-4 py-3 text-white text-lg font-bold focus:outline-none transition-colors ${
-                      ficoError ? "border-red-500 focus:border-red-400" : "border-gray-700 focus:border-blue-500"
+                    className={`w-full border rounded-xl px-4 py-3 text-lg font-bold placeholder:text-[var(--text-faint)] focus:outline-none transition-colors ${
+                      ficoError ? "focus:border-[var(--accent-negative)]" : "focus:border-[var(--accent-info)]"
                     }`}
+                    style={{ background: "var(--surface-inset)", borderColor: ficoError ? "var(--accent-negative)" : "var(--border-hairline)", color: "var(--text-primary)" }}
                   />
                   {ficoError && (
-                    <p className="text-xs text-red-400 mt-1">Score must be between 300 and 850.</p>
+                    <p className="text-xs mt-1" style={{ color: "var(--accent-negative)" }}>Score must be between 300 and 850.</p>
                   )}
                 </div>
                 <button
                   onClick={handleSaveFico} disabled={saving || !ficoValid}
-                  className={`flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold transition-all disabled:opacity-60 ${
-                    saved ? "bg-emerald-600 text-white" : "bg-blue-600 hover:bg-blue-500 text-white"
-                  }`}
+                  className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold text-white transition-all disabled:opacity-60"
+                  style={{ background: saved ? "var(--accent-positive)" : "var(--accent-info)" }}
                 >
                   {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
                   {saving ? "Saving…" : saved ? "Saved!" : "Save Score"}
                 </button>
               </div>
             </div>
-          </Card>
+          </DataCard>
         </div>
       </section>
 
       {/* ── 2. Score ranges + tips — individually collapsible ── */}
       <div className="space-y-3">
         {/* Score Ranges */}
-        <Card>
+        <DataCard>
           <button
             onClick={() => setRangesOpen((v) => !v)}
             className="w-full flex items-center justify-between touch-manipulation"
           >
-            <CardTitle>Score Ranges</CardTitle>
+            <DataCardTitle>Score Ranges</DataCardTitle>
             <ChevronDown
               size={15}
-              className="text-gray-500 transition-transform duration-200 shrink-0"
-              style={{ transform: rangesOpen ? "rotate(180deg)" : "rotate(0deg)" }}
+              className="transition-transform duration-200 shrink-0"
+              style={{ color: "var(--text-muted)", transform: rangesOpen ? "rotate(180deg)" : "rotate(0deg)" }}
             />
           </button>
           <div
@@ -520,27 +524,27 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                 return (
                   <div key={label} className="flex items-center gap-3">
                     <div className={`w-3 h-3 rounded-full shrink-0 ${color}`} />
-                    <span className="text-sm text-white font-medium w-24">{label}</span>
-                    <span className="text-sm text-gray-400">{range}</span>
-                    {active && <span className="text-xs font-semibold text-blue-400 ml-auto">← You</span>}
+                    <span className="text-sm font-medium w-24" style={{ color: "var(--text-primary)" }}>{label}</span>
+                    <span className="text-sm" style={{ color: "var(--text-secondary)" }}>{range}</span>
+                    {active && <span className="text-xs font-semibold ml-auto" style={{ color: "var(--accent-info)" }}>← You</span>}
                   </div>
                 );
               })}
             </div>
           </div>
-        </Card>
+        </DataCard>
 
         {/* How to Improve */}
-        <Card>
+        <DataCard>
           <button
             onClick={() => setTipsOpen((v) => !v)}
             className="w-full flex items-center justify-between touch-manipulation"
           >
-            <CardTitle>How to Improve</CardTitle>
+            <DataCardTitle>How to Improve</DataCardTitle>
             <ChevronDown
               size={15}
-              className="text-gray-500 transition-transform duration-200 shrink-0"
-              style={{ transform: tipsOpen ? "rotate(180deg)" : "rotate(0deg)" }}
+              className="transition-transform duration-200 shrink-0"
+              style={{ color: "var(--text-muted)", transform: tipsOpen ? "rotate(180deg)" : "rotate(0deg)" }}
             />
           </button>
           <div
@@ -555,48 +559,48 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                 "Limit hard inquiries — only apply for new credit when needed.",
                 "Diversify credit types (credit cards, installment loans).",
               ].map((tip, i) => (
-                <p key={i} className="text-sm text-gray-400 pl-3 border-l border-gray-700">{tip}</p>
+                <p key={i} className="text-sm pl-3 border-l" style={{ color: "var(--text-secondary)", borderColor: "var(--border-hairline)" }}>{tip}</p>
               ))}
             </div>
           </div>
-        </Card>
+        </DataCard>
       </div>
 
       {/* ── 3. Utilization summary (limited cards only, excl. charge cards) ── */}
       {limitedCards.length > 0 && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Card>
-            <CardTitle>Total Used</CardTitle>
-            <p className="text-2xl font-bold text-red-400 mt-1">{fmtUSD(totalUsed)}</p>
-            <p className="text-xs text-gray-500 mt-1">{cards.length} card{cards.length !== 1 ? "s" : ""}</p>
-          </Card>
-          <Card>
-            <CardTitle>Total Limit</CardTitle>
-            <p className="text-2xl font-bold text-white mt-1">{fmtUSD(totalLimit)}</p>
-            <p className="text-xs text-gray-500 mt-1">Combined credit</p>
-          </Card>
-          <Card>
-            <CardTitle>Available</CardTitle>
-            <p className="text-2xl font-bold text-emerald-400 mt-1">{fmtUSD(totalAvailable)}</p>
-            <p className="text-xs text-gray-500 mt-1">Limit minus balance</p>
-          </Card>
-          <Card>
-            <CardTitle>Utilization</CardTitle>
-            <p className={`text-2xl font-bold mt-1 ${overallUtil >= 70 ? "text-red-400" : overallUtil >= 30 ? "text-yellow-400" : "text-emerald-400"}`}>
+          <DataCard>
+            <DataCardTitle>Total Used</DataCardTitle>
+            <p className="text-2xl font-bold mt-1" style={{ color: "var(--accent-negative)" }}>{fmtUSD(totalUsed)}</p>
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{cards.length} card{cards.length !== 1 ? "s" : ""}</p>
+          </DataCard>
+          <DataCard>
+            <DataCardTitle>Total Limit</DataCardTitle>
+            <p className="text-2xl font-bold mt-1" style={{ color: "var(--text-primary)" }}>{fmtUSD(totalLimit)}</p>
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Combined credit</p>
+          </DataCard>
+          <DataCard>
+            <DataCardTitle>Available</DataCardTitle>
+            <p className="text-2xl font-bold mt-1" style={{ color: "var(--accent-positive)" }}>{fmtUSD(totalAvailable)}</p>
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Limit minus balance</p>
+          </DataCard>
+          <DataCard>
+            <DataCardTitle>Utilization</DataCardTitle>
+            <p className="text-2xl font-bold mt-1" style={{ color: utilTextColor(overallUtil) }}>
               {overallUtil.toFixed(1)}%
             </p>
-            <div className="w-full h-1.5 bg-gray-800 rounded-full mt-2 overflow-hidden">
+            <div className="w-full h-1.5 rounded-full mt-2 overflow-hidden" style={{ background: "var(--surface-inset)" }}>
               <div className={`h-full rounded-full transition-all ${utilColor(overallUtil)}`} style={{ width: `${Math.min(overallUtil, 100)}%` }} />
             </div>
-          </Card>
+          </DataCard>
         </div>
       )}
 
       {/* ── 4. Debt breakdown donut (shared widget, same as space debt dashboard) ── */}
       {accounts.length > 0 && (
         <section className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 px-1">Breakdown</p>
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4">
+          <p className="text-xs font-semibold uppercase tracking-widest px-1" style={{ color: "var(--text-muted)" }}>Breakdown</p>
+          <div className="border rounded-2xl p-4" style={{ background: "var(--surface-muted)", borderColor: "var(--border-hairline)" }}>
             {renderDebtBreakdownChart(accounts, "donut", "Add debt accounts to see your debt breakdown.")}
           </div>
         </section>
@@ -605,8 +609,8 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
       {/* ── 5. Payoff planner (shared widget, same as space debt dashboard) ── */}
       {accounts.filter((a) => a.balance > 0).length > 0 && (
         <section className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 px-1">Payoff Planner</p>
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+          <p className="text-xs font-semibold uppercase tracking-widest px-1" style={{ color: "var(--text-muted)" }}>Payoff Planner</p>
+          <div className="border rounded-2xl overflow-hidden" style={{ background: "var(--surface-muted)", borderColor: "var(--border-hairline)" }}>
             {renderDebtPayoffCalculator(accounts)}
           </div>
         </section>
@@ -615,7 +619,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
       {/* ── 6. Per-card breakdown ── */}
       {cards.length > 0 && (
         <section className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 px-1">Cards</p>
+          <p className="text-xs font-semibold uppercase tracking-widest px-1" style={{ color: "var(--text-muted)" }}>Cards</p>
           <div className="space-y-3">
             {cards.map((card) => {
               const isCredit       = card.balance < 0;
@@ -632,9 +636,8 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
               return (
                 <div
                   key={card.id}
-                  className={`rounded-2xl border transition-all ${
-                    isSelected ? "border-blue-500 bg-blue-500/5" : "border-gray-800 bg-gray-900/60 hover:border-gray-700"
-                  }`}
+                  className="rounded-2xl border transition-all"
+                  style={{ borderColor: isSelected ? "var(--accent-info)" : "var(--border-hairline)", background: "var(--surface-muted)" }}
                 >
                   {/* Card header */}
                   <button
@@ -642,32 +645,32 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                     className="w-full flex items-center justify-between px-4 py-4 text-left touch-manipulation select-none"
                   >
                     <div className="flex items-center gap-3">
-                      <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${isSelected ? "bg-blue-500/20" : "bg-gray-800"}`}>
-                        <CreditCard size={16} className={isSelected ? "text-blue-400" : "text-gray-400"} />
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: isSelected ? "var(--surface-hover-strong)" : "var(--surface-inset)" }}>
+                        <CreditCard size={16} style={{ color: isSelected ? "var(--accent-info)" : "var(--text-secondary)" }} />
                       </div>
                       <div>
                         <div className="flex items-center gap-2 flex-wrap">
-                          <p className="text-sm font-semibold text-white leading-tight">{card.name}</p>
+                          <p className="text-sm font-semibold leading-tight" style={{ color: "var(--text-primary)" }}>{card.name}</p>
                           {isCredit && (
-                            <span className="text-xs bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                            <span className="text-xs border px-1.5 py-0.5 rounded-full whitespace-nowrap" style={{ background: "rgba(34,197,94,0.15)", color: "var(--accent-positive)", borderColor: "rgba(34,197,94,0.20)" }}>
                               Owes you
                             </span>
                           )}
                           {subtypeLabel && (
-                            <span className="text-xs bg-gray-800 text-gray-400 border border-gray-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                            <span className="text-xs border px-1.5 py-0.5 rounded-full whitespace-nowrap" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)", borderColor: "var(--border-hairline)" }}>
                               {subtypeLabel}
                             </span>
                           )}
                         </div>
-                        <p className="text-xs text-gray-500 mt-0.5">{card.institution}</p>
+                        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{card.institution}</p>
                       </div>
                     </div>
                     <div className="text-right">
-                      <p className={`text-sm font-bold tabular-nums ${isCredit ? "text-emerald-400" : "text-red-400"}`}>
+                      <p className="text-sm font-bold tabular-nums" style={{ color: isCredit ? "var(--accent-positive)" : "var(--accent-negative)" }}>
                         {isCredit ? `+${fmtUSD(used)}` : `−${fmtUSD(used)}`}
                       </p>
                       {revolving && !isCredit && limit && (
-                        <p className="text-xs text-gray-500 mt-0.5">of {fmtUSD(limit)}</p>
+                        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>of {fmtUSD(limit)}</p>
                       )}
                     </div>
                   </button>
@@ -677,12 +680,12 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                     {util !== null && (
                       <div>
                         <div className="flex justify-between text-xs mb-1.5">
-                          <span className={`font-semibold ${util >= 70 ? "text-red-400" : util >= 30 ? "text-yellow-400" : "text-emerald-400"}`}>
+                          <span className="font-semibold" style={{ color: utilTextColor(util) }}>
                             {util.toFixed(1)}% used
                           </span>
-                          <span className="text-gray-500">{fmtUSD(available ?? 0)} available</span>
+                          <span style={{ color: "var(--text-muted)" }}>{fmtUSD(available ?? 0)} available</span>
                         </div>
-                        <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
+                        <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "var(--surface-inset)" }}>
                           <div className={`h-full rounded-full transition-all ${utilColor(util)}`} style={{ width: `${Math.min(util, 100)}%` }} />
                         </div>
                       </div>
@@ -693,44 +696,44 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                       <div className="flex items-center gap-4 flex-wrap">
                         {card.interestRate != null && (
                           <div>
-                            <p className="text-[10px] text-gray-600 uppercase tracking-widest">APR</p>
-                            <p className="text-sm font-semibold text-orange-400">{card.interestRate.toFixed(2)}%</p>
+                            <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-faint)" }}>APR</p>
+                            <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{card.interestRate.toFixed(2)}%</p>
                           </div>
                         )}
                         {card.minimumPayment != null && (
                           <div>
-                            <p className="text-[10px] text-gray-600 uppercase tracking-widest">
+                            <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-faint)" }}>
                               {card.minimumPaymentIsEstimated ? "Est. Min Payment" : "Min Payment"}
                             </p>
-                            <p className="text-sm font-semibold text-white">
+                            <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
                               {fmtUSD(card.minimumPayment)}/mo
                             </p>
                           </div>
                         )}
                         {card.debtProfile?.dueDay && (
                           <div>
-                            <p className="text-[10px] text-gray-600 uppercase tracking-widest">Due</p>
-                            <p className="text-sm font-semibold text-gray-300">{ordinal(card.debtProfile.dueDay)}</p>
+                            <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-faint)" }}>Due</p>
+                            <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>{ordinal(card.debtProfile.dueDay)}</p>
                           </div>
                         )}
                         {card.debtProfile?.statementCloseDay && (
                           <div>
-                            <p className="text-[10px] text-gray-600 uppercase tracking-widest">Statement Close</p>
-                            <p className="text-sm font-semibold text-gray-300">{ordinal(card.debtProfile.statementCloseDay)}</p>
+                            <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-faint)" }}>Statement Close</p>
+                            <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>{ordinal(card.debtProfile.statementCloseDay)}</p>
                           </div>
                         )}
                       </div>
                     )}
                     {card.minimumPaymentIsEstimated && card.minimumPayment != null && (
-                      <p className="text-xs text-gray-500">
+                      <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                         Estimated minimum payment — not provided by your issuer. Enter an exact amount in debt details for accuracy.
                       </p>
                     )}
                     {card.debtProfile?.promoAprEndDate && (
-                      <p className="text-xs text-yellow-400">Promo APR ends {formatDate(card.debtProfile.promoAprEndDate)}</p>
+                      <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Promo APR ends {formatDate(card.debtProfile.promoAprEndDate)}</p>
                     )}
                     {card.debtProfile?.notes && (
-                      <p className="text-xs text-gray-500 italic truncate">&quot;{card.debtProfile.notes}&quot;</p>
+                      <p className="text-xs italic truncate" style={{ color: "var(--text-muted)" }}>&quot;{card.debtProfile.notes}&quot;</p>
                     )}
 
                     {/* Limit edit row — revolving only */}
@@ -747,30 +750,33 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                                 if (e.key === "Enter") handleSaveLimit(card.id);
                                 if (e.key === "Escape") setEditingLimitId(null);
                               }}
-                              className="flex-1 bg-gray-800 border border-gray-600 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                              className={`flex-1 border rounded-xl px-3 py-2 text-sm ${INPUT_CLS}`}
+                              style={inputStyle}
                             />
                             <button
                               onClick={() => handleSaveLimit(card.id)} disabled={savingLimit}
-                              className="flex items-center gap-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60 px-3 py-2 rounded-xl transition-colors"
+                              className="flex items-center gap-1 text-xs font-semibold text-white disabled:opacity-60 px-3 py-2 rounded-xl transition-colors"
+                              style={{ background: "var(--accent-info)" }}
                             >
                               {savingLimit ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
                               Save
                             </button>
-                            <button onClick={() => setEditingLimitId(null)} className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-xl transition-colors">
+                            <button onClick={() => setEditingLimitId(null)} className="p-2 hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] rounded-xl transition-colors" style={{ color: "var(--text-muted)" }}>
                               <X size={14} />
                             </button>
                           </div>
                         ) : (
                           <button
                             onClick={(e) => { e.stopPropagation(); setEditingLimitId(card.id); setLimitInput(card.creditLimit ? String(card.creditLimit) : ""); }}
-                            className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-white hover:bg-gray-800 px-2.5 py-1.5 rounded-lg transition-colors"
+                            className="flex items-center gap-1.5 text-xs font-medium hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] px-2.5 py-1.5 rounded-lg transition-colors"
+                            style={{ color: "var(--text-muted)" }}
                           >
                             <Pencil size={11} />
                             {card.creditLimit ? "Edit limit" : "Set limit"}
                           </button>
                         )}
                         {isSelected && (
-                          <span className="ml-auto text-xs text-blue-400 flex items-center gap-1">
+                          <span className="ml-auto text-xs flex items-center gap-1" style={{ color: "var(--accent-info)" }}>
                             <Check size={9} /> filtering transactions
                           </span>
                         )}
@@ -783,71 +789,79 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                     <div className="flex flex-col gap-1.5">
                       {editingDebtId === card.id ? (
                         <div
-                          className="space-y-2 bg-gray-800/40 border border-gray-700 rounded-xl p-3"
+                          className="space-y-2 border rounded-xl p-3"
+                          style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}
                           onClick={(e) => e.stopPropagation()}
                         >
                           <div className="grid grid-cols-2 gap-2">
                             <div>
-                              <label className="block text-[10px] text-gray-500 mb-1">APR %</label>
+                              <label className="block text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>APR %</label>
                               <input
                                 type="text" inputMode="decimal" placeholder="e.g. 24.99"
                                 value={debtForm.apr}
                                 onChange={(e) => setDebtForm((f) => ({ ...f, apr: e.target.value }))}
-                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                                className={`w-full border rounded-lg px-2.5 py-1.5 text-sm ${INPUT_CLS}`}
+                                style={inputStyle}
                               />
                             </div>
                             <div>
-                              <label className="block text-[10px] text-gray-500 mb-1">Min Payment $</label>
+                              <label className="block text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>Min Payment $</label>
                               <input
                                 type="text" inputMode="decimal" placeholder="Auto-estimated if blank"
                                 value={debtForm.minimumPayment}
                                 onChange={(e) => setDebtForm((f) => ({ ...f, minimumPayment: e.target.value }))}
-                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                                className={`w-full border rounded-lg px-2.5 py-1.5 text-sm ${INPUT_CLS}`}
+                                style={inputStyle}
                               />
                             </div>
                             <div>
-                              <label className="block text-[10px] text-gray-500 mb-1">Due Day (1–31)</label>
+                              <label className="block text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>Due Day (1–31)</label>
                               <input
                                 type="text" inputMode="numeric" placeholder="e.g. 15"
                                 value={debtForm.dueDay}
                                 onChange={(e) => setDebtForm((f) => ({ ...f, dueDay: e.target.value }))}
-                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                                className={`w-full border rounded-lg px-2.5 py-1.5 text-sm ${INPUT_CLS}`}
+                                style={inputStyle}
                               />
                             </div>
                             <div>
-                              <label className="block text-[10px] text-gray-500 mb-1">Statement Close Day</label>
+                              <label className="block text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>Statement Close Day</label>
                               <input
                                 type="text" inputMode="numeric" placeholder="e.g. 28"
                                 value={debtForm.statementCloseDay}
                                 onChange={(e) => setDebtForm((f) => ({ ...f, statementCloseDay: e.target.value }))}
-                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                                className={`w-full border rounded-lg px-2.5 py-1.5 text-sm ${INPUT_CLS}`}
+                                style={inputStyle}
                               />
                             </div>
                             <div>
-                              <label className="block text-[10px] text-gray-500 mb-1">Promo APR Ends</label>
+                              <label className="block text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>Promo APR Ends</label>
                               <input
                                 type="date"
                                 value={debtForm.promoAprEndDate}
                                 onChange={(e) => setDebtForm((f) => ({ ...f, promoAprEndDate: e.target.value }))}
-                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors"
+                                className={`w-full border rounded-lg px-2.5 py-1.5 text-sm ${INPUT_CLS}`}
+                                style={inputStyle}
                               />
                             </div>
                             <div className="col-span-2">
-                              <label className="block text-[10px] text-gray-500 mb-1">Notes</label>
+                              <label className="block text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>Notes</label>
                               <input
                                 type="text" placeholder="Optional"
                                 value={debtForm.notes}
                                 onChange={(e) => setDebtForm((f) => ({ ...f, notes: e.target.value }))}
-                                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                                className={`w-full border rounded-lg px-2.5 py-1.5 text-sm ${INPUT_CLS}`}
+                                style={inputStyle}
                               />
                             </div>
                           </div>
-                          {debtError && <p className="text-xs text-red-400">{debtError}</p>}
+                          {debtError && <p className="text-xs" style={{ color: "var(--accent-negative)" }}>{debtError}</p>}
                           <div className="flex gap-2">
                             <button
                               onClick={() => handleSaveDebtProfile(card.id)}
                               disabled={savingDebt}
-                              className="flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60 px-3 py-2 rounded-xl transition-colors"
+                              className="flex items-center justify-center gap-1.5 flex-1 text-xs font-semibold text-white disabled:opacity-60 px-3 py-2 rounded-xl transition-colors"
+                              style={{ background: "var(--accent-info)" }}
                             >
                               {savingDebt ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
                               Save
@@ -855,7 +869,8 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                             <button
                               onClick={() => { setEditingDebtId(null); setDebtError(null); }}
                               disabled={savingDebt}
-                              className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-xl transition-colors"
+                              className="p-2 hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] rounded-xl transition-colors"
+                              style={{ color: "var(--text-muted)" }}
                             >
                               <X size={14} />
                             </button>
@@ -864,7 +879,8 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                       ) : (
                         <button
                           onClick={(e) => { e.stopPropagation(); openDebtEditor(card); }}
-                          className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-white hover:bg-gray-800 px-2.5 py-1.5 rounded-lg transition-colors self-start"
+                          className="flex items-center gap-1.5 text-xs font-medium hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] px-2.5 py-1.5 rounded-lg transition-colors self-start"
+                          style={{ color: "var(--text-muted)" }}
                         >
                           <Pencil size={11} />
                           {card.debtProfile ? "Edit debt details" : "Add debt details"}
@@ -882,7 +898,8 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                               value={subtypeInput}
                               onChange={(e) => { setSubtypeInput(e.target.value); setSubtypeError(null); }}
                               disabled={savingSubtype}
-                              className="flex-1 bg-gray-800 border border-gray-600 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors"
+                              className={`flex-1 border rounded-xl px-3 py-2 text-sm ${INPUT_CLS}`}
+                              style={inputStyle}
                             >
                               <option value="" disabled>Select type…</option>
                               {DEBT_SUBTYPES.map((s) => (
@@ -892,20 +909,22 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                             <button
                               onClick={() => handleSaveSubtype(card.id)}
                               disabled={savingSubtype || !subtypeInput}
-                              className="flex items-center gap-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-2 rounded-xl transition-colors"
+                              className="flex items-center gap-1 text-xs font-semibold text-white disabled:opacity-50 px-3 py-2 rounded-xl transition-colors"
+                              style={{ background: "var(--accent-info)" }}
                             >
                               {savingSubtype ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
                               Save
                             </button>
                             <button
                               onClick={() => { setEditingSubtypeId(null); setSubtypeInput(""); setSubtypeError(null); }}
-                              className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-xl transition-colors"
+                              className="p-2 hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] rounded-xl transition-colors"
+                              style={{ color: "var(--text-muted)" }}
                             >
                               <X size={14} />
                             </button>
                           </div>
                           {subtypeError && (
-                            <p className="text-xs text-red-400 px-1">{subtypeError}</p>
+                            <p className="text-xs px-1" style={{ color: "var(--accent-negative)" }}>{subtypeError}</p>
                           )}
                         </>
                       ) : (
@@ -917,13 +936,14 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                               setSubtypeInput(card.debtSubtype ?? "");
                               setSubtypeError(null);
                             }}
-                            className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-white hover:bg-gray-800 px-2.5 py-1.5 rounded-lg transition-colors"
+                            className="flex items-center gap-1.5 text-xs font-medium hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] px-2.5 py-1.5 rounded-lg transition-colors"
+                            style={{ color: "var(--text-muted)" }}
                           >
                             <Pencil size={11} />
                             {card.debtSubtype ? "Change type" : "Set account type"}
                           </button>
                           {!revolving && isSelected && (
-                            <span className="ml-auto text-xs text-blue-400 flex items-center gap-1">
+                            <span className="ml-auto text-xs flex items-center gap-1" style={{ color: "var(--accent-info)" }}>
                               <Check size={9} /> filtering transactions
                             </span>
                           )}
@@ -948,11 +968,10 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
               <button
                 key={p}
                 onClick={() => setDatePreset(p)}
-                className={`text-xs font-semibold px-4 py-2.5 rounded-full border transition-colors touch-manipulation ${
-                  datePreset === p
-                    ? "bg-blue-600 border-blue-500 text-white"
-                    : "bg-gray-900 border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white"
-                }`}
+                className="text-xs font-semibold px-4 py-2.5 rounded-full border transition-colors touch-manipulation"
+                style={datePreset === p
+                  ? { background: "var(--accent-info)", borderColor: "var(--accent-info)", color: "#fff" }
+                  : { background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}
               >
                 {p === "all" ? "All" : p === "7d" ? "7D" : p.toUpperCase()}
               </button>
@@ -960,19 +979,19 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
           </div>
 
           {/* ── Compact card ── */}
-          <Card className="!p-0 overflow-hidden">
+          <DataCard padding="0" className="overflow-hidden">
             {/* Card header */}
-            <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-gray-800">
+            <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b" style={{ borderColor: "var(--border-hairline)" }}>
               <div className="flex items-center gap-2 flex-wrap">
-                <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">Transactions</p>
+                <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Transactions</p>
                 {selectedCard && (
-                  <span className="text-xs bg-blue-500/15 text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <span className="text-xs border px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: "var(--surface-inset)", color: "var(--accent-info)", borderColor: "var(--border-hairline)" }}>
                     {selectedCard.name}
-                    <button onClick={() => setSelectedCardId(null)} className="hover:text-white ml-0.5"><X size={10} /></button>
+                    <button onClick={() => setSelectedCardId(null)} className="hover:text-[var(--text-primary)] ml-0.5"><X size={10} /></button>
                   </span>
                 )}
                 {totalDebtPaid > 0 && (
-                  <span className="text-xs font-semibold text-yellow-400">
+                  <span className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>
                     Total Debt Paid: {fmtFull(totalDebtPaid)}
                   </span>
                 )}
@@ -980,7 +999,8 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
               {baseTxs.length > COMPACT_ROWS && (
                 <button
                   onClick={() => { setModalPage(0); setShowTxModal(true); }}
-                  className="text-xs font-semibold text-blue-400 hover:text-blue-300 transition-colors shrink-0 ml-2 touch-manipulation px-2 py-2"
+                  className="text-xs font-semibold transition-colors shrink-0 ml-2 touch-manipulation px-2 py-2"
+                  style={{ color: "var(--accent-info)" }}
                 >
                   Show more
                 </button>
@@ -989,82 +1009,86 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
 
             {/* 4-row compact list */}
             {baseTxs.length === 0 ? (
-              <p className="text-sm text-gray-500 text-center py-10">No transactions in this range.</p>
+              <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>No transactions in this range.</p>
             ) : (
-              <div className="divide-y divide-gray-800">
+              <div className="divide-y divide-[var(--border-hairline)]">
                 {compactSlice.map((tx) => <TxRow key={tx.id} tx={tx} cards={cards} selectedCardId={selectedCardId} />)}
               </div>
             )}
-          </Card>
+          </DataCard>
         </section>
       )}
 
       {/* ── Transaction modal ── */}
       {showTxModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setShowTxModal(false)} />
-          <div className="relative bg-gray-900 border border-gray-700 rounded-3xl w-full sm:max-w-2xl max-h-[88dvh] flex flex-col shadow-2xl">
+          <div className="absolute inset-0 backdrop-blur-sm" style={{ background: "var(--scrim)" }} onClick={() => setShowTxModal(false)} />
+          <div className="relative border rounded-3xl w-full sm:max-w-2xl max-h-[88dvh] flex flex-col shadow-2xl" style={{ background: "var(--modal-surface)", borderColor: "var(--border-hairline-strong)" }}>
 
             {/* Modal header */}
-            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800 shrink-0">
-              <p className="text-sm font-bold text-white">All Transactions</p>
-              <button onClick={() => setShowTxModal(false)} className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-800 rounded-xl transition-colors">
+            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
+              <p className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>All Transactions</p>
+              <button onClick={() => setShowTxModal(false)} className="p-1.5 hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] rounded-xl transition-colors" style={{ color: "var(--text-muted)" }}>
                 <X size={16} />
               </button>
             </div>
 
             {/* Modal filters */}
-            <div className="px-5 py-3 border-b border-gray-800 space-y-2 shrink-0">
+            <div className="px-5 py-3 border-b space-y-2 shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
               <div className="relative">
-                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--text-muted)" }} />
                 <input
                   type="text" placeholder="Search…" value={search}
                   onChange={(e) => { setSearch(e.target.value); setModalPage(0); }}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-xl pl-8 pr-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+                  className={`w-full border rounded-xl pl-8 pr-3 py-2 text-sm ${INPUT_CLS}`}
+                  style={inputStyle}
                 />
-                {search && <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"><X size={12} /></button>}
+                {search && <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-primary)]" style={{ color: "var(--text-muted)" }}><X size={12} /></button>}
               </div>
               <select
                 value={catFilter ?? ""}
                 onChange={(e) => { setCatFilter((e.target.value as TransactionCategory) || null); setModalPage(0); }}
-                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors"
+                className={`w-full border rounded-xl px-3 py-2 text-sm ${INPUT_CLS}`}
+                style={inputStyle}
               >
                 <option value="">All categories</option>
                 {ALL_CATEGORIES.map((c) => (
                   <option key={c} value={c}>{c}</option>
                 ))}
               </select>
-              <div className="flex items-center gap-1 text-xs text-gray-500">
-                <span className="font-semibold text-white">{filteredTxs.length}</span> transactions
+              <div className="flex items-center gap-1 text-xs" style={{ color: "var(--text-muted)" }}>
+                <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{filteredTxs.length}</span> transactions
                 {totalDebtPaid > 0 && (
-                  <span className="ml-3 font-semibold text-yellow-400">Total Debt Paid: {fmtFull(totalDebtPaid)}</span>
+                  <span className="ml-3 font-semibold" style={{ color: "var(--text-secondary)" }}>Total Debt Paid: {fmtFull(totalDebtPaid)}</span>
                 )}
               </div>
             </div>
 
             {/* Modal list */}
-            <div className="overflow-y-auto flex-1 divide-y divide-gray-800">
+            <div className="overflow-y-auto flex-1 divide-y divide-[var(--border-hairline)]">
               {pageSlice.length === 0
-                ? <p className="text-sm text-gray-500 text-center py-10">No transactions match your filters.</p>
+                ? <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>No transactions match your filters.</p>
                 : pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} cards={cards} selectedCardId={selectedCardId} />)
               }
             </div>
 
             {/* Modal pagination */}
             {totalPages > 1 && (
-              <div className="flex items-center justify-between px-5 py-3 border-t border-gray-800 shrink-0">
+              <div className="flex items-center justify-between px-5 py-3 border-t shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
                 <button
                   onClick={() => setModalPage((p) => Math.max(0, p - 1))}
                   disabled={modalPage === 0}
-                  className="flex items-center gap-1 text-xs font-semibold text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center gap-1 text-xs font-semibold hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  style={{ color: "var(--text-secondary)" }}
                 >
                   <ChevronLeft size={14} /> Prev
                 </button>
-                <span className="text-xs text-gray-500">{modalPage + 1} / {totalPages}</span>
+                <span className="text-xs" style={{ color: "var(--text-muted)" }}>{modalPage + 1} / {totalPages}</span>
                 <button
                   onClick={() => setModalPage((p) => Math.min(totalPages - 1, p + 1))}
                   disabled={modalPage === totalPages - 1}
-                  className="flex items-center gap-1 text-xs font-semibold text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center gap-1 text-xs font-semibold hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  style={{ color: "var(--text-secondary)" }}
                 >
                   Next <ChevronRight size={14} />
                 </button>
@@ -1075,7 +1099,8 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
             <div className="px-5 pb-5 shrink-0">
               <button
                 onClick={() => setShowTxModal(false)}
-                className="w-full py-3 rounded-2xl text-sm font-semibold text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 transition-colors"
+                className="w-full py-3 rounded-2xl text-sm font-semibold hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors"
+                style={{ color: "var(--text-secondary)", background: "var(--surface-inset)" }}
               >
                 Collapse
               </button>
@@ -1096,26 +1121,25 @@ function TxRow({ tx, cards, selectedCardId }: {
 }) {
   const isCredit = tx.amount > 0;
   const dateObj  = new Date(tx.date + "T12:00:00");
-  const catCls   = CAT_COLORS[tx.category] ?? "bg-gray-600/15 text-gray-500";
   const acctName = cards.find((c) => c.id === tx.accountId)?.name ?? "";
   return (
-    <div className="flex items-center gap-3 px-4 py-3 hover:bg-gray-800/40 transition-colors">
+    <div className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors">
       <div className="w-9 shrink-0 text-center">
-        <p className="text-xs font-semibold text-gray-300 leading-none">{dateObj.toLocaleDateString("en-US", { day: "numeric" })}</p>
-        <p className="text-xs text-gray-600 mt-0.5">{dateObj.toLocaleDateString("en-US", { month: "short" })}</p>
+        <p className="text-xs font-semibold leading-none" style={{ color: "var(--text-secondary)" }}>{dateObj.toLocaleDateString("en-US", { day: "numeric" })}</p>
+        <p className="text-xs mt-0.5" style={{ color: "var(--text-faint)" }}>{dateObj.toLocaleDateString("en-US", { month: "short" })}</p>
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm font-semibold text-white truncate">{tx.merchant}</p>
-          {tx.pending && <span className="text-xs bg-yellow-500/15 text-yellow-400 px-1.5 py-0.5 rounded-full shrink-0">Pending</span>}
+          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{tx.merchant}</p>
+          {tx.pending && <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>Pending</span>}
         </div>
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-          <span className={`text-xs px-1.5 py-0.5 rounded-full ${catCls}`}>{tx.category}</span>
-          {!selectedCardId && <span className="text-xs text-gray-600">{acctName}</span>}
+          <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>{tx.category}</span>
+          {!selectedCardId && <span className="text-xs" style={{ color: "var(--text-faint)" }}>{acctName}</span>}
         </div>
       </div>
       <div className="shrink-0 text-right">
-        <p className={`text-sm font-bold tabular-nums ${isCredit ? "text-emerald-400" : "text-white"}`}>
+        <p className="text-sm font-bold tabular-nums" style={{ color: isCredit ? "var(--accent-positive)" : "var(--text-primary)" }}>
           {isCredit ? "+" : "−"}{fmtFull(tx.amount)}
         </p>
       </div>

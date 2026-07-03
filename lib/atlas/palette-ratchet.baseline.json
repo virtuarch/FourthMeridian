@@ -3,7 +3,6 @@
   "components/dashboard/AddManualAssetModal.tsx": 3,
   "components/dashboard/AdviceBanner.tsx": 46,
   "components/dashboard/DashboardClient.tsx": 88,
-  "components/dashboard/DebtClient.tsx": 146,
   "components/dashboard/FilterBar.tsx": 4,
   "components/dashboard/KnowledgeAcquisitionCard.tsx": 23,
   "components/dashboard/ManageSpaceModal.tsx": 1,
