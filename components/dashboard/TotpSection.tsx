@@ -9,15 +9,27 @@
  *   - Enable 2FA flow: QR code → verification → recovery codes reveal
  *   - Disable 2FA flow: confirmation modal with TOTP or password
  *   - Recovery code count + regeneration
+ *
+ * Modal shells migrated onto the Atlas Glass primitive (FormModal / Dialog →
+ * OverlaySurface) per docs/design-system/ATLAS_GLASS_MODAL_DOCTRINE.md,
+ * migration M2. The previous bespoke shell had no max-height and no scroll
+ * container, so on a short desktop viewport the setup content (QR + code +
+ * recovery codes) was clipped with no way to reach it. The primitive caps
+ * the panel at 88dvh and scrolls the body internally. Dismissal semantics
+ * are preserved: no Escape/backdrop close (preventClose + closeOnBackdrop
+ * false), enforced setup stays non-dismissable, and each step's close
+ * affordance matches the original (hideClose gates the built-in ✕).
  */
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
-  ShieldCheck, ShieldOff, X, Copy, Eye, EyeOff,
+  ShieldCheck, ShieldOff, Copy, Eye, EyeOff,
   Loader2, CheckCircle2, AlertTriangle, Key, RefreshCw, Lock,
 } from "lucide-react";
+import { FormModal } from "@/components/atlas/FormModal";
+import { Dialog } from "@/components/atlas/Dialog";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -96,28 +108,20 @@ function SetupModal({ onClose, onEnabled, enforced = false }: { onClose: () => v
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[var(--scrim)] backdrop-blur-sm">
-      <div className="w-full max-w-md bg-[var(--modal-surface)] border border-[var(--border-hairline)] rounded-2xl shadow-2xl">
-
-        {/* Header */}
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--border-hairline)]">
-          <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
-            <ShieldCheck size={16} className="text-[var(--accent-info)]" />
-          </div>
-          <h3 className="text-sm font-semibold text-white">
-            {modalStep === "qr" ? "Set up two-factor authentication" : "Save your recovery codes"}
-          </h3>
-          {modalStep === "codes" && (
-            <button onClick={() => { onEnabled(); onClose(); }} className="ml-auto text-[var(--text-faint)] hover:text-[var(--text-secondary)]">
-              <X size={16} />
-            </button>
-          )}
-        </div>
-
+    <FormModal
+      open
+      onClose={() => { onEnabled(); onClose(); }}
+      title={modalStep === "qr" ? "Set up two-factor authentication" : "Save your recovery codes"}
+      icon={ShieldCheck}
+      size="sm"
+      preventClose
+      closeOnBackdrop={false}
+      hideClose={modalStep !== "codes"}
+    >
         {/* QR step */}
         {modalStep === "qr" && (
           <>
-            <div className="px-5 py-5 space-y-5">
+            <div className="space-y-5">
               {enforced && (
                 <div className="flex items-start gap-2 p-3 rounded-xl bg-[var(--surface-inset)] border border-[var(--border-hairline)]">
                   <Lock size={13} className="text-[var(--text-secondary)] mt-0.5 shrink-0" />
@@ -220,7 +224,7 @@ function SetupModal({ onClose, onEnabled, enforced = false }: { onClose: () => v
 
         {/* Recovery codes step */}
         {modalStep === "codes" && (
-          <div className="px-5 py-5 space-y-5">
+          <div className="space-y-5">
             <div className="p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20 flex items-start gap-2">
               <CheckCircle2 size={14} className="text-[var(--accent-positive)] mt-0.5 shrink-0" />
               <p className="text-xs text-[var(--accent-positive)] font-medium">Two-factor authentication is now enabled.</p>
@@ -263,8 +267,7 @@ function SetupModal({ onClose, onEnabled, enforced = false }: { onClose: () => v
             </button>
           </div>
         )}
-      </div>
-    </div>
+    </FormModal>
   );
 }
 
@@ -298,17 +301,17 @@ function RegenerateModal({ onClose, onRegenerated }: { onClose: () => void; onRe
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[var(--scrim)] backdrop-blur-sm">
-      <div className="w-full max-w-md bg-[var(--modal-surface)] border border-[var(--border-hairline)] rounded-2xl shadow-2xl">
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--border-hairline)]">
-          <div className="w-8 h-8 rounded-lg bg-[var(--surface-inset)] border border-[var(--border-hairline)] flex items-center justify-center">
-            <RefreshCw size={15} className="text-[var(--text-secondary)]" />
-          </div>
-          <h3 className="text-sm font-semibold text-white">Regenerate recovery codes</h3>
-          {done && <button onClick={onClose} className="ml-auto text-[var(--text-faint)] hover:text-[var(--text-secondary)]"><X size={16} /></button>}
-        </div>
-
-        <div className="px-5 py-5 space-y-4">
+    <FormModal
+      open
+      onClose={onClose}
+      title="Regenerate recovery codes"
+      icon={RefreshCw}
+      size="sm"
+      preventClose
+      closeOnBackdrop={false}
+      hideClose={!done}
+    >
+        <div className="space-y-4">
           {!done ? (
             <>
               <div className="p-3 rounded-xl bg-[var(--surface-inset)] border border-[var(--border-hairline)] text-xs text-[var(--text-secondary)]">
@@ -381,8 +384,7 @@ function RegenerateModal({ onClose, onRegenerated }: { onClose: () => void; onRe
             </>
           )}
         </div>
-      </div>
-    </div>
+    </FormModal>
   );
 }
 
@@ -420,15 +422,17 @@ function DisableModal({ onClose, onDisabled }: { onClose: () => void; onDisabled
   const canSubmit = useTotp ? totpCode.replace(/\s/g, "").length === 6 : password.length > 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[var(--scrim)] backdrop-blur-sm">
-      <div className="w-full max-w-md bg-[var(--modal-surface)] border border-[var(--border-hairline-strong)] rounded-2xl shadow-2xl">
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--border-hairline)]">
-          <AlertTriangle size={16} className="text-[var(--accent-negative)]" />
-          <h3 className="text-sm font-semibold text-white">Disable two-factor authentication</h3>
-          <button onClick={onClose} className="ml-auto text-[var(--text-faint)] hover:text-[var(--text-secondary)]"><X size={16} /></button>
-        </div>
-
-        <div className="px-5 py-5 space-y-4">
+    <Dialog
+      open
+      onClose={onClose}
+      role="alertdialog"
+      title="Disable two-factor authentication"
+      icon={AlertTriangle}
+      size="sm"
+      preventClose
+      closeOnBackdrop={false}
+    >
+        <div className="space-y-4">
           <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/20 text-xs text-[var(--text-secondary)]">
             Disabling 2FA removes the extra layer of protection from your account and deletes all recovery codes.
           </div>
@@ -485,8 +489,7 @@ function DisableModal({ onClose, onDisabled }: { onClose: () => void; onDisabled
             </div>
           </form>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 

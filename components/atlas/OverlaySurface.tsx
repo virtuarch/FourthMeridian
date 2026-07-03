@@ -108,6 +108,13 @@ export interface OverlaySurfaceProps {
   role?: "dialog" | "alertdialog";
   /** Hide the built-in header (caller renders its own inside children). */
   hideHeader?: boolean;
+  /**
+   * Keep the header (title/icon) but omit the built-in close button. For
+   * flows whose dismissal is only via explicit in-content actions, or that
+   * must not be dismissable at a given step (e.g. enforced 2FA setup). Pair
+   * with preventClose to also block Escape / backdrop.
+   */
+  hideClose?: boolean;
   /** Restrained ambient bloom, passed through to GlassPanel. */
   glow?: "none" | "meridian" | "brass" | "coral" | "violet" | "ai";
   /**
@@ -150,6 +157,7 @@ export function OverlaySurface({
   closeOnBackdrop,
   role = "dialog",
   hideHeader = false,
+  hideClose = false,
   glow = "none",
   zIndex,
   className = "",
@@ -314,14 +322,16 @@ export function OverlaySurface({
                   )}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={onClose}
-                aria-label="Close"
-                className="w-8 h-8 flex items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
-              >
-                <X size={16} />
-              </button>
+              {!hideClose && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  aria-label="Close"
+                  className="w-8 h-8 flex items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
+                >
+                  <X size={16} />
+                </button>
+              )}
             </div>
           )}
 
