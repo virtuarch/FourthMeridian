@@ -110,6 +110,14 @@ export interface OverlaySurfaceProps {
   hideHeader?: boolean;
   /** Restrained ambient bloom, passed through to GlassPanel. */
   glow?: "none" | "meridian" | "brass" | "coral" | "violet" | "ai";
+  /**
+   * Explicit stacking override. Defaults to the --z-modal token. Used to
+   * raise this surface above another, not-yet-migrated overlay during the
+   * modal-doctrine transition (e.g. AddWalletModal opened from within the
+   * still-legacy CreateSpaceModal, which sits at z-[200]). Prefer the named
+   * token layers once all hosting modals are on the primitive.
+   */
+  zIndex?: number;
   className?: string;
 }
 
@@ -143,6 +151,7 @@ export function OverlaySurface({
   role = "dialog",
   hideHeader = false,
   glow = "none",
+  zIndex,
   className = "",
 }: OverlaySurfaceProps) {
   const [mounted, setMounted] = useState(false);
@@ -255,7 +264,7 @@ export function OverlaySurface({
     <div
       className={`fixed inset-0 flex ${overlayAlign} p-0 sm:p-4`}
       style={{
-        zIndex: "var(--z-modal)" as unknown as number,
+        zIndex: zIndex ?? ("var(--z-modal)" as unknown as number),
         background: "var(--scrim)",
         backdropFilter: "blur(8px)",
         WebkitBackdropFilter: "blur(8px)",
