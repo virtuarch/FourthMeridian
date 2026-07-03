@@ -160,7 +160,7 @@
      between you and the background = less of its color survives). Blur is the
      expensive axis, so only the rare thick/floating tiers carry the big radii. */
   --glass-blur-ultrathin: 14px;  --glass-sat-ultrathin: 185%;  --glass-bright-ultrathin: 1;
-  --glass-blur-thin:      24px;  --glass-sat-thin:      170%;  --glass-bright-thin:      1;
+  --glass-blur-thin:      22px;  --glass-sat-thin:      172%;  --glass-bright-thin:      1;
   --glass-blur-regular:   46px;  --glass-sat-regular:   150%;  --glass-bright-regular:   .99;
   --glass-blur-thick:     68px;  --glass-sat-thick:     138%;  --glass-bright-thick:     .96;
   /* floating — new, rare, most-separated tier (hero / critical only).
@@ -350,8 +350,12 @@ body {
   background-repeat: no-repeat;
   background-size: cover;
   background-position: center 22%;
-  filter: blur(2px) brightness(.52) saturate(1.15);
-  opacity: .6;
+  /* Refraction-test pass (temporary material-eval): sharper + brighter + more
+     saturated than the old "distant, hidden" treatment so continents, city-light
+     texture and the horizon atmosphere read clearly THROUGH the glass — you can't
+     judge refraction against a background you can barely see. */
+  filter: blur(1.1px) brightness(.7) saturate(1.32);
+  opacity: .8;
   animation: atlas-globe-drift 70s var(--ease-standard) infinite alternate;
   will-change: transform;
 }
@@ -360,8 +364,8 @@ body {
 html[data-theme="light"] .atlas-globe-dark  { display: none; }
 html[data-theme="light"] .atlas-globe-light {
   display: block;
-  opacity: .32;
-  filter: blur(2px) brightness(.94) saturate(1.05);
+  opacity: .44;
+  filter: blur(1.1px) brightness(.96) saturate(1.16);
 }
 @keyframes atlas-globe-drift {
   0%   { transform: translateX(-50%) translateY(0)    scale(1);    }
@@ -379,13 +383,26 @@ html[data-theme="light"] .atlas-globe-light {
   width: 108%;
   height: 62%;
   transform: translateX(-50%);
-  color: var(--ink-100);
-  opacity: .14;
+  color: var(--ink-50);
+  /* Refraction-test pass: grid definition raised so the (now denser) meridian
+     lines are the primary "does the glass bend straight lines?" reference. */
+  opacity: .28;
 }
 html[data-theme="light"] .atlas-meridians {
   color: var(--ink-500);
-  opacity: .20;
+  opacity: .32;
 }
+
+/* ---------- Refraction-test intensity (temporary material-eval) ----------
+   The Space Dashboard (primary workspace) uses the full "rich" globe treatment
+   — the default values above. The everyday Dashboard opts into a dialed-back
+   "balanced" variant so the same globe language reads calmer behind data-dense
+   panels without going noisy. Driven by AtlasField's `intensity` prop. */
+.atlas-field.is-balanced .atlas-globe {
+  opacity: .52;
+  filter: blur(1.5px) brightness(.62) saturate(1.18);
+}
+.atlas-field.is-balanced .atlas-meridians { opacity: .17; }
 
 /* ---------- Presence pulse — small "active" status dot ----------
    Very subtle breathing opacity/scale, no glow/box-shadow ring — the
@@ -453,10 +470,10 @@ html[data-theme="light"] .atlas-meridians {
   padding: 1px;
   background: linear-gradient(
     145deg,
-    rgba(255,255,255,calc(.22 * var(--atlas-edge-strength, 1))),
-    rgba(255,255,255,calc(.05 * var(--atlas-edge-strength, 1))) 42%,
-    rgba(255,255,255,0) 60%,
-    rgba(255,255,255,calc(.10 * var(--atlas-edge-strength, 1)))
+    rgba(255,255,255,calc(.34 * var(--atlas-edge-strength, 1))),
+    rgba(255,255,255,calc(.07 * var(--atlas-edge-strength, 1))) 38%,
+    rgba(255,255,255,0) 56%,
+    rgba(255,255,255,calc(.14 * var(--atlas-edge-strength, 1)))
   );
   /* Punch out the interior so only the 1px border band paints. */
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -470,10 +487,10 @@ html[data-theme="light"] .atlas-meridians {
 html[data-theme="light"] .atlas-fresnel-edge::after {
   background: linear-gradient(
     145deg,
-    rgba(255,255,255,calc(.85 * var(--atlas-edge-strength, 1))),
-    rgba(17,21,31,calc(.06 * var(--atlas-edge-strength, 1))) 46%,
-    rgba(17,21,31,0) 60%,
-    rgba(17,21,31,calc(.08 * var(--atlas-edge-strength, 1)))
+    rgba(255,255,255,calc(.95 * var(--atlas-edge-strength, 1))),
+    rgba(17,21,31,calc(.09 * var(--atlas-edge-strength, 1))) 44%,
+    rgba(17,21,31,0) 58%,
+    rgba(17,21,31,calc(.11 * var(--atlas-edge-strength, 1)))
   );
 }
 

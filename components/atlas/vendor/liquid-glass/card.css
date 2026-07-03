@@ -1,0 +1,29 @@
+/* Vendored from @ogtirth/liquid-glass-oss (MIT) — Card styles only.
+   Trimmed from the upstream src/styles.css to just the .lg-card* rules the
+   LiquidGlassCard component uses; every other component's styles
+   (slider/button/dock/toast/…) were intentionally dropped.
+   See VENDORED.md, LICENSE, THIRD_PARTY_NOTICES.md in this folder. */
+.lg-card {
+  position: relative;
+  width: min(380px, 100%);
+  min-height: 220px;
+  color: #fff;
+  isolation: isolate;
+}
+.lg-card.is-draggable { position: fixed; z-index: 3; top: 0; left: 0; touch-action: none; cursor: grab; will-change: transform; }
+.lg-card.is-draggable:active { cursor: grabbing; }
+.lg-card__glass {
+  position: absolute;
+  z-index: 1;
+  left: -24px;
+  top: -12px;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.lg-card__content {
+  position: relative;
+  z-index: 2;
+  min-height: inherit;
+  padding: 24px;
+}

@@ -164,7 +164,10 @@ export function EarthBackground({ children, region, theme = "dark" }: EarthBackg
           bottom: -4%;
           left:  -7.5vw;
           right: -7.5vw;
-          filter: blur(0.8px) brightness(0.66) saturate(1.05);
+          /* Refraction-test pass: sharper + brighter + richer so coastlines and
+             city-light detail read as high-frequency structure to judge glass
+             against; the Brief stays the most cinematic of the three surfaces. */
+          filter: blur(0.4px) brightness(0.74) saturate(1.2);
         }
         .eb-img {
           object-fit: cover;
@@ -185,7 +188,7 @@ export function EarthBackground({ children, region, theme = "dark" }: EarthBackg
             top: -18%;
             left:  -30vw;
             right: -30vw;
-            filter: blur(0.5px) brightness(0.65) saturate(1.08);
+            filter: blur(0.3px) brightness(0.73) saturate(1.22);
           }
           .eb-img { object-position: center ${POSITION_Y.xl}%; }
         }
@@ -238,8 +241,8 @@ export function EarthBackground({ children, region, theme = "dark" }: EarthBackg
         className="absolute inset-0"
         style={{
           background: [
-            `radial-gradient(ellipse 100% 35% at 50% -2%, rgba(80,140,255,0.18) 0%, transparent 65%)`,
-            `radial-gradient(ellipse 60% 25% at ${Math.min(sun.x + 15, 95)}% 5%, rgba(100,180,255,0.10) 0%, transparent 55%)`,
+            `radial-gradient(ellipse 100% 35% at 50% -2%, rgba(80,140,255,0.24) 0%, transparent 65%)`,
+            `radial-gradient(ellipse 60% 25% at ${Math.min(sun.x + 15, 95)}% 5%, rgba(100,180,255,0.14) 0%, transparent 55%)`,
           ].join(", "),
         }}
       />

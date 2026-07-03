@@ -74,13 +74,38 @@ const EDGE_STRENGTH: Record<GlassDepth, number> = {
   floating: 1.5,
 };
 
-// Phase 2 — neutral interior bloom: a soft pool of light INSIDE the pane,
-// positioned toward the same top-left light source as the Fresnel edge. This is
-// NOT the accent `glow` (which is brand-colored and scarce) — it is white and
-// barely there (~7%), and only defaults on for thick/floating so modals and
-// hero surfaces feel genuinely thicker without touching data cards.
+// Phase 3 — DIRECTIONAL interior bloom: a stronger pool of light entering at the
+// top-left source, plus a faint counter-glow where light exits the far bottom-right
+// edge. The two-source asymmetry reads as light passing THROUGH a slab (refraction)
+// rather than a flat, symmetric frost. Still neutral/white and distinct from the
+// brand-colored accent `glow`; defaults on for thick/floating only.
 const INTERIOR_BLOOM =
-  "radial-gradient(135% 115% at 16% -12%, rgba(255,255,255,0.07), transparent 55%)";
+  "radial-gradient(120% 90% at 14% -16%, rgba(255,255,255,0.10), transparent 52%), " +
+  "radial-gradient(90% 80% at 108% 120%, rgba(255,255,255,0.045), transparent 55%)";
+
+// Phase 3 — refraction bevel: the core "bends light" cue, done entirely with inset
+// box-shadows (free — no extra backdrop-filter, no SVG/canvas). Each tier layers a
+// directional bevel (bright top-left = light entry, dark bottom-right = exit) plus,
+// on thicker tiers, a soft inner rim-light (`inset 0 0 …`) that brightens the edges
+// more than the center — countering the "uniform center blur" flatness. Intensity
+// scales with depth so thin stays restrained (DataCard is thin) and thick/floating
+// read as genuinely deeper, more refractive slabs. Theme-neutral (white/black), the
+// same convention the --shadow-e* recipes already use.
+const REFRACTION_BEVEL: Record<GlassDepth, string> = {
+  ultrathin:
+    "inset 1px 1px 0 rgba(255,255,255,.05), inset -1px -1px 0 rgba(0,0,0,.06)",
+  thin:
+    "inset 1px 1px 0 rgba(255,255,255,.06), inset -1px -1px 0 rgba(0,0,0,.09)",
+  regular:
+    "inset 1px 1px 0 rgba(255,255,255,.08), inset -1px -1px 1px rgba(0,0,0,.11), " +
+    "inset 0 0 10px rgba(255,255,255,.03)",
+  thick:
+    "inset 1px 2px 0 rgba(255,255,255,.11), inset -1px -2px 1px rgba(0,0,0,.15), " +
+    "inset 0 0 16px rgba(255,255,255,.04)",
+  floating:
+    "inset 1px 2px 1px rgba(255,255,255,.13), inset -2px -2px 2px rgba(0,0,0,.18), " +
+    "inset 0 0 22px rgba(255,255,255,.05)",
+};
 
 export interface GlassPanelOwnProps {
   as?: ElementType;
@@ -157,7 +182,8 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
           background: `var(--glass-${depth})`,
           backdropFilter: `var(--glass-filter-${depth})`,
           WebkitBackdropFilter: `var(--glass-filter-${depth})`,
-          boxShadow: `var(--shadow-${elevation})`,
+          // Elevation shadow + the Phase 3 depth-scaled refraction bevel/rim-light.
+          boxShadow: `var(--shadow-${elevation}), ${REFRACTION_BEVEL[depth as GlassDepth]}`,
           ...(edge
             ? ({ "--atlas-edge-strength": resolvedEdgeStrength } as CSSProperties)
             : {}),

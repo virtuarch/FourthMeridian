@@ -32,6 +32,8 @@ import type { BriefSection, BriefItem } from "@/lib/brief-types";
 import { SinceLastVisitModal } from "./SinceLastVisitModal";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { TONE_VALUE, TONE_ICON, CATEGORY_ICON, categoryFromItemId } from "@/components/atlas/tones";
+import { AtlasLiquidCard } from "@/components/atlas/AtlasLiquidCard";
+import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 
 // ── Icon map ──────────────────────────────────────────────────────────────────
 
@@ -108,50 +110,69 @@ export function BriefSinceLastVisit({ section }: BriefSinceLastVisitProps) {
     ...Array.from({ length: Math.max(0, TARGET_COLS - items.length) }, () => null as null),
   ].slice(0, TARGET_COLS);
 
+  const ariaLabel = "Since Your Last Visit — click to expand activity";
+  const liquid = useAtlasLiquid();
+
+  // Shared crisp content. The hover-brightening overlay is Atlas-only and
+  // OMITTED on the Liquid path (no Atlas glass stacked on LiquidGlassCard).
+  const content = (
+    <>
+      {!liquid && (
+        <div className="absolute inset-0 bg-transparent group-hover:bg-[var(--surface-hover)] transition-colors duration-300 pointer-events-none z-0" />
+      )}
+
+      {/* Header strip */}
+      <div
+        className="relative z-10 flex items-center justify-between px-6 md:px-8 pt-5 pb-3"
+        style={{ borderBottom: "1px solid var(--border-hairline)" }}
+      >
+        <p className="text-[10px] font-bold tracking-[0.18em] uppercase text-[var(--meridian-400)]/90">
+          {section.title}
+        </p>
+        <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] transition-colors">
+          View activity
+          <ChevronRight className="w-3 h-3" />
+        </span>
+      </div>
+
+      {/* 4-column grid */}
+      <div className="relative z-10 grid grid-cols-2 md:grid-cols-4 divide-x divide-[var(--border-hairline)]">
+        {padded.map((item, i) => (
+          <div key={item?.id ?? `empty-${i}`} className="px-6 md:px-8 py-6">
+            {item ? <ItemColumn item={item} /> : <EmptyColumn />}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+
   return (
     <>
-      {/* Clickable panel */}
-      <GlassPanel
-        as="div"
-        role="button"
-        tabIndex={0}
-        aria-label="Since Your Last Visit — click to expand activity"
-        onClick={handleOpen}
-        onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleOpen(); } }}
-        depth="thin"
-        elevation="e3"
-        radius="lg"
-        interactive
-        className="group cursor-pointer px-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
-      >
-        {/* Hover brightening overlay */}
-        <div className="absolute inset-0 bg-transparent group-hover:bg-[var(--surface-hover)] transition-colors duration-300 pointer-events-none z-0" />
-
-        {/* Header strip */}
-        <div
-          className="relative z-10 flex items-center justify-between px-6 md:px-8 pt-5 pb-3"
-          style={{ borderBottom: "1px solid var(--border-hairline)" }}
+      {/* Liquid supported → LiquidGlassCard material (opens the same modal). */}
+      {liquid ? (
+        <AtlasLiquidCard onClick={handleOpen} ariaLabel={ariaLabel}>
+          {content}
+        </AtlasLiquidCard>
+      ) : (
+        // Fallback → the Atlas Glass panel.
+        <GlassPanel
+          as="div"
+          role="button"
+          tabIndex={0}
+          aria-label={ariaLabel}
+          onClick={handleOpen}
+          onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleOpen(); } }}
+          depth="thin"
+          elevation="e3"
+          radius="lg"
+          interactive
+          className="group cursor-pointer px-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
         >
-          <p className="text-[10px] font-bold tracking-[0.18em] uppercase text-[var(--meridian-400)]/90">
-            {section.title}
-          </p>
-          <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] transition-colors">
-            View activity
-            <ChevronRight className="w-3 h-3" />
-          </span>
-        </div>
+          {content}
+        </GlassPanel>
+      )}
 
-        {/* 4-column grid */}
-        <div className="relative z-10 grid grid-cols-2 md:grid-cols-4 divide-x divide-[var(--border-hairline)]">
-          {padded.map((item, i) => (
-            <div key={item?.id ?? `empty-${i}`} className="px-6 md:px-8 py-6">
-              {item ? <ItemColumn item={item} /> : <EmptyColumn />}
-            </div>
-          ))}
-        </div>
-      </GlassPanel>
-
-      {/* Modal */}
+      {/* Modal — unchanged, shared by both paths */}
       <SinceLastVisitModal
         open={modalOpen}
         onClose={handleClose}

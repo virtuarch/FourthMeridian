@@ -43,11 +43,11 @@ function BriefSkeleton() {
   return (
     <div className="animate-pulse">
       {/* Hero — height scales with BriefHero's own clamp() (currently
-          480px/72vh/820px) so the skeleton doesn't visibly "pop" taller
+          380px/54vh/640px) so the skeleton doesn't visibly "pop" taller
           once the real hero mounts. */}
       <div
         className="w-full"
-        style={{ minHeight: "clamp(440px, 65vh, 740px)", background: "var(--ink-800)" }}
+        style={{ minHeight: "clamp(350px, 50vh, 590px)", background: "var(--ink-800)" }}
       />
       {/* Cards */}
       <div className="px-6 md:px-10 xl:px-16 max-w-[1400px] mx-auto mt-8 space-y-4">

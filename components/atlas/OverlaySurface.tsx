@@ -89,6 +89,15 @@ export interface OverlaySurfaceProps {
   title: string;
   subtitle?: string;
   icon?: ElementType;
+  /**
+   * Optional control rendered in the header row opposite the title, to the
+   * left of the built-in close button (e.g. a time-range filter). Additive:
+   * when omitted the header is byte-for-byte identical to before, so existing
+   * consumers are unaffected. Introduced so header-anchored controls (as
+   * BriefModal has) can converge onto this primitive without moving them into
+   * the toolbar row.
+   */
+  headerRight?: ReactNode;
   intent?: OverlayIntent;
   size?: OverlaySize;
   /** Optional sub-nav / filter row between header and body. */
@@ -149,6 +158,7 @@ export function OverlaySurface({
   title,
   subtitle,
   icon: Icon,
+  headerRight,
   intent = "form",
   size = "md",
   toolbar,
@@ -330,16 +340,22 @@ export function OverlaySurface({
                   )}
                 </div>
               </div>
-              {!hideClose && (
-                <button
-                  type="button"
-                  onClick={onClose}
-                  aria-label="Close"
-                  className="w-8 h-8 flex items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
-                >
-                  <X size={16} />
-                </button>
-              )}
+              {/* Right cluster: optional headerRight control + close button.
+                  With no headerRight the cluster wraps only the close button,
+                  so output is identical to the pre-headerRight header. */}
+              <div className="flex items-center gap-2 shrink-0">
+                {headerRight}
+                {!hideClose && (
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    aria-label="Close"
+                    className="w-8 h-8 flex items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
             </div>
           )}
 

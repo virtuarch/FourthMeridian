@@ -27,9 +27,20 @@
  * Spaces only, so unrelated dashboard tabs are untouched by this redesign.
  */
 
-export function AtlasField() {
+/**
+ * `intensity` (Refraction-test material-eval pass):
+ *   "rich"     — full globe/grid treatment (Space Dashboard, the primary
+ *                workspace). Default.
+ *   "balanced" — dialed-back globe/grid for the everyday Dashboard so the same
+ *                language reads calmer behind data-dense panels (see the
+ *                .is-balanced overrides in globals.css).
+ */
+export function AtlasField({ intensity = "rich" }: { intensity?: "rich" | "balanced" }) {
   return (
-    <div className="atlas-field" aria-hidden>
+    <div
+      className={`atlas-field ${intensity === "balanced" ? "is-balanced" : "is-rich"}`}
+      aria-hidden
+    >
       {/* Midnight/Light Glass Earth — same two assets EarthBackground.tsx
           falls back to. The dark/light swap is pure CSS (html[data-theme])
           so this stays a hook-free, server-renderable component. */}
@@ -46,12 +57,20 @@ export function AtlasField() {
         aria-hidden
         focusable="false"
       >
+        {/* Denser graticule (refraction-test pass) — more longitude ellipses and
+            latitude bands give the glass more regular line-work to visibly bend
+            against, which is the clearest way to judge whether refraction reads. */}
         <g fill="none" stroke="currentColor" strokeWidth={1}>
           <circle cx={500} cy={260} r={300} />
+          <ellipse cx={500} cy={260} rx={245} ry={300} />
           <ellipse cx={500} cy={260} rx={190} ry={300} />
+          <ellipse cx={500} cy={260} rx={130} ry={300} />
           <ellipse cx={500} cy={260} rx={70} ry={300} />
+          <ellipse cx={500} cy={110} rx={252} ry={70} />
           <ellipse cx={500} cy={170} rx={280} ry={80} />
+          <ellipse cx={500} cy={260} rx={300} ry={104} />
           <ellipse cx={500} cy={360} rx={280} ry={70} />
+          <ellipse cx={500} cy={430} rx={250} ry={60} />
         </g>
         <path
           d="M 180 120 Q 500 30 820 130"

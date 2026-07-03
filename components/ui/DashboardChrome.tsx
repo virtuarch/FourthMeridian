@@ -51,6 +51,12 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const isSpaces = pathname.startsWith("/dashboard/spaces");
+  // Refraction-test material-eval pass: the everyday Dashboard home also renders
+  // the Atlas Field (dialed-back "balanced" intensity) so its glass panels have a
+  // real globe backdrop to judge refraction against, not flat --bg-base. Scoped to
+  // the home route only — data-dense sub-tabs (banking, transactions, …) stay flat.
+  const isDashboardHome = pathname === "/dashboard";
+  const immersive = isSpaces || isDashboardHome;
 
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
 
@@ -66,8 +72,8 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
       <Sidebar />
 
       {/* Main area */}
-      <div className={["flex-1 flex flex-col min-w-0", isSpaces ? "relative isolate" : ""].join(" ")}>
-        {isSpaces && <AtlasField />}
+      <div className={["flex-1 flex flex-col min-w-0", immersive ? "relative isolate" : ""].join(" ")}>
+        {immersive && <AtlasField intensity={isSpaces ? "rich" : "balanced"} />}
 
         {/* Mobile header — sticky + glass (restored: this used to be a
             plain opaque bar that scrolled away with the page; it now stays
@@ -82,9 +88,9 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         <header
           className={[
             "lg:hidden sticky top-0 z-40 backdrop-blur-md shrink-0",
-            isSpaces ? "" : "border-b border-[var(--border-hairline)]",
+            immersive ? "" : "border-b border-[var(--border-hairline)]",
           ].join(" ")}
-          style={{ background: isSpaces ? "transparent" : "var(--glass-ultrathin)" }}
+          style={{ background: immersive ? "transparent" : "var(--glass-ultrathin)" }}
         >
           <div className="flex items-center justify-between px-4 h-14">
             <div className="flex items-center gap-1.5">
@@ -119,9 +125,9 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
         <header
           className={[
             "hidden lg:flex items-center justify-end px-8 h-14 sticky top-0 z-40 backdrop-blur-md shrink-0",
-            isSpaces ? "" : "border-b border-[var(--border-hairline)]",
+            immersive ? "" : "border-b border-[var(--border-hairline)]",
           ].join(" ")}
-          style={{ background: isSpaces ? "transparent" : "var(--glass-ultrathin)" }}
+          style={{ background: immersive ? "transparent" : "var(--glass-ultrathin)" }}
         >
           <RefreshButton label="Refresh Data" />
         </header>

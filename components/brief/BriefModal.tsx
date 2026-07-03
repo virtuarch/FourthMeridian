@@ -29,11 +29,12 @@
  *
  * Behaviour:
  *   - Renders into document.body via ReactDOM.createPortal
- *   - Fixed full-viewport overlay, z-[9999]
+ *   - Fixed full-viewport overlay on the named --z-modal token (Overlay
+ *     Convergence: normalized off the former z-[9999] outlier)
  *   - Dark navy scrim + backdrop-blur + a faint meridian ambient glow
  *   - Glass panel centered on desktop, inset with safe margins on mobile
  *     (p-4 sm:p-6 md:p-10 on the overlay itself)
- *   - max-h-[85vh] with internal overflow-y-auto *and* overflow-x-hidden —
+ *   - max-h-[85dvh] with internal overflow-y-auto *and* overflow-x-hidden —
  *     the explicit overflow-x-hidden matters: setting only
  *     overflow-y-auto leaves the browser to compute overflow-x as auto
  *     too, which silently adds a horizontal scrollbar the moment any
@@ -50,17 +51,25 @@
  *   - Glass icon close button, top-right, always visible/tappable
  *   - Content scrolls inside the panel if it's taller than max-h
  *   - Body scroll locked while open
+ *   - Focus moves into the panel on open, is trapped (Tab/Shift+Tab), and
+ *     returns to the invoking trigger on close (Overlay Convergence parity)
  *   - role="dialog" + aria-modal
  *   - Entrance: fade + slight scale/translate, respects prefers-reduced-motion
  *     (global *,*::before,*::after { transition-duration: .01ms !important }
  *     rule in globals.css neutralizes this automatically)
  */
 
-import { useEffect, useState, ReactNode } from "react";
+import { useEffect, useRef, useState, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
+
+// Same focusable-selector the OverlaySurface primitive uses — kept local so
+// this parity change stays scoped to BriefModal without a full rebase.
+const FOCUSABLE =
+  'a[href], button:not([disabled]), textarea:not([disabled]), ' +
+  'input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface BriefModalProps {
   open: boolean;
@@ -82,6 +91,12 @@ export function BriefModal({ open, onClose, title, children, wide, headerRight }
   // Drives the entrance transition — starts false on every mount, flips to
   // true one frame later so the browser has an initial state to animate from.
   const [entered, setEntered] = useState(false);
+
+  // Focus management (parity with OverlaySurface, added without a full rebase):
+  // capture the invoking trigger, move focus into the panel on open, trap Tab
+  // within it, and restore focus to the trigger on close.
+  const panelRef = useRef<HTMLElement | null>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
 
   // ESC to close — onClose is stable (callers use useCallback)
   useEffect(() => {
@@ -105,7 +120,45 @@ export function BriefModal({ open, onClose, title, children, wide, headerRight }
     return () => cancelAnimationFrame(raf);
   }, [open]);
 
+  // Move focus in on open; restore to the trigger on close/unmount.
+  useEffect(() => {
+    if (!open) return;
+    restoreFocusRef.current = document.activeElement as HTMLElement | null;
+    const raf = requestAnimationFrame(() => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      const first = panel.querySelector<HTMLElement>(FOCUSABLE);
+      // preventScroll: focusing must never scroll the portalled panel into view.
+      (first ?? panel).focus({ preventScroll: true });
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      restoreFocusRef.current?.focus?.({ preventScroll: true });
+    };
+  }, [open]);
+
   if (!open) return null;
+
+  // Tab focus trap — keeps focus within the panel while open.
+  function onKeyDownTrap(e: React.KeyboardEvent) {
+    if (e.key !== "Tab") return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const nodes = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+      (el) => el.offsetParent !== null || el === document.activeElement
+    );
+    if (nodes.length === 0) { e.preventDefault(); panel.focus(); return; }
+    const first = nodes[0];
+    const last = nodes[nodes.length - 1];
+    const activeEl = document.activeElement as HTMLElement | null;
+    if (e.shiftKey && (activeEl === first || !panel.contains(activeEl))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && activeEl === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
 
   // Close button — embedded into the glass rather than floating on top of
   // it. No resting background or border at all; the hit target is still a
@@ -136,7 +189,7 @@ export function BriefModal({ open, onClose, title, children, wide, headerRight }
      * Backdrop is a separate absolutely-positioned child so clicking it
      * closes the modal without the panel itself triggering the same handler.
      */
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-6 md:p-10">
+    <div className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center p-4 sm:p-6 md:p-10">
 
       {/* Backdrop — scrim + blur + a faint navy/meridian ambient glow */}
       <div
@@ -156,9 +209,12 @@ export function BriefModal({ open, onClose, title, children, wide, headerRight }
       {/* Glass panel — centered, does NOT close on click */}
       <GlassPanel
         as="div"
+        ref={panelRef as React.Ref<HTMLElement>}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
+        onKeyDown={onKeyDownTrap}
         depth="thick"
         elevation="e4"
         radius="lg"
@@ -166,7 +222,7 @@ export function BriefModal({ open, onClose, title, children, wide, headerRight }
         className={[
           "w-full",
           wide ? "max-w-3xl" : "max-w-2xl",
-          "max-h-[85vh] overflow-y-auto overflow-x-hidden",
+          "max-h-[85dvh] overflow-y-auto overflow-x-hidden focus:outline-none",
         ].join(" ")}
         style={{
           background: "var(--modal-surface)",

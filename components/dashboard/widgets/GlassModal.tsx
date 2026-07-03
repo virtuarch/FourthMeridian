@@ -3,54 +3,35 @@
 /**
  * GlassModal
  *
- * Shared shell for every modal introduced by the Dashboard IA Refactor (KPI
- * detail modals, Perspective-card modals, TimelineModal). Extracted from the
- * backdrop/sheet recipe NetWorthChartModal already established — same
- * translucent + blurred backdrop, same GlassPanel depth/elevation/radius,
- * same header treatment — so every new modal in this pass is built from
- * GlassPanel/GlassButton + theme tokens "by construction" (point 9 of the
- * IA refactor) instead of six bespoke shells that could drift apart or leak
- * a hardcoded bg-gray-* surface.
+ * Shared shell for the Dashboard IA Refactor modals (KPI detail modals,
+ * Perspective-card modals, TimelineModal). Historically its own hand-rolled
+ * backdrop/sheet recipe (GlassPanel + tokens, portal-less, no focus trap, no
+ * Escape). As of the Overlay Convergence slice it is **re-based in place onto
+ * the canonical `OverlaySurface` primitive** — GlassModal is now a thin
+ * adapter, not a parallel implementation.
  *
- * Not a replacement for existing modals (NetWorthChartModal, AccountModal,
- * etc.) — those already follow this recipe inline and are left as-is to
- * avoid touching working code for no functional gain.
+ * Why re-base rather than migrate every consumer: the public prop shape below
+ * (title / subtitle / icon / onClose / children / footer / toolbar / size) is
+ * preserved exactly, so `TimelineModal`, the KPI-detail modals and the
+ * Perspective-card modals continue calling `<GlassModal …>` unchanged while
+ * transparently gaining the primitive's portal, body-scroll-lock + scroll
+ * preservation, focus trap, Escape handling and named z-index token.
+ *
+ * Behavioural notes vs. the old shell:
+ *   - intent="workspace": these are large detail/tool surfaces. On mobile the
+ *     primitive presents them full-screen (previously a ~94dvh bottom sheet —
+ *     effectively the same footprint); on desktop, centered with the same
+ *     width/height ladder (md→max-w-xl, lg→max-w-3xl, xl→max-w-5xl,
+ *     full→max-w-[96vw]/92dvh) this shell already used.
+ *   - closeOnBackdrop is forced true to preserve the old shell's behaviour
+ *     (workspace intent otherwise defaults backdrop-click to non-closing).
+ *
+ * Not deleted: kept as the stable public entry point for its consumers. Full
+ * per-consumer migration + removal is a later, separately-approved step.
  */
 
 import { ReactNode, ElementType } from "react";
-import { X } from "lucide-react";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
-import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
-
-// v2.5 modal usability pass: md/lg/xl size to their CONTENT on desktop
-// (sm:h-auto) and only cap at the viewport-based max-height — matching the
-// recipe NetWorthChartModal already uses (`sm:h-auto sm:max-h-[88dvh]`).
-// Previously the outer h-[94dvh] applied at every breakpoint, so a modal
-// with three rows of content still rendered as an ~88dvh sheet of mostly
-// empty glass. "full" keeps a fixed height by design (Timeline). On mobile
-// every size remains a full-height bottom sheet (h-[94dvh] below), same as
-// the rest of the app's modals.
-const SIZE_CLASS: Record<NonNullable<GlassModalProps["size"]>, string> = {
-  md:   "sm:h-auto sm:max-w-xl sm:max-h-[88dvh]",
-  lg:   "sm:h-auto sm:max-w-3xl sm:max-h-[88dvh]",
-  xl:   "sm:h-auto sm:max-w-5xl sm:max-h-[90dvh]",
-  full: "sm:max-w-[96vw] sm:h-[92dvh]",
-};
-
-// SCROLL-1 fix (doctrine §8.10/§13): the *height* half of SIZE_CLASS, applied
-// to the INNER flex column — not just the GlassPanel. GlassPanel wraps its
-// children in a plain `relative z-10` block (no flex, no height), which breaks
-// any height:100% chain passing through it; the inner div's former `h-full`
-// therefore collapsed to auto, the column became content-height, and the body's
-// `flex-1 min-h-0 overflow-y-auto` never bounded (tall modals clipped instead
-// of scrolling). These caps are viewport-relative (dvh) and thus definite, so
-// the body has a real height to overflow. Widths stay on the panel.
-const INNER_HEIGHT_CLASS: Record<NonNullable<GlassModalProps["size"]>, string> = {
-  md:   "sm:h-auto sm:max-h-[88dvh]",
-  lg:   "sm:h-auto sm:max-h-[88dvh]",
-  xl:   "sm:h-auto sm:max-h-[90dvh]",
-  full: "sm:h-[92dvh]",
-};
+import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 
 export interface GlassModalProps {
   title: string;
@@ -62,76 +43,37 @@ export interface GlassModalProps {
   footer?: ReactNode;
   /** Optional sub-nav / filter row rendered between header and body. */
   toolbar?: ReactNode;
-  /** md (default) ≈ NetWorthChartModal's max-w-3xl; full ≈ near-fullscreen, for Timeline. */
+  /** md ≈ max-w-xl; lg (default) ≈ max-w-3xl; xl ≈ max-w-5xl; full ≈ near-fullscreen (Timeline). */
   size?: "md" | "lg" | "xl" | "full";
 }
 
 export function GlassModal({
   title,
   subtitle,
-  icon: Icon,
+  icon,
   onClose,
   children,
   footer,
   toolbar,
   size = "lg",
 }: GlassModalProps) {
-  // Lock background scroll while mounted (GlassModal is rendered only when
-  // open) and restore the exact scroll position on close, via the shared
-  // nest-safe helper — no jump-to-top (doctrine §14).
-  useBodyScrollLock(true);
-
+  // GlassModal is conditionally mounted by its callers (rendered only while
+  // open), so `open` is always true here; unmounting is what closes it, which
+  // fires OverlaySurface's cleanup (focus restore + scroll-lock release).
   return (
-    // Backdrop — translucent + blurred, matching the rest of the app's
-    // glass-modal recipe (NetWorthChartModal/CreateSpaceModal/AccountModal).
-    <div
-      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-2 sm:p-4"
-      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
-      onClick={onClose}
+    <OverlaySurface
+      open
+      onClose={onClose}
+      title={title}
+      subtitle={subtitle}
+      icon={icon}
+      intent="workspace"
+      size={size}
+      toolbar={toolbar}
+      footer={footer}
+      closeOnBackdrop
     >
-      {/* Sheet — stops propagation so clicking inside doesn't close */}
-      <GlassPanel
-        depth="thick"
-        elevation="e4"
-        radius="xl"
-        className={`w-full h-[94dvh] ${SIZE_CLASS[size]} flex flex-col`}
-        onClick={(e: React.MouseEvent) => e.stopPropagation()}
-      >
-        {/* SCROLL-1 fix: carry the dvh height cap on THIS inner flex column
-            (see INNER_HEIGHT_CLASS) rather than relying on `h-full` through
-            GlassPanel's `relative z-10` wrapper, so min-h-0 can actually let
-            the body below shrink and scroll instead of clipping. Panel classes
-            are unchanged. */}
-        <div className={`h-[94dvh] ${INNER_HEIGHT_CLASS[size]} min-h-0 flex flex-col p-5`}>
-          {/* Header */}
-          <div className="flex items-center justify-between gap-3 mb-1 shrink-0">
-            <div className="flex items-center gap-2.5 min-w-0">
-              {Icon && (
-                <div className="w-8 h-8 rounded-[var(--radius-sm)] bg-[var(--surface-muted)] border border-[var(--border-hairline)] flex items-center justify-center shrink-0">
-                  <Icon size={15} className="text-[var(--text-secondary)]" />
-                </div>
-              )}
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-[var(--text-primary)] truncate">{title}</p>
-                {subtitle && <p className="text-xs text-[var(--text-muted)] truncate">{subtitle}</p>}
-              </div>
-            </div>
-            <button
-              onClick={onClose}
-              className="w-8 h-8 flex items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation shrink-0"
-            >
-              <X size={16} />
-            </button>
-          </div>
-
-          {toolbar && <div className="shrink-0 mt-3">{toolbar}</div>}
-
-          {/* Body — scrolls; header/toolbar/footer stay put */}
-          <div className="flex-1 min-h-0 overflow-y-auto mt-4 -mx-1 px-1">{children}</div>
-
-          {footer && <div className="shrink-0 mt-4 pt-4 border-t border-[var(--border-hairline)]">{footer}</div>}
-        </div>
-      </GlassPanel>
-    </div>
+      {children}
+    </OverlaySurface>
   );
 }

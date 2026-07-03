@@ -52,6 +52,8 @@
 import Link from "next/link";
 import { LayoutGrid, Brain, ArrowRight } from "lucide-react";
 import { EarthBackground } from "./EarthBackground";
+import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
+import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { useTheme } from "@/components/theme/ThemeProvider";
 import { useHeroRegion } from "./HeroRegionProvider";
@@ -119,6 +121,26 @@ const CTA_BASE =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent";
 
 function HeroCTAs() {
+  // Liquid CTAs when supported (useAtlasLiquid), else the Atlas Glass CTAs below.
+  // Only the row layout is Fourth Meridian; each CTA is the bare Liquid card.
+  const liquid = useAtlasLiquid();
+  if (liquid) {
+    return (
+      <div className="flex flex-col sm:flex-row gap-2.5 mt-7">
+        <AtlasLiquidCta href="/dashboard/spaces" ariaLabel="Continue to Spaces">
+          <LayoutGrid className="w-4 h-4 shrink-0" />
+          <span>Continue to Spaces</span>
+          <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+        </AtlasLiquidCta>
+
+        <AtlasLiquidCta href="/dashboard/analyze" ariaLabel="View AI Analysis">
+          <Brain className="w-4 h-4 shrink-0" />
+          <span>View AI Analysis</span>
+        </AtlasLiquidCta>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col sm:flex-row gap-2.5 mt-7">
       {/* Primary — Meridian-tinted Atlas Glass, not a solid-blue button.
@@ -199,7 +221,12 @@ export function BriefHero({ visitState, contextLine, generatedAt }: BriefHeroPro
   return (
     <div
       className="relative w-full"
-      style={{ height: "clamp(480px, 72vh, 820px)" }}
+      // Hero height is the single lever for the whole Brief's vertical start:
+      // the greeting is pinned to the bottom of this panel and the cards sit
+      // right below it, so lowering this clamp lifts the greeting AND the cards
+      // up together, preserving every spacing relationship. Reduced from
+      // 480/72vh/820 to bring the composition higher / closer to the Spaces top.
+      style={{ height: "clamp(380px, 54vh, 640px)" }}
     >
       {/* Earth — bleeds to all four edges */}
       <EarthBackground region={effectiveRegion} theme={resolvedTheme} />

@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored third-party source (see components/atlas/vendor/*/VENDORED.md) —
+    // kept pristine; not linted by our project rules.
+    "components/atlas/vendor/**",
   ]),
   // Project-wide rule overrides
   {

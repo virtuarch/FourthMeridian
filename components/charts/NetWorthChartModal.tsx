@@ -3,11 +3,10 @@ import { useMemo, useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { X } from "lucide-react";
 import { Snapshot } from "@/types";
 import { Interval, cutoffForInterval } from "./NetWorthChart";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 
 interface Props {
   snapshots: Snapshot[];
@@ -111,36 +110,24 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
   }
 
   return (
-    // Backdrop — translucent + blurred, matching the rest of the app's
-    // glass-modal recipe (CreateSpaceModal/AddWalletModal/AccountModal),
-    // instead of the old opaque full-bleed bg-gray-900 takeover.
-    <div
-      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-2 sm:p-4"
-      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
-      onClick={onClose}
-    >
-      {/* Sheet — stops propagation so clicking inside doesn't close */}
-      <GlassPanel
-        depth="thick"
-        elevation="e4"
-        radius="xl"
-        className="w-full h-[94dvh] sm:h-auto sm:max-w-3xl sm:max-h-[88dvh]"
-        onClick={(e: React.MouseEvent) => e.stopPropagation()}
-      >
-        <div className="h-full sm:max-h-[88dvh] p-5 flex flex-col">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-4 shrink-0">
-            <p className="text-sm font-semibold text-[var(--text-primary)]">{MODAL_TITLE[initialSeries ?? "netWorth"]}</p>
-            <button
-              onClick={onClose}
-              className="w-8 h-8 flex items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation"
-            >
-              <X size={16} />
-            </button>
-          </div>
-
+    // Converged onto the canonical OverlaySurface primitive (Overlay
+    // Convergence, Phase C1): portal, body-scroll-lock + scroll preservation,
+    // focus trap, Escape and the named --z-modal z-index token now come from
+    // the primitive instead of this file's former hand-rolled scrim/GlassPanel
+    // recipe. Series + interval controls sit in the toolbar slot (between
+    // header and body); the chart is the body. closeOnBackdrop preserves the
+    // old backdrop-click-to-close behaviour under the workspace intent.
+    <OverlaySurface
+      open
+      onClose={onClose}
+      title={MODAL_TITLE[initialSeries ?? "netWorth"]}
+      intent="workspace"
+      size="lg"
+      closeOnBackdrop
+      toolbar={
+        <div className="space-y-3">
           {/* Series toggles */}
-          <div className="flex items-center gap-2 mb-4 flex-wrap shrink-0">
+          <div className="flex items-center gap-2 flex-wrap">
             {SERIES.map(({ key, label, color }) => {
               const on = active.has(key);
               return (
@@ -165,7 +152,7 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
           </div>
 
           {/* Interval selector */}
-          <div className="flex items-center gap-1 mb-4 flex-wrap shrink-0">
+          <div className="flex items-center gap-1 flex-wrap">
             {available.map(({ label }) => (
               <button
                 key={label}
@@ -185,57 +172,60 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
               </button>
             ))}
           </div>
-
-          {/* Chart — flex-1 fills all remaining vertical space */}
-          <div className="flex-1 min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={data} margin={{ top: 4, right: 8, bottom: 48, left: 16 }}>
-                <XAxis
-                  dataKey="date"
-                  ticks={ticks}
-                  tickFormatter={tickFormat}
-                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  tickFormatter={fmt}
-                  tick={{ fontSize: 10, fill: "var(--text-muted)", dx: -20 }}
-                  tickLine={false}
-                  axisLine={false}
-                  width={88}
-                />
-                <Tooltip
-                  contentStyle={{
-                    background: "var(--glass-thick)", border: "1px solid var(--border-hairline-strong)",
-                    borderRadius: 8, fontSize: 12, backdropFilter: "blur(20px)",
-                  }}
-                  formatter={(v, name) => {
-                    const series = SERIES.find((s) => s.key === name);
-                    return [fmtFull(Number(v)), series?.label ?? name];
-                  }}
-                  labelFormatter={(v) => fmtTooltipDate(v)}
-                  labelStyle={{ color: "var(--text-secondary)" }}
-                  trigger="hover"
-                />
-                {SERIES.map(({ key, color }) =>
-                  active.has(key) ? (
-                    <Line
-                      key={key}
-                      type="monotone"
-                      dataKey={key}
-                      stroke={color}
-                      strokeWidth={2}
-                      dot={false}
-                      activeDot={{ r: 4, fill: color, stroke: "var(--bg-base)", strokeWidth: 2 }}
-                    />
-                  ) : null
-                )}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
         </div>
-      </GlassPanel>
-    </div>
+      }
+    >
+      {/* Chart — explicit viewport-relative height so Recharts'
+          ResponsiveContainer always measures a definite parent inside the
+          primitive's scroll body (no reliance on flex-fill through an
+          auto-height column). */}
+      <div className="h-[58dvh] sm:h-[60dvh] min-h-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 4, right: 8, bottom: 48, left: 16 }}>
+            <XAxis
+              dataKey="date"
+              ticks={ticks}
+              tickFormatter={tickFormat}
+              tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+              tickLine={false}
+              axisLine={false}
+            />
+            <YAxis
+              tickFormatter={fmt}
+              tick={{ fontSize: 10, fill: "var(--text-muted)", dx: -20 }}
+              tickLine={false}
+              axisLine={false}
+              width={88}
+            />
+            <Tooltip
+              contentStyle={{
+                background: "var(--glass-thick)", border: "1px solid var(--border-hairline-strong)",
+                borderRadius: 8, fontSize: 12, backdropFilter: "blur(20px)",
+              }}
+              formatter={(v, name) => {
+                const series = SERIES.find((s) => s.key === name);
+                return [fmtFull(Number(v)), series?.label ?? name];
+              }}
+              labelFormatter={(v) => fmtTooltipDate(v)}
+              labelStyle={{ color: "var(--text-secondary)" }}
+              trigger="hover"
+            />
+            {SERIES.map(({ key, color }) =>
+              active.has(key) ? (
+                <Line
+                  key={key}
+                  type="monotone"
+                  dataKey={key}
+                  stroke={color}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4, fill: color, stroke: "var(--bg-base)", strokeWidth: 2 }}
+                />
+              ) : null
+            )}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </OverlaySurface>
   );
 }
