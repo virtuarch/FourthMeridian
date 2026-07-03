@@ -51,6 +51,7 @@ import { formatDate, formatRelativeTime, possessive } from "@/lib/format";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { SPACE_TAB_LABELS, SpaceTabId } from "@/lib/space-nav";
 import { getPerspectivesForCategory, getCompositionSwitcherItems, PERSPECTIVE_GROUPS, type PerspectiveGroup } from "@/lib/perspectives";
+import type { LensResult } from "@/lib/perspective-engine/types";
 import { InlineFilter } from "@/components/atlas/InlineFilter";
 import type { TimelineEvent } from "@/lib/timeline-types";
 import { PerspectivesWidget, PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
@@ -292,6 +293,13 @@ export function DashboardClient({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingAsset,   setDeletingAsset]   = useState(false);
   const [timelineEvents,  setTimelineEvents]  = useState<TimelineEvent[] | null>(null);
+
+  // Perspective Engine results (commit 8) — keyed by lensId, one batch
+  // fetch against the membership-gated route (the Personal Space is a
+  // Space like any other; same route SpaceDashboard uses). null = not
+  // loaded / failed → lens-backed cards render their static description
+  // (the widget's graceful-fallback contract).
+  const [lensResults, setLensResults] = useState<Record<string, LensResult> | null>(null);
   const [memberCount,     setMemberCount]     = useState<number | null>(null);
 
   const initialTab = (searchParams.get("tab") ?? "dashboard") as PersonalTab;
@@ -545,9 +553,15 @@ export function DashboardClient({
         .filter((p) => p.id !== "overview")
         .map((p) => {
           const target = PERSONAL_PERSPECTIVE_TARGETS[p.id];
-          return target ? { ...p, onSelect: () => handleFilterChange(target) } : p;
+          // Engine answer for lens-backed cards (liquidity, debt). Missing
+          // key (fetch pending/failed, or a server-side "error" result) →
+          // undefined → static description, exactly as before.
+          const result = p.lensId ? lensResults?.[p.lensId] : undefined;
+          return target
+            ? { ...p, result, onSelect: () => handleFilterChange(target) }
+            : { ...p, result };
         }),
-    [category, handleFilterChange]
+    [category, handleFilterChange, lensResults]
   );
 
   // Perspectives sub-nav filter — client-side only, same items, just scoped
@@ -594,6 +608,26 @@ export function DashboardClient({
         setTimelineEvents(real);
       })
       .catch(() => { if (active) setTimelineEvents([]); });
+    return () => { active = false; };
+  }, [spaceId]);
+
+  // Perspective Engine results — mirrors the activity fetch above; any
+  // failure (network, 403, malformed) resolves to null and the cards keep
+  // their static descriptions.
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/spaces/${spaceId}/perspectives`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!active) return;
+        const results: LensResult[] = Array.isArray(data?.results) ? data.results : [];
+        setLensResults(
+          results.length
+            ? Object.fromEntries(results.map((res) => [res.lensId, res]))
+            : null,
+        );
+      })
+      .catch(() => { if (active) setLensResults(null); });
     return () => { active = false; };
   }, [spaceId]);
 
