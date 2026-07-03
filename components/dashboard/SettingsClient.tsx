@@ -3,7 +3,7 @@
 import { useState, Suspense } from "react";
 import { useSession } from "next-auth/react";
 import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight } from "lucide-react";
-import { Card, CardTitle } from "@/components/ui/Card";
+import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { TotpSection } from "@/components/dashboard/TotpSection";
 import { displaySpaceName } from "@/lib/format";
 import Link from "next/link";
@@ -54,6 +54,10 @@ const USE_CASE_OPTIONS: SelectOption[] = [
 
 const EMPLOYMENT_LABELS = Object.fromEntries(EMPLOYMENT_OPTIONS.map((o) => [o.value, o.label]));
 const USE_CASE_LABELS   = Object.fromEntries(USE_CASE_OPTIONS.map((o)   => [o.value, o.label]));
+
+// ── Shared input styling (Atlas tokens) ──────────────────────────────────────
+const INPUT_BASE = "w-full border rounded-lg text-sm focus:outline-none focus:border-[var(--accent-info)] transition-colors placeholder:text-[var(--text-faint)]";
+const inputStyle: React.CSSProperties = { background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-primary)" };
 
 // ── Inline editable field ────────────────────────────────────────────────────
 
@@ -108,14 +112,12 @@ function InlineField({
 
   function handleCancel() { setDraft(current); setError(""); setEditing(false); }
 
-  const inputCls =
-    "w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm " +
-    "focus:outline-none focus:border-blue-500 transition-colors";
+  const inputCls = INPUT_BASE + " px-3 py-2";
 
   return (
-    <div className="flex items-start justify-between gap-4 py-3.5 border-b border-gray-800/60 last:border-0">
+    <div className="flex items-start justify-between gap-4 py-3.5 border-b last:border-0" style={{ borderColor: "var(--border-hairline)" }}>
       <div className="flex-1 min-w-0">
-        <p className="text-xs text-gray-500 mb-0.5">{label}</p>
+        <p className="text-xs mb-0.5" style={{ color: "var(--text-muted)" }}>{label}</p>
 
         {editing ? (
           <div className="mt-1.5 space-y-2">
@@ -125,6 +127,7 @@ function InlineField({
                 onChange={(e) => setDraft(e.target.value)}
                 autoFocus
                 className={inputCls + " appearance-none"}
+                style={inputStyle}
               >
                 <option value="">Select…</option>
                 {selectOptions.map((o) => (
@@ -139,36 +142,39 @@ function InlineField({
                 autoFocus
                 placeholder={placeholder}
                 className={inputCls + " [color-scheme:dark]"}
+                style={inputStyle}
                 onKeyDown={(e) => {
                   if (e.key === "Enter")  handleSave();
                   if (e.key === "Escape") handleCancel();
                 }}
               />
             )}
-            {helpText && <p className="text-xs text-gray-600">{helpText}</p>}
-            {error    && <p className="text-xs text-red-400">{error}</p>}
+            {helpText && <p className="text-xs" style={{ color: "var(--text-faint)" }}>{helpText}</p>}
+            {error    && <p className="text-xs" style={{ color: "var(--accent-negative)" }}>{error}</p>}
             <div className="flex gap-2">
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="flex items-center gap-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-2.5 py-1 rounded-lg transition-colors"
+                className="flex items-center gap-1.5 text-xs font-semibold text-white disabled:opacity-50 px-2.5 py-1 rounded-lg transition-colors"
+                style={{ background: "var(--accent-info)" }}
               >
                 {saving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
                 Save
               </button>
               <button
                 onClick={handleCancel}
-                className="flex items-center gap-1.5 text-xs font-medium text-gray-400 hover:text-white px-2.5 py-1 rounded-lg transition-colors"
+                className="flex items-center gap-1.5 text-xs font-medium hover:text-[var(--text-primary)] px-2.5 py-1 rounded-lg transition-colors"
+                style={{ color: "var(--text-secondary)" }}
               >
                 <X size={11} /> Cancel
               </button>
             </div>
           </div>
         ) : (
-          <p className="text-sm text-white">
+          <p className="text-sm" style={{ color: "var(--text-primary)" }}>
             {curDisp
-              ? <>{curDisp}{flash && <span className="ml-2 text-xs text-emerald-400">Saved ✓</span>}</>
-              : <span className="text-gray-600 italic text-sm">Not set</span>
+              ? <>{curDisp}{flash && <span className="ml-2 text-xs" style={{ color: "var(--accent-positive)" }}>Saved ✓</span>}</>
+              : <span className="italic text-sm" style={{ color: "var(--text-faint)" }}>Not set</span>
             }
           </p>
         )}
@@ -177,7 +183,8 @@ function InlineField({
       {!editing && !readOnly && (
         <button
           onClick={() => { setDraft(current); setEditing(true); }}
-          className="mt-4 p-1.5 rounded-lg text-gray-600 hover:text-gray-300 hover:bg-gray-800 transition-colors shrink-0"
+          className="mt-4 p-1.5 rounded-lg hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors shrink-0"
+          style={{ color: "var(--text-faint)" }}
         >
           <Pencil size={13} />
         </button>
@@ -218,22 +225,20 @@ function PreferredSpaceCard({
     }
   }
 
-  const selectCls =
-    "w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm " +
-    "focus:outline-none focus:border-blue-500 transition-colors appearance-none";
+  const selectCls = INPUT_BASE + " px-3 py-2 appearance-none";
 
   return (
-    <Card>
+    <DataCard>
       <div className="flex items-center gap-2 mb-1">
-        <LayoutDashboard size={15} className="text-gray-400" />
-        <CardTitle>Default Space</CardTitle>
+        <LayoutDashboard size={15} style={{ color: "var(--text-secondary)" }} />
+        <DataCardTitle>Default Space</DataCardTitle>
       </div>
-      <p className="text-xs text-gray-600 mb-4">
+      <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
         The Space that&apos;s active by default when you continue in from your Daily Brief. Defaults to your Personal Space if not set.
       </p>
 
       {error && (
-        <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2 text-sm text-red-400 mb-3">
+        <div className="rounded-xl border px-3 py-2 text-sm mb-3" style={{ background: "rgba(237,82,71,0.10)", borderColor: "rgba(237,82,71,0.30)", color: "var(--accent-negative)" }}>
           {error}
         </div>
       )}
@@ -244,28 +249,30 @@ function PreferredSpaceCard({
           onChange={(e) => handleSave(e.target.value)}
           disabled={saving}
           className={selectCls + " flex-1"}
+          style={inputStyle}
         >
           <option value="">Personal Space (default)</option>
           {spaces.filter((w) => w.type !== "PERSONAL").map((w) => (
             <option key={w.id} value={w.id}>{displaySpaceName(w.name)}</option>
           ))}
         </select>
-        {saving && <Loader2 size={14} className="animate-spin text-gray-500 shrink-0" />}
-        {flash   && <span className="text-xs text-emerald-400 shrink-0">Saved ✓</span>}
+        {saving && <Loader2 size={14} className="animate-spin shrink-0" style={{ color: "var(--text-muted)" }} />}
+        {flash   && <span className="text-xs shrink-0" style={{ color: "var(--accent-positive)" }}>Saved ✓</span>}
       </div>
 
       {preferredId && currentName && (
-        <p className="text-xs text-gray-600 mt-2">
-          Landing on <span className="text-gray-400">{currentName}</span> after login.{" "}
+        <p className="text-xs mt-2" style={{ color: "var(--text-faint)" }}>
+          Landing on <span style={{ color: "var(--text-secondary)" }}>{currentName}</span> after login.{" "}
           <button
             onClick={() => handleSave("")}
-            className="text-blue-400 hover:text-blue-300 transition-colors"
+            className="transition-colors"
+            style={{ color: "var(--accent-info)" }}
           >
             Reset to default
           </button>
         </p>
       )}
-    </Card>
+    </DataCard>
   );
 }
 
@@ -324,19 +331,17 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
     setTimeout(() => setPwOk(false), 3500);
   }
 
-  const inputCls =
-    "w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-sm " +
-    "focus:outline-none focus:border-blue-500 transition-colors";
+  const inputCls = INPUT_BASE + " px-3 py-2.5";
 
   return (
     <div className="max-w-2xl mx-auto space-y-6 px-4 py-6">
-      <h1 className="text-2xl font-bold text-white">Settings</h1>
+      <h1 className="text-2xl font-bold" style={{ color: "var(--text-primary)" }}>Settings</h1>
 
       {/* ── Profile ── */}
-      <Card>
+      <DataCard>
         <div className="flex items-center gap-2 mb-1">
-          <User size={15} className="text-gray-400" />
-          <CardTitle>Profile</CardTitle>
+          <User size={15} style={{ color: "var(--text-secondary)" }} />
+          <DataCardTitle>Profile</DataCardTitle>
         </div>
 
         <InlineField
@@ -392,7 +397,7 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
           onSave={(val) => saveField({ useCase: val })}
           selectOptions={USE_CASE_OPTIONS}
         />
-      </Card>
+      </DataCard>
 
       {/* ── Preferred space ── */}
       <PreferredSpaceCard
@@ -402,26 +407,26 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
       />
 
       {/* ── Security ── */}
-      <Card>
+      <DataCard>
         <div className="flex items-center gap-2 mb-4">
-          <ShieldCheck size={15} className="text-gray-400" />
-          <CardTitle>Security</CardTitle>
+          <ShieldCheck size={15} style={{ color: "var(--text-secondary)" }} />
+          <DataCardTitle>Security</DataCardTitle>
         </div>
 
         <form onSubmit={handlePasswordChange} className="space-y-3">
           {pwError && (
-            <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2.5 text-sm text-red-400">
+            <div className="rounded-xl border px-3 py-2.5 text-sm" style={{ background: "rgba(237,82,71,0.10)", borderColor: "rgba(237,82,71,0.30)", color: "var(--accent-negative)" }}>
               {pwError}
             </div>
           )}
           {pwOk && (
-            <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 px-3 py-2.5 text-sm text-emerald-400">
+            <div className="rounded-xl border px-3 py-2.5 text-sm" style={{ background: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.30)", color: "var(--accent-positive)" }}>
               Password updated successfully.
             </div>
           )}
 
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">Current password</label>
+            <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Current password</label>
             <div className="relative">
               <input
                 type={showCur ? "text" : "password"}
@@ -429,18 +434,19 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
                 onChange={(e) => setCurrentPw(e.target.value)}
                 required
                 className={inputCls + " pr-10"}
+                style={inputStyle}
                 placeholder="••••••••"
                 autoComplete="current-password"
               />
               <button type="button" onClick={() => setShowCur((v) => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 p-1">
+                className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-secondary)] p-1" style={{ color: "var(--text-muted)" }}>
                 {showCur ? <EyeOff size={14} /> : <Eye size={14} />}
               </button>
             </div>
           </div>
 
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">New password</label>
+            <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>New password</label>
             <div className="relative">
               <input
                 type={showNew ? "text" : "password"}
@@ -449,24 +455,26 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
                 required
                 minLength={8}
                 className={inputCls + " pr-10"}
+                style={inputStyle}
                 placeholder="Min. 8 characters"
                 autoComplete="new-password"
               />
               <button type="button" onClick={() => setShowNew((v) => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 p-1">
+                className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-secondary)] p-1" style={{ color: "var(--text-muted)" }}>
                 {showNew ? <EyeOff size={14} /> : <Eye size={14} />}
               </button>
             </div>
           </div>
 
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">Confirm new password</label>
+            <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Confirm new password</label>
             <input
               type="password"
               value={confirmPw}
               onChange={(e) => setConfirmPw(e.target.value)}
               required
               className={inputCls}
+              style={inputStyle}
               placeholder="Repeat new password"
               autoComplete="new-password"
             />
@@ -475,51 +483,53 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
           <button
             type="submit"
             disabled={pwBusy || !currentPw || !newPw || !confirmPw}
-            className="flex items-center gap-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2.5 rounded-xl transition-colors"
+            className="flex items-center gap-2 text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2.5 rounded-xl transition-colors"
+            style={{ background: "var(--accent-info)" }}
           >
             {pwBusy ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
             Update Password
           </button>
         </form>
-      </Card>
+      </DataCard>
 
       {/* ── Two-factor authentication ── */}
-      <Card>
+      <DataCard>
         <div className="flex items-center gap-2 mb-4">
-          <ShieldCheck size={15} className="text-gray-400" />
-          <CardTitle>Two-Factor Authentication</CardTitle>
+          <ShieldCheck size={15} style={{ color: "var(--text-secondary)" }} />
+          <DataCardTitle>Two-Factor Authentication</DataCardTitle>
         </div>
-        <Suspense fallback={<div className="h-16 rounded-xl bg-gray-800 animate-pulse" />}>
+        <Suspense fallback={<div className="h-16 rounded-xl animate-pulse" style={{ background: "var(--surface-inset)" }} />}>
           <TotpSection />
         </Suspense>
-      </Card>
+      </DataCard>
 
       {/* ── Data & Archive ── */}
-      <Card>
+      <DataCard>
         <div className="flex items-center gap-2 mb-1">
-          <Archive size={15} className="text-gray-400" />
-          <CardTitle>Data & Archive</CardTitle>
+          <Archive size={15} style={{ color: "var(--text-secondary)" }} />
+          <DataCardTitle>Data & Archive</DataCardTitle>
         </div>
-        <p className="text-xs text-gray-600 mb-4">
+        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
           Manage archived accounts and Spaces. Restore them, or remove them permanently.
         </p>
 
         <Link
           href="/dashboard/settings/archived-assets"
-          className="flex items-center justify-between px-4 py-3 rounded-xl bg-gray-800/50 border border-gray-700 hover:bg-gray-800 hover:border-gray-600 transition-colors group"
+          className="flex items-center justify-between px-4 py-3 rounded-xl border hover:bg-[var(--surface-hover)] transition-colors group"
+          style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}
         >
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gray-700 flex items-center justify-center">
-              <Archive size={14} className="text-gray-400" />
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "var(--surface-hover-strong)" }}>
+              <Archive size={14} style={{ color: "var(--text-secondary)" }} />
             </div>
             <div>
-              <p className="text-sm font-medium text-white">Archive &amp; Trash</p>
-              <p className="text-xs text-gray-500">Archived accounts, archived Spaces, and trash</p>
+              <p className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>Archive &amp; Trash</p>
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>Archived accounts, archived Spaces, and trash</p>
             </div>
           </div>
-          <ChevronRight size={15} className="text-gray-600 group-hover:text-gray-400 transition-colors" />
+          <ChevronRight size={15} style={{ color: "var(--text-faint)" }} />
         </Link>
-      </Card>
+      </DataCard>
     </div>
   );
 }

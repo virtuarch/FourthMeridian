@@ -8,10 +8,8 @@
   "components/dashboard/ManageSpaceModal.tsx": 1,
   "components/dashboard/ReconnectAccountButton.tsx": 2,
   "components/dashboard/RemoveAccountButton.tsx": 4,
-  "components/dashboard/SettingsClient.tsx": 49,
   "components/dashboard/SpaceDashboard.tsx": 197,
   "components/dashboard/SpacesClient.tsx": 1,
-  "components/dashboard/TotpSection.tsx": 107,
   "components/dashboard/widgets/SpaceTransactionsPanel.tsx": 50,
   "components/space/widgets/debt-adapters.tsx": 2
 }
