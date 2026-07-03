@@ -11,26 +11,17 @@
 
 import { NextRequest, NextResponse }      from "next/server";
 import { db }                             from "@/lib/db";
-import { SpaceMemberStatus }          from "@prisma/client";
-import { requireUser } from "@/lib/session";
+import { requireSpaceAction }             from "@/lib/spaces/authorize";
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const [user, err] = await requireUser();
-  if (err) return err;
-
   const { id: spaceId } = await params;
 
-  const membership = await db.spaceMember.findUnique({
-    where: { spaceId_userId: { spaceId, userId: user.id } },
-    select: { role: true, status: true },
-  });
-
-  if (!membership || membership.status !== SpaceMemberStatus.ACTIVE) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  // Any ACTIVE member (any role) may read sections.
+  const [, err] = await requireSpaceAction(spaceId, "section:read");
+  if (err) return err;
 
   const sections = await db.spaceDashboardSection.findMany({
     where: { spaceId },

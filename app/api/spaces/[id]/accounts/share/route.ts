@@ -15,8 +15,9 @@
 
 import { NextRequest, NextResponse }                    from "next/server";
 import { db }                                           from "@/lib/db";
-import { ShareStatus, VisibilityLevel, SpaceMemberStatus } from "@prisma/client";
-import { requireUser } from "@/lib/session";
+import { ShareStatus, VisibilityLevel }                 from "@prisma/client";
+import { requireSpaceAction } from "@/lib/spaces/authorize";
+import { can } from "@/lib/spaces/policy";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
@@ -27,19 +28,12 @@ export const POST = withApiHandler(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) => {
-  const [user, err] = await requireUser();
-  if (err) return err;
-
   const { id: spaceId } = await params;
-  const userId = user.id;
 
-  const membership = await db.spaceMember.findUnique({
-    where: { spaceId_userId: { spaceId, userId } },
-    select: { role: true, status: true },
-  });
-  if (!membership || membership.status !== SpaceMemberStatus.ACTIVE) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  // Any ACTIVE member (any role) may share an account into the space.
+  const [auth, err] = await requireSpaceAction(spaceId, "account:share");
+  if (err) return err;
+  const userId = auth.user.id;
 
   const body = await req.json() as {
     financialAccountId: string;
@@ -123,19 +117,15 @@ export const DELETE = withApiHandler(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) => {
-  const [user, err] = await requireUser();
-  if (err) return err;
-
   const { id: spaceId } = await params;
-  const userId = user.id;
 
-  const membership = await db.spaceMember.findUnique({
-    where: { spaceId_userId: { spaceId, userId } },
-    select: { role: true, status: true },
-  });
-  if (!membership || membership.status !== SpaceMemberStatus.ACTIVE) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  // Door: any ACTIVE member (any role) may reach the account-share surface —
+  // NOT "account:revoke", which is ADMIN-min and would wrongly block an
+  // adder who is only a MEMBER. The OWNER/ADMIN privilege is applied in the
+  // residual below via can("account:revoke", …).
+  const [auth, err] = await requireSpaceAction(spaceId, "account:share");
+  if (err) return err;
+  const userId = auth.user.id;
 
   const body = await req.json() as { financialAccountId: string };
   const { financialAccountId } = body;
@@ -160,7 +150,10 @@ export const DELETE = withApiHandler(async (
     return NextResponse.json({ error: "Share not found" }, { status: 404 });
   }
 
-  const isPrivileged = ["OWNER", "ADMIN"].includes(membership.role);
+  // Residual: the adder may revoke their own share; otherwise OWNER/ADMIN
+  // (can("account:revoke", …)) may revoke anyone's. Semantics preserved
+  // exactly from the previous inline ["OWNER","ADMIN"].includes(role) check.
+  const isPrivileged = can("account:revoke", auth.membership);
   if (link.addedByUserId !== userId && !isPrivileged) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
