@@ -149,6 +149,18 @@ html[data-theme="dark"] {
   --surface-hover-strong: rgba(255,255,255,.10);
   --surface-muted: rgba(255,255,255,.05);
 
+  /* ---------- STEP A: DataCard foundation tokens (additive; unconsumed) ----------
+     Added for the Atlas Glass card-unification foundation (see
+     docs/investigations/ATLAS_GLASS_UNIFICATION_STEP_A_CHECKLIST.md). Nothing
+     references these yet — they exist so Step B card migrations reference
+     semantic tokens instead of raw palette. Values are provisional (review). */
+  --text-faint: var(--ink-500);            /* quietest text tier — timestamps (replaces text-gray-500) */
+  --surface-inset: rgba(255,255,255,.07);  /* inset icon-chip fill on glass (replaces bg-gray-800) */
+  --accent-positive: var(--emerald-400);   /* real gain only (Design Language Law 7) */
+  --accent-negative: var(--coral-400);     /* real loss only */
+  --accent-neutral:  var(--ink-300);       /* non-signalling default */
+  --accent-info:     var(--meridian-400);  /* interactive / informational */
+
   /* ---------- MODAL SURFACE — BriefModal's one-off "smoked crystal" fill ----------
      Kept separate from --glass-thick on purpose (see BriefModal.tsx header
      comment) since modals want a lower-opacity, heavier-blur recipe than
@@ -176,6 +188,17 @@ html[data-theme="light"] {
   --surface-hover: rgba(17,21,31,.05);
   --surface-hover-strong: rgba(17,21,31,.08);
   --surface-muted: rgba(17,21,31,.04);
+
+  /* ---------- STEP A: DataCard foundation tokens (additive; unconsumed) ----------
+     Light-theme parity for the tokens added in the dark block above. Darker
+     accent steps (-500) and a concrete faint gray are used for contrast on
+     light glass. Provisional (review). */
+  --text-faint: #9AA1B0;                   /* one step fainter than --text-muted (#7A8295) */
+  --surface-inset: rgba(17,21,31,.06);     /* inset icon-chip fill on light glass */
+  --accent-positive: var(--emerald-500);   /* darker step for contrast on light glass */
+  --accent-negative: var(--coral-500);
+  --accent-neutral:  var(--ink-600);
+  --accent-info:     var(--meridian-500);
 
   /* Frosted white "smoked glass" — replaces the dark navy fill so the
      modal reads as Light Glass instead of Midnight. */
