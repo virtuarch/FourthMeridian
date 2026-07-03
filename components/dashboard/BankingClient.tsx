@@ -54,6 +54,9 @@ const ALL_CATEGORIES: TransactionCategory[] = [
   "Travel", "Subscriptions", "Utilities", "Interest", "Payment", "Other",
 ];
 
+// FlowType P5 Slice 2 — money-out cost flows that count toward the "Spend" chip.
+const FLOW_COST = new Set(["SPENDING", "FEE", "INTEREST"]);
+
 type TimeFilter = "all" | "90d" | "30d" | "7d";
 
 const TIME_LABELS: Record<TimeFilter, string> = {
@@ -159,10 +162,20 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
       .sort((a, b) => b.date.localeCompare(a.date));
   }, [selectedAccountId, catFilter, cutoff, search, transactions]);
 
-  const totalSpend = filteredTxs
-    .filter((t) => t.amount < 0 && t.category !== "Payment" && t.category !== "Transfer")
+  // FlowType P5 Slice 2 — summary totals from flowType (no category/sign).
+  // Spend = SPENDING + FEE + INTEREST outflows, minus REFUND (clamped ≥ 0).
+  // In = INCOME only. Transfers/debt payments/investments/adjustments/unknowns
+  // are excluded from both. JSX/labels/colors below are unchanged.
+  const grossSpend = filteredTxs
+    .filter((t) => t.flowType != null && FLOW_COST.has(t.flowType))
     .reduce((s, t) => s + Math.abs(t.amount), 0);
-  const totalCredit = filteredTxs.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+  const spendRefunds = filteredTxs
+    .filter((t) => t.flowType === "REFUND")
+    .reduce((s, t) => s + Math.abs(t.amount), 0);
+  const totalSpend = Math.max(0, grossSpend - spendRefunds);
+  const totalCredit = filteredTxs
+    .filter((t) => t.flowType === "INCOME")
+    .reduce((s, t) => s + Math.abs(t.amount), 0);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   const acctName = (id: string) => accounts.find((a) => a.id === id)?.name ?? id;

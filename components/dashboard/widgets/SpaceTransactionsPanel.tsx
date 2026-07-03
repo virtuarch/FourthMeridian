@@ -37,6 +37,9 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
   "Travel", "Subscriptions", "Utilities", "Interest", "Payment", "Other",
 ];
 
+// FlowType P5 Slice 2 — money-out cost flows that count toward the "Spend" chip.
+const FLOW_COST = new Set(["SPENDING", "FEE", "INTEREST"]);
+
 // ── Date-range filter ─────────────────────────────────────────────────────────
 type DateRange = "all" | "90d" | "30d" | "7d";
 
@@ -139,12 +142,19 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote }: Pr
   }, [transactions, catFilter, accountFilter, cutoff, pendingFilter, search]);
 
   // ── Summary totals ────────────────────────────────────────────────────────
-  const totalSpend = filtered
-    .filter((t) => t.amount < 0 && t.category !== "Payment" && t.category !== "Transfer")
+  // FlowType P5 Slice 2 — from flowType (no category/sign). Spend = SPENDING +
+  // FEE + INTEREST outflows minus REFUND (clamped ≥ 0); In = INCOME only.
+  // Transfers/debt payments/investments/adjustments/unknowns excluded from both.
+  const grossSpend = filtered
+    .filter((t) => t.flowType != null && FLOW_COST.has(t.flowType))
     .reduce((s, t) => s + Math.abs(t.amount), 0);
+  const spendRefunds = filtered
+    .filter((t) => t.flowType === "REFUND")
+    .reduce((s, t) => s + Math.abs(t.amount), 0);
+  const totalSpend = Math.max(0, grossSpend - spendRefunds);
   const totalIn = filtered
-    .filter((t) => t.amount > 0)
-    .reduce((s, t) => s + t.amount, 0);
+    .filter((t) => t.flowType === "INCOME")
+    .reduce((s, t) => s + Math.abs(t.amount), 0);
 
   // ── Active filter chip helpers ─────────────────────────────────────────
   const selectedAccount = accountFilter ? accountMap.get(accountFilter) : null;
