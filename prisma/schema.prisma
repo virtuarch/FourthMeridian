@@ -52,10 +52,10 @@ enum RiskLevel {
 }
 
 enum PlaidItemStatus {
-  ACTIVE        // syncing normally
-  NEEDS_REAUTH  // user must re-authenticate via Plaid Link
-  ERROR         // unrecoverable error — see errorCode
-  REVOKED       // all accounts removed; itemRemove() was called
+  ACTIVE // syncing normally
+  NEEDS_REAUTH // user must re-authenticate via Plaid Link
+  ERROR // unrecoverable error — see errorCode
+  REVOKED // all accounts removed; itemRemove() was called
 }
 
 /// Per-Item Plaid Investments product consent state, derived from the `item`
@@ -67,9 +67,9 @@ enum PlaidItemStatus {
 /// after the user grants consent via Link update mode. See
 /// docs/investigations/PLAID_INVESTMENTS_CONSENT_INVESTIGATION.md.
 enum PlaidInvestmentsConsent {
-  ENABLED           // user consented to investments (or legacy probe succeeded)
-  CONSENT_REQUIRED  // supported, but user must grant consent via Link update mode
-  UNSUPPORTED       // Plaid Investments not available for this Item
+  ENABLED // user consented to investments (or legacy probe succeeded)
+  CONSENT_REQUIRED // supported, but user must grant consent via Link update mode
+  UNSUPPORTED // Plaid Investments not available for this Item
 }
 
 /// D2 (Phase 2, Step 1A): generalizes PlaidItemStatus across all connection
@@ -77,10 +77,10 @@ enum PlaidInvestmentsConsent {
 /// unchanged — this is additive, not a replacement. Not yet used by any
 /// application code.
 enum ConnectionStatus {
-  ACTIVE        // syncing normally / valid credential
-  NEEDS_REAUTH  // user must re-authenticate
-  ERROR         // unrecoverable error — see errorCode
-  REVOKED       // credential revoked / connection removed
+  ACTIVE // syncing normally / valid credential
+  NEEDS_REAUTH // user must re-authenticate
+  ERROR // unrecoverable error — see errorCode
+  REVOKED // credential revoked / connection removed
 }
 
 /// D2 (Phase 2, Step 1A): identifies which kind of provider a Connection
@@ -117,7 +117,7 @@ enum SpaceCategory {
   TRIP
   INVESTMENT
   EQUIPMENT
-  GOAL          // legacy — kept for backward compat
+  GOAL // legacy — kept for backward compat
   RETIREMENT
   DEBT_PAYOFF
   EMERGENCY_FUND
@@ -174,11 +174,11 @@ enum InviteStatus {
 /// BALANCE_ONLY added for privacy-sensitive sharing (e.g. a partner sees total but not institution).
 /// FULL replaces the old SHARED value; SHARED kept temporarily for Account (legacy) rows.
 enum VisibilityLevel {
-  PRIVATE       // only the owning Space can see this account
-  BALANCE_ONLY  // other Space sees the balance total, no institution or transactions
-  SUMMARY_ONLY  // qualitative summary, no raw numbers
-  SHARED        // legacy — maps to FULL; kept for backward compat with Account model
-  FULL          // fully visible to all Space members (new canonical value)
+  PRIVATE // only the owning Space can see this account
+  BALANCE_ONLY // other Space sees the balance total, no institution or transactions
+  SUMMARY_ONLY // qualitative summary, no raw numbers
+  SHARED // legacy — maps to FULL; kept for backward compat with Account model
+  FULL // fully visible to all Space members (new canonical value)
 }
 
 /// Whether a SpaceAccountLink is currently active or has been revoked.
@@ -212,19 +212,19 @@ enum SpaceAccountLinkKind {
 /// IGNORED are not written by any code path today; they're kept, unused, in
 /// case a future manual-review feature is layered on top of this ledger.
 enum DuplicateStatus {
-  PENDING              // flagged, awaiting user review
-  CONFIRMED_DUPLICATE  // user confirmed these are the same real-world account
-  NOT_DUPLICATE        // user confirmed these are different accounts
-  IGNORED              // user dismissed without deciding
+  PENDING // flagged, awaiting user review
+  CONFIRMED_DUPLICATE // user confirmed these are the same real-world account
+  NOT_DUPLICATE // user confirmed these are different accounts
+  IGNORED // user dismissed without deciding
 }
 
 /// How an automatic merge in lib/accounts/reconcile.ts was detected. Always
 /// populated on rows written by that path — there is no ambiguous/unset case
 /// today.
 enum DuplicateDetectionSource {
-  PROVIDER_IDENTITY_MATCH  // exact plaidAccountId or walletAddress match
-  FINGERPRINT_MATCH        // loose institution + mask + type + name match
-  SIBLING_CONSOLIDATION    // multiple matching rows reduced to one canonical row, independent of the top-level trigger
+  PROVIDER_IDENTITY_MATCH // exact plaidAccountId or walletAddress match
+  FINGERPRINT_MATCH // loose institution + mask + type + name match
+  SIBLING_CONSOLIDATION // multiple matching rows reduced to one canonical row, independent of the top-level trigger
 }
 
 /// Whether a FinancialAccount is owned by an individual user or by a Space entity.
@@ -235,13 +235,13 @@ enum DuplicateDetectionSource {
 /// metadata-only in Postgres: existing rows keep referencing the same enum OID,
 /// so no row data is rewritten and no UPDATE statement is needed.
 enum AccountOwnerType {
-  USER   // personal account owned by a single user
-  SPACE  // Space-level account (e.g. a joint or business account)
+  USER // personal account owned by a single user
+  SPACE // Space-level account (e.g. a joint or business account)
 }
 
 enum UserRole {
-  USER          // normal authenticated user
-  SYSTEM_ADMIN  // platform administration — not for daily use; requires TOTP (M3)
+  USER // normal authenticated user
+  SYSTEM_ADMIN // platform administration — not for daily use; requires TOTP (M3)
 }
 
 enum EmploymentStatus {
@@ -253,10 +253,10 @@ enum EmploymentStatus {
 }
 
 enum UseCase {
-  PERSONAL_TRACKING   // personal budget + net worth tracking
-  BUSINESS_VENTURES   // business / LLC financial oversight
-  INVESTING           // portfolio + market focus
-  DEBT_MANAGEMENT     // debt payoff planning
+  PERSONAL_TRACKING // personal budget + net worth tracking
+  BUSINESS_VENTURES // business / LLC financial oversight
+  INVESTING // portfolio + market focus
+  DEBT_MANAGEMENT // debt payoff planning
   OTHER
 }
 
@@ -284,10 +284,10 @@ enum GoalStatus {
 
 /// Governs which fields and tracking mode apply to a SpaceGoal.
 enum GoalType {
-  FINANCIAL       // Save $X by a target date
-  HABIT           // Behavioral goal tracked by streak / check-ins
-  SPENDING_LIMIT  // Keep a spending category under $X / month
-  DEBT_REDUCTION  // Pay down a specific debt account by $X or X%
+  FINANCIAL // Save $X by a target date
+  HABIT // Behavioral goal tracked by streak / check-ins
+  SPENDING_LIMIT // Keep a spending category under $X / month
+  DEBT_REDUCTION // Pay down a specific debt account by $X or X%
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -304,46 +304,46 @@ model User {
   name                 String?
   firstName            String?
   lastName             String?
-  dateOfBirthEncrypted String?           // AES-256-GCM encrypted ISO date string
+  dateOfBirthEncrypted String? // AES-256-GCM encrypted ISO date string
   employmentStatus     EmploymentStatus?
   useCase              UseCase?
-  passwordHash         String?           // bcrypt hash, cost 12
-  totpSecret           String?           // TOTP seed, stored encrypted (used in M3)
+  passwordHash         String? // bcrypt hash, cost 12
+  totpSecret           String? // TOTP seed, stored encrypted (used in M3)
   totpEnabled          Boolean           @default(false)
   role                 UserRole          @default(USER)
   preferredSpaceId     String?           @map("preferredWorkspaceId") // soft ref — Space the user lands on after login
   passwordResetToken   String?           @unique
   passwordResetExpiry  DateTime?
   forcePasswordReset   Boolean           @default(false) // set true by admin; user must change on next login
-  lastBriefViewedAt    DateTime?                         // set when user views the Daily Brief page
+  lastBriefViewedAt    DateTime? // set when user views the Daily Brief page
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
 
-  spaces               SpaceMember[]
-  sentInvites          SpaceInvite[]     @relation("SentInvites")
-  receivedInvites      SpaceInvite[]     @relation("ReceivedInvites")
-  plaidItems           PlaidItem[]
-  connections          Connection[]      // D2 — PLAID rows created/updated by lib/plaid/exchangeToken.ts; read by app/api/plaid/link-token
-  importBatches        ImportBatch[]     // D2 Step 4D — populated by the import pipeline (app/api/accounts/[id]/import)
+  spaces                SpaceMember[]
+  sentInvites           SpaceInvite[]          @relation("SentInvites")
+  receivedInvites       SpaceInvite[]          @relation("ReceivedInvites")
+  plaidItems            PlaidItem[]
+  connections           Connection[] // D2 — PLAID rows created/updated by lib/plaid/exchangeToken.ts; read by app/api/plaid/link-token
+  importBatches         ImportBatch[] // D2 Step 4D — populated by the import pipeline (app/api/accounts/[id]/import)
   importMappingProfiles ImportMappingProfile[] // D2 (Phase 2, Step 4D-5b) — additive; display-only creator ref, not an authorization boundary
-  ownedAccounts        Account[]         // legacy: accounts this user connected/created
-  creditScores         CreditScore[]
-  auditLogs            AuditLog[]
+  ownedAccounts         Account[] // legacy: accounts this user connected/created
+  creditScores          CreditScore[]
+  auditLogs             AuditLog[]
 
   // Security
-  recoveryCodes        RecoveryCode[]
-  sessions             UserSession[]
+  recoveryCodes RecoveryCode[]
+  sessions      UserSession[]
 
   // New financial account relations
-  financialAccounts    FinancialAccount[]  @relation("UserOwnedFinancialAccounts")
-  accountConnections   AccountConnection[] @relation("UserConnectedAccounts")
-  createdFinancialAccounts FinancialAccount[] @relation("FinancialAccountCreator") // D11 — accounts this user created/connected, independent of ownerType
+  financialAccounts        FinancialAccount[]  @relation("UserOwnedFinancialAccounts")
+  accountConnections       AccountConnection[] @relation("UserConnectedAccounts")
+  createdFinancialAccounts FinancialAccount[]  @relation("FinancialAccountCreator") // D11 — accounts this user created/connected, independent of ownerType
 
   // Member revocation (who revoked whom)
-  revokedMembers       SpaceMember[]       @relation("RevokedByUser")
+  revokedMembers SpaceMember[] @relation("RevokedByUser")
 
   // Goal creation
-  createdGoals         SpaceGoal[]         @relation("GoalCreator")
+  createdGoals SpaceGoal[] @relation("GoalCreator")
 
   // SpaceAccountLink (D3) — the sole account-link path since WorkspaceAccountShare
   // was retired (v2.5-A Phase 4c). Tracks who added/revoked links.
@@ -351,7 +351,7 @@ model User {
   revokedSpaceAccountLinks SpaceAccountLink[] @relation("SpaceAccountLinkRevoker")
 
   // DuplicateAccountCandidate — tracks who resolved the review
-  resolvedDuplicates   DuplicateAccountCandidate[] @relation("DuplicateResolver")
+  resolvedDuplicates DuplicateAccountCandidate[] @relation("DuplicateResolver")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -370,7 +370,7 @@ model Space {
   description String?
   type        SpaceType     @default(PERSONAL)
   category    SpaceCategory @default(PERSONAL)
-  isPublic    Boolean       @default(false)  // SHARED Spaces can be listed publicly
+  isPublic    Boolean       @default(false) // SHARED Spaces can be listed publicly
 
   // ── Lifecycle (mirrors SpaceGoal's archive/trash pattern) ─────────────────
   // archivedAt: hidden from normal nav, fully intact, restorable any time.
@@ -379,15 +379,15 @@ model Space {
   //             Space is never in both states at once. PERSONAL
   //             Spaces cannot be archived, trashed, or permanently
   //             deleted (enforced in the API layer, not the schema).
-  archivedAt  DateTime?
-  deletedAt   DateTime?
+  archivedAt DateTime?
+  deletedAt  DateTime?
 
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   members       SpaceMember[]
   invites       SpaceInvite[]
-  accounts      Account[]       // legacy account relation
+  accounts      Account[] // legacy account relation
   snapshots     SpaceSnapshot[]
   aiAgent       AiAgent?
   adviceHistory AiAdvice[]
@@ -423,19 +423,19 @@ model Space {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model SpaceMember {
-  id       String           @id @default(cuid())
-  spaceId  String           @map("workspaceId")
-  space    Space            @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  id       String            @id @default(cuid())
+  spaceId  String            @map("workspaceId")
+  space    Space             @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   userId   String
-  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role     SpaceMemberRole  @default(MEMBER)
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     SpaceMemberRole   @default(MEMBER)
   status   SpaceMemberStatus @default(ACTIVE)
-  joinedAt DateTime         @default(now())
+  joinedAt DateTime          @default(now())
 
   // Populated when status transitions to REMOVED or LEFT
   revokedAt   DateTime?
   revokedById String?
-  revokedBy   User?         @relation("RevokedByUser", fields: [revokedById], references: [id], onDelete: SetNull)
+  revokedBy   User?     @relation("RevokedByUser", fields: [revokedById], references: [id], onDelete: SetNull)
 
   @@unique([spaceId, userId])
   @@index([spaceId])
@@ -455,14 +455,14 @@ model SpaceInvite {
   spaceId       String          @map("workspaceId")
   space         Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   invitedById   String
-  invitedBy     User            @relation("SentInvites",     fields: [invitedById],   references: [id], onDelete: Cascade)
+  invitedBy     User            @relation("SentInvites", fields: [invitedById], references: [id], onDelete: Cascade)
   invitedUserId String
   invitedUser   User            @relation("ReceivedInvites", fields: [invitedUserId], references: [id], onDelete: Cascade)
   role          SpaceMemberRole @default(MEMBER)
   status        InviteStatus    @default(PENDING)
   createdAt     DateTime        @default(now())
   expiresAt     DateTime?
-  seenAt        DateTime?       // set when invited user first views the invite
+  seenAt        DateTime? // set when invited user first views the invite
 
   @@unique([spaceId, invitedUserId])
   @@index([invitedUserId])
@@ -505,17 +505,17 @@ model AiAgent {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model PlaidItem {
-  id              String          @id @default(cuid())
-  userId          String
-  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  externalItemId  String          @unique  // provider's item/connection id (Plaid item_id today)
-  institutionId   String                   // Plaid's institution_id (e.g. "ins_3")
-  institutionName String                   // human-readable (e.g. "Chase")
-  encryptedToken  String                   // AES-256-GCM encrypted access token — NEVER plaintext
-  status          PlaidItemStatus @default(ACTIVE)
-  cursor          String?                  // /transactions/sync cursor for incremental sync
-  errorCode       String?                  // last Plaid error code when status = ERROR
-  lastSyncedAt    DateTime?
+  id                  String                   @id @default(cuid())
+  userId              String
+  user                User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  externalItemId      String                   @unique // provider's item/connection id (Plaid item_id today)
+  institutionId       String // Plaid's institution_id (e.g. "ins_3")
+  institutionName     String // human-readable (e.g. "Chase")
+  encryptedToken      String // AES-256-GCM encrypted access token — NEVER plaintext
+  status              PlaidItemStatus          @default(ACTIVE)
+  cursor              String? // /transactions/sync cursor for incremental sync
+  errorCode           String? // last Plaid error code when status = ERROR
+  lastSyncedAt        DateTime?
   // D2 Step 7B — last manual "Refresh"/"Sync Now" attempt (success or
   // failure), distinct from lastSyncedAt above (also written by the
   // scheduled sync job). Gates the manual-refresh cooldown only; the
@@ -525,11 +525,11 @@ model PlaidItem {
   // predating this column). Written by lib/plaid/refresh.ts and
   // lib/plaid/exchangeToken.ts; the future "Enable Investment Holdings" UI
   // renders when this is CONSENT_REQUIRED.
-  investmentsConsent PlaidInvestmentsConsent?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  investmentsConsent  PlaidInvestmentsConsent?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
 
-  accounts    Account[]           // legacy relation
+  accounts    Account[] // legacy relation
   connections AccountConnection[] // new relation
 
   @@index([userId])
@@ -552,10 +552,10 @@ model Connection {
   userId               String
   user                 User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   provider             ProviderType
-  externalConnectionId String?                    // provider's login/connection id, where one exists
-  credential           String?                    // encrypted; null for MANUAL; xpub/descriptor for WALLET watch-only — NEVER a private key
+  externalConnectionId String? // provider's login/connection id, where one exists
+  credential           String? // encrypted; null for MANUAL; xpub/descriptor for WALLET watch-only — NEVER a private key
   status               ConnectionStatus @default(ACTIVE)
-  cursor               String?                    // sync cursor, where the provider supports one
+  cursor               String? // sync cursor, where the provider supports one
   errorCode            String?
   lastSyncedAt         DateTime?
   createdAt            DateTime         @default(now())
@@ -637,22 +637,22 @@ model Account {
   id               String          @id @default(cuid())
   spaceId          String          @map("workspaceId")
   space            Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  ownerId          String?                          // who connected this account; nullable (SetNull on user delete)
+  ownerId          String? // who connected this account; nullable (SetNull on user delete)
   owner            User?           @relation(fields: [ownerId], references: [id], onDelete: SetNull)
   visibilityLevel  VisibilityLevel @default(PRIVATE)
   name             String
   type             AccountType
   institution      String
-  balance          Float           @default(0)      // current/ledger balance
-  availableBalance Float?                           // Plaid: balance after pending transactions clear
-  creditLimit      Float?                           // credit cards: limit from Plaid or manual entry
+  balance          Float           @default(0) // current/ledger balance
+  availableBalance Float? // Plaid: balance after pending transactions clear
+  creditLimit      Float? // credit cards: limit from Plaid or manual entry
   currency         String          @default("USD")
   lastUpdated      DateTime        @default(now())
-  deletedAt        DateTime?                        // soft delete — hides from UI, preserves history
+  deletedAt        DateTime? // soft delete — hides from UI, preserves history
 
   // Plaid — token lives on PlaidItem, not here
-  plaidAccountId String? @unique                   // Plaid's account_id for this specific account
-  plaidItemDbId  String?                           // FK → PlaidItem.id (our internal id)
+  plaidAccountId String?    @unique // Plaid's account_id for this specific account
+  plaidItemDbId  String? // FK → PlaidItem.id (our internal id)
   plaidItem      PlaidItem? @relation(fields: [plaidItemDbId], references: [id])
 
   // Crypto self-custody fields (wallet address accounts only)
@@ -684,12 +684,12 @@ model Account {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model FinancialAccount {
-  id               String           @id @default(cuid())
-  ownerType        AccountOwnerType
-  ownerUserId      String?
-  ownerUser        User?            @relation("UserOwnedFinancialAccounts", fields: [ownerUserId], references: [id], onDelete: SetNull)
-  ownerSpaceId     String?          @map("ownerWorkspaceId")
-  ownerSpace       Space?           @relation("SpaceOwnedFinancialAccounts", fields: [ownerSpaceId], references: [id], onDelete: SetNull)
+  id           String           @id @default(cuid())
+  ownerType    AccountOwnerType
+  ownerUserId  String?
+  ownerUser    User?            @relation("UserOwnedFinancialAccounts", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  ownerSpaceId String?          @map("ownerWorkspaceId")
+  ownerSpace   Space?           @relation("SpaceOwnedFinancialAccounts", fields: [ownerSpaceId], references: [id], onDelete: SetNull)
 
   // D11 (Phase 2 schema modernization): the human-accountable party independent
   // of the visibility owner. For ownerType=USER this is normally the same
@@ -699,20 +699,20 @@ model FinancialAccount {
   // nullable — backfilled from ownerUserId (falling back to the earliest
   // AccountConnection.connectedByUserId) for existing rows; set at creation
   // time for every new FinancialAccount going forward.
-  createdByUserId  String?
-  createdByUser    User?            @relation("FinancialAccountCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdByUserId String?
+  createdByUser   User?   @relation("FinancialAccountCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   // Canonical values — written by the AccountConnection with isCanonical = true
-  name             String
-  type             AccountType
-  institution      String
-  institutionId    String?          // Plaid institution_id (e.g. "ins_3")
-  mask             String?          // last 4 digits of account number
-  balance          Float            @default(0)
-  availableBalance Float?
-  creditLimit      Float?
-  currency         String           @default("USD")
-  lastUpdated           DateTime         @default(now())
+  name                 String
+  type                 AccountType
+  institution          String
+  institutionId        String? // Plaid institution_id (e.g. "ins_3")
+  mask                 String? // last 4 digits of account number
+  balance              Float       @default(0)
+  availableBalance     Float?
+  creditLimit          Float?
+  currency             String      @default("USD")
+  lastUpdated          DateTime    @default(now())
   // D4 Balance Freshness Provenance — the timestamp Plaid reported for when
   // the balance itself was last fetched from the institution. Distinct from
   // lastUpdated (which records when Fourth Meridian wrote to this row).
@@ -721,53 +721,56 @@ model FinancialAccount {
   // documents support only for ins_128026 / Capital One, but the field is typed
   // as optional on all AccountBalance responses). Never backfilled for existing
   // rows; null means "provenance unknown", not "balance is current".
-  balanceLastUpdatedAt  DateTime?
+  balanceLastUpdatedAt DateTime?
 
   // Plaid deduplication key
-  plaidAccountId   String?          @unique
+  plaidAccountId String? @unique
 
   // Display name metadata (additive — never overwritten by Plaid sync after creation).
   // Resolution order for what to show the user: displayName ?? officialName ?? plaidName ?? name.
   // `institution` (above) already serves as the human-readable institution name
   // (e.g. "Chase"), so no separate institutionName column was added.
-  plaidName        String?          // raw Plaid `name` value, captured once at import — never updated on resync
-  officialName     String?          // Plaid `official_name`, captured once at import — never updated on resync
-  displayName      String?          // user-editable override; null until the user renames the account
+  plaidName    String? // raw Plaid `name` value, captured once at import — never updated on resync
+  officialName String? // Plaid `official_name`, captured once at import — never updated on resync
+  displayName  String? // user-editable override; null until the user renames the account
 
   // Crypto self-custody fields
-  walletAddress    String?
-  walletChain      String?
-  nativeBalance    Float?
+  walletAddress String?
+  walletChain   String?
+  nativeBalance Float?
 
   // Debt-specific fields (optional — populated for credit cards, loans, lines of credit)
   // Legacy flat fields — kept for backward compatibility with existing UI/queries.
   // New debt-profile data (APR, due date, statement close day, promo APR, notes)
   // lives on the DebtProfile relation below; effective values prefer DebtProfile
   // when present and fall back to these flat columns otherwise.
-  debtSubtype      String?          // e.g. credit_card, line_of_credit, heloc, auto_loan, mortgage, personal_loan, student_loan
-  interestRate     Float?           // Annual Percentage Rate (APR), e.g. 19.99
-  minimumPayment   Float?           // Minimum monthly payment amount
+  debtSubtype    String? // e.g. credit_card, line_of_credit, heloc, auto_loan, mortgage, personal_loan, student_loan
+  interestRate   Float? // Annual Percentage Rate (APR), e.g. 19.99
+  minimumPayment Float? // Minimum monthly payment amount
 
-  syncStatus       String?          @default("pending")
-  deletedAt        DateTime?        // soft delete — preserves history
+  syncStatus String?   @default("pending")
+  deletedAt  DateTime? // soft delete — preserves history
 
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  connections           AccountConnection[]
+  connections              AccountConnection[]
   // SpaceAccountLink (D3) — the sole account-link path since WorkspaceAccountShare
   // was retired (v2.5-A Phase 4c).
-  spaceAccountLinks     SpaceAccountLink[]
-  duplicateCandidatesA  DuplicateAccountCandidate[] @relation("DuplicateCandidateA")
-  duplicateCandidatesB  DuplicateAccountCandidate[] @relation("DuplicateCandidateB")
-  goalContributions     GoalContribution[]
-  debtProfile           DebtProfile?
-  transactions          Transaction[]               @relation("FinancialAccountTransactions")
-  holdings              Holding[]
+  spaceAccountLinks        SpaceAccountLink[]
+  duplicateCandidatesA     DuplicateAccountCandidate[] @relation("DuplicateCandidateA")
+  duplicateCandidatesB     DuplicateAccountCandidate[] @relation("DuplicateCandidateB")
+  goalContributions        GoalContribution[]
+  debtProfile              DebtProfile?
+  transactions             Transaction[]               @relation("FinancialAccountTransactions")
+  holdings                 Holding[]
   // ProviderAccountIdentity (D2) — populated (Step 1C backfill + Step 2 dual-write).
-  providerIdentities    ProviderAccountIdentity[]
+  providerIdentities       ProviderAccountIdentity[]
   // ImportBatch (D2 Step 4D) — populated by the import pipeline.
-  importBatches         ImportBatch[]
+  importBatches            ImportBatch[]
+  // FlowType (v2.5.5 P3) — transactions whose counterparty ("other side") is
+  // this account. Relation-only back-reference; populated from P4 onward.
+  counterpartyTransactions Transaction[]               @relation("TransactionCounterpartyAccount")
 
   @@index([ownerUserId])
   @@index([ownerSpaceId])
@@ -790,12 +793,12 @@ model DebtProfile {
   financialAccountId String           @unique
   financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
 
-  apr               Float?           // user-entered APR, e.g. 24.99 — preferred over FinancialAccount.interestRate when set
-  minimumPayment    Float?           // user-entered minimum payment — preferred over FinancialAccount.minimumPayment when set
-  dueDay            Int?             // day of month payment is due (1-31)
-  statementCloseDay Int?             // day of month the statement closes (1-31)
-  promoAprEndDate   DateTime?        @db.Date // when a promotional/intro APR expires
-  notes             String?          @db.Text
+  apr               Float? // user-entered APR, e.g. 24.99 — preferred over FinancialAccount.interestRate when set
+  minimumPayment    Float? // user-entered minimum payment — preferred over FinancialAccount.minimumPayment when set
+  dueDay            Int? // day of month payment is due (1-31)
+  statementCloseDay Int? // day of month the statement closes (1-31)
+  promoAprEndDate   DateTime? @db.Date // when a promotional/intro APR expires
+  notes             String?   @db.Text
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -821,22 +824,22 @@ model AccountConnection {
   connectedByUser    User             @relation("UserConnectedAccounts", fields: [connectedByUserId], references: [id], onDelete: Cascade)
 
   // Source credentials — exactly one of plaidItemDbId or (walletAddress) will be set
-  plaidItemDbId      String?
-  plaidItem          PlaidItem?       @relation(fields: [plaidItemDbId], references: [id], onDelete: SetNull)
+  plaidItemDbId String?
+  plaidItem     PlaidItem? @relation(fields: [plaidItemDbId], references: [id], onDelete: SetNull)
 
   // D2 — populated for PLAID by lib/plaid/exchangeToken.ts alongside
   // plaidItemDbId. Parallel path to plaidItemDbId for future non-Plaid
   // providers; existing Plaid/manual/wallet behavior unchanged.
-  connectionId       String?
-  connection         Connection?      @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  connectionId String?
+  connection   Connection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
 
-  syncStatus         String           @default("pending")
-  isCanonical        Boolean          @default(true)   // authoritative balance source for this account
-  lastSyncedAt       DateTime?
-  deletedAt          DateTime?        // soft delete on account removal; preserves Holding/Transaction history
+  syncStatus   String    @default("pending")
+  isCanonical  Boolean   @default(true) // authoritative balance source for this account
+  lastSyncedAt DateTime?
+  deletedAt    DateTime? // soft delete on account removal; preserves Holding/Transaction history
 
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([financialAccountId])
   @@index([connectedByUserId])
@@ -878,8 +881,8 @@ model SpaceAccountLink {
   revokedByUserId    String?
   revokedByUser      User?                @relation("SpaceAccountLinkRevoker", fields: [revokedByUserId], references: [id], onDelete: SetNull)
 
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([spaceId, financialAccountId])
   @@index([spaceId, status])
@@ -901,33 +904,33 @@ model SpaceAccountLink {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model DuplicateAccountCandidate {
-  id                String                    @id @default(cuid())
+  id               String                   @id @default(cuid())
   // Nullable: mergeArchivedDuplicateIntoCanonical doesn't always have a space
   // in scope (the restore routes resolve by account ownership, not by Space).
   // A merge is a fact about an account pair, not inherently scoped to one
   // Space. Populated when the caller has a space in context (e.g. Plaid
   // import); null otherwise (e.g. the generic/manual restore routes).
-  spaceId           String?                   @map("workspaceId")
+  spaceId          String?                  @map("workspaceId")
   // Directional by convention, not by name: accountA is always the
   // surviving canonical ("winner") row, accountB is always the archived row
   // whose history was folded into it ("loser"). See
   // mergeArchivedDuplicateIntoCanonical in lib/accounts/reconcile.ts.
-  accountAId        String
-  accountA          FinancialAccount          @relation("DuplicateCandidateA", fields: [accountAId], references: [id], onDelete: Cascade)
-  accountBId        String
-  accountB          FinancialAccount          @relation("DuplicateCandidateB", fields: [accountBId], references: [id], onDelete: Cascade)
-  status            DuplicateStatus           @default(PENDING)
-  detectionSource   DuplicateDetectionSource
-  detectedAt        DateTime                  @default(now())
+  accountAId       String
+  accountA         FinancialAccount         @relation("DuplicateCandidateA", fields: [accountAId], references: [id], onDelete: Cascade)
+  accountBId       String
+  accountB         FinancialAccount         @relation("DuplicateCandidateB", fields: [accountBId], references: [id], onDelete: Cascade)
+  status           DuplicateStatus          @default(PENDING)
+  detectionSource  DuplicateDetectionSource
+  detectedAt       DateTime                 @default(now())
   // resolvedAt/resolvedByUserId predate D1 and still read as "a human
   // reviewed this." For every row written by the automatic merge path,
   // resolvedByUserId is null (no human in the loop) and resolvedAt is set to
   // the same instant as detectedAt — there is no review gap to measure.
-  resolvedAt        DateTime?
-  resolvedByUserId  String?
-  resolvedByUser    User?                     @relation("DuplicateResolver", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+  resolvedAt       DateTime?
+  resolvedByUserId String?
+  resolvedByUser   User?                    @relation("DuplicateResolver", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
 
-  createdAt         DateTime                  @default(now())
+  createdAt DateTime @default(now())
 
   // Kept as a true unique constraint, not relaxed to append-only: a later
   // re-merge of the same (winner, loser) pair (e.g. a second restore attempt
@@ -947,46 +950,46 @@ model DuplicateAccountCandidate {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model SpaceGoal {
-  id              String        @id @default(cuid())
-  spaceId         String        @map("workspaceId")
-  space           Space         @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  id              String       @id @default(cuid())
+  spaceId         String       @map("workspaceId")
+  space           Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   createdByUserId String
-  createdBy       User          @relation("GoalCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  createdBy       User         @relation("GoalCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
   name            String
   description     String?
-  category        GoalCategory  @default(GENERAL)
-  goalType        GoalType      @default(FINANCIAL)
-  status          GoalStatus    @default(ACTIVE)
+  category        GoalCategory @default(GENERAL)
+  goalType        GoalType     @default(FINANCIAL)
+  status          GoalStatus   @default(ACTIVE)
 
   // ── FINANCIAL fields ──────────────────────────────────────────────────────
-  targetAmount    Float?                          // required for FINANCIAL & SPENDING_LIMIT
-  currentAmount   Float         @default(0)       // denormalized — updated by sync job
-  targetDate      DateTime?     @db.Date
+  targetAmount  Float? // required for FINANCIAL & SPENDING_LIMIT
+  currentAmount Float     @default(0) // denormalized — updated by sync job
+  targetDate    DateTime? @db.Date
 
   // ── HABIT fields ──────────────────────────────────────────────────────────
-  habitFrequency  String?                         // DAILY | WEEKLY | MONTHLY
-  currentStreak   Int           @default(0)
-  longestStreak   Int           @default(0)
-  lastCheckIn     DateTime?
+  habitFrequency String? // DAILY | WEEKLY | MONTHLY
+  currentStreak  Int       @default(0)
+  longestStreak  Int       @default(0)
+  lastCheckIn    DateTime?
 
   // ── SPENDING_LIMIT fields ─────────────────────────────────────────────────
-  spendingCategory String?                        // free-text category label
+  spendingCategory String? // free-text category label
 
   // ── DEBT_REDUCTION fields ─────────────────────────────────────────────────
-  linkedAccountId       String?                   // FK to FinancialAccount (soft ref — no cascade)
-  targetReductionAmount Float?                    // pay down by $X
-  targetReductionPct    Float?                    // pay down by X%
-  snapshotBalance       Float?                    // balance at goal creation (for progress calc)
+  linkedAccountId       String? // FK to FinancialAccount (soft ref — no cascade)
+  targetReductionAmount Float? // pay down by $X
+  targetReductionPct    Float? // pay down by X%
+  snapshotBalance       Float? // balance at goal creation (for progress calc)
 
-  completedAt     DateTime?
-  archivedAt      DateTime?                     // set when goal is archived
-  deletedAt       DateTime?                     // soft delete — set when moved to trash
+  completedAt DateTime?
+  archivedAt  DateTime? // set when goal is archived
+  deletedAt   DateTime? // soft delete — set when moved to trash
 
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  contributions   GoalContribution[]
-  checkIns        GoalCheckIn[]
+  contributions GoalContribution[]
+  checkIns      GoalCheckIn[]
 
   @@index([spaceId, status])
   @@index([spaceId, category])
@@ -1024,7 +1027,7 @@ model GoalContribution {
   financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
   includeBalance     Boolean          @default(true)
 
-  createdAt          DateTime         @default(now())
+  createdAt DateTime @default(now())
 
   @@unique([goalId, financialAccountId])
   @@index([goalId])
@@ -1046,18 +1049,18 @@ model GoalContribution {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model SpaceDashboardSection {
-  id        String             @id @default(cuid())
-  spaceId   String             @map("workspaceId")
-  space     Space              @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  key       String             // e.g. "net_worth", "goals_progress", "debt_payoff"
-  label     String             // display label
-  tab       SpaceDashboardTab  @default(OVERVIEW)
-  enabled   Boolean            @default(true)
-  order     Int                @default(0)
-  config    Json?              // section-specific settings
+  id      String            @id @default(cuid())
+  spaceId String            @map("workspaceId")
+  space   Space             @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  key     String // e.g. "net_worth", "goals_progress", "debt_payoff"
+  label   String // display label
+  tab     SpaceDashboardTab @default(OVERVIEW)
+  enabled Boolean           @default(true)
+  order   Int               @default(0)
+  config  Json? // section-specific settings
 
-  createdAt DateTime           @default(now())
-  updatedAt DateTime           @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([spaceId, key])
   @@index([spaceId, tab])
@@ -1110,6 +1113,48 @@ model Holding {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FlowType semantics (v2.5.5 Financial Intelligence — Transaction Semantics)
+// Native enums promoted 1:1 from the P1 classifier's TypeScript unions
+// (lib/transactions/flow-classifier.ts). Additive; Phase A adds the types and
+// nullable columns only — no write-time population, backfill, or read cutover.
+// See docs/initiatives/flowtype/P3_SCHEMA_DESIGN_INVESTIGATION.md.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Economic KIND of a transaction (the canonical flow-semantics field).
+enum FlowType {
+  SPENDING
+  INCOME
+  REFUND
+  DEBT_PAYMENT
+  TRANSFER
+  INVESTMENT
+  FEE
+  INTEREST
+  ADJUSTMENT
+  UNKNOWN
+}
+
+/// Economic DIRECTION, decoupled from the per-account amount sign.
+enum FlowDirection {
+  INFLOW
+  OUTFLOW
+  INTERNAL
+  UNKNOWN
+}
+
+/// Stable, auditable reason a row received its flow classification.
+enum FlowClassificationReason {
+  PLAID_PFC_DETAILED
+  PLAID_PFC_PRIMARY
+  CATEGORY_FLOW_VALUE
+  CATEGORY_INVESTMENT_VALUE
+  ACCOUNT_TYPE_CONTEXT
+  SIGN_DEFAULT_SPENDING
+  SIGN_DEFAULT_INFLOW
+  AMBIGUOUS_UNKNOWN
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Transaction
 // Pulled from Plaid or entered manually. Positive = money in, negative = out.
 //
@@ -1123,9 +1168,9 @@ model Holding {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Transaction {
-  id          String              @id @default(cuid())
-  accountId   String?
-  account     Account?            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id        String   @id @default(cuid())
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   financialAccountId String?
   financialAccount   FinancialAccount? @relation("FinancialAccountTransactions", fields: [financialAccountId], references: [id], onDelete: Cascade)
@@ -1148,13 +1193,39 @@ model Transaction {
   // at Step 4D implementation time, not assumed here. See
   // docs/initiatives/d2/investigations/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §3.
   importBatchId         String?
-  importBatch            ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  importBatch           ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   externalTransactionId String?
 
   // D2 Step 4D-3 — soft-delete set by import rollback
   // (app/api/imports/[id]/rollback → ImportBatch.status = ROLLED_BACK).
   // See D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §1.
-  deletedAt              DateTime?
+  deletedAt DateTime?
+
+  // ── FlowType semantics (v2.5.5 P3 Phase A — additive, nullable) ────────────
+  // Persists the deterministic classifier output (lib/transactions/flow-classifier.ts).
+  // Phase A only creates these columns; nothing writes or reads them yet
+  // (write-time population = Phase B, backfill = P4, read cutover = P5).
+  // counterpartyAccountId is the best-effort "other side" of the movement when
+  // it is a known owned account — the destination-aware seam that makes
+  // per-liability debt attribution (KD-18) deterministic. onDelete: SetNull
+  // mirrors importBatchId: deleting the referenced account degrades the pointer
+  // to null, never deletes the transaction.
+  flowType                 FlowType?
+  flowDirection            FlowDirection?
+  counterpartyAccountId    String?
+  counterpartyAccount      FinancialAccount?         @relation("TransactionCounterpartyAccount", fields: [counterpartyAccountId], references: [id], onDelete: SetNull)
+  classificationConfidence Float?
+  classificationReason     FlowClassificationReason?
+  classifierVersion        Int?
+  // Raw Plaid personal_finance_category hints (captured in memory since P2).
+  // Kept as String — Plaid owns/versions this taxonomy; it is a provider hint,
+  // not Fourth Meridian semantics (which live in flowType).
+  pfcPrimary               String?
+  pfcDetailed              String?
+  pfcConfidenceLevel       String?
+  // Forward seed for the Merchant Engine — the stable Plaid merchant key. Lets a
+  // future Merchant table + merchantId FK backfill without a Plaid re-fetch.
+  merchantEntityId         String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1165,6 +1236,11 @@ model Transaction {
   @@index([financialAccountId, date])
   @@index([date])
   @@index([importBatchId])
+  // FlowType rollup indexes (P3 Phase A): per-account/per-liability, global
+  // per-flow lenses, and reverse counterparty attribution.
+  @@index([financialAccountId, flowType, date])
+  @@index([flowType, date])
+  @@index([counterpartyAccountId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1199,40 +1275,40 @@ enum ImportBatchStatus {
 }
 
 model ImportBatch {
-  id                 String            @id @default(cuid())
+  id String @id @default(cuid())
 
   financialAccountId String
-  financialAccount   FinancialAccount  @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
 
-  createdByUserId    String?
-  createdByUser      User?             @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdByUserId String?
+  createdByUser   User?   @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
 
-  connectionId       String?
-  connection         Connection?       @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  connectionId String?
+  connection   Connection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
 
   // D2 Step 4D-5b — which ImportMappingProfile (if any) resolved this
   // batch's columns. Set only on the saved-profile-matched path; null for
   // the explicit-mapping and auto-detect paths. onDelete: SetNull so
   // deleting a profile later never deletes the historical batches that used
   // it. See docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md §2.
-  mappingProfileId   String?
-  mappingProfile     ImportMappingProfile? @relation(fields: [mappingProfileId], references: [id], onDelete: SetNull)
+  mappingProfileId String?
+  mappingProfile   ImportMappingProfile? @relation(fields: [mappingProfileId], references: [id], onDelete: SetNull)
 
-  source             ImportSource
-  originalFilename   String?
-  status             ImportBatchStatus @default(PENDING)
-  rowCount           Int               @default(0)
-  importedCount      Int               @default(0)
-  skippedCount       Int               @default(0)
+  source                ImportSource
+  originalFilename      String?
+  status                ImportBatchStatus @default(PENDING)
+  rowCount              Int               @default(0)
+  importedCount         Int               @default(0)
+  skippedCount          Int               @default(0)
   // D2 Step 4D-1 — additive counters needed once a real classifier (CSV
   // import) exists. matchedCount: rows that resolved to an already-existing
   // Transaction (no new row written) — distinct from skippedCount, which
   // covers rows skipped for other reasons (e.g. an ambiguous fingerprint
   // match). failedCount: rows that could not be parsed/validated at all. See
   // docs/initiatives/d2/investigations/D2_STEP4D1_CSV_IMPORT_MVP_INVESTIGATION.md §8.
-  matchedCount       Int               @default(0)
-  failedCount        Int               @default(0)
-  errorSummary       Json?
+  matchedCount          Int               @default(0)
+  failedCount           Int               @default(0)
+  errorSummary          Json?
   // D2 Step 4D-5b — snapshot of the actual resolved CsvColumnMap, written on
   // every import regardless of which resolver path produced it (auto-detect,
   // explicit mapping, or saved profile). Exists so a profile that's later
@@ -1240,11 +1316,11 @@ model ImportBatch {
   // as having used — see D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §2.
   resolvedColumnMapping Json?
 
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
-  completedAt        DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
 
-  transactions       Transaction[]
+  transactions Transaction[]
 
   @@index([financialAccountId])
   @@index([createdByUserId])
@@ -1271,27 +1347,27 @@ model ImportBatch {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model ImportMappingProfile {
-  id               String       @id @default(cuid())
+  id String @id @default(cuid())
 
-  spaceId          String
-  space            Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  spaceId String
+  space   Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
 
   name             String
   source           ImportSource // informational only — NOT part of the matching key
-  institutionLabel String?      // informational only, e.g. "Chase"
+  institutionLabel String? // informational only, e.g. "Chase"
 
-  mapping          Json         // resolved CsvColumnMap shape — see module comment above
+  mapping Json // resolved CsvColumnMap shape — see module comment above
 
-  createdByUserId  String?
-  createdByUser    User?        @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdByUserId String?
+  createdByUser   User?   @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
 
-  lastUsedAt       DateTime?
-  useCount         Int          @default(0)
+  lastUsedAt DateTime?
+  useCount   Int       @default(0)
 
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  importBatches    ImportBatch[]
+  importBatches ImportBatch[]
 
   @@unique([spaceId, name])
   @@index([spaceId])
@@ -1366,7 +1442,7 @@ model CreditScore {
   id         String   @id @default(cuid())
   userId     String
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  score      Int                      // 300–850
+  score      Int // 300–850
   source     String   @default("manual") // "manual" | "chase_app" | "amex_app" | "experian"
   recordedAt DateTime @default(now())
   createdAt  DateTime @default(now())
@@ -1381,17 +1457,17 @@ model CreditScore {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model AuditLog {
-  id                String   @id @default(cuid())
-  userId            String?
-  user              User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  spaceId           String?  @map("workspaceId")
-  space             Space?   @relation(fields: [spaceId], references: [id], onDelete: SetNull)
-  action            String   // See AuditAction constants in lib/audit-actions.ts
-  metadata          Json?    // e.g. { institution: "Chase", accountCount: 3 }
-  ipAddress         String?
-  userAgent         String?
+  id                 String   @id @default(cuid())
+  userId             String?
+  user               User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  spaceId            String?  @map("workspaceId")
+  space              Space?   @relation(fields: [spaceId], references: [id], onDelete: SetNull)
+  action             String // See AuditAction constants in lib/audit-actions.ts
+  metadata           Json? // e.g. { institution: "Chase", accountCount: 3 }
+  ipAddress          String?
+  userAgent          String?
   performedByAdminId String? // set when a SYSTEM_ADMIN performs an action on behalf of another user
-  createdAt         DateTime @default(now())
+  createdAt          DateTime @default(now())
 
   @@index([userId, createdAt])
   @@index([spaceId, createdAt])
@@ -1410,7 +1486,7 @@ model RecoveryCode {
   id        String    @id @default(cuid())
   userId    String
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  codeHash  String    // bcrypt hash (cost 10) of the plaintext code — NEVER stored as plaintext
+  codeHash  String // bcrypt hash (cost 10) of the plaintext code — NEVER stored as plaintext
   usedAt    DateTime?
   createdAt DateTime  @default(now())
   expiresAt DateTime?
@@ -1432,12 +1508,12 @@ model UserSession {
   id           String    @id @default(cuid())
   userId       String
   user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  sessionToken String    @unique  // random opaque identifier (not the JWT itself)
+  sessionToken String    @unique // random opaque identifier (not the JWT itself)
   ipAddress    String?
   userAgent    String?
   lastActiveAt DateTime  @default(now())
   revokedAt    DateTime?
-  revokedById  String?   // admin userId who revoked this session
+  revokedById  String? // admin userId who revoked this session
   createdAt    DateTime  @default(now())
 
   @@index([userId])
@@ -1452,10 +1528,10 @@ model UserSession {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model PlatformSetting {
-  key       String   @id  // e.g. "require_totp_system_admin"
-  value     String        // "true" | "false" | numeric string
-  updatedAt DateTime @updatedAt
-  updatedById String?     // userId of last admin who changed this setting
+  key         String   @id // e.g. "require_totp_system_admin"
+  value       String // "true" | "false" | numeric string
+  updatedAt   DateTime @updatedAt
+  updatedById String? // userId of last admin who changed this setting
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1469,7 +1545,7 @@ model PlatformSetting {
 // ─────────────────────────────────────────────────────────────────────────────
 model RateLimit {
   id          String   @id @default(cuid())
-  key         String   // scope:endpoint:subject
+  key         String // scope:endpoint:subject
   windowStart DateTime // start of the fixed-window bucket
   count       Int      @default(0)
   createdAt   DateTime @default(now())
