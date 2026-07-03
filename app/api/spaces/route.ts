@@ -80,35 +80,52 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // Build default section rows for this category
   const sectionPresets = getPresetsForCategory(resolvedCategory);
 
-  const space = await db.space.create({
-    data: {
-      name:        name.trim(),
-      description: description?.trim() || null,
-      type:        "SHARED",
-      category:    resolvedCategory,
-      isPublic:    !!isPublic,
-      members: {
-        create: { userId: user.id, role: "OWNER" },
+  // Space creation, membership, dashboard sections, and the Space's AiAgent
+  // must all succeed together. Every Space has exactly one AiAgent (schema
+  // enforces @@unique on spaceId); creating it here — in the same transaction
+  // as the Space — mirrors the register route and prevents the "No AiAgent
+  // found" gap that buildContext() would otherwise hit on the Daily Brief.
+  const space = await db.$transaction(async (tx) => {
+    const created = await tx.space.create({
+      data: {
+        name:        name.trim(),
+        description: description?.trim() || null,
+        type:        "SHARED",
+        category:    resolvedCategory,
+        isPublic:    !!isPublic,
+        members: {
+          create: { userId: user.id, role: "OWNER" },
+        },
+        dashboardSections: {
+          create: sectionPresets.map((s) => ({
+            key:     s.key,
+            label:   s.label,
+            tab:     s.tab,
+            enabled: s.enabled,
+            order:   s.order,
+            config:  s.config == null ? Prisma.DbNull : s.config as Prisma.InputJsonValue,
+          })),
+        },
       },
-      dashboardSections: {
-        create: sectionPresets.map((s) => ({
-          key:     s.key,
-          label:   s.label,
-          tab:     s.tab,
-          enabled: s.enabled,
-          order:   s.order,
-          config:  s.config == null ? Prisma.DbNull : s.config as Prisma.InputJsonValue,
-        })),
+      include: {
+        members: {
+          include: { user: { select: { id: true, name: true, username: true } } },
+        },
+        dashboardSections: {
+          orderBy: [{ tab: "asc" }, { order: "asc" }],
+        },
       },
-    },
-    include: {
-      members: {
-        include: { user: { select: { id: true, name: true, username: true } } },
+    });
+
+    await tx.aiAgent.create({
+      data: {
+        spaceId:    created.id,
+        name:       `${created.name} Agent`,
+        agentScope: [],   // empty → full template manifest is used
       },
-      dashboardSections: {
-        orderBy: [{ tab: "asc" }, { order: "asc" }],
-      },
-    },
+    });
+
+    return created;
   });
 
   await db.auditLog.create({

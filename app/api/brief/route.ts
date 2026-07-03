@@ -480,15 +480,28 @@ export async function GET() {
     .filter((r): r is PromiseFulfilledResult<SpaceContext_AI> => r.status === "fulfilled")
     .map((r) => r.value);
 
-  // Log failures so they are visible without crashing the brief
+  // Log failures so they are visible without crashing the brief.
+  // A missing AiAgent is an expected, self-correcting data-integrity gap
+  // (auto-created on Space creation; backfilled by scripts/backfill-ai-agents.ts).
+  // It degrades gracefully here, so aggregate it into a single warn rather than
+  // one error per Space per load. Any other rejection is unexpected — surface it.
+  const missingAgentSpaceIds: string[] = [];
   contextResults.forEach((r, i) => {
-    if (r.status === "rejected") {
-      console.error(
-        `[brief] buildContext failed for Space ${memberships[i]?.spaceId}:`,
-        r.reason,
-      );
+    if (r.status !== "rejected") return;
+    const spaceId = memberships[i]?.spaceId;
+    const message = r.reason instanceof Error ? r.reason.message : String(r.reason);
+    if (message.includes("No AiAgent found")) {
+      if (spaceId) missingAgentSpaceIds.push(spaceId);
+    } else {
+      console.error(`[brief] buildContext failed for Space ${spaceId}:`, r.reason);
     }
   });
+  if (missingAgentSpaceIds.length > 0) {
+    console.warn(
+      `[brief] Skipped ${missingAgentSpaceIds.length} Space(s) with no AiAgent ` +
+      `(run scripts/backfill-ai-agents.ts to backfill): ${missingAgentSpaceIds.join(", ")}`,
+    );
+  }
 
   // ── Primary context ────────────────────────────────────────────────────────
   const primaryCtx =

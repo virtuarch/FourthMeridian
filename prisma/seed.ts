@@ -399,7 +399,19 @@ async function main() {
   // ── AI Agents ────────────────────────────────────────────────────────────────
   const janeAgent = await prisma.aiAgent.create({ data: { spaceId: janeSpace.id, name: "Jane's Financial Agent" } });
   const johnAgent = await prisma.aiAgent.create({ data: { spaceId: johnSpace.id, name: "John's Financial Agent" } });
-  console.log("   ✓ AiAgents");
+  // Every Space has exactly one AiAgent. The shared/category Spaces need one
+  // too, or buildContext() throws "No AiAgent found" on the Daily Brief.
+  await prisma.aiAgent.createMany({
+    data: [
+      { spaceId: householdSpace.id,  name: "Smith-Doe Household Agent" },
+      { spaceId: debtSpace.id,       name: "Debt Payoff Tracker Agent" },
+      { spaceId: japanSpace.id,      name: "Japan Trip 2027 Agent"     },
+      { spaceId: investmentSpace.id, name: "Investment Club Agent"     },
+      { spaceId: businessSpace.id,   name: "JD Freelance LLC Agent"    },
+      { spaceId: propertySpace.id,   name: "Austin Home Agent"         },
+    ],
+  });
+  console.log("   ✓ AiAgents: 8");
 
   // ── Credit Scores ────────────────────────────────────────────────────────────
   await prisma.creditScore.createMany({

@@ -10,15 +10,18 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
-    "db:reset": "prisma migrate reset"
+    "db:reset": "prisma migrate reset",
+    "backfill:ai-agents": "tsx scripts/backfill-ai-agents.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@ogtirth/liquid-glass-oss": "0.1.0",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^3.0.3",
     "exceljs": "^4.4.0",
+    "liquid-glass-web-react": "^0.1.1",
     "lucide-react": "^1.17.0",
     "next": "16.2.7",
     "next-auth": "^4.24.14",
