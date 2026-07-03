@@ -131,6 +131,9 @@ import {
 import { runImportPipeline } from "@/lib/imports/pipeline";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
+// FlowType P5 Slice 0 — same classification contract as the Plaid sync write path.
+import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
+import { buildFlowInputFromRow, buildFlowWriteFields } from "@/lib/transactions/plaid-flow-input";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -302,6 +305,34 @@ export const POST = withApiHandler(async (
   // counter (see D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §5).
   const updatedTransactionIds: string[] = [];
 
+  // FlowType P5 Slice 0 — populate flow columns on import writes using the same
+  // contract as lib/plaid/syncTransactions.ts. Account context is loaded ONCE per
+  // batch (every row targets this single FinancialAccount). CSV/Excel/QuickBooks
+  // carry no Plaid PFC, so pfc*/merchantEntityId are null on create; on
+  // update-on-match they are preserved from the existing row (never nulled).
+  // counterpartyAccountId stays null throughout (no inference).
+  const flowAcct = await db.financialAccount.findUnique({
+    where:  { id: financialAccountId },
+    select: { type: true, debtSubtype: true },
+  });
+  const flowAccountContext = {
+    accountType: (flowAcct?.type as string | null) ?? null,
+    debtSubtype: flowAcct?.debtSubtype ?? null,
+  };
+  function computeFlowFields(rowLike: {
+    category:           string;
+    amount:             number;
+    merchant:           string | null;
+    description:        string | null;
+    pfcPrimary:         string | null;
+    pfcDetailed:        string | null;
+    pfcConfidenceLevel: string | null;
+    merchantEntityId:   string | null;
+  }) {
+    const { input, captured } = buildFlowInputFromRow(rowLike, flowAccountContext);
+    return buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
+  }
+
   for (const row of rows) {
     const lineNumber = row.lineNumber; // data-row index, 1-indexed, header row excluded
 
@@ -321,6 +352,17 @@ export const POST = withApiHandler(async (
       );
 
       if (result.outcome === "CREATE") {
+        // FlowType P5 Slice 0 — classify from the incoming row (no Plaid PFC).
+        const flowFields = computeFlowFields({
+          category:           row.category,
+          amount:             row.amount,
+          merchant:           row.merchant,
+          description:        row.description,
+          pfcPrimary:         null,
+          pfcDetailed:        null,
+          pfcConfidenceLevel: null,
+          merchantEntityId:   null,
+        });
         await db.transaction.create({
           data: {
             financialAccountId,
@@ -332,6 +374,7 @@ export const POST = withApiHandler(async (
             pending:               false,
             externalTransactionId: row.externalTransactionId,
             importBatchId:         batch.id, // only set on rows this batch creates — never on MATCH
+            ...flowFields,
           },
         });
         created++;
@@ -344,7 +387,12 @@ export const POST = withApiHandler(async (
         if (getImportProviderCapabilities(source).supportsUpdateOnMatch && result.matchedVia === "externalId") {
           const existing = await db.transaction.findUnique({
             where:  { id: result.transactionId },
-            select: { date: true, amount: true, merchant: true, description: true, category: true },
+            select: {
+              date: true, amount: true, merchant: true, description: true, category: true,
+              // FlowType P5 Slice 0 — read existing provider hints so a re-classify
+              // preserves them (never overwrites pfc/merchantEntityId with null).
+              pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true, merchantEntityId: true,
+            },
           });
           if (existing) {
             const diff = computeQuickBooksUpdateDiff(existing, {
@@ -355,7 +403,24 @@ export const POST = withApiHandler(async (
               category:    row.category,
             });
             if (diff) {
-              await db.transaction.update({ where: { id: result.transactionId }, data: diff });
+              // FlowType P5 Slice 0 — re-classify from the incoming values so a
+              // changed category/amount never leaves flowType stale (the P4
+              // backfill would not re-select a current-version row). Existing
+              // provider hints are re-fed and preserved.
+              const flowFields = computeFlowFields({
+                category:           row.category,
+                amount:             row.amount,
+                merchant:           row.merchant,
+                description:        row.description,
+                pfcPrimary:         existing.pfcPrimary,
+                pfcDetailed:        existing.pfcDetailed,
+                pfcConfidenceLevel: existing.pfcConfidenceLevel,
+                merchantEntityId:   existing.merchantEntityId,
+              });
+              await db.transaction.update({
+                where: { id: result.transactionId },
+                data:  { ...diff, ...flowFields },
+              });
               updatedTransactionIds.push(result.transactionId);
             }
           }
