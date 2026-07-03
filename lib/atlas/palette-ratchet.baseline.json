@@ -15,7 +15,6 @@
   "components/dashboard/InvestmentsClient.tsx": 78,
   "components/dashboard/KnowledgeAcquisitionCard.tsx": 23,
   "components/dashboard/ManageSpaceModal.tsx": 1,
-  "components/dashboard/NetWorthCard.tsx": 11,
   "components/dashboard/ReconnectAccountButton.tsx": 2,
   "components/dashboard/RemoveAccountButton.tsx": 4,
   "components/dashboard/SettingsClient.tsx": 49,

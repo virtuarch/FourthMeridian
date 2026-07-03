@@ -1,5 +1,5 @@
 "use client";
-import { Card, CardTitle } from "@/components/ui/Card";
+import { DataCard } from "@/components/atlas/DataCard";
 import { TrendingUp, TrendingDown } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 
@@ -23,38 +23,40 @@ export function NetWorthCard({ netWorth, totalAssets, totalDebt, liquid, change3
   const pct = prevWorth !== 0 ? (change30d / Math.abs(prevWorth)) * 100 : 0;
 
   return (
-    <Card className="col-span-2">
-      <CardTitle>{title}</CardTitle>
+    <DataCard title={title} className="col-span-2">
       <div className="flex items-end justify-between mt-1">
-        <p className="text-4xl font-bold tracking-tight text-white">{fmt(netWorth)}</p>
+        <p className="text-4xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>{fmt(netWorth)}</p>
         <div className="flex flex-col items-end mb-1 gap-0.5">
-          <span className="text-xs text-gray-500 font-medium">{changeLabel}</span>
-          <span className={`flex items-center gap-1 text-sm font-semibold ${positive ? "text-emerald-400" : "text-red-400"}`}>
+          <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>{changeLabel}</span>
+          <span
+            className="flex items-center gap-1 text-sm font-semibold"
+            style={{ color: positive ? "var(--accent-positive)" : "var(--accent-negative)" }}
+          >
             {positive ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
             <span className="text-xs font-medium opacity-80">({pct.toFixed(1)}%)</span>
             {fmt(change30d)}
           </span>
         </div>
       </div>
-      <div className="flex justify-between mt-3 border-t border-gray-700 pt-3">
+      <div className="flex justify-between mt-3 border-t pt-3" style={{ borderColor: "var(--border-hairline)" }}>
         {!hideInvestments && (
           <div>
-            <p className="text-xs text-gray-400">Investments</p>
-            <p className="text-sm font-semibold text-emerald-400">{fmt(totalAssets)}</p>
+            <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Investments</p>
+            <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(totalAssets)}</p>
           </div>
         )}
         <div>
-          <p className="text-xs text-gray-400">Liquid</p>
-          <p className="text-sm font-semibold text-blue-400">{fmt(liquid)}</p>
+          <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Liquid</p>
+          <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(liquid)}</p>
         </div>
         <div>
-          <p className="text-xs text-gray-400">Debt</p>
-          <p className="text-sm font-semibold text-red-400">{fmt(Math.abs(totalDebt))}</p>
+          <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Debt</p>
+          <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(Math.abs(totalDebt))}</p>
         </div>
       </div>
       {lastUpdated && (
-        <p className="text-xs text-gray-600 mt-2">Updated {lastUpdated}</p>
+        <p className="text-xs mt-2" style={{ color: "var(--text-faint)" }}>Updated {lastUpdated}</p>
       )}
-    </Card>
+    </DataCard>
   );
 }
