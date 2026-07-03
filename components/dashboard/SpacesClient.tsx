@@ -50,6 +50,8 @@ import {
 } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { GlassButton } from "@/components/atlas/GlassButton";
+import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
+import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import {
   CATEGORY_LABELS,
   CATEGORY_ICONS,
@@ -727,6 +729,12 @@ function InviteBanner({ invites, onAction }: { invites: Invite[]; onAction: () =
 // straight from headline to subtitle.
 
 function SpacesHeader({ onCreateSpace }: { onCreateSpace: () => void }) {
+  // Phase 1 Liquid pilot — the single Create Space CTA is the one Spaces surface
+  // that opts into the Liquid material; everything else stays Atlas Glass. Falls
+  // back to the original GlassButton when Liquid isn't supported (useAtlasLiquid:
+  // no WebGL / prefers-reduced-transparency / ?atlasLiquid=0). Behavior (opening
+  // CreateSpaceModal via onCreateSpace) is identical on both paths.
+  const liquid = useAtlasLiquid();
   return (
     <div className="pt-2 pb-8 md:pb-10 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-5">
       <div>
@@ -737,14 +745,24 @@ function SpacesHeader({ onCreateSpace }: { onCreateSpace: () => void }) {
           Everything you build, manage, and share lives here.
         </p>
       </div>
-      {/* Replaces the old permanently-visible inline Create Space panel —
-          the form now lives in CreateSpaceModal (mounted once from
-          DashboardChrome.tsx), opened via the same "open-create-space"
-          window event the Sidebar's own Create Space row also dispatches. */}
-      <GlassButton onClick={onCreateSpace} tone="meridian" className="shrink-0 sm:mt-1">
-        <Plus size={15} />
-        Create Space
-      </GlassButton>
+      {/* Opens CreateSpaceModal (mounted once from DashboardChrome.tsx) via the
+          same "open-create-space" window event the Sidebar's row dispatches. */}
+      {liquid ? (
+        <AtlasLiquidCta
+          onClick={onCreateSpace}
+          ariaLabel="Create Space"
+          fullWidth={false}
+          className="shrink-0 sm:mt-1"
+        >
+          <Plus size={15} />
+          <span>Create Space</span>
+        </AtlasLiquidCta>
+      ) : (
+        <GlassButton onClick={onCreateSpace} tone="meridian" className="shrink-0 sm:mt-1">
+          <Plus size={15} />
+          Create Space
+        </GlassButton>
+      )}
     </div>
   );
 }
