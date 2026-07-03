@@ -3,8 +3,12 @@
 /**
  * ManageSpaceModal
  *
- * Full space management panel. Opens as a modal overlay, restyled with
- * Atlas Glass (GlassPanel/GlassButton + theme tokens) to match CreateSpaceModal.
+ * Full space management panel. Rendered through the shared Atlas Glass modal
+ * primitive (FormModal → OverlaySurface) per the Modal Doctrine Phase 3
+ * (migration 3.3, retires recipe R3): the tab bar lives in the primitive's
+ * toolbar slot and the tab content is its scrolling body; portal, focus-trap,
+ * body-scroll-lock, panel height cap, and named z-scale come from the
+ * primitive. Backdrop/Escape close (unchanged, always allowed here).
  * Tabs: General · Members · Goals · Finances · Overview · Delete/Leave Space
  *
  * The last tab is the single entry point for owner-initiated archive/trash
@@ -44,6 +48,7 @@ import {
 } from "@/lib/space-nav";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { GlassButton } from "@/components/atlas/GlassButton";
+import { FormModal } from "@/components/atlas/FormModal";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -132,7 +137,7 @@ interface Props {
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 const ROLE_ICONS: Record<string, React.ReactNode> = {
-  OWNER:  <Crown  size={11} className="text-yellow-400" />,
+  OWNER:  <Crown  size={11} className="text-[var(--brass-400)]" />,
   ADMIN:  <Shield size={11} className="text-[var(--meridian-400)]"   />,
   MEMBER: <Users  size={11} className="text-[var(--text-secondary)]"   />,
   VIEWER: <Eye    size={11} className="text-[var(--text-muted)]"   />,
@@ -1546,11 +1551,6 @@ export function ManageSpaceModal({
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { loadSpace(); }, [loadSpace]);
 
-  // Close on backdrop click
-  function handleBackdrop(e: React.MouseEvent<HTMLDivElement>) {
-    if (e.target === e.currentTarget) onClose();
-  }
-
   const allTabs: { id: ManageTab; label: string; icon: React.ReactNode; show: boolean }[] = [
     { id: "general",   label: "General",     icon: <Settings    size={14} />, show: canEdit },
     { id: "members",   label: "Members",     icon: <Users       size={14} />, show: true },
@@ -1562,118 +1562,84 @@ export function ManageSpaceModal({
   const tabs = allTabs.filter((t) => t.show);
 
   return (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center p-4 sm:p-6"
-      style={{
-        background: "rgba(0,0,0,0.55)",
-        backdropFilter: "blur(8px)",
-        WebkitBackdropFilter: "blur(8px)",
-      }}
-      onClick={handleBackdrop}
-    >
-      <GlassPanel depth="thick" elevation="e4" radius="xl" className="w-full sm:max-w-lg">
-        {/* Height/scroll management lives on this inner div rather than the
-            GlassPanel root — see CreateSpaceModal for the same pattern. */}
-        <div className="flex flex-col max-h-[calc(100dvh-2rem)] sm:max-h-[88dvh]">
-          {/* Modal header */}
-          <div
-            className="flex items-center justify-between px-5 pt-5 pb-4 shrink-0"
-            style={{ borderBottom: "1px solid var(--border-hairline)" }}
-          >
-            <div className="min-w-0">
-              <p className="text-base font-semibold text-[var(--text-primary)] truncate">{displaySpaceName(spaceName)}</p>
-              <p className="text-xs text-[var(--text-muted)] mt-0.5">
-                {ROLE_LABELS[myRole] ?? myRole} · Manage Space
-              </p>
-            </div>
+    <FormModal
+      open
+      onClose={onClose}
+      title={displaySpaceName(spaceName)}
+      subtitle={`${ROLE_LABELS[myRole] ?? myRole} · Manage Space`}
+      size="md"
+      toolbar={
+        <div className="flex gap-0.5 overflow-x-auto scrollbar-hide">
+          {tabs.map((t) => (
             <button
-              onClick={onClose}
-              aria-label="Close"
-              className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
+              key={t.id}
+              onClick={() => setActiveTab(t.id)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium whitespace-nowrap transition-colors shrink-0 ${
+                activeTab === t.id
+                  ? t.id === "danger"
+                    ? "bg-[rgba(237,82,71,.16)] text-[var(--coral-400)]"
+                    : "bg-[var(--surface-hover-strong)] text-[var(--text-primary)]"
+                  : t.id === "danger"
+                    ? "text-[rgba(237,82,71,.6)] hover:text-[var(--coral-400)]"
+                    : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+              }`}
             >
-              <X size={16} />
+              {t.icon}
+              {t.label}
             </button>
-          </div>
-
-          {/* Tab bar */}
-          <div
-            className="flex gap-0.5 px-4 py-2 overflow-x-auto scrollbar-hide shrink-0"
-            style={{ borderBottom: "1px solid var(--border-hairline)" }}
-          >
-            {tabs.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setActiveTab(t.id)}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium whitespace-nowrap transition-colors shrink-0 ${
-                  activeTab === t.id
-                    ? t.id === "danger"
-                      ? "bg-[rgba(237,82,71,.16)] text-[var(--coral-400)]"
-                      : "bg-[var(--surface-hover-strong)] text-[var(--text-primary)]"
-                    : t.id === "danger"
-                      ? "text-[rgba(237,82,71,.6)] hover:text-[var(--coral-400)]"
-                      : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                }`}
-              >
-                {t.icon}
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Tab content */}
-          <div className="flex-1 overflow-y-auto p-5 min-h-0">
-          {loading ? (
-            <div className="flex justify-center py-12">
-              <Loader2 size={22} className="animate-spin text-[var(--text-muted)]" />
-            </div>
-          ) : !space ? (
-            <div className="text-center py-12">
-              <p className="text-sm text-[var(--text-muted)]">Could not load Space</p>
-            </div>
-          ) : (
-            <>
-              {activeTab === "general"   && canEdit   && (
-                <GeneralTab
-                  space={space}
-                  onSaved={(updated) => {
-                    setSpace((prev) => prev ? { ...prev, ...updated } : prev);
-                    onRefresh();
-                  }}
-                />
-              )}
-              {activeTab === "members"              && (
-                <MembersTab
-                  space={space}
-                  myRole={myRole}
-                  currentUserId={currentUserId}
-                  reloadSpace={loadSpace}
-                  onRefresh={onRefresh}
-                />
-              )}
-              {activeTab === "goals"    && canManage && (
-                <GoalsTab spaceId={spaceId} canManage={canManage} />
-              )}
-              {activeTab === "finances"             && (
-                <FinancesTab spaceId={spaceId} myRole={myRole} onRefresh={onRefresh} />
-              )}
-              {activeTab === "dashboard" && canManage && (
-                <DashboardTab spaceId={spaceId} />
-              )}
-              {activeTab === "danger"               && (
-                <DangerZoneTab
-                  space={space}
-                  myRole={myRole}
-                  currentUserId={currentUserId}
-                  onClose={onClose}
-                  onRefresh={onRefresh}
-                  onDeleted={onDeleted}
-                />
-              )}
-            </>
-          )}
-          </div>
+          ))}
         </div>
-      </GlassPanel>
-    </div>
+      }
+    >
+      {loading ? (
+        <div className="flex justify-center py-12">
+          <Loader2 size={22} className="animate-spin text-[var(--text-muted)]" />
+        </div>
+      ) : !space ? (
+        <div className="text-center py-12">
+          <p className="text-sm text-[var(--text-muted)]">Could not load Space</p>
+        </div>
+      ) : (
+        <>
+          {activeTab === "general"   && canEdit   && (
+            <GeneralTab
+              space={space}
+              onSaved={(updated) => {
+                setSpace((prev) => prev ? { ...prev, ...updated } : prev);
+                onRefresh();
+              }}
+            />
+          )}
+          {activeTab === "members"              && (
+            <MembersTab
+              space={space}
+              myRole={myRole}
+              currentUserId={currentUserId}
+              reloadSpace={loadSpace}
+              onRefresh={onRefresh}
+            />
+          )}
+          {activeTab === "goals"    && canManage && (
+            <GoalsTab spaceId={spaceId} canManage={canManage} />
+          )}
+          {activeTab === "finances"             && (
+            <FinancesTab spaceId={spaceId} myRole={myRole} onRefresh={onRefresh} />
+          )}
+          {activeTab === "dashboard" && canManage && (
+            <DashboardTab spaceId={spaceId} />
+          )}
+          {activeTab === "danger"               && (
+            <DangerZoneTab
+              space={space}
+              myRole={myRole}
+              currentUserId={currentUserId}
+              onClose={onClose}
+              onRefresh={onRefresh}
+              onDeleted={onDeleted}
+            />
+          )}
+        </>
+      )}
+    </FormModal>
   );
 }
