@@ -13,22 +13,27 @@
  * but per project rules that is out of scope here — this stays deterministic.
  */
 
+/** Semantic status tone — resolved to Atlas accent / ink tokens by the card.
+ *  Only genuine positive/negative states carry colour; middle states are
+ *  neutral ink (Step B accent decision: colour is rare and meaningful). */
+export type StatusTone = "positive" | "negative" | "neutral";
+
 export interface StatusMessage {
-  message:   string;
-  className: string; // Tailwind text color class
+  message: string;
+  tone:    StatusTone;
 }
 
 /** bankCash = checking + savings balances only (excludes brokerage/crypto cash). */
 export function getCashStatusMessage(bankCash: number): StatusMessage {
-  if (bankCash >= 1500) return { message: "Healthy cash buffer", className: "text-emerald-400" };
-  if (bankCash >= 1000) return { message: "Cash available",      className: "text-blue-400"    };
-  return                 { message: "Cash is tight",              className: "text-red-400"     };
+  if (bankCash >= 1500) return { message: "Healthy cash buffer", tone: "positive" };
+  if (bankCash >= 1000) return { message: "Cash available",      tone: "neutral"  };
+  return                 { message: "Cash is tight",              tone: "negative" };
 }
 
 /** total = sum of debt-account balances (positive = owed). Pass Math.max(0, total). */
 export function getDebtStatusMessage(total: number): StatusMessage {
-  if (total <= 0)    return { message: "No debt detected",   className: "text-emerald-400" };
-  if (total < 5000)  return { message: "Debt under control", className: "text-blue-400"    };
-  if (total < 15000) return { message: "Moderate debt load", className: "text-yellow-400"  };
-  return                { message: "High debt load",          className: "text-red-400"     };
+  if (total <= 0)    return { message: "No debt detected",   tone: "positive" };
+  if (total < 5000)  return { message: "Debt under control", tone: "neutral"  };
+  if (total < 15000) return { message: "Moderate debt load", tone: "neutral"  };
+  return                { message: "High debt load",          tone: "negative" };
 }

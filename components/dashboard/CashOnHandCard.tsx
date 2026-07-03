@@ -23,10 +23,9 @@ export function CashOnHandCard({ accounts, investable = 0, lastUpdated }: Props)
 
   if (hasInvestable) {
     rows.push({
-      id:             "brokerage-cash",
-      label:          "Brokerage Cash",
-      value:          formatCurrency(investable),
-      valueClassName: "text-violet-400",
+      id:    "brokerage-cash",
+      label: "Brokerage Cash",
+      value: formatCurrency(investable),
     });
   }
 
@@ -35,7 +34,7 @@ export function CashOnHandCard({ accounts, investable = 0, lastUpdated }: Props)
       title="Cash on Hand"
       value={formatCompactCurrency(hasInvestable ? totalCash : bankCash)}
       message={status.message}
-      messageClassName={status.className}
+      messageTone={status.tone}
       rows={rows}
       lastUpdated={lastUpdated}
     />

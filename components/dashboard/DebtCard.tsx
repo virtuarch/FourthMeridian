@@ -19,11 +19,11 @@ export function DebtCard({ accounts, lastUpdated }: Props) {
     if (a.minimumPayment != null) subParts.push(`${formatCurrency(a.minimumPayment)}/mo min`);
 
     return {
-      id:             a.id,
-      label:          a.name, // already resolved: displayName ?? officialName ?? plaidName ?? raw name
-      value:          `${a.balance > 0 ? "-" : "+"}${formatCurrency(Math.abs(a.balance))}`,
-      valueClassName: a.balance > 0 ? "text-red-400" : "text-emerald-400",
-      subLabel:       subParts.length > 0 ? subParts.join(" · ") : undefined,
+      id:        a.id,
+      label:     a.name, // already resolved: displayName ?? officialName ?? plaidName ?? raw name
+      value:     `${a.balance > 0 ? "-" : "+"}${formatCurrency(Math.abs(a.balance))}`,
+      valueTone: a.balance > 0 ? "negative" as const : "positive" as const,
+      subLabel:  subParts.length > 0 ? subParts.join(" · ") : undefined,
     };
   });
 
@@ -31,9 +31,9 @@ export function DebtCard({ accounts, lastUpdated }: Props) {
     <SummaryStatCard
       title="Debt"
       value={formatCompactCurrency(Math.abs(total))}
-      valueClassName={total > 0 ? "text-red-400" : "text-emerald-400"}
+      valueTone={total > 0 ? "negative" : "positive"}
       message={status.message}
-      messageClassName={status.className}
+      messageTone={status.tone}
       rows={rows}
       lastUpdated={lastUpdated}
     />
