@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { Account, Transaction, TransactionCategory } from "@/types";
-import { Card, CardTitle } from "@/components/ui/Card";
+import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { PortfolioHistoryChart, ChartSeries } from "@/components/charts/PortfolioHistoryChart";
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
 import { Search, X, Check, Building2, Landmark, CreditCard, ChevronDown } from "lucide-react";
@@ -21,6 +21,7 @@ const fmtCompact = (n: number) =>
 // ── Chart config ──────────────────────────────────────────────────────────────
 type BankingSlice = "cash" | "savings" | "debt" | "netLiquid";
 
+// Chart series colours are data visualisation — preserved.
 const BANKING_SERIES: ChartSeries[] = [
   { key: "cash",      label: "Cash",       color: "#10b981" },
   { key: "savings",   label: "Savings",    color: "#3b82f6" },
@@ -42,26 +43,11 @@ const CHART_TITLES: Record<BankingSlice, string> = {
   netLiquid: "Net Liquid History",
 };
 
-// ── Category badge colors ─────────────────────────────────────────────────────
-const CAT_COLORS: Record<TransactionCategory, string> = {
-  Income:        "bg-emerald-500/15 text-emerald-400",
-  Transfer:      "bg-blue-500/15 text-blue-400",
-  Groceries:     "bg-lime-500/15 text-lime-400",
-  Dining:        "bg-orange-500/15 text-orange-400",
-  Shopping:      "bg-purple-500/15 text-purple-400",
-  Travel:        "bg-sky-500/15 text-sky-400",
-  Subscriptions: "bg-violet-500/15 text-violet-400",
-  Utilities:     "bg-slate-500/15 text-slate-400",
-  Interest:      "bg-teal-500/15 text-teal-400",
-  Payment:       "bg-gray-500/15 text-gray-400",
-  Other:         "bg-gray-600/15 text-gray-500",
-  // Investment categories (won't appear in banking, but needed for type safety)
-  Buy:           "bg-emerald-500/15 text-emerald-400",
-  Sell:          "bg-red-500/15 text-red-400",
-  Dividend:      "bg-blue-500/15 text-blue-400",
-  Split:         "bg-purple-500/15 text-purple-400",
-  Fee:           "bg-gray-500/15 text-gray-400",
-};
+// ── Category badge ─────────────────────────────────────────────────────────────
+// Step C: transaction-category colour-coding neutralised to a single ink chip —
+// the category name carries the meaning (decorative type colour → neutral, per
+// the account-type precedent). Restore as a data-viz palette later if desired.
+const CAT_CHIP = "bg-[var(--surface-inset)] text-[var(--text-secondary)]";
 
 const ALL_CATEGORIES: TransactionCategory[] = [
   "Income", "Transfer", "Groceries", "Dining", "Shopping",
@@ -196,8 +182,8 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
       onClick={() => setChartSlice(s)}
       className={`text-xs font-semibold px-3 py-2.5 rounded-lg transition-colors touch-manipulation ${
         chartSlice === s
-          ? "bg-blue-600 text-white"
-          : "text-gray-400 hover:text-white hover:bg-gray-800 border border-gray-700"
+          ? "bg-[var(--accent-info)] text-white"
+          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] border border-[var(--border-hairline)]"
       }`}
     >
       {s === "netLiquid" ? "Net Liquid" : s.charAt(0).toUpperCase() + s.slice(1)}
@@ -210,8 +196,8 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
       onClick={() => setTimeFilter(t)}
       className={`text-xs font-semibold px-2.5 py-2.5 rounded-lg transition-colors touch-manipulation ${
         timeFilter === t
-          ? "bg-blue-600 text-white"
-          : "text-gray-400 hover:text-white hover:bg-gray-800"
+          ? "bg-[var(--accent-info)] text-white"
+          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]"
       }`}
     >
       {TIME_LABELS[t]}
@@ -221,7 +207,7 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Banking</h1>
+        <h1 className="text-2xl font-bold" style={{ color: "var(--text-primary)" }}>Banking</h1>
         <div className="flex items-center gap-2">
           <PlaidLinkButton label="Add Account" />
         </div>
@@ -229,29 +215,29 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
 
       {/* ── 1. Summary cards (non-clickable) ── */}
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-        <Card>
-          <CardTitle>Total Cash</CardTitle>
-          <p className="text-3xl font-bold text-emerald-400 mt-1">{fmtCompact(totalCash)}</p>
-          <p className="text-xs text-gray-500 mt-1">Checking + Savings</p>
-        </Card>
-        <Card>
-          <CardTitle>Total Debt</CardTitle>
-          <p className="text-3xl font-bold text-red-400 mt-1">{fmtCompact(totalDebt)}</p>
-          <p className="text-xs text-gray-500 mt-1">Cards</p>
-        </Card>
-        <Card className="col-span-2 lg:col-span-1">
-          <CardTitle>Net Liquid</CardTitle>
-          <p className={`text-3xl font-bold mt-1 ${netLiquid >= 0 ? "text-white" : "text-red-400"}`}>
+        <DataCard>
+          <DataCardTitle>Total Cash</DataCardTitle>
+          <p className="text-3xl font-bold mt-1" style={{ color: "var(--accent-positive)" }}>{fmtCompact(totalCash)}</p>
+          <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Checking + Savings</p>
+        </DataCard>
+        <DataCard>
+          <DataCardTitle>Total Debt</DataCardTitle>
+          <p className="text-3xl font-bold mt-1" style={{ color: "var(--accent-negative)" }}>{fmtCompact(totalDebt)}</p>
+          <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Cards</p>
+        </DataCard>
+        <DataCard className="col-span-2 lg:col-span-1">
+          <DataCardTitle>Net Liquid</DataCardTitle>
+          <p className="text-3xl font-bold mt-1" style={{ color: netLiquid >= 0 ? "var(--text-primary)" : "var(--accent-negative)" }}>
             {fmtCompact(netLiquid)}
           </p>
-          <p className="text-xs text-gray-500 mt-1">Cash minus card balances</p>
-        </Card>
+          <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Cash minus card balances</p>
+        </DataCard>
       </div>
 
       {/* ── 2. History chart ── */}
       <section>
         <div className="flex items-center gap-2 mb-3 flex-wrap">
-          <span className="text-xs font-semibold uppercase tracking-widest text-gray-500 mr-1">Chart:</span>
+          <span className="text-xs font-semibold uppercase tracking-widest mr-1" style={{ color: "var(--text-muted)" }}>Chart:</span>
           {(["cash", "savings", "debt", "netLiquid"] as BankingSlice[]).map(sliceBtn)}
         </div>
         <PortfolioHistoryChart
@@ -264,7 +250,7 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
 
       {/* ── 3. Collapsible institution groups ── */}
       <section ref={accountsSectionRef} className="space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 px-1">Accounts</p>
+        <p className="text-xs font-semibold uppercase tracking-widest px-1" style={{ color: "var(--text-muted)" }}>Accounts</p>
 
         {institutionGroups.map(({ institution, accounts: accts }) => {
           const isOpen    = !collapsed[institution];
@@ -274,31 +260,32 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
           const syncLabel  = formatDate(newestSync);
 
           return (
-            <div key={institution} className="rounded-2xl border border-gray-800 bg-gray-900/60 overflow-hidden">
+            <div key={institution} className="rounded-2xl border overflow-hidden" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-muted)" }}>
 
               {/* ── Institution header — tap to expand/collapse ── */}
               <button
                 onClick={() => toggleInstitution(institution)}
-                className="w-full flex items-center justify-between px-4 py-3.5 transition-colors hover:bg-gray-800/70 active:bg-gray-800 touch-manipulation select-none"
+                className="w-full flex items-center justify-between px-4 py-3.5 transition-colors hover:bg-[var(--surface-hover)] active:bg-[var(--surface-hover-strong)] touch-manipulation select-none"
               >
                 <div className="flex items-center gap-3">
                   {/* Avatar */}
-                  <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-gray-700 to-gray-600 flex items-center justify-center shrink-0 shadow-sm">
-                    <span className="text-sm font-bold text-white">{institution[0]}</span>
+                  <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 shadow-sm" style={{ background: "var(--surface-inset)" }}>
+                    <span className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>{institution[0]}</span>
                   </div>
                   <div className="text-left">
-                    <p className="text-sm font-semibold text-white leading-tight">{institution}</p>
-                    <p className="text-xs text-gray-500">{accts.length} account{accts.length !== 1 ? "s" : ""} · Updated {syncLabel}</p>
+                    <p className="text-sm font-semibold leading-tight" style={{ color: "var(--text-primary)" }}>{institution}</p>
+                    <p className="text-xs" style={{ color: "var(--text-muted)" }}>{accts.length} account{accts.length !== 1 ? "s" : ""} · Updated {syncLabel}</p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <p className={`text-sm font-semibold tabular-nums ${netPos ? "text-white" : "text-red-400"}`}>
+                  <p className="text-sm font-semibold tabular-nums" style={{ color: netPos ? "var(--text-primary)" : "var(--accent-negative)" }}>
                     {!netPos ? "-" : ""}{fmtAbs(Math.abs(instTotal))}
                   </p>
                   <ChevronDown
                     size={16}
-                    className={`text-gray-500 transition-transform duration-200 shrink-0 ${isOpen ? "rotate-180" : "rotate-0"}`}
+                    className={`transition-transform duration-200 shrink-0 ${isOpen ? "rotate-180" : "rotate-0"}`}
+                    style={{ color: "var(--text-muted)" }}
                   />
                 </div>
               </button>
@@ -313,7 +300,7 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
               >
                 {/* minHeight:0 required for 0fr to collapse in Safari */}
                 <div className="overflow-hidden" style={{ minHeight: 0 }}>
-                  <div className="border-t border-gray-700/60 bg-gray-950/60">
+                  <div className="border-t" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-muted)" }}>
                     {accts.map((a, idx) => {
                       const isSelected = selectedAccountId === a.id;
                       const isDebt     = a.type === "debt";
@@ -323,24 +310,22 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
                         <button
                           key={a.id}
                           onClick={() => handleCardClick(a.id)}
-                          className={`w-full flex items-center justify-between pl-6 pr-4 py-3.5 transition-colors touch-manipulation text-left ${
-                            isSelected ? "bg-blue-500/10" : "hover:bg-gray-800/40 active:bg-gray-800"
-                          } ${idx < accts.length - 1 ? "border-b border-gray-800/50" : ""}`}
+                          className="w-full flex items-center justify-between pl-6 pr-4 py-3.5 transition-colors touch-manipulation text-left"
+                          style={{
+                            background: isSelected ? "var(--surface-hover-strong)" : undefined,
+                            borderBottom: idx < accts.length - 1 ? "1px solid var(--border-hairline)" : undefined,
+                          }}
                         >
-                          {/* Left: type icon + name */}
+                          {/* Left: type icon + name (type colour neutralised) */}
                           <div className="flex items-center gap-3">
-                            <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
-                              isDebt    ? "bg-red-500/10"     :
-                              isSavings ? "bg-emerald-500/10" :
-                                          "bg-blue-500/10"
-                            }`}>
-                              {isDebt                  && <CreditCard size={13} className="text-red-400"     />}
-                              {isSavings               && <Landmark   size={13} className="text-emerald-400" />}
-                              {a.type === "checking"   && <Building2  size={13} className="text-blue-400"    />}
+                            <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>
+                              {isDebt                  && <CreditCard size={13} />}
+                              {isSavings               && <Landmark   size={13} />}
+                              {a.type === "checking"   && <Building2  size={13} />}
                             </div>
                             <div>
-                              <p className="text-sm font-medium text-white leading-tight">{a.name}</p>
-                              <p className="text-xs text-gray-500 capitalize leading-tight mt-0.5">
+                              <p className="text-sm font-medium leading-tight" style={{ color: "var(--text-primary)" }}>{a.name}</p>
+                              <p className="text-xs capitalize leading-tight mt-0.5" style={{ color: "var(--text-muted)" }}>
                                 {isSavings ? "savings · interest monthly" : a.type}
                               </p>
                             </div>
@@ -348,16 +333,16 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
 
                           {/* Right: balance + state */}
                           <div className="text-right shrink-0 ml-3">
-                            <p className={`text-sm font-semibold tabular-nums ${
-                              isDebt
-                                ? a.balance > 0 ? "text-red-400" : "text-emerald-400"
-                                : "text-white"
-                            }`}>
+                            <p className="text-sm font-semibold tabular-nums" style={{
+                              color: isDebt
+                                ? a.balance > 0 ? "var(--accent-negative)" : "var(--accent-positive)"
+                                : "var(--text-primary)",
+                            }}>
                               {isDebt ? (a.balance > 0 ? "-" : "+") : ""}{fmtAbs(Math.abs(a.balance))}
                             </p>
                             {isSelected
-                              ? <p className="text-xs text-blue-400 flex items-center gap-1 justify-end mt-0.5"><Check size={9} /> active</p>
-                              : <p className="text-xs text-gray-600 mt-0.5">{formatDate(a.lastUpdated)}</p>
+                              ? <p className="text-xs flex items-center gap-1 justify-end mt-0.5" style={{ color: "var(--accent-info)" }}><Check size={9} /> active</p>
+                              : <p className="text-xs mt-0.5" style={{ color: "var(--text-faint)" }}>{formatDate(a.lastUpdated)}</p>
                             }
                           </div>
                         </button>
@@ -377,18 +362,18 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
         {/* Section header */}
         <div className="flex items-center justify-between flex-wrap gap-2 px-1">
           <div className="flex items-center gap-2">
-            <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">Transactions</p>
+            <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Transactions</p>
             {selectedAccount && (
-              <span className="text-xs bg-blue-500/15 text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+              <span className="text-xs border px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: "var(--surface-inset)", color: "var(--accent-info)", borderColor: "var(--border-hairline)" }}>
                 {selectedAccount.name}
-                <button onClick={() => setSelectedAccountId(null)} className="hover:text-white ml-0.5">
+                <button onClick={() => setSelectedAccountId(null)} className="hover:text-[var(--text-primary)] ml-0.5">
                   <X size={10} />
                 </button>
               </span>
             )}
           </div>
           {/* Time filter */}
-          <div className="flex items-center gap-1 bg-gray-900 border border-gray-700 rounded-xl p-1">
+          <div className="flex items-center gap-1 border rounded-xl p-1" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
             {(["all", "90d", "30d", "7d"] as TimeFilter[]).map(timeBtn)}
           </div>
         </div>
@@ -396,16 +381,17 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
         {/* Search + category filter */}
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--text-muted)" }} />
             <input
               type="text"
               placeholder="Search transactions…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded-xl pl-8 pr-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+              className="w-full border rounded-xl pl-8 pr-3 py-2.5 text-sm placeholder:text-[var(--text-faint)] focus:outline-none focus:border-[var(--accent-info)] transition-colors"
+              style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-primary)" }}
             />
             {search && (
-              <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+              <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-primary)]" style={{ color: "var(--text-muted)" }}>
                 <X size={13} />
               </button>
             )}
@@ -413,7 +399,8 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
           <select
             value={catFilter ?? ""}
             onChange={(e) => setCatFilter((e.target.value as TransactionCategory) || null)}
-            className="bg-gray-900 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors"
+            className="border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--accent-info)] transition-colors"
+            style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-primary)" }}
           >
             <option value="">All categories</option>
             {ALL_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -422,27 +409,27 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
 
         {/* Summary strip */}
         <div className="flex items-center gap-4 text-sm flex-wrap px-1">
-          <span className="text-gray-400">
-            <span className="font-semibold text-white">{filteredTxs.length}</span> transactions
+          <span style={{ color: "var(--text-secondary)" }}>
+            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{filteredTxs.length}</span> transactions
           </span>
           {totalSpend > 0 && (
-            <span className="text-gray-400">
-              Spend: <span className="font-semibold text-red-400">-{fmtTx(totalSpend)}</span>
+            <span style={{ color: "var(--text-secondary)" }}>
+              Spend: <span className="font-semibold" style={{ color: "var(--accent-negative)" }}>-{fmtTx(totalSpend)}</span>
             </span>
           )}
           {totalCredit > 0 && (
-            <span className="text-gray-400">
-              In: <span className="font-semibold text-emerald-400">+{fmtTx(totalCredit)}</span>
+            <span style={{ color: "var(--text-secondary)" }}>
+              In: <span className="font-semibold" style={{ color: "var(--accent-positive)" }}>+{fmtTx(totalCredit)}</span>
             </span>
           )}
         </div>
 
         {/* Transaction list */}
-        <Card className="!p-0 overflow-hidden">
+        <DataCard padding="0" className="overflow-hidden">
           {filteredTxs.length === 0 ? (
-            <p className="text-sm text-gray-500 text-center py-10">No transactions match your filters.</p>
+            <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>No transactions match your filters.</p>
           ) : (
-            <div className="divide-y divide-gray-800">
+            <div className="divide-y divide-[var(--border-hairline)]">
               {filteredTxs.map((tx) => (
                 <TxRow
                   key={tx.id}
@@ -454,7 +441,7 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
               ))}
             </div>
           )}
-        </Card>
+        </DataCard>
       </section>
     </div>
   );
@@ -479,13 +466,13 @@ function TxRow({
   const dateObj = new Date(tx.date + "T12:00:00");
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 hover:bg-gray-800/40 transition-colors">
+    <div className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors">
       {/* Date column */}
       <div className="w-9 shrink-0 text-center">
-        <p className="text-xs font-semibold text-gray-300 leading-none">
+        <p className="text-xs font-semibold leading-none" style={{ color: "var(--text-secondary)" }}>
           {dateObj.toLocaleDateString("en-US", { day: "numeric" })}
         </p>
-        <p className="text-xs text-gray-600 mt-0.5">
+        <p className="text-xs mt-0.5" style={{ color: "var(--text-faint)" }}>
           {dateObj.toLocaleDateString("en-US", { month: "short" })}
         </p>
       </div>
@@ -493,26 +480,26 @@ function TxRow({
       {/* Merchant + meta */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm font-semibold text-white truncate">{tx.merchant}</p>
+          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{tx.merchant}</p>
           {tx.pending && (
-            <span className="text-xs bg-yellow-500/15 text-yellow-400 px-1.5 py-0.5 rounded-full shrink-0">
+            <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>
               Pending
             </span>
           )}
         </div>
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-          <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_COLORS[tx.category]}`}>
+          <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
             {tx.category}
           </span>
           {!hideAccount && (
-            <span className="text-xs text-gray-600">{acctInst} · {acctName}</span>
+            <span className="text-xs" style={{ color: "var(--text-faint)" }}>{acctInst} · {acctName}</span>
           )}
         </div>
       </div>
 
       {/* Amount */}
       <div className="shrink-0 text-right">
-        <p className={`text-sm font-bold tabular-nums ${isCredit ? "text-emerald-400" : "text-white"}`}>
+        <p className="text-sm font-bold tabular-nums" style={{ color: isCredit ? "var(--accent-positive)" : "var(--text-primary)" }}>
           {isCredit ? "+" : "−"}{fmt(tx.amount)}
         </p>
       </div>

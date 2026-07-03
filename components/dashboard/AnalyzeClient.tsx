@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Card, CardTitle } from "@/components/ui/Card";
+import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { AdviceBanner } from "@/components/dashboard/AdviceBanner";
 import {
   KnowledgeAcquisitionCard,
@@ -59,41 +59,42 @@ const ELIGIBLE_ROLES = new Set(["OWNER", "ADMIN", "MEMBER"]);
 // Defined once outside the render tree so the object reference is stable.
 // Cast to `any` at the call site — react-markdown@8 component map types are
 // incompatible with React 19's JSX namespace changes.
+// Colours migrated to Atlas ink tokens; code syntax colours neutralised.
 const MD_COMPONENTS = {
-  h1: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-base text-white mt-4 first:mt-0 mb-2">{children}</p>,
-  h2: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-[15px] text-white mt-4 first:mt-0 mb-1.5">{children}</p>,
-  h3: ({ children }: { children: React.ReactNode }) => <p className="font-semibold text-sm text-gray-100 mt-3 first:mt-0 mb-1">{children}</p>,
+  h1: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-base mt-4 first:mt-0 mb-2" style={{ color: "var(--text-primary)" }}>{children}</p>,
+  h2: ({ children }: { children: React.ReactNode }) => <p className="font-bold text-[15px] mt-4 first:mt-0 mb-1.5" style={{ color: "var(--text-primary)" }}>{children}</p>,
+  h3: ({ children }: { children: React.ReactNode }) => <p className="font-semibold text-sm mt-3 first:mt-0 mb-1" style={{ color: "var(--text-primary)" }}>{children}</p>,
   p:  ({ children }: { children: React.ReactNode }) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
-  strong: ({ children }: { children: React.ReactNode }) => <strong className="font-semibold text-white tabular-nums">{children}</strong>,
-  em: ({ children }: { children: React.ReactNode }) => <em className="italic text-gray-300">{children}</em>,
-  ul: ({ children }: { children: React.ReactNode }) => <ul className="list-disc pl-5 mb-3 last:mb-0 space-y-1.5 marker:text-gray-500">{children}</ul>,
-  ol: ({ children }: { children: React.ReactNode }) => <ol className="list-decimal pl-5 mb-3 last:mb-0 space-y-1.5 marker:text-gray-500">{children}</ol>,
-  li: ({ children }: { children: React.ReactNode }) => <li className="text-gray-200 leading-relaxed pl-1">{children}</li>,
+  strong: ({ children }: { children: React.ReactNode }) => <strong className="font-semibold tabular-nums" style={{ color: "var(--text-primary)" }}>{children}</strong>,
+  em: ({ children }: { children: React.ReactNode }) => <em className="italic" style={{ color: "var(--text-secondary)" }}>{children}</em>,
+  ul: ({ children }: { children: React.ReactNode }) => <ul className="list-disc pl-5 mb-3 last:mb-0 space-y-1.5 marker:text-[var(--text-muted)]">{children}</ul>,
+  ol: ({ children }: { children: React.ReactNode }) => <ol className="list-decimal pl-5 mb-3 last:mb-0 space-y-1.5 marker:text-[var(--text-muted)]">{children}</ol>,
+  li: ({ children }: { children: React.ReactNode }) => <li className="leading-relaxed pl-1" style={{ color: "var(--text-secondary)" }}>{children}</li>,
   blockquote: ({ children }: { children: React.ReactNode }) => (
-    <blockquote className="border-l-2 border-blue-500/50 pl-3 py-0.5 text-gray-400 italic mb-3">{children}</blockquote>
+    <blockquote className="border-l-2 pl-3 py-0.5 italic mb-3" style={{ borderColor: "var(--border-hairline-strong)", color: "var(--text-secondary)" }}>{children}</blockquote>
   ),
   // Fenced code blocks come through with a className like "language-js";
   // inline code has no className.
   code: ({ children, className }: { children: React.ReactNode; className?: string }) =>
     className ? (
-      <pre className="bg-gray-950 border border-gray-800 rounded-xl p-3 overflow-x-auto mb-3 text-xs text-green-300 font-mono leading-relaxed">
+      <pre className="border rounded-xl p-3 overflow-x-auto mb-3 text-xs font-mono leading-relaxed" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>
         <code>{children}</code>
       </pre>
     ) : (
-      <code className="bg-gray-950 rounded px-1.5 py-0.5 text-[13px] text-blue-300 font-mono tabular-nums">{children}</code>
+      <code className="rounded px-1.5 py-0.5 text-[13px] font-mono tabular-nums" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>{children}</code>
     ),
   pre: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  hr: () => <hr className="border-gray-700/70 my-3" />,
+  hr: () => <hr className="my-3" style={{ borderColor: "var(--border-hairline)" }} />,
   table: ({ children }: { children: React.ReactNode }) => (
-    <div className="overflow-x-auto my-3 rounded-xl border border-gray-700/70">
+    <div className="overflow-x-auto my-3 rounded-xl border" style={{ borderColor: "var(--border-hairline)" }}>
       <table className="min-w-full text-[13px] border-collapse tabular-nums">{children}</table>
     </div>
   ),
-  thead: ({ children }: { children: React.ReactNode }) => <thead className="bg-gray-800/80">{children}</thead>,
-  tbody: ({ children }: { children: React.ReactNode }) => <tbody className="divide-y divide-gray-700/50">{children}</tbody>,
+  thead: ({ children }: { children: React.ReactNode }) => <thead style={{ background: "var(--surface-inset)" }}>{children}</thead>,
+  tbody: ({ children }: { children: React.ReactNode }) => <tbody className="divide-y divide-[var(--border-hairline)]">{children}</tbody>,
   tr: ({ children }: { children: React.ReactNode }) => <tr>{children}</tr>,
-  th: ({ children }: { children: React.ReactNode }) => <th className="px-3.5 py-2 text-left font-semibold text-gray-200 whitespace-nowrap border-b border-gray-700/70">{children}</th>,
-  td: ({ children }: { children: React.ReactNode }) => <td className="px-3.5 py-2 text-gray-300 align-top whitespace-nowrap">{children}</td>,
+  th: ({ children }: { children: React.ReactNode }) => <th className="px-3.5 py-2 text-left font-semibold whitespace-nowrap border-b" style={{ color: "var(--text-secondary)", borderColor: "var(--border-hairline)" }}>{children}</th>,
+  td: ({ children }: { children: React.ReactNode }) => <td className="px-3.5 py-2 align-top whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>{children}</td>,
 };
 
 export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, snapshotCount, assetClassCount, cryptoPct, userName }: Props) {
@@ -267,28 +268,30 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
       }
     >
       <div className="shrink-0 flex items-center gap-3">
-        <div className="w-9 h-9 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center">
-          <Brain size={18} className="text-blue-400" />
+        <div className="w-9 h-9 rounded-xl border flex items-center justify-center" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
+          <Brain size={18} style={{ color: "var(--accent-info)" }} />
         </div>
-        <h1 className="text-2xl font-bold text-white">Analyze with AI</h1>
+        <h1 className="text-2xl font-bold" style={{ color: "var(--text-primary)" }}>Analyze with AI</h1>
       </div>
 
       {/* Tab switcher */}
-      <div className="shrink-0 flex gap-1 p-1 bg-gray-900 rounded-xl w-fit">
+      <div className="shrink-0 flex gap-1 p-1 rounded-xl w-fit" style={{ background: "var(--surface-inset)" }}>
         <button
           onClick={() => setTab("review")}
-          className={`flex items-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-all touch-manipulation ${
-            tab === "review" ? "bg-gray-700 text-white" : "text-gray-400 hover:text-white"
-          }`}
+          className="flex items-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-all touch-manipulation"
+          style={tab === "review"
+            ? { background: "var(--surface-hover-strong)", color: "var(--text-primary)" }
+            : { color: "var(--text-secondary)" }}
         >
           <BarChart2 size={15} />
           ML Review
         </button>
         <button
           onClick={() => setTab("chat")}
-          className={`flex items-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-all touch-manipulation ${
-            tab === "chat" ? "bg-gray-700 text-white" : "text-gray-400 hover:text-white"
-          }`}
+          className="flex items-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-all touch-manipulation"
+          style={tab === "chat"
+            ? { background: "var(--surface-hover-strong)", color: "var(--text-primary)" }
+            : { color: "var(--text-secondary)" }}
         >
           <MessageSquare size={15} />
           AI Chat
@@ -301,28 +304,28 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
           {advice && <AdviceBanner advice={advice} />}
 
           {/* Schedule info */}
-          <Card>
+          <DataCard>
             <div className="flex items-center gap-2 mb-3">
-              <Clock size={14} className="text-gray-400" />
-              <CardTitle>Advice Schedule</CardTitle>
+              <Clock size={14} style={{ color: "var(--text-secondary)" }} />
+              <DataCardTitle>Advice Schedule</DataCardTitle>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="bg-gray-800 rounded-xl p-3">
-                <p className="text-xs text-gray-400 mb-1">Weekdays</p>
-                <p className="text-sm font-semibold text-white">9:00 AM & 4:00 PM</p>
-                <p className="text-xs text-gray-500">After market open + close</p>
+              <div className="rounded-xl p-3" style={{ background: "var(--surface-inset)" }}>
+                <p className="text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Weekdays</p>
+                <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>9:00 AM & 4:00 PM</p>
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>After market open + close</p>
               </div>
-              <div className="bg-gray-800 rounded-xl p-3">
-                <p className="text-xs text-gray-400 mb-1">Weekends</p>
-                <p className="text-sm font-semibold text-white">9:00 AM</p>
-                <p className="text-xs text-gray-500">Daily portfolio check-in</p>
+              <div className="rounded-xl p-3" style={{ background: "var(--surface-inset)" }}>
+                <p className="text-xs mb-1" style={{ color: "var(--text-secondary)" }}>Weekends</p>
+                <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>9:00 AM</p>
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Daily portfolio check-in</p>
               </div>
             </div>
-          </Card>
+          </DataCard>
 
           {/* What the engine reviews */}
-          <Card>
-            <CardTitle>What the Engine Reviews</CardTitle>
+          <DataCard>
+            <DataCardTitle>What the Engine Reviews</DataCardTitle>
             <div className="mt-3 grid grid-cols-2 gap-2">
               {[
                 { label: "Cash Position", value: latestSnapshot ? `$${latestSnapshot.totalCash.toLocaleString("en-US")}` : "—" },
@@ -332,47 +335,46 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
                 { label: "30-day Snapshots", value: snapshotCount > 0 ? `${snapshotCount} data point${snapshotCount === 1 ? "" : "s"}` : "—" },
                 { label: "Market Movement", value: "S&P, BTC, ETH" },
               ].map(({ label, value }) => (
-                <div key={label} className="bg-gray-800 rounded-xl p-3">
-                  <p className="text-xs text-gray-400">{label}</p>
-                  <p className="text-sm font-semibold text-white mt-0.5">{value}</p>
+                <div key={label} className="rounded-xl p-3" style={{ background: "var(--surface-inset)" }}>
+                  <p className="text-xs" style={{ color: "var(--text-secondary)" }}>{label}</p>
+                  <p className="text-sm font-semibold mt-0.5" style={{ color: "var(--text-primary)" }}>{value}</p>
                 </div>
               ))}
             </div>
-          </Card>
+          </DataCard>
 
           {/* Action readiness */}
-          <Card>
-            <CardTitle>Action Readiness</CardTitle>
+          <DataCard>
+            <DataCardTitle>Action Readiness</DataCardTitle>
             <div className="flex items-center gap-3 mt-3">
               {advice ? (
                 <>
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
-                    advice.actionReady
-                      ? "bg-green-500/10 border border-green-500/30"
-                      : "bg-red-500/10 border border-red-500/30"
-                  }`}>
-                    <Zap size={22} className={advice.actionReady ? "text-green-400" : "text-red-400"} fill="currentColor" />
+                  <div className="w-12 h-12 rounded-2xl flex items-center justify-center border" style={{
+                    background: advice.actionReady ? "rgba(34,197,94,0.10)" : "rgba(237,82,71,0.10)",
+                    borderColor: advice.actionReady ? "rgba(34,197,94,0.30)" : "rgba(237,82,71,0.30)",
+                  }}>
+                    <Zap size={22} style={{ color: advice.actionReady ? "var(--accent-positive)" : "var(--accent-negative)" }} fill="currentColor" />
                   </div>
                   <div>
-                    <p className={`text-lg font-bold ${advice.actionReady ? "text-green-400" : "text-red-400"}`}>
+                    <p className="text-lg font-bold" style={{ color: advice.actionReady ? "var(--accent-positive)" : "var(--accent-negative)" }}>
                       {advice.actionReady ? "Ready for Action" : "Hold / Not Ready"}
                     </p>
-                    <p className="text-xs text-gray-400">{advice.summary}</p>
+                    <p className="text-xs" style={{ color: "var(--text-secondary)" }}>{advice.summary}</p>
                   </div>
                 </>
               ) : (
                 <>
-                  <div className="w-12 h-12 rounded-2xl bg-gray-700/50 border border-gray-600/30 flex items-center justify-center">
-                    <Zap size={22} className="text-gray-500" fill="currentColor" />
+                  <div className="w-12 h-12 rounded-2xl border flex items-center justify-center" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
+                    <Zap size={22} style={{ color: "var(--text-muted)" }} fill="currentColor" />
                   </div>
                   <div>
-                    <p className="text-lg font-bold text-gray-400">No advice yet</p>
-                    <p className="text-xs text-gray-500">The AI engine will run at the next scheduled interval</p>
+                    <p className="text-lg font-bold" style={{ color: "var(--text-secondary)" }}>No advice yet</p>
+                    <p className="text-xs" style={{ color: "var(--text-muted)" }}>The AI engine will run at the next scheduled interval</p>
                   </div>
                 </>
               )}
             </div>
-          </Card>
+          </DataCard>
         </div>
       )}
 
@@ -381,16 +383,16 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
           centered reading column inside it (ChatGPT/Claude pattern) so text
           stays readable while the surface uses the full Analyze content area. */}
       {tab === "chat" && (
-        <Card className="flex-1 min-h-0 flex flex-col overflow-hidden p-0">
+        <DataCard padding="0" className="flex-1 min-h-0 flex flex-col overflow-hidden">
             {/* Assistant identity header */}
-            <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-gray-800 bg-gray-900/60 backdrop-blur-sm">
-              <div className="w-8 h-8 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center shrink-0">
-                <Brain size={15} className="text-blue-400" />
+            <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b backdrop-blur-sm" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-muted)" }}>
+              <div className="w-8 h-8 rounded-xl border flex items-center justify-center shrink-0" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
+                <Brain size={15} style={{ color: "var(--accent-info)" }} />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-white leading-tight">Fourth Meridian AI</p>
-                <p className="flex items-center gap-1.5 text-xs text-gray-500 leading-tight mt-0.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+                <p className="text-sm font-semibold leading-tight" style={{ color: "var(--text-primary)" }}>Fourth Meridian AI</p>
+                <p className="flex items-center gap-1.5 text-xs leading-tight mt-0.5" style={{ color: "var(--text-muted)" }}>
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: "var(--accent-positive)" }} />
                   Connected to your financial context
                 </p>
               </div>
@@ -400,14 +402,15 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
                   value={selectedSpaceId}
                   onChange={(e) => setSelectedSpaceId(e.target.value)}
                   aria-label="Analysis context"
-                  className="max-w-[10rem] appearance-none bg-gray-800/80 border border-gray-700 rounded-lg pl-3 pr-7 py-1.5 text-xs font-medium text-gray-200 focus:outline-none focus:border-blue-500 transition-colors truncate"
+                  className="max-w-[10rem] appearance-none border rounded-lg pl-3 pr-7 py-1.5 text-xs font-medium focus:outline-none focus:border-[var(--accent-info)] transition-colors truncate"
+                  style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}
                 >
                   <option value="master">All My Spaces</option>
                   {spaces.map((s) => (
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
                 </select>
-                <ChevronDown size={13} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+                <ChevronDown size={13} className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--text-muted)" }} />
               </div>
             </div>
 
@@ -419,12 +422,12 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
                   {m.role === "assistant" ? (
                     <>
                       {/* Avatar — pinned to the top of the message group */}
-                      <div className="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center mr-2.5 mt-0.5 shrink-0">
-                        <Brain size={13} className="text-blue-400" />
+                      <div className="w-7 h-7 rounded-lg border flex items-center justify-center mr-2.5 mt-0.5 shrink-0" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
+                        <Brain size={13} style={{ color: "var(--accent-info)" }} />
                       </div>
                       {/* Message bubble + optional Knowledge Acquisition card */}
                       <div className="flex flex-col gap-2 max-w-[88%]">
-                        <div className="bg-gray-800/80 border border-gray-700/50 text-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 text-sm">
+                        <div className="border rounded-2xl rounded-tl-sm px-4 py-3 text-sm" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>
                           {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                           <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS as any}>
                             {m.content}
@@ -482,7 +485,7 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
                       </div>
                     </>
                   ) : (
-                    <div className="max-w-[85%] rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed bg-blue-600 text-white shadow-sm whitespace-pre-wrap break-words">
+                    <div className="max-w-[85%] rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed text-white shadow-sm whitespace-pre-wrap break-words" style={{ background: "var(--accent-info)" }}>
                       {m.content}
                     </div>
                   )}
@@ -490,14 +493,14 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
               ))}
               {loading && (
                 <div className="flex justify-start">
-                  <div className="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center mr-2.5 shrink-0">
-                    <Brain size={13} className="text-blue-400" />
+                  <div className="w-7 h-7 rounded-lg border flex items-center justify-center mr-2.5 shrink-0" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
+                    <Brain size={13} style={{ color: "var(--accent-info)" }} />
                   </div>
-                  <div className="bg-gray-800/80 border border-gray-700/50 rounded-2xl rounded-tl-sm px-4 py-3">
+                  <div className="border rounded-2xl rounded-tl-sm px-4 py-3" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
                     <div className="flex gap-1.5 items-center h-4">
-                      <span className="w-2 h-2 rounded-full bg-gray-500 animate-bounce" style={{ animationDelay: "0ms" }} />
-                      <span className="w-2 h-2 rounded-full bg-gray-500 animate-bounce" style={{ animationDelay: "150ms" }} />
-                      <span className="w-2 h-2 rounded-full bg-gray-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+                      <span className="w-2 h-2 rounded-full animate-bounce" style={{ animationDelay: "0ms", background: "var(--text-muted)" }} />
+                      <span className="w-2 h-2 rounded-full animate-bounce" style={{ animationDelay: "150ms", background: "var(--text-muted)" }} />
+                      <span className="w-2 h-2 rounded-full animate-bounce" style={{ animationDelay: "300ms", background: "var(--text-muted)" }} />
                     </div>
                   </div>
                 </div>
@@ -510,13 +513,14 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
             {messages.length <= 1 && (
               <div className="shrink-0 px-4 pb-3">
                 <div className="max-w-3xl mx-auto w-full">
-                <p className="text-xs font-medium uppercase tracking-widest text-gray-500 mb-2">Try asking</p>
+                <p className="text-xs font-medium uppercase tracking-widest mb-2" style={{ color: "var(--text-muted)" }}>Try asking</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {SUGGESTED_PROMPTS.map((p) => (
                     <button
                       key={p}
                       onClick={() => sendMessage(p)}
-                      className="text-left text-sm text-gray-200 border border-gray-700/70 bg-gray-800/50 px-3.5 py-2.5 rounded-xl hover:bg-gray-800 hover:border-blue-500/40 transition-colors"
+                      className="text-left text-sm border px-3.5 py-2.5 rounded-xl hover:bg-[var(--surface-hover)] transition-colors"
+                      style={{ color: "var(--text-secondary)", borderColor: "var(--border-hairline)", background: "var(--surface-inset)" }}
                     >
                       {p}
                     </button>
@@ -527,42 +531,45 @@ export function AnalyzeClient({ advice, ficoScore: _ficoScore, latestSnapshot, s
             )}
 
             {/* Composer — pinned to the bottom of the workspace. */}
-            <div className="shrink-0 border-t border-gray-800 p-3">
+            <div className="shrink-0 border-t p-3" style={{ borderColor: "var(--border-hairline)" }}>
               <div className="max-w-3xl mx-auto w-full">
-              <div className="flex items-end gap-2 rounded-2xl border border-gray-700 bg-gray-800/80 focus-within:border-blue-500 transition-colors p-1.5 pl-3">
+              <div className="flex items-end gap-2 rounded-2xl border focus-within:border-[var(--accent-info)] transition-colors p-1.5 pl-3" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-inset)" }}>
                 <textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleComposerKeyDown}
                   rows={1}
                   placeholder="Ask about your finances…"
-                  className="flex-1 resize-none max-h-40 bg-transparent py-2 text-sm text-white placeholder-gray-500 focus:outline-none leading-relaxed"
+                  className="flex-1 resize-none max-h-40 bg-transparent py-2 text-sm placeholder:text-[var(--text-muted)] focus:outline-none leading-relaxed"
+                  style={{ color: "var(--text-primary)" }}
                 />
                 {loading ? (
                   <button
                     onClick={stopGeneration}
-                    className="w-9 h-9 rounded-xl bg-gray-700 hover:bg-gray-600 flex items-center justify-center transition-colors shrink-0"
+                    className="w-9 h-9 rounded-xl hover:bg-[var(--surface-hover-strong)] flex items-center justify-center transition-colors shrink-0"
+                    style={{ background: "var(--surface-inset)" }}
                     aria-label="Stop generation"
                   >
-                    <X size={16} className="text-white" />
+                    <X size={16} style={{ color: "var(--text-primary)" }} />
                   </button>
                 ) : (
                   <button
                     onClick={() => sendMessage()}
                     disabled={!input.trim()}
                     aria-label="Send message"
-                    className="w-9 h-9 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
+                    className="w-9 h-9 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0 text-white"
+                    style={{ background: "var(--accent-info)" }}
                   >
-                    <Send size={16} className="text-white" />
+                    <Send size={16} />
                   </button>
                 )}
               </div>
-              <p className="mt-1.5 px-1 text-[11px] text-gray-600">
+              <p className="mt-1.5 px-1 text-[11px]" style={{ color: "var(--text-faint)" }}>
                 Enter to send · Shift+Enter for a new line
               </p>
               </div>
             </div>
-          </Card>
+          </DataCard>
       )}
     </div>
   );

@@ -18,7 +18,7 @@ interface InvestmentsProps {
 }
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
 import { AssetDrawer } from "@/components/dashboard/AssetDrawer";
-import { Card, CardTitle } from "@/components/ui/Card";
+import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { CoinIcon } from "@/components/ui/CoinIcon";
 import { PortfolioHistoryChart, ChartSeries } from "@/components/charts/PortfolioHistoryChart";
 import {
@@ -68,15 +68,19 @@ interface CryptoRow {
 }
 
 // ── Category badge config ─────────────────────────────────────────────────────
+// Step C: category colour-coding neutralised to a single ink chip; the icon +
+// label carry the meaning. Amount direction is still state-coloured in TxRow.
+const CAT_CHIP = "bg-[var(--surface-inset)] text-[var(--text-secondary)]";
+
 const ACTIVITY_CAT: Record<
   InvestmentTransaction["category"],
-  { label: string; cls: string; icon: React.ReactNode }
+  { label: string; icon: React.ReactNode }
 > = {
-  Buy:      { label: "Buy",      cls: "bg-emerald-500/15 text-emerald-400", icon: <ArrowDownCircle size={10} /> },
-  Sell:     { label: "Sell",     cls: "bg-red-500/15 text-red-400",         icon: <ArrowUpCircle size={10} />   },
-  Dividend: { label: "Dividend", cls: "bg-blue-500/15 text-blue-400",       icon: <DollarSign size={10} />      },
-  Split:    { label: "Split",    cls: "bg-purple-500/15 text-purple-400",   icon: <Percent size={10} />         },
-  Fee:      { label: "Fee",      cls: "bg-gray-500/15 text-gray-400",       icon: <Trash2 size={10} />          },
+  Buy:      { label: "Buy",      icon: <ArrowDownCircle size={10} /> },
+  Sell:     { label: "Sell",     icon: <ArrowUpCircle size={10} />   },
+  Dividend: { label: "Dividend", icon: <DollarSign size={10} />      },
+  Split:    { label: "Split",    icon: <Percent size={10} />         },
+  Fee:      { label: "Fee",      icon: <Trash2 size={10} />          },
 };
 
 const COMPACT_ROWS = 4;
@@ -89,35 +93,36 @@ function TxRow({ tx, acct }: { tx: InvestmentTransaction; acct?: Account }) {
   const fmtAmt  = (n: number) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
 
+  const amountColor =
+    tx.category === "Sell" || tx.category === "Dividend" ? "var(--accent-positive)"
+    : tx.category === "Buy" ? "var(--text-primary)"
+    : "var(--text-muted)";
+
   return (
-    <div className="flex items-center gap-3 px-4 py-3 hover:bg-gray-800/40 transition-colors">
+    <div className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors">
       <div className="w-9 shrink-0 text-center">
-        <p className="text-xs font-semibold text-gray-300 leading-none">
+        <p className="text-xs font-semibold leading-none" style={{ color: "var(--text-secondary)" }}>
           {dateObj.toLocaleDateString("en-US", { day: "numeric" })}
         </p>
-        <p className="text-xs text-gray-600 mt-0.5">
+        <p className="text-xs mt-0.5" style={{ color: "var(--text-faint)" }}>
           {dateObj.toLocaleDateString("en-US", { month: "short" })}
         </p>
       </div>
       <CoinIcon symbol={tx.ticker} size={32} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm font-semibold text-white">{tx.ticker}</p>
-          <span className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full ${cat.cls}`}>
+          <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{tx.ticker}</p>
+          <span className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
             {cat.icon}{cat.label}
           </span>
         </div>
-        <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-500 truncate">
+        <div className="flex items-center gap-2 mt-0.5 text-xs truncate" style={{ color: "var(--text-muted)" }}>
           <span className="truncate">{tx.description}</span>
-          {acct && <span className="shrink-0 text-gray-700">· {acct.name}</span>}
+          {acct && <span className="shrink-0" style={{ color: "var(--text-faint)" }}>· {acct.name}</span>}
         </div>
       </div>
       <div className="shrink-0 text-right">
-        <p className={`text-sm font-bold tabular-nums ${
-          tx.category === "Sell" || tx.category === "Dividend" ? "text-emerald-400"
-          : tx.category === "Buy" ? "text-white"
-          : "text-gray-400"
-        }`}>
+        <p className="text-sm font-bold tabular-nums" style={{ color: amountColor }}>
           {isBuy ? "−" : tx.amount > 0 ? "+" : "−"}{fmtAmt(tx.amount)}
         </p>
       </div>
@@ -164,23 +169,24 @@ function InvestmentActivityTable({
     <>
       {/* ── Modal ── */}
       {modalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="w-full max-w-lg bg-gray-900 border border-gray-700 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[88dvh]">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 backdrop-blur-sm" style={{ background: "var(--scrim)" }}>
+          <div className="w-full max-w-lg border rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[88dvh]" style={{ background: "var(--modal-surface)", borderColor: "var(--border-hairline-strong)" }}>
             {/* Modal header */}
-            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-800 shrink-0 flex-wrap">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b shrink-0 flex-wrap" style={{ borderColor: "var(--border-hairline)" }}>
               <div className="flex items-center gap-2">
-                <p className="text-sm font-semibold text-white">Activity</p>
-                <span className="text-xs text-gray-500">{filtered.length} transactions</span>
+                <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Activity</p>
+                <span className="text-xs" style={{ color: "var(--text-muted)" }}>{filtered.length} transactions</span>
               </div>
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1 bg-gray-950 border border-gray-700 rounded-xl p-1">
+                <div className="flex items-center gap-1 border rounded-xl p-1" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
                   {(["all", "Buy", "Sell", "Dividend", "Split", "Fee"] as const).map((f) => (
                     <button
                       key={f}
                       onClick={() => setTxFilter(f)}
-                      className={`text-xs font-semibold px-2 py-1 rounded-lg transition-colors ${
-                        txFilter === f ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"
-                      }`}
+                      className="text-xs font-semibold px-2 py-1 rounded-lg transition-colors"
+                      style={txFilter === f
+                        ? { background: "var(--accent-info)", color: "#fff" }
+                        : { color: "var(--text-secondary)" }}
                     >
                       {f === "all" ? "All" : f}
                     </button>
@@ -188,7 +194,8 @@ function InvestmentActivityTable({
                 </div>
                 <button
                   onClick={() => setModalOpen(false)}
-                  className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                  className="p-1.5 hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] rounded-lg transition-colors"
+                  style={{ color: "var(--text-muted)" }}
                 >
                   <ChevronUp size={16} />
                 </button>
@@ -196,9 +203,9 @@ function InvestmentActivityTable({
             </div>
 
             {/* Transaction list */}
-            <div className="overflow-y-auto flex-1 divide-y divide-gray-800">
+            <div className="overflow-y-auto flex-1 divide-y divide-[var(--border-hairline)]">
               {pageSlice.length === 0 ? (
-                <p className="text-sm text-gray-500 text-center py-10">No transactions match this filter.</p>
+                <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>No transactions match this filter.</p>
               ) : (
                 pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} acct={acctMap.get(tx.accountId)} />)
               )}
@@ -206,21 +213,23 @@ function InvestmentActivityTable({
 
             {/* Pagination footer */}
             {totalPages > 1 && (
-              <div className="flex items-center justify-between px-4 py-3 border-t border-gray-800 shrink-0">
+              <div className="flex items-center justify-between px-4 py-3 border-t shrink-0" style={{ borderColor: "var(--border-hairline)" }}>
                 <button
                   onClick={() => setModalPage((p) => Math.max(0, p - 1))}
                   disabled={modalPage === 0}
-                  className="flex items-center gap-1 text-xs font-semibold text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center gap-1 text-xs font-semibold hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  style={{ color: "var(--text-secondary)" }}
                 >
                   <ChevronUp size={14} className="rotate-[-90deg]" /> Prev
                 </button>
-                <span className="text-xs text-gray-500">
+                <span className="text-xs" style={{ color: "var(--text-muted)" }}>
                   {modalPage + 1} / {totalPages}
                 </span>
                 <button
                   onClick={() => setModalPage((p) => Math.min(totalPages - 1, p + 1))}
                   disabled={modalPage === totalPages - 1}
-                  className="flex items-center gap-1 text-xs font-semibold text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center gap-1 text-xs font-semibold hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  style={{ color: "var(--text-secondary)" }}
                 >
                   Next <ChevronDown size={14} className="rotate-[-90deg]" />
                 </button>
@@ -231,7 +240,8 @@ function InvestmentActivityTable({
             <div className="px-4 pb-4 shrink-0">
               <button
                 onClick={() => setModalOpen(false)}
-                className="w-full text-sm font-medium text-gray-400 hover:text-white border border-gray-700 py-2.5 rounded-xl transition-colors"
+                className="w-full text-sm font-medium hover:text-[var(--text-primary)] border py-2.5 rounded-xl transition-colors"
+                style={{ color: "var(--text-secondary)", borderColor: "var(--border-hairline)" }}
               >
                 Collapse
               </button>
@@ -241,17 +251,18 @@ function InvestmentActivityTable({
       )}
 
       {/* ── Compact card ── */}
-      <Card className="!p-0 overflow-hidden">
+      <DataCard padding="0" className="overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-gray-800">
+        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b" style={{ borderColor: "var(--border-hairline)" }}>
           <div className="flex items-center gap-2">
-            <p className="text-sm font-semibold text-white">Activity</p>
-            <span className="text-xs text-gray-500">{filtered.length} transactions</span>
+            <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Activity</p>
+            <span className="text-xs" style={{ color: "var(--text-muted)" }}>{filtered.length} transactions</span>
           </div>
           {filtered.length > COMPACT_ROWS && (
             <button
               onClick={() => { setModalOpen(true); setModalPage(0); }}
-              className="flex items-center gap-1.5 text-xs font-semibold text-blue-400 border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 rounded-lg hover:bg-blue-500/20 transition-colors"
+              className="flex items-center gap-1.5 text-xs font-semibold border px-3 py-1.5 rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
+              style={{ color: "var(--accent-info)", borderColor: "var(--border-hairline)", background: "var(--surface-inset)" }}
             >
               <ChevronDown size={13} />
               Show more
@@ -261,20 +272,20 @@ function InvestmentActivityTable({
 
         {filtered.length === 0 ? (
           <div className="py-10 text-center">
-            <p className="text-sm text-gray-500">No transactions yet.</p>
-            <p className="text-xs text-gray-600 mt-1">Connect via Plaid to pull live activity.</p>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>No transactions yet.</p>
+            <p className="text-xs mt-1" style={{ color: "var(--text-faint)" }}>Connect via Plaid to pull live activity.</p>
           </div>
         ) : (
-          <div className="divide-y divide-gray-800">
+          <div className="divide-y divide-[var(--border-hairline)]">
             {compact.map((tx) => <TxRow key={tx.id} tx={tx} acct={acctMap.get(tx.accountId)} />)}
           </div>
         )}
-      </Card>
+      </DataCard>
     </>
   );
 }
 
-// Chart series definitions
+// Chart series definitions — data-viz colours preserved.
 const INVESTMENT_SERIES: ChartSeries[] = [
   { key: "stocks", label: "Stocks & Funds", color: "#8b5cf6" },
   { key: "crypto", label: "Crypto",         color: "#eab308" },
@@ -397,12 +408,9 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
   const showStocks = filter === "all" || filter === "stocks";
   const showCrypto = filter === "all" || filter === "crypto";
 
-  const cardActive = (f: InvestmentFilter) =>
-    `cursor-pointer transition-all border-2 ${
-      filter === f
-        ? "border-blue-500 bg-blue-500/10"
-        : "border-transparent hover:border-gray-600"
-    }`;
+  // Selection ring for the summary filter cards (accent when active).
+  const filterCardStyle = (f: InvestmentFilter): React.CSSProperties | undefined =>
+    filter === f ? { boxShadow: "0 0 0 2px var(--accent-info)" } : undefined;
 
   return (
     <div className="space-y-6">
@@ -431,7 +439,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
       )}
 
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Investments</h1>
+        <h1 className="text-2xl font-bold" style={{ color: "var(--text-primary)" }}>Investments</h1>
         <div className="flex items-center gap-2">
           <PlaidLinkButton label="Add Account" />
         </div>
@@ -439,41 +447,41 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
 
       {/* ── Summary filter cards ── */}
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-        <Card className={cardActive("stocks")} onClick={() => handleFilterChange(filter === "stocks" ? "all" : "stocks")}>
+        <DataCard interactive onClick={() => handleFilterChange(filter === "stocks" ? "all" : "stocks")} className="cursor-pointer" style={filterCardStyle("stocks")}>
           <div className="flex items-center justify-between mb-1">
-            <CardTitle>Stocks & Funds</CardTitle>
-            {filter === "stocks" && <Check size={13} className="text-blue-400" />}
+            <DataCardTitle>Stocks & Funds</DataCardTitle>
+            {filter === "stocks" && <Check size={13} style={{ color: "var(--accent-info)" }} />}
           </div>
-          <p className="text-3xl font-bold text-violet-400">{fmtCompact(totalStocks)}</p>
-          <p className="text-xs text-gray-500 mt-1">{stocks.length} accounts</p>
-        </Card>
+          <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>{fmtCompact(totalStocks)}</p>
+          <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{stocks.length} accounts</p>
+        </DataCard>
 
-        <Card className={cardActive("crypto")} onClick={() => handleFilterChange(filter === "crypto" ? "all" : "crypto")}>
+        <DataCard interactive onClick={() => handleFilterChange(filter === "crypto" ? "all" : "crypto")} className="cursor-pointer" style={filterCardStyle("crypto")}>
           <div className="flex items-center justify-between mb-1">
-            <CardTitle>Crypto</CardTitle>
-            {filter === "crypto" && <Check size={13} className="text-blue-400" />}
+            <DataCardTitle>Crypto</DataCardTitle>
+            {filter === "crypto" && <Check size={13} style={{ color: "var(--accent-info)" }} />}
           </div>
-          <p className="text-3xl font-bold text-yellow-400">{fmtCompact(totalCrypto)}</p>
-          <p className="text-xs text-gray-500 mt-1">{allCryptoAccounts.length} wallets</p>
-        </Card>
+          <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>{fmtCompact(totalCrypto)}</p>
+          <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{allCryptoAccounts.length} wallets</p>
+        </DataCard>
 
-        <Card className={`col-span-2 lg:col-span-1 ${cardActive("all")}`} onClick={() => handleFilterChange("all")}>
+        <DataCard interactive onClick={() => handleFilterChange("all")} className="col-span-2 lg:col-span-1 cursor-pointer" style={filterCardStyle("all")}>
           <div className="flex items-center justify-between mb-1">
-            <CardTitle>Total Portfolio</CardTitle>
-            {filter === "all" && <Check size={13} className="text-blue-400" />}
+            <DataCardTitle>Total Portfolio</DataCardTitle>
+            {filter === "all" && <Check size={13} style={{ color: "var(--accent-info)" }} />}
           </div>
-          <p className="text-3xl font-bold text-white">{fmtCompact(totalStocks + totalCrypto)}</p>
-          <p className="text-xs text-gray-500 mt-1">{stocks.length + allCryptoAccounts.length} accounts</p>
-        </Card>
+          <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>{fmtCompact(totalStocks + totalCrypto)}</p>
+          <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{stocks.length + allCryptoAccounts.length} accounts</p>
+        </DataCard>
       </div>
 
       {/* ── Stocks section ── */}
       {showStocks && (
         <section ref={stocksSectionRef} className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 px-1">
+          <p className="text-xs font-semibold uppercase tracking-widest px-1" style={{ color: "var(--text-muted)" }}>
             Stocks & Funds
             {filter === "stocks" && (
-              <span className="ml-2 text-blue-400 normal-case tracking-normal font-normal text-xs">
+              <span className="ml-2 normal-case tracking-normal font-normal text-xs" style={{ color: "var(--accent-info)" }}>
                 — click an account to filter holdings
               </span>
             )}
@@ -486,18 +494,17 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                 <div
                   key={a.id}
                   onClick={() => handleAccountClick(a.id)}
-                  className={`rounded-2xl border-2 transition-all cursor-pointer ${
-                    sel ? "border-violet-500 bg-violet-500/5" : "border-transparent hover:border-gray-600"
-                  }`}
+                  className="rounded-2xl border-2 transition-all cursor-pointer"
+                  style={{ borderColor: sel ? "var(--accent-info)" : "transparent", background: sel ? "var(--surface-muted)" : undefined }}
                 >
-                  <div className="rounded-[14px] border border-gray-700 bg-gray-900 p-4">
-                    <p className="text-xs text-gray-400 truncate">{a.institution}</p>
-                    <p className="text-sm font-semibold text-white truncate mb-2">{a.name}</p>
-                    <p className="text-2xl font-bold text-violet-400">{fmt(a.balance)}</p>
-                    <p className="text-xs text-gray-600 mt-1">Updated {formatDate(a.lastUpdated)}</p>
+                  <div className="rounded-[14px] border p-4" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-inset)" }}>
+                    <p className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>{a.institution}</p>
+                    <p className="text-sm font-semibold truncate mb-2" style={{ color: "var(--text-primary)" }}>{a.name}</p>
+                    <p className="text-2xl font-bold" style={{ color: "var(--text-primary)" }}>{fmt(a.balance)}</p>
+                    <p className="text-xs mt-1" style={{ color: "var(--text-faint)" }}>Updated {formatDate(a.lastUpdated)}</p>
                   </div>
                   {sel && (
-                    <p className="text-xs text-violet-400 text-center py-1.5">
+                    <p className="text-xs text-center py-1.5" style={{ color: "var(--accent-info)" }}>
                       ↑ showing holdings for this account
                     </p>
                   )}
@@ -508,14 +515,14 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
 
           {/* Stock holdings table */}
           {holdingsToShow.length > 0 && (
-            <Card>
+            <DataCard>
               <div className="flex items-center justify-between mb-1">
-                <CardTitle>
+                <DataCardTitle>
                   Holdings{selectedAccountId && ` — ${stocks.find((a) => a.id === selectedAccountId)?.name}`}
-                </CardTitle>
-                <span className="text-xs text-gray-500">{holdingsToShow.length} positions</span>
+                </DataCardTitle>
+                <span className="text-xs" style={{ color: "var(--text-muted)" }}>{holdingsToShow.length} positions</span>
               </div>
-              <div className="divide-y divide-gray-800">
+              <div className="divide-y divide-[var(--border-hairline)]">
                 {visibleHoldings.map((h) => (
                   <div
                     key={h.id}
@@ -532,23 +539,22 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                         removable: false,
                       })
                     }
-                    className="flex items-center justify-between py-3 cursor-pointer hover:bg-gray-800/50 rounded-xl px-2 -mx-2 transition-colors"
+                    className="flex items-center justify-between py-3 cursor-pointer hover:bg-[var(--surface-hover)] rounded-xl px-2 -mx-2 transition-colors"
                   >
                     <div className="flex items-center gap-3">
                       <CoinIcon symbol={h.symbol} size={36} />
                       <div>
-                        <p className="text-sm font-semibold text-white">{h.symbol}</p>
-                        <p className="text-xs text-gray-500">
+                        <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{h.symbol}</p>
+                        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                           {h.quantity} shares · {fmt(h.price)}
                         </p>
                       </div>
                     </div>
                     <div className="text-right">
-                      <p className="text-sm font-semibold text-white">{fmt(h.value)}</p>
+                      <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(h.value)}</p>
                       <span
-                        className={`flex items-center justify-end gap-0.5 text-xs font-medium ${
-                          h.change24h >= 0 ? "text-emerald-400" : "text-red-400"
-                        }`}
+                        className="flex items-center justify-end gap-0.5 text-xs font-medium"
+                        style={{ color: h.change24h >= 0 ? "var(--accent-positive)" : "var(--accent-negative)" }}
                       >
                         {h.change24h >= 0 ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
                         {h.change24h >= 0 ? "+" : ""}
@@ -561,7 +567,8 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
               {holdingsToShow.length > PREVIEW && (
                 <button
                   onClick={() => setHoldingsExpanded((e) => !e)}
-                  className="flex items-center justify-center gap-1.5 w-full mt-3 pt-3 border-t border-gray-800 text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors"
+                  className="flex items-center justify-center gap-1.5 w-full mt-3 pt-3 border-t text-sm font-medium transition-colors"
+                  style={{ borderColor: "var(--border-hairline)", color: "var(--accent-info)" }}
                 >
                   {holdingsExpanded ? (
                     <><ChevronUp size={15} /> See Less</>
@@ -570,7 +577,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                   )}
                 </button>
               )}
-            </Card>
+            </DataCard>
           )}
         </section>
       )}
@@ -579,23 +586,24 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
       {showCrypto && (
         <section ref={cryptoSectionRef} className="space-y-3">
           <div className="flex items-center justify-between px-1">
-            <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">Crypto</p>
+            <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>Crypto</p>
             <button
               onClick={() => setShowAddModal(true)}
-              className="flex items-center gap-1.5 text-xs font-semibold text-blue-400 border border-blue-500/30 bg-blue-500/10 px-3 py-2.5 rounded-lg hover:bg-blue-500/20 transition-colors touch-manipulation"
+              className="flex items-center gap-1.5 text-xs font-semibold border px-3 py-2.5 rounded-lg hover:bg-[var(--surface-hover)] transition-colors touch-manipulation"
+              style={{ color: "var(--accent-info)", borderColor: "var(--border-hairline)", background: "var(--surface-inset)" }}
             >
               <Plus size={13} />
               Add Wallet
             </button>
           </div>
 
-          <Card>
+          <DataCard>
             {sortedCryptoRows.length === 0 ? (
-              <p className="text-sm text-gray-500 text-center py-6">
+              <p className="text-sm text-center py-6" style={{ color: "var(--text-muted)" }}>
                 No crypto wallets yet. Add a wallet address to get started.
               </p>
             ) : (
-              <div className="divide-y divide-gray-800">
+              <div className="divide-y divide-[var(--border-hairline)]">
                 {sortedCryptoRows.map((row) => {
                   const isConfirming = confirmRemoveId === row.id;
 
@@ -603,23 +611,25 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                     <div key={row.id} className="py-3">
                       {isConfirming ? (
                         /* ── Confirm remove ── */
-                        <div className="flex items-center justify-between gap-3 px-1 py-1 bg-red-500/10 border border-red-500/20 rounded-xl">
+                        <div className="flex items-center justify-between gap-3 px-1 py-1 rounded-xl border" style={{ background: "rgba(237,82,71,0.10)", borderColor: "rgba(237,82,71,0.20)" }}>
                           <div className="flex items-center gap-2 min-w-0">
-                            <AlertTriangle size={15} className="text-red-400 shrink-0" />
-                            <p className="text-sm text-red-300 truncate">
+                            <AlertTriangle size={15} className="shrink-0" style={{ color: "var(--accent-negative)" }} />
+                            <p className="text-sm truncate" style={{ color: "var(--accent-negative)" }}>
                               Remove <span className="font-semibold">{row.name}</span>?
                             </p>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <button
                               onClick={() => handleRemove(row.id)}
-                              className="text-xs font-semibold text-white bg-red-600 hover:bg-red-500 px-3 py-1.5 rounded-lg transition-colors"
+                              className="text-xs font-semibold text-white px-3 py-1.5 rounded-lg transition-colors"
+                              style={{ background: "var(--accent-negative)" }}
                             >
                               Remove
                             </button>
                             <button
                               onClick={() => setConfirmRemoveId(null)}
-                              className="text-xs font-medium text-gray-400 hover:text-white border border-gray-700 px-3 py-1.5 rounded-lg transition-colors"
+                              className="text-xs font-medium hover:text-[var(--text-primary)] border px-3 py-1.5 rounded-lg transition-colors"
+                              style={{ color: "var(--text-secondary)", borderColor: "var(--border-hairline)" }}
                             >
                               Cancel
                             </button>
@@ -631,34 +641,34 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                           {/* Click zone → opens chart drawer */}
                           <div
                             onClick={() => setSelectedAsset(row)}
-                            className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer hover:bg-gray-800/50 rounded-xl px-2 py-1 -mx-2 transition-colors"
+                            className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer hover:bg-[var(--surface-hover)] rounded-xl px-2 py-1 -mx-2 transition-colors"
                           >
                             <CoinIcon symbol={row.symbol} size={36} />
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 flex-wrap">
-                                <p className="text-sm font-semibold text-white">{row.name}</p>
+                                <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{row.name}</p>
                                 {row.walletChain && (
-                                  <span className="text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded">
+                                  <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>
                                     {row.walletChain}
                                   </span>
                                 )}
                               </div>
-                              <p className="text-xs text-gray-500 truncate mt-0.5">
+                              <p className="text-xs truncate mt-0.5" style={{ color: "var(--text-muted)" }}>
                                 {row.walletAddress ? truncAddr(row.walletAddress) : row.source}
                               </p>
                             </div>
                             <div className="text-right shrink-0">
-                              <p className="text-sm font-semibold text-white">{fmt(row.balance)}</p>
+                              <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(row.balance)}</p>
                               {row.quantity !== undefined ? (
-                                <p className="text-xs text-gray-400">
+                                <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
                                   {row.quantity} {row.walletChain}
                                 </p>
                               ) : row.walletChain ? (
                                 /* self-custody wallet with no balance synced yet */
-                                <span className="text-xs text-yellow-400">pending</span>
+                                <span className="text-xs" style={{ color: "var(--text-secondary)" }}>pending</span>
                               ) : null /* exchange account — multiple assets, no native balance */}
                               {row.lastUpdated && (
-                                <p className="text-xs text-gray-600 mt-0.5">
+                                <p className="text-xs mt-0.5" style={{ color: "var(--text-faint)" }}>
                                   {formatDate(row.lastUpdated)}
                                 </p>
                               )}
@@ -672,7 +682,8 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                                 e.stopPropagation();
                                 setConfirmRemoveId(row.id);
                               }}
-                              className="shrink-0 p-2 text-gray-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                              className="shrink-0 p-2 hover:text-[var(--accent-negative)] hover:bg-[var(--surface-hover)] rounded-lg transition-colors"
+                              style={{ color: "var(--text-faint)" }}
                               title="Remove wallet"
                             >
                               <Trash2 size={15} />
@@ -685,13 +696,13 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                 })}
               </div>
             )}
-          </Card>
+          </DataCard>
         </section>
       )}
 
       {/* ── Activity ── */}
       <section className="space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 px-1">Activity</p>
+        <p className="text-xs font-semibold uppercase tracking-widest px-1" style={{ color: "var(--text-muted)" }}>Activity</p>
         <InvestmentActivityTable
           transactions={investmentTransactions}
           accounts={accounts}
