@@ -11,9 +11,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account } from "@/types";
-import { X, AlertTriangle, Trash2, Loader2 } from "lucide-react";
+import { AlertTriangle, Trash2, Loader2 } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { Dialog } from "@/components/atlas/Dialog";
 import { GlassButton } from "@/components/atlas/GlassButton";
 
 interface Props {
@@ -63,65 +63,55 @@ export function RemoveAccountModal({ accounts, onClose }: Props) {
   };
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4"
-      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <Dialog
+      open
+      onClose={onClose}
+      title="Remove Account"
+      subtitle="Historical data is preserved — only hidden from the dashboard."
+      size="sm"
+      footer={
+        <div className="space-y-2">
+          {error && (
+            <p className="text-xs text-[var(--coral-400)] text-center">{error}</p>
+          )}
+          <GlassButton tone="neutral" fullWidth onClick={onClose}>
+            Done
+          </GlassButton>
+        </div>
+      }
     >
-      <GlassPanel
-        depth="thick"
-        elevation="e4"
-        radius="xl"
-        className="w-full sm:max-w-md max-h-[88dvh] flex flex-col"
-        onClick={(e: React.MouseEvent) => e.stopPropagation()}
-      >
-        <div className="flex flex-col max-h-[88dvh]">
-          {/* Header */}
-          <div
-            className="flex items-center justify-between gap-3 px-6 pt-5 pb-3 shrink-0"
-            style={{ borderBottom: "1px solid var(--border-hairline)" }}
-          >
-            <div>
-              <h2 className="text-base font-semibold text-[var(--text-primary)]">Remove Account</h2>
-              <p className="text-xs text-[var(--text-muted)] mt-0.5">
-                Historical data is preserved — only hidden from the dashboard.
-              </p>
-            </div>
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors"
-            >
-              <X size={18} />
-            </button>
-          </div>
-
-          {/* Account list */}
-          <div className="overflow-y-auto flex-1 min-h-0 divide-y divide-[var(--border-hairline)]">
-            {order.map((institution) => (
-              <div key={institution}>
-                {/* Institution label */}
-                <div className="px-6 pt-3 pb-1">
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="w-6 h-6 rounded-[var(--radius-xs)] flex items-center justify-center shrink-0"
-                      style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
-                    >
-                      <span className="text-xs font-bold text-[var(--text-secondary)]">{institution[0]}</span>
-                    </div>
-                    <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest">
-                      {institution}
-                    </p>
-                  </div>
+      {/* Account list — grouped by institution. The Atlas Glass modal
+          primitive (Dialog → OverlaySurface, doctrine Phase 4 / migration
+          4.1, retires recipe R4) owns the portal, scrim, height cap, and
+          scrolling body; internal horizontal padding is dropped so rows sit
+          in the primitive's padding. Per-row inline confirm strips and the
+          DELETE /api/accounts/:id behavior are unchanged. */}
+      <div className="divide-y divide-[var(--border-hairline)]">
+        {order.map((institution) => (
+          <div key={institution}>
+            {/* Institution label */}
+            <div className="pt-3 pb-1">
+              <div className="flex items-center gap-2">
+                <div
+                  className="w-6 h-6 rounded-[var(--radius-xs)] flex items-center justify-center shrink-0"
+                  style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}
+                >
+                  <span className="text-xs font-bold text-[var(--text-secondary)]">{institution[0]}</span>
                 </div>
+                <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest">
+                  {institution}
+                </p>
+              </div>
+            </div>
 
-                {/* Accounts under this institution */}
-                {groups[institution].map((a) => {
-                  const isConfirming = confirmId === a.id;
-                  const isRemoving   = removing  === a.id;
+            {/* Accounts under this institution */}
+            {groups[institution].map((a) => {
+              const isConfirming = confirmId === a.id;
+              const isRemoving   = removing  === a.id;
 
-                  return (
-                    <div key={a.id} className="px-6 py-3">
-                      {isConfirming ? (
+              return (
+                <div key={a.id} className="py-3">
+                  {isConfirming ? (
                         /* ── Confirm strip ── */
                         <div
                           className="flex items-center justify-between gap-3 rounded-[var(--radius-sm)] px-3 py-2.5"
@@ -183,25 +173,6 @@ export function RemoveAccountModal({ accounts, onClose }: Props) {
               </div>
             ))}
           </div>
-
-          {/* Error */}
-          {error && (
-            <p
-              className="text-xs text-[var(--coral-400)] text-center px-6 py-2 shrink-0"
-              style={{ borderTop: "1px solid var(--border-hairline)" }}
-            >
-              {error}
-            </p>
-          )}
-
-          {/* Footer */}
-          <div className="px-6 py-4 shrink-0" style={{ borderTop: "1px solid var(--border-hairline)" }}>
-            <GlassButton tone="neutral" fullWidth onClick={onClose}>
-              Done
-            </GlassButton>
-          </div>
-        </div>
-      </GlassPanel>
-    </div>
+    </Dialog>
   );
 }
