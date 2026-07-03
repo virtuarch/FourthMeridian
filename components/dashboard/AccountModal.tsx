@@ -11,7 +11,7 @@ import { Account, Holding, Transaction, TransactionCategory, AccountType } from 
 import { CoinIcon } from "@/components/ui/CoinIcon";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { useTheme } from "@/components/theme/ThemeProvider";
 
@@ -37,7 +37,7 @@ function AssetLogo({
       style={{ width: size, height: size }}
       className="rounded-xl bg-violet-500/15 border border-violet-500/20 flex items-center justify-center shrink-0"
     >
-      <span className="text-xs font-bold text-violet-400 leading-none">
+      <span className="text-xs font-bold text-[var(--accent-neutral)] leading-none">
         {symbol.slice(0, 2).toUpperCase()}
       </span>
     </div>
@@ -67,22 +67,22 @@ const fmtCompact = (n: number) =>
 
 // ── Category colors ───────────────────────────────────────────────────────────
 const CAT_COLORS: Partial<Record<TransactionCategory, string>> = {
-  Income:        "bg-emerald-500/15 text-emerald-400",
-  Transfer:      "bg-blue-500/15 text-blue-400",
+  Income:        "bg-emerald-500/15 text-[var(--accent-positive)]",
+  Transfer:      "bg-blue-500/15 text-[var(--accent-info)]",
   Groceries:     "bg-lime-500/15 text-lime-400",
   Dining:        "bg-orange-500/15 text-orange-400",
-  Shopping:      "bg-purple-500/15 text-purple-400",
+  Shopping:      "bg-purple-500/15 text-[var(--accent-neutral)]",
   Travel:        "bg-sky-500/15 text-sky-400",
-  Subscriptions: "bg-violet-500/15 text-violet-400",
+  Subscriptions: "bg-violet-500/15 text-[var(--accent-neutral)]",
   Utilities:     "bg-slate-500/15 text-slate-400",
   Interest:      "bg-teal-500/15 text-teal-400",
-  Payment:       "bg-gray-500/15 text-gray-400",
-  Other:         "bg-gray-600/15 text-gray-500",
-  Buy:           "bg-emerald-500/15 text-emerald-400",
-  Sell:          "bg-red-500/15 text-red-400",
-  Dividend:      "bg-yellow-500/15 text-yellow-400",
-  Split:         "bg-blue-500/15 text-blue-400",
-  Fee:           "bg-gray-500/15 text-gray-400",
+  Payment:       "bg-[var(--surface-inset)] text-[var(--text-secondary)]",
+  Other:         "bg-[var(--surface-inset)] text-[var(--text-muted)]",
+  Buy:           "bg-emerald-500/15 text-[var(--accent-positive)]",
+  Sell:          "bg-red-500/15 text-[var(--accent-negative)]",
+  Dividend:      "bg-yellow-500/15 text-[var(--accent-warning)]",
+  Split:         "bg-blue-500/15 text-[var(--accent-info)]",
+  Fee:           "bg-[var(--surface-inset)] text-[var(--text-secondary)]",
 };
 
 // ── Account type icons ────────────────────────────────────────────────────────
@@ -96,12 +96,12 @@ const TYPE_ICON: Record<AccountType, React.ElementType> = {
 };
 
 const TYPE_ICON_CLS: Record<AccountType, string> = {
-  checking:   "bg-blue-500/10 text-blue-400",
-  savings:    "bg-emerald-500/10 text-emerald-400",
-  investment: "bg-violet-500/10 text-violet-400",
-  crypto:     "bg-yellow-500/10 text-yellow-400",
-  debt:       "bg-red-500/10 text-red-400",
-  other:      "bg-gray-500/10 text-gray-400",
+  checking:   "bg-blue-500/10 text-[var(--accent-info)]",
+  savings:    "bg-emerald-500/10 text-[var(--accent-positive)]",
+  investment: "bg-violet-500/10 text-[var(--accent-neutral)]",
+  crypto:     "bg-yellow-500/10 text-[var(--accent-warning)]",
+  debt:       "bg-red-500/10 text-[var(--accent-negative)]",
+  other:      "bg-[var(--surface-inset)] text-[var(--text-secondary)]",
 };
 
 const PAGE_SIZE = 10;
@@ -291,278 +291,125 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
   }
 
   const Icon    = TYPE_ICON[account.type as AccountType] ?? Building2;
-  const iconCls = TYPE_ICON_CLS[account.type as AccountType] ?? "bg-gray-500/10 text-gray-400";
+  const iconCls = TYPE_ICON_CLS[account.type as AccountType] ?? "bg-[var(--surface-inset)] text-[var(--text-secondary)]";
+
+  const isTxView = activeTab === "transactions" || !isInvestment;
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4"
-      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      {/* Panel */}
-      <GlassPanel
-        depth="thick"
-        elevation="e4"
-        radius="xl"
-        className="w-full sm:max-w-2xl max-h-[88dvh] flex flex-col"
-        onClick={(e: React.MouseEvent) => e.stopPropagation()}
-      >
-        {/* SCROLL-1 fix (doctrine §8.10/§13): a single inner flex column with a
-            definite dvh max-height + min-h-0. GlassPanel wraps its children in a
-            plain `relative z-10` block, so the `flex flex-col` + max-h on the
-            GlassPanel itself never reach these children — the tab bodies below
-            (`overflow-y-auto flex-1`) previously clipped instead of scrolling.
-            They now bound because THIS column carries its own definite height.
-            The nested chart overlay (fixed inset-0), tabs, footer, network calls
-            and behavior are all unchanged. */}
-        <div className="flex flex-col min-h-0 max-h-[88dvh]">
-
-        {/* ── Header ── */}
-        <div
-          className="flex items-center gap-3 px-5 pt-5 pb-4 shrink-0"
-          style={{ borderBottom: "1px solid var(--border-hairline)" }}
-        >
-          {account.type === "crypto" ? (
-            <CoinIcon
-              symbol={account.walletChain ?? exchangeSymbol(account.institution)}
-              size={36}
-            />
-          ) : (
-            <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${iconCls}`}>
-              <Icon size={16} />
-            </div>
-          )}
-          <div className="flex-1 min-w-0">
-            {editingName ? (
-              <form
-                onSubmit={(e) => { e.preventDefault(); handleSaveName(); }}
-                className="flex items-center gap-1"
-              >
-                <input
-                  autoFocus
-                  type="text"
-                  value={nameInput}
-                  onChange={(e) => setNameInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Escape") { setEditingName(false); setNameError(""); } }}
-                  maxLength={120}
-                  placeholder={originalName ?? account.name}
-                  className="flex-1 min-w-0 rounded-[var(--radius-xs)] px-2 py-1 text-sm font-bold text-[var(--text-primary)] focus:outline-none"
-                  style={{ background: "var(--surface-muted)", border: "1px solid var(--meridian-400)" }}
-                />
-                <button
-                  type="submit"
-                  disabled={nameSaving}
-                  className="p-1 text-[var(--emerald-400)] hover:text-[var(--emerald-300)] disabled:opacity-50 shrink-0"
-                >
-                  {nameSaving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setEditingName(false); setNameError(""); }}
-                  disabled={nameSaving}
-                  className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0"
-                >
-                  <X size={13} />
-                </button>
-              </form>
+    <OverlaySurface
+      open
+      intent="workspace"
+      size="md"
+      className="sm:max-w-2xl"
+      onClose={onClose}
+      closeOnBackdrop
+      hideHeader
+      title={localName || account.name}
+      toolbar={
+        <div className="space-y-3">
+          {/* ── Header (title + inline rename + balance + close) ── */}
+          <div className="flex items-center gap-3">
+            {account.type === "crypto" ? (
+              <CoinIcon
+                symbol={account.walletChain ?? exchangeSymbol(account.institution)}
+                size={36}
+              />
             ) : (
-              <button
-                onClick={() => { setNameInput(account.displayName ?? ""); setNameError(""); setEditingName(true); }}
-                className="group flex items-center gap-1.5 max-w-full text-left"
-              >
-                <p className="text-sm font-bold text-[var(--text-primary)] leading-tight truncate">{localName}</p>
-                <Pencil size={11} className="text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] shrink-0" />
-              </button>
-            )}
-            <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5 truncate">
-              {account.institution}
-              {originalName && localName !== originalName && (
-                <span className="text-[var(--text-muted)]"> · originally &quot;{originalName}&quot;</span>
-              )}
-            </p>
-            {nameError && <p className="text-xs text-[var(--coral-400)] leading-tight mt-0.5">{nameError}</p>}
-          </div>
-          <div className="text-right shrink-0 mr-2">
-            <p className={`text-sm font-bold tabular-nums ${isDebt && account.balance > 0 ? "text-[var(--coral-400)]" : "text-[var(--text-primary)]"}`}>
-              {isDebt && account.balance > 0 ? "−" : ""}{fmtCompact(account.balance)}
-            </p>
-            <p className="text-xs text-[var(--text-muted)] mt-0.5">balance</p>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* ── Tab switcher (investment/crypto only) ── */}
-        {isInvestment && (
-          <div className="flex px-5 pt-3 pb-0 gap-1 shrink-0">
-            {(["holdings", "transactions"] as ModalTab[]).map((t) => (
-              <button
-                key={t}
-                onClick={() => setActiveTab(t)}
-                className={`px-4 py-2 rounded-[var(--radius-full)] text-xs font-semibold border transition-all capitalize ${
-                  activeTab === t
-                    ? "text-[var(--meridian-400)]"
-                    : "bg-transparent border-[var(--border-hairline-strong)] text-[var(--text-muted)] hover:border-[var(--border-hairline-strong)] hover:text-[var(--text-primary)]"
-                }`}
-                style={
-                  activeTab === t
-                    ? { background: "rgba(59,130,246,.14)", borderColor: "rgba(125,168,255,.32)" }
-                    : undefined
-                }
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* ── Holdings tab ── */}
-        {activeTab === "holdings" && isInvestment && (
-          <div className="overflow-y-auto flex-1 px-5 py-4 space-y-1">
-            {accountHoldings.length === 0 ? (
-              <p className="text-sm text-[var(--text-muted)] text-center py-10">No positions found.</p>
-            ) : (
-              accountHoldings.map((h) => (
-                <button
-                  key={h.id}
-                  onClick={() => setChartHolding(h)}
-                  className="w-full flex items-center gap-3 py-3 border-b border-[var(--border-hairline)] last:border-0 hover:bg-[var(--surface-hover)] -mx-2 px-2 rounded-[var(--radius-sm)] transition-colors touch-manipulation text-left"
-                >
-                  {/* Logo */}
-                  <AssetLogo symbol={h.symbol} accountType={account.type} size={36} />
-
-                  {/* Name + symbol */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-semibold text-[var(--text-primary)] leading-tight">{h.symbol}</p>
-                      <ExternalLink size={10} className="text-[var(--text-muted)]" />
-                    </div>
-                    <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5 truncate">{h.name}</p>
-                  </div>
-
-                  {/* Stats */}
-                  <div className="flex items-center gap-4 shrink-0 text-right">
-                    <div>
-                      <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Qty</p>
-                      <p className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums">
-                        {h.quantity % 1 === 0 ? h.quantity.toFixed(0) : h.quantity.toFixed(4)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Price</p>
-                      <p className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums">{fmtCompact(h.price)}</p>
-                    </div>
-                    {h.change24h !== 0 && (
-                      <div>
-                        <p className="text-[10px] text-[var(--text-muted)] mb-0.5">24h</p>
-                        <p className={`text-xs font-semibold tabular-nums ${h.change24h >= 0 ? "text-[var(--emerald-400)]" : "text-[var(--coral-400)]"}`}>
-                          {h.change24h >= 0 ? "+" : ""}{h.change24h.toFixed(2)}%
-                        </p>
-                      </div>
-                    )}
-                    <div>
-                      <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Value</p>
-                      <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums">{fmtCompact(h.value)}</p>
-                    </div>
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-        )}
-
-        {/* ── TradingView chart overlay ── */}
-        {chartHolding && (
-          <div
-            className="fixed inset-0 z-[110] flex flex-col overflow-hidden"
-            style={{ background: "var(--glass-thick)", backdropFilter: "blur(30px) saturate(160%)", WebkitBackdropFilter: "blur(30px) saturate(160%)" }}
-          >
-            {/* Chart header */}
-            <div
-              className="flex items-center justify-between px-5 pt-5 pb-3 shrink-0"
-              style={{ borderBottom: "1px solid var(--border-hairline)" }}
-            >
-              <div>
-                <p className="text-sm font-bold text-[var(--text-primary)]">{chartHolding.symbol}</p>
-                <p className="text-xs text-[var(--text-muted)] truncate max-w-[200px]">{chartHolding.name}</p>
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${iconCls}`}>
+                <Icon size={16} />
               </div>
-              <button
-                onClick={() => setChartHolding(null)}
-                className="p-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors"
-              >
-                <X size={16} />
-              </button>
+            )}
+            <div className="flex-1 min-w-0">
+              {editingName ? (
+                <form
+                  onSubmit={(e) => { e.preventDefault(); handleSaveName(); }}
+                  className="flex items-center gap-1"
+                >
+                  <input
+                    autoFocus
+                    type="text"
+                    value={nameInput}
+                    onChange={(e) => setNameInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setEditingName(false); setNameError(""); } }}
+                    maxLength={120}
+                    placeholder={originalName ?? account.name}
+                    className="flex-1 min-w-0 rounded-[var(--radius-xs)] px-2 py-1 text-sm font-bold text-[var(--text-primary)] focus:outline-none"
+                    style={{ background: "var(--surface-muted)", border: "1px solid var(--meridian-400)" }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={nameSaving}
+                    className="p-1 text-[var(--emerald-400)] hover:text-[var(--emerald-300)] disabled:opacity-50 shrink-0"
+                  >
+                    {nameSaving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setEditingName(false); setNameError(""); }}
+                    disabled={nameSaving}
+                    className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0"
+                  >
+                    <X size={13} />
+                  </button>
+                </form>
+              ) : (
+                <button
+                  onClick={() => { setNameInput(account.displayName ?? ""); setNameError(""); setEditingName(true); }}
+                  className="group flex items-center gap-1.5 max-w-full text-left"
+                >
+                  <p className="text-sm font-bold text-[var(--text-primary)] leading-tight truncate">{localName}</p>
+                  <Pencil size={11} className="text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] shrink-0" />
+                </button>
+              )}
+              <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5 truncate">
+                {account.institution}
+                {originalName && localName !== originalName && (
+                  <span className="text-[var(--text-muted)]"> · originally &quot;{originalName}&quot;</span>
+                )}
+              </p>
+              {nameError && <p className="text-xs text-[var(--coral-400)] leading-tight mt-0.5">{nameError}</p>}
             </div>
-
-            {/* Position summary row */}
-            <div
-              className="grid grid-cols-4 divide-x divide-[var(--border-hairline)] shrink-0"
-              style={{ borderBottom: "1px solid var(--border-hairline)" }}
+            <div className="text-right shrink-0 mr-2">
+              <p className={`text-sm font-bold tabular-nums ${isDebt && account.balance > 0 ? "text-[var(--coral-400)]" : "text-[var(--text-primary)]"}`}>
+                {isDebt && account.balance > 0 ? "−" : ""}{fmtCompact(account.balance)}
+              </p>
+              <p className="text-xs text-[var(--text-muted)] mt-0.5">balance</p>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors shrink-0"
             >
-              {[
-                { label: "Value",  value: fmtUSD(chartHolding.value),  cls: "text-[var(--text-primary)]" },
-                { label: "Price",  value: fmtUSD(chartHolding.price),  cls: "text-[var(--text-primary)]" },
-                {
-                  label: "Qty",
-                  value: chartHolding.quantity % 1 === 0
-                    ? chartHolding.quantity.toFixed(0)
-                    : chartHolding.quantity.toFixed(4),
-                  cls: "text-[var(--text-primary)]",
-                },
-                {
-                  label: "24h",
-                  value: chartHolding.change24h !== 0
-                    ? `${chartHolding.change24h >= 0 ? "+" : ""}${chartHolding.change24h.toFixed(2)}%`
-                    : "—",
-                  cls: chartHolding.change24h > 0
-                    ? "text-[var(--emerald-400)]"
-                    : chartHolding.change24h < 0
-                      ? "text-[var(--coral-400)]"
-                      : "text-[var(--text-muted)]",
-                },
-              ].map(({ label, value, cls }) => (
-                <div key={label} className="flex flex-col items-center justify-center py-3 px-2">
-                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">{label}</p>
-                  <p className={`text-sm font-bold tabular-nums ${cls}`}>{value}</p>
-                </div>
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* ── Tab switcher (investment/crypto only) ── */}
+          {isInvestment && (
+            <div className="flex gap-1">
+              {(["holdings", "transactions"] as ModalTab[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setActiveTab(t)}
+                  className={`px-4 py-2 rounded-[var(--radius-full)] text-xs font-semibold border transition-all capitalize ${
+                    activeTab === t
+                      ? "text-[var(--meridian-400)]"
+                      : "bg-transparent border-[var(--border-hairline-strong)] text-[var(--text-muted)] hover:border-[var(--border-hairline-strong)] hover:text-[var(--text-primary)]"
+                  }`}
+                  style={
+                    activeTab === t
+                      ? { background: "rgba(59,130,246,.14)", borderColor: "rgba(125,168,255,.32)" }
+                      : undefined
+                  }
+                >
+                  {t}
+                </button>
               ))}
             </div>
+          )}
 
-            {/* TradingView iframe — theme param tracks the app's own
-                Midnight/Light Glass mode (resolvedTheme) instead of a
-                hardcoded "dark", so the embedded widget doesn't clash with
-                Light Glass. */}
-            <div className="flex-1 min-h-0">
-              <iframe
-                key={`${chartHolding.symbol}-${resolvedTheme}`}
-                src={`https://www.tradingview.com/widgetembed/?symbol=${encodeURIComponent(toTVSymbol(chartHolding.symbol, account.type))}&interval=D&theme=${resolvedTheme}&locale=en&style=1&hidesidetoolbar=0&withdateranges=1&saveimage=0&toolbarbg=${resolvedTheme === "light" ? "ffffff" : "1e2130"}`}
-                className="w-full h-full border-0"
-                allow="clipboard-write"
-                title={`${chartHolding.symbol} chart`}
-              />
-            </div>
-
-            {/* Back button */}
-            <div className="px-5 pb-5 pt-2 shrink-0">
-              <GlassButton tone="neutral" fullWidth onClick={() => setChartHolding(null)}>
-                ← Back to Holdings
-              </GlassButton>
-            </div>
-          </div>
-        )}
-
-        {/* ── Transactions tab ── */}
-        {(activeTab === "transactions" || !isInvestment) && (
-          <>
-            {/* Filters */}
-            <div
-              className="px-4 pt-2.5 pb-2 space-y-2 shrink-0"
-              style={{ borderBottom: "1px solid var(--border-hairline)" }}
-            >
+          {/* ── Transaction filters ── */}
+          {isTxView && (
+            <div className="space-y-2">
               {/* Date presets */}
               <div className="flex gap-1.5 flex-wrap">
                 {(["7D", "1M", "3M", "6M", "1Y", "All"] as DatePreset[]).map((p) => (
@@ -627,52 +474,32 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
                 </p>
               )}
             </div>
-
-            {/* Transaction list */}
-            <div className="overflow-y-auto flex-1 divide-y divide-[var(--border-hairline)] pt-1">
-              {!txs && !loadError && (
-                <div className="flex items-center justify-center py-12 gap-2 text-[var(--text-muted)]">
-                  <Loader2 size={16} className="animate-spin" />
-                  <span className="text-sm">Loading…</span>
-                </div>
-              )}
-              {loadError && (
-                <p className="text-sm text-[var(--coral-400)] text-center py-10">Failed to load transactions.</p>
-              )}
-              {txs && filtered.length === 0 && (
-                <p className="text-sm text-[var(--text-muted)] text-center py-10">No transactions match your filters.</p>
-              )}
-              {txs && pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} isDebt={isDebt} />)}
-            </div>
-
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <div
-                className="flex items-center justify-between px-5 py-3 shrink-0"
-                style={{ borderTop: "1px solid var(--border-hairline)" }}
+          )}
+        </div>
+      }
+      footer={
+        <div className="space-y-3">
+          {/* Pagination */}
+          {isTxView && totalPages > 1 && (
+            <div className="flex items-center justify-between">
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="flex items-center gap-1 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
-                <button
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  disabled={page === 0}
-                  className="flex items-center gap-1 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  <ChevronLeft size={14} /> Prev
-                </button>
-                <span className="text-xs text-[var(--text-muted)]">{page + 1} / {totalPages}</span>
-                <button
-                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                  disabled={page === totalPages - 1}
-                  className="flex items-center gap-1 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  Next <ChevronRight size={14} />
-                </button>
-              </div>
-            )}
-          </>
-        )}
+                <ChevronLeft size={14} /> Prev
+              </button>
+              <span className="text-xs text-[var(--text-muted)]">{page + 1} / {totalPages}</span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={page === totalPages - 1}
+                className="flex items-center gap-1 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                Next <ChevronRight size={14} />
+              </button>
+            </div>
+          )}
 
-        {/* Footer — Close + Remove */}
-        <div className="px-5 pb-5 pt-2 shrink-0 space-y-2">
           {/* Inline remove confirmation */}
           {confirmRemove ? (
             <div
@@ -718,9 +545,164 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
             </div>
           )}
         </div>
+      }
+    >
+      {/* ── Body: Holdings tab ── */}
+      {activeTab === "holdings" && isInvestment && (
+        <div className="space-y-1">
+          {accountHoldings.length === 0 ? (
+            <p className="text-sm text-[var(--text-muted)] text-center py-10">No positions found.</p>
+          ) : (
+            accountHoldings.map((h) => (
+              <button
+                key={h.id}
+                onClick={() => setChartHolding(h)}
+                className="w-full flex items-center gap-3 py-3 border-b border-[var(--border-hairline)] last:border-0 hover:bg-[var(--surface-hover)] -mx-2 px-2 rounded-[var(--radius-sm)] transition-colors touch-manipulation text-left"
+              >
+                {/* Logo */}
+                <AssetLogo symbol={h.symbol} accountType={account.type} size={36} />
+
+                {/* Name + symbol */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-sm font-semibold text-[var(--text-primary)] leading-tight">{h.symbol}</p>
+                    <ExternalLink size={10} className="text-[var(--text-muted)]" />
+                  </div>
+                  <p className="text-xs text-[var(--text-muted)] leading-tight mt-0.5 truncate">{h.name}</p>
+                </div>
+
+                {/* Stats */}
+                <div className="flex items-center gap-4 shrink-0 text-right">
+                  <div>
+                    <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Qty</p>
+                    <p className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums">
+                      {h.quantity % 1 === 0 ? h.quantity.toFixed(0) : h.quantity.toFixed(4)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Price</p>
+                    <p className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums">{fmtCompact(h.price)}</p>
+                  </div>
+                  {h.change24h !== 0 && (
+                    <div>
+                      <p className="text-[10px] text-[var(--text-muted)] mb-0.5">24h</p>
+                      <p className={`text-xs font-semibold tabular-nums ${h.change24h >= 0 ? "text-[var(--emerald-400)]" : "text-[var(--coral-400)]"}`}>
+                        {h.change24h >= 0 ? "+" : ""}{h.change24h.toFixed(2)}%
+                      </p>
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Value</p>
+                    <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums">{fmtCompact(h.value)}</p>
+                  </div>
+                </div>
+              </button>
+            ))
+          )}
         </div>
-      </GlassPanel>
-    </div>
+      )}
+
+      {/* ── Body: Transactions tab ── */}
+      {isTxView && (
+        <div className="divide-y divide-[var(--border-hairline)]">
+          {!txs && !loadError && (
+            <div className="flex items-center justify-center py-12 gap-2 text-[var(--text-muted)]">
+              <Loader2 size={16} className="animate-spin" />
+              <span className="text-sm">Loading…</span>
+            </div>
+          )}
+          {loadError && (
+            <p className="text-sm text-[var(--coral-400)] text-center py-10">Failed to load transactions.</p>
+          )}
+          {txs && filtered.length === 0 && (
+            <p className="text-sm text-[var(--text-muted)] text-center py-10">No transactions match your filters.</p>
+          )}
+          {txs && pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} isDebt={isDebt} />)}
+        </div>
+      )}
+
+      {/* ── Nested TradingView chart overlay — preserved exactly as-is
+           (fixed inset-0 resolves against the OverlaySurface GlassPanel, so it
+           still covers the modal panel; z-110 keeps it above the modal). ── */}
+      {chartHolding && (
+        <div
+          className="fixed inset-0 z-[110] flex flex-col overflow-hidden"
+          style={{ background: "var(--glass-thick)", backdropFilter: "blur(30px) saturate(160%)", WebkitBackdropFilter: "blur(30px) saturate(160%)" }}
+        >
+          {/* Chart header */}
+          <div
+            className="flex items-center justify-between px-5 pt-5 pb-3 shrink-0"
+            style={{ borderBottom: "1px solid var(--border-hairline)" }}
+          >
+            <div>
+              <p className="text-sm font-bold text-[var(--text-primary)]">{chartHolding.symbol}</p>
+              <p className="text-xs text-[var(--text-muted)] truncate max-w-[200px]">{chartHolding.name}</p>
+            </div>
+            <button
+              onClick={() => setChartHolding(null)}
+              className="p-1.5 rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* Position summary row */}
+          <div
+            className="grid grid-cols-4 divide-x divide-[var(--border-hairline)] shrink-0"
+            style={{ borderBottom: "1px solid var(--border-hairline)" }}
+          >
+            {[
+              { label: "Value",  value: fmtUSD(chartHolding.value),  cls: "text-[var(--text-primary)]" },
+              { label: "Price",  value: fmtUSD(chartHolding.price),  cls: "text-[var(--text-primary)]" },
+              {
+                label: "Qty",
+                value: chartHolding.quantity % 1 === 0
+                  ? chartHolding.quantity.toFixed(0)
+                  : chartHolding.quantity.toFixed(4),
+                cls: "text-[var(--text-primary)]",
+              },
+              {
+                label: "24h",
+                value: chartHolding.change24h !== 0
+                  ? `${chartHolding.change24h >= 0 ? "+" : ""}${chartHolding.change24h.toFixed(2)}%`
+                  : "—",
+                cls: chartHolding.change24h > 0
+                  ? "text-[var(--emerald-400)]"
+                  : chartHolding.change24h < 0
+                    ? "text-[var(--coral-400)]"
+                    : "text-[var(--text-muted)]",
+              },
+            ].map(({ label, value, cls }) => (
+              <div key={label} className="flex flex-col items-center justify-center py-3 px-2">
+                <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">{label}</p>
+                <p className={`text-sm font-bold tabular-nums ${cls}`}>{value}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* TradingView iframe — theme param tracks the app's own
+              Midnight/Light Glass mode (resolvedTheme) instead of a
+              hardcoded "dark", so the embedded widget doesn't clash with
+              Light Glass. */}
+          <div className="flex-1 min-h-0">
+            <iframe
+              key={`${chartHolding.symbol}-${resolvedTheme}`}
+              src={`https://www.tradingview.com/widgetembed/?symbol=${encodeURIComponent(toTVSymbol(chartHolding.symbol, account.type))}&interval=D&theme=${resolvedTheme}&locale=en&style=1&hidesidetoolbar=0&withdateranges=1&saveimage=0&toolbarbg=${resolvedTheme === "light" ? "ffffff" : "1e2130"}`}
+              className="w-full h-full border-0"
+              allow="clipboard-write"
+              title={`${chartHolding.symbol} chart`}
+            />
+          </div>
+
+          {/* Back button */}
+          <div className="px-5 pb-5 pt-2 shrink-0">
+            <GlassButton tone="neutral" fullWidth onClick={() => setChartHolding(null)}>
+              ← Back to Holdings
+            </GlassButton>
+          </div>
+        </div>
+      )}
+    </OverlaySurface>
   );
 }
 
@@ -731,7 +713,7 @@ function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
   // amount < 0 = debit (money out / charge)             → white
   const isInvestmentTx = ["Buy","Sell","Dividend","Split","Fee"].includes(tx.category);
   const isCredit = isDebt ? tx.amount > 0 : tx.amount > 0;
-  const catCls   = CAT_COLORS[tx.category] ?? "bg-gray-600/15 text-gray-500";
+  const catCls   = CAT_COLORS[tx.category] ?? "bg-[var(--surface-inset)] text-[var(--text-muted)]";
   const dateObj  = new Date(tx.date + "T12:00:00");
 
   // Investment transactions use merchant as ticker
@@ -739,7 +721,7 @@ function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
   const secondaryLabel = tx.description && tx.description !== tx.merchant ? tx.description : null;
 
   return (
-    <div className="flex items-center gap-3 px-5 py-3 hover:bg-[var(--surface-hover)] transition-colors">
+    <div className="flex items-center gap-3 py-3 hover:bg-[var(--surface-hover)] transition-colors">
       {/* Date */}
       <div className="w-9 shrink-0 text-center">
         <p className="text-xs font-semibold text-[var(--text-secondary)] leading-none">
@@ -755,7 +737,7 @@ function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
         <div className="flex items-center gap-2">
           <p className="text-sm font-semibold text-[var(--text-primary)] truncate leading-tight">{primaryLabel}</p>
           {tx.pending && (
-            <span className="text-xs bg-yellow-500/15 text-yellow-400 px-1.5 py-0.5 rounded-full shrink-0">
+            <span className="text-xs bg-yellow-500/15 text-[var(--accent-warning)] px-1.5 py-0.5 rounded-full shrink-0">
               Pending
             </span>
           )}
