@@ -90,6 +90,31 @@ for (const [file, n] of Object.entries(current)) {
   }
 }
 
+// --update: ratchet the baseline DOWN. Rewrites the baseline to the current
+// counts (files at 0 disappear, decreased files drop), but only after the same
+// no-increase check as check mode — it refuses to write if any count grew.
+const UPDATE = process.argv.includes("--update");
+
+if (UPDATE) {
+  if (failures.length) {
+    console.error(
+      "[palette-ratchet] REFUSING to update — counts increased:\n" +
+        failures.map((f) => "  " + f).join("\n")
+    );
+    process.exit(1);
+  }
+  const cleared = Object.keys(baseline).filter((f) => !(f in current)).length;
+  const lowered = Object.keys(current).filter(
+    (f) => f in baseline && current[f] < baseline[f]
+  ).length;
+  writeFileSync(baselinePath, JSON.stringify(current, null, 2) + "\n");
+  console.log(
+    `[palette-ratchet] baseline updated — ${cleared} file(s) cleared, ` +
+      `${lowered} lowered, ${Object.keys(current).length} tracked.`
+  );
+  process.exit(0);
+}
+
 if (failures.length) {
   console.error(
     "[palette-ratchet] FAIL — raw palette grew:\n" +
