@@ -13,6 +13,9 @@
 # testing
 /coverage
 
+# one-time backfill rollback logs (scripts/reclassify-subscriptions.ts etc.)
+scripts/.backfill-logs/
+
 # next.js
 /.next/
 /out/
