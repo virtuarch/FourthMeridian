@@ -36,6 +36,13 @@
 
 import type { TransactionCategory } from "@prisma/client";
 import type { Transaction as PlaidTransaction } from "plaid";
+import { resolveMerchantCategory } from "@/lib/transactions/merchant-rules";
+
+// Re-export so existing importers (e.g. scripts/reclassify-subscriptions.ts,
+// which import isKnownSubscriptionMerchant from this module) keep working
+// unchanged after the subscription allowlist moved to merchant-rules.ts —
+// the SINGLE source of truth for merchant→category resolution.
+export { isKnownSubscriptionMerchant } from "@/lib/transactions/merchant-rules";
 
 /**
  * Input shape for the mapper. Widened from the original
@@ -49,55 +56,6 @@ export type PlaidCategoryInput = Pick<
 >;
 
 /**
- * Tight, deterministic merchant-name substring allowlist (lower-cased match
- * against `merchant_name` and `name`). Intentionally small and brand-specific —
- * this is a seed of unambiguous subscription brands, not an exhaustive registry
- * (full brand→category resolution is the future Merchant Engine's job).
- */
-const SUBSCRIPTION_MERCHANTS: readonly string[] = [
-  "netflix",
-  "spotify",
-  "hulu",
-  "disney", // Disney+ (see caveat: also matches Disney Store / Parks)
-  "adobe",
-  "microsoft 365",
-  "google one",
-  "google workspace",
-  "apple.com/bill",
-  "youtube premium",
-];
-
-/**
- * True when either Plaid merchant field contains an allowlisted subscription
- * brand. Checks BOTH `merchant_name` and `name` because subscription billing
- * descriptors (e.g. "APPLE.COM/BILL") frequently live in `name` while
- * `merchant_name` is a cleaner brand ("Apple").
- */
-function isSubscriptionMerchant(
-  merchantName: string | null | undefined,
-  name: string | null | undefined,
-): boolean {
-  const haystack = `${merchantName ?? ""} ${name ?? ""}`.toLowerCase();
-  return SUBSCRIPTION_MERCHANTS.some((token) => haystack.includes(token));
-}
-
-/**
- * Public, narrow predicate for the subscription merchant allowlist — the SINGLE
- * source of truth for "is this a known subscription merchant". Exposed so
- * offline tooling (e.g. scripts/reclassify-subscriptions.ts, which reclassifies
- * historical rows that incremental Plaid sync never revisits) matches candidates
- * with the exact same rule the live import mapper uses, and the two can never
- * drift. `name` is optional: callers with only a single merchant string (e.g. a
- * persisted Transaction.merchant) may pass just that.
- */
-export function isKnownSubscriptionMerchant(
-  merchantName: string | null | undefined,
-  name?: string | null | undefined,
-): boolean {
-  return isSubscriptionMerchant(merchantName, name);
-}
-
-/**
  * Maps a Plaid transaction's category info to our TransactionCategory enum.
  * Prefers the modern `personal_finance_category` taxonomy; falls back to the
  * legacy `category` string array; defaults to "Other". Never throws — an
@@ -108,24 +66,37 @@ export function mapPlaidCategory(txn: PlaidCategoryInput): TransactionCategory {
   if (pfc?.primary) {
     const detailed = pfc.detailed ?? "";
 
-    // Detailed-level override — more precise than the primary bucket alone.
+    // 1. Detailed-level override — more precise than the primary bucket alone.
     if (detailed.includes("INTEREST")) return "Interest";
 
-    // ── Subscription detection (additive, before the primary switch) ─────────
-    // Merchant-allowlist-driven ONLY. We do NOT allowlist whole ENTERTAINMENT_*
-    // detaileds, because Plaid folds concerts, theaters, sporting events, and
-    // one-off music/video purchases into the same buckets as streaming services.
-    // (The original literal-token heuristic is kept as a harmless defensive
-    // superset — it never fires on real Plaid PFC but preserves the prior contract.)
-    if (isSubscriptionMerchant(txn.merchant_name, txn.name)) return "Subscriptions";
+    // 2. FLOW-STRUCTURAL PFC primaries WIN over merchant rules. A merchant
+    //    string must never override income/transfer/loan/fee structure — these
+    //    are the flow-critical buckets the FlowType classifier depends on. This
+    //    is why the merchant-rule branch (step 3) sits BELOW this switch.
+    switch (pfc.primary) {
+      case "INCOME":        return "Income";
+      case "TRANSFER_IN":
+      case "TRANSFER_OUT":  return "Transfer";
+      case "LOAN_PAYMENTS": return "Payment";
+      case "BANK_FEES":     return "Fee";
+    }
+
+    // 3. Global merchant → category rules (Merchant Intelligence Slice 1),
+    //    including the folded subscription-brand allowlist. Positioned ABOVE
+    //    the spend-bucket switch because Plaid frequently dumps regional/SaaS
+    //    merchants into GENERAL_MERCHANDISE / an unmapped primary → Other; a
+    //    curated rule is more precise there. Category-only; FlowType stays
+    //    downstream in lib/transactions/flow-classifier.ts.
+    const byMerchant = resolveMerchantCategory(txn.merchant_name, txn.name);
+    if (byMerchant) return byMerchant;
+
+    // 4. Defensive literal-token check. Confirmed to NEVER fire on real Plaid
+    //    PFC (no detailed value contains "SUBSCRIPTION"), kept only to preserve
+    //    the prior contract.
     if (detailed.includes("SUBSCRIPTION")) return "Subscriptions";
 
+    // 5. Spend-bucket primaries — meaning comes from the PFC bucket.
     switch (pfc.primary) {
-      case "INCOME":              return "Income";
-      case "TRANSFER_IN":
-      case "TRANSFER_OUT":        return "Transfer";
-      case "LOAN_PAYMENTS":       return "Payment";
-      case "BANK_FEES":           return "Fee";
       case "FOOD_AND_DRINK":      return "Dining";
       case "GENERAL_MERCHANDISE": return "Shopping";
       case "RENT_AND_UTILITIES":  return "Utilities";
@@ -134,9 +105,10 @@ export function mapPlaidCategory(txn: PlaidCategoryInput): TransactionCategory {
     }
   }
 
-  // No PFC at all (older Items / sparse rows): the merchant allowlist still
-  // applies, checked before the legacy category-array fallback.
-  if (isSubscriptionMerchant(txn.merchant_name, txn.name)) return "Subscriptions";
+  // No PFC at all (older Items / sparse rows): the merchant rules still apply,
+  // checked before the legacy category-array fallback.
+  const byMerchant = resolveMerchantCategory(txn.merchant_name, txn.name);
+  if (byMerchant) return byMerchant;
 
   // Legacy fallback — Plaid's older `category` array, e.g. ["Food and Drink", "Restaurants"].
   const legacy = txn.category?.[0]?.toLowerCase() ?? "";
