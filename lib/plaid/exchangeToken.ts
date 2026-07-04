@@ -61,6 +61,19 @@ export interface ExchangeTokenParams {
   institution_id:   string;
   /** Human-readable institution name for display + DB storage. */
   institution_name: string;
+  /**
+   * D2.x Slice 1 (fast-path split). When true, the full 730-day initial
+   * transaction sync is NOT awaited inside this call: accounts/balances,
+   * holdings, and today's snapshot are made durable and the function returns
+   * immediately with `historyPending: true`, leaving history to complete
+   * out-of-band (daily sync-banks cron today; an after()/waitUntil background
+   * continuation once Slice 2 lands). Defaults to false, which preserves the
+   * original inline-history behavior — required by the admin Expand History
+   * flow (exchange-expanded-history-token), whose entire purpose is to pull
+   * expanded history inline and which relies on the returned
+   * transactionsSynced count and the cursor set by syncTransactionsForItem.
+   */
+  deferHistorySync?: boolean;
 }
 
 export interface ExchangeTokenResult {
@@ -69,6 +82,14 @@ export interface ExchangeTokenResult {
   transactionsSynced: number;
   /** The new PlaidItem's internal DB id (used by admin retire flow). */
   plaidItemId:        string;
+  /**
+   * D2.x Slice 1. True when the initial transaction history import was
+   * deferred (see ExchangeTokenParams.deferHistorySync) rather than run
+   * inline — balances/holdings/snapshot are durable but full history is still
+   * arriving out-of-band. Additive/optional; existing callers that ignore it
+   * are unaffected.
+   */
+  historyPending?:    boolean;
 }
 
 // ── Plaid type → AccountType ──────────────────────────────────────────────────
@@ -97,6 +118,7 @@ export async function performPlaidTokenExchange(
   params: ExchangeTokenParams,
 ): Promise<ExchangeTokenResult> {
   const { userId, spaceId, public_token, institution_id, institution_name } = params;
+  const deferHistorySync = params.deferHistorySync ?? false;
 
   // 1. Duplicate institution check — log only; upsert handles collisions
   const existingItem = await db.plaidItem.findFirst({
@@ -459,15 +481,38 @@ export async function performPlaidTokenExchange(
     }
   }
 
-  // 9. Initial transaction sync — best-effort, non-fatal
+  // 9. Initial transaction sync.
+  //
+  // D2.x Slice 1 (fast-path split) — when deferHistorySync is set (the normal
+  // first-run Link flow, app/api/plaid/exchange-token/route.ts), the full
+  // 730-day history import is NOT awaited here: balances, holdings, and
+  // today's snapshot (step 9b) are already durable, so the function returns
+  // immediately and history completes out-of-band. Until Slice 2 attaches an
+  // after()/waitUntil background continuation, the standing daily sync-banks
+  // cron (vercel.json → /api/jobs/sync-banks) is the completion path — no
+  // manual Refresh required, just a delay. syncTransactionsForItem is
+  // untouched; this only chooses whether to await it here.
+  //
+  // When deferHistorySync is false (admin Expand History flow,
+  // exchange-expanded-history-token) behavior is unchanged: history is pulled
+  // inline — that is that flow's entire purpose, and it relies on the
+  // transactionsSynced count and the cursor set by syncTransactionsForItem.
   let txSync: { added: number; modified: number; removed: number } | null = null;
-  try {
-    txSync = await syncTransactionsForItem(plaidItem.id);
+  let historyPending = false;
+  if (deferHistorySync) {
+    historyPending = true;
     console.log(
-      `[plaid] initial transaction sync — ${txSync.added} added, ${txSync.modified} modified, ${txSync.removed} removed`,
+      `[plaid] initial transaction sync DEFERRED for item ${plaidItem.id} ("${institution_name}") — fast-path return; history completes out-of-band (cron until Slice 2)`,
     );
-  } catch (syncErr) {
-    console.warn("[plaid] initial transaction sync failed (non-fatal):", syncErr);
+  } else {
+    try {
+      txSync = await syncTransactionsForItem(plaidItem.id);
+      console.log(
+        `[plaid] initial transaction sync — ${txSync.added} added, ${txSync.modified} modified, ${txSync.removed} removed`,
+      );
+    } catch (syncErr) {
+      console.warn("[plaid] initial transaction sync failed (non-fatal):", syncErr);
+    }
   }
 
   // 9b. SpaceSnapshot regeneration — best-effort, non-fatal
@@ -507,6 +552,7 @@ export async function performPlaidTokenExchange(
     holdingsImported,
     transactionsSynced: txSync?.added ?? 0,
     plaidItemId:        plaidItem.id,
+    historyPending,
   };
 }
 

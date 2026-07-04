@@ -33,9 +33,23 @@
  * session user's context.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { getSpaceContext } from "@/lib/space";
 import { performPlaidTokenExchange, parsePlaidError } from "@/lib/plaid/exchangeToken";
+import { runDeferredHistorySync } from "@/lib/plaid/backgroundHistorySync";
+
+// D2.x Slice 1 (fast-path split). This request returns as soon as the fast
+// slice is durable — token exchanged, accounts/balances persisted, holdings
+// attempted, today's snapshot written — and defers the full 730-day history
+// import out-of-band (see deferHistorySync below).
+//
+// D2.x Slice 2 (background continuation). That deferred history now runs via
+// after() below, in the SAME server invocation, after the response is sent.
+// after() work counts against maxDuration, so the budget is raised from the
+// fast-slice 30 to 60 (parity with the sync-banks cron) to give the background
+// syncTransactionsForItem room to complete. Anything exceeding this budget is
+// finished by the standing daily cron — no manual Refresh required.
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
@@ -57,13 +71,31 @@ export async function POST(req: NextRequest) {
       public_token,
       institution_id,
       institution_name,
+      // D2.x Slice 1 — defer the full history import so this request returns
+      // once balances/holdings/snapshot are durable. Only this normal
+      // first-run flow defers; the admin Expand History flow does not.
+      deferHistorySync: true,
     });
+
+    // D2.x Slice 2 — schedule the deferred history import to run after this
+    // response is sent (post-response, same invocation). Fire-and-forget and
+    // best-effort: runDeferredHistorySync never throws, so a background
+    // failure can never affect the Link success returned below. Only gated on
+    // historyPending, so it never runs for a caller that synced inline.
+    if (result.historyPending) {
+      after(() => runDeferredHistorySync(result.plaidItemId));
+    }
 
     return NextResponse.json({
       success:            true,
       imported:           result.imported,
       holdingsImported:   result.holdingsImported,
       transactionsSynced: result.transactionsSynced,
+      // Additive/optional. True when history is still arriving out-of-band so
+      // the client can message honestly ("balances ready, importing history")
+      // instead of treating a fast return as incomplete. Existing clients that
+      // ignore this field are unaffected.
+      historyPending:     result.historyPending ?? false,
     });
   } catch (err: unknown) {
     const { message, status, code } = parsePlaidError(err, "Failed to connect account");
