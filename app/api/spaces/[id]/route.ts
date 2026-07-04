@@ -44,6 +44,21 @@ export const GET = withApiHandler(async (
 
   if (!space) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  // ── SP-2b Batch 3 — DOCUMENTED public-read exception (intentionally inline) ──
+  // This GET door is NOT a role/lifecycle gate, so it deliberately does NOT use
+  // requireSpaceAction. It is a read-VISIBILITY gate with three properties that
+  // requireSpaceAction cannot model, and must be preserved here:
+  //   1. Existence first — a missing Space returns 404 (above) BEFORE any auth
+  //      check; requireSpaceAction never emits 404 (it would 403 a missing
+  //      Space, collapsing the 404/403 distinction).
+  //   2. Public OR member — a PUBLIC Space is readable by anyone authenticated,
+  //      including non-members; requireSpaceAction 403s every non-member and has
+  //      no `isPublic` awareness, so it would break public-Space reads.
+  //   3. myRole derivation — the response carries the caller's role (or null for
+  //      a public non-member); requireSpaceAction returns no row for a public
+  //      non-member (it 403s first).
+  // See docs/initiatives/sp2/SP-2B_BATCH3_INVESTIGATION.md. Do NOT swap this for
+  // requireSpaceAction("space:read").
   const membership = await db.spaceMember.findUnique({ where: { spaceId_userId: { spaceId: id, userId: user.id } } });
   const isActiveMember = membership?.status === "ACTIVE";
   if (!space.isPublic && !isActiveMember) {

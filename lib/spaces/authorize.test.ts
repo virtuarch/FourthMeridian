@@ -175,6 +175,33 @@ check("D perspectives still computes as the requesting viewer (userId from auth)
   /computePerspectives\(\s*\{\s*spaceId\s*,\s*userId\s*\}\s*\)/.test(perspectives));
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PART E — GET /api/spaces/[id] documented public-read exception (Batch 3).
+// This door is intentionally NOT migrated to requireSpaceAction; these
+// tripwires pin its invariants so a future refactor can't naively swap it.
+// (code() strips comments, so these match real code, not the doc comment.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const spaceIdRoute = code(read("app", "api", "spaces", "[id]", "route.ts"));
+
+check("E GET keeps public-read branch (isPublic OR active member)",
+  /!space\.isPublic\s*&&\s*!isActiveMember/.test(spaceIdRoute));
+check("E GET keeps 404 'Not found' before the 403 auth check",
+  spaceIdRoute.indexOf("Not found") !== -1 &&
+  spaceIdRoute.indexOf("Not found") < spaceIdRoute.indexOf("Forbidden"));
+check("E GET derives myRole from membership (null for public non-member)",
+  /myRole:\s*isActiveMember\s*\?\s*membership!?\.role\s*:\s*null/.test(spaceIdRoute));
+check("E GET is NOT swapped to requireSpaceAction(space:read)",
+  !/requireSpaceAction\(\s*spaceId\s*,\s*["']space:read["']\s*\)/.test(spaceIdRoute));
+
+// Permanent target/resource lookups — NOT auth doors, documented as non-targets.
+const invite  = code(read("app", "api", "spaces", "[id]", "invite", "route.ts"));
+const members = code(read("app", "api", "spaces", "[id]", "members", "[userId]", "route.ts"));
+check("E invite door is requireSpaceRole(ADMIN); its findUnique is a target lookup",
+  /requireSpaceRole\([^)]*ADMIN\)/.test(invite) && /spaceMember\.findUnique/.test(invite));
+check("E members caller doors are requireSpaceRole; its findUniques are targetMembership",
+  /requireSpaceRole\(/.test(members) && /targetMembership\s*=\s*await\s+db\.spaceMember\.findUnique/.test(members));
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 console.log(`\n${passes} passed, ${failures} failed (${passes + failures} checks).`);
 if (failures > 0) { console.log("SP-2b authorize tests FAILED."); process.exit(1); }
