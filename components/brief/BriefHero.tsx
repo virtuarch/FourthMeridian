@@ -56,7 +56,6 @@ import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
 import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { useTheme } from "@/components/theme/ThemeProvider";
-import { useHeroRegion } from "./HeroRegionProvider";
 import type { VisitState } from "@/lib/brief-types";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -213,10 +212,11 @@ export function BriefHero({ visitState, contextLine, generatedAt }: BriefHeroPro
 
   const { resolvedTheme } = useTheme();
 
-  // Region (auto-detected, with optional manual override) now lives in
-  // HeroRegionProvider so UserMenu's dropdown — a sibling, not a parent —
-  // can read and set it too. See HeroRegionProvider.tsx.
-  const { effectiveRegion } = useHeroRegion();
+  // Product decision (UI cleanup): the Daily Brief backdrop is pinned to ONE
+  // canonical image for every user, regardless of timezone/location — the
+  // MENA crop. Region-based switching is removed here; HeroRegionProvider is
+  // no longer consumed by the hero (kept inert for now, not deleted).
+  const HERO_REGION = "mena" as const;
 
   return (
     <div
@@ -228,8 +228,9 @@ export function BriefHero({ visitState, contextLine, generatedAt }: BriefHeroPro
       // 480/72vh/820 to bring the composition higher / closer to the Spaces top.
       style={{ height: "clamp(380px, 54vh, 640px)" }}
     >
-      {/* Earth — bleeds to all four edges */}
-      <EarthBackground region={effectiveRegion} theme={resolvedTheme} />
+      {/* Earth — bleeds to all four edges. Pinned to the MENA crop (one
+          canonical Daily Brief backdrop for everyone). */}
+      <EarthBackground region={HERO_REGION} theme={resolvedTheme} />
 
       {/* Hero text — pinned to the lower portion */}
       <div className="absolute inset-0 flex flex-col justify-end">
