@@ -272,6 +272,13 @@ export interface AccountsSectionData {
   health:         AccountHealthSummary;
   knowledgeGaps:  KnowledgeGap[];          // always present, possibly empty
   accounts?:      AccountSummaryItem[];    // omitted when scopeHint === 'brief'
+  /**
+   * Distinct FinancialAccount ids visible in this Space (one per SpaceAccountLink).
+   * Populated regardless of scopeHint — used by the Daily Brief to deduplicate
+   * accounts shared across multiple Spaces so "Accounts tracked" counts distinct
+   * real accounts rather than link placements. IDs only; no balances or names.
+   */
+  accountIds?:    string[];
 }
 
 // ---------------------------------------------------------------------------

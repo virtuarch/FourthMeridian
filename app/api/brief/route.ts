@@ -525,12 +525,14 @@ export async function GET() {
         a.detectedAt.localeCompare(b.detectedAt),
     );
 
-  // ── Cross-Space account count (total across all eligible Spaces) ───────────
-  // Note: shared accounts may be double-counted when they appear in multiple
-  // Spaces. This is a known limitation of per-Space context aggregation and
-  // will be addressed in a future deduplication slice.
-  const totalAccountCount = successfulContexts
-    .reduce((sum, c) => sum + (accounts(c)?.totalCount ?? 0), 0);
+  // ── Cross-Space distinct account count ─────────────────────────────────────
+  // "Accounts tracked" counts distinct real FinancialAccounts visible to the
+  // user, not SpaceAccountLink placements. Each Space's accounts domain reports
+  // the FinancialAccount ids it can see (accountIds); deduplicating across
+  // Spaces via a Set means an account shared into multiple Spaces counts once.
+  const totalAccountCount = new Set(
+    successfulContexts.flatMap((c) => accounts(c)?.accountIds ?? []),
+  ).size;
 
   // ── Pending Space invites (non-financial query) ────────────────────────────
   const pendingInviteCount = await db.spaceInvite.count({

@@ -381,8 +381,15 @@ async function assembleAccounts(
 
   // ── Assemble payload ──────────────────────────────────────────────────────
 
+  // Distinct FinancialAccount ids visible in this Space. Populated regardless of
+  // scopeHint so the Daily Brief can deduplicate accounts shared across Spaces.
+  // IDs only — no balances or names — so this adds no privacy exposure and does
+  // not affect the BALANCE_ONLY visibility guarantee.
+  const accountIds = links.map((l) => l.financialAccount.id);
+
   const data: AccountsSectionData = {
     totalCount:         links.length,
+    accountIds,
     totalAssets:        classification.totalAssets,
     totalLiabilities:   classification.totalLiabilities,
     netWorth:           classification.netWorth,
