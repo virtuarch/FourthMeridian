@@ -5,7 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { requireUser } from "@/lib/session";
+import { requireSpaceAction } from "@/lib/spaces/authorize";
 import { withApiHandler } from "@/lib/api";
 
 export const POST = withApiHandler(async (
@@ -13,15 +13,10 @@ export const POST = withApiHandler(async (
   { params }: { params: Promise<{ id: string; goalId: string }> }
 ) => {
   const { id: spaceId, goalId } = await params;
-  const [user, err] = await requireUser();
-  if (err) return err;
 
-  const membership = await db.spaceMember.findUnique({
-    where: { spaceId_userId: { spaceId, userId: user.id } },
-  });
-  if (!membership || membership.status !== "ACTIVE") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  // Any ACTIVE member (any role) may record a check-in.
+  const [, err] = await requireSpaceAction(spaceId, "goal:checkIn");
+  if (err) return err;
 
   const goal = await db.spaceGoal.findUnique({ where: { id: goalId } });
   if (!goal || goal.spaceId !== spaceId) {

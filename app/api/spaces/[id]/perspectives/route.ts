@@ -26,10 +26,8 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db }                        from "@/lib/db";
-import { requireUser }               from "@/lib/session";
+import { requireSpaceAction }        from "@/lib/spaces/authorize";
 import { withApiHandler }            from "@/lib/api";
-import { SpaceMemberStatus }         from "@prisma/client";
 import { computePerspectives }       from "@/lib/perspective-engine";
 import type { LensResult }           from "@/lib/perspective-engine";
 
@@ -43,21 +41,13 @@ export const GET = withApiHandler(async (
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) => {
-  const [user, err] = await requireUser();
-  if (err) return err;
-  const userId = user.id;
-
   const { id: spaceId } = await params;
   if (!spaceId) return NextResponse.json({ error: "Missing space id" }, { status: 400 });
 
-  // ── Membership guard (same shape as the activity route) ───────────────────
-  const membership = await db.spaceMember.findUnique({
-    where:  { spaceId_userId: { spaceId, userId } },
-    select: { status: true },
-  });
-  if (!membership || membership.status !== SpaceMemberStatus.ACTIVE) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  // ── Membership guard (any ACTIVE member) ──────────────────────────────────
+  const [auth, err] = await requireSpaceAction(spaceId, "perspective:read");
+  if (err) return err;
+  const userId = auth.user.id;
 
   // ── Compute — always as the requesting viewer ──────────────────────────────
   const results: LensResult[] = await computePerspectives({ spaceId, userId });

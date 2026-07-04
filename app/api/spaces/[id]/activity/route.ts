@@ -31,10 +31,9 @@
 
 import { NextRequest, NextResponse }    from "next/server";
 import { db }                           from "@/lib/db";
-import { requireUser }                  from "@/lib/session";
+import { requireSpaceAction }           from "@/lib/spaces/authorize";
 import { possessive }                   from "@/lib/format";
 import { withApiHandler }               from "@/lib/api";
-import { SpaceMemberStatus }        from "@prisma/client";
 import type { TimelineEvent, TimelineTone } from "@/lib/timeline-types";
 
 // ─── Events we actively show ──────────────────────────────────────────────────
@@ -281,21 +280,12 @@ export const GET = withApiHandler(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) => {
-  const [user, err] = await requireUser();
-  if (err) return err;
-  const userId = user.id;
-
   const { id: spaceId } = await params;
   if (!spaceId) return NextResponse.json({ error: "Missing space id" }, { status: 400 });
 
-  // ── Membership guard ──────────────────────────────────────────────────────
-  const membership = await db.spaceMember.findUnique({
-    where:  { spaceId_userId: { spaceId, userId } },
-    select: { status: true },
-  });
-  if (!membership || membership.status !== SpaceMemberStatus.ACTIVE) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  // ── Membership guard (any ACTIVE member) ──────────────────────────────────
+  const [, err] = await requireSpaceAction(spaceId, "activity:read");
+  if (err) return err;
 
   // ── Fetch raw logs ────────────────────────────────────────────────────────
   // We fetch slightly more than 30 to account for rows that normalise to null

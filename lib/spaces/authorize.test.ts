@@ -137,6 +137,44 @@ check("C share no longer imports requireUser / SpaceMemberStatus",
   !/requireUser/.test(share) && !/SpaceMemberStatus/.test(share));
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PART D — Batch 2 migrated routes (check-in / activity / perspectives).
+// Same source-scan tripwire approach. All three are "any ACTIVE member" doors.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const checkIn      = code(read("app", "api", "spaces", "[id]", "goals", "[goalId]", "check-in", "route.ts"));
+const activity     = code(read("app", "api", "spaces", "[id]", "activity", "route.ts"));
+const perspectives = code(read("app", "api", "spaces", "[id]", "perspectives", "route.ts"));
+
+// goal check-in
+check("D check-in uses requireSpaceAction goal:checkIn",
+  /requireSpaceAction\(\s*spaceId\s*,\s*["']goal:checkIn["']\s*\)/.test(checkIn));
+check("D check-in dropped inline spaceMember.findUnique",
+  !/spaceMember\.findUnique/.test(checkIn));
+check("D check-in keeps goal 404 + HABIT 400 residuals",
+  /status:\s*404/.test(checkIn) && /HABIT/.test(checkIn) && /status:\s*400/.test(checkIn));
+
+// activity
+check("D activity uses requireSpaceAction activity:read",
+  /requireSpaceAction\(\s*spaceId\s*,\s*["']activity:read["']\s*\)/.test(activity));
+check("D activity dropped inline spaceMember.findUnique",
+  !/spaceMember\.findUnique/.test(activity));
+check("D activity keeps missing-spaceId 400 BEFORE the door",
+  activity.indexOf("Missing space id") !== -1 &&
+  activity.indexOf("Missing space id") < activity.indexOf("requireSpaceAction(spaceId"));
+
+// perspectives
+check("D perspectives uses requireSpaceAction perspective:read",
+  /requireSpaceAction\(\s*spaceId\s*,\s*["']perspective:read["']\s*\)/.test(perspectives));
+check("D perspectives dropped inline spaceMember.findUnique",
+  !/spaceMember\.findUnique/.test(perspectives));
+check("D perspectives keeps missing-spaceId 400 BEFORE the door",
+  perspectives.indexOf("Missing space id") !== -1 &&
+  perspectives.indexOf("Missing space id") < perspectives.indexOf("requireSpaceAction(spaceId"));
+check("D perspectives still computes as the requesting viewer (userId from auth)",
+  /const\s+userId\s*=\s*auth\.user\.id/.test(perspectives) &&
+  /computePerspectives\(\s*\{\s*spaceId\s*,\s*userId\s*\}\s*\)/.test(perspectives));
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 console.log(`\n${passes} passed, ${failures} failed (${passes + failures} checks).`);
 if (failures > 0) { console.log("SP-2b authorize tests FAILED."); process.exit(1); }
