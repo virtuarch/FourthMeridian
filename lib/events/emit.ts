@@ -43,11 +43,14 @@ type DbClient = Prisma.TransactionClient | typeof db;
  * referenced constants already exist in lib/audit-actions.ts (no edit there).
  *   Slice 1: SpaceRestored.
  *   Slice 2: AccountShared, AccountShareRevoked.
+ *   Slice 3: MemberRemoved (canonical MEMBER_REMOVED), MemberLeft (SPACE_LEAVE).
  */
 const DOMAIN_EVENT_ACTION: Partial<Record<DomainEventType, AuditActionType>> = {
   SpaceRestored:       AuditAction.SPACE_RESTORED,
   AccountShared:       AuditAction.ACCOUNT_SHARED,
   AccountShareRevoked: AuditAction.ACCOUNT_REVOKED,
+  MemberRemoved:       AuditAction.MEMBER_REMOVED,
+  MemberLeft:          AuditAction.SPACE_LEAVE,
 };
 
 /**
@@ -55,11 +58,15 @@ const DOMAIN_EVENT_ACTION: Partial<Record<DomainEventType, AuditActionType>> = {
  * never fail the caller — dispatchDomainEvent enforces that isolation.
  *
  *   Slice 2: snapshot regeneration for the two share-set-changing events.
+ *   Slice 3: same handler for member removal/leave (their share links are
+ *            revoked in the same request, changing the space's active shares).
  */
 type DomainEventHandler = (event: DomainEvent) => void | Promise<void>;
 const HANDLERS: Partial<Record<DomainEventType, DomainEventHandler[]>> = {
   AccountShared:       [regenerateSnapshotOnShareChange],
   AccountShareRevoked: [regenerateSnapshotOnShareChange],
+  MemberRemoved:       [regenerateSnapshotOnShareChange],
+  MemberLeft:          [regenerateSnapshotOnShareChange],
 };
 
 /**

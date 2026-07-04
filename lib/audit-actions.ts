@@ -59,6 +59,10 @@ export const AuditAction = {
   MEMBER_INVITED:           "MEMBER_INVITED",
   MEMBER_REMOVED:           "MEMBER_REMOVED",
   MEMBER_ROLE_CHANGED:      "MEMBER_ROLE_CHANGED",
+  // EV-1 Slice 3 — self-leave. Codifies the string the activity Timeline
+  // already treats as a first-class action ("Member left"); value is unchanged
+  // from the previous inline literal.
+  SPACE_LEAVE:              "SPACE_LEAVE",
 
   // ── Sync / Platform ──────────────────────────────────────────────────────────
   PLAID_SYNC:               "PLAID_SYNC",

@@ -48,7 +48,8 @@ export type DomainEvent =
   // ── Members ─────────────────────────────────────────────────────────────
   | (DomainEventEnvelope & { type: "MemberInvited"; payload: { invitedEmail: string; role: string } }) // PROVISIONAL
   | (DomainEventEnvelope & { type: "MemberJoined"; payload: { userId: string } }) // PROVISIONAL
-  | (DomainEventEnvelope & { type: "MemberRemoved"; payload: { targetUserId: string; targetName: string; newStatus: string } }) // PROVISIONAL
+  | (DomainEventEnvelope & { type: "MemberRemoved"; payload: { removedUserId: string; removedName: string; newStatus: string } }) // EXERCISED (Slice 3) — removed by an admin/owner
+  | (DomainEventEnvelope & { type: "MemberLeft"; payload: { removedUserId: string; removedName: string; newStatus: string } }) // EXERCISED (Slice 3) — self-leave
   | (DomainEventEnvelope & { type: "MemberRoleChanged"; payload: { targetUserId: string; targetName: string; oldRole: string; newRole: string } }) // PROVISIONAL
   // ── Account sharing ─────────────────────────────────────────────────────
   | (DomainEventEnvelope & { type: "AccountShared"; payload: { financialAccountId: string; accountName: string; visibilityLevel: string } }) // PROVISIONAL
