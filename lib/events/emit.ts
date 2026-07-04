@@ -44,6 +44,7 @@ type DbClient = Prisma.TransactionClient | typeof db;
  *   Slice 1: SpaceRestored.
  *   Slice 2: AccountShared, AccountShareRevoked.
  *   Slice 3: MemberRemoved (canonical MEMBER_REMOVED), MemberLeft (SPACE_LEAVE).
+ *   Slice 4: ConnectionSynced (PLAID_REFRESH) — audit-only, no handler.
  */
 const DOMAIN_EVENT_ACTION: Partial<Record<DomainEventType, AuditActionType>> = {
   SpaceRestored:       AuditAction.SPACE_RESTORED,
@@ -51,6 +52,7 @@ const DOMAIN_EVENT_ACTION: Partial<Record<DomainEventType, AuditActionType>> = {
   AccountShareRevoked: AuditAction.ACCOUNT_REVOKED,
   MemberRemoved:       AuditAction.MEMBER_REMOVED,
   MemberLeft:          AuditAction.SPACE_LEAVE,
+  ConnectionSynced:    AuditAction.PLAID_REFRESH,
 };
 
 /**

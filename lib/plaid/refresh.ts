@@ -40,6 +40,7 @@ import { db } from "@/lib/db";
 import { AccountType, PlaidInvestmentsConsent, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { emitDomainEvent } from "@/lib/events/emit";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { classifyPlaidErrorForHealth, getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
 import { withPlaidRetry } from "@/lib/plaid/retry";
@@ -318,6 +319,28 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
   // the Cash History / Banking History / Net Worth charts actually read —
   // see lib/snapshots/regenerate.ts for why this step exists.
   const spacesSnapshotted = await regenerateSnapshotsForAccounts(updatedAccountIds);
+
+  // ── EV-1 Slice 4 — ConnectionSynced (audit-only) ────────────────────────
+  // Records a canonical PLAID_REFRESH audit row now that the sync (incl. the
+  // snapshot fan-out above) has succeeded. Emitted best-effort AFTER the
+  // fan-out and wrapped so an audit-insert failure can never fail a refresh
+  // that already succeeded. No handler is registered for ConnectionSynced, so
+  // this does not touch the snapshot fan-out, the return value, or error
+  // semantics.
+  try {
+    await emitDomainEvent({
+      type:        "ConnectionSynced",
+      actorUserId: item.userId,
+      payload: {
+        provider:          "PLAID",
+        plaidItemId:       plaidItemDbId,
+        accountsUpdated,
+        spacesSnapshotted: spacesSnapshotted.length,
+      },
+    });
+  } catch (auditErr) {
+    console.warn(`[refreshPlaidItem] ConnectionSynced audit failed for item ${plaidItemDbId} (non-fatal):`, auditErr);
+  }
 
   return {
     plaidItemId:          plaidItemDbId,

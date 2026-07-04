@@ -58,7 +58,7 @@ export type DomainEvent =
   | (DomainEventEnvelope & { type: "GoalCreated"; payload: { goalId: string; name: string; goalType: string; targetAmount: number | null } }) // PROVISIONAL
   | (DomainEventEnvelope & { type: "GoalCheckedIn"; payload: { goalId: string; goalName: string } }) // PROVISIONAL
   // ── Sync / snapshots ────────────────────────────────────────────────────
-  | (DomainEventEnvelope & { type: "ConnectionSynced"; payload: { provider: string; connectionId: string; updatedAccountIds: string[] } }) // PROVISIONAL
+  | (DomainEventEnvelope & { type: "ConnectionSynced"; payload: { provider: string; plaidItemId: string; accountsUpdated: number; spacesSnapshotted: number } }) // EXERCISED (Slice 4) — audit-only, no handler
   | (DomainEventEnvelope & { type: "SnapshotGenerated"; payload: { date: string; netWorth: number } }); // PROVISIONAL
 
 /** Convenience alias for a single event's discriminant string. */
