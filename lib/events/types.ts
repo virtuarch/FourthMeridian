@@ -50,12 +50,12 @@ export type DomainEvent =
   | (DomainEventEnvelope & { type: "MemberJoined"; payload: { userId: string } }) // PROVISIONAL
   | (DomainEventEnvelope & { type: "MemberRemoved"; payload: { removedUserId: string; removedName: string; newStatus: string } }) // EXERCISED (Slice 3) — removed by an admin/owner
   | (DomainEventEnvelope & { type: "MemberLeft"; payload: { removedUserId: string; removedName: string; newStatus: string } }) // EXERCISED (Slice 3) — self-leave
-  | (DomainEventEnvelope & { type: "MemberRoleChanged"; payload: { targetUserId: string; targetName: string; oldRole: string; newRole: string } }) // PROVISIONAL
+  | (DomainEventEnvelope & { type: "MemberRoleChanged"; payload: { targetUserId: string; targetName: string; oldRole: string; newRole: string } }) // EXERCISED (Slice 5B) — audit-only, no handler
   // ── Account sharing ─────────────────────────────────────────────────────
   | (DomainEventEnvelope & { type: "AccountShared"; payload: { financialAccountId: string; accountName: string; visibilityLevel: string } }) // PROVISIONAL
   | (DomainEventEnvelope & { type: "AccountShareRevoked"; payload: { financialAccountId: string; accountName: string | null } }) // PROVISIONAL
   // ── Goals ───────────────────────────────────────────────────────────────
-  | (DomainEventEnvelope & { type: "GoalCreated"; payload: { goalId: string; name: string; goalType: string; targetAmount: number | null } }) // PROVISIONAL
+  | (DomainEventEnvelope & { type: "GoalCreated"; payload: { goalId: string; name: string; goalType: string; targetAmount?: number } }) // EXERCISED (Slice 5B) — audit-only; targetAmount omitted when absent (never null)
   | (DomainEventEnvelope & { type: "GoalCheckedIn"; payload: { goalId: string; goalName: string } }) // PROVISIONAL
   // ── Sync / snapshots ────────────────────────────────────────────────────
   | (DomainEventEnvelope & { type: "ConnectionSynced"; payload: { provider: string; plaidItemId: string; accountsUpdated: number; spacesSnapshotted: number } }) // EXERCISED (Slice 4) — audit-only, no handler

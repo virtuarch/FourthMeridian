@@ -79,14 +79,15 @@ export const PATCH = withApiHandler(async (
   const tu = targetMembership.user;
   const targetName = [tu.firstName, tu.lastName].filter(Boolean).join(" ").trim() || tu.email || targetUserId;
 
-  await db.auditLog.create({
-    data: {
-      userId:      user.id,
-      spaceId,
-      action:      "MEMBER_ROLE_CHANGE",
-      metadata:    { targetUserId, targetName, oldRole: targetMembership.role, newRole: role },
-      ipAddress:   getClientIp(req),
-    },
+  // EV-1 Slice 5B — MemberRoleChanged (audit-only, no handler). No transaction
+  // and no side effect here today; the no-tx emit persists the canonical
+  // MEMBER_ROLE_CHANGED row with byte-identical metadata.
+  await emitDomainEvent({
+    type:        "MemberRoleChanged",
+    spaceId,
+    actorUserId: user.id,
+    ipAddress:   getClientIp(req),
+    payload:     { targetUserId, targetName, oldRole: targetMembership.role, newRole: role },
   });
 
   return NextResponse.json(updated);

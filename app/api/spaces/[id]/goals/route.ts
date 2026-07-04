@@ -8,6 +8,7 @@ import { requireSpaceRole } from "@/lib/session";
 import { GoalCategory, GoalType, SpaceMemberRole } from "@prisma/client";
 import { db } from "@/lib/db";
 import { withApiHandler, getClientIp } from "@/lib/api";
+import { emitDomainEvent } from "@/lib/events/emit";
 
 const VALID_GOAL_CATEGORIES = new Set(Object.values(GoalCategory));
 const VALID_GOAL_TYPES      = new Set(Object.values(GoalType));
@@ -137,14 +138,15 @@ export const POST = withApiHandler(async (
     },
   });
 
-  await db.auditLog.create({
-    data: {
-      userId:      user.id,
-      spaceId,
-      action:      "GOAL_CREATE",
-      metadata:    { goalId: goal.id, name: goal.name, goalType, targetAmount },
-      ipAddress:   getClientIp(req),
-    },
+  // EV-1 Slice 5B — GoalCreated (audit-only, no handler). No transaction and no
+  // side effect here today; the no-tx emit persists the canonical GOAL_CREATED
+  // row with byte-identical metadata (targetAmount omitted when absent).
+  await emitDomainEvent({
+    type:        "GoalCreated",
+    spaceId,
+    actorUserId: user.id,
+    ipAddress:   getClientIp(req),
+    payload:     { goalId: goal.id, name: goal.name, goalType, targetAmount },
   });
 
   return NextResponse.json(goal, { status: 201 });
