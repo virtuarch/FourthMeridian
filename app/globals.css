@@ -404,6 +404,32 @@ html[data-theme="light"] .atlas-meridians {
 }
 .atlas-field.is-balanced .atlas-meridians { opacity: .17; }
 
+/* ---------- Spaces overview — atmospheric field, no literal globe (R4-c) ----------
+   Scoped to `.is-rich`, which is ONLY the central Spaces overview
+   (/dashboard/spaces). The inside-a-Space dashboard (/dashboard) renders
+   `.is-balanced` and is untouched by these rules.
+
+   R4-c reverses the earlier P1 "globe-forward" treatment: the literal world/
+   globe artwork is suppressed so the Liquid Space cards are the visual focus.
+   The Atlas ATMOSPHERE stays — dark radial depth + top veil come from the
+   `.atlas-field` base (unchanged), and the brass horizon + faint meridian
+   field remain via `.atlas-meridians`. So the page still reads as Atlas /
+   Meridian, just not as a world map. Pure CSS; no globe PNG behind the cards. */
+
+/* Suppress the literal globe photo (continents / city-lights) for the Spaces
+   overview. The dark radial background, top veil, and meridian/brass field all
+   remain — only the recognizable "world" image is removed. */
+.atlas-field.is-rich .atlas-globe {
+  display: none;
+}
+
+/* Keep the meridian + brass horizon as a quiet atmospheric field — dialed
+   below the base so it reads as distant structure/lighting, never a prominent
+   globe grid competing with the cards. */
+.atlas-field.is-rich .atlas-meridians {
+  opacity: .16;
+}
+
 /* ---------- Presence pulse — small "active" status dot ----------
    Very subtle breathing opacity/scale, no glow/box-shadow ring — the
    emphasis is presence, not status-bar urgency. Used by the Spaces header

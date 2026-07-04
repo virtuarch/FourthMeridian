@@ -55,16 +55,35 @@ export function AtlasLiquidCard({
   onClick,
   ariaLabel,
   backgroundImage = DEFAULT_BG,
+  tint,
+  tintStrength,
   children,
 }: {
   href?: string;
   onClick?: () => void;
   ariaLabel: string;
   backgroundImage?: string;
+  /**
+   * Optional per-instance identity hue fed into the Liquid shader
+   * (`tintColor`, an RGB multiplier ~0–1.1). OMITTED by default so existing
+   * callers (Daily Brief) keep the frosted preset's neutral tint — this is a
+   * purely additive, backward-compatible extension.
+   */
+  tint?: [number, number, number];
+  /** Optional tint mix strength (shader `tintStrength`). Omitted → preset default (~0.1). */
+  tintStrength?: number;
   children: ReactNode;
 }) {
+  // Only add tint fields when supplied, so an omitting caller yields the exact
+  // same settings object as before (no visual change).
+  const settings = {
+    ...SETTINGS,
+    ...(tint !== undefined ? { tintColor: tint } : {}),
+    ...(tintStrength !== undefined ? { tintStrength } : {}),
+  };
+
   const inner = (
-    <LiquidGlassCard backgroundImage={backgroundImage} variant="frosted" settings={SETTINGS}>
+    <LiquidGlassCard backgroundImage={backgroundImage} variant="frosted" settings={settings}>
       {/* Contrast scrim — content is already crisp DOM above the glass; this
           restrained backing lifts the data so it reads as real UI over the glass.
           Above the glass, below the content. No frost/shimmer/glare. */}
