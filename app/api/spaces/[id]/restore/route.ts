@@ -21,7 +21,7 @@ import { requireSpaceRole } from "@/lib/session";
 import { SpaceMemberRole } from "@prisma/client";
 import { db } from "@/lib/db";
 import { withApiHandler, getClientIp } from "@/lib/api";
-import { AuditAction } from "@/lib/audit-actions";
+import { emitDomainEvent } from "@/lib/events/emit";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -44,14 +44,12 @@ export const POST = withApiHandler(async (
     data:  { deletedAt: null },
   });
 
-  await db.auditLog.create({
-    data: {
-      userId:      user.id,
-      spaceId: id,
-      action:      AuditAction.SPACE_RESTORED,
-      metadata:    { name: space.name },
-      ipAddress:   getClientIp(req),
-    },
+  await emitDomainEvent({
+    type:        "SpaceRestored",
+    spaceId:     id,
+    actorUserId: user.id,
+    ipAddress:   getClientIp(req),
+    payload:     { name: space.name },
   });
 
   return NextResponse.json({ ok: true });
