@@ -11,6 +11,8 @@ import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
 import { requireUser, requireSpaceRole }      from "@/lib/session";
 import { SpaceMemberRole, SpaceMemberStatus } from "@prisma/client";
+import { getClientIp }                            from "@/lib/api";
+import { emitDomainEvent }                        from "@/lib/events/emit";
 
 export async function PATCH(
   req: NextRequest,
@@ -54,6 +56,19 @@ export async function PATCH(
         data:  { status: "ACCEPTED" },
       }),
     ]);
+
+    // Timeline T-1 — MemberJoined (audit-only, no handler). Net-new
+    // Timeline-visible row. Emitted post-commit (no-tx) so the array-form
+    // transaction above is untouched; actorUserId is the joining user, from
+    // which the activity consumer derives "{name} joined the space".
+    await emitDomainEvent({
+      type:        "MemberJoined",
+      spaceId,
+      actorUserId: user.id,
+      ipAddress:   getClientIp(req),
+      payload:     { userId: user.id, role: invite.role },
+    });
+
     return NextResponse.json({ ok: true, joined: true });
   }
 

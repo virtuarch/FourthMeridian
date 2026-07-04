@@ -46,8 +46,11 @@ export type DomainEvent =
   | (DomainEventEnvelope & { type: "SpaceCreated"; payload: { name: string; isPublic: boolean; category: string } }) // PROVISIONAL
   | (DomainEventEnvelope & { type: "SpaceUpdated"; payload: { name: string; isPublic: boolean; category?: string } }) // PROVISIONAL
   // ── Members ─────────────────────────────────────────────────────────────
-  | (DomainEventEnvelope & { type: "MemberInvited"; payload: { invitedEmail: string; role: string } }) // PROVISIONAL
-  | (DomainEventEnvelope & { type: "MemberJoined"; payload: { userId: string } }) // PROVISIONAL
+  // EXERCISED (Timeline T-1) — audit-only, no handler. `invitedEmail` carries a
+  // safe display handle (name or @username), NOT a real email — the activity
+  // consumer currently reads `meta.invitedEmail`; key rename is deferred debt.
+  | (DomainEventEnvelope & { type: "MemberInvited"; payload: { invitedUserId: string; role: string; invitedEmail: string } })
+  | (DomainEventEnvelope & { type: "MemberJoined"; payload: { userId: string; role: string } }) // EXERCISED (Timeline T-1) — audit-only, no handler
   | (DomainEventEnvelope & { type: "MemberRemoved"; payload: { removedUserId: string; removedName: string; newStatus: string } }) // EXERCISED (Slice 3) — removed by an admin/owner
   | (DomainEventEnvelope & { type: "MemberLeft"; payload: { removedUserId: string; removedName: string; newStatus: string } }) // EXERCISED (Slice 3) — self-leave
   | (DomainEventEnvelope & { type: "MemberRoleChanged"; payload: { targetUserId: string; targetName: string; oldRole: string; newRole: string } }) // EXERCISED (Slice 5B) — audit-only, no handler

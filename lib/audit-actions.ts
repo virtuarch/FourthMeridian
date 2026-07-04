@@ -57,6 +57,9 @@ export const AuditAction = {
 
   // ── Members ──────────────────────────────────────────────────────────────────
   MEMBER_INVITED:           "MEMBER_INVITED",
+  // Timeline T-1 — member accepted an invite and joined. Codifies the string the
+  // activity Timeline already renders ("Member joined").
+  MEMBER_JOINED:            "MEMBER_JOINED",
   MEMBER_REMOVED:           "MEMBER_REMOVED",
   MEMBER_ROLE_CHANGED:      "MEMBER_ROLE_CHANGED",
   // EV-1 Slice 3 — self-leave. Codifies the string the activity Timeline

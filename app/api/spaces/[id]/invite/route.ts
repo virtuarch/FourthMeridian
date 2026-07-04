@@ -8,6 +8,8 @@ import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
 import { requireSpaceRole }                   from "@/lib/session";
 import { SpaceMemberRole, SpaceMemberStatus } from "@prisma/client";
+import { getClientIp }                            from "@/lib/api";
+import { emitDomainEvent }                        from "@/lib/events/emit";
 
 export async function POST(
   req: NextRequest,
@@ -77,6 +79,22 @@ export async function POST(
     },
     include: {
       invitedUser: { select: { id: true, name: true, username: true } },
+    },
+  });
+
+  // Timeline T-1 — MemberInvited (audit-only, no handler). Net-new
+  // Timeline-visible row. `invitedEmail` carries a safe display handle
+  // (name or @username), never a real email, because the activity consumer
+  // currently reads meta.invitedEmail (key rename is deferred debt).
+  await emitDomainEvent({
+    type:        "MemberInvited",
+    spaceId,
+    actorUserId: user.id,
+    ipAddress:   getClientIp(req),
+    payload: {
+      invitedUserId: targetUser.id,
+      role,
+      invitedEmail:  targetUser.name ?? `@${targetUser.username}`,
     },
   });
 
