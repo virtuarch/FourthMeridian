@@ -20,7 +20,8 @@ import { requireSpaceAction } from "@/lib/spaces/authorize";
 import { can } from "@/lib/spaces/policy";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
-import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
+import { emitDomainEvent, dispatchDomainEvent } from "@/lib/events/emit";
+import type { DomainEvent } from "@/lib/events/types";
 
 // ─── POST ─────────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,17 @@ export const POST = withApiHandler(async (
     return NextResponse.json({ error: "You do not own this account" }, { status: 403 });
   }
 
+  // EV-1 Slice 2 — AccountShared. The AuditLog row is persisted inside the
+  // transaction (KD-4: it commits together with the SAL write); the snapshot
+  // handler runs post-commit via dispatchDomainEvent (best-effort, non-fatal).
+  const event: DomainEvent = {
+    type:        "AccountShared",
+    spaceId,
+    actorUserId: userId,
+    ipAddress:   getClientIp(req),
+    payload:     { financialAccountId, accountName: fa.name, visibilityLevel },
+  };
+
   // KD-4 Phase 3 — the share write (SAL upsert) and its audit row commit
   // together. Snapshot regen below stays OUTSIDE.
   // D3 Stage B3 — SpaceAccountLink is the sole write target.
@@ -88,25 +100,13 @@ export const POST = withApiHandler(async (
       },
     });
 
-    await tx.auditLog.create({
-      data: {
-        userId,
-        spaceId,
-        action:    "ACCOUNT_SHARE",
-        metadata:  { financialAccountId, accountName: fa.name, visibilityLevel },
-        ipAddress: getClientIp(req),
-      },
-    });
+    await emitDomainEvent(event, { tx });
   });
 
-  // Regenerate SpaceSnapshot now that this space has a new active share —
-  // see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md for the established
-  // pattern. Best-effort/non-fatal: the share itself has already succeeded.
-  try {
-    await regenerateSpaceSnapshot(spaceId);
-  } catch (snapshotErr) {
-    console.warn(`[POST /api/spaces/:id/accounts/share] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
-  }
+  // Post-commit: regenerate SpaceSnapshot now that this space has a new active
+  // share (see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
+  // Best-effort/non-fatal — dispatchDomainEvent isolates handler failures.
+  await dispatchDomainEvent(event);
 
   return NextResponse.json({ ok: true }, { status: 201 });
 }, "POST /api/spaces/[id]/accounts/share");
@@ -160,6 +160,16 @@ export const DELETE = withApiHandler(async (
 
   const revokedAt = new Date();
 
+  // EV-1 Slice 2 — AccountShareRevoked. AuditLog row persisted in-tx (KD-4);
+  // snapshot handler runs post-commit via dispatchDomainEvent (best-effort).
+  const event: DomainEvent = {
+    type:        "AccountShareRevoked",
+    spaceId,
+    actorUserId: userId,
+    ipAddress:   getClientIp(req),
+    payload:     { financialAccountId, accountName: link.financialAccount?.name ?? null },
+  };
+
   // KD-4 Phase 3 — the revoke write and its audit row commit together.
   // Snapshot regen below stays OUTSIDE.
   await db.$transaction(async (tx) => {
@@ -172,25 +182,13 @@ export const DELETE = withApiHandler(async (
       },
     });
 
-    await tx.auditLog.create({
-      data: {
-        userId,
-        spaceId,
-        action:    "ACCOUNT_SHARE_REVOKE",
-        metadata:  { financialAccountId, accountName: link.financialAccount?.name ?? null },
-        ipAddress: getClientIp(req),
-      },
-    });
+    await emitDomainEvent(event, { tx });
   });
 
-  // Regenerate SpaceSnapshot now that this space lost an active share —
-  // see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md for the established
-  // pattern. Best-effort/non-fatal: the revoke itself has already succeeded.
-  try {
-    await regenerateSpaceSnapshot(spaceId);
-  } catch (snapshotErr) {
-    console.warn(`[DELETE /api/spaces/:id/accounts/share] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
-  }
+  // Post-commit: regenerate SpaceSnapshot now that this space lost an active
+  // share (see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
+  // Best-effort/non-fatal — dispatchDomainEvent isolates handler failures.
+  await dispatchDomainEvent(event);
 
   return NextResponse.json({ ok: true });
 }, "DELETE /api/spaces/[id]/accounts/share");
