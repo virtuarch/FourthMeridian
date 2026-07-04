@@ -49,6 +49,8 @@ type DbClient = Prisma.TransactionClient | typeof db;
  *             (GOAL_CREATED) — audit-only, no handlers.
  *   Timeline T-1: MemberInvited (MEMBER_INVITED), MemberJoined (MEMBER_JOINED)
  *             — audit-only, no handlers; net-new Timeline-visible rows.
+ *   Timeline T-2: GoalCheckedIn (GOAL_CHECKED_IN) — audit-only, no handler;
+ *             net-new Timeline-visible row.
  */
 const DOMAIN_EVENT_ACTION: Partial<Record<DomainEventType, AuditActionType>> = {
   SpaceRestored:       AuditAction.SPACE_RESTORED,
@@ -61,6 +63,7 @@ const DOMAIN_EVENT_ACTION: Partial<Record<DomainEventType, AuditActionType>> = {
   GoalCreated:         AuditAction.GOAL_CREATED,
   MemberInvited:       AuditAction.MEMBER_INVITED,
   MemberJoined:        AuditAction.MEMBER_JOINED,
+  GoalCheckedIn:       AuditAction.GOAL_CHECKED_IN,
 };
 
 /**

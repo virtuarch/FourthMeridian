@@ -6,7 +6,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requireSpaceAction } from "@/lib/spaces/authorize";
-import { withApiHandler } from "@/lib/api";
+import { withApiHandler, getClientIp } from "@/lib/api";
+import { emitDomainEvent } from "@/lib/events/emit";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -15,7 +16,7 @@ export const POST = withApiHandler(async (
   const { id: spaceId, goalId } = await params;
 
   // Any ACTIVE member (any role) may record a check-in.
-  const [, err] = await requireSpaceAction(spaceId, "goal:checkIn");
+  const [auth, err] = await requireSpaceAction(spaceId, "goal:checkIn");
   if (err) return err;
 
   const goal = await db.spaceGoal.findUnique({ where: { id: goalId } });
@@ -71,6 +72,18 @@ export const POST = withApiHandler(async (
       },
     }),
   ]);
+
+  // Timeline T-2 — GoalCheckedIn (audit-only, no handler). Net-new
+  // Timeline-visible row. Emitted post-commit (no-tx) so the array-form
+  // transaction above is untouched. Note is deliberately excluded from the
+  // payload — it is personal free-text and not surfaced in the space feed.
+  await emitDomainEvent({
+    type:        "GoalCheckedIn",
+    spaceId,
+    actorUserId: auth.user.id,
+    ipAddress:   getClientIp(req),
+    payload:     { goalId, goalName: goal.name, streak: newStreak },
+  });
 
   return NextResponse.json({ checkIn, goal: updatedGoal }, { status: 201 });
 }, "POST /api/spaces/[id]/goals/[goalId]/check-in");

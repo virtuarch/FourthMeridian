@@ -59,7 +59,7 @@ export type DomainEvent =
   | (DomainEventEnvelope & { type: "AccountShareRevoked"; payload: { financialAccountId: string; accountName: string | null } }) // PROVISIONAL
   // ── Goals ───────────────────────────────────────────────────────────────
   | (DomainEventEnvelope & { type: "GoalCreated"; payload: { goalId: string; name: string; goalType: string; targetAmount?: number } }) // EXERCISED (Slice 5B) — audit-only; targetAmount omitted when absent (never null)
-  | (DomainEventEnvelope & { type: "GoalCheckedIn"; payload: { goalId: string; goalName: string } }) // PROVISIONAL
+  | (DomainEventEnvelope & { type: "GoalCheckedIn"; payload: { goalId: string; goalName: string; streak: number } }) // EXERCISED (Timeline T-2) — audit-only, no handler; note deliberately excluded
   // ── Sync / snapshots ────────────────────────────────────────────────────
   | (DomainEventEnvelope & { type: "ConnectionSynced"; payload: { provider: string; plaidItemId: string; accountsUpdated: number; spacesSnapshotted: number } }) // EXERCISED (Slice 4) — audit-only, no handler
   | (DomainEventEnvelope & { type: "SnapshotGenerated"; payload: { date: string; netWorth: number } }); // PROVISIONAL

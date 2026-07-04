@@ -38,6 +38,8 @@ export const AuditAction = {
   GOAL_ARCHIVED:            "GOAL_ARCHIVED",
   GOAL_TRASHED:             "GOAL_TRASHED",
   GOAL_RESTORED:            "GOAL_RESTORED",
+  // Timeline T-2 — a HABIT goal check-in was recorded.
+  GOAL_CHECKED_IN:          "GOAL_CHECKED_IN",
 
   // ── Spaces (lifecycle) ──────────────────────────────────────────────────
   SPACE_CREATE:         "SPACE_CREATE",

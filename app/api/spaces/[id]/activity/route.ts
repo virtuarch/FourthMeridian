@@ -26,6 +26,7 @@
  *   SPACE_LEAVE, SPACE_REMOVE_MEMBER
  *   ACCOUNT_SHARED, ACCOUNT_SHARE, ACCOUNT_REVOKED, ACCOUNT_SHARE_REVOKE
  *   GOAL_CREATED, GOAL_CREATE, GOAL_ARCHIVED, GOAL_RESTORED, GOAL_DELETE (completed)
+ *   GOAL_CHECKED_IN (HABIT check-in)
  *   MANUAL_ASSET_ADD, MANUAL_ASSET_DELETE (archived), MANUAL_ASSET_RESTORE
  */
 
@@ -53,6 +54,7 @@ const ALLOWED_ACTIONS = new Set([
   "GOAL_ARCHIVED",
   "GOAL_RESTORED",
   "GOAL_DELETE",      // used for goal completion in some routes
+  "GOAL_CHECKED_IN",  // Timeline T-2 — HABIT check-in
   // Manual assets
   "MANUAL_ASSET_ADD",
   "MANUAL_ASSET_DELETE",   // soft-delete = archive
@@ -234,6 +236,18 @@ function normalizeLog(log: RawLog): TimelineEvent | null {
         actorName: actor,
         title:    isComplete ? "Goal completed" : "Goal removed",
         subtitle: isComplete ? `${goalName} reached its target` : `${goalName} was removed`,
+      };
+    }
+
+    // ── Goal check-in (Timeline T-2) ──────────────────────────────────────────
+    case "GOAL_CHECKED_IN": {
+      const goalName = str(meta.goalName) || str(meta.name) || "A goal";
+      const streak   = typeof meta.streak === "number" ? meta.streak : 0;
+      return {
+        id, date, type: log.action, icon: "Flame", tone: "positive",
+        actorName: actor,
+        title:    "Goal check-in",
+        subtitle: streak > 1 ? `${goalName} — ${streak}-day streak` : `Checked in on ${goalName}`,
       };
     }
 
