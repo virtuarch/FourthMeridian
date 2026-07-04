@@ -82,7 +82,14 @@ export function PlaidProvider({ children }: { children: React.ReactNode }) {
           throw new Error(d.error ?? "Import failed");
         }
         onDoneRef.current?.();
-        router.refresh();
+        // D2.x Slice 3 — all Plaid connects resolve to the permanent
+        // Connections hub, the single destination where first-run sync
+        // progress and provider management live. Replaces the prior bare
+        // router.refresh() (which gave no visible post-connect feedback). The
+        // new institution renders there as an "importing" card among any
+        // existing "ready" ones. onDone still runs first for callers that need
+        // to close a modal, etc.
+        router.push("/dashboard/connections");
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to import accounts.");
       } finally {

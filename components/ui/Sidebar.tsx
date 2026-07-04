@@ -48,6 +48,7 @@ import {
   Home,
   Building2,
   Brain,
+  Link2,
   MessageSquare,
   LineChart,
   Store,
@@ -357,9 +358,10 @@ export function Sidebar() {
   const initial  = (user?.name ?? user?.email ?? "?")[0].toUpperCase();
   const username = user?.username ? `@${user.username}` : null;
 
-  const isBrief    = path === "/dashboard/brief";
-  const isAI       = path.startsWith("/dashboard/analyze");
-  const isSettings = path.startsWith("/dashboard/settings");
+  const isBrief       = path === "/dashboard/brief";
+  const isAI          = path.startsWith("/dashboard/analyze");
+  const isConnections = path.startsWith("/dashboard/connections");
+  const isSettings    = path.startsWith("/dashboard/settings");
 
   return (
     // `self-start` is the load-bearing part of this className: the parent
@@ -417,6 +419,18 @@ export function Sidebar() {
         <div className="mx-5 h-px" style={{ background: "var(--border-hairline)" }} />
 
         <div className="px-3 space-y-0.5">
+          <Link
+            href="/dashboard/connections"
+            className={[
+              "flex items-center gap-3 px-2 py-2 rounded-lg text-sm font-medium border transition-[background-color,border-color,color]",
+              isConnections
+                ? "text-[var(--meridian-400)] bg-[rgba(59,130,246,.06)] border-[rgba(125,168,255,.16)]"
+                : "text-[var(--text-secondary)] border-transparent hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]",
+            ].join(" ")}
+          >
+            <Link2 size={17} strokeWidth={isConnections ? 2.5 : 1.75} />
+            Connections
+          </Link>
           <Link
             href="/dashboard/analyze"
             className={[
