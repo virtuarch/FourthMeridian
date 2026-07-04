@@ -66,8 +66,14 @@ export function mapPlaidCategory(txn: PlaidCategoryInput): TransactionCategory {
   if (pfc?.primary) {
     const detailed = pfc.detailed ?? "";
 
-    // 1. Detailed-level override — more precise than the primary bucket alone.
+    // 1. Detailed-level overrides — more precise than the primary bucket alone.
     if (detailed.includes("INTEREST")) return "Interest";
+    // CC-1: a credit-card payment is a Payment regardless of which primary
+    // Plaid happened to tag. Self-identifying and institution-agnostic — this
+    // rescues the destination (card-side) legs Plaid sometimes files under a
+    // non-LOAN_PAYMENTS primary. (When primary IS LOAN_PAYMENTS this is a no-op,
+    // since step 2 already returns Payment.)
+    if (detailed.includes("CREDIT_CARD_PAYMENT")) return "Payment";
 
     // 2. FLOW-STRUCTURAL PFC primaries WIN over merchant rules. A merchant
     //    string must never override income/transfer/loan/fee structure — these
@@ -123,4 +129,103 @@ export function mapPlaidCategory(txn: PlaidCategoryInput): TransactionCategory {
   if (legacy.includes("subscription"))                          return "Subscriptions";
 
   return "Other";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CC-1 — Credit-card payment classification correctness.
+//
+// The DESTINATION leg of a card payment is a positive credit sitting on the
+// card's own account ("Payment Thank You-Mobile"). Plaid tags these
+// inconsistently, so some fall through mapPlaidCategory's `default → Other`
+// (see docs/investigations/CREDIT_CARD_PAYMENT_CLASSIFICATION_INVESTIGATION.md).
+//
+// mapPlaidCategory is account-blind and amount-blind, so the safe rescue for
+// the Other legs (which carry no useful PFC — only a descriptor) lives at a
+// seam that KNOWS the account side and sign: the Plaid sync write path and the
+// historical backfill. Both import the SINGLE guarded predicate below so they
+// can never drift. This is descriptor + account-side + sign gated — it is NOT a
+// merchant rule and deliberately does NOT touch the Merchant Intelligence catalog.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Generalized, INSTITUTION-AGNOSTIC card-payment acknowledgment phrases. These
+ * are the descriptors issuers put on the card-side payment credit — Chase, Amex,
+ * Citi, Discover, etc. all use one of these forms. Deliberately NOT tied to any
+ * institution name (no "chase"): the pattern is the payment acknowledgment, not
+ * the brand. Lowercased; matched as substrings against `${merchant} ${name}`.
+ */
+export const CARD_PAYMENT_DESCRIPTORS: readonly string[] = [
+  "payment thank you",
+  "thank you mobile",   // "Payment Thank You-Mobile"
+  "cardmember payment",
+  "cardmember serv",    // "CARDMEMBER SERV ... PAYMENT"
+  "credit crd autopay",
+  "card autopay",
+  "autopay payment",
+  "online payment",
+  "payment received",
+  "mobile payment",
+  "epayment",
+  "e-payment",
+];
+
+/**
+ * True when either merchant field contains a generalized card-payment
+ * descriptor. Descriptor-only — NOT sufficient on its own to classify a payment
+ * (an ordinary account can carry "online payment" text); it MUST be combined
+ * with the account-side + sign guard in isLiabilityCardPaymentLeg.
+ */
+export function isCardPaymentDescriptor(
+  merchant: string | null | undefined,
+  name?: string | null | undefined,
+): boolean {
+  const haystack = `${merchant ?? ""} ${name ?? ""}`.toLowerCase();
+  return CARD_PAYMENT_DESCRIPTORS.some((token) => haystack.includes(token));
+}
+
+/** Inputs for the guarded card-payment-leg predicate. FM sign convention: amount > 0 = money into the row's own account. */
+export interface CardPaymentLegInput {
+  /**
+   * FinancialAccount.type (AccountType value). `"debt"` is the PRIMARY liability
+   * signal — Plaid `type: "credit"`/`"loan"` maps to AccountType.debt at import
+   * (lib/plaid/exchangeToken.ts mapAccountType). This is the field actually
+   * populated for Plaid-synced credit cards.
+   */
+  accountType: string | null | undefined;
+  /**
+   * FinancialAccount.debtSubtype — a SECONDARY accepted signal. Never populated
+   * by the Plaid import path (only the flat legacy column; real debt data lives
+   * on DebtProfile), so it is null for Plaid cards — but a non-null value (e.g.
+   * a manually-entered liability) is still honored.
+   */
+  debtSubtype?: string | null | undefined;
+  /** FM-signed amount already resolved by the caller. */
+  amount:      number;
+  merchant:    string | null | undefined;
+  name?:       string | null | undefined;
+}
+
+/**
+ * SINGLE source of truth for "this row is the destination leg of a credit-card
+ * payment" — used by BOTH the live sync write path and the historical backfill
+ * so they can never diverge.
+ *
+ * Deterministic guard, all three conditions required:
+ *   1. the row sits on a LIABILITY account, AND
+ *   2. amount > 0 (a credit INTO that liability — i.e. a payment received), AND
+ *   3. the descriptor matches a generalized card-payment phrase.
+ *
+ * Liability is signalled PRIMARILY by `accountType === "debt"` (the field Plaid
+ * actually populates — see CC-1 correction / the debtSubtype diagnosis) and
+ * SECONDARILY by a non-null `debtSubtype` (manual liabilities). Either suffices.
+ *
+ * The liability + positive-sign guard is what prevents ordinary merchant rows
+ * (or a checking-account "online payment") from ever being misread as a debt
+ * payment, and prevents ANY card PURCHASE (amount < 0) from flipping to Payment.
+ */
+export function isLiabilityCardPaymentLeg(input: CardPaymentLegInput): boolean {
+  const isLiability =
+    input.accountType === "debt" ||
+    (input.debtSubtype != null && input.debtSubtype !== "");
+  return isLiability && input.amount > 0 && isCardPaymentDescriptor(input.merchant, input.name);
 }

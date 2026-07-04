@@ -64,9 +64,14 @@
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
-import { TransactionCategory, ProviderType, PlaidItemStatus } from "@prisma/client";
-import type { Transaction as PlaidTransaction } from "plaid";
+import { ProviderType, PlaidItemStatus } from "@prisma/client";
 import { findByFingerprint } from "@/lib/transactions/fingerprint";
+// Pure Plaid → TransactionCategory mapping, extracted to a Prisma-free module so
+// it is unit-testable in isolation (lib/transactions/plaid-category.test.ts).
+// Re-exported below to preserve the historical `@/lib/plaid/syncTransactions`
+// import path for mapPlaidCategory.
+import { mapPlaidCategory, isLiabilityCardPaymentLeg } from "@/lib/transactions/plaid-category";
+export { mapPlaidCategory } from "@/lib/transactions/plaid-category";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 // FlowType P2 (import fidelity) — shadow classification only. Nothing below is
 // persisted or used to alter any write, total, or AI read; it exists solely to
@@ -99,52 +104,6 @@ export interface SyncTransactionsResult {
   updatedByFingerprint:  number;
   /** Transactions dropped because no FinancialAccount matched the Plaid account_id. */
   skippedMissingAccount: number;
-}
-
-/**
- * Maps a Plaid transaction's category info to our TransactionCategory enum.
- * Prefers the modern `personal_finance_category` taxonomy; falls back to the
- * legacy `category` string array; defaults to "Other". Never throws — an
- * unrecognized or missing category should never block a transaction import.
- */
-export function mapPlaidCategory(
-  txn: Pick<PlaidTransaction, "personal_finance_category" | "category">
-): TransactionCategory {
-  const pfc = txn.personal_finance_category;
-  if (pfc?.primary) {
-    const detailed = pfc.detailed ?? "";
-
-    // Detailed-level overrides — more precise than the primary bucket alone.
-    if (detailed.includes("INTEREST"))     return TransactionCategory.Interest;
-    if (detailed.includes("SUBSCRIPTION")) return TransactionCategory.Subscriptions;
-
-    switch (pfc.primary) {
-      case "INCOME":              return TransactionCategory.Income;
-      case "TRANSFER_IN":
-      case "TRANSFER_OUT":        return TransactionCategory.Transfer;
-      case "LOAN_PAYMENTS":       return TransactionCategory.Payment;
-      case "BANK_FEES":           return TransactionCategory.Fee;
-      case "FOOD_AND_DRINK":      return TransactionCategory.Dining;
-      case "GENERAL_MERCHANDISE": return TransactionCategory.Shopping;
-      case "RENT_AND_UTILITIES":  return TransactionCategory.Utilities;
-      case "TRAVEL":               return TransactionCategory.Travel;
-      default:                     return TransactionCategory.Other;
-    }
-  }
-
-  // Legacy fallback — Plaid's older `category` array, e.g. ["Food and Drink", "Restaurants"].
-  const legacy = txn.category?.[0]?.toLowerCase() ?? "";
-  if (legacy.includes("food") || legacy.includes("restaurant")) return TransactionCategory.Dining;
-  if (legacy.includes("shop"))                                  return TransactionCategory.Shopping;
-  if (legacy.includes("travel"))                                return TransactionCategory.Travel;
-  if (legacy.includes("transfer"))                              return TransactionCategory.Transfer;
-  if (legacy.includes("payment"))                               return TransactionCategory.Payment;
-  if (legacy.includes("interest"))                              return TransactionCategory.Interest;
-  if (legacy.includes("payroll") || legacy.includes("deposit")) return TransactionCategory.Income;
-  if (legacy.includes("utilities") || legacy.includes("rent"))  return TransactionCategory.Utilities;
-  if (legacy.includes("subscription"))                          return TransactionCategory.Subscriptions;
-
-  return TransactionCategory.Other;
 }
 
 /**
@@ -254,7 +213,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       // Plaid: positive = debit (money out), negative = credit (money in).
       // Fourth Meridian: positive = credit (money in), negative = debit (money out).
       const amount      = -txn.amount;
-      const category    = mapPlaidCategory(txn);
+      let   category    = mapPlaidCategory(txn); // `let`: CC-1 may refine below
       const date         = new Date(txn.date);
       const merchant     = txn.merchant_name ?? txn.name;
       const description  = txn.name;
@@ -262,10 +221,26 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       // FlowType P3 Phase B — classify and persist the flow columns. Computed
       // unconditionally (it feeds the write). Wrapped so a classification
       // failure degrades to all-null flow columns and NEVER blocks the write:
-      // the row still persists with its original fields.
+      // the row still persists with its original fields. resolveAccountMeta is
+      // resolved once here and reused by the CC-1 guard AND flow classification.
       let flowFields = NULL_FLOW_WRITE_FIELDS;
       try {
         const meta = await resolveAccountMeta(financialAccountId);
+
+        // CC-1 — rescue the destination (card-side) leg of a credit-card payment
+        // that Plaid filed under Other. Guarded by isLiabilityCardPaymentLeg:
+        // liability account (debtSubtype != null) + amount > 0 + a generalized,
+        // institution-agnostic card-payment descriptor. Scoped to Other only, so
+        // it can NEVER reclassify a purchase (amount < 0) or a row Plaid tagged
+        // with a confident category. Applied BEFORE classifyFlow so the flow
+        // classifier sees Payment → DEBT_PAYMENT (no classifier change needed).
+        if (
+          category === "Other" &&
+          isLiabilityCardPaymentLeg({ accountType: meta.type, debtSubtype: meta.debtSubtype, amount, merchant, name: description })
+        ) {
+          category = "Payment";
+        }
+
         const { input, captured } = buildPlaidFlowInput(txn, {
           category,
           amount,

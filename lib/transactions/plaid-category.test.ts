@@ -15,7 +15,13 @@
  * without `prisma generate` and without any PLAID_* env vars.
  */
 
-import { mapPlaidCategory, type PlaidCategoryInput } from "./plaid-category";
+import {
+  mapPlaidCategory,
+  isCardPaymentDescriptor,
+  isLiabilityCardPaymentLeg,
+  type PlaidCategoryInput,
+} from "./plaid-category";
+import { classifyFlow } from "./flow-classifier";
 
 // ── Tiny assert harness ───────────────────────────────────────────────────────
 
@@ -147,6 +153,80 @@ expectCategory("Sephora, no PFC → Shopping", { personal_finance_category: null
 // Held-out merchants must NOT be classified by a rule (fall through to PFC/Other).
 expectCategory("PlayStation held out (VIDEO_GAMES) → Other", pfc("ENTERTAINMENT", "ENTERTAINMENT_VIDEO_GAMES", "PlayStation Network"), "Other");
 expectCategory("Namecheap held out (GENERAL_MERCHANDISE) → Shopping", pfc("GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_OTHER", "Namecheap"), "Shopping");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. CC-1 — Credit-card payment classification correctness
+// ─────────────────────────────────────────────────────────────────────────────
+
+function expectBool(name: string, got: boolean, want: boolean): void {
+  if (got === want) { passed++; return; }
+  failures.push(`✗ ${name} — got ${got}, want ${want}`);
+}
+
+// 6a. mapPlaidCategory: the CREDIT_CARD_PAYMENT detailed rescues Payment even
+//     when the primary is not LOAN_PAYMENTS (self-identifying, account-blind).
+expectCategory("CREDIT_CARD_PAYMENT detailed under LOAN_PAYMENTS → Payment",
+  pfc("LOAN_PAYMENTS", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT", "Payment Thank You"), "Payment");
+expectCategory("CREDIT_CARD_PAYMENT detailed under an UNMAPPED primary → Payment (rescue)",
+  pfc("TRANSPORTATION", "TRANSPORTATION_CREDIT_CARD_PAYMENT", "Payment Thank You-Mobile"), "Payment");
+// Ordinary card purchase must stay put (NOT all card rows become Payment).
+expectCategory("Ordinary card purchase (Amazon) → Shopping",
+  pfc("GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES", "Amazon"), "Shopping");
+// A genuine transfer row remains Transfer.
+expectCategory("Transfer row stays Transfer",
+  pfc("TRANSFER_IN", "TRANSFER_IN_ACCOUNT_TRANSFER", "Transfer"), "Transfer");
+
+// 6b. isCardPaymentDescriptor — generalized, institution-agnostic phrase match.
+expectBool("descriptor: Chase 'Payment Thank You-Mobile'", isCardPaymentDescriptor("Payment Thank You-Mobile"), true);
+expectBool("descriptor: Amex 'AUTOPAY PAYMENT - THANK YOU'", isCardPaymentDescriptor("AUTOPAY PAYMENT", "AUTOPAY PAYMENT - THANK YOU"), true);
+expectBool("descriptor: Citi 'ONLINE PAYMENT THANK YOU'", isCardPaymentDescriptor("ONLINE PAYMENT, THANK YOU"), true);
+expectBool("descriptor: Discover 'DISCOVER E-PAYMENT'", isCardPaymentDescriptor("DISCOVER E-PAYMENT"), true);
+expectBool("descriptor: 'CARDMEMBER SERV PAYMENT'", isCardPaymentDescriptor("CARDMEMBER SERV WEB PMT"), true);
+expectBool("descriptor: ordinary merchant 'Uber' → false", isCardPaymentDescriptor("Uber"), false);
+expectBool("descriptor: 'Amazon' → false", isCardPaymentDescriptor("Amazon", "AMAZON MKTP"), false);
+
+// 6c. isLiabilityCardPaymentLeg — the guarded destination-leg predicate.
+//     Requires: liability account + amount > 0 + descriptor.
+//     PRIMARY liability signal is accountType === "debt" — the shape Plaid
+//     actually produces for a synced credit card (type=debt, debtSubtype=null).
+//     CC-1 correction: the original guard keyed on debtSubtype and matched 0 rows.
+expectBool("guard: Plaid card (type=debt, debtSubtype=null, +1500, descriptor) → true",
+  isLiabilityCardPaymentLeg({ accountType: "debt", debtSubtype: null, amount: 1500, merchant: "Payment Thank You-Mobile" }), true);
+expectBool("guard: Amex payment credit (type=debt) → true",
+  isLiabilityCardPaymentLeg({ accountType: "debt", amount: 3500, merchant: "AUTOPAY PAYMENT", name: "AUTOPAY PAYMENT - THANK YOU" }), true);
+// SECONDARY signal: manually-entered liability (accountType not "debt" but debtSubtype set) still qualifies.
+expectBool("guard: manual liability (debtSubtype=credit_card) as secondary signal → true",
+  isLiabilityCardPaymentLeg({ accountType: "other", debtSubtype: "credit_card", amount: 500, merchant: "Payment Thank You" }), true);
+// NON-liability account (checking, no debt signal) with 'online payment' text must NOT qualify.
+expectBool("guard: checking (type=checking, debtSubtype null) + 'online payment' → false",
+  isLiabilityCardPaymentLeg({ accountType: "checking", debtSubtype: null, amount: 1500, merchant: "ONLINE PAYMENT" }), false);
+// Liability but a PURCHASE (amount < 0) must NOT qualify — never flips a purchase.
+expectBool("guard: card purchase (type=debt, -12, no descriptor) → false",
+  isLiabilityCardPaymentLeg({ accountType: "debt", amount: -12.11, merchant: "Uber" }), false);
+// Liability + positive but NO descriptor (e.g. a refund) → false.
+expectBool("guard: card refund credit without descriptor → false",
+  isLiabilityCardPaymentLeg({ accountType: "debt", amount: 40, merchant: "Amazon Refund" }), false);
+// Liability + descriptor but amount == 0 → false (strict positive).
+expectBool("guard: zero-amount → false",
+  isLiabilityCardPaymentLeg({ accountType: "debt", amount: 0, merchant: "Payment Thank You" }), false);
+
+// 6d. Payment → DEBT_PAYMENT through the EXISTING flow classifier (no change).
+//     Destination leg (on the card, amount > 0) is an inflow to the liability.
+{
+  const dest = classifyFlow({ category: "Payment", amount: 1500, debtSubtype: "credit_card" });
+  expectBool("flow: Payment +amount → DEBT_PAYMENT", dest.flowType === "DEBT_PAYMENT", true);
+  expectBool("flow: Payment +amount → INFLOW", dest.flowDirection === "INFLOW", true);
+}
+{
+  // Source leg (paid FROM checking, amount < 0) is INTERNAL.
+  const src = classifyFlow({ category: "Payment", amount: -1500 });
+  expectBool("flow: Payment -amount → DEBT_PAYMENT", src.flowType === "DEBT_PAYMENT", true);
+  expectBool("flow: Payment -amount → INTERNAL", src.flowDirection === "INTERNAL", true);
+}
+{
+  const xfer = classifyFlow({ category: "Transfer", amount: 100 });
+  expectBool("flow: Transfer stays TRANSFER", xfer.flowType === "TRANSFER", true);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Report
