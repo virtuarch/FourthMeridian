@@ -279,6 +279,29 @@ export interface AccountsSectionData {
    * real accounts rather than link placements. IDs only; no balances or names.
    */
   accountIds?:    string[];
+  /**
+   * Privacy-safe identity roster of the accounts visible in this Space — one
+   * entry per SpaceAccountLink. Populated regardless of scopeHint so the Daily
+   * Brief can render the "Accounts Tracked" list after deduplicating by id.
+   * NEVER contains balances. institution/mask are included only for FULL
+   * visibility; BALANCE_ONLY/SUMMARY_ONLY entries carry a generic name and omit
+   * institution/mask (mirroring the per-account `accounts` array behaviour).
+   */
+  trackedAccounts?: TrackedAccountLite[];
+}
+
+/**
+ * Minimal, balance-free account identity used to build the Daily Brief's
+ * "Accounts Tracked" roster. Deduplicated across Spaces by `id` downstream.
+ */
+export interface TrackedAccountLite {
+  id:           string;              // FinancialAccount.id — the dedup key
+  name:         string;              // privacy-resolved display name
+  type:         string;              // AccountType
+  subtype?:     string | null;       // debtSubtype when present
+  institution?: string;             // FULL visibility only; omitted otherwise
+  mask?:        string | null;       // last 4; FULL visibility only; omitted otherwise
+  visibility:   'FULL' | 'BALANCE_ONLY' | 'SUMMARY_ONLY';
 }
 
 // ---------------------------------------------------------------------------

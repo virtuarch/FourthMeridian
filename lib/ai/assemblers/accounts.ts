@@ -61,6 +61,7 @@ import type {
   AccountSummaryItem,
   AccountHealthSummary,
   KnowledgeGap,
+  TrackedAccountLite,
 } from '@/lib/ai/types';
 import type { SpaceContext } from '@/lib/space';
 
@@ -81,6 +82,7 @@ type AccountLinkRow = {
     plaidName:       string | null;
     type:            string;
     institution:     string;
+    mask:            string | null;
     balance:         number;
     currency:        string;
     lastUpdated:          Date;
@@ -144,6 +146,7 @@ async function assembleAccounts(
           plaidName:      true,
           type:           true,
           institution:    true,
+          mask:           true,
           balance:        true,
           currency:       true,
           lastUpdated:          true,
@@ -387,9 +390,52 @@ async function assembleAccounts(
   // not affect the BALANCE_ONLY visibility guarantee.
   const accountIds = links.map((l) => l.financialAccount.id);
 
+  // Privacy-safe identity roster for the Daily Brief "Accounts Tracked" list.
+  // Populated in all scopes. NEVER includes balances. Visibility handling mirrors
+  // the per-account `accounts` array: FULL exposes real name + institution + mask;
+  // all other levels use a generic name and omit institution/mask. SUMMARY_ONLY is
+  // surfaced distinctly so downstream dedup can apply FULL > BALANCE_ONLY >
+  // SUMMARY_ONLY precedence; every other non-FULL level is treated as BALANCE_ONLY.
+  const trackedAccounts: TrackedAccountLite[] = links.map((link) => {
+    const fa       = link.financialAccount;
+    const isFull   = link.visibilityLevel === VisibilityLevel.FULL;
+    const ownerName = link.addedByUser.firstName?.trim() ||
+                      link.addedByUser.name?.trim().split(' ')[0] ||
+                      null;
+
+    if (isFull) {
+      return {
+        id:          fa.id,
+        name:        resolveDisplayName(fa),
+        type:        fa.type,
+        subtype:     fa.debtSubtype,
+        institution: fa.institution,
+        mask:        fa.mask,
+        visibility:  'FULL',
+      };
+    }
+
+    const visibility: TrackedAccountLite['visibility'] =
+      link.visibilityLevel === VisibilityLevel.SUMMARY_ONLY ? 'SUMMARY_ONLY' : 'BALANCE_ONLY';
+
+    // BALANCE_ONLY / SUMMARY_ONLY — generic name, no institution, no mask.
+    return {
+      id:         fa.id,
+      name:       genericAccountName({
+                    type:           fa.type,
+                    debtSubtype:    fa.debtSubtype,
+                    ownerFirstName: ownerName,
+                  }),
+      type:       fa.type,
+      subtype:    null,
+      visibility,
+    };
+  });
+
   const data: AccountsSectionData = {
     totalCount:         links.length,
     accountIds,
+    trackedAccounts,
     totalAssets:        classification.totalAssets,
     totalLiabilities:   classification.totalLiabilities,
     netWorth:           classification.netWorth,

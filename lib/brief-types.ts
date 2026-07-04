@@ -39,6 +39,24 @@ export interface BriefItem {
   href?:   string;
 }
 
+// ── Tracked account (Since Last Visit modal — "Accounts Tracked" tab) ──────────
+
+/**
+ * A distinct, privacy-safe account shown in the Daily Brief "Accounts Tracked"
+ * roster. Deduplicated by `id` across eligible Spaces (shown once). Contains no
+ * balance. institution/mask are present only for FULL visibility; restricted
+ * visibility entries carry a generic name and omit institution/mask.
+ */
+export interface TrackedAccount {
+  id:           string;
+  name:         string;
+  type:         string;
+  subtype?:     string | null;
+  institution?: string;
+  mask?:        string | null;
+  visibility:   "FULL" | "BALANCE_ONLY" | "SUMMARY_ONLY";
+}
+
 // ── Brief section ─────────────────────────────────────────────────────────────
 
 export interface BriefSection {
@@ -57,6 +75,12 @@ export interface BriefSection {
   actionLabel?: string;
   actionHref?:  string;
   tone?:        BriefTone;
+  /**
+   * Distinct account roster for the "Accounts Tracked" tab of the Since Last
+   * Visit modal. Only set on the `since_last_visit` section. Deduplicated by id
+   * across eligible Spaces; contains no balances.
+   */
+  trackedAccounts?: TrackedAccount[];
 }
 
 // ── Financial map ─────────────────────────────────────────────────────────────

@@ -3,18 +3,17 @@
 /**
  * SinceLastVisitModal
  *
- * Detailed activity window shown when the user clicks the
- * "Since Your Last Visit" panel.
+ * Detailed window shown when the user clicks the "Since Your Last Visit" panel.
  *
- * v1 scope:
- *   - Time range tab strip (UI present; only "Since Last Visit" has real data)
- *   - Honest "coming soon" state for extended ranges — no fabricated numbers
- *   - Summary cards from existing BriefSection items
+ * v2 scope — data tabs (replaces the earlier time-range tabs):
+ *   - Tab 1 "Net Worth"        — the existing summary items (net worth, etc.)
+ *   - Tab 2 "Accounts Tracked" — distinct, privacy-safe roster of tracked
+ *                                FinancialAccounts (deduped by id across Spaces;
+ *                                length matches the "Accounts tracked" count)
+ *   - Tab 3 / Tab 4            — reserved (honest "coming soon" state)
  *
- * TODO: wire extended range tabs to a dedicated API endpoint that accepts
- *       a `range` query param and returns net-worth delta, transaction count,
- *       goal updates, and account changes for that window.
- *       Suggested route: GET /api/brief/activity?range=1d|1w|1m|1y|ytd
+ * The roster arrives on section.trackedAccounts (built server-side; no balances,
+ * institution/mask only for FULL visibility). The UI performs no data queries.
  */
 
 import { useState } from "react";
@@ -27,7 +26,7 @@ import {
   CATEGORY_CHIP_BG,
   categoryFromItemId,
 } from "@/components/atlas/tones";
-import type { BriefSection, BriefTone } from "@/lib/brief-types";
+import type { BriefSection, BriefTone, TrackedAccount } from "@/lib/brief-types";
 import {
   TrendingUp,
   TrendingDown,
@@ -36,22 +35,25 @@ import {
   Bell,
   Activity,
   Clock,
+  CreditCard,
+  Wallet,
+  Coins,
+  Home,
+  Building2,
 } from "lucide-react";
 
-// ── Time range strip ──────────────────────────────────────────────────────────
+// ── Data tab strip ────────────────────────────────────────────────────────────
 
-const RANGES = [
-  { id: "current", label: "Since Visit", hasData: true  },
-  { id: "1d",      label: "Day",         hasData: false },
-  { id: "1w",      label: "Week",        hasData: false },
-  { id: "1m",      label: "Month",       hasData: false },
-  { id: "1y",      label: "Year",        hasData: false },
-  { id: "ytd",     label: "YTD",         hasData: false },
+const TABS = [
+  { id: "netWorth",  label: "Net Worth",        kind: "data"     },
+  { id: "accounts",  label: "Accounts Tracked", kind: "data"     },
+  { id: "reserved3", label: "Reserved",         kind: "reserved" },
+  { id: "reserved4", label: "Reserved",         kind: "reserved" },
 ] as const;
 
-type RangeId = typeof RANGES[number]["id"];
+type TabId = typeof TABS[number]["id"];
 
-// ── Icon chip ─────────────────────────────────────────────────────────────────
+// ── Icon chip (summary items) ─────────────────────────────────────────────────
 
 function ItemIcon({ id, tone }: { id: string; tone?: BriefTone }) {
   const category = categoryFromItemId(id);
@@ -67,8 +69,7 @@ function ItemIcon({ id, tone }: { id: string; tone?: BriefTone }) {
 }
 
 // Semantic icon chip — circular glass-tinted background keyed to the same
-// category color used everywhere else on the brief (cash = meridian,
-// goal = violet, etc.), so users learn the association once and it holds.
+// category color used everywhere else on the brief.
 function ItemIconChip({ id, tone }: { id: string; tone?: BriefTone }) {
   const category = categoryFromItemId(id);
   return (
@@ -89,18 +90,16 @@ function ComingSoonState({ label }: { label: string }) {
         <Clock className="w-5 h-5 text-[var(--text-muted)]" />
       </div>
       <p className="text-sm font-medium text-[var(--text-secondary)]">
-        {label} data coming soon
+        {label} coming soon
       </p>
       <p className="text-xs text-[var(--text-muted)] max-w-xs">
-        Extended range activity windows will be available in an upcoming update.
-        {/* TODO: remove when GET /api/brief/activity?range=... is implemented */}
+        This space is reserved for an upcoming Daily Brief detail view.
       </p>
     </div>
   );
 }
 
-// Row lives directly on the modal's own glass surface — no card, no
-// divider. Vertical rhythm alone (py-3.5 per row) carries the grouping.
+// Row lives directly on the modal's own glass surface — no card, no divider.
 function SummaryItem({
   id,
   label,
@@ -131,6 +130,87 @@ function SummaryItem({
   );
 }
 
+// ── Accounts Tracked roster ───────────────────────────────────────────────────
+
+// Icon keyed to account type. Falls back to a neutral wallet.
+function AccountIcon({ type }: { type: string }) {
+  const cls = "w-4 h-4 text-[var(--text-secondary)]";
+  switch (type) {
+    case "cash":
+    case "depository": return <Landmark className={cls} />;
+    case "investment": return <TrendingUp className={cls} />;
+    case "crypto":
+    case "digital":    return <Coins className={cls} />;
+    case "debt":       return <CreditCard className={cls} />;
+    case "property":
+    case "real":       return <Home className={cls} />;
+    case "business":   return <Building2 className={cls} />;
+    default:           return <Wallet className={cls} />;
+  }
+}
+
+// Human-readable fallback label for an account type (used as the row subline
+// when institution/mask are withheld for privacy).
+function typeLabel(type: string): string {
+  switch (type) {
+    case "cash":
+    case "depository": return "Cash account";
+    case "investment": return "Investment account";
+    case "crypto":
+    case "digital":    return "Digital asset";
+    case "debt":       return "Debt account";
+    case "property":
+    case "real":       return "Real asset";
+    case "business":   return "Business account";
+    default:           return "Account";
+  }
+}
+
+function AccountRow({ account }: { account: TrackedAccount }) {
+  // FULL visibility may show institution + last-4; restricted visibility shows
+  // only a human type label (institution/mask are never present in the payload).
+  const subline =
+    account.institution
+      ? account.mask
+        ? `${account.institution} ···· ${account.mask}`
+        : account.institution
+      : typeLabel(account.type);
+
+  return (
+    <div className="flex items-center gap-3 py-3">
+      <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 border border-[var(--border-hairline)] bg-[var(--surface-muted)]">
+        <AccountIcon type={account.type} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-[var(--text-secondary)] leading-snug truncate">{account.name}</p>
+        <p className="text-xs text-[var(--text-muted)] mt-0.5 truncate">{subline}</p>
+      </div>
+    </div>
+  );
+}
+
+function AccountsTracked({ accounts }: { accounts: TrackedAccount[] }) {
+  if (accounts.length === 0) {
+    return (
+      <div className="py-10 text-center">
+        <p className="text-sm text-[var(--text-muted)]">No accounts are being tracked yet.</p>
+      </div>
+    );
+  }
+  return (
+    <>
+      <p className="text-xs text-[var(--text-muted)] mb-1">
+        {accounts.length} distinct {accounts.length === 1 ? "account" : "accounts"} tracked across your Spaces.
+      </p>
+      <div className="flex flex-col divide-y divide-[var(--border-hairline)]">
+        {accounts.map(a => (
+          <AccountRow key={a.id} account={a} />
+        ))}
+      </div>
+    </>
+  );
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 interface SinceLastVisitModalProps {
@@ -140,9 +220,14 @@ interface SinceLastVisitModalProps {
 }
 
 export function SinceLastVisitModal({ open, onClose, section }: SinceLastVisitModalProps) {
-  const [activeRange, setActiveRange] = useState<RangeId>("current");
-  const activeRangeMeta = RANGES.find(r => r.id === activeRange)!;
-  const items = section.items ?? [];
+  const [activeTab, setActiveTab] = useState<TabId>("netWorth");
+  const activeTabMeta = TABS.find(t => t.id === activeTab)!;
+  // Net Worth tab shows only net-worth rows — never Accounts Tracked or Space
+  // invites. Those are surfaced in their own tabs (or reserved for future ones).
+  const netWorthItems   = (section.items ?? []).filter(
+    item => item.id === "nw_delta" || item.id === "nw_current",
+  );
+  const trackedAccounts = section.trackedAccounts ?? [];
 
   return (
     <BriefModal
@@ -152,25 +237,27 @@ export function SinceLastVisitModal({ open, onClose, section }: SinceLastVisitMo
       wide
       headerRight={
         <InlineFilter
-          aria-label="Time range"
-          options={RANGES.map(r => ({ id: r.id, label: r.label }))}
-          value={activeRange}
-          onChange={setActiveRange}
+          aria-label="Detail view"
+          options={TABS.map(t => ({ id: t.id, label: t.label }))}
+          value={activeTab}
+          onChange={setActiveTab}
         />
       }
     >
-      {/* Content — rows sit directly on the modal's glass, no nested card */}
-      {!activeRangeMeta.hasData ? (
-        <ComingSoonState label={activeRangeMeta.label} />
+      {activeTabMeta.kind === "reserved" ? (
+        <ComingSoonState label={activeTabMeta.label} />
+      ) : activeTab === "accounts" ? (
+        <AccountsTracked accounts={trackedAccounts} />
       ) : (
+        // Net Worth tab — net-worth rows only.
         <>
-          {items.length === 0 ? (
+          {netWorthItems.length === 0 ? (
             <div className="py-10 text-center">
-              <p className="text-sm text-[var(--text-muted)]">No activity recorded since your last visit.</p>
+              <p className="text-sm text-[var(--text-muted)]">No net worth changes since your last visit.</p>
             </div>
           ) : (
             <div className="flex flex-col">
-              {items.map(item => (
+              {netWorthItems.map(item => (
                 <SummaryItem
                   key={item.id}
                   id={item.id}
@@ -183,7 +270,6 @@ export function SinceLastVisitModal({ open, onClose, section }: SinceLastVisitMo
             </div>
           )}
 
-          {/* Footer note */}
           <p className="text-xs text-[var(--text-muted)] mt-8 text-center">
             Showing changes since your last Daily Brief visit.
           </p>

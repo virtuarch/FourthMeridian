@@ -53,6 +53,7 @@ import type {
   BriefTone,
   VisitState,
   FinancialMapData,
+  TrackedAccount,
 } from "@/lib/brief-types";
 
 // ── Formatting helpers (unchanged) ────────────────────────────────────────────
@@ -148,10 +149,11 @@ function buildOnboarding(): BriefSection {
  * When no trend data exists, only the current value is shown.
  */
 function buildSinceLastVisit(
-  primaryCtx:     SpaceContext_AI,
-  totalAccounts:  number,
-  lastViewedAt:   Date | null,
-  pendingInvites: number,
+  primaryCtx:      SpaceContext_AI,
+  totalAccounts:   number,
+  lastViewedAt:    Date | null,
+  pendingInvites:  number,
+  trackedAccounts: TrackedAccount[],
 ): BriefSection | null {
   const acct = accounts(primaryCtx);
   const snap  = snapshot(primaryCtx);
@@ -207,6 +209,7 @@ function buildSinceLastVisit(
     priority: 10,
     title:    sinceLabel(lastViewedAt),
     items,
+    trackedAccounts,
   };
 }
 
@@ -534,6 +537,26 @@ export async function GET() {
     successfulContexts.flatMap((c) => accounts(c)?.accountIds ?? []),
   ).size;
 
+  // ── Cross-Space distinct account roster ("Accounts Tracked" tab) ───────────
+  // Flatten each Space's privacy-safe roster and deduplicate by
+  // FinancialAccount.id so an account shared into multiple Spaces appears once.
+  // When the same account is visible at different levels across Spaces, keep the
+  // highest-visibility copy (FULL > BALANCE_ONLY > SUMMARY_ONLY). The resulting
+  // length equals totalAccountCount by construction (same ids, deduped).
+  const VISIBILITY_RANK: Record<TrackedAccount["visibility"], number> = {
+    FULL: 3, BALANCE_ONLY: 2, SUMMARY_ONLY: 1,
+  };
+  const trackedById = new Map<string, TrackedAccount>();
+  for (const c of successfulContexts) {
+    for (const a of accounts(c)?.trackedAccounts ?? []) {
+      const existing = trackedById.get(a.id);
+      if (!existing || VISIBILITY_RANK[a.visibility] > VISIBILITY_RANK[existing.visibility]) {
+        trackedById.set(a.id, a);
+      }
+    }
+  }
+  const trackedAccounts: TrackedAccount[] = [...trackedById.values()];
+
   // ── Pending Space invites (non-financial query) ────────────────────────────
   const pendingInviteCount = await db.spaceInvite.count({
     where: { invitedUserId: user.id, status: "PENDING" },
@@ -563,6 +586,7 @@ export async function GET() {
       totalAccountCount,
       lastViewedAt,
       pendingInviteCount,
+      trackedAccounts,
     );
     if (sinceSection) sections.push(sinceSection);
 
