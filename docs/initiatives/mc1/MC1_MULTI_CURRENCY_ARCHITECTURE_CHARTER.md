@@ -1,7 +1,7 @@
 # MC1 — Multi-Currency Architecture — Initiative Charter
 
 **Status:** APPROVED (planning; no implementation yet) · 🏛️ **foundational architecture initiative**
-**Approved:** 2026-07-03
+**Approved:** 2026-07-03 · **Amended 2026-07-05:** the phase structure below is superseded by the approved 5-phase roadmap — `docs/initiatives/mc1/MC1_MULTI_CURRENCY_ROADMAP.md` (see the amendment note at §"Approved implementation order") · **Phase 0 delivered 2026-07-05** (`298ef56` → `bf53507` + closeout; see `MC1_PHASE0_CLOSEOUT_REPORT_2026-07-05.md`)
 **Track/ID:** `MC1` — first initiative on the new **`MC-x` (multi-currency / money-model)** track. Allocated per the STATUS.md §4 namespace rule (track prefix + number, folder created at allocation so the ID cannot be squatted). Deliberately *not* a frozen matrix integer (D1–D14 are frozen per `PHASE_2_DECISION_MATRIX.md`) and *not* an `AI-x`/`UI-x`/`L-x` slot.
 **Queue position:** a long-term architectural initiative that **follows** the D2.x Initial Sync Experience work and the Snapshot Backfill initiative, and **precedes** future provider expansion (Coinbase, Kraken, Interactive Brokers, Schwab, Fidelity, richer CSV imports, wallet providers). This is **not** a v2.5 deliverable.
 **Evidence / source:** `docs/investigations/MULTI_CURRENCY_ARCHITECTURE_INVESTIGATION.md` (authoritative design input — completed and approved).
@@ -46,6 +46,8 @@ Provenance (which currency a number is in) is stamped in Phase 0 and is irrevers
 
 ## Approved implementation order
 
+> **Amended 2026-07-05 — the 8-phase outline below is SUPERSEDED** by the approved 5-phase structure in `MC1_MULTI_CURRENCY_ROADMAP.md` (§2 there maps old→new): **0** currency provenance (unchanged — provenance only: `Transaction.currency`, `Holding.currency`, `SpaceSnapshot.reportingCurrency`, writer stamping, backfill; no FX conversion, no UI, no normalized values) → **1** FX provider layer (rate archive + deterministic service) → **2** read-time conversion via a shared money service → **3** Space/User reporting currency → **4** currency selector & UX. **Recorded revision to decision #2 above:** read-time conversion over an immutable dated rate archive is preferred over Option B's write-time normalized columns for now (normalized columns stay available later as an additive cache); conversion must never mutate stored financial facts; snapshots remain frozen computed totals stamped with `reportingCurrency`. Historical FX remains a core capability (delivered by the Phase 1 archive); FX P&L (realized/unrealized) is a future capability gated on a cost-basis/lot model, outside MC1. Old phases 4–6 are absorbed into the new Phase 4 or parked as optional enhancements; old phase 7 (provider expansion) moves out of MC1 to the provider track. The table below is retained as historical record only.
+
 | Phase | Scope | Schema |
 |---|---|---|
 | **0** | **Currency provenance.** Stamp currency onto transactions, holdings, and snapshots (Plaid already sends `iso_currency_code` for transactions and holdings; it is currently dropped). All default `USD`; zero behavior change. Eliminates the only irreversible migration risk. | Additive (currency-stamp columns); planned separately, not in this charter |
@@ -60,7 +62,7 @@ Provenance (which currency a number is in) is stamped in Phase 0 and is irrevers
 ## Dependencies
 
 - **D2.x — Initial Sync Experience & Historical Pipeline** — MC1 follows this work; it should not compete with the v2.5 flagship onboarding initiative.
-- **Snapshot Backfill initiative** — MC1's snapshot evolution (Phase 4) builds on the backfill's additive snapshot provenance (`SpaceSnapshot.source`/`isEstimated`); currency provenance on snapshots is a sibling of that provenance work.
+- **Snapshot Backfill initiative** — MC1's snapshot work builds on the backfill's additive snapshot provenance (`SpaceSnapshot.isEstimated` — *erratum fixed 2026-07-05: an earlier version of this line cited a `SpaceSnapshot.source` column that does not exist*); currency provenance on snapshots is a sibling of that provenance work.
 - **Future provider initiatives depend on MC1**, not the reverse. Provider expansion (Coinbase, Kraken, Interactive Brokers, Schwab, Fidelity, CSV, wallets) should build on the currency architecture rather than precede it.
 
 ## Open decisions requiring approval before their phase
