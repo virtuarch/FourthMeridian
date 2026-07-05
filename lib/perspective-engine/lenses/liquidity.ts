@@ -18,6 +18,8 @@
  */
 
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
+import { buildSpaceConversionContextById } from "@/lib/money/server-context";
+import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import { registerLens } from "../registry";
 import type { ComputeOptions, LensResult, PerspectiveScope } from "../types";
 import { computeLiquidity, type LiquidityAccountRow } from "./liquidity.core";
@@ -37,12 +39,26 @@ async function liquidityLens(
     id:              account.id,
     type:            account.type,
     balance:         account.balance,
+    // MC1 P3 Slice 5 — native currency rides along (non-identifying; the
+    // privacy contract of this boundary is about names/institutions).
+    currency:        account.currency ?? null,
     creditLimit:     account.creditLimit ?? undefined,
     lastUpdated:     account.lastUpdated,
     visibilityLevel: visibilityLevel as string,
   }));
 
-  return computeLiquidity(scope, options, lensRows);
+  // MC1 Phase 3 Slice 5 — THE LENS FLIP (F-3). Real space context, valued at
+  // the latest close relative to the engine's injected clock (matching the
+  // core's derivation exactly). All-USD Spaces are numerically identical to
+  // the raw-addition behavior. The by-id helper keeps @/lib/db out of this
+  // adapter (its test tripwires pin the KD-19-only read path) and degrades
+  // to identity if the Space row vanished mid-request.
+  const ctx = await buildSpaceConversionContextById(scope.spaceId, {
+    currencies: lensRows.map((r) => r.currency ?? null),
+    dates:      [minusDaysISO(toISODateUTC(options.now()), 1)],
+  });
+
+  return computeLiquidity(scope, options, lensRows, ctx);
 }
 
 registerLens("liquidity", liquidityLens);

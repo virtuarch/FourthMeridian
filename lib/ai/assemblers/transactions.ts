@@ -76,6 +76,7 @@ import type {
 import { normalizeMerchant } from '@/lib/transactions/merchant';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { convertMoney, identityContext } from '@/lib/money/convert';
+import { buildSpaceConversionContext } from '@/lib/money/server-context';
 import type { ConversionContext } from '@/lib/money/types';
 import type { SpaceContext } from '@/lib/space';
 
@@ -203,12 +204,13 @@ type TxnRow = {
  * preserved by positive rates, so sign-partitioned accumulators (debit vs
  * credit, source-side legs) partition identically.
  */
-function amountInTarget(txn: TxnRow, ctx: ConversionContext): number {
-  return convertMoney(
+function amountInTarget(txn: TxnRow, ctx: ConversionContext): { amount: number; estimated: boolean } {
+  const c = convertMoney(
     { amount: txn.amount, currency: txn.currency },
     txn.date.toISOString().slice(0, 10),
     ctx,
-  ).amount;
+  );
+  return { amount: c.amount, estimated: c.estimated };
 }
 
 // ---------------------------------------------------------------------------
@@ -304,11 +306,27 @@ async function assembleTransactions(
 
   // ── Cash flow aggregation (settled only) ──────────────────────────────────
 
-  // MC1 Phase 2 Slice 4 — the money context for every accumulator in this
-  // assembler. Identity (target = USD) in Phase 2: byte-identical totals, NO
-  // AI behavior change; the lib/ai/types.ts "summed without conversion" notes
-  // remain true until the MC1 Phase 3 flip swaps a real target in here.
-  const moneyCtx = identityContext(DEFAULT_DISPLAY_CURRENCY);
+  // MC1 Phase 3 Slice 4 — THE AI FLIP (plan seam #4). One real space context
+  // for every accumulator in this assembler, prefetched over each fetched
+  // row's OWN transaction date (historical FX per row, plan D-6). All-USD
+  // Spaces are numerically identical to the Phase 2 identity behavior
+  // (equivalence gates); unresolvable rows degrade per D-3 (native +
+  // estimated) and taint the summary's `estimated` flag — data-only, no
+  // prompt/serializer change (presentation is Phase 4). Identity fallback
+  // only if the Space row vanished mid-request.
+  const spaceRow = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
+  });
+  const moneyCtx = spaceRow
+    ? await buildSpaceConversionContext(spaceRow, {
+        currencies: rows.map((r) => r.currency),
+        dates:      [...new Set(rows.map((r) => r.date.toISOString().slice(0, 10)))],
+      })
+    : identityContext(DEFAULT_DISPLAY_CURRENCY);
+
+  // MC1 P3 Slice 4 (D-7) — window-level taint, mirrors the monthly buckets.
+  let windowEstimated = false;
 
   let incomeTotal      = 0;
   let expenseTotal     = 0;
@@ -331,8 +349,11 @@ async function assembleTransactions(
 
   for (const txn of settled) {
     // MC1 Phase 2 Slice 4 — one converted amount per row drives every
-    // accumulator and comparison below (identity in Phase 2 ⇒ amt === txn.amount).
-    const amt = amountInTarget(txn, moneyCtx);
+    // accumulator and comparison below; MC1 P3 Slice 4 — the same conversion
+    // carries the estimated taint into the window flag.
+    const conv = amountInTarget(txn, moneyCtx);
+    const amt = conv.amount;
+    if (conv.estimated) windowEstimated = true;
 
     // Category bucket accumulator
     const entry = categoryMap.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
@@ -399,7 +420,10 @@ async function assembleTransactions(
   let pendingDebitTotal  = 0;
 
   for (const txn of pending) {
-    const amt = amountInTarget(txn, moneyCtx); // MC1 P2 Slice 4 (identity today)
+    // MC1 P2 Slice 4 threading; P3 Slice 4 real context + taint.
+    const conv = amountInTarget(txn, moneyCtx);
+    const amt = conv.amount;
+    if (conv.estimated) windowEstimated = true;
     if (amt > 0) {
       pendingCreditCount++;
       pendingCreditTotal += amt;
@@ -676,6 +700,7 @@ async function assembleTransactions(
     debtPaymentTotal: Math.round(debtPaymentTotal * 100) / 100,
     transferTotal:    Math.round(transferTotal    * 100) / 100,
     netCashFlow:      Math.round(netCashFlow      * 100) / 100,
+    estimated:        windowEstimated, // MC1 P3 Slice 4 (D-7) — data-only until Phase 4
 
     pendingCreditCount,
     pendingCreditTotal: Math.round(pendingCreditTotal * 100) / 100,
@@ -812,6 +837,9 @@ export function buildMonthlyBreakdown(
     debtPaymentTotal: number;
     transferTotal:    number;
     transactionCount: number;
+    // MC1 Phase 3 Slice 2 (D-7) — any converted row in this month was
+    // estimated (walk-back / miss / null-residue). False without a context.
+    estimated:        boolean;
     // KD-17: per-category debit sum + credit sum + settled row count, mirroring
     // the top-level byCategory (debit-only `total`, credits disclosed
     // separately — never a signed net). count mirrors CategorySpend.count.
@@ -825,7 +853,7 @@ export function buildMonthlyBreakdown(
     if (!b) {
       b = {
         incomeTotal: 0, expenseTotal: 0, refundTotal: 0, debtPaymentTotal: 0,
-        transferTotal: 0, transactionCount: 0, categoryAgg: new Map(),
+        transferTotal: 0, transactionCount: 0, estimated: false, categoryAgg: new Map(),
       };
       buckets.set(key, b);
     }
@@ -835,8 +863,14 @@ export function buildMonthlyBreakdown(
   // Settled rows drive money totals + category sums (same rules as the main loop).
   for (const txn of settled) {
     // MC1 Phase 2 Slice 4 — per-row target amount (native when no ctx).
-    const amt = ctx ? amountInTarget(txn, ctx) : txn.amount;
+    // MC1 Phase 3 Slice 2 — the same conversion carries the estimated taint (D-7).
     const b = bucketFor(monthKey(txn.date));
+    let amt = txn.amount;
+    if (ctx) {
+      const c = amountInTarget(txn, ctx);
+      amt = c.amount;
+      if (c.estimated) b.estimated = true;
+    }
     b.transactionCount += 1;
     const agg = b.categoryAgg.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
     if (amt < 0) agg.debitTotal += Math.abs(amt);
@@ -909,6 +943,7 @@ export function buildMonthlyBreakdown(
         debtPaymentTotal: Math.round(b.debtPaymentTotal * 100) / 100,
         transferTotal:    Math.round(b.transferTotal    * 100) / 100,
         transactionCount: b.transactionCount,
+        estimated:        b.estimated, // MC1 P3 Slice 2 (D-7) — always emitted, rendered nowhere yet
         ...(partial ? { partial: true } : {}),
         ...(monthTruncated ? { truncated: true } : {}),
         byCategory,

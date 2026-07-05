@@ -51,9 +51,15 @@ export interface DebtPaymentTxnLike {
  * positive rates, |convert(x)| === convert(|x|), so the abs-sum shape of the
  * rollups is preserved; under identity it is exactly the native |amount|.
  */
-function rowAmount(t: DebtPaymentTxnLike, ctx?: ConversionContext): number {
+function rowAmount(
+  t: DebtPaymentTxnLike,
+  ctx?: ConversionContext,
+  flag?: { estimated: boolean },
+): number {
   if (!ctx) return t.amount;
-  return convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.dateISO ?? "", ctx).amount;
+  const c = convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.dateISO ?? "", ctx);
+  if (c.estimated && flag) flag.estimated = true; // MC1 P3 Slice 2 — taint (D-7)
+  return c.amount;
 }
 
 /**
@@ -79,6 +85,12 @@ export interface DebtPaymentRollupEntry {
   accountId: string;
   total: number;
   count: number;
+  /**
+   * MC1 Phase 3 Slice 2 (plan D-7) — true when any converted row in this
+   * entry was estimated (walk-back / miss / null-residue). Always emitted;
+   * false on the context-less path. Rendered nowhere until Phase 4.
+   */
+  estimated: boolean;
 }
 
 /**
@@ -96,11 +108,13 @@ export function rollupDebtPaymentsByAccount(
     if (t.flowType !== 'DEBT_PAYMENT') continue;
     let entry = byAccount.get(t.accountId);
     if (!entry) {
-      entry = { accountId: t.accountId, total: 0, count: 0 };
+      entry = { accountId: t.accountId, total: 0, count: 0, estimated: false };
       byAccount.set(t.accountId, entry);
     }
-    entry.total += Math.abs(rowAmount(t, ctx));
+    const flag = { estimated: false };
+    entry.total += Math.abs(rowAmount(t, ctx, flag));
     entry.count += 1;
+    if (flag.estimated) entry.estimated = true;
   }
   return [...byAccount.values()].sort((a, b) => b.total - a.total);
 }

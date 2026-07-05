@@ -30,8 +30,7 @@
 
 import { db } from "@/lib/db";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { identityContext } from "@/lib/money/convert";
+import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { ShareStatus } from "@prisma/client";
 import {
   reconstructDailyCashBalances,
@@ -124,6 +123,8 @@ export async function backfillSpaceSnapshots(
       financialAccount: {
         select: {
           id: true, type: true, balance: true, createdAt: true,
+          // MC1 Phase 3 Slice 3 — conversion input for the real space context.
+          currency: true,
           // Slice 4B — used only to gate credit-card reconstruction.
           debtSubtype: true, creditLimit: true,
         },
@@ -136,6 +137,7 @@ export async function backfillSpaceSnapshots(
     id:          l.financialAccount.id,
     type:        l.financialAccount.type as string,
     balance:     l.financialAccount.balance,
+    currency:    l.financialAccount.currency, // MC1 P3 Slice 3 — conversion input
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
   }));
@@ -223,14 +225,33 @@ export async function backfillSpaceSnapshots(
   const dailyCardDebt = reconstructDailyLiabilityBalances(cardAccounts, deltaByCardDay, today, effectiveStart);
 
   // Build one row per reconstructed day (today already excluded by the core).
-  // reportingCurrency (MC1 Phase 0 Slice 2): reconstructed rows declare their
-  // computation currency exactly like live rows — same explicit stamp as
-  // lib/snapshots/regenerate.ts. Behavior-neutral: always "USD" today.
+  // reportingCurrency (MC1 Phase 3 Slice 3, F-2): reconstructed rows stamp the
+  // Space's reporting currency — the SAME value the conversion context below
+  // targets, read once, atomically. isEstimated keeps its D2.x reconstruction
+  // meaning (approved D-7): currency estimation is not written to snapshots.
   const rows: Array<{
     spaceId: string; date: Date; isEstimated: true; reportingCurrency: string;
     stocks: number; crypto: number; total: number; cash: number; savings: number;
     debt: number; netWorth: number; totalAssets: number; netLiquid: number; cashOnHand: number;
   }> = [];
+
+  // MC1 Phase 3 Slice 3 — THE BACKFILL FLIP (plan seams #2). One real space
+  // context prefetched over EVERY reconstructed day, so each historical day
+  // converts at ITS OWN day's rate (historical FX per day — finding §1.4).
+  // Days beyond archive depth resolve as misses → native + estimated per D-3,
+  // on rows that are already isEstimated by construction. All-USD Spaces take
+  // the identity fast path throughout (numerically identical to Phase 2).
+  const space = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
+  });
+  if (!space) return 0; // space vanished mid-call — nothing to backfill
+
+  const reconstructedDates = [...dailyCash.keys()].filter((dISO) => !existingDates.has(dISO));
+  const ctx = await buildSpaceConversionContext(space, {
+    currencies: accounts.map((a) => a.currency ?? null),
+    dates:      reconstructedDates,
+  });
 
   for (const [dISO, cashMap] of dailyCash) {
     // Never touch a date that already has a row (LIVE today, or any prior live
@@ -250,11 +271,10 @@ export async function backfillSpaceSnapshots(
       });
     if (dayAccounts.length === 0) continue;
 
-    // MC1 Phase 2 Slice 3 — identity context, same seam as regenerate.ts
-    // (byte-identical totals; Phase 3 swaps in the real target).
-    const c = classifyAccounts(dayAccounts, identityContext(DEFAULT_DISPLAY_CURRENCY));
+    // Historical valuation: day d's balances convert at day d's rate.
+    const c = classifyAccounts(dayAccounts, ctx, dISO);
     const fields = computeSnapshotFields(c);
-    rows.push({ spaceId, date: d, isEstimated: true, reportingCurrency: DEFAULT_DISPLAY_CURRENCY, ...fields });
+    rows.push({ spaceId, date: d, isEstimated: true, reportingCurrency: space.reportingCurrency, ...fields });
   }
 
   if (rows.length === 0) return 0;

@@ -135,6 +135,12 @@ export interface Transaction {
   category: TransactionCategory;
   amount: number;         // positive = credit (money in), negative = debit (money out)
   pending: boolean;
+  /**
+   * MC1 Phase 3 Slice 4 — native currency of `amount` (Phase 0 provenance
+   * stamp; null = pre-provenance residue). Additive: populated by the debt
+   * read for the per-liability rollup's conversion; other reads may omit it.
+   */
+  currency?: string | null;
 
   // FlowType metadata (v2.5.5 P5 Slice 1 — additive read plumbing only).
   // Nothing consumes these yet; all category/sign logic is unchanged. Null for

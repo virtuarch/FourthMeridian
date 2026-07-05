@@ -240,9 +240,13 @@ export interface KnowledgeGap {
 /**
  * Data payload for the 'accounts' context domain.
  *
- * All monetary values are in the Space's primary currency (USD unless the
- * majority of accounts differ). Mixed-currency balances are summed without
- * conversion — a known limitation until multi-currency support lands.
+ * All monetary TOTALS are converted at read time into the Space's reporting
+ * currency (Space.reportingCurrency; MC1 Phase 3 — the assembler builds a
+ * real conversion context over the immutable FX archive). Per-account rows
+ * keep their native currency. Unresolvable conversions (missing rate,
+ * null-residue provenance) degrade to the native amount and taint
+ * `totalsEstimated` — never excluded, never thrown. Presentation of the flag
+ * is Phase 4; it is data-only here.
  *
  * When assembled with scopeHint='brief', the `accounts` array is omitted
  * to reduce payload size for the Daily Brief aggregator.
@@ -262,6 +266,12 @@ export interface AccountsSectionData {
   totalInvestments:   number;
   totalDigitalAssets: number;
   totalRealAssets:    number;
+  /**
+   * MC1 Phase 3 Slice 4 (D-7) — true when any converted balance in the totals
+   * above was estimated (rate walked back / missing, or null-residue
+   * provenance). Data-only: no prompt or serializer consumes it until Phase 4.
+   */
+  totalsEstimated:    boolean;
   counts: {
     liquid:       number;
     investments:  number;
@@ -358,6 +368,13 @@ export interface MonthlyBreakdownEntry {
   debtPaymentTotal: number;
   transferTotal:    number;
   transactionCount: number; // settled + pending rows dated in this month
+  /**
+   * MC1 Phase 3 Slice 2 (D-7) — true when any converted row in this month was
+   * estimated (rate walked back / missing, or null-residue currency). Always
+   * emitted (false without a conversion context). Data-only until Phase 4 —
+   * no prompt, serializer, or UI consumes it yet.
+   */
+  estimated:        boolean;
   /** True when the window clips this month (partial coverage). */
   partial?:         boolean;
   /**
@@ -570,6 +587,12 @@ export interface TransactionsSummaryData {
   transferTotal:     number;
   /** incomeTotal + refundTotal − expenseTotal − debtPaymentTotal (D-4; excludes transfers). */
   netCashFlow:       number;
+  /**
+   * MC1 Phase 3 Slice 4 (D-7) — true when any converted row in the window
+   * totals above was estimated (rate walked back / missing, or null-residue
+   * provenance). Data-only until Phase 4.
+   */
+  estimated:         boolean;
 
   // ── Pending ─────────────────────────────────────────────────────────────
   pendingCreditCount: number;
@@ -693,9 +716,11 @@ export interface HoldingsConcentration {
  *
  * Deterministic, value-based investment intelligence computed from existing
  * Holding rows — no cost basis, no returns, no asset-class/sector data (see
- * `dataLimits`). All monetary values are in the Space's primary currency;
- * mixed-currency holdings are summed without conversion, matching the accounts
- * assembler's known limitation.
+ * `dataLimits`). Monetary values are denominated per the accounts domain's
+ * MC1 Phase 3 contract (totals in the Space's reporting currency; per-row
+ * values native). NOTE: this holdings assembler itself still sums raw values
+ * (not yet threaded through the conversion seam — recorded as a Phase 3
+ * closeout finding alongside F-3); all-USD data is unaffected.
  *
  * ── Visibility model (mirrors lib/ai/assemblers/accounts.ts) ─────────────────
  * Aggregate value totals (totalPortfolioValue, investedValue, cashValue,

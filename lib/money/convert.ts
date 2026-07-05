@@ -25,6 +25,7 @@
  * prefetch) and are consumed in anger by Phase 3.
  */
 
+import type { Resolution } from "@/lib/fx/types";
 import type { ConversionContext, ConvertedMoney, ConvertedTotal, DatedMoney, Money } from "./types";
 
 /**
@@ -93,4 +94,60 @@ export function convertAndSum(items: readonly DatedMoney[], ctx: ConversionConte
     estimated = estimated || c.estimated;
   }
   return { amount, currency: ctx.target, estimated };
+}
+
+// ─── Serialization (MC1 Phase 3 Slice 2, plan D-6) ────────────────────────────
+// Client surfaces cannot call the rate service (Phase 2 finding §1.1). Server
+// pages build a real context, materialize it into a plain JSON payload, and
+// pass it as a prop; the client rehydrates a behaviorally identical context
+// with this pure, dependency-free pair. All-USD Spaces serialize an EMPTY
+// entry table (identity/pass-through branches never call resolve()).
+
+/** Plain-JSON form of a ConversionContext: the target plus materialized resolutions. */
+export interface SerializedConversionContext {
+  target:  string;
+  entries: Record<string, Resolution>; // key: "from|dateISO"
+}
+
+const entryKey = (from: string, dateISO: string): string => `${from}|${dateISO}`;
+
+/**
+ * Materialize a context for transport. `currencies`/`dates` enumerate the
+ * pairs the client will need (same inputs the server used to build the
+ * context); the target itself and nulls are skipped — identity and
+ * null-residue never reach resolve(), so an all-USD Space with target USD
+ * produces `entries: {}`. Deterministic: same context + same pair lists ⇒
+ * byte-identical payload (key order follows the input lists).
+ */
+export function serializeContext(
+  ctx: ConversionContext,
+  currencies: readonly (string | null)[],
+  dates: readonly string[],
+): SerializedConversionContext {
+  const entries: Record<string, Resolution> = {};
+  const from = [...new Set(currencies.filter((c): c is string => c != null && c !== ctx.target))];
+  const uniqueDates = [...new Set(dates)];
+  for (const f of from) {
+    for (const d of uniqueDates) {
+      entries[entryKey(f, d)] = ctx.resolve(f, d);
+    }
+  }
+  return { target: ctx.target, entries };
+}
+
+/**
+ * Rebuild a synchronous ConversionContext from its serialized form. Pure and
+ * client-safe; frozen like the server-built original; unserialized pairs
+ * resolve to a deterministic RateMiss (⇒ native + estimated downstream) —
+ * identical semantics to an unprefetched pair on the server (plan D-6:
+ * "identical behavior after rehydration").
+ */
+export function rehydrateContext(s: SerializedConversionContext): ConversionContext {
+  const entries = s.entries;
+  return Object.freeze({
+    target: s.target,
+    resolve(from: string, dateISO: string): Resolution {
+      return entries[entryKey(from, dateISO)] ?? { kind: "miss", quote: from, requestedDateISO: dateISO };
+    },
+  });
 }

@@ -83,6 +83,9 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
     category:    r.category as Transaction["category"],
     amount:      r.amount,
     pending:     r.pending,
+    // MC1 Phase 3 Slice 6 — native currency for client-surface flow-total
+    // conversion (Phase 0 stamp; null = pre-provenance residue).
+    currency:    r.currency ?? null,
     // FlowType metadata (P5 Slice 1 — additive; consumed since P5 Slice 2 by the
     // Banking/Space flow totals, and downstream by the Slice 3 debt rollup).
     flowType:                 r.flowType ?? null,
@@ -121,6 +124,9 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
     category:    r.category as Transaction["category"],
     amount:      r.amount,
     pending:     r.pending,
+    // MC1 Phase 3 Slice 4 — native currency for the per-liability rollup's
+    // conversion (Phase 0 stamp; null = pre-provenance residue).
+    currency:    r.currency ?? null,
     // FlowType metadata (P5 Slice 1 — additive; consumed since P5 Slice 2 by the
     // Banking/Space flow totals, and downstream by the Slice 3 debt rollup).
     flowType:                 r.flowType ?? null,

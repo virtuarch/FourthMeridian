@@ -7,6 +7,8 @@ import { PortfolioHistoryChart, ChartSeries } from "@/components/charts/Portfoli
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
 import { Search, X, Check, Building2, Landmark, CreditCard, ChevronDown } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
 import { formatDate } from "@/lib/format";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
@@ -83,10 +85,36 @@ interface Props {
   transactions:     Transaction[];
   portfolioHistory: PortfolioHistoryPoint[];
   preselectedId:    string | null;
+  /**
+   * MC1 Phase 3 Slice 6 (F-1, D-6) — serialized Space conversion context from
+   * the server page. Optional: absent => context-less native sums (kill switch).
+   */
+  moneyCtx?:        SerializedConversionContext;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export function BankingClient({ accounts, transactions, portfolioHistory, preselectedId }: Props) {
+export function BankingClient({ accounts, transactions, portfolioHistory, preselectedId, moneyCtx }: Props) {
+  // MC1 P3 Slice 6 — rehydrated once. Balances value at the latest close;
+  // transaction rows convert at their own dates. Identical math when absent
+  // or for all-USD Spaces.
+  const conversionCtx = useMemo(
+    () => (moneyCtx ? rehydrateContext(moneyCtx) : undefined),
+    [moneyCtx],
+  );
+  const balanceInTarget = useCallback(
+    (a: Account): number =>
+      conversionCtx
+        ? convertMoney({ amount: a.balance, currency: a.currency ?? null }, yesterdayUTCISO(), conversionCtx).amount
+        : a.balance,
+    [conversionCtx],
+  );
+  const txAmount = useCallback(
+    (t: Transaction): number =>
+      conversionCtx
+        ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, conversionCtx).amount
+        : t.amount,
+    [conversionCtx],
+  );
   const [chartSlice, setChartSlice]               = useState<BankingSlice>("cash");
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(preselectedId);
   const [timeFilter, setTimeFilter]               = useState<TimeFilter>("all");
@@ -133,9 +161,9 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
     return order.map((inst) => ({ institution: inst, accounts: groups[inst] }));
   }, [accounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const totalCash  = [...checking, ...savings].reduce((s, a) => s + a.balance, 0);
+  const totalCash  = [...checking, ...savings].reduce((s, a) => s + balanceInTarget(a), 0);
   // Net debt: positive balances = you owe, negative = bank owes you (credit). Sum gives net owed.
-  const totalDebt  = debt.reduce((s, a) => s + a.balance, 0);
+  const totalDebt  = debt.reduce((s, a) => s + balanceInTarget(a), 0);
   const netLiquid  = totalCash - totalDebt;
 
   // ── Transaction filtering ────────────────────────────────────────────────
@@ -168,14 +196,14 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
   // are excluded from both. JSX/labels/colors below are unchanged.
   const grossSpend = filteredTxs
     .filter((t) => t.flowType != null && FLOW_COST.has(t.flowType))
-    .reduce((s, t) => s + Math.abs(t.amount), 0);
+    .reduce((s, t) => s + Math.abs(txAmount(t)), 0);
   const spendRefunds = filteredTxs
     .filter((t) => t.flowType === "REFUND")
-    .reduce((s, t) => s + Math.abs(t.amount), 0);
+    .reduce((s, t) => s + Math.abs(txAmount(t)), 0);
   const totalSpend = Math.max(0, grossSpend - spendRefunds);
   const totalCredit = filteredTxs
     .filter((t) => t.flowType === "INCOME")
-    .reduce((s, t) => s + Math.abs(t.amount), 0);
+    .reduce((s, t) => s + Math.abs(txAmount(t)), 0);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   const acctName = (id: string) => accounts.find((a) => a.id === id)?.name ?? id;
@@ -267,7 +295,7 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
 
         {institutionGroups.map(({ institution, accounts: accts }) => {
           const isOpen    = !collapsed[institution];
-          const instTotal = accts.reduce((s, a) => s + a.balance, 0);
+          const instTotal = accts.reduce((s, a) => s + balanceInTarget(a), 0); // MC1 P3 Slice 6 — aggregate, converted
           const netPos    = instTotal >= 0;
           const newestSync = accts.reduce((best, a) => (a.lastUpdated > best ? a.lastUpdated : best), accts[0].lastUpdated);
           const syncLabel  = formatDate(newestSync);

@@ -40,10 +40,18 @@
  *                liquidity and never in the headline or verdict sums
  * Balances are used as last reported (the data layer does not expose
  * availableBalance; stated as an assumption). Sums mirror the dashboard's
- * classifyAccounts() behavior — raw addition, no FX conversion.
+ * classifyAccounts() behavior: raw addition on the context-less kill-switch
+ * path, and — MC1 Phase 3 Slice 5 (F-3) — per-row conversion into the
+ * Space's reporting currency when a ConversionContext is supplied, valuing
+ * at the latest close relative to the injected clock (options.now(), so the
+ * module stays pure). Unresolvable rows degrade per plan D-3 (native amount,
+ * `estimated` taint on the result — data-only until Phase 4).
  */
 
 import { formatCurrency } from "@/lib/format";
+import { convertMoney } from "@/lib/money/convert";
+import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
 import type {
   ComputeOptions,
   LensAssumption,
@@ -79,6 +87,13 @@ export interface LiquidityAccountRow {
   /** AccountType string: checking | savings | investment | crypto | debt | other */
   type:    string;
   balance: number;
+  /**
+   * MC1 Phase 3 Slice 5 — native currency of `balance`/`creditLimit` (Phase 0
+   * provenance; non-identifying, so it does not weaken the privacy contract).
+   * Only consulted when a ConversionContext is supplied; absent/null is the
+   * null-residue case (native pass-through + estimated, plan D-3).
+   */
+  currency?: string | null;
   /** Present only on FULL rows (withheld otherwise by the data layer). */
   creditLimit?: number;
   /** ISO timestamp of last balance write (Account.lastUpdated). */
@@ -97,8 +112,24 @@ export function computeLiquidity(
   scope:   PerspectiveScope,
   options: ComputeOptions,
   rows:    LiquidityAccountRow[],
+  // MC1 Phase 3 Slice 5 — optional conversion context (classifier pattern).
+  // Absent ⇒ the original raw addition, byte-for-byte (kill switch).
+  ctx?:    ConversionContext,
 ): LensResult {
   const computedAt = options.now().toISOString();
+
+  // Latest close relative to the INJECTED clock — keeps this module pure and
+  // fixture-deterministic (plan D-6 valuation rule for live balances).
+  const valuationDateISO = ctx ? minusDaysISO(toISODateUTC(options.now()), 1) : undefined;
+  const flag = { estimated: false };
+
+  /** Row amount in the context target (native + taint per D-3 when unresolvable). */
+  const inTarget = (amount: number, currency: string | null | undefined): number => {
+    if (!ctx) return amount;
+    const c = convertMoney({ amount, currency: currency ?? null }, valuationDateISO!, ctx);
+    if (c.estimated) flag.estimated = true;
+    return c.amount;
+  };
 
   const base = {
     lensId: "liquidity" as const,
@@ -143,11 +174,15 @@ export function computeLiquidity(
   let cashNow = 0, marketable = 0, illiquid = 0, credit = 0;
   let creditKnown = false;
   for (const r of contributing) {
-    if (CASH_TYPES.has(r.type))            cashNow    += r.balance;
-    else if (MARKETABLE_TYPES.has(r.type)) marketable += r.balance;
-    else if (ILLIQUID_TYPES.has(r.type))   illiquid   += r.balance;
+    if (CASH_TYPES.has(r.type))            cashNow    += inTarget(r.balance, r.currency);
+    else if (MARKETABLE_TYPES.has(r.type)) marketable += inTarget(r.balance, r.currency);
+    else if (ILLIQUID_TYPES.has(r.type))   illiquid   += inTarget(r.balance, r.currency);
     else if (r.type === "debt" && r.visibilityLevel === "FULL" && typeof r.creditLimit === "number") {
-      credit += Math.max(r.creditLimit - Math.abs(r.balance), 0);
+      // creditLimit and balance share the row's native currency, so the
+      // clamped headroom converts as one native amount (convert-then-clamp
+      // would be equivalent under positive rates; clamp-then-convert keeps
+      // the existing max() shape byte-identical without a context).
+      credit += inTarget(Math.max(r.creditLimit - Math.abs(r.balance), 0), r.currency);
       creditKnown = true;
     }
   }
@@ -246,6 +281,9 @@ export function computeLiquidity(
     verdict,
     headline,
     metrics,
+    // MC1 P3 Slice 5 (D-7) — emitted only when a context was supplied, so
+    // context-less results serialize byte-identically (kill switch).
+    ...(ctx ? { estimated: flag.estimated } : {}),
     assumptions,
     provenance: {
       accountIds,

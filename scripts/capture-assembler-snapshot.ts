@@ -78,6 +78,9 @@ async function main(): Promise<void> {
       type:     space.type,
       category: space.category,
       isPublic: space.isPublic,
+      // MC1 Phase 3 Slice 6 — SpaceContext gained the authoritative
+      // reporting currency; the snapshot harness mirrors the real resolver.
+      reportingCurrency: space.reportingCurrency,
     },
   };
 

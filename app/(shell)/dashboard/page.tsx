@@ -6,6 +6,8 @@ import { getRecentSnapshots }                          from "@/lib/data/snapshot
 import { getLatestAdvice }                             from "@/lib/data/advice";
 import { getDebtTransactions, getTransactions }        from "@/lib/data/transactions";
 import { getSpaceContext }                         from "@/lib/space";
+import { serializeSpaceConversionContext }        from "@/lib/money/server-context";
+import { yesterdayUTCISO }                         from "@/lib/fx/config";
 
 // Co-locate compute with the Singapore-region Supabase instance — see
 // lib/space.ts / perf audit notes. Applies to this page's serverless
@@ -49,6 +51,24 @@ export default async function DashboardPage() {
     getTransactions({ spaceId: ctx.spaceId }),
   ]);
 
+  // MC1 Phase 3 Slice 6 (F-1, D-6) — serialize the Space's conversion context
+  // for the client-side classify/flow math. Currencies and dates cover
+  // everything this client aggregates: account balances (latest close) plus
+  // every provided transaction row's own date. All-USD Spaces serialize an
+  // empty entry table (a few bytes; identical math).
+  const moneyCtx = await serializeSpaceConversionContext(ctx.space, {
+    currencies: [
+      ...accounts.map((a) => a.currency ?? null),
+      ...transactions.map((t) => t.currency ?? null),
+      ...debtTransactions.map((t) => t.currency ?? null),
+    ],
+    dates: [
+      yesterdayUTCISO(),
+      ...transactions.map((t) => t.date),
+      ...debtTransactions.map((t) => t.date),
+    ],
+  });
+
   return (
     <Suspense fallback={null}>
       <DashboardClient
@@ -65,6 +85,7 @@ export default async function DashboardPage() {
         ficoUpdatedAt={ficoData.updatedAt}
         debtTransactions={debtTransactions}
         transactions={transactions}
+        moneyCtx={moneyCtx}
       />
     </Suspense>
   );

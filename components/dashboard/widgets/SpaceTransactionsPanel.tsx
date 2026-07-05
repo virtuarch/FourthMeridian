@@ -18,6 +18,7 @@ import { Account, Transaction, TransactionCategory } from "@/types";
 import { DataCard } from "@/components/atlas/DataCard";
 import { Search, X } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
 const fmt = (n: number) =>
@@ -78,10 +79,30 @@ interface Props {
    *  structurally partial (FULL-visibility shares only) — e.g. "Showing
    *  transactions from fully shared accounts only". Omit on Personal. */
   scopeNote?:   string;
+  /**
+   * MC1 Phase 3 Slice 6 (F-1, D-6) — serialized Space conversion context.
+   * Optional: absent => context-less native sums (the kill switch; the
+   * SpaceDashboard client-fetched instance stays context-less for now —
+   * recorded as a Phase 3 closeout finding). Provided by DashboardClient.
+   */
+  moneyCtx?:    SerializedConversionContext;
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
-export function SpaceTransactionsPanel({ transactions, accounts, scopeNote }: Props) {
+export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, moneyCtx }: Props) {
+  // MC1 P3 Slice 6 — rehydrated once; per-row conversion at each row's own
+  // date (identical math for all-USD Spaces / absent context).
+  const conversionCtx = useMemo(
+    () => (moneyCtx ? rehydrateContext(moneyCtx) : undefined),
+    [moneyCtx],
+  );
+  const rowAmount = useCallback(
+    (t: Transaction): number =>
+      conversionCtx
+        ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, conversionCtx).amount
+        : t.amount,
+    [conversionCtx],
+  );
   const [search,        setSearch]        = useState("");
   const [catFilter,     setCatFilter]     = useState<TransactionCategory | null>(null);
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
@@ -147,14 +168,14 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote }: Pr
   // Transfers/debt payments/investments/adjustments/unknowns excluded from both.
   const grossSpend = filtered
     .filter((t) => t.flowType != null && FLOW_COST.has(t.flowType))
-    .reduce((s, t) => s + Math.abs(t.amount), 0);
+    .reduce((s, t) => s + Math.abs(rowAmount(t)), 0);
   const spendRefunds = filtered
     .filter((t) => t.flowType === "REFUND")
-    .reduce((s, t) => s + Math.abs(t.amount), 0);
+    .reduce((s, t) => s + Math.abs(rowAmount(t)), 0);
   const totalSpend = Math.max(0, grossSpend - spendRefunds);
   const totalIn = filtered
     .filter((t) => t.flowType === "INCOME")
-    .reduce((s, t) => s + Math.abs(t.amount), 0);
+    .reduce((s, t) => s + Math.abs(rowAmount(t)), 0);
 
   // ── Active filter chip helpers ─────────────────────────────────────────
   const selectedAccount = accountFilter ? accountMap.get(accountFilter) : null;

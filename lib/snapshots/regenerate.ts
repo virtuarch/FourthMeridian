@@ -35,8 +35,8 @@
 import { db } from "@/lib/db";
 import { getAccounts } from "@/lib/data/accounts";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { identityContext } from "@/lib/money/convert";
+import { buildSpaceConversionContext } from "@/lib/money/server-context";
+import { yesterdayUTCISO } from "@/lib/fx/config";
 import { ShareStatus } from "@prisma/client";
 
 function todayUTC(): Date {
@@ -55,10 +55,24 @@ export async function regenerateSpaceSnapshot(
   date: Date = todayUTC(),
 ): Promise<void> {
   const accounts = await getAccounts({ spaceId });
-  // MC1 Phase 2 Slice 3 — identity context (target = USD): byte-identical
-  // totals, proves the conversion seam live on the snapshot write path.
-  // MC1 Phase 3 swaps this for the Space's reporting-currency context.
-  const c = classifyAccounts(accounts, identityContext(DEFAULT_DISPLAY_CURRENCY));
+
+  // MC1 Phase 3 Slice 3 — THE SNAPSHOT FLIP (plan seams #1, F-2). The context
+  // target and the reportingCurrency stamp below both come from the same
+  // Space read, atomically: they can never disagree. For every all-USD Space
+  // this is numerically identical to the Phase 2 identity behavior
+  // (equivalence gates); non-USD rows now convert for real at the latest
+  // close, degrading per D-3 (native + estimated) when a rate is missing.
+  const space = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
+  });
+  if (!space) return; // space vanished mid-call — nothing to snapshot
+
+  const ctx = await buildSpaceConversionContext(space, {
+    currencies: accounts.map((a) => a.currency ?? null),
+    dates:      [yesterdayUTCISO()],
+  });
+  const c = classifyAccounts(accounts, ctx);
 
   const stocks     = c.totalInvestments;
   const crypto     = c.totalDigitalAssets;
@@ -76,12 +90,13 @@ export async function regenerateSpaceSnapshot(
   // cash rather than an invented buffer amount.
   const cashOnHand  = Math.max(cash, 0);
 
-  // MC1 Phase 0 Slice 2 — every snapshot row declares the currency its totals
-  // were computed and presented in. Stamped explicitly (not left to the DB
-  // default) so the writer's declaration is visible and greppable; the source
-  // is lib/currency.ts, the designated swap point when reporting currency
-  // moves to the Space (MC1 Phase 3). Behavior-neutral: always "USD" today.
-  const reportingCurrency = DEFAULT_DISPLAY_CURRENCY;
+  // MC1 Phase 3 Slice 3 (F-2) — the stamp IS the context target: both come
+  // from the same Space read above, in the same edit, so they can never
+  // disagree. Existing rows keep their stamps (forward-only, plan D-4); only
+  // today's upserted row carries the current value. SpaceSnapshot.isEstimated
+  // keeps its D2.x reconstruction meaning — currency estimation is NOT
+  // written to snapshots (approved D-7; Phase 4 open item).
+  const reportingCurrency = space.reportingCurrency;
 
   await db.spaceSnapshot.upsert({
     where: { spaceId_date: { spaceId, date } },

@@ -10,6 +10,7 @@ import {
   Check, Search, ChevronLeft, ChevronRight, ChevronDown,
 } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { formatDate as formatDateUTC } from "@/lib/format";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
 import {
@@ -109,6 +110,11 @@ interface Props {
   lastUpdatedAt: string | null;
   accounts:      Account[];       // debt accounts only
   transactions:  Transaction[];   // debt account transactions
+  /**
+   * MC1 Phase 3 Slice 6 (F-1, D-6) — serialized Space conversion context from
+   * the server page. Optional: absent => context-less native rollups (kill switch).
+   */
+  moneyCtx?:     SerializedConversionContext;
 }
 
 // Shared input styling (Atlas tokens).
@@ -116,8 +122,23 @@ const INPUT_CLS = "focus:outline-none focus:border-[var(--accent-info)] transiti
 const inputStyle: React.CSSProperties = { background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-primary)" };
 
 // ── Main component ────────────────────────────────────────────────────────────
-export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions }: Props) {
+export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions, moneyCtx }: Props) {
   const router = useRouter();
+
+  // MC1 P3 Slice 6 — rehydrated once; each debt leg converts at its own row
+  // date inside the rollups (identical math when absent / all-USD).
+  const conversionCtx = useMemo(
+    () => (moneyCtx ? rehydrateContext(moneyCtx) : undefined),
+    [moneyCtx],
+  );
+  const rollupRows = useMemo(
+    () => transactions.map((t) => ({ ...t, dateISO: t.date, currency: t.currency ?? null })),
+    [transactions],
+  );
+  const rollupRowById = useMemo(
+    () => new Map(rollupRows.map((r) => [r.id, r])),
+    [rollupRows],
+  );
 
   // Credit section collapsed state (all collapsed by default for real-estate)
   const [updateScoreOpen, setUpdateScoreOpen] = useState(false);
@@ -431,14 +452,14 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
 
   // Payments made toward the card balance (flowType = DEBT_PAYMENT — FlowType
   // P5 Slice 3; replaces the category === "Payment" string heuristic).
-  const totalDebtPaid = computeTotalDebtPaid(baseTxs);
+  const totalDebtPaid = computeTotalDebtPaid(baseTxs.map((t) => rollupRowById.get(t.id) ?? t), conversionCtx);
 
   // Per-liability payment rollup (KD-18 capability): payments grouped by the
   // receiving card. Shown only in the unfiltered view — with a card selected
   // it would be a single entry equal to totalDebtPaid.
   const debtPaidByCard = useMemo(
-    () => (selectedCardId ? [] : rollupDebtPaymentsByAccount(baseTxs)),
-    [selectedCardId, baseTxs],
+    () => (selectedCardId ? [] : rollupDebtPaymentsByAccount(baseTxs.map((t) => rollupRowById.get(t.id) ?? t), conversionCtx)),
+    [selectedCardId, baseTxs, rollupRowById, conversionCtx],
   );
 
   return (

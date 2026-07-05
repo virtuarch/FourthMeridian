@@ -102,6 +102,14 @@ export interface AccountClassification<T extends ClassifiableAccount = Classifia
   totalAssets:        number;
   /** totalAssets − totalLiabilities */
   netWorth:           number;
+  /**
+   * MC1 Phase 3 Slice 2 (plan D-7) — true when ANY converted member of the
+   * totals was estimated: rate walked back, rate missing, or the row's native
+   * currency was null-residue. Always emitted; false whenever no
+   * ConversionContext was supplied (the kill-switch path never estimates).
+   * Carried to props/AI data only — rendered nowhere until Phase 4.
+   */
+  estimated:          boolean;
 }
 
 // ─── Implementation ───────────────────────────────────────────────────────────
@@ -118,15 +126,16 @@ export interface AccountClassification<T extends ClassifiableAccount = Classifia
  */
 function sumBalances(
   accounts: ClassifiableAccount[],
-  ctx?: ConversionContext,
-  valuationDateISO?: string,
+  ctx: ConversionContext | undefined,
+  valuationDateISO: string | undefined,
+  flag: { estimated: boolean },
 ): number {
   if (!ctx) return accounts.reduce((s, a) => s + a.balance, 0);
-  return accounts.reduce(
-    (s, a) =>
-      s + convertMoney({ amount: a.balance, currency: a.currency ?? null }, valuationDateISO!, ctx).amount,
-    0,
-  );
+  return accounts.reduce((s, a) => {
+    const c = convertMoney({ amount: a.balance, currency: a.currency ?? null }, valuationDateISO!, ctx);
+    if (c.estimated) flag.estimated = true; // MC1 P3 Slice 2 — taint propagation (D-7)
+    return s + c.amount;
+  }, 0);
 }
 
 /**
@@ -137,11 +146,17 @@ function sumBalances(
  *              historical behavior, untouched. Phase 2 server callers pass
  *              identityContext(DEFAULT_DISPLAY_CURRENCY) — provably identical
  *              output; MC1 Phase 3 swaps real targets in at this seam.
+ * @param valuationDateISO - MC1 Phase 3 Slice 3: the date balances are valued
+ *              at when a context is supplied. Defaults to the latest close
+ *              (yesterday UTC) — the live-balance rule. The snapshot BACKFILL
+ *              passes each reconstructed day here so historical days convert
+ *              at historical rates. Ignored without a context.
  * @returns AccountClassification<T> with fully-typed bucket arrays.
  */
 export function classifyAccounts<T extends ClassifiableAccount>(
   accounts: T[],
   ctx?: ConversionContext,
+  valuationDateISO?: string,
 ): AccountClassification<T> {
   const checking      = accounts.filter((a) => a.type === "checking");
   const savings       = accounts.filter((a) => a.type === "savings");
@@ -164,25 +179,30 @@ export function classifyAccounts<T extends ClassifiableAccount>(
     }
   }
 
-  // Live balances value at the latest close (plan D-6); irrelevant under the
-  // Phase 2 identityContext (identity/pass-through branches never read it).
-  const valuationDateISO = ctx ? yesterdayUTCISO() : undefined;
+  // Live balances value at the latest close (plan D-6) unless the caller
+  // supplies an explicit historical valuation date (snapshot backfill);
+  // irrelevant under identity (identity/pass-through branches never read it).
+  const effectiveValuationDateISO = ctx ? (valuationDateISO ?? yesterdayUTCISO()) : undefined;
 
-  const totalChecking      = sumBalances(checking, ctx, valuationDateISO);
-  const totalSavings       = sumBalances(savings, ctx, valuationDateISO);
+  // MC1 Phase 3 Slice 2 (D-7) — mutable taint flag shared by every summed
+  // bucket; stays false on the context-less kill-switch path.
+  const flag = { estimated: false };
+
+  const totalChecking      = sumBalances(checking, ctx, effectiveValuationDateISO, flag);
+  const totalSavings       = sumBalances(savings, ctx, effectiveValuationDateISO, flag);
   const totalLiquid        = totalChecking + totalSavings;
-  const totalInvestments   = sumBalances(investments, ctx, valuationDateISO);
-  const totalDigitalAssets = sumBalances(digitalAssets, ctx, valuationDateISO);
-  const totalRealAssets    = sumBalances(realAssets, ctx, valuationDateISO);
+  const totalInvestments   = sumBalances(investments, ctx, effectiveValuationDateISO, flag);
+  const totalDigitalAssets = sumBalances(digitalAssets, ctx, effectiveValuationDateISO, flag);
+  const totalRealAssets    = sumBalances(realAssets, ctx, effectiveValuationDateISO, flag);
   // Only positive balances count as owed — negative = they owe you.
   // Convert-then-clamp: with positive rates, sign is preserved, so this is
   // equivalent to clamp-then-convert and byte-identical under identity.
   const totalLiabilities   = ctx
-    ? liabilities.reduce(
-        (s, a) =>
-          s + Math.max(0, convertMoney({ amount: a.balance, currency: a.currency ?? null }, valuationDateISO!, ctx).amount),
-        0,
-      )
+    ? liabilities.reduce((s, a) => {
+        const c = convertMoney({ amount: a.balance, currency: a.currency ?? null }, effectiveValuationDateISO!, ctx);
+        if (c.estimated) flag.estimated = true;
+        return s + Math.max(0, c.amount);
+      }, 0)
     : liabilities.reduce((s, a) => s + Math.max(0, a.balance), 0);
   const totalAssets        = totalLiquid + totalInvestments + totalDigitalAssets + totalRealAssets;
   const netWorth           = totalAssets - totalLiabilities;
@@ -202,5 +222,6 @@ export function classifyAccounts<T extends ClassifiableAccount>(
     totalLiabilities,
     totalAssets,
     netWorth,
+    estimated: flag.estimated,
   };
 }

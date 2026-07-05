@@ -1,9 +1,11 @@
 /**
  * lib/debt.golden.test.ts
  *
- * MC1 Phase 2 Slice 4 — byte-identical golden gate for the debt-payment
- * rollups (transaction family). Pure: no DB, no network. House-style
- * standalone tsx script, auto-discovered by scripts/run-tests.ts.
+ * MC1 Phase 2 Slice 4 golden gate, evolved into MC1 Phase 3 Slice 2
+ * EQUIVALENCE GATES (plan D-10): pure-USD fixtures stay byte-identical
+ * (kill switch); residue/mixed fixtures stay NUMERICALLY identical under
+ * identity while `estimated` (new, D-7) turns honest; real-rate contexts
+ * convert with correct flags. Pure: no DB, no network.
  */
 
 import { rollupDebtPaymentsByAccount, totalDebtPaid, type DebtPaymentTxnLike } from "./debt";
@@ -20,44 +22,57 @@ function check(name: string, cond: boolean, detail = ""): void {
 
 const CTX = identityContext(DEFAULT_DISPLAY_CURRENCY);
 
-// ── USD fixture (incl. legacy rows without currency/dateISO fields) ──────────
+const numbersOf = (entries: ReturnType<typeof rollupDebtPaymentsByAccount>) =>
+  entries.map(({ accountId, total, count }) => ({ accountId, total, count }));
 
-const usdFixture: DebtPaymentTxnLike[] = [
+// ── pure-USD fixture: byte-identity (kill-switch gate) ────────────────────────
+
+const pureUsd: DebtPaymentTxnLike[] = [
   { accountId: "cardA", amount: -300.25, flowType: "DEBT_PAYMENT", currency: "USD", dateISO: "2026-06-01" },
   { accountId: "cardA", amount: 150.5,   flowType: "DEBT_PAYMENT", currency: "USD", dateISO: "2026-06-15" },
-  { accountId: "cardB", amount: -99.99,  flowType: "DEBT_PAYMENT", currency: "USD" }, // no dateISO
-  { accountId: "cardB", amount: -20,     flowType: "DEBT_PAYMENT" },                   // bare legacy shape
+  { accountId: "cardB", amount: -99.99,  flowType: "DEBT_PAYMENT", currency: "USD" }, // no dateISO — identity never reads it
   { accountId: "cardA", amount: -55,     flowType: "SPENDING",     currency: "USD" }, // excluded by flow
-  { accountId: "cardC", amount: -10,     flowType: null },                             // null flow excluded
+  { accountId: "cardC", amount: -10,     flowType: null,           currency: "USD" }, // null flow excluded
 ];
 
 {
-  check("golden: totalDebtPaid byte-identical (USD fixture)",
-    JSON.stringify(totalDebtPaid(usdFixture)) === JSON.stringify(totalDebtPaid(usdFixture, CTX)));
-  check("golden: rollup byte-identical (USD fixture)",
-    JSON.stringify(rollupDebtPaymentsByAccount(usdFixture)) ===
-    JSON.stringify(rollupDebtPaymentsByAccount(usdFixture, CTX)));
-  check("golden: abs-sum shape preserved (300.25 + 150.5 + 99.99 + 20)",
-    totalDebtPaid(usdFixture, CTX) === 300.25 + 150.5 + 99.99 + 20);
+  check("kill switch: totalDebtPaid byte-identical (pure-USD)",
+    JSON.stringify(totalDebtPaid(pureUsd)) === JSON.stringify(totalDebtPaid(pureUsd, CTX)));
+  check("kill switch: rollup byte-identical incl. estimated:false (pure-USD)",
+    JSON.stringify(rollupDebtPaymentsByAccount(pureUsd)) ===
+    JSON.stringify(rollupDebtPaymentsByAccount(pureUsd, CTX)));
+  check("abs-sum shape preserved (300.25 + 150.5 + 99.99)",
+    totalDebtPaid(pureUsd, CTX) === 300.25 + 150.5 + 99.99);
+  check("estimated: false on every pure-USD entry (both paths)",
+    rollupDebtPaymentsByAccount(pureUsd, CTX).every((e) => e.estimated === false) &&
+    rollupDebtPaymentsByAccount(pureUsd).every((e) => e.estimated === false));
 }
 
-// ── mixed/non-USD fixture: STILL byte-identical under identity (D-3) ─────────
+// ── residue/mixed: numbers identical under identity, flags honest ─────────────
 
 {
   const mixed: DebtPaymentTxnLike[] = [
-    ...usdFixture,
+    ...pureUsd,
     { accountId: "cardD", amount: -500, flowType: "DEBT_PAYMENT", currency: "EUR", dateISO: "2026-06-10" },
-    { accountId: "cardD", amount: -75,  flowType: "DEBT_PAYMENT", currency: null }, // null-residue
-    { accountId: "cardE", amount: -120, flowType: "DEBT_PAYMENT", currency: "SAR" },
+    { accountId: "cardD", amount: -75,  flowType: "DEBT_PAYMENT", currency: null },   // null-residue
+    { accountId: "cardE", amount: -120, flowType: "DEBT_PAYMENT" },                    // bare legacy shape
   ];
-  check("golden: mixed-currency totalDebtPaid byte-identical under identity",
-    JSON.stringify(totalDebtPaid(mixed)) === JSON.stringify(totalDebtPaid(mixed, CTX)));
-  check("golden: mixed-currency rollup byte-identical under identity (incl. sort order)",
-    JSON.stringify(rollupDebtPaymentsByAccount(mixed)) ===
-    JSON.stringify(rollupDebtPaymentsByAccount(mixed, CTX)));
+  check("mixed: totalDebtPaid numerically identical under identity",
+    totalDebtPaid(mixed) === totalDebtPaid(mixed, CTX));
+  check("mixed: rollup numbers identical under identity (flags aside)",
+    JSON.stringify(numbersOf(rollupDebtPaymentsByAccount(mixed))) ===
+    JSON.stringify(numbersOf(rollupDebtPaymentsByAccount(mixed, CTX))));
+  const withCtx = rollupDebtPaymentsByAccount(mixed, CTX);
+  check("mixed: EUR/null entries flagged estimated with context",
+    withCtx.find((e) => e.accountId === "cardD")?.estimated === true &&
+    withCtx.find((e) => e.accountId === "cardE")?.estimated === true);
+  check("mixed: pure-USD entries stay unflagged",
+    withCtx.find((e) => e.accountId === "cardA")?.estimated === false);
+  check("mixed: context-less path never flags",
+    rollupDebtPaymentsByAccount(mixed).every((e) => e.estimated === false));
 }
 
-// ── seam liveness (unit-level only — NOT product behavior) ────────────────────
+// ── real-rate context: converts + flags correctly (seam liveness) ─────────────
 
 {
   const realCtx = {
@@ -71,16 +86,18 @@ const usdFixture: DebtPaymentTxnLike[] = [
     { accountId: "cardD", amount: -500, flowType: "DEBT_PAYMENT", currency: "EUR", dateISO: "2026-06-10" },
     { accountId: "cardE", amount: -100, flowType: "DEBT_PAYMENT", currency: "SAR", dateISO: "2026-06-10" },
   ];
-  check("seam live: EUR leg converts at its row date (500 × 1.2 = 600)",
-    rollupDebtPaymentsByAccount(rows, realCtx)[0].total === 600);
-  check("seam live: missed SAR leg stays native (D-3, never excluded)",
-    totalDebtPaid(rows, realCtx) === 600 + 100);
+  const rollup = rollupDebtPaymentsByAccount(rows, realCtx);
+  check("real: EUR converts at its row date (500 × 1.2 = 600), exact ⇒ not estimated",
+    rollup[0].total === 600 && rollup[0].estimated === false);
+  check("real: missed SAR stays native + estimated (D-3, never excluded)",
+    rollup[1].total === 100 && rollup[1].estimated === true);
+  check("real: totalDebtPaid includes both (600 + 100)", totalDebtPaid(rows, realCtx) === 700);
 }
 
 if (failures.length > 0) {
-  console.error(`\nMC1 P2 debt goldens: ${failures.length} FAILURE(S) (${passed} checks passed):`);
+  console.error(`\nMC1 P3 debt equivalence gates: ${failures.length} FAILURE(S) (${passed} checks passed):`);
   for (const f of failures) console.error("  " + f);
   process.exit(1);
 }
-console.log(`MC1 P2 debt goldens: all ${passed} checks passed.`);
+console.log(`MC1 P3 debt equivalence gates: all ${passed} checks passed.`);
 process.exit(0);

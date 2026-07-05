@@ -53,6 +53,8 @@ import { ShareStatus, PlaidItemStatus, VisibilityLevel } from '@prisma/client';
 import { classifyAccounts, type ClassifiableAccount } from '@/lib/account-classifier';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { identityContext } from '@/lib/money/convert';
+import { buildSpaceConversionContext } from '@/lib/money/server-context';
+import { yesterdayUTCISO } from '@/lib/fx/config';
 import { genericAccountName } from '@/lib/account-privacy';
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
@@ -208,11 +210,23 @@ async function assembleAccounts(
     syncStatus: l.financialAccount.syncStatus ?? undefined,
   }));
 
-  // MC1 Phase 2 Slice 3 — identity context (target = USD): byte-identical
-  // totals (golden-pinned); NO AI behavior change. The "summed without
-  // conversion" limitation notes in lib/ai/types.ts remain true until the
-  // MC1 Phase 3 flip swaps the real target in at this seam.
-  const classification = classifyAccounts(classifiableAll, identityContext(DEFAULT_DISPLAY_CURRENCY));
+  // MC1 Phase 3 Slice 4 — THE AI FLIP (plan seam #3). Totals convert at the
+  // latest close into the Space's reporting currency; per-account rows keep
+  // native currency (already in the payload). All-USD Spaces are numerically
+  // identical to the Phase 2 identity behavior (equivalence gates). Identity
+  // fallback only if the Space row vanished mid-request. Data-only: no
+  // prompt/serializer change (presentation is Phase 4).
+  const space = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
+  });
+  const moneyCtx = space
+    ? await buildSpaceConversionContext(space, {
+        currencies: classifiableAll.map((a) => a.currency ?? null),
+        dates:      [yesterdayUTCISO()],
+      })
+    : identityContext(DEFAULT_DISPLAY_CURRENCY);
+  const classification = classifyAccounts(classifiableAll, moneyCtx);
 
   // ── Health summary ────────────────────────────────────────────────────────
 
@@ -451,6 +465,8 @@ async function assembleAccounts(
     totalInvestments:   classification.totalInvestments,
     totalDigitalAssets: classification.totalDigitalAssets,
     totalRealAssets:    classification.totalRealAssets,
+    totalsEstimated:    classification.estimated, // MC1 P3 Slice 4 (D-7) — data-only
+
     counts: {
       liquid:        classification.liquid.length,
       investments:   classification.investments.length,

@@ -49,6 +49,7 @@ import { exchangeSymbol } from "@/lib/exchangeSymbol";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate, formatRelativeTime, possessive } from "@/lib/format";
 import { classifyAccounts } from "@/lib/account-classifier";
+import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { SPACE_TAB_LABELS, SpaceTabId } from "@/lib/space-nav";
 import { getPerspectivesForCategory, getCompositionSwitcherItems, PERSPECTIVE_GROUPS, type PerspectiveGroup } from "@/lib/perspectives";
 import type { LensResult } from "@/lib/perspective-engine/types";
@@ -112,6 +113,12 @@ interface Props {
   ficoUpdatedAt:     string | null;
   debtTransactions:  Transaction[];
   transactions:      Transaction[];
+  /**
+   * MC1 Phase 3 Slice 6 (F-1, D-6) — serialized Space conversion context from
+   * the server page. Optional: absent => context-less math (the kill switch).
+   * All-USD Spaces carry an empty entry table; math is identical.
+   */
+  moneyCtx?:         SerializedConversionContext;
 }
 
 // ── Tab config ────────────────────────────────────────────────────────────────
@@ -279,8 +286,14 @@ const fmtAbs = (n: number) =>
 export function DashboardClient({
   spaceId, spaceName, category, myRole, currentUserId,
   accounts, holdings, snapshots, ficoScore, ficoUpdatedAt, debtTransactions,
-  transactions,
+  transactions, moneyCtx,
 }: Props) {
+  // MC1 Phase 3 Slice 6 — rehydrate once; undefined preserves the
+  // context-less fallback path everywhere below.
+  const conversionCtx = useMemo(
+    () => (moneyCtx ? rehydrateContext(moneyCtx) : undefined),
+    [moneyCtx],
+  );
   const router        = useRouter();
   const searchParams  = useSearchParams();
   const { data: session } = useSession();
@@ -403,10 +416,12 @@ export function DashboardClient({
   );
 
   // Full-portfolio classification (all accounts, for allocation donut + cash/investment totals)
-  const classification = useMemo(() => classifyAccounts(accounts), [accounts]);
+  // MC1 P3 Slice 6 — converts into the Space's reporting currency when the
+  // serialized context prop is present (identical math for all-USD Spaces).
+  const classification = useMemo(() => classifyAccounts(accounts, conversionCtx), [accounts, conversionCtx]);
 
   // Tab-scoped classification (filtered accounts, for NetWorthCard headline stats)
-  const tabClassification = useMemo(() => classifyAccounts(filtered), [filtered]);
+  const tabClassification = useMemo(() => classifyAccounts(filtered, conversionCtx), [filtered, conversionCtx]);
 
   const stats = useMemo(() => ({
     netWorth: tabClassification.netWorth,
@@ -1255,6 +1270,7 @@ export function DashboardClient({
         <SpaceTransactionsPanel
           transactions={transactions}
           accounts={accounts}
+          moneyCtx={moneyCtx}
         />
       )}
 

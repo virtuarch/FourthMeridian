@@ -66,6 +66,7 @@ import { getDebtTransactions } from '@/lib/data/transactions';
 import { rollupDebtPaymentsByAccount } from '@/lib/debt';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { identityContext } from '@/lib/money/convert';
+import { buildSpaceConversionContext } from '@/lib/money/server-context';
 import type { AccountsSectionData } from '@/lib/ai/types';
 import { validateOutput, applyEnforcement } from '@/lib/ai/output-validator';
 import type { ValidationResult, EnforcementMode } from '@/lib/ai/output-validator';
@@ -673,9 +674,31 @@ async function fetchPerLiabilityDebtPayments(ctx: SpaceContext_AI): Promise<Debt
     const inWindow = rows.filter(
       (r) => !r.pending && r.date >= txn.startDate && r.date <= txn.endDate,
     );
-    // MC1 Phase 2 Slice 4 — identity context (target = USD): byte-identical
-    // rollup, seam live on the server path; Phase 3 flips the target here.
-    const rollup = rollupDebtPaymentsByAccount(inWindow, identityContext(DEFAULT_DISPLAY_CURRENCY));
+    // MC1 Phase 3 Slice 4 — THE AI FLIP (plan seam #5). Each debt leg converts
+    // at ITS OWN row date into the Space's reporting currency (rows carry
+    // currency + ISO date from getDebtTransactions). All-USD Spaces are
+    // numerically identical to the Phase 2 identity behavior; unresolvable
+    // rows degrade per D-3 and flag entry.estimated (data-only — the
+    // serializer's presentation is Phase 4). Identity fallback only if the
+    // Space row vanished mid-request.
+    const space = await db.space.findUnique({
+      where:  { id: ctx.spaceId },
+      select: { reportingCurrency: true },
+    });
+    const debtRows = inWindow.map((r) => ({
+      accountId: r.accountId,
+      amount:    r.amount,
+      flowType:  r.flowType,
+      currency:  r.currency ?? null,
+      dateISO:   r.date, // getDebtTransactions emits ISO "YYYY-MM-DD"
+    }));
+    const moneyCtx = space
+      ? await buildSpaceConversionContext(space, {
+          currencies: debtRows.map((r) => r.currency),
+          dates:      [...new Set(debtRows.map((r) => r.dateISO))],
+        })
+      : identityContext(DEFAULT_DISPLAY_CURRENCY);
+    const rollup = rollupDebtPaymentsByAccount(debtRows, moneyCtx);
     if (rollup.length === 0) return [];
     const accounts =
       (ctx.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData | undefined)?.accounts ?? [];

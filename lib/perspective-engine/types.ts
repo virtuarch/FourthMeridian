@@ -163,6 +163,14 @@ export interface LensResult {
   verdict?: string;
   /** The single number the card leads with. Present only when status === "ok". */
   headline?: LensMetric;
+  /**
+   * MC1 Phase 3 Slice 5 (D-7) — true when any converted amount in this
+   * lens's sums was estimated (rate walked back / missing, or null-residue
+   * currency). Emitted only by conversion-aware lenses when a
+   * ConversionContext was supplied; absent otherwise (context-less results
+   * stay byte-identical — the kill switch). Data-only until Phase 4.
+   */
+  estimated?: boolean;
   metrics:     LensMetric[];
   assumptions: LensAssumption[];
   provenance:  LensProvenance;
