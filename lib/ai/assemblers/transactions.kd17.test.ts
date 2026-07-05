@@ -42,6 +42,10 @@ import {
   buildMonthlyBreakdown,
   checkSpendingCategoryInvariant,
 } from './transactions';
+// FlowType P5 Slice 4: fixture rows carry flowType/flowDirection, derived by
+// the REAL classifier (pure import) — the same values the P4 backfill wrote,
+// so synthetic rows match production data exactly.
+import { classifyFlow } from '../../transactions/flow-classifier';
 
 // ---------------------------------------------------------------------------
 // Tiny harness (mirrors transactions.privacy.test.ts)
@@ -72,15 +76,29 @@ type Row = {
   category: TransactionCategory;
   amount:   number;
   pending:  boolean;
+  // FlowType P5 Slice 4 — mirrors the assembler's TxnRow.
+  flowType:      ReturnType<typeof classifyFlow>['flowType'] | null;
+  flowDirection: ReturnType<typeof classifyFlow>['flowDirection'] | null;
 };
 
-function row(day: number, category: TransactionCategory, amount: number, merchant = 'Test'): Row {
+function row(
+  day: number,
+  category: TransactionCategory,
+  amount: number,
+  merchant = 'Test',
+  // Optional account context forwarded to the classifier (e.g. a debt
+  // account's destination-side payment leg).
+  ctx?: { accountType?: string; debtSubtype?: string },
+): Row {
+  const c = classifyFlow({ category, amount, ...ctx });
   return {
     date: new Date(`2026-01-${String(day).padStart(2, '0')}T00:00:00.000Z`),
     merchant,
     category,
     amount,
     pending: false,
+    flowType:      c.flowType,
+    flowDirection: c.flowDirection,
   };
 }
 
@@ -271,6 +289,49 @@ const janRows: Row[] = [
 
   check('Tripwire: drilldown still aggregates the debits-only population (lt: 0)',
     /amount: \{ lt: 0 \}/.test(assemblerSrc));
+}
+
+// ---------------------------------------------------------------------------
+// 6. FlowType P5 Slice 4 — flow partition cases (D-1..D-4)
+// ---------------------------------------------------------------------------
+
+{
+  const jan = janBreakdown([
+    // D-1: rows the legacy category filter could never see.
+    row(5,  TransactionCategory.Dividend, +120.50, 'Vanguard'),        // → INCOME
+    row(6,  TransactionCategory.Fee,      -35.00,  'Wire fee'),        // → FEE
+    // Existing banking flows.
+    row(7,  TransactionCategory.Dining,   -60.00),                     // → SPENDING
+    row(8,  TransactionCategory.Shopping, +25.00,  'Return'),          // → REFUND
+    row(11, TransactionCategory.Interest, -12.34,  'Interest charge'), // → INTEREST
+    // Both legs of a card payment: source (negative) + destination (positive
+    // INFLOW on a credit-card account) — only the source leg may count.
+    row(10, TransactionCategory.Payment,  -300.00, 'Card payment'),
+    row(9,  TransactionCategory.Payment,  +300.00, 'Card payment',
+        { accountType: 'debt', debtSubtype: 'credit_card' }),
+  ]);
+
+  check('Slice 4: dividend counts as income — and ONLY the dividend (refund is not income)',
+    approx(jan.incomeTotal, 120.50), `got ${jan.incomeTotal}`);
+
+  check('Slice 4: expenseTotal = SPENDING + FEE + INTEREST gross (60 + 35 + 12.34)',
+    approx(jan.expenseTotal, 107.34), `got ${jan.expenseTotal}`);
+
+  check('Slice 4: refund disclosed in refundTotal, never netted into expenseTotal',
+    approx(jan.refundTotal, 25.00), `got ${jan.refundTotal}`);
+
+  check('Slice 4: destination-side DEBT_PAYMENT inflow leg excluded (no double count)',
+    approx(jan.debtPaymentTotal, 300.00), `got ${jan.debtPaymentTotal}`);
+
+  check('Slice 4: Fee appears in byCategory as a debit line',
+    approx(jan.byCategory.find((c) => c.category === 'Fee')?.total ?? 0, 35.00));
+
+  check('Slice 4: credit-only Dividend month is dropped from monthly byCategory (no phantom spend)',
+    jan.byCategory.find((c) => c.category === 'Dividend') === undefined);
+
+  const spendingCats = jan.byCategory.filter((c) => !NON_SPENDING.has(c.category));
+  check('Slice 4: KD-17 invariant holds under the flow partition',
+    checkSpendingCategoryInvariant(spendingCats, jan.expenseTotal, NON_SPENDING, '2026-01') === null);
 }
 
 // ---------------------------------------------------------------------------

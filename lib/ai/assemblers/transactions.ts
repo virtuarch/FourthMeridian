@@ -55,7 +55,8 @@
  */
 
 import { db } from '@/lib/db';
-import { ShareStatus, TransactionCategory } from '@prisma/client';
+import { ShareStatus, TransactionCategory, FlowType } from '@prisma/client';
+import type { FlowDirection } from '@prisma/client';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { TRANSACTION_DETAIL_VISIBILITY } from '@/lib/ai/visibility';
@@ -94,7 +95,13 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
   TransactionCategory.Other,
 ];
 
-/** Categories that represent money flowing in (income / interest). */
+/**
+ * Categories that represent money flowing in (income / interest).
+ * FlowType P5 Slice 4: unreferenced since the flow cutover. Deletion is
+ * deliberately DEFERRED to Slice 7 (gated on a zero-reference grep across the
+ * repo) per the P5 plan — do not remove here.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const INCOME_CATEGORIES = new Set<TransactionCategory>([
   TransactionCategory.Income,
   TransactionCategory.Interest,
@@ -120,10 +127,45 @@ const MERCHANT_EXCLUDED_CATEGORIES = new Set<TransactionCategory>([
  * specific category (e.g. "why is January so high?" / "show me the largest
  * transactions"), so payroll, transfers, and debt payments are excluded unless
  * the user explicitly asks about one of those.
+ * FlowType P5 Slice 4: unreferenced since the flow cutover (drilldown default
+ * is now flowType=SPENDING, D-5). Deletion DEFERRED to Slice 7 (gated) — do
+ * not remove here.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const SPENDING_CATEGORIES: TransactionCategory[] = BANKING_CATEGORIES.filter(
   (c) => !MERCHANT_EXCLUDED_CATEGORIES.has(c),
 );
+
+/**
+ * FlowType P5 Slice 4 (D-1) — the banking-flow row set. Which rows the AI sees
+ * is now defined by economic flow, not merchant taxonomy: Dividend rows
+ * (flowType=INCOME) and Fee rows (flowType=FEE) become reachable. Excluded:
+ * INVESTMENT (security activity, stays in the Investments view), ADJUSTMENT
+ * (non-economic artifacts), UNKNOWN (0 rows by the P4 backfill invariant).
+ */
+const BANKING_FLOWS: FlowType[] = [
+  FlowType.SPENDING,
+  FlowType.REFUND,
+  FlowType.INCOME,
+  FlowType.DEBT_PAYMENT,
+  FlowType.TRANSFER,
+  FlowType.FEE,
+  FlowType.INTEREST,
+];
+
+/**
+ * FlowType P5 Slice 4 (D-2) — flows counted in expenseTotal (gross Σ|amount|):
+ * SPENDING, plus FEE (newly reachable), plus INTEREST charges (parity with the
+ * legacy fall-through that already counted them). Mirrors the dashboard's
+ * Slice-2 FLOW_COST set. REFUND is disclosed separately (refundTotal, D-3) and
+ * NEVER netted here — the KD-17 debit-only reconciliation between byCategory
+ * and expenseTotal depends on it.
+ */
+const EXPENSE_FLOWS = new Set<FlowType>([
+  FlowType.SPENDING,
+  FlowType.FEE,
+  FlowType.INTEREST,
+]);
 
 /**
  * Safety cap on rows fetched per assembly. Aggregation covers these rows;
@@ -174,6 +216,10 @@ type TxnRow = {
   category: TransactionCategory;
   amount:   number;
   pending:  boolean;
+  // FlowType P5 Slice 4 — flow semantics. Non-null for every row the
+  // BANKING_FLOWS query filter admits (the filter is on flowType itself).
+  flowType:      FlowType | null;
+  flowDirection: FlowDirection | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -228,16 +274,21 @@ async function assembleTransactions(
         },
       ],
       deletedAt: null,
-      category:  { in: BANKING_CATEGORIES },
+      // FlowType P5 Slice 4 (D-1): row set defined by economic flow, replacing
+      // `category: { in: BANKING_CATEGORIES } ` — admits Dividend (INCOME) and
+      // Fee (FEE) rows; excludes INVESTMENT/ADJUSTMENT/UNKNOWN.
+      flowType:  { in: BANKING_FLOWS },
       // Floor always applied; ceiling only for an explicit past-bounded window.
       date:      win.end ? { gte: win.start, lte: win.end } : { gte: win.start },
     },
     select: {
-      date:     true,
-      merchant: true,
-      category: true,
-      amount:   true,
-      pending:  true,
+      date:          true,
+      merchant:      true,
+      category:      true,
+      amount:        true,
+      pending:       true,
+      flowType:      true,
+      flowDirection: true,
     },
     orderBy: { date: 'desc' },
     take:    TRANSACTION_FETCH_LIMIT + 1,
@@ -265,6 +316,7 @@ async function assembleTransactions(
 
   let incomeTotal      = 0;
   let expenseTotal     = 0;
+  let refundTotal      = 0;
   let debtPaymentTotal = 0;
   let transferTotal    = 0;
 
@@ -287,34 +339,51 @@ async function assembleTransactions(
     entry.count += 1;
     categoryMap.set(txn.category, entry);
 
-    if (txn.category === TransactionCategory.Transfer) {
+    // FlowType P5 Slice 4 — partition by flowType (D-1..D-4). Each settled row
+    // lands in exactly one bucket; INVESTMENT/ADJUSTMENT/UNKNOWN never reach
+    // this loop (excluded by the BANKING_FLOWS query filter).
+
+    if (txn.flowType === FlowType.TRANSFER) {
       transferTotal += Math.abs(txn.amount);
       continue;
     }
 
-    if (txn.category === TransactionCategory.Payment) {
+    if (txn.flowType === FlowType.DEBT_PAYMENT) {
+      // Source-side legs only (amount < 0). Destination-side INFLOW legs on
+      // debt accounts are deliberately excluded — counting both sides would
+      // double-count; the per-liability view is Slice 3's DebtClient rollup.
       if (txn.amount < 0) debtPaymentTotal += Math.abs(txn.amount);
       continue;
     }
 
-    if (INCOME_CATEGORIES.has(txn.category) && txn.amount > 0) {
-      incomeTotal += txn.amount;
-      if (!largestIncomeRow || txn.amount > largestIncomeRow.amount) {
-        largestIncomeRow = txn;
+    if (txn.flowType === FlowType.INCOME) {
+      if (txn.amount > 0) {
+        incomeTotal += txn.amount;
+        if (!largestIncomeRow || txn.amount > largestIncomeRow.amount) {
+          largestIncomeRow = txn;
+        }
       }
       continue;
     }
 
-    // Everything else with a negative amount is an expense
-    if (txn.amount < 0) {
+    if (txn.flowType === FlowType.REFUND) {
+      // D-3: disclosed gross; never netted into expenseTotal (KD-17) and
+      // never counted as income (a refund reverses prior spending).
+      refundTotal += Math.abs(txn.amount);
+      continue;
+    }
+
+    // D-2: SPENDING + FEE + INTEREST charges, gross.
+    if (txn.flowType !== null && EXPENSE_FLOWS.has(txn.flowType)) {
       expenseTotal += Math.abs(txn.amount);
-      if (!largestExpenseRow || txn.amount < largestExpenseRow.amount) {
+      if (!largestExpenseRow || Math.abs(txn.amount) > Math.abs(largestExpenseRow.amount)) {
         largestExpenseRow = txn;
       }
     }
   }
 
-  const netCashFlow = incomeTotal - expenseTotal - debtPaymentTotal;
+  // D-4: refunds offset spend in the net figure; transfers stay excluded.
+  const netCashFlow = incomeTotal + refundTotal - expenseTotal - debtPaymentTotal;
 
   // ── Pending aggregation ───────────────────────────────────────────────────
 
@@ -394,9 +463,10 @@ async function assembleTransactions(
     const merchantMap = new Map<string, { amounts: number[]; category: string }>();
 
     for (const txn of settled) {
+      // Slice 4: flow-based exclusion (was category Transfer/Payment).
       if (
-        txn.category === TransactionCategory.Transfer ||
-        txn.category === TransactionCategory.Payment
+        txn.flowType === FlowType.TRANSFER ||
+        txn.flowType === FlowType.DEBT_PAYMENT
       ) continue;
 
       const key     = txn.merchant.trim().toLowerCase();
@@ -454,10 +524,10 @@ async function assembleTransactions(
     const merchantMap = new Map<string, MerchantAgg>();
 
     for (const txn of settled) {
-      // Spending merchants only: skip inflows/transfers/debt payments, and skip
-      // any non-negative amount (refunds/credits are not spend).
-      if (MERCHANT_EXCLUDED_CATEGORIES.has(txn.category)) continue;
-      if (txn.amount >= 0) continue;
+      // Spending merchants only (Slice 4): one flow predicate replaces the
+      // category-exclusion set + sign check. Payroll (INCOME), transfers,
+      // debt payments, fees, and refunds structurally cannot surface here.
+      if (txn.flowType !== FlowType.SPENDING) continue;
 
       const { canonicalKey, canonicalName } = normalizeMerchant(txn.merchant);
       const iso = txn.date.toISOString().split('T')[0];
@@ -534,7 +604,9 @@ async function assembleTransactions(
     const incomeMap = new Map<string, IncomeAgg>();
 
     for (const txn of settled) {
-      if (!INCOME_CATEGORIES.has(txn.category)) continue;
+      // Slice 4: flow-based inclusion (was INCOME_CATEGORIES + sign). Dividend
+      // payers now appear as income sources (approved N6).
+      if (txn.flowType !== FlowType.INCOME) continue;
       if (txn.amount <= 0) continue;
 
       const { canonicalKey, canonicalName } = normalizeMerchant(txn.merchant);
@@ -592,6 +664,7 @@ async function assembleTransactions(
 
     incomeTotal:      Math.round(incomeTotal      * 100) / 100,
     expenseTotal:     Math.round(expenseTotal     * 100) / 100,
+    refundTotal:      Math.round(refundTotal      * 100) / 100,
     debtPaymentTotal: Math.round(debtPaymentTotal * 100) / 100,
     transferTotal:    Math.round(transferTotal    * 100) / 100,
     netCashFlow:      Math.round(netCashFlow      * 100) / 100,
@@ -723,6 +796,7 @@ export function buildMonthlyBreakdown(
   type Bucket = {
     incomeTotal:      number;
     expenseTotal:     number;
+    refundTotal:      number;
     debtPaymentTotal: number;
     transferTotal:    number;
     transactionCount: number;
@@ -738,7 +812,7 @@ export function buildMonthlyBreakdown(
     let b = buckets.get(key);
     if (!b) {
       b = {
-        incomeTotal: 0, expenseTotal: 0, debtPaymentTotal: 0,
+        incomeTotal: 0, expenseTotal: 0, refundTotal: 0, debtPaymentTotal: 0,
         transferTotal: 0, transactionCount: 0, categoryAgg: new Map(),
       };
       buckets.set(key, b);
@@ -756,13 +830,16 @@ export function buildMonthlyBreakdown(
     agg.count  += 1;
     b.categoryAgg.set(txn.category, agg);
 
-    if (txn.category === TransactionCategory.Transfer) {
+    // FlowType P5 Slice 4 — same flow partition rules as the window loop.
+    if (txn.flowType === FlowType.TRANSFER) {
       b.transferTotal += Math.abs(txn.amount);
-    } else if (txn.category === TransactionCategory.Payment) {
+    } else if (txn.flowType === FlowType.DEBT_PAYMENT) {
       if (txn.amount < 0) b.debtPaymentTotal += Math.abs(txn.amount);
-    } else if (INCOME_CATEGORIES.has(txn.category) && txn.amount > 0) {
-      b.incomeTotal += txn.amount;
-    } else if (txn.amount < 0) {
+    } else if (txn.flowType === FlowType.INCOME) {
+      if (txn.amount > 0) b.incomeTotal += txn.amount;
+    } else if (txn.flowType === FlowType.REFUND) {
+      b.refundTotal += Math.abs(txn.amount);
+    } else if (txn.flowType !== null && EXPENSE_FLOWS.has(txn.flowType)) {
       b.expenseTotal += Math.abs(txn.amount);
     }
   }
@@ -814,6 +891,7 @@ export function buildMonthlyBreakdown(
         month,
         incomeTotal:      Math.round(b.incomeTotal      * 100) / 100,
         expenseTotal:     Math.round(b.expenseTotal     * 100) / 100,
+        refundTotal:      Math.round(b.refundTotal      * 100) / 100,
         debtPaymentTotal: Math.round(b.debtPaymentTotal * 100) / 100,
         transferTotal:    Math.round(b.transferTotal    * 100) / 100,
         transactionCount: b.transactionCount,
@@ -918,15 +996,15 @@ async function assembleDrilldown(
   const includeNonSpending = request.includeNonSpending === true;
   const merchantQuery      = request.merchant?.trim();
 
-  // Category constraint:
-  //   - a specific resolved category → exactly that category
-  //   - includeNonSpending           → any banking category
-  //   - default                      → discretionary spending categories only
+  // Category constraint (Slice 4, D-5):
+  //   - a specific resolved category → exactly that category (explicit ask)
+  //   - includeNonSpending           → any banking-flow row
+  //   - default                      → discretionary spending (flowType=SPENDING)
   const categoryWhere = resolvedCategory
     ? { category: resolvedCategory }
     : includeNonSpending
-      ? { category: { in: BANKING_CATEGORIES } }
-      : { category: { in: SPENDING_CATEGORIES } };
+      ? { flowType: { in: BANKING_FLOWS } }
+      : { flowType: FlowType.SPENDING };
 
   // Sign constraint: spending only (amount < 0) unless a non-spending category
   // was explicitly requested (income is positive, etc.).

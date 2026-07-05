@@ -353,6 +353,8 @@ export interface MonthlyBreakdownEntry {
   month:            string; // YYYY-MM (UTC)
   incomeTotal:      number;
   expenseTotal:     number;
+  /** Gross flowType=REFUND sum for this month (P5 Slice 4 D-3 — mirrors the window-level field). */
+  refundTotal:      number;
   debtPaymentTotal: number;
   transferTotal:    number;
   transactionCount: number; // settled + pending rows dated in this month
@@ -545,16 +547,27 @@ export interface TransactionsSummaryData {
   /** The row cap in force for this assembly (TRANSACTION_FETCH_LIMIT). */
   fetchLimit:        number;
 
-  // ── Cash flow totals ────────────────────────────────────────────────────
-  /** Sum of positive amounts in Income + Interest categories. */
+  // ── Cash flow totals (FlowType P5 Slice 4 — flow semantics) ─────────────
+  /** Sum of positive flowType=INCOME amounts (includes dividends, doctrine §5). */
   incomeTotal:       number;
-  /** Absolute sum of negative amounts in non-transfer, non-payment categories. */
+  /**
+   * Gross absolute sum over flowType ∈ {SPENDING, FEE, INTEREST} (D-2).
+   * Refunds are NEVER netted here — see refundTotal (D-3) — preserving the
+   * KD-17 debit-only reconciliation with byCategory.
+   */
   expenseTotal:      number;
-  /** Absolute sum of Payment category (debt repayment). */
+  /**
+   * Gross absolute sum of flowType=REFUND rows (D-3): reversals of prior
+   * spending, disclosed as a first-class figure. NOT income; consumers net
+   * explicitly. Includes any positive spend-category rows the classifier
+   * folded to REFUND (e.g. misclassified card-payment credits — N10 caveat).
+   */
+  refundTotal:       number;
+  /** Absolute sum of source-side (amount < 0) flowType=DEBT_PAYMENT legs. */
   debtPaymentTotal:  number;
-  /** Absolute sum of Transfer category (internal moves, both directions). */
+  /** Absolute sum of flowType=TRANSFER (internal moves, both directions). */
   transferTotal:     number;
-  /** incomeTotal − expenseTotal − debtPaymentTotal (excludes transfers). */
+  /** incomeTotal + refundTotal − expenseTotal − debtPaymentTotal (D-4; excludes transfers). */
   netCashFlow:       number;
 
   // ── Pending ─────────────────────────────────────────────────────────────
