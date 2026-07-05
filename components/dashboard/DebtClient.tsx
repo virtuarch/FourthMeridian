@@ -12,7 +12,11 @@ import {
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate as formatDateUTC } from "@/lib/format";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
-import { estimateMinimumPayment } from "@/lib/debt";
+import {
+  estimateMinimumPayment,
+  totalDebtPaid as computeTotalDebtPaid,
+  rollupDebtPaymentsByAccount,
+} from "@/lib/debt";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtUSD = (n: number) =>
@@ -425,10 +429,17 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
   const totalPages    = Math.ceil(filteredTxs.length / PAGE_ROWS);
   const pageSlice     = filteredTxs.slice(modalPage * PAGE_ROWS, (modalPage + 1) * PAGE_ROWS);
 
-  // Payments made toward the card balance (positive txs with category Payment)
-  const totalDebtPaid = baseTxs
-    .filter((t) => t.category === "Payment")
-    .reduce((s, t) => s + Math.abs(t.amount), 0);
+  // Payments made toward the card balance (flowType = DEBT_PAYMENT — FlowType
+  // P5 Slice 3; replaces the category === "Payment" string heuristic).
+  const totalDebtPaid = computeTotalDebtPaid(baseTxs);
+
+  // Per-liability payment rollup (KD-18 capability): payments grouped by the
+  // receiving card. Shown only in the unfiltered view — with a card selected
+  // it would be a single entry equal to totalDebtPaid.
+  const debtPaidByCard = useMemo(
+    () => (selectedCardId ? [] : rollupDebtPaymentsByAccount(baseTxs)),
+    [selectedCardId, baseTxs],
+  );
 
   return (
     <div className="space-y-6">
@@ -995,6 +1006,13 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions 
                     Total Debt Paid: {fmtFull(totalDebtPaid)}
                   </span>
                 )}
+                {/* Per-liability breakdown (P5 Slice 3 / KD-18) — only when
+                    more than one card received payments in this range. */}
+                {debtPaidByCard.length > 1 && debtPaidByCard.map((e) => (
+                  <span key={e.accountId} className="text-xs" style={{ color: "var(--text-muted)" }}>
+                    {cards.find((c) => c.id === e.accountId)?.name ?? "Other"}: {fmtFull(e.total)}
+                  </span>
+                ))}
               </div>
               {baseTxs.length > COMPACT_ROWS && (
                 <button
