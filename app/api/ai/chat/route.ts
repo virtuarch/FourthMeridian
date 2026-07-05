@@ -416,13 +416,9 @@ const CATEGORY_SYNONYMS: Record<string, string> = {
   payment: 'Payment', payments: 'Payment',
 };
 
-/** Non-spending categories — a drilldown into one of these opts into inflows/
- *  transfers/payments instead of the default spending-only (amount < 0) filter.
- *  FlowType P5 Slice 6: unreferenced since the flow-derived set below took over.
- *  Deletion DEFERRED to Slice 7 (gated on a zero-reference grep) — do not
- *  remove here. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const NON_SPENDING_CATEGORY_SET = new Set(['Income', 'Interest', 'Transfer', 'Payment']);
+// FlowType P5 Slice 7: the legacy NON_SPENDING_CATEGORY_SET was deleted after
+// the Slice 6 cutover left it with zero runtime references — the flow-derived
+// set below is the single successor.
 
 // ── FlowType P5 Slice 6 — flow-derived category name sets ────────────────────
 // Successor to the hand-written {Income, Interest, Transfer, Payment} copies:

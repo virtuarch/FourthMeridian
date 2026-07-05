@@ -269,10 +269,11 @@ export function isSpendingFlow(c: FlowClassification): boolean {
 }
 
 /**
- * True when the flow is excluded from spending analysis — the classifier
- * counterpart of annotations.ts SPENDING_EXCLUDED. Not routed in P1 (see the
- * checklist §1.2 gate); exported so the equivalence harness can prove where it
- * does and does not reproduce the legacy set.
+ * True when the flow is excluded from spending analysis. Since P5 Slice 5 this
+ * IS the annotations.ts opportunity-eligibility gate (the legacy hand-written
+ * SPENDING_EXCLUDED set was deleted in Slice 7); the equivalence harness in
+ * flow-classifier.test.ts §3 keeps proving parity with the legacy set over the
+ * banking-category domain.
  */
 export function isExcludedFromSpending(c: FlowClassification): boolean {
   return !isSpendingFlow(c);

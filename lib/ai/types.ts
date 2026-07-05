@@ -422,8 +422,9 @@ export interface MerchantSummary {
  * key (lib/transactions/merchant.ts).
  *
  * INCOME-ONLY invariant: built exclusively from settled INFLOW rows — amount > 0
- * in the Income and Interest categories (the same INCOME_CATEGORIES set that
- * feeds the top-level incomeTotal). Transfers are excluded. `total` is the
+ * with flowType=INCOME (the same population that feeds the top-level
+ * incomeTotal; includes dividends and interest earned since P5 Slice 4).
+ * Transfers are excluded. `total` is the
  * (positive) sum of these settled inflow amounts. There is no `category` field:
  * every entry is, by construction, an income/interest source. This is where
  * payroll surfaces — it must never be described as a spending merchant.

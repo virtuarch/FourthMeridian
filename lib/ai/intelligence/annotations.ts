@@ -751,16 +751,9 @@ function derivePriorities(
 
 // ── 2.3 Spending Opportunity computation ─────────────────────────────────────
 
-/**
- * Categories excluded from expense opportunity analysis.
- * Income / Interest (income) / Transfer are not spending.
- * Payment (debt repayment) is handled by the Debt Strategy engine.
- * FlowType P5 Slice 5: unreferenced since the gate cut over to flow semantics
- * (see classifySpendingCategory). Deletion is deliberately DEFERRED to Slice 7
- * (gated on a zero-reference grep) per the P5 plan — do not remove here.
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const SPENDING_EXCLUDED = new Set(['Income', 'Interest', 'Transfer', 'Payment']);
+// FlowType P5 Slice 7: the legacy SPENDING_EXCLUDED set was deleted after the
+// Slice 5 gate cutover left it with zero runtime references — the exclusion is
+// now flow semantics (see classifySpendingCategory below).
 
 const SPENDING_DISCRETIONARY      = new Set(['Dining', 'Shopping', 'Travel', 'Subscriptions']);
 const SPENDING_SEMI_DISCRETIONARY = new Set(['Groceries']);
@@ -771,7 +764,8 @@ function classifySpendingCategory(category: string): SpendingCategoryClassificat
   // enters opportunity analysis only when its rows classify as a spending flow
   // (flowType ∈ {SPENDING, REFUND}). The probe uses amount −1 because
   // byCategory `total` is the KD-17 debit-only population this section ranks.
-  // Parity with the legacy SPENDING_EXCLUDED set over banking categories was
+  // Parity with the legacy {Income, Interest, Transfer, Payment} exclusion set
+  // over banking categories was
   // proven by the P1 harness (flow-classifier.test.ts §3a); the deliberate
   // divergence: post-Slice-4 Fee entries (flowType=FEE) are now gated out
   // instead of surfacing as REVIEW_NEEDED — a fee is not a spending-reduction

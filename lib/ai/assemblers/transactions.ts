@@ -95,46 +95,11 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
   TransactionCategory.Other,
 ];
 
-/**
- * Categories that represent money flowing in (income / interest).
- * FlowType P5 Slice 4: unreferenced since the flow cutover. Deletion is
- * deliberately DEFERRED to Slice 7 (gated on a zero-reference grep across the
- * repo) per the P5 plan — do not remove here.
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const INCOME_CATEGORIES = new Set<TransactionCategory>([
-  TransactionCategory.Income,
-  TransactionCategory.Interest,
-]);
-
-/**
- * Categories excluded from the SPENDING merchant rollup (D6.3 stabilization).
- * These are not discretionary spend: Income + Interest are inflows, Transfer is
- * an internal move, and Payment is debt repayment. Combined with the amount < 0
- * expense filter, this guarantees payroll, transfers, and debt payments can
- * never surface as "top spending merchants".
- */
-const MERCHANT_EXCLUDED_CATEGORIES = new Set<TransactionCategory>([
-  TransactionCategory.Income,
-  TransactionCategory.Interest,
-  TransactionCategory.Transfer,
-  TransactionCategory.Payment,
-]);
-
-/**
- * Discretionary SPENDING categories — banking categories minus the non-spending
- * set above. Used as the default category filter for a drilldown that names no
- * specific category (e.g. "why is January so high?" / "show me the largest
- * transactions"), so payroll, transfers, and debt payments are excluded unless
- * the user explicitly asks about one of those.
- * FlowType P5 Slice 4: unreferenced since the flow cutover (drilldown default
- * is now flowType=SPENDING, D-5). Deletion DEFERRED to Slice 7 (gated) — do
- * not remove here.
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const SPENDING_CATEGORIES: TransactionCategory[] = BANKING_CATEGORIES.filter(
-  (c) => !MERCHANT_EXCLUDED_CATEGORIES.has(c),
-);
+// FlowType P5 Slice 7: the legacy INCOME_CATEGORIES / MERCHANT_EXCLUDED_CATEGORIES /
+// SPENDING_CATEGORIES sets were deleted after the flow cutover (Slices 4–6) left
+// them with zero runtime references. flowType/flowDirection is the single
+// semantic authority. BANKING_CATEGORIES above remains: it is list membership
+// (resolveCategory drilldown phrase → category), not flow semantics.
 
 /**
  * FlowType P5 Slice 4 (D-1) — the banking-flow row set. Which rows the AI sees
@@ -503,11 +468,10 @@ async function assembleTransactions(
   // absolute settled expense sum (mirrors byCategory/cash-flow money
   // conventions); `category` is the merchant's dominant spending category.
   //
-  // SPENDING-ONLY (D6.3): only settled EXPENSE rows are grouped here — amount < 0
-  // AND category not in MERCHANT_EXCLUDED_CATEGORIES (Income, Interest, Transfer,
-  // Payment). This is what keeps payroll, internal transfers, and debt payments
-  // out of "top merchants by spend"; inflows are rolled up separately into
-  // `incomeSources` below.
+  // SPENDING-ONLY (D6.3, flow semantics since Slice 4): only settled
+  // flowType=SPENDING rows are grouped here. This is what keeps payroll,
+  // internal transfers, debt payments, fees, and refunds out of "top merchants
+  // by spend"; inflows are rolled up separately into `incomeSources` below.
 
   let merchants: MerchantSummary[] | undefined;
 
@@ -585,10 +549,11 @@ async function assembleTransactions(
 
   // ── Income-source rollup (D6.3 stabilization — INFLOW sources only) ───────
   // Mirror image of the merchant rollup: groups settled INFLOW rows by the same
-  // canonical key. Included = positive amount in an INCOME_CATEGORIES bucket
-  // (Income + Interest — the same set that feeds the top-level incomeTotal, so
-  // the numbers reconcile). Transfers are excluded by construction (Transfer is
-  // not in INCOME_CATEGORIES). This is where payroll belongs — never `merchants`.
+  // canonical key. Included = positive amount with flowType=INCOME (the same
+  // population that feeds the top-level incomeTotal, so the numbers reconcile;
+  // includes dividends and interest earned since Slice 4). Transfers are
+  // excluded by construction (TRANSFER is a different flow). This is where
+  // payroll belongs — never `merchants`.
 
   let incomeSources: IncomeSource[] | undefined;
 
