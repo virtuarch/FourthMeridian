@@ -5,6 +5,9 @@
  * safe to call from data-layer code, API routes, or tests.
  */
 
+import { convertMoney } from "@/lib/money/convert";
+import type { ConversionContext } from "@/lib/money/types";
+
 /**
  * Estimates a monthly minimum payment when the user has supplied an APR but
  * no actual minimum payment (Plaid does not reliably provide this, and not
@@ -27,11 +30,30 @@ export function estimateMinimumPayment(balance: number, aprPercent: number): num
  * Minimal transaction shape for the rollups below — a structural subset of the
  * Transaction DTO (types/index.ts), kept local so this module stays
  * dependency-free.
+ *
+ * currency/dateISO (MC1 Phase 2 Slice 4): optional conversion inputs. Only
+ * consulted when a ConversionContext is supplied; rows without them degrade
+ * per plan D-3 (native amount, estimated) — with the Phase 2 identityContext
+ * the arithmetic is identical either way (golden-pinned).
  */
 export interface DebtPaymentTxnLike {
   accountId: string;
   amount: number;
   flowType?: string | null;
+  currency?: string | null;
+  /** Row valuation date ("YYYY-MM-DD") for historical FX (plan D-6). */
+  dateISO?: string;
+}
+
+/**
+ * MC1 Phase 2 Slice 4 — per-row amount in the context target. No context ⇒
+ * the native amount, byte-for-byte (kill switch). Convert-then-abs: with
+ * positive rates, |convert(x)| === convert(|x|), so the abs-sum shape of the
+ * rollups is preserved; under identity it is exactly the native |amount|.
+ */
+function rowAmount(t: DebtPaymentTxnLike, ctx?: ConversionContext): number {
+  if (!ctx) return t.amount;
+  return convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.dateISO ?? "", ctx).amount;
 }
 
 /**
@@ -44,10 +66,10 @@ export interface DebtPaymentTxnLike {
  * of the legacy computation. Rows with null flowType are excluded — the
  * non-null invariant holds for all production writers (P5 Slice 0 + backfill).
  */
-export function totalDebtPaid(txs: DebtPaymentTxnLike[]): number {
+export function totalDebtPaid(txs: DebtPaymentTxnLike[], ctx?: ConversionContext): number {
   let sum = 0;
   for (const t of txs) {
-    if (t.flowType === 'DEBT_PAYMENT') sum += Math.abs(t.amount);
+    if (t.flowType === 'DEBT_PAYMENT') sum += Math.abs(rowAmount(t, ctx));
   }
   return sum;
 }
@@ -65,7 +87,10 @@ export interface DebtPaymentRollupEntry {
  * Callers pass rows already scoped to debt accounts (getDebtTransactions),
  * so each row's accountId identifies the liability that received the payment.
  */
-export function rollupDebtPaymentsByAccount(txs: DebtPaymentTxnLike[]): DebtPaymentRollupEntry[] {
+export function rollupDebtPaymentsByAccount(
+  txs: DebtPaymentTxnLike[],
+  ctx?: ConversionContext,
+): DebtPaymentRollupEntry[] {
   const byAccount = new Map<string, DebtPaymentRollupEntry>();
   for (const t of txs) {
     if (t.flowType !== 'DEBT_PAYMENT') continue;
@@ -74,7 +99,7 @@ export function rollupDebtPaymentsByAccount(txs: DebtPaymentTxnLike[]): DebtPaym
       entry = { accountId: t.accountId, total: 0, count: 0 };
       byAccount.set(t.accountId, entry);
     }
-    entry.total += Math.abs(t.amount);
+    entry.total += Math.abs(rowAmount(t, ctx));
     entry.count += 1;
   }
   return [...byAccount.values()].sort((a, b) => b.total - a.total);

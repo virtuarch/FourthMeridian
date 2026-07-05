@@ -64,6 +64,8 @@ import { checkSpendingCategoryInvariant } from '@/lib/ai/assemblers/transactions
 import { classifyFlow } from '@/lib/transactions/flow-classifier';
 import { getDebtTransactions } from '@/lib/data/transactions';
 import { rollupDebtPaymentsByAccount } from '@/lib/debt';
+import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
+import { identityContext } from '@/lib/money/convert';
 import type { AccountsSectionData } from '@/lib/ai/types';
 import { validateOutput, applyEnforcement } from '@/lib/ai/output-validator';
 import type { ValidationResult, EnforcementMode } from '@/lib/ai/output-validator';
@@ -671,7 +673,9 @@ async function fetchPerLiabilityDebtPayments(ctx: SpaceContext_AI): Promise<Debt
     const inWindow = rows.filter(
       (r) => !r.pending && r.date >= txn.startDate && r.date <= txn.endDate,
     );
-    const rollup = rollupDebtPaymentsByAccount(inWindow);
+    // MC1 Phase 2 Slice 4 — identity context (target = USD): byte-identical
+    // rollup, seam live on the server path; Phase 3 flips the target here.
+    const rollup = rollupDebtPaymentsByAccount(inWindow, identityContext(DEFAULT_DISPLAY_CURRENCY));
     if (rollup.length === 0) return [];
     const accounts =
       (ctx.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData | undefined)?.accounts ?? [];

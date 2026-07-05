@@ -36,6 +36,7 @@ import { db } from "@/lib/db";
 import { getAccounts } from "@/lib/data/accounts";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { identityContext } from "@/lib/money/convert";
 import { ShareStatus } from "@prisma/client";
 
 function todayUTC(): Date {
@@ -54,7 +55,10 @@ export async function regenerateSpaceSnapshot(
   date: Date = todayUTC(),
 ): Promise<void> {
   const accounts = await getAccounts({ spaceId });
-  const c = classifyAccounts(accounts);
+  // MC1 Phase 2 Slice 3 — identity context (target = USD): byte-identical
+  // totals, proves the conversion seam live on the snapshot write path.
+  // MC1 Phase 3 swaps this for the Space's reporting-currency context.
+  const c = classifyAccounts(accounts, identityContext(DEFAULT_DISPLAY_CURRENCY));
 
   const stocks     = c.totalInvestments;
   const crypto     = c.totalDigitalAssets;

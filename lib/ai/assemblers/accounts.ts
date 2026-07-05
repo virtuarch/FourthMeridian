@@ -51,6 +51,8 @@ import { db } from '@/lib/db';
 import { ShareStatus, PlaidItemStatus, VisibilityLevel } from '@prisma/client';
 
 import { classifyAccounts, type ClassifiableAccount } from '@/lib/account-classifier';
+import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
+import { identityContext } from '@/lib/money/convert';
 import { genericAccountName } from '@/lib/account-privacy';
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
@@ -196,15 +198,21 @@ async function assembleAccounts(
 
   // ── Classify ──────────────────────────────────────────────────────────────
   // classifyAccounts() needs only { type, balance } — available regardless of
-  // visibility level, so all accounts contribute to totals.
+  // visibility level, so all accounts contribute to totals. currency rides
+  // along for the MC1 conversion seam (identical totals under identity).
 
   const classifiableAll: ClassifiableAccount[] = links.map((l) => ({
     type:       l.financialAccount.type,
     balance:    l.financialAccount.balance,
+    currency:   l.financialAccount.currency,
     syncStatus: l.financialAccount.syncStatus ?? undefined,
   }));
 
-  const classification = classifyAccounts(classifiableAll);
+  // MC1 Phase 2 Slice 3 — identity context (target = USD): byte-identical
+  // totals (golden-pinned); NO AI behavior change. The "summed without
+  // conversion" limitation notes in lib/ai/types.ts remain true until the
+  // MC1 Phase 3 flip swaps the real target in at this seam.
+  const classification = classifyAccounts(classifiableAll, identityContext(DEFAULT_DISPLAY_CURRENCY));
 
   // ── Health summary ────────────────────────────────────────────────────────
 

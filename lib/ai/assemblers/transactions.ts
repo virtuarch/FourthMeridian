@@ -74,6 +74,9 @@ import type {
   DrilldownTransaction,
 } from '@/lib/ai/types';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
+import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
+import { convertMoney, identityContext } from '@/lib/money/convert';
+import type { ConversionContext } from '@/lib/money/types';
 import type { SpaceContext } from '@/lib/space';
 
 // ---------------------------------------------------------------------------
@@ -181,11 +184,32 @@ type TxnRow = {
   category: TransactionCategory;
   amount:   number;
   pending:  boolean;
+  // MC1 Phase 2 Slice 4 — Phase 0 provenance stamp; conversion input for the
+  // money-context seam below. Null = pre-backfill residue (native
+  // pass-through under any context, plan D-3).
+  currency: string | null;
   // FlowType P5 Slice 4 — flow semantics. Non-null for every row the
   // BANKING_FLOWS query filter admits (the filter is on flowType itself).
   flowType:      FlowType | null;
   flowDirection: FlowDirection | null;
 };
+
+/**
+ * MC1 Phase 2 Slice 4 — a row's amount in the money-context target, converted
+ * at the ROW's own date (historical FX per row, plan D-6). Under the Phase 2
+ * identityContext this returns txn.amount exactly (identity / native
+ * pass-through), so every accumulator below is byte-identical to the
+ * pre-threading code — pinned by transactions.golden.test.ts. Sign is
+ * preserved by positive rates, so sign-partitioned accumulators (debit vs
+ * credit, source-side legs) partition identically.
+ */
+function amountInTarget(txn: TxnRow, ctx: ConversionContext): number {
+  return convertMoney(
+    { amount: txn.amount, currency: txn.currency },
+    txn.date.toISOString().slice(0, 10),
+    ctx,
+  ).amount;
+}
 
 // ---------------------------------------------------------------------------
 // Assembler implementation
@@ -252,6 +276,7 @@ async function assembleTransactions(
       category:      true,
       amount:        true,
       pending:       true,
+      currency:      true, // MC1 Phase 2 Slice 4 — read-only conversion input
       flowType:      true,
       flowDirection: true,
     },
@@ -279,6 +304,12 @@ async function assembleTransactions(
 
   // ── Cash flow aggregation (settled only) ──────────────────────────────────
 
+  // MC1 Phase 2 Slice 4 — the money context for every accumulator in this
+  // assembler. Identity (target = USD) in Phase 2: byte-identical totals, NO
+  // AI behavior change; the lib/ai/types.ts "summed without conversion" notes
+  // remain true until the MC1 Phase 3 flip swaps a real target in here.
+  const moneyCtx = identityContext(DEFAULT_DISPLAY_CURRENCY);
+
   let incomeTotal      = 0;
   let expenseTotal     = 0;
   let refundTotal      = 0;
@@ -286,7 +317,9 @@ async function assembleTransactions(
   let transferTotal    = 0;
 
   let largestIncomeRow:  TxnRow | null = null;
+  let largestIncomeAmt   = 0; // largestIncomeRow's amount in target units
   let largestExpenseRow: TxnRow | null = null;
+  let largestExpenseAmt  = 0; // |largestExpenseRow| in target units
 
   // KD-17: debit and credit sums are tracked SEPARATELY per category. The old
   // accumulator summed signed amounts and emitted |net| as "total", which let
@@ -297,10 +330,14 @@ async function assembleTransactions(
   const categoryMap = new Map<string, { debitTotal: number; creditTotal: number; count: number }>();
 
   for (const txn of settled) {
+    // MC1 Phase 2 Slice 4 — one converted amount per row drives every
+    // accumulator and comparison below (identity in Phase 2 ⇒ amt === txn.amount).
+    const amt = amountInTarget(txn, moneyCtx);
+
     // Category bucket accumulator
     const entry = categoryMap.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
-    if (txn.amount < 0) entry.debitTotal += Math.abs(txn.amount);
-    else if (txn.amount > 0) entry.creditTotal += txn.amount;
+    if (amt < 0) entry.debitTotal += Math.abs(amt);
+    else if (amt > 0) entry.creditTotal += amt;
     entry.count += 1;
     categoryMap.set(txn.category, entry);
 
@@ -309,7 +346,7 @@ async function assembleTransactions(
     // this loop (excluded by the BANKING_FLOWS query filter).
 
     if (txn.flowType === FlowType.TRANSFER) {
-      transferTotal += Math.abs(txn.amount);
+      transferTotal += Math.abs(amt);
       continue;
     }
 
@@ -317,15 +354,18 @@ async function assembleTransactions(
       // Source-side legs only (amount < 0). Destination-side INFLOW legs on
       // debt accounts are deliberately excluded — counting both sides would
       // double-count; the per-liability view is Slice 3's DebtClient rollup.
-      if (txn.amount < 0) debtPaymentTotal += Math.abs(txn.amount);
+      if (amt < 0) debtPaymentTotal += Math.abs(amt);
       continue;
     }
 
     if (txn.flowType === FlowType.INCOME) {
-      if (txn.amount > 0) {
-        incomeTotal += txn.amount;
-        if (!largestIncomeRow || txn.amount > largestIncomeRow.amount) {
+      if (amt > 0) {
+        incomeTotal += amt;
+        // Largest selected in TARGET units (identical under identity); the row
+        // object itself keeps its native amount for downstream serialization.
+        if (!largestIncomeRow || amt > largestIncomeAmt) {
           largestIncomeRow = txn;
+          largestIncomeAmt = amt;
         }
       }
       continue;
@@ -334,15 +374,16 @@ async function assembleTransactions(
     if (txn.flowType === FlowType.REFUND) {
       // D-3: disclosed gross; never netted into expenseTotal (KD-17) and
       // never counted as income (a refund reverses prior spending).
-      refundTotal += Math.abs(txn.amount);
+      refundTotal += Math.abs(amt);
       continue;
     }
 
     // D-2: SPENDING + FEE + INTEREST charges, gross.
     if (txn.flowType !== null && EXPENSE_FLOWS.has(txn.flowType)) {
-      expenseTotal += Math.abs(txn.amount);
-      if (!largestExpenseRow || Math.abs(txn.amount) > Math.abs(largestExpenseRow.amount)) {
+      expenseTotal += Math.abs(amt);
+      if (!largestExpenseRow || Math.abs(amt) > largestExpenseAmt) {
         largestExpenseRow = txn;
+        largestExpenseAmt = Math.abs(amt);
       }
     }
   }
@@ -358,12 +399,13 @@ async function assembleTransactions(
   let pendingDebitTotal  = 0;
 
   for (const txn of pending) {
-    if (txn.amount > 0) {
+    const amt = amountInTarget(txn, moneyCtx); // MC1 P2 Slice 4 (identity today)
+    if (amt > 0) {
       pendingCreditCount++;
-      pendingCreditTotal += txn.amount;
+      pendingCreditTotal += amt;
     } else {
       pendingDebitCount++;
-      pendingDebitTotal += Math.abs(txn.amount);
+      pendingDebitTotal += Math.abs(amt);
     }
   }
 
@@ -407,6 +449,7 @@ async function assembleTransactions(
     win.startIso,
     effectiveEndIso,
     truncated ? coverageStartIso.slice(0, 7) : null,
+    moneyCtx, // MC1 P2 Slice 4 — identity today; Phase 3 flips the target here too
   );
 
   // ── Date range ────────────────────────────────────────────────────────────
@@ -757,6 +800,10 @@ export function buildMonthlyBreakdown(
   // KD-7: YYYY-MM of the fetch-cap coverage floor, or null when not truncated.
   // The month at this boundary had older rows dropped and is flagged incomplete.
   truncatedMonth: string | null,
+  // MC1 Phase 2 Slice 4 — optional money context. Absent ⇒ raw native sums,
+  // byte-for-byte the pre-threading behavior (kd17's call sites are unchanged);
+  // the assembler passes its identity context (identical output, golden-pinned).
+  ctx?: ConversionContext,
 ): MonthlyBreakdownEntry[] {
   type Bucket = {
     incomeTotal:      number;
@@ -787,25 +834,27 @@ export function buildMonthlyBreakdown(
 
   // Settled rows drive money totals + category sums (same rules as the main loop).
   for (const txn of settled) {
+    // MC1 Phase 2 Slice 4 — per-row target amount (native when no ctx).
+    const amt = ctx ? amountInTarget(txn, ctx) : txn.amount;
     const b = bucketFor(monthKey(txn.date));
     b.transactionCount += 1;
     const agg = b.categoryAgg.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
-    if (txn.amount < 0) agg.debitTotal += Math.abs(txn.amount);
-    else if (txn.amount > 0) agg.creditTotal += txn.amount;
+    if (amt < 0) agg.debitTotal += Math.abs(amt);
+    else if (amt > 0) agg.creditTotal += amt;
     agg.count  += 1;
     b.categoryAgg.set(txn.category, agg);
 
     // FlowType P5 Slice 4 — same flow partition rules as the window loop.
     if (txn.flowType === FlowType.TRANSFER) {
-      b.transferTotal += Math.abs(txn.amount);
+      b.transferTotal += Math.abs(amt);
     } else if (txn.flowType === FlowType.DEBT_PAYMENT) {
-      if (txn.amount < 0) b.debtPaymentTotal += Math.abs(txn.amount);
+      if (amt < 0) b.debtPaymentTotal += Math.abs(amt);
     } else if (txn.flowType === FlowType.INCOME) {
-      if (txn.amount > 0) b.incomeTotal += txn.amount;
+      if (amt > 0) b.incomeTotal += amt;
     } else if (txn.flowType === FlowType.REFUND) {
-      b.refundTotal += Math.abs(txn.amount);
+      b.refundTotal += Math.abs(amt);
     } else if (txn.flowType !== null && EXPENSE_FLOWS.has(txn.flowType)) {
-      b.expenseTotal += Math.abs(txn.amount);
+      b.expenseTotal += Math.abs(amt);
     }
   }
 

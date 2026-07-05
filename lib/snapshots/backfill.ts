@@ -31,6 +31,7 @@
 import { db } from "@/lib/db";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { identityContext } from "@/lib/money/convert";
 import { ShareStatus } from "@prisma/client";
 import {
   reconstructDailyCashBalances,
@@ -249,7 +250,9 @@ export async function backfillSpaceSnapshots(
       });
     if (dayAccounts.length === 0) continue;
 
-    const c = classifyAccounts(dayAccounts);
+    // MC1 Phase 2 Slice 3 — identity context, same seam as regenerate.ts
+    // (byte-identical totals; Phase 3 swaps in the real target).
+    const c = classifyAccounts(dayAccounts, identityContext(DEFAULT_DISPLAY_CURRENCY));
     const fields = computeSnapshotFields(c);
     rows.push({ spaceId, date: d, isEstimated: true, reportingCurrency: DEFAULT_DISPLAY_CURRENCY, ...fields });
   }

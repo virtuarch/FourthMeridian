@@ -76,6 +76,11 @@ type Row = {
   category: TransactionCategory;
   amount:   number;
   pending:  boolean;
+  // MC1 Phase 2 Slice 4 — mirrors the assembler's TxnRow (currency stamp;
+  // null = pre-provenance residue). Fixtures use "USD"; these suites call
+  // buildMonthlyBreakdown WITHOUT a money context, exercising the raw
+  // native-sum path — byte-identical to pre-MC1 behavior by construction.
+  currency: string | null;
   // FlowType P5 Slice 4 — mirrors the assembler's TxnRow.
   flowType:      ReturnType<typeof classifyFlow>['flowType'] | null;
   flowDirection: ReturnType<typeof classifyFlow>['flowDirection'] | null;
@@ -97,6 +102,7 @@ function row(
     category,
     amount,
     pending: false,
+    currency: 'USD', // MC1 P2 Slice 4 — mirrors TxnRow; raw path unaffected
     flowType:      c.flowType,
     flowDirection: c.flowDirection,
   };

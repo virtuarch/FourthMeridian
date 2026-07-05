@@ -31,6 +31,10 @@
 
 // ─── Minimum required fields ──────────────────────────────────────────────────
 
+import { convertMoney } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
+
 /**
  * Minimum account fields required for classification.
  * Structurally compatible with both Account (types/index.ts) and
@@ -39,6 +43,14 @@
 export interface ClassifiableAccount {
   type:        string;
   balance:     number;
+  /**
+   * MC1 Phase 2 Slice 3 — the account's native currency (ISO 4217), when the
+   * caller's rows carry it (server rows do — Phase 0 provenance). Optional and
+   * additive: callers passing bare { type, balance } are untouched. Only
+   * consulted when a ConversionContext is supplied; absent/null is the
+   * null-residue case (native amount passes through, plan D-3).
+   */
+  currency?:   string | null;
   /**
    * Optional — only present on Account (personal dashboard).
    * SpaceAccount does not carry this field, so it will be undefined.
@@ -94,18 +106,42 @@ export interface AccountClassification<T extends ClassifiableAccount = Classifia
 
 // ─── Implementation ───────────────────────────────────────────────────────────
 
-function sumBalances(accounts: ClassifiableAccount[]): number {
-  return accounts.reduce((s, a) => s + a.balance, 0);
+/**
+ * MC1 Phase 2 Slice 3 — currency-aware summation behind an optional context.
+ * No context (all client callers; any un-threaded caller) ⇒ the original raw
+ * addition, byte-for-byte — the permanent kill switch. With a context, each
+ * balance converts per row (convert-then-sum, plan D-8); under the Phase 2
+ * identityContext every row takes the identity or native-pass-through branch,
+ * so the accumulation is arithmetically identical to raw addition regardless
+ * of row currencies (the golden suite pins this). The real-rate cutover is
+ * MC1 Phase 3, not here.
+ */
+function sumBalances(
+  accounts: ClassifiableAccount[],
+  ctx?: ConversionContext,
+  valuationDateISO?: string,
+): number {
+  if (!ctx) return accounts.reduce((s, a) => s + a.balance, 0);
+  return accounts.reduce(
+    (s, a) =>
+      s + convertMoney({ amount: a.balance, currency: a.currency ?? null }, valuationDateISO!, ctx).amount,
+    0,
+  );
 }
 
 /**
  * Classify an array of accounts into named buckets and pre-compute totals.
  *
  * @param accounts - Any array whose elements have at least { type, balance }.
+ * @param ctx - Optional ConversionContext (MC1 Phase 2 Slice 3). Absent ⇒
+ *              historical behavior, untouched. Phase 2 server callers pass
+ *              identityContext(DEFAULT_DISPLAY_CURRENCY) — provably identical
+ *              output; MC1 Phase 3 swaps real targets in at this seam.
  * @returns AccountClassification<T> with fully-typed bucket arrays.
  */
 export function classifyAccounts<T extends ClassifiableAccount>(
   accounts: T[],
+  ctx?: ConversionContext,
 ): AccountClassification<T> {
   const checking      = accounts.filter((a) => a.type === "checking");
   const savings       = accounts.filter((a) => a.type === "savings");
@@ -128,14 +164,26 @@ export function classifyAccounts<T extends ClassifiableAccount>(
     }
   }
 
-  const totalChecking      = sumBalances(checking);
-  const totalSavings       = sumBalances(savings);
+  // Live balances value at the latest close (plan D-6); irrelevant under the
+  // Phase 2 identityContext (identity/pass-through branches never read it).
+  const valuationDateISO = ctx ? yesterdayUTCISO() : undefined;
+
+  const totalChecking      = sumBalances(checking, ctx, valuationDateISO);
+  const totalSavings       = sumBalances(savings, ctx, valuationDateISO);
   const totalLiquid        = totalChecking + totalSavings;
-  const totalInvestments   = sumBalances(investments);
-  const totalDigitalAssets = sumBalances(digitalAssets);
-  const totalRealAssets    = sumBalances(realAssets);
-  // Only positive balances count as owed — negative = they owe you
-  const totalLiabilities   = liabilities.reduce((s, a) => s + Math.max(0, a.balance), 0);
+  const totalInvestments   = sumBalances(investments, ctx, valuationDateISO);
+  const totalDigitalAssets = sumBalances(digitalAssets, ctx, valuationDateISO);
+  const totalRealAssets    = sumBalances(realAssets, ctx, valuationDateISO);
+  // Only positive balances count as owed — negative = they owe you.
+  // Convert-then-clamp: with positive rates, sign is preserved, so this is
+  // equivalent to clamp-then-convert and byte-identical under identity.
+  const totalLiabilities   = ctx
+    ? liabilities.reduce(
+        (s, a) =>
+          s + Math.max(0, convertMoney({ amount: a.balance, currency: a.currency ?? null }, valuationDateISO!, ctx).amount),
+        0,
+      )
+    : liabilities.reduce((s, a) => s + Math.max(0, a.balance), 0);
   const totalAssets        = totalLiquid + totalInvestments + totalDigitalAssets + totalRealAssets;
   const netWorth           = totalAssets - totalLiabilities;
 
