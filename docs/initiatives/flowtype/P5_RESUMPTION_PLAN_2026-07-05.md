@@ -1,3 +1,5 @@
+> **SUPERSEDED — point-in-time record (2026-07-05, pre-execution).** This plan was fully executed the same day: Slices 3–7 shipped (`0c89e18` → `f22de52`) and FlowType P5 is **complete**. Authoritative record: `P5_CLOSEOUT_INVESTIGATION_2026-07-05.md`. Do not use this document for current status.
+
 # FlowType P5 — Resumption Plan (Slices 3–7)
 
 **Date:** 2026-07-05

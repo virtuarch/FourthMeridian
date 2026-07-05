@@ -71,7 +71,8 @@ export async function GET(
     category:    r.category,
     amount:      r.amount,
     pending:     r.pending,
-    // FlowType metadata (P5 Slice 1 — additive; not consumed anywhere yet).
+    // FlowType metadata (P5 Slice 1 — additive; consumed since P5 Slice 2 by the
+    // Banking/Space flow totals, and downstream by the Slice 3 debt rollup).
     flowType:                 r.flowType ?? null,
     flowDirection:            r.flowDirection ?? null,
     classificationConfidence: r.classificationConfidence ?? null,

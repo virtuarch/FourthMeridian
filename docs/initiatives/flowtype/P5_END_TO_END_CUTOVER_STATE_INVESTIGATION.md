@@ -1,3 +1,5 @@
+> **SUPERSEDED — point-in-time record (2026-07-04).** This document describes the code state *before* P5 Slices 3–7 landed; its "NOT STARTED" statuses for Slices 3–7 are historical only. FlowType P5 is **complete** (all slices shipped, 2026-07-05). Authoritative record: `P5_CLOSEOUT_INVESTIGATION_2026-07-05.md`. Do not use this document for current status.
+
 > **INVESTIGATION ONLY — no code, schema, migration, or refactor was performed.** This document reconciles the P5 read-cutover plan (`P5_READ_CUTOVER_INVESTIGATION.md`) against the *actual code state on `feature/v2.5-spaces-completion`* as of the date below, and enumerates the remaining work to make FlowType fully end-to-end. Governing design: `FLOWTYPE_FOUNDATION_INVESTIGATION.md`. Stop-after-checklist per instruction.
 
 # FlowType — End-to-End Read/Write Cutover: State & Remaining Work (Investigation)

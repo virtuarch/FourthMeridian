@@ -83,7 +83,8 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
     category:    r.category as Transaction["category"],
     amount:      r.amount,
     pending:     r.pending,
-    // FlowType metadata (P5 Slice 1 — additive; not consumed anywhere yet).
+    // FlowType metadata (P5 Slice 1 — additive; consumed since P5 Slice 2 by the
+    // Banking/Space flow totals, and downstream by the Slice 3 debt rollup).
     flowType:                 r.flowType ?? null,
     flowDirection:            r.flowDirection ?? null,
     classificationConfidence: r.classificationConfidence ?? null,
@@ -120,7 +121,8 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
     category:    r.category as Transaction["category"],
     amount:      r.amount,
     pending:     r.pending,
-    // FlowType metadata (P5 Slice 1 — additive; not consumed anywhere yet).
+    // FlowType metadata (P5 Slice 1 — additive; consumed since P5 Slice 2 by the
+    // Banking/Space flow totals, and downstream by the Slice 3 debt rollup).
     flowType:                 r.flowType ?? null,
     flowDirection:            r.flowDirection ?? null,
     classificationConfidence: r.classificationConfidence ?? null,
