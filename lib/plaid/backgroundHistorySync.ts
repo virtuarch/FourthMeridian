@@ -29,8 +29,48 @@
  */
 
 import { db } from "@/lib/db";
+import { ShareStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth, plaidErrorSummary } from "@/lib/plaid/errors";
+import { backfillSpaceSnapshots } from "@/lib/snapshots/backfill";
+
+/**
+ * D2.x Slice 4 — after first-run history has synced, reconstruct up to 30 days
+ * of historical snapshots for every genuinely-new Space the item's accounts are
+ * shared into. Best-effort / non-fatal: a backfill failure can never affect the
+ * sync result or the already-sent Link response, and the new-Space gate inside
+ * backfillSpaceSnapshots() makes existing Spaces no-ops. Runs only on a
+ * successful sync (full transaction history is required first).
+ */
+async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
+  try {
+    const conns = await db.accountConnection.findMany({
+      where:  { plaidItemDbId: plaidItemId, deletedAt: null },
+      select: { financialAccountId: true },
+    });
+    const faIds = conns.map((c) => c.financialAccountId);
+    if (faIds.length === 0) return;
+
+    const links = await db.spaceAccountLink.findMany({
+      where:  { financialAccountId: { in: faIds }, status: ShareStatus.ACTIVE },
+      select: { spaceId: true },
+    });
+    const spaceIds = [...new Set(links.map((l) => l.spaceId))];
+
+    for (const spaceId of spaceIds) {
+      try {
+        const written = await backfillSpaceSnapshots(spaceId);
+        if (written > 0) {
+          console.log(`[plaid][D2x-slice4] backfilled ${written} snapshot(s) for space ${spaceId} (item ${plaidItemId})`);
+        }
+      } catch (e) {
+        console.error(`[plaid][D2x-slice4] snapshot backfill failed for space ${spaceId} (non-fatal):`, e);
+      }
+    }
+  } catch (e) {
+    console.error(`[plaid][D2x-slice4] snapshot backfill resolution failed for item ${plaidItemId} (non-fatal):`, e);
+  }
+}
 
 /**
  * Runs the deferred first-run transaction history import for one PlaidItem.
@@ -46,6 +86,10 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<void>
         `added ${r.added}, modified ${r.modified}, removed ${r.removed} ` +
         `(created ${r.created}, updatedByPlaidId ${r.updatedByPlaidId}, updatedByFingerprint ${r.updatedByFingerprint}, skippedMissingAccount ${r.skippedMissingAccount})`,
     );
+
+    // D2.x Slice 4 — reconstruct historical snapshots now that full history
+    // exists. Best-effort/non-fatal and gated to new Spaces inside.
+    await backfillHistoryForItem(plaidItemId);
   } catch (e) {
     console.error(
       `[plaid][D2x-slice2] background history sync FAILED for item ${plaidItemId} (non-fatal — Link already succeeded): ${plaidErrorSummary(e)}`,

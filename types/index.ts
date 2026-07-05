@@ -76,6 +76,9 @@ export interface Snapshot {
   totalInvestments: number;
   totalCrypto: number;
   cashOnHand: number;
+  // D2.x Slice 4 — true for reconstructed/backfilled historical rows. Optional
+  // so existing constructors default to undefined (treated as not-estimated).
+  isEstimated?: boolean;
 }
 
 export type TransactionCategory =

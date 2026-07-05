@@ -1,0 +1,170 @@
+/**
+ * lib/snapshots/backfill-core.ts
+ *
+ * D2.x Slice 4 — PURE reconstruction math for the historical snapshot backfill.
+ * No DB, no Prisma, no `new Date()` inside the tested functions (dates are
+ * passed in), so this unit-tests without `prisma generate`. The DB orchestration
+ * (queries, gate, createMany) lives in lib/snapshots/backfill.ts.
+ *
+ * Reconstruction is honest only for CASH (checking/savings): balances are
+ * walked backward from today's real balance using raw signed transaction
+ * amounts (FM convention: +in / −out), with
+ *   eod(d) = eod(d+1) − Σ amount(transactions dated d+1).
+ * Below an account's earliest transaction there are no deltas, so the balance
+ * naturally holds flat — never fabricated. Non-cash (investments/crypto/manual/
+ * loans) are held flat by the caller (they aren't passed here). No FlowType.
+ */
+
+// ── Date helpers (UTC, date-only) ─────────────────────────────────────────────
+
+export function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+export function fromISO(iso: string): Date {
+  return new Date(`${iso}T00:00:00.000Z`);
+}
+
+export function truncDateUTC(d: Date): Date {
+  const t = new Date(d);
+  t.setUTCHours(0, 0, 0, 0);
+  return t;
+}
+
+export function addDaysUTC(d: Date, days: number): Date {
+  const t = truncDateUTC(d);
+  t.setUTCDate(t.getUTCDate() + days);
+  return t;
+}
+
+export function maxDate(a: Date, b: Date): Date {
+  return a.getTime() >= b.getTime() ? a : b;
+}
+
+// ── Cash balance reconstruction ───────────────────────────────────────────────
+
+export interface CashAccountBalance {
+  id:      string;
+  balance: number; // current balance = end-of-day(today)
+}
+
+/**
+ * deltaByAccountDay: accountId → (isoDate → Σ signed amount posted that day).
+ * Returns: isoDate → (accountId → reconstructed end-of-day balance), for every
+ * day in [effectiveStart, today − 1] (today itself is never reconstructed).
+ *
+ * Days are produced newest-first (today−1 down to effectiveStart); Map preserves
+ * insertion order. Missing deltas count as 0 (balance holds flat).
+ */
+export function reconstructDailyCashBalances(
+  cashAccounts: CashAccountBalance[],
+  deltaByAccountDay: Map<string, Map<string, number>>,
+  today: Date,
+  effectiveStart: Date,
+): Map<string, Map<string, number>> {
+  const start = truncDateUTC(effectiveStart);
+  const t0 = truncDateUTC(today);
+  const out = new Map<string, Map<string, number>>();
+
+  // running = end-of-day(today) = current balances.
+  const running = new Map<string, number>(cashAccounts.map((a) => [a.id, a.balance]));
+
+  for (let d = addDaysUTC(t0, -1); d.getTime() >= start.getTime(); d = addDaysUTC(d, -1)) {
+    // Move from eod(d+1) to eod(d) by subtracting the transactions dated (d+1).
+    const dPlus1 = isoDate(addDaysUTC(d, 1));
+    for (const a of cashAccounts) {
+      const sum = deltaByAccountDay.get(a.id)?.get(dPlus1) ?? 0;
+      running.set(a.id, (running.get(a.id) ?? 0) - sum);
+    }
+    out.set(isoDate(d), new Map(running));
+  }
+
+  return out;
+}
+
+/**
+ * D2.x Slice 4B — liability (credit-card) reverse walk. Identical shape to the
+ * cash walk EXCEPT the sign: a liability balance is the amount OWED (stored
+ * positive), which rises with purchases (FM −) and falls with payments/refunds
+ * (FM +). The per-day change in owed is −Σ FM_amount, so the reverse step ADDS:
+ *
+ *   owed(d) = owed(d+1) + Σ amount(txns dated d+1)
+ *
+ * (Sanity: owed today 500; a $100 purchase yesterday is FM −100 ⇒ owed before =
+ * 500 + (−100) = 400 — correctly lower before the charge.) Missing deltas hold
+ * flat. A reconstructed negative owed (overpayment/credit balance) is left as-is
+ * here; classifyAccounts clamps liabilities at max(0, balance) downstream,
+ * matching live behavior.
+ *
+ * The cash walk (reconstructDailyCashBalances) is intentionally left unchanged.
+ */
+export function reconstructDailyLiabilityBalances(
+  liabilityAccounts: CashAccountBalance[],
+  deltaByAccountDay: Map<string, Map<string, number>>,
+  today: Date,
+  effectiveStart: Date,
+): Map<string, Map<string, number>> {
+  const start = truncDateUTC(effectiveStart);
+  const t0 = truncDateUTC(today);
+  const out = new Map<string, Map<string, number>>();
+
+  // running = owed at end-of-day(today) = current balance.
+  const running = new Map<string, number>(liabilityAccounts.map((a) => [a.id, a.balance]));
+
+  for (let d = addDaysUTC(t0, -1); d.getTime() >= start.getTime(); d = addDaysUTC(d, -1)) {
+    const dPlus1 = isoDate(addDaysUTC(d, 1));
+    for (const a of liabilityAccounts) {
+      const sum = deltaByAccountDay.get(a.id)?.get(dPlus1) ?? 0;
+      running.set(a.id, (running.get(a.id) ?? 0) + sum); // ADD (owed) vs SUBTRACT (cash)
+    }
+    out.set(isoDate(d), new Map(running));
+  }
+
+  return out;
+}
+
+// ── Derived snapshot fields (parity with lib/snapshots/regenerate.ts) ─────────
+
+export interface ClassifyTotals {
+  totalInvestments:   number;
+  totalDigitalAssets: number;
+  totalChecking:      number;
+  totalSavings:       number;
+  totalLiabilities:   number;
+  totalRealAssets:    number;
+}
+
+export interface SnapshotFields {
+  stocks:      number;
+  crypto:      number;
+  total:       number;
+  cash:        number;
+  savings:     number;
+  debt:        number;
+  netWorth:    number;
+  totalAssets: number;
+  netLiquid:   number;
+  cashOnHand:  number;
+}
+
+/**
+ * Exact same arithmetic as regenerateSpaceSnapshot (lib/snapshots/regenerate.ts)
+ * so a backfilled row is internally consistent with the live "today" row.
+ * realAssets is included in totalAssets/netWorth, excluded from netLiquid.
+ */
+export function computeSnapshotFields(c: ClassifyTotals): SnapshotFields {
+  const stocks     = c.totalInvestments;
+  const crypto     = c.totalDigitalAssets;
+  const total      = stocks + crypto;
+  const cash       = c.totalChecking;
+  const savings    = c.totalSavings;
+  const debt       = c.totalLiabilities;
+  const realAssets = c.totalRealAssets;
+
+  const totalAssets = total + cash + savings + realAssets;
+  const netWorth    = totalAssets - debt;
+  const netLiquid   = cash + savings - debt;
+  const cashOnHand  = Math.max(cash, 0);
+
+  return { stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
+}

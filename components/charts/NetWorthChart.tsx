@@ -4,6 +4,7 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "rec
 import { Snapshot } from "@/types";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { ChartFirstDayPlaceholder } from "./ChartFirstDayPlaceholder";
+import { EstimatedHistoryBadge } from "./EstimatedHistoryBadge";
 
 export type Interval = "7D" | "1M" | "3M" | "6M" | "YTD" | "1Y";
 
@@ -79,6 +80,8 @@ export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode 
     );
   }
 
+  const hasEstimated = filtered.some((s) => s.isEstimated);
+
   return (
     <div>
       <div className="flex items-center gap-1 mb-3 flex-wrap">
@@ -95,6 +98,11 @@ export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode 
             {label}
           </button>
         ))}
+        {hasEstimated && (
+          <span className="ml-auto">
+            <EstimatedHistoryBadge />
+          </span>
+        )}
       </div>
 
       <ResponsiveContainer width="100%" height={chartHeight}>

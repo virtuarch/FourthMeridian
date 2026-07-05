@@ -33,6 +33,8 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
     totalInvestments: r.stocks,
     totalCrypto:      r.crypto,
     cashOnHand:       r.cashOnHand,
+    // D2.x Slice 4 — provenance for the estimated-history badge.
+    isEstimated:      r.isEstimated ?? false,
   }));
 }
 
