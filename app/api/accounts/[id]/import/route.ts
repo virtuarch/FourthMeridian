@@ -313,7 +313,11 @@ export const POST = withApiHandler(async (
   // counterpartyAccountId stays null throughout (no inference).
   const flowAcct = await db.financialAccount.findUnique({
     where:  { id: financialAccountId },
-    select: { type: true, debtSubtype: true },
+    // currency: MC1 Phase 0 Slice 2 — import files carry no per-row currency
+    // column (lib/imports/csv.ts), so created rows are stamped with the
+    // target account's currency; null if the account row is missing. Never
+    // defaulted to USD here.
+    select: { type: true, debtSubtype: true, currency: true },
   });
   const flowAccountContext = {
     accountType: (flowAcct?.type as string | null) ?? null,
@@ -374,6 +378,9 @@ export const POST = withApiHandler(async (
             pending:               false,
             externalTransactionId: row.externalTransactionId,
             importBatchId:         batch.id, // only set on rows this batch creates — never on MATCH
+            // MC1 Phase 0 Slice 2 — the target account's currency (files
+            // carry no per-row currency column).
+            currency:              flowAcct?.currency ?? null,
             ...flowFields,
           },
         });
@@ -392,6 +399,9 @@ export const POST = withApiHandler(async (
               // FlowType P5 Slice 0 — read existing provider hints so a re-classify
               // preserves them (never overwrites pfc/merchantEntityId with null).
               pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true, merchantEntityId: true,
+              // MC1 Phase 0 Slice 2 — read the existing stamp so the update
+              // below preserves it (or fills it opportunistically if null).
+              currency: true,
             },
           });
           if (existing) {
@@ -419,7 +429,11 @@ export const POST = withApiHandler(async (
               });
               await db.transaction.update({
                 where: { id: result.transactionId },
-                data:  { ...diff, ...flowFields },
+                // currency (MC1 Phase 0 Slice 2): preserve the existing stamp,
+                // else stamp the target account's currency opportunistically.
+                // Deliberately NOT part of computeQuickBooksUpdateDiff —
+                // currency must never be what *triggers* an update.
+                data:  { ...diff, ...flowFields, currency: existing.currency ?? flowAcct?.currency ?? null },
               });
               updatedTransactionIds.push(result.transactionId);
             }

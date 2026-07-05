@@ -30,6 +30,7 @@
 
 import { db } from "@/lib/db";
 import { classifyAccounts } from "@/lib/account-classifier";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { ShareStatus } from "@prisma/client";
 import {
   reconstructDailyCashBalances,
@@ -221,8 +222,11 @@ export async function backfillSpaceSnapshots(
   const dailyCardDebt = reconstructDailyLiabilityBalances(cardAccounts, deltaByCardDay, today, effectiveStart);
 
   // Build one row per reconstructed day (today already excluded by the core).
+  // reportingCurrency (MC1 Phase 0 Slice 2): reconstructed rows declare their
+  // computation currency exactly like live rows — same explicit stamp as
+  // lib/snapshots/regenerate.ts. Behavior-neutral: always "USD" today.
   const rows: Array<{
-    spaceId: string; date: Date; isEstimated: true;
+    spaceId: string; date: Date; isEstimated: true; reportingCurrency: string;
     stocks: number; crypto: number; total: number; cash: number; savings: number;
     debt: number; netWorth: number; totalAssets: number; netLiquid: number; cashOnHand: number;
   }> = [];
@@ -247,7 +251,7 @@ export async function backfillSpaceSnapshots(
 
     const c = classifyAccounts(dayAccounts);
     const fields = computeSnapshotFields(c);
-    rows.push({ spaceId, date: d, isEstimated: true, ...fields });
+    rows.push({ spaceId, date: d, isEstimated: true, reportingCurrency: DEFAULT_DISPLAY_CURRENCY, ...fields });
   }
 
   if (rows.length === 0) return 0;

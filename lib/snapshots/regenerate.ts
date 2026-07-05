@@ -35,6 +35,7 @@
 import { db } from "@/lib/db";
 import { getAccounts } from "@/lib/data/accounts";
 import { classifyAccounts } from "@/lib/account-classifier";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { ShareStatus } from "@prisma/client";
 
 function todayUTC(): Date {
@@ -71,16 +72,25 @@ export async function regenerateSpaceSnapshot(
   // cash rather than an invented buffer amount.
   const cashOnHand  = Math.max(cash, 0);
 
+  // MC1 Phase 0 Slice 2 — every snapshot row declares the currency its totals
+  // were computed and presented in. Stamped explicitly (not left to the DB
+  // default) so the writer's declaration is visible and greppable; the source
+  // is lib/currency.ts, the designated swap point when reporting currency
+  // moves to the Space (MC1 Phase 3). Behavior-neutral: always "USD" today.
+  const reportingCurrency = DEFAULT_DISPLAY_CURRENCY;
+
   await db.spaceSnapshot.upsert({
     where: { spaceId_date: { spaceId, date } },
     create: {
       spaceId, date,
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
+      reportingCurrency,
     },
     update: {
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
+      reportingCurrency,
     },
   });
 }

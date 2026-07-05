@@ -411,16 +411,18 @@ export async function performPlaidTokenExchange(
         const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
         if (!acctHoldings.length) continue;
 
+        // currency in both selects: MC1 Phase 0 Slice 2 — account-level
+        // fallback for the per-holding currency stamp below.
         const holdingPlaidIdentity = await db.providerAccountIdentity.findFirst({
           where:  { provider: ProviderType.PLAID, externalAccountId: plaidAcct.account_id },
-          select: { financialAccount: { select: { id: true } } },
+          select: { financialAccount: { select: { id: true, currency: true } } },
         });
 
         let fa = holdingPlaidIdentity?.financialAccount ?? null;
         if (!fa) {
           fa = await db.financialAccount.findUnique({
             where:  { plaidAccountId: plaidAcct.account_id },
-            select: { id: true },
+            select: { id: true, currency: true },
           });
           if (fa) {
             console.warn(
@@ -451,6 +453,10 @@ export async function performPlaidTokenExchange(
               price:    currentPrice,
               value:    h.institution_value ?? h.quantity * currentPrice,
               change24h,
+              // MC1 Phase 0 Slice 2 — valuation currency of price/value:
+              // Plaid holding code, else its security's code, else the
+              // account currency. Null only if all three are absent.
+              currency: h.iso_currency_code ?? sec.iso_currency_code ?? fa.currency ?? null,
             },
           });
           holdingsImported++;

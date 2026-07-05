@@ -285,19 +285,21 @@ export async function refreshPlaidItem(
         // D2 Step 1D — findFirst, not findUnique: see
         // lib/accounts/reconcile.ts for why (provider, externalAccountId) is
         // no longer a named unique key.
+        // currency in both selects: MC1 Phase 0 Slice 2 — account-level
+        // fallback for the per-holding currency stamp below.
         const holdingPlaidIdentity = await db.providerAccountIdentity.findFirst({
           where: { provider: ProviderType.PLAID, externalAccountId: plaidAcct.account_id },
-          select: { financialAccount: { select: { id: true } } },
+          select: { financialAccount: { select: { id: true, currency: true } } },
         });
 
         let fa = holdingPlaidIdentity?.financialAccount ?? null;
         if (!fa) {
           // Selected via a separate variable (not assigned straight into
           // `fa`) so `deletedAt` is available to gate the warning below
-          // without widening `fa`'s declared type beyond `{ id }`.
+          // without widening `fa`'s declared type beyond `{ id, currency }`.
           const legacyFa = await db.financialAccount.findUnique({
             where:  { plaidAccountId: plaidAcct.account_id },
-            select: { id: true, deletedAt: true },
+            select: { id: true, currency: true, deletedAt: true },
           });
           // Only warn for accounts still in active use — an archived
           // account hitting the legacy fallback is expected, not a coverage
@@ -333,6 +335,10 @@ export async function refreshPlaidItem(
               price:     currentPrice,
               value:     h.institution_value ?? h.quantity * currentPrice,
               change24h,
+              // MC1 Phase 0 Slice 2 — valuation currency of price/value:
+              // Plaid holding code, else its security's code, else the
+              // account currency. Null only if all three are absent.
+              currency:  h.iso_currency_code ?? sec.iso_currency_code ?? fa.currency ?? null,
             },
           });
           holdingsUpdated++;

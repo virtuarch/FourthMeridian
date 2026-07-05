@@ -141,15 +141,17 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   // Account-context cache for the classifier (accountType/debtSubtype), which
   // the write path does not otherwise load. Populated lazily per account.
   // Independent of the resolveFinancialAccountId path used by writes.
-  const accountMetaCache = new Map<string, { type: string | null; debtSubtype: string | null }>();
-  async function resolveAccountMeta(financialAccountId: string): Promise<{ type: string | null; debtSubtype: string | null }> {
+  const accountMetaCache = new Map<string, { type: string | null; debtSubtype: string | null; currency: string | null }>();
+  async function resolveAccountMeta(financialAccountId: string): Promise<{ type: string | null; debtSubtype: string | null; currency: string | null }> {
     const cached = accountMetaCache.get(financialAccountId);
     if (cached) return cached;
     const fa = await db.financialAccount.findUnique({
       where:  { id: financialAccountId },
-      select: { type: true, debtSubtype: true },
+      // currency: MC1 Phase 0 Slice 2 — account-level fallback for the
+      // per-transaction currency stamp when Plaid omits iso_currency_code.
+      select: { type: true, debtSubtype: true, currency: true },
     });
-    const meta = { type: (fa?.type as string | undefined) ?? null, debtSubtype: fa?.debtSubtype ?? null };
+    const meta = { type: (fa?.type as string | undefined) ?? null, debtSubtype: fa?.debtSubtype ?? null, currency: fa?.currency ?? null };
     accountMetaCache.set(financialAccountId, meta);
     return meta;
   }
@@ -232,9 +234,17 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       // failure degrades to all-null flow columns and NEVER blocks the write:
       // the row still persists with its original fields. resolveAccountMeta is
       // resolved once here and reused by the CC-1 guard AND flow classification.
+      // MC1 Phase 0 Slice 2 — currency provenance stamp. Provider code first
+      // (Plaid sends iso_currency_code per transaction); account currency as
+      // fallback (resolved inside the classification try below so a meta
+      // failure degrades to provider-code-or-null and never blocks the write,
+      // matching the flow-fields degradation contract). Never defaulted to
+      // USD here — null means "denomination not recorded".
+      let currency: string | null = txn.iso_currency_code ?? null;
       let flowFields = NULL_FLOW_WRITE_FIELDS;
       try {
         const meta = await resolveAccountMeta(financialAccountId);
+        currency = currency ?? meta.currency;
 
         // CC-1 — rescue the destination (card-side) leg of a credit-card payment
         // that Plaid filed under Other. Guarded by isLiabilityCardPaymentLeg:
@@ -264,7 +274,10 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       }
 
       // The 7 original values are byte-identical; flow columns are additive.
-      const fields = { financialAccountId, date, merchant, description, category, amount, pending: txn.pending, ...flowFields };
+      // currency (MC1 Phase 0 Slice 2) rides the shared fields object so all
+      // three outcomes below (update-by-plaidId, fingerprint update, create)
+      // stamp identically.
+      const fields = { financialAccountId, date, merchant, description, category, amount, pending: txn.pending, currency, ...flowFields };
 
       try {
         // 1. Exact match — same row Plaid is telling us about.

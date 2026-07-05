@@ -40,10 +40,22 @@ export async function computeCashResidual(
   const h = db.holding as any;
 
   if (residual >= MIN_THRESHOLD) {
+    // MC1 Phase 0 Slice 2 — the synthetic CASH row's value is denominated in
+    // the parent account's currency (it is derived from that account's
+    // balance). Stamped even though this function currently has no callers,
+    // so a future revival cannot reintroduce an unstamped Holding writer.
+    // Null (account missing) is preserved — never defaulted to USD here.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const acct = await (db.account as any).findUnique({
+      where:  { id: accountId },
+      select: { currency: true },
+    });
+    const currency: string | null = acct?.currency ?? null;
+
     // Upsert: write or update the CASH row
     await h.upsert({
       where:  { accountId_symbol: { accountId, symbol: CASH_SYMBOL } },
-      create: { accountId, symbol: CASH_SYMBOL, name: CASH_NAME, quantity: residual, price: 1, value: residual, change24h: 0, isCash: true },
+      create: { accountId, symbol: CASH_SYMBOL, name: CASH_NAME, quantity: residual, price: 1, value: residual, change24h: 0, isCash: true, currency },
       update: { quantity: residual, value: residual },
     });
   } else {
