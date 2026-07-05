@@ -14,6 +14,16 @@
  *     npx tsx lib/perspective-engine/route.test.ts
  *
  * Run from the repo root. Exits 0 on success, 1 on failure.
+ *
+ * NOTE (SP-2b Batch 2, commit 8ede987): route authorization was centralized.
+ * The route no longer inlines `requireUser()`, the `spaceId_userId` lookup,
+ * the `SpaceMemberStatus.ACTIVE` check, or the `403` framing — those now live
+ * in `requireSpaceAction()` (lib/spaces/authorize.ts), which is unit-tested in
+ * lib/spaces/authorize.test.ts + lib/spaces/policy.test.ts. This tripwire
+ * therefore asserts the route-level *contract*: it must delegate to
+ * `requireSpaceAction(spaceId, "perspective:read")`, bail out on the returned
+ * error before doing any work, and compute strictly as the authenticated
+ * viewer. The centralized enforcement itself is proven by those sibling suites.
  */
 
 import { readFileSync } from "fs";
@@ -38,27 +48,29 @@ function main(): void {
 
   console.log("GET /api/spaces/[id]/perspectives — gating tripwires");
 
-  // ── Auth ────────────────────────────────────────────────────────────────
-  check("authenticates via requireUser()", /requireUser\(\)/.test(code));
+  // ── Auth + membership gating (centralized) ───────────────────────────────
+  // requireSpaceAction() wraps requireUser() + the [spaceId, userId] lookup +
+  // ACTIVE-status/role enforcement + 403 framing (lib/spaces/authorize.ts).
+  check("gates via requireSpaceAction(spaceId, \"perspective:read\")",
+    /requireSpaceAction\(\s*spaceId\s*,\s*["']perspective:read["']\s*\)/.test(code));
   check("wrapped in withApiHandler (house error framing)", /withApiHandler\(/.test(code));
 
-  // ── Membership guard, and its ordering vs. compute ─────────────────────
-  const guardIdx   = code.indexOf("spaceId_userId");
-  const activeIdx  = code.indexOf("SpaceMemberStatus.ACTIVE");
-  const statusIdx  = code.indexOf("status: 403");
+  // ── Guard ordering: bail on the auth error BEFORE any computation ────────
+  const guardIdx   = code.search(/requireSpaceAction\(/);
+  const bailIdx    = code.search(/if\s*\(\s*err\s*\)\s*return\s+err/);
   const computeIdx = code.indexOf("computePerspectives(");
-  check("membership looked up by [spaceId, userId] unique", guardIdx !== -1);
-  check("requires ACTIVE membership", activeIdx !== -1);
-  check("non-members get 403", statusIdx !== -1);
+  check("bails out on the authorization error (non-members never compute)",
+    bailIdx !== -1);
   check("guard runs BEFORE any perspective computation",
-    computeIdx !== -1 && guardIdx < computeIdx && activeIdx < computeIdx && statusIdx < computeIdx);
+    computeIdx !== -1 && guardIdx !== -1 && bailIdx !== -1 &&
+    guardIdx < computeIdx && bailIdx < computeIdx);
 
   // ── Viewer identity (§5.9) ──────────────────────────────────────────────
   check("engine scope userId is the authenticated requester",
     /computePerspectives\(\{\s*spaceId,\s*userId\s*\}\)/.test(code) &&
-    /const userId = user\.id/.test(code));
+    /const\s+userId\s*=\s*auth\.user\.id/.test(code));
   check("no foreign/stored identity reaches the scope",
-    !/userId:\s*(?!.*user\.id)[a-zA-Z]+\.(ownerUserId|createdByUserId|addedByUserId)/.test(code));
+    !/userId:\s*[a-zA-Z]+\.(ownerUserId|createdByUserId|addedByUserId)/.test(code));
 
   // ── Engine boundary ─────────────────────────────────────────────────────
   check("route registers lenses via side-effect imports",

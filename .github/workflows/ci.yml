@@ -1,0 +1,44 @@
+name: CI
+
+# Unit-test + typecheck + lint gate for Fourth Meridian.
+#
+# Runs ONLY the safe local test suite (scripts/run-tests.ts → every *.test.ts
+# under lib/ and app/). These need no database, no network, and no secrets, so
+# this workflow requires no service containers and no repository secrets.
+#
+# DO NOT add the DB/Plaid dev harnesses here
+# (scripts/test-visibility-two-user-space.ts, scripts/reset-chase-history-test.ts):
+# they need a live Postgres / Plaid and are intentionally out of scope for CI.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Required: three *.test.ts import Prisma enum values, so the generated
+      # client must exist before they run (and before tsc typechecks).
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
