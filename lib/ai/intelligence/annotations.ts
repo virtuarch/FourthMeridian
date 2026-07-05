@@ -37,6 +37,10 @@ import type {
   GoalsSectionData,
 } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
+// FlowType P5 Slice 5 — the opportunity-eligibility gate derives from flow
+// semantics. Both imports are pure (no DB, no side effects), preserving this
+// module's "pure function" design constraint.
+import { classifyFlow, isExcludedFromSpending } from '@/lib/transactions/flow-classifier';
 
 // ── Primitive classification types ────────────────────────────────────────────
 
@@ -751,7 +755,11 @@ function derivePriorities(
  * Categories excluded from expense opportunity analysis.
  * Income / Interest (income) / Transfer are not spending.
  * Payment (debt repayment) is handled by the Debt Strategy engine.
+ * FlowType P5 Slice 5: unreferenced since the gate cut over to flow semantics
+ * (see classifySpendingCategory). Deletion is deliberately DEFERRED to Slice 7
+ * (gated on a zero-reference grep) per the P5 plan — do not remove here.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const SPENDING_EXCLUDED = new Set(['Income', 'Interest', 'Transfer', 'Payment']);
 
 const SPENDING_DISCRETIONARY      = new Set(['Dining', 'Shopping', 'Travel', 'Subscriptions']);
@@ -759,7 +767,17 @@ const SPENDING_SEMI_DISCRETIONARY = new Set(['Groceries']);
 const SPENDING_FIXED              = new Set(['Utilities']);
 
 function classifySpendingCategory(category: string): SpendingCategoryClassification | null {
-  if (SPENDING_EXCLUDED.has(category))             return null;
+  // FlowType P5 Slice 5 — the eligibility gate is flow semantics: a category
+  // enters opportunity analysis only when its rows classify as a spending flow
+  // (flowType ∈ {SPENDING, REFUND}). The probe uses amount −1 because
+  // byCategory `total` is the KD-17 debit-only population this section ranks.
+  // Parity with the legacy SPENDING_EXCLUDED set over banking categories was
+  // proven by the P1 harness (flow-classifier.test.ts §3a); the deliberate
+  // divergence: post-Slice-4 Fee entries (flowType=FEE) are now gated out
+  // instead of surfacing as REVIEW_NEEDED — a fee is not a spending-reduction
+  // opportunity. The discretionary/fixed sub-classing below stays
+  // category-based by design (flowType does not encode discretionary-ness).
+  if (isExcludedFromSpending(classifyFlow({ category, amount: -1 }))) return null;
   if (SPENDING_DISCRETIONARY.has(category))        return 'DISCRETIONARY';
   if (SPENDING_SEMI_DISCRETIONARY.has(category))   return 'SEMI_DISCRETIONARY';
   if (SPENDING_FIXED.has(category))                return 'FIXED';
