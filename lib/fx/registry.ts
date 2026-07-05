@@ -8,6 +8,8 @@
  */
 
 import type { FxProviderAdapter, FxRegistry } from "./types";
+import { createOpenExchangeRatesAdapter } from "./providers/openExchangeRates";
+import { createFrankfurterAdapter } from "./providers/frankfurter";
 
 /**
  * Build a registry from an ordered adapter list (dependency-injection seam —
@@ -26,11 +28,24 @@ export function createFxRegistry(adapters: readonly FxProviderAdapter[]): FxRegi
 }
 
 /**
- * The production registry. EMPTY in Slice 2 by design — Phase 1 Slice 3
- * populates it with [openexchangerates, frankfurter] in that priority order
- * (plan D1/D2). Nothing calls this yet; it exists so Slice 3 adds adapters
- * without reshaping any consumer.
+ * The production registry (Slice 3): [openexchangerates, frankfurter] in
+ * approved priority order (plan D1/D2). Open Exchange Rates requires
+ * OXR_APP_ID — when the key is absent the adapter is omitted and coverage
+ * degrades to Frankfurter's ECB subset (no SAR/AED), which is the approved
+ * safe-disable posture (plan §5). Env is read here, at construction, so
+ * adapters themselves stay injectable and key-agnostic.
  */
 export function defaultFxRegistry(): FxRegistry {
-  return createFxRegistry([]);
+  const appId = process.env.OXR_APP_ID;
+  const adapters: FxProviderAdapter[] = [];
+  if (appId) {
+    adapters.push(createOpenExchangeRatesAdapter(appId));
+  } else {
+    console.warn(
+      "[fx] OXR_APP_ID not set — primary provider (Open Exchange Rates) disabled; " +
+      "Frankfurter-only coverage (ECB subset: no SAR/AED).",
+    );
+  }
+  adapters.push(createFrankfurterAdapter());
+  return createFxRegistry(adapters);
 }

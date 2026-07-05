@@ -45,8 +45,26 @@ let threw = false;
 try { createFxRegistry([a, fakeAdapter("primary")]); } catch { threw = true; }
 check("duplicate source throws", threw);
 
-// Slice 2 state: production registry deliberately empty until Slice 3
-check("default registry empty in Slice 2", defaultFxRegistry().adapters.length === 0);
+// Slice 3 state: production registry wires the two approved providers.
+// Without OXR_APP_ID → Frankfurter-only (approved safe-disable posture);
+// with the key → [openexchangerates, frankfurter] in priority order (plan D1/D2).
+{
+  const prev = process.env.OXR_APP_ID;
+
+  delete process.env.OXR_APP_ID;
+  const withoutKey = defaultFxRegistry();
+  check("default registry (no key): frankfurter only",
+    withoutKey.adapters.length === 1 && withoutKey.adapters[0].source === "frankfurter");
+
+  process.env.OXR_APP_ID = "test-key";
+  const withKey = defaultFxRegistry();
+  check("default registry (key set): OXR primary, frankfurter failover",
+    withKey.adapters.length === 2 &&
+    withKey.adapters[0].source === "openexchangerates" &&
+    withKey.adapters[1].source === "frankfurter");
+
+  if (prev === undefined) delete process.env.OXR_APP_ID; else process.env.OXR_APP_ID = prev;
+}
 
 if (failures.length > 0) {
   console.error(`\nMC1 P1 fx registry: ${failures.length} FAILURE(S) (${passed} checks passed):`);
