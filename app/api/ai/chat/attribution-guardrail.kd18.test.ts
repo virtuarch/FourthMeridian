@@ -122,13 +122,18 @@ check(
 
 // Wording snapshot — exact phrases that must survive verbatim so the disclosure
 // cannot silently drift into a weaker or capability-implying statement.
+// FlowType P5 Slice 6: the per-liability DEBT-PAYMENT dimension is relaxed —
+// it is now deterministic (Slice 3 rollup, serialized as the PER-LIABILITY
+// DEBT PAYMENTS line). The disclosure must name that ONE exception and keep
+// every other dimension fully disclosed.
 const DISCLOSURE_PHRASES = [
   'ATTRIBUTION LIMIT',
   'NOT attributed to specific accounts, cards, sources, ',
-  'or destinations.',
-  'which specific card a debt payment ',
-  'went to, which account a transfer came from or went to',
-  'Any split of these totals ',
+  'or destinations, with ONE exception: per-card debt payments',
+  'PER-LIABILITY DEBT PAYMENTS line when present',
+  'which account a transfer came from or ',
+  'produced a given income, interest, or spending total.',
+  'any split of these totals ',
   'across individual accounts or cards would be invented.',
 ];
 for (const phrase of DISCLOSURE_PHRASES) {
@@ -156,6 +161,9 @@ check(
 // back to a refusal-first rule.
 const RULE_PHRASES = [
   'Attribution honesty — refuse only the missing dimension, never the whole question:',
+  // Slice 6: the rule now leads with the ONE deterministically backed dimension.
+  'Per-card debt payments ARE available',
+  'never extrapolate beyond them',
   'Do not lead with a refusal',
   'FIRST, answer every deterministic portion the context DOES contain',
   'Never withhold a correct total because one requested dimension is missing.',
@@ -164,7 +172,7 @@ const RULE_PHRASES = [
   'Offer the nearest truthful alternative you can answer',
   'Never infer, allocate, or distribute a total across accounts or cards',
   'any such split would be invented',
-  'This applies to every dimension, not only debt payments.',
+  'This applies to every dimension the context does not deterministically break down.',
 ];
 for (const phrase of RULE_PHRASES) {
   check(
@@ -175,11 +183,11 @@ for (const phrase of RULE_PHRASES) {
 }
 
 check(
-  'rule is generalized beyond debt payments (names multiple dimensions)',
+  'rule stays generalized (names the still-unattributed dimensions)',
   src.includes('income/interest/spending') &&
     src.includes('transfers per account') &&
-    src.includes('not only debt payments'),
-  'rule appears narrowed to debt payments only',
+    src.includes('spending per card'),
+  'rule lost its still-unattributed dimensions (over-relaxed beyond debt payments)',
 );
 
 // Answer-first doctrine: the instruction to answer the deterministic portion must
@@ -206,7 +214,8 @@ check(
 
 // 3a. Disclosure is pushed into the serialized context block, inside the
 //     transaction (`if (txn)`) guard.
-const ctxBody = functionBody(src, 'function serializeContextBlock(ctx: SpaceContext_AI): string');
+// Slice 6: signature carries the optional per-liability rollup parameter.
+const ctxBody = functionBody(src, 'function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtPaymentLine[]): string');
 
 check(
   'disclosure is pushed into the context block',
@@ -290,12 +299,48 @@ check(
   'rule is not positioned between the debt-payment and financial-assessment doctrines',
 );
 
-// Guardrail is prompt-text only: KD-18 must not have touched aggregation,
-// schema, rollups, or the validator from within this route.
+// ---------------------------------------------------------------------------
+// 5. Per-liability debt payments (FlowType P5 Slice 6 — the relaxed dimension)
+// ---------------------------------------------------------------------------
+// The ONE dimension KD-18 may treat as attributed must be backed by the
+// deterministic Slice 3 rollup — never computed ad hoc in the route, never
+// left for the model to infer.
+
 check(
-  'no new aggregation/rollup introduced by KD-18 (no byLiability in route)',
-  !src.includes('byLiability'),
-  'unexpected byLiability rollup found — KD-18 is guardrail-only',
+  'per-liability block is serialized in the context',
+  ctxBody.includes('PER-LIABILITY DEBT PAYMENTS'),
+  'PER-LIABILITY DEBT PAYMENTS line missing from serializeContextBlock',
+);
+
+check(
+  'per-liability block is gated inside the `if (txn)` transaction guard',
+  ctxBody.indexOf('PER-LIABILITY DEBT PAYMENTS') > txnGuardIdx,
+  'per-liability block is not gated by the transaction guard',
+);
+
+check(
+  'per-liability figures come from the deterministic Slice 3 rollup',
+  src.includes("import { rollupDebtPaymentsByAccount } from '@/lib/debt'") &&
+    src.includes('rollupDebtPaymentsByAccount('),
+  'route does not source per-card figures from lib/debt rollupDebtPaymentsByAccount',
+);
+
+check(
+  'per-liability rows come through the KD-15 visibility-guarded data layer',
+  src.includes("import { getDebtTransactions } from '@/lib/data/transactions'"),
+  'route bypasses getDebtTransactions (visibility guards) for debt rows',
+);
+
+check(
+  'source/destination non-reconciliation honesty is pinned',
+  ctxBody.includes('do not force them to reconcile '),
+  'serializer no longer warns that per-card (destination) and debtPaymentTotal (source) may differ',
+);
+
+check(
+  'other dimensions remain disclosed next to the per-liability block',
+  ctxBody.includes('remains unattributed'),
+  'per-liability block no longer re-scopes the attribution limit to the other dimensions',
 );
 
 // ---------------------------------------------------------------------------

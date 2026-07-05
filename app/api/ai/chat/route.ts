@@ -45,7 +45,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db }                        from '@/lib/db';
 import { requireUser }               from '@/lib/session';
 import { limitByUser }               from '@/lib/rate-limit';
-import { SpaceMemberRole }           from '@prisma/client';
+import { SpaceMemberRole, TransactionCategory } from '@prisma/client';
 import { buildContext }              from '@/lib/ai/context-builder';
 import { generateChatReply }      from '@/lib/ai/provider';
 import type { ChatMessage }        from '@/lib/ai/provider';
@@ -59,6 +59,12 @@ import { detectsPayoffIntent, detectsExplicitUpdateIntent } from '@/lib/ai/inten
 import type { IntentRoute }          from '@/lib/ai/intent';
 import { planContextSelection, DEFAULT_CONTEXT_BUDGET_TOKENS } from '@/lib/ai/context-priority';
 import { checkSpendingCategoryInvariant } from '@/lib/ai/assemblers/transactions';
+// FlowType P5 Slice 6 — flow-derived serializer sets + per-liability debt
+// payments (KD-18 relaxation, backed by the Slice 3 rollup).
+import { classifyFlow } from '@/lib/transactions/flow-classifier';
+import { getDebtTransactions } from '@/lib/data/transactions';
+import { rollupDebtPaymentsByAccount } from '@/lib/debt';
+import type { AccountsSectionData } from '@/lib/ai/types';
 import { validateOutput, applyEnforcement } from '@/lib/ai/output-validator';
 import type { ValidationResult, EnforcementMode } from '@/lib/ai/output-validator';
 import { AuditAction }               from '@/lib/audit-actions';
@@ -411,8 +417,30 @@ const CATEGORY_SYNONYMS: Record<string, string> = {
 };
 
 /** Non-spending categories — a drilldown into one of these opts into inflows/
- *  transfers/payments instead of the default spending-only (amount < 0) filter. */
+ *  transfers/payments instead of the default spending-only (amount < 0) filter.
+ *  FlowType P5 Slice 6: unreferenced since the flow-derived set below took over.
+ *  Deletion DEFERRED to Slice 7 (gated on a zero-reference grep) — do not
+ *  remove here. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const NON_SPENDING_CATEGORY_SET = new Set(['Income', 'Interest', 'Transfer', 'Payment']);
+
+// ── FlowType P5 Slice 6 — flow-derived category name sets ────────────────────
+// Successor to the hand-written {Income, Interest, Transfer, Payment} copies:
+// a category is serialized as a SPENDING line only when its debit rows classify
+// to a flow presented as spending — SPENDING or FEE (whose debits live inside
+// expenseTotal since Slice 4 D-2). INTEREST charges are also inside
+// expenseTotal but stay excluded from the category lines (unchanged legacy
+// presentation — the KD-17 invariant is ≤, not =, for exactly this reason).
+// Income/Transfer/Payment resolve to non-spending flows as before, and the
+// post-Slice-4 newcomers resolve correctly by construction: Dividend → INCOME
+// (excluded — no more $0 average lines), Fee → FEE (included). The probe uses
+// amount −1 because byCategory `total` is the KD-17 debit-only population.
+const SERIALIZED_SPENDING_FLOWS = new Set(['SPENDING', 'FEE']);
+const NON_SPENDING_CATEGORY_NAMES: ReadonlySet<string> = new Set(
+  (Object.values(TransactionCategory) as string[]).filter(
+    (c) => !SERIALIZED_SPENDING_FLOWS.has(classifyFlow({ category: c, amount: -1 }).flowType),
+  ),
+);
 
 /** Subjects that are not a real merchant — a bare pronoun or generic noun. */
 const GENERIC_DRILLDOWN_SUBJECTS = new Set([
@@ -526,7 +554,8 @@ function resolveDrilldown(
     periodLabel = base.label;
   }
 
-  const includeNonSpending = category ? NON_SPENDING_CATEGORY_SET.has(category) : false;
+  // Slice 6: flow-derived (same members over resolvable banking categories).
+  const includeNonSpending = category ? NON_SPENDING_CATEGORY_NAMES.has(category) : false;
 
   // Human label for provenance, e.g. "January 2026 · Other" or "Airbnb".
   const subjectLabel = category ?? merchant ?? 'largest transactions';
@@ -580,21 +609,30 @@ function extractKnowledgeGaps(ctx: SpaceContext_AI): KnowledgeGap[] {
 // debt payments. No schema, no aggregation, no new rollups. Capability for true
 // per-liability history is ratified into the v2.5.5 FlowType initiative.
 
-/** Emitted once in the transaction section of every serialized context block. */
+/** Emitted once in the transaction section of every serialized context block.
+ *  FlowType P5 Slice 6: the per-liability DEBT-PAYMENT carve-out is relaxed —
+ *  that one dimension is now deterministic (Slice 3 destination-side rollup,
+ *  serialized as the PER-LIABILITY DEBT PAYMENTS line). Every other dimension
+ *  remains unattributed and keeps the full disclosure. */
 const ATTRIBUTION_DISCLOSURE =
   'ATTRIBUTION LIMIT (read before any per-account question): the flow totals in ' +
   'this context — spending, income, debt payments, transfers, and interest — are ' +
   'exact in aggregate but are NOT attributed to specific accounts, cards, sources, ' +
-  'or destinations. This data does not record which specific card a debt payment ' +
-  'went to, which account a transfer came from or went to, or which account ' +
-  'produced a given income, interest, or spending total. Any split of these totals ' +
+  'or destinations, with ONE exception: per-card debt payments, which are provided ' +
+  'deterministically in the PER-LIABILITY DEBT PAYMENTS line when present. Apart ' +
+  'from that line, this data does not record which account a transfer came from or ' +
+  'went to, or which account produced a given income, interest, or spending total. ' +
+  'Outside the per-liability debt-payment line, any split of these totals ' +
   'across individual accounts or cards would be invented.';
 
 /** Injected into ADVISOR_PRINCIPLES (both space and master prompts). */
 const ATTRIBUTION_RULE = [
   'Attribution honesty — refuse only the missing dimension, never the whole question:',
+  '- Per-card debt payments ARE available: the PER-LIABILITY DEBT PAYMENTS line in the ' +
+    'context, when present, is the deterministic per-card breakdown — answer per-card ' +
+    'debt-payment questions from those exact figures and never extrapolate beyond them.',
   '- Many questions ask for a breakdown along a dimension the deterministic context ' +
-    'does NOT carry — spending per card, debt payments per card, ' +
+    'does NOT carry — spending per card, ' +
     'transfers per account, income/interest/spending per account. These are NOT ' +
     'unanswerable. Do not lead with a refusal, and never discard a truthful total ' +
     'just because one requested dimension is unavailable. Answer in this order:',
@@ -609,8 +647,49 @@ const ATTRIBUTION_RULE = [
   '- Never infer, allocate, or distribute a total across accounts or cards to fill the ' +
     'missing dimension — any such split would be invented, and a correct total never ' +
     'licenses one.',
-  '- This applies to every dimension, not only debt payments.',
+  '- This applies to every dimension the context does not deterministically break down.',
 ].join('\n');
+
+// ── Per-liability debt payments (FlowType P5 Slice 6 — KD-18 relaxation) ─────
+
+/** One debt account's received payments within the serialized window. */
+type DebtPaymentLine = { name: string; total: number; count: number };
+
+/**
+ * Deterministic per-card debt-payment breakdown for one Space: destination-side
+ * settled flowType=DEBT_PAYMENT legs recorded on each debt account, grouped by
+ * account (the Slice 3 rollup), clipped to the context's transaction window.
+ *
+ * Privacy: getDebtTransactions applies the same Space scoping + KD-15
+ * TRANSACTION_DETAIL_VISIBILITY predicate as every other transaction read, so
+ * only FULL-visibility accounts can contribute; account names come from the
+ * accounts section the context already carries (no new name exposure).
+ * Fails open to [] — the serializer then emits no per-liability line and the
+ * generalized attribution disclosure covers the dimension as before.
+ */
+async function fetchPerLiabilityDebtPayments(ctx: SpaceContext_AI): Promise<DebtPaymentLine[]> {
+  const txn = getTransactionsSummary(ctx);
+  if (!txn) return [];
+  try {
+    const rows = await getDebtTransactions({ spaceId: ctx.space.id });
+    const inWindow = rows.filter(
+      (r) => !r.pending && r.date >= txn.startDate && r.date <= txn.endDate,
+    );
+    const rollup = rollupDebtPaymentsByAccount(inWindow);
+    if (rollup.length === 0) return [];
+    const accounts =
+      (ctx.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData | undefined)?.accounts ?? [];
+    const nameById = new Map(accounts.map((a) => [a.id, a.name]));
+    return rollup.map((e) => ({
+      name:  nameById.get(e.accountId) ?? 'Unnamed debt account',
+      total: Math.round(e.total * 100) / 100,
+      count: e.count,
+    }));
+  } catch (err) {
+    console.error('[api/ai/chat] per-liability debt rollup failed:', err);
+    return [];
+  }
+}
 
 /**
  * Serialize a single SpaceContext_AI into a compact text block.
@@ -618,7 +697,7 @@ const ATTRIBUTION_RULE = [
  * knowledge gaps as a human-readable list with impact annotations.
  * The prompt explicitly constrains the model to this data only.
  */
-function serializeContextBlock(ctx: SpaceContext_AI): string {
+function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtPaymentLine[]): string {
   const lines: string[] = [];
 
   lines.push(`Space: ${displaySpaceName(ctx.space.name)}`);
@@ -654,6 +733,28 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
     // an explicit "attribution unavailable", never a fabricated per-account split.
     lines.push(`  ${ATTRIBUTION_DISCLOSURE}`);
 
+    // ── Per-liability debt payments (Slice 6 — the ONE attributed dimension) ─
+    // Deterministic destination-side rollup (Slice 3), same window as above.
+    // Absent (no lines) when the Space has no debt-payment legs in the window —
+    // the disclosure above then covers the dimension unqualified.
+    if (debtPayments && debtPayments.length > 0) {
+      lines.push(
+        '  PER-LIABILITY DEBT PAYMENTS (deterministic — settled debt-payment legs ' +
+        'recorded on each debt account itself, same window as above): ' +
+        debtPayments
+          .map((d) => `${d.name}: ${fmtMoney(d.total)} across ${d.count} payment(s)`)
+          .join('; ') + '.',
+      );
+      lines.push(
+        '  Use these exact figures for any per-card debt-payment question. They are ' +
+        'destination-side records and may differ from the aggregate debtPaymentTotal ' +
+        '(source-side) by timing or external payments — do not force them to reconcile ' +
+        'exactly. Every OTHER per-account dimension (per-card spending, per-card ' +
+        'interest, per-account transfers/income) remains unattributed — the attribution ' +
+        'limit above still applies to those.',
+      );
+    }
+
     // ── Fetch-cap coverage caveat (KD-7) ─────────────────────────────────────
     // When the summary was truncated, the totals/rollups/monthly figures below
     // cover only [coverageStartDate, endDate]. Tell the model the data is
@@ -682,8 +783,10 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
     // Categories that are NOT discretionary spending. Excluded from every
     // "spending" figure (monthly category lines AND category averages) so that
     // per-month category totals always reconcile to that month's expenseTotal
-    // and can never exceed it.
-    const NON_SPENDING = new Set(['Income', 'Interest', 'Transfer', 'Payment']);
+    // and can never exceed it. Slice 6: flow-derived (see the module-level
+    // definition) — identical membership for legacy categories; Dividend now
+    // excluded, Fee still included.
+    const NON_SPENDING = NON_SPENDING_CATEGORY_NAMES;
 
     // KD-7: exclude fetch-cap truncated months from averages, same as partial.
     // KD-10: reliableMonths is the shared predicate the assessment also uses.
@@ -845,8 +948,11 @@ function serializeContextBlock(ctx: SpaceContext_AI): string {
         // never be misread as spending categories.
         lines.push(
           `      [other flows this month — NOT spending: income ${fmtMoney(m.incomeTotal)}, ` +
-          `debt payments ${fmtMoney(m.debtPaymentTotal)}, transfers ${fmtMoney(m.transferTotal)}; ` +
-          `${m.transactionCount} txn(s)]`,
+          `debt payments ${fmtMoney(m.debtPaymentTotal)}, transfers ${fmtMoney(m.transferTotal)}` +
+          // Slice 6: surface the Slice 4 refundTotal when present — refunds are
+          // reversals of spending, never income, and are not netted anywhere.
+          (m.refundTotal > 0 ? `, refunds received ${fmtMoney(m.refundTotal)} (reversals of spending — NOT income, already excluded from the spending figure)` : '') +
+          `; ${m.transactionCount} txn(s)]`,
         );
       }
       lines.push(
@@ -1601,6 +1707,7 @@ function buildSpaceSystemPrompt(
   ctx: SpaceContext_AI,
   annotations: FinancialAssessment,
   route: IntentRoute,
+  debtPayments?: DebtPaymentLine[],
 ): string {
   return [
     'You are a skilled, direct financial advisor powered by Fourth Meridian.',
@@ -1633,7 +1740,7 @@ function buildSpaceSystemPrompt(
     '=== END ASSESSMENT ===',
     '',
     '=== SPACE CONTEXT ===',
-    serializeContextBlock(ctx),
+    serializeContextBlock(ctx, debtPayments),
     '=== END CONTEXT ===',
   ].join('\n');
 }
@@ -1664,6 +1771,7 @@ function buildMasterSystemPrompt(
   contexts: SpaceContext_AI[],
   annotationsList: FinancialAssessment[],
   route: IntentRoute,
+  debtPaymentsList?: DebtPaymentLine[][],
 ): string {
   const spaceBlocks = contexts
     .map((ctx, i) => {
@@ -1673,7 +1781,7 @@ function buildMasterSystemPrompt(
         '=== FINANCIAL ASSESSMENT ===',
         assessment ? serializeAssessmentBlock(assessment, analysisWindowNote(ctx)) : '(no assessment available)',
         '=== END ASSESSMENT ===',
-        serializeContextBlock(ctx),
+        serializeContextBlock(ctx, debtPaymentsList?.[i]),
       ].join('\n');
     })
     .join('\n\n');
@@ -1899,7 +2007,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     const masterAssessments = contexts.map(computeAssessment);
-    systemPrompt = buildMasterSystemPrompt(contexts, masterAssessments, intentRoute);
+    // Slice 6: per-liability debt-payment rollups (one Space-scoped query each,
+    // in parallel; [] on failure — serializer falls back to disclosure-only).
+    const masterDebtPayments = await Promise.all(
+      contexts.map((c) => fetchPerLiabilityDebtPayments(c)),
+    );
+    systemPrompt = buildMasterSystemPrompt(contexts, masterAssessments, intentRoute, masterDebtPayments);
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, contexts, masterAssessments, intentRoute);
     gapsForResponse = filterGapsByIntent(
@@ -1944,7 +2057,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     const assessment = computeAssessment(ctx);
-    systemPrompt = buildSpaceSystemPrompt(ctx, assessment, intentRoute);
+    // Slice 6: per-liability debt-payment rollup ([] on failure → disclosure-only).
+    const debtPayments = await fetchPerLiabilityDebtPayments(ctx);
+    systemPrompt = buildSpaceSystemPrompt(ctx, assessment, intentRoute, debtPayments);
     // Shadow-mode selection plan (D6.3D-1): logged only — prompt is unchanged.
     await logShadowSelectionPlans(user.id, [ctx], [assessment], intentRoute);
     gapsForResponse = filterGapsByIntent(
