@@ -18,6 +18,7 @@ import {
 } from "@/lib/space-presets";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
+import { reportingCurrencyForNewSpace } from "@/lib/spaces/reporting-currency";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
@@ -80,6 +81,17 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // Build default section rows for this category
   const sectionPresets = getPresetsForCategory(resolvedCategory);
 
+  // MC1 Phase 3 Slice 1 (D-2) — copy-once: the new Space's reporting currency
+  // is seeded from the creator's User default at creation and owned by the
+  // Space thereafter (no retroactive inheritance; editing the User default
+  // never re-denominates existing Spaces). Nothing reads the value yet — the
+  // conversion flip is Phase 3 Slices 3–6.
+  const creator = await db.user.findUnique({
+    where:  { id: user.id },
+    select: { reportingCurrency: true },
+  });
+  const reportingCurrency = reportingCurrencyForNewSpace(creator);
+
   // Space creation, membership, dashboard sections, and the Space's AiAgent
   // must all succeed together. Every Space has exactly one AiAgent (schema
   // enforces @@unique on spaceId); creating it here — in the same transaction
@@ -93,6 +105,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         type:        "SHARED",
         category:    resolvedCategory,
         isPublic:    !!isPublic,
+        reportingCurrency, // MC1 P3 — copy-once from creator (see above)
         members: {
           create: { userId: user.id, role: "OWNER" },
         },

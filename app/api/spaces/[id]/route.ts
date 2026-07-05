@@ -22,6 +22,7 @@ import { SpaceMemberRole } from "@prisma/client";
 import { db } from "@/lib/db";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
+import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
 
 export const GET = withApiHandler(async (
   _req: NextRequest,
@@ -81,13 +82,29 @@ export const PATCH = withApiHandler(async (
   const { user, membership } = patchAuth;
 
   const body = await req.json();
-  const { name, description, isPublic, category, archivedAt } = body as {
-    name?:        string;
-    description?: string;
-    isPublic?:    boolean;
-    category?:    string;
-    archivedAt?:  string | null; // ISO string to archive, null to unarchive
+  const { name, description, isPublic, category, archivedAt, reportingCurrency } = body as {
+    name?:              string;
+    description?:       string;
+    isPublic?:          boolean;
+    category?:          string;
+    archivedAt?:        string | null; // ISO string to archive, null to unarchive
+    // MC1 Phase 3 Slice 1 — authoritative Space reporting currency. API-only
+    // field (the selector UI is Phase 4); allowlist-validated below; changes
+    // are FORWARD-ONLY by architecture (read-time conversion — nothing stored
+    // is rewritten). Nothing reads the value until the flip slices.
+    reportingCurrency?: string;
   };
+
+  // MC1 Phase 3 Slice 1 — validate against FX_BASE + SUPPORTED_QUOTES before
+  // any write; invalid input is a 400, never a silent default.
+  let resolvedReportingCurrency: string | undefined;
+  if (reportingCurrency !== undefined) {
+    const parsed = parseReportingCurrencyInput(reportingCurrency);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+    resolvedReportingCurrency = parsed.value;
+  }
 
   const existing = await db.space.findUnique({ where: { id } });
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -119,6 +136,7 @@ export const PATCH = withApiHandler(async (
       ...(isPublic    !== undefined && { isPublic }),
       ...(category    !== undefined && { category: category as never }),
       ...(archivedAt  !== undefined && { archivedAt: archivedAt ? new Date(archivedAt) : null }),
+      ...(resolvedReportingCurrency !== undefined && { reportingCurrency: resolvedReportingCurrency }),
     },
   });
 

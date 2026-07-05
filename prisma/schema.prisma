@@ -306,6 +306,12 @@ model User {
   passwordResetExpiry  DateTime?
   forcePasswordReset   Boolean           @default(false) // set true by admin; user must change on next login
   lastBriefViewedAt    DateTime? // set when user views the Daily Brief page
+  // MC1 Phase 3 (D-1/D-2) — the user's DEFAULT reporting currency. A default
+  // ONLY: it seeds reportingCurrency for Spaces this user creates (copy-once
+  // at POST /api/spaces) and denominates nothing by itself. NO retroactive
+  // inheritance — editing this never re-denominates existing Spaces; the
+  // Space's own value is the only one consulted for Space-scoped totals.
+  reportingCurrency    String            @default("USD")
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
 
@@ -361,6 +367,16 @@ model Space {
   type        SpaceType     @default(PERSONAL)
   category    SpaceCategory @default(PERSONAL)
   isPublic    Boolean       @default(false) // SHARED Spaces can be listed publicly
+  // MC1 Phase 3 (D-1/D-2/D-4) — the AUTHORITATIVE reporting currency for every
+  // aggregate, snapshot stamp, chart, and AI total computed within this Space.
+  // Seeded copy-once from the creator's User.reportingCurrency at creation;
+  // thereafter owned by the Space alone (no live inheritance). Changing it is
+  // FORWARD-ONLY: live aggregates re-denominate on the next read, snapshots
+  // stamp the new currency from the next write, and existing snapshot rows
+  // keep their stamps — history is never rewritten. Allowed values: FX_BASE +
+  // SUPPORTED_QUOTES (lib/fx/config.ts), enforced at the API boundary.
+  // Nothing reads this until the Phase 3 flip slices (3–6).
+  reportingCurrency String @default("USD")
 
   // ── Lifecycle (mirrors SpaceGoal's archive/trash pattern) ─────────────────
   // archivedAt: hidden from normal nav, fully intact, restorable any time.
