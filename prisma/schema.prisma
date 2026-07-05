@@ -1086,6 +1086,11 @@ model Holding {
   // Synthetic row written by sync job: account.balance − sum(real positions).
   isCash    Boolean @default(false)
 
+  // MC1 Phase 0 — ISO 4217 code of `price` and `value` (the fiat valuation
+  // unit — for crypto positions this is the quote currency, not the asset;
+  // quantity stays unitless). Same null semantics as Transaction.currency.
+  currency String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1211,6 +1216,13 @@ model Transaction {
   // Forward seed for the Merchant Engine — the stable Plaid merchant key. Lets a
   // future Merchant table + merchantId FK backfill without a Plaid re-fetch.
   merchantEntityId         String?
+
+  // MC1 Phase 0 — currency provenance (additive, nullable). ISO 4217 code of
+  // `amount`, from Plaid iso_currency_code at write time, or the parent
+  // account's currency for imports/fallback. Null = pre-Phase-0 row whose
+  // denomination was never recorded (backfilled from parent account where
+  // derivable). Nothing reads this until MC1 Phase 2+.
+  currency String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1392,6 +1404,12 @@ model SpaceSnapshot {
   // Today's live snapshot and every pre-existing row read false. Additive,
   // defaulted → zero migration risk.
   isEstimated Boolean @default(false)
+
+  // MC1 Phase 0 — the currency all ten totals on this row were computed and
+  // presented in. NOT NULL DEFAULT "USD": unlike row-level stamps this is a
+  // property of the computation, and every historical row was computed by
+  // USD-presenting code, so the default is a true statement about old rows.
+  reportingCurrency String @default("USD")
 
   createdAt DateTime @default(now())
 
