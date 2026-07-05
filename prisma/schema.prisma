@@ -1594,3 +1594,28 @@ enum SyncIssueKind {
   REPLAY_RECOVERED
   REPLAY_FAILED
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FxRate (MC1 Phase 1) — immutable dated FX rate archive.
+// Rows for closed dates are never updated or deleted (append-only, enforced at
+// the application layer: insert-only writes for dates ≤ yesterday UTC). This
+// immutability is what makes read-time conversion (MC1 Phase 2) deterministic
+// and history-stable: resolving a past-dated rate returns the same answer
+// forever. Standalone archive — no other model references it; nothing consumes
+// it until MC1 Phase 2. See docs/initiatives/mc1/MC1_PHASE1_FX_PROVIDER_LAYER_PLAN.md.
+// ─────────────────────────────────────────────────────────────────────────────
+model FxRate {
+  id        String   @id @default(cuid())
+  date      DateTime @db.Date // valuation date, daily close granularity (plan D4)
+  base      String            // canonical base — always "USD" (lib/fx/config.ts, Slice 2)
+  quote     String            // ISO 4217
+  rate      Float             // 1 base = rate quote (Float confirmed — plan D3)
+  source    String            // adapter that supplied the batch — provenance
+  fetchedAt DateTime @default(now())
+
+  // Determinism anchor: ONE canonical rate per (date, pair) — deliberately not
+  // per source; which provider supplied it is provenance (`source`), not identity.
+  @@unique([date, base, quote])
+  // Walk-back scans (base is constant USD): latest date ≤ asked, per quote.
+  @@index([quote, date])
+}
