@@ -11,12 +11,13 @@
  *   A — Holding rows anchored to legacy Account (accountId set, financialAccountId null)
  *   B — Transaction rows anchored to legacy Account (same shape)
  *   C — legacy Account rows (total + non-deleted)
- *   D — WorkspaceAccountShare rows NOT mirrored into SpaceAccountLink
  *   E — SHARED visibility residue on SpaceAccountLink and legacy Account
+ *
+ * (Gate D — WorkspaceAccountShare mirror check — was removed after the WAS
+ * model was dropped in v2.5-A Phase 4c; the table no longer exists to count.)
  *
  * Decision rule:
  *   A=B=C=0 (prod)  → Phase 5 (Account drop) in-scope; else DEFERRED.
- *   D=0             → Phase 4 (WAS drop) may proceed.
  *   E(Account)>0    → VisibilityLevel.SHARED enum removal stays coupled to Phase 5.
  *
  * This script performs no writes of any kind.
@@ -62,50 +63,6 @@ async function main() {
   const gateCTotal = await prisma.account.count();
   const gateCLive = await prisma.account.count({ where: { deletedAt: null } });
 
-  // ── Gate D — WAS rows not mirrored into SAL ────────────────────────────────
-  // WAS physical column is "workspaceId"; SAL physical column is "spaceId".
-  // Raw SQL (not the Prisma delegate): the WorkspaceAccountShare model was
-  // dropped from the schema in v2.5-A Phase 4c, so the delegate no longer
-  // exists. Against a database where the migration has already been applied
-  // (table gone), Gate D reports RETIRED and passes vacuously.
-  let gateD = 0;
-  let gateDDrift = 0;
-  let wasTotal = 0;
-  let wasDropped = false;
-  try {
-    const gateDRows = await prisma.$queryRaw<{ count: bigint }[]>`
-      SELECT COUNT(*)::bigint AS count
-      FROM "WorkspaceAccountShare" was
-      WHERE NOT EXISTS (
-        SELECT 1 FROM "SpaceAccountLink" sal
-        WHERE sal."spaceId" = was."workspaceId"
-          AND sal."financialAccountId" = was."financialAccountId"
-      )`;
-    gateD = Number(gateDRows[0].count);
-    const wasTotalRows = await prisma.$queryRaw<{ count: bigint }[]>`
-      SELECT COUNT(*)::bigint AS count FROM "WorkspaceAccountShare"`;
-    wasTotal = Number(wasTotalRows[0].count);
-    // Mirror fidelity: mirrored pairs whose status or visibility disagree.
-    const gateDDriftRows = await prisma.$queryRaw<{ count: bigint }[]>`
-      SELECT COUNT(*)::bigint AS count
-      FROM "WorkspaceAccountShare" was
-      JOIN "SpaceAccountLink" sal
-        ON sal."spaceId" = was."workspaceId"
-       AND sal."financialAccountId" = was."financialAccountId"
-      WHERE sal."status" <> was."status"
-         OR sal."visibilityLevel" <> was."visibilityLevel"`;
-    gateDDrift = Number(gateDDriftRows[0].count);
-  } catch (e) {
-    // 42P01 undefined_table → the retirement migration has been applied here.
-    const msg = String(e);
-    if (msg.includes("42P01") || (msg.includes("WorkspaceAccountShare") && msg.includes("does not exist"))) {
-      wasDropped = true;
-    } else {
-      throw e;
-    }
-  }
-  const salTotal = await prisma.spaceAccountLink.count();
-
   // ── Gate E — SHARED visibility residue ─────────────────────────────────────
   const gateESal = await prisma.spaceAccountLink.count({
     where: { visibilityLevel: "SHARED" },
@@ -121,17 +78,10 @@ async function main() {
   console.log(`   ${pass(gateB)}   [context: both FKs set: ${txnBoth}, neither: ${txnNeither}]`);
   console.log("Gate C — legacy Account rows");
   console.log(`   ${pass(gateCTotal)}   [total: ${gateCTotal}, non-deleted: ${gateCLive}]`);
-  console.log("Gate D — WAS rows not mirrored into SAL (blocks WAS drop)");
-  if (wasDropped) {
-    console.log(`   ✅ RETIRED — WorkspaceAccountShare table already dropped (Phase 4c applied)   [SAL total: ${salTotal}]`);
-  } else {
-    console.log(`   ${pass(gateD)}   [WAS total: ${wasTotal}, SAL total: ${salTotal}, mirrored-but-drifted (status/visibility): ${gateDDrift}]`);
-  }
   console.log("Gate E — SHARED visibility residue (blocks enum-value removal only)");
   console.log(`   SpaceAccountLink: ${pass(gateESal)}   Account: ${pass(gateEAccount)}`);
 
   console.log("\nDecision:");
-  console.log(`   Phase 4 (WAS drop):      ${wasDropped ? "DONE (applied)" : gateD === 0 && gateDDrift === 0 ? "CLEAR to prepare" : "BLOCKED — un-mirrored/drifted WAS rows"}`);
   console.log(`   Phase 5 (Account drop):  ${gateA === 0 && gateB === 0 && gateCTotal === 0 ? "CLEAR (pending approval)" : "DEFERRED — legacy anchors present"}`);
   console.log(`   SHARED enum removal:     ${gateESal === 0 && gateEAccount === 0 ? "unblocked (rides with Phase 5 regardless)" : "BLOCKED — SHARED rows exist"}`);
 }

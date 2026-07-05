@@ -1,7 +1,7 @@
 /**
  * lib/account-privacy.ts
  *
- * Helpers for enforcing WorkspaceAccountShare visibility tiers at the
+ * Helpers for enforcing SpaceAccountLink visibility tiers at the
  * API-response level.
  *
  * BALANCE_ONLY
@@ -195,7 +195,7 @@ export function sanitizeForBalanceOnly(
 // ── Aggregating normalizer ────────────────────────────────────────────────────
 
 /**
- * Converts a raw list of WorkspaceAccountShare rows into a normalised account
+ * Converts a raw list of SpaceAccountLink rows into a normalised account
  * array safe for every space widget to consume.
  *
  * Rules:

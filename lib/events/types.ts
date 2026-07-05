@@ -24,7 +24,7 @@
  * columns (see lib/events/emit.ts) — no schema change is implied.
  */
 export interface DomainEventEnvelope {
-  /** → AuditLog.spaceId (persisted to the legacy "workspaceId" column). */
+  /** → AuditLog.spaceId. */
   spaceId?: string | null;
   /** → AuditLog.userId — the user who caused the action. */
   actorUserId?: string | null;

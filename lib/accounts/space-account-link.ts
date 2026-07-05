@@ -10,10 +10,10 @@
  * data layer, and most account routes (see the D3 Step 4 read-cutover
  * reports), AND the SOLE runtime write target for account↔space visibility.
  * [UPDATED KD-4 Phase 1] The WorkspaceAccountShare (WAS) dual-write has been
- * retired from every runtime path — WAS is written only by prisma/seed.ts now.
- * The "dual-write" naming in this module is historical; these helpers no
- * longer mirror anything. Full WAS model retirement remains scheduled for
- * v2.5. See docs/investigations/KD4_ATOMIC_SPACE_ACCOUNT_LINK_WRITES_INVESTIGATION.md
+ * retired from every runtime path. The WAS model itself is now fully retired —
+ * dropped in v2.5-A Phase 4c — so nothing writes it anywhere. The "dual-write"
+ * naming in this module is historical; these helpers no longer mirror anything.
+ * See docs/investigations/KD4_ATOMIC_SPACE_ACCOUNT_LINK_WRITES_INVESTIGATION.md
  * §1 for the grounding.
  *
  * Rules (docs/initiatives/d3/D3_STEP3_DUAL_WRITE_REVIEW.md §2, amended by
@@ -241,69 +241,6 @@ export async function dualWriteSpaceAccountLink(params: {
       return;
     }
     throw err;
-  }
-}
-
-/**
- * Mirrors a WorkspaceAccountShare row wholesale onto SpaceAccountLink — the
- * common case for revoke/restore mutations that already have the full share
- * row in hand (e.g. fetched before an updateMany, or returned from a
- * findMany). `kind` is still recomputed per Rule 1, never copied.
- */
-export async function dualWriteFromShare(
-  share: {
-    workspaceId:        string;
-    financialAccountId: string;
-    addedByUserId:      string;
-    visibilityLevel:    VisibilityLevel;
-    status:             ShareStatus;
-    revokedAt:           Date | null;
-    revokedByUserId:     string | null;
-  },
-  creatorUserId?: string | null,
-  client?: DbClient
-): Promise<void> {
-  await dualWriteSpaceAccountLink({
-    spaceId:            share.workspaceId,
-    financialAccountId: share.financialAccountId,
-    creatorUserId,
-    client,
-    create: {
-      addedByUserId:   share.addedByUserId,
-      visibilityLevel: share.visibilityLevel,
-      status:          share.status,
-      revokedAt:       share.revokedAt,
-      revokedByUserId: share.revokedByUserId,
-    },
-    update: {
-      addedByUserId:   share.addedByUserId,
-      visibilityLevel: share.visibilityLevel,
-      status:          share.status,
-      revokedAt:       share.revokedAt,
-      revokedByUserId: share.revokedByUserId,
-    },
-  });
-}
-
-/**
- * Convenience loop over dualWriteFromShare — used by routes that bulk
- * revoke/restore several WorkspaceAccountShare rows at once via updateMany.
- */
-export async function dualWriteFromShares(
-  shares: Array<{
-    workspaceId:        string;
-    financialAccountId: string;
-    addedByUserId:      string;
-    visibilityLevel:    VisibilityLevel;
-    status:             ShareStatus;
-    revokedAt:           Date | null;
-    revokedByUserId:     string | null;
-  }>,
-  creatorUserId?: string | null,
-  client?: DbClient
-): Promise<void> {
-  for (const share of shares) {
-    await dualWriteFromShare(share, creatorUserId, client);
   }
 }
 
