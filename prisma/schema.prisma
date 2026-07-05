@@ -96,17 +96,15 @@ enum ProviderType {
 }
 
 /// Renamed from Workspace -> Space (Fourth Meridian Phase 1 naming migration).
-/// @@map keeps the underlying Postgres enum type name unchanged so this is a
-/// code/Prisma-Client-only rename — no DDL required.
+/// DB1 (2026-07): physical enum type renamed WorkspaceType -> SpaceType, so the
+/// DB type name now matches and no @@map is needed.
 enum SpaceType {
   PERSONAL
   SHARED
-
-  @@map("WorkspaceType")
 }
 
 /// Semantic category for a Space — drives default UI labels, section presets, and AI context.
-/// Renamed from WorkspaceCategory -> SpaceCategory; @@map preserves the DB type name.
+/// Renamed from WorkspaceCategory -> SpaceCategory (DB1: physical enum type renamed to match).
 enum SpaceCategory {
   PERSONAL
   HOUSEHOLD
@@ -123,13 +121,11 @@ enum SpaceCategory {
   EMERGENCY_FUND
   CUSTOM
   OTHER
-
-  @@map("WorkspaceCategory")
 }
 
 /// Tabs available on the Space planning dashboard.
 /// Each SpaceDashboardSection belongs to one tab.
-/// Renamed from WorkspaceDashboardTab -> SpaceDashboardTab; @@map preserves the DB type name.
+/// Renamed from WorkspaceDashboardTab -> SpaceDashboardTab (DB1: physical enum type renamed to match).
 enum SpaceDashboardTab {
   OVERVIEW
   GOALS
@@ -139,29 +135,23 @@ enum SpaceDashboardTab {
   RETIREMENT
   ACTIVITY
   SETTINGS
-
-  @@map("WorkspaceDashboardTab")
 }
 
-/// Renamed from WorkspaceMemberRole -> SpaceMemberRole; @@map preserves the DB type name.
+/// Renamed from WorkspaceMemberRole -> SpaceMemberRole (DB1: physical enum type renamed to match).
 enum SpaceMemberRole {
   OWNER
   ADMIN
   MEMBER
   VIEWER
-
-  @@map("WorkspaceMemberRole")
 }
 
 /// Soft-membership state. REMOVED = kicked by OWNER/ADMIN. LEFT = self-removed.
 /// Row is never deleted so audit history is preserved.
-/// Renamed from WorkspaceMemberStatus -> SpaceMemberStatus; @@map preserves the DB type name.
+/// Renamed from WorkspaceMemberStatus -> SpaceMemberStatus (DB1: physical enum type renamed to match).
 enum SpaceMemberStatus {
   ACTIVE
   REMOVED
   LEFT
-
-  @@map("WorkspaceMemberStatus")
 }
 
 enum InviteStatus {
@@ -311,7 +301,7 @@ model User {
   totpSecret           String? // TOTP seed, stored encrypted (used in M3)
   totpEnabled          Boolean           @default(false)
   role                 UserRole          @default(USER)
-  preferredSpaceId     String?           @map("preferredWorkspaceId") // soft ref — Space the user lands on after login
+  preferredSpaceId     String?           // soft ref — Space the user lands on after login
   passwordResetToken   String?           @unique
   passwordResetExpiry  DateTime?
   forcePasswordReset   Boolean           @default(false) // set true by admin; user must change on next login
@@ -360,8 +350,8 @@ model User {
 // Space on registration. Additional SHARED Spaces can be created or
 // joined (Hogan Family, Atlanta Duplex LLC, etc.)
 // category provides semantic context for the Space (e.g. HOUSEHOLD, BUSINESS).
-// @@map keeps the underlying "Workspace" table name unchanged — this is a
-// Prisma-Client-only rename, no DDL required.
+// DB1 (2026-07): the physical table was renamed Workspace -> Space, so the
+// @@map is gone and the DB table name now matches the model.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Space {
@@ -410,7 +400,6 @@ model Space {
   @@index([isPublic])
   @@index([archivedAt])
   @@index([deletedAt])
-  @@map("Workspace")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -424,7 +413,7 @@ model Space {
 
 model SpaceMember {
   id       String            @id @default(cuid())
-  spaceId  String            @map("workspaceId")
+  spaceId  String
   space    Space             @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   userId   String
   user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -441,7 +430,6 @@ model SpaceMember {
   @@index([spaceId])
   @@index([userId])
   @@index([spaceId, status])
-  @@map("WorkspaceMember")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -452,7 +440,7 @@ model SpaceMember {
 
 model SpaceInvite {
   id            String          @id @default(cuid())
-  spaceId       String          @map("workspaceId")
+  spaceId       String
   space         Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   invitedById   String
   invitedBy     User            @relation("SentInvites", fields: [invitedById], references: [id], onDelete: Cascade)
@@ -467,7 +455,6 @@ model SpaceInvite {
   @@unique([spaceId, invitedUserId])
   @@index([invitedUserId])
   @@index([spaceId])
-  @@map("WorkspaceInvite")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -478,7 +465,7 @@ model SpaceInvite {
 
 model AiAgent {
   id           String    @id @default(cuid())
-  spaceId      String    @unique @map("workspaceId")
+  spaceId      String    @unique
   space        Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   name         String
   // D4 — optional restriction layer for AI context assembly.
@@ -635,7 +622,7 @@ model ProviderAccountIdentity {
 
 model Account {
   id               String          @id @default(cuid())
-  spaceId          String          @map("workspaceId")
+  spaceId          String
   space            Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   ownerId          String? // who connected this account; nullable (SetNull on user delete)
   owner            User?           @relation(fields: [ownerId], references: [id], onDelete: SetNull)
@@ -688,7 +675,7 @@ model FinancialAccount {
   ownerType    AccountOwnerType
   ownerUserId  String?
   ownerUser    User?            @relation("UserOwnedFinancialAccounts", fields: [ownerUserId], references: [id], onDelete: SetNull)
-  ownerSpaceId String?          @map("ownerWorkspaceId")
+  ownerSpaceId String?
   ownerSpace   Space?           @relation("SpaceOwnedFinancialAccounts", fields: [ownerSpaceId], references: [id], onDelete: SetNull)
 
   // D11 (Phase 2 schema modernization): the human-accountable party independent
@@ -910,7 +897,7 @@ model DuplicateAccountCandidate {
   // A merge is a fact about an account pair, not inherently scoped to one
   // Space. Populated when the caller has a space in context (e.g. Plaid
   // import); null otherwise (e.g. the generic/manual restore routes).
-  spaceId          String?                  @map("workspaceId")
+  spaceId          String?
   // Directional by convention, not by name: accountA is always the
   // surviving canonical ("winner") row, accountB is always the archived row
   // whose history was folded into it ("loser"). See
@@ -951,7 +938,7 @@ model DuplicateAccountCandidate {
 
 model SpaceGoal {
   id              String       @id @default(cuid())
-  spaceId         String       @map("workspaceId")
+  spaceId         String
   space           Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   createdByUserId String
   createdBy       User         @relation("GoalCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
@@ -994,7 +981,6 @@ model SpaceGoal {
   @@index([spaceId, status])
   @@index([spaceId, category])
   @@index([spaceId, goalType])
-  @@map("WorkspaceGoal")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1050,7 +1036,7 @@ model GoalContribution {
 
 model SpaceDashboardSection {
   id      String            @id @default(cuid())
-  spaceId String            @map("workspaceId")
+  spaceId String
   space   Space             @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   key     String // e.g. "net_worth", "goals_progress", "debt_payoff"
   label   String // display label
@@ -1065,7 +1051,6 @@ model SpaceDashboardSection {
   @@unique([spaceId, key])
   @@index([spaceId, tab])
   @@index([spaceId, enabled])
-  @@map("WorkspaceDashboardSection")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1382,7 +1367,7 @@ model ImportMappingProfile {
 
 model SpaceSnapshot {
   id      String   @id @default(cuid())
-  spaceId String   @map("workspaceId")
+  spaceId String
   space   Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   date    DateTime @db.Date
 
@@ -1412,7 +1397,6 @@ model SpaceSnapshot {
 
   @@unique([spaceId, date])
   @@index([spaceId, date])
-  @@map("WorkspaceSnapshot")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1423,7 +1407,7 @@ model SpaceSnapshot {
 
 model AiAdvice {
   id          String    @id @default(cuid())
-  spaceId     String    @map("workspaceId")
+  spaceId     String
   space       Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   agentId     String
   agent       AiAgent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -1466,7 +1450,7 @@ model AuditLog {
   id                 String   @id @default(cuid())
   userId             String?
   user               User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  spaceId            String?  @map("workspaceId")
+  spaceId            String?
   space              Space?   @relation(fields: [spaceId], references: [id], onDelete: SetNull)
   action             String // See AuditAction constants in lib/audit-actions.ts
   metadata           Json? // e.g. { institution: "Chase", accountCount: 3 }
