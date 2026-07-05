@@ -4,6 +4,10 @@
     {
       "path": "/api/jobs/sync-banks",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/jobs/fetch-fx-rates",
+      "schedule": "30 6 * * *"
     }
   ]
 }

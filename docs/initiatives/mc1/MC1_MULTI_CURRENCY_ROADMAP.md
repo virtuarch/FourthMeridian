@@ -21,7 +21,7 @@ Five invariants make "world-class later without redesign" true (§9.3): every mo
 | Phase | Approved scope |
 |---|---|
 | **MC1 Phase 0** | **Currency exists** — provenance only: `Transaction.currency`, `Holding.currency`, `SpaceSnapshot.reportingCurrency`, writer stamping, backfill. Exactly as specified in `MC1_PHASE0_CURRENCY_PROVENANCE_PLAN.md` — intentionally small and behavior-neutral. **No FX conversion, no UI selector, no normalized converted values in Phase 0.** ✅ **Delivered 2026-07-05** (`298ef56`→`bf53507`; `MC1_PHASE0_CLOSEOUT_REPORT_2026-07-05.md`). |
-| **MC1 Phase 1** | **FX provider/service** — provider abstraction, immutable dated rate archive (`FxRate`), deterministic rate service, failover, caching. No consumers yet. |
+| **MC1 Phase 1** | **FX provider/service** — provider abstraction, immutable dated rate archive (`FxRate`), deterministic rate service, failover, caching. No consumers yet. ✅ **Delivered 2026-07-05** (`8689e2d`→closing commits; `MC1_PHASE1_CLOSEOUT_REPORT_2026-07-05.md`). |
 | **MC1 Phase 2** | **Read-time conversion** via the shared money service (`lib/money/` — `convertMoney()`), threaded through both aggregation families; target hardwired USD; behavior-neutral. |
 | **MC1 Phase 3** | **Space/User reporting currency** — `Space.reportingCurrency` (authoritative) + `User.reportingCurrency` (copy-once default for new Spaces); the conversion-target flip. |
 | **MC1 Phase 4** | **Currency selector and UX** — Space/User selectors, ephemeral view override, chart/snapshot display rules, AI presentation contract. |
