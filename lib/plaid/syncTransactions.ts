@@ -65,6 +65,7 @@ import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import { ProviderType, PlaidItemStatus } from "@prisma/client";
+import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { findByFingerprint } from "@/lib/transactions/fingerprint";
 // Pure Plaid → TransactionCategory mapping, extracted to a Prisma-free module so
 // it is unit-testable in isolation (lib/transactions/plaid-category.test.ts).
@@ -207,6 +208,14 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         console.warn(
           `[plaid sync] no FinancialAccount for plaidAccountId ${txn.account_id} — skipping transaction ${txn.transaction_id}`
         );
+        // M1 — durable record of a transaction dropped for lack of an account.
+        await recordSyncIssue({
+          kind:               "MISSING_ACCOUNT",
+          plaidItemId:        plaidItemDbId,
+          plaidAccountId:     txn.account_id,
+          plaidTransactionId: txn.transaction_id,
+          detail:             { merchant: txn.merchant_name ?? txn.name, amount: txn.amount, date: txn.date, pending: txn.pending },
+        });
         continue;
       }
 
@@ -265,7 +274,11 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         });
 
         if (existingByPlaidId) {
-          await db.transaction.update({ where: { id: existingByPlaidId.id }, data: fields });
+          // Integrity hardening: resurrect (deletedAt: null). If this row had
+          // been tombstoned by a prior removed[] and Plaid now re-sends it in
+          // added/modified, it is live again — Plaid only sends added/modified
+          // for live transactions, so clearing deletedAt here is correct.
+          await db.transaction.update({ where: { id: existingByPlaidId.id }, data: { ...fields, deletedAt: null } });
           updatedByPlaidId++;
           continue;
         }
@@ -292,6 +305,15 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         created++;
       } catch (e) {
         console.error(`[plaid sync] failed to upsert transaction ${txn.transaction_id}:`, e);
+        // M1 — durable record of a transaction that failed to persist.
+        await recordSyncIssue({
+          kind:               "UPSERT_ERROR",
+          plaidItemId:        plaidItemDbId,
+          financialAccountId,
+          plaidAccountId:     txn.account_id,
+          plaidTransactionId: txn.transaction_id,
+          detail:             { merchant, amount, date: date.toISOString(), error: e instanceof Error ? e.message : String(e) },
+        });
       }
     }
     added    += addedTxns.length;
@@ -299,8 +321,29 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
 
     if (removedTxns.length > 0) {
       const ids = removedTxns.map((t) => t.transaction_id);
-      const result = await db.transaction.deleteMany({ where: { plaidTransactionId: { in: ids } } });
+      // Integrity hardening: SOFT-delete (tombstone) instead of physical delete.
+      // Preserves the row + plaidTransactionId for forensics/recovery, so a
+      // pending removed during a pending→posted transition is never lost without
+      // a trace. Readers already filter deletedAt: null (D2 Step 4D-R), so
+      // tombstoned rows do not resurface in UI/AI/totals/snapshots. Guarded on
+      // deletedAt: null so re-processing preserves the original removal time
+      // (idempotent). The removed ids are logged for forensics.
+      const result = await db.transaction.updateMany({
+        where: { plaidTransactionId: { in: ids }, deletedAt: null },
+        data:  { deletedAt: new Date() },
+      });
       removed += result.count;
+      if (result.count > 0) {
+        console.warn(
+          `[plaid sync] removed[] soft-deleted ${result.count} transaction(s) for item ${plaidItemDbId} — plaidTransactionIds: ${ids.join(", ")}`
+        );
+        // M1 — durable record of the removed[] tombstone batch for forensics.
+        await recordSyncIssue({
+          kind:        "REMOVED_TOMBSTONE",
+          plaidItemId: plaidItemDbId,
+          detail:      { count: result.count, ids },
+        });
+      }
     }
 
     hasMore = has_more;

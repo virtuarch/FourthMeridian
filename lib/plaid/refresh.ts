@@ -37,9 +37,10 @@
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
-import { AccountType, PlaidInvestmentsConsent, PlaidItemStatus, ProviderType } from "@prisma/client";
+import { AccountType, PlaidInvestmentsConsent, PlaidItemStatus, ProviderType, ShareStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
-import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { recordSyncIssue } from "@/lib/plaid/syncIssues";
+import { regenerateSnapshotsForAccounts, regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 import { emitDomainEvent } from "@/lib/events/emit";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { classifyPlaidErrorForHealth, getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
@@ -67,6 +68,39 @@ function mapAccountType(type: string, subtype: string | null | undefined): Accou
   }
 }
 
+// ── M2 — balance↔transaction reconciliation helpers ──────────────────────────
+
+/**
+ * Which accounts can be reconciled safely (balance movement ≈ transaction sum).
+ * Cash (checking/savings) and revolving credit cards only. Investments/crypto
+ * move with the market, and manual/other + non-card debt (loans, amortization)
+ * are not transaction-driven → excluded to avoid false positives.
+ */
+function reconcileKind(fa: {
+  type: string;
+  debtSubtype: string | null;
+  creditLimit: number | null;
+}): "cash" | "card" | null {
+  if (fa.type === "checking" || fa.type === "savings") return "cash";
+  if (fa.type === "debt" && (fa.debtSubtype === "credit_card" || (fa.debtSubtype == null && fa.creditLimit != null))) {
+    return "card";
+  }
+  return null;
+}
+
+/** Sum of non-deleted transaction amounts per FinancialAccount (FM signed). */
+async function txnSumByAccount(ids: string[]): Promise<Map<string, number>> {
+  if (ids.length === 0) return new Map();
+  const rows = await db.transaction.groupBy({
+    by: ["financialAccountId"],
+    where: { financialAccountId: { in: ids }, deletedAt: null },
+    _sum: { amount: true },
+  });
+  const m = new Map<string, number>();
+  for (const r of rows) if (r.financialAccountId) m.set(r.financialAccountId, r._sum.amount ?? 0);
+  return m;
+}
+
 export interface RefreshItemResult {
   plaidItemId:           string;
   institution:           string;
@@ -78,6 +112,13 @@ export interface RefreshItemResult {
   transactionsRemoved:    number;
   /** Space ids whose SpaceSnapshot row was regenerated (today's date). */
   spacesSnapshotted:  string[];
+  /**
+   * FinancialAccount ids whose balance was updated this refresh. Optional/
+   * additive. Populated by refreshPlaidItem; used by refreshAllActiveItemsForUser
+   * to regenerate each affected Space ONCE after all items complete (snapshot
+   * orchestration fix — avoids per-institution partial snapshots).
+   */
+  updatedAccountIds?: string[];
   error?:                 string;
   /** D2 Step 7B — set instead of calling Plaid when this item is on the manual-refresh cooldown. */
   skipped?:               "cooldown";
@@ -93,7 +134,10 @@ export interface RefreshItemResult {
  *
  * @param plaidItemDbId  Our internal PlaidItem.id (primary key), not Plaid's item_id.
  */
-export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshItemResult> {
+export async function refreshPlaidItem(
+  plaidItemDbId: string,
+  opts?: { deferSnapshot?: boolean },
+): Promise<RefreshItemResult> {
   const item = await db.plaidItem.findUnique({ where: { id: plaidItemDbId } });
   if (!item) {
     throw new Error(`refreshPlaidItem: PlaidItem ${plaidItemDbId} not found`);
@@ -104,6 +148,8 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
   // ── 1. Balances / account metadata ────────────────────────────────────────
   let accountsUpdated = 0;
   const updatedAccountIds: string[] = [];
+  // M2 — per-account balance before/after for cash/card reconciliation.
+  const reconcileTargets: Array<{ id: string; type: string; kind: "cash" | "card"; balanceBefore: number; balanceAfter: number }> = [];
   const accountsRes   = await withPlaidRetry(
     () => plaidClient.accountsGet({ access_token: accessToken }),
     "accountsGet"
@@ -169,6 +215,18 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
     });
     accountsUpdated++;
     updatedAccountIds.push(fa.id);
+
+    // M2 — capture before/after balance for reconcilable account types.
+    const rk = reconcileKind(fa);
+    if (rk) {
+      reconcileTargets.push({
+        id:            fa.id,
+        type:          fa.type,
+        kind:          rk,
+        balanceBefore: fa.balance,                         // stored (pre-update) balance
+        balanceAfter:  acct.balances.current ?? fa.balance, // fresh balance just written
+      });
+    }
   }
 
   // ── 2. Investment holdings ──────────────────────────────────────────────
@@ -311,14 +369,61 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
 
   // ── 3. Transactions ──────────────────────────────────────────────────────
   // Reuses the existing cursor-based sync as-is — no duplicated logic.
+  // M2 — snapshot the reconcilable accounts' transaction sums BEFORE the sync
+  // so we can diff how much this sync changed them.
+  const reconcileIds = reconcileTargets.map((t) => t.id);
+  const txnSumBefore = await txnSumByAccount(reconcileIds);
+
   const txSync = await syncTransactionsForItem(plaidItemDbId);
+
+  // ── 3b. Balance↔transaction reconciliation (M2) ──────────────────────────
+  // For cash/card accounts, the balance movement this refresh should be
+  // explained by the net transaction change this sync (cash: +Σamount; card
+  // owed: −Σamount). A gap beyond threshold means the balance moved without
+  // matching transactions (e.g. the July-2 pending→posted loss). Flag only —
+  // best-effort; never fails the refresh; no replay.
+  try {
+    if (reconcileTargets.length > 0) {
+      const txnSumAfter = await txnSumByAccount(reconcileIds);
+      for (const t of reconcileTargets) {
+        const balanceDelta = t.balanceAfter - t.balanceBefore;
+        const txnSumDelta  = (txnSumAfter.get(t.id) ?? 0) - (txnSumBefore.get(t.id) ?? 0);
+        const expected     = t.kind === "cash" ? txnSumDelta : -txnSumDelta;
+        const mismatch     = Math.abs(balanceDelta - expected);
+        const threshold    = Math.max(100, Math.abs(t.balanceAfter) * 0.02);
+        if (mismatch > threshold) {
+          console.warn(
+            `[reconcile] BALANCE_TX_MISMATCH account ${t.id} (${t.type}) — balanceDelta=${balanceDelta.toFixed(2)} expected=${expected.toFixed(2)} mismatch=${mismatch.toFixed(2)} > threshold=${threshold.toFixed(2)}`
+          );
+          await recordSyncIssue({
+            kind:               "BALANCE_TX_MISMATCH",
+            plaidItemId:        plaidItemDbId,
+            financialAccountId: t.id,
+            detail:             { accountType: t.type, kind: t.kind, balanceDelta, txnSumDelta, expected, mismatch, threshold },
+          });
+        }
+      }
+    }
+  } catch (reconErr) {
+    console.error(`[reconcile] balance↔transaction reconciliation failed for item ${plaidItemDbId} (non-fatal):`, reconErr);
+  }
 
   // ── 4. SpaceSnapshot regeneration ───────────────────────────────────
   // Recomputes today's snapshot row for every space these accounts are
   // shared into, from the now-fresh FinancialAccount balances. This is what
   // the Cash History / Banking History / Net Worth charts actually read —
   // see lib/snapshots/regenerate.ts for why this step exists.
-  const spacesSnapshotted = await regenerateSnapshotsForAccounts(updatedAccountIds);
+  //
+  // Orchestration fix: when opts.deferSnapshot is set (the all-items refresh
+  // path), SKIP the per-item regeneration and let the caller regenerate each
+  // affected Space ONCE after every institution has finished — otherwise a
+  // regenerate here reads the full Space while OTHER institutions are still
+  // stale, persisting a partial-balance snapshot (see
+  // D2X_LIVE_SNAPSHOT_PARTIAL_REFRESH_INVESTIGATION.md). Direct single-item
+  // callers (no opts) keep regenerating once here, as before.
+  const spacesSnapshotted = opts?.deferSnapshot
+    ? []
+    : await regenerateSnapshotsForAccounts(updatedAccountIds);
 
   // ── EV-1 Slice 4 — ConnectionSynced (audit-only) ────────────────────────
   // Records a canonical PLAID_REFRESH audit row now that the sync (incl. the
@@ -352,7 +457,55 @@ export async function refreshPlaidItem(plaidItemDbId: string): Promise<RefreshIt
     transactionsModified: txSync.modified,
     transactionsRemoved:  txSync.removed,
     spacesSnapshotted,
+    updatedAccountIds,
   };
+}
+
+/**
+ * Snapshot orchestration fix — regenerate each affected Space exactly ONCE
+ * after an all-items refresh, from the fully-refreshed account set, EXCLUDING
+ * any Space touched by an item that failed this run (its balances are stale,
+ * so a full-set read would persist a partial snapshot). Spaces with no failed
+ * item are regenerated once each. Never throws for a single space failure.
+ *
+ * @param succeededAccountIds  union of updatedAccountIds from items that refreshed OK
+ * @param failedItemIds        PlaidItem ids that threw this run
+ * @returns the Space ids actually regenerated
+ */
+async function regenerateCompletedSpaces(
+  succeededAccountIds: string[],
+  failedItemIds: string[],
+): Promise<string[]> {
+  if (succeededAccountIds.length === 0) return [];
+
+  // Candidate Spaces — any Space linked to a successfully-refreshed account.
+  const candidateLinks = await db.spaceAccountLink.findMany({
+    where:  { financialAccountId: { in: succeededAccountIds }, status: ShareStatus.ACTIVE },
+    select: { spaceId: true },
+  });
+  let candidateSpaceIds = new Set(candidateLinks.map((l) => l.spaceId));
+
+  // Tarnished Spaces — linked to any failed item's accounts. Excluded so a
+  // knowingly-partial same-day snapshot is never persisted for them.
+  if (failedItemIds.length > 0 && candidateSpaceIds.size > 0) {
+    const failedConns = await db.accountConnection.findMany({
+      where:  { plaidItemDbId: { in: failedItemIds }, deletedAt: null },
+      select: { financialAccountId: true },
+    });
+    const failedFaIds = failedConns.map((c) => c.financialAccountId);
+    if (failedFaIds.length > 0) {
+      const tarnishedLinks = await db.spaceAccountLink.findMany({
+        where:  { financialAccountId: { in: failedFaIds }, status: ShareStatus.ACTIVE },
+        select: { spaceId: true },
+      });
+      const tarnished = new Set(tarnishedLinks.map((l) => l.spaceId));
+      candidateSpaceIds = new Set([...candidateSpaceIds].filter((id) => !tarnished.has(id)));
+    }
+  }
+
+  const spaceIds = [...candidateSpaceIds];
+  await Promise.all(spaceIds.map((id) => regenerateSpaceSnapshot(id)));
+  return spaceIds;
 }
 
 export interface RefreshSummary {
@@ -447,7 +600,13 @@ export async function refreshAllActiveItemsForUser(
   let totalTransactionsAdded    = 0;
   let totalTransactionsModified = 0;
   let totalTransactionsRemoved  = 0;
-  const snapshottedSpaceIds = new Set<string>();
+
+  // Orchestration fix — defer snapshots per item; regenerate each affected
+  // Space ONCE after the loop from the fully-refreshed set (see
+  // regenerateCompletedSpaces). Collect the union of successfully-updated
+  // account ids and the ids of items that failed.
+  const succeededAccountIds: string[] = [];
+  const failedItemIds: string[] = [];
 
   for (const item of items) {
     if (!(await hasActiveLinkedAccount(item.id))) {
@@ -459,16 +618,17 @@ export async function refreshAllActiveItemsForUser(
     }
 
     try {
-      const r = await refreshPlaidItem(item.id);
+      const r = await refreshPlaidItem(item.id, { deferSnapshot: true });
       results.push(r);
       totalAccountsUpdated      += r.accountsUpdated;
       totalHoldingsUpdated      += r.holdingsUpdated;
       totalTransactionsAdded    += r.transactionsAdded;
       totalTransactionsModified += r.transactionsModified;
       totalTransactionsRemoved  += r.transactionsRemoved;
-      r.spacesSnapshotted.forEach((id) => snapshottedSpaceIds.add(id));
+      succeededAccountIds.push(...(r.updatedAccountIds ?? []));
     } catch (e) {
       console.error(`[refreshAllActiveItemsForUser] refresh failed for PlaidItem ${item.id}:`, e);
+      failedItemIds.push(item.id);
       const health = classifyPlaidErrorForHealth(e);
       if (health) {
         await db.plaidItem.update({
@@ -491,6 +651,16 @@ export async function refreshAllActiveItemsForUser(
     }
   }
 
+  // Regenerate once per affected Space after ALL institutions are done,
+  // excluding any Space touched by a failed item (best-effort; never fails the
+  // refresh). This replaces the per-item regeneration removed above.
+  let snapshottedSpaceIds: string[] = [];
+  try {
+    snapshottedSpaceIds = await regenerateCompletedSpaces(succeededAccountIds, failedItemIds);
+  } catch (snapErr) {
+    console.error("[refreshAllActiveItemsForUser] post-loop snapshot regeneration failed (non-fatal):", snapErr);
+  }
+
   return {
     results,
     itemCount: items.length,
@@ -499,6 +669,6 @@ export async function refreshAllActiveItemsForUser(
     totalTransactionsAdded,
     totalTransactionsModified,
     totalTransactionsRemoved,
-    spacesSnapshotted: [...snapshottedSpaceIds],
+    spacesSnapshotted: snapshottedSpaceIds,
   };
 }

@@ -1402,6 +1402,12 @@ model SpaceSnapshot {
   cashOnHand  Float @default(0) // max(cash − expense_buffer, 0) — renamed from cashToPlay (legacy "play cash" language)
   netLiquid   Float @default(0) // cash + savings − debt
 
+  // D2.x Slice 4 — true for reconstructed/backfilled historical rows (cash
+  // walked back from transactions; investments/loans/manual assets held flat).
+  // Today's live snapshot and every pre-existing row read false. Additive,
+  // defaulted → zero migration risk.
+  isEstimated Boolean @default(false)
+
   createdAt DateTime @default(now())
 
   @@unique([spaceId, date])
@@ -1552,4 +1558,37 @@ model RateLimit {
 
   @@unique([key, windowStart])
   @@index([windowStart])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2.x — Financial Data Integrity Gate (M1). Durable, queryable record of
+// transaction-sync integrity issues so silent loss becomes visible and future
+// Ambient Intelligence can reason over sync health. Forensic side-table — no
+// other model references it; best-effort writes never affect sync results.
+// ─────────────────────────────────────────────────────────────────────────────
+model SyncIssue {
+  id                 String        @id @default(cuid())
+  provider           String        @default("PLAID")
+  plaidItemId        String?
+  financialAccountId String?
+  kind               SyncIssueKind
+  plaidTransactionId String?
+  plaidAccountId     String?
+  detail             Json? // { merchant, amount, date, balanceDelta, txnSum, threshold, ids, ... }
+  resolved           Boolean       @default(false)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@index([financialAccountId, resolved])
+  @@index([plaidItemId, kind])
+}
+
+enum SyncIssueKind {
+  MISSING_ACCOUNT
+  UPSERT_ERROR
+  REMOVED_TOMBSTONE
+  BALANCE_TX_MISMATCH
+  REPLAY_ATTEMPTED // reserved for v2.5 auto-recovery
+  REPLAY_RECOVERED
+  REPLAY_FAILED
 }
