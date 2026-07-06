@@ -6,10 +6,13 @@
 
 import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
+import { env }                                    from "@/lib/env";
 import { requireSpaceRole }                   from "@/lib/session";
 import { SpaceMemberRole, SpaceMemberStatus } from "@prisma/client";
 import { getClientIp }                            from "@/lib/api";
 import { emitDomainEvent }                        from "@/lib/events/emit";
+import { sendEmail }                              from "@/lib/email/send";
+import { buildInviteUrl }                         from "@/lib/email/invite-url";
 
 export async function POST(
   req: NextRequest,
@@ -33,7 +36,7 @@ export async function POST(
   // Look up target user by username
   const targetUser = await db.user.findUnique({
     where:  { username: username.trim().replace(/^@/, "") },
-    select: { id: true, name: true, username: true },
+    select: { id: true, name: true, username: true, email: true },
   });
   if (!targetUser) {
     return NextResponse.json({ error: "No user found with that username" }, { status: 404 });
@@ -79,13 +82,32 @@ export async function POST(
     },
     include: {
       invitedUser: { select: { id: true, name: true, username: true } },
+      space:       { select: { name: true } },
     },
   });
+
+  // ── Invitation notification email (OPS-1 S3) ──────────────────────────────
+  // Notify the (existing-account) invitee. NON-THROWING: a delivery failure is
+  // logged and recorded in the event, but never fails invite creation. The
+  // email carries NO token — acceptance stays identity-gated in-app; the CTA is
+  // a trusted-base pointer to /dashboard/spaces (built from env, not the Host).
+  const inviterName = user.username ? `@${user.username}` : "A Fourth Meridian member";
+  const spaceName   = invite.space?.name ?? "a Space";
+  const emailResult = await sendEmail("space-invite", targetUser.email, {
+    spaceName,
+    inviterName,
+    role,
+    inviteUrl: buildInviteUrl(env.NEXT_PUBLIC_APP_URL),
+  });
+  if (emailResult.status === "error") {
+    console.error("[spaces/invite] invitation email failed to send:", emailResult.error);
+  }
 
   // Timeline T-1 — MemberInvited (audit-only, no handler). Net-new
   // Timeline-visible row. `invitedEmail` carries a safe display handle
   // (name or @username), never a real email, because the activity consumer
   // currently reads meta.invitedEmail (key rename is deferred debt).
+  // `emailStatus` (S3) records the notification outcome on this same event.
   await emitDomainEvent({
     type:        "MemberInvited",
     spaceId,
@@ -95,6 +117,7 @@ export async function POST(
       invitedUserId: targetUser.id,
       role,
       invitedEmail:  targetUser.name ?? `@${targetUser.username}`,
+      emailStatus:   emailResult.status,
     },
   });
 

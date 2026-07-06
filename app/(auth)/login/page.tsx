@@ -92,7 +92,14 @@ function LoginForm() {
       const data = await res.json();
 
       if (!data.ok) {
-        setError("Invalid email, username, or password.");
+        // Block mode (OPS-1 S2e): a correct password on an unverified account
+        // returns reason:"unverified" — show a clear instruction and point at
+        // the resend affordance below, rather than the generic error.
+        setError(
+          data.reason === "unverified"
+            ? "Please verify your email before signing in. Check your inbox, or resend the verification email below."
+            : "Invalid email, username, or password."
+        );
         setPassword("");
         setLoading(false);
         return;

@@ -17,6 +17,13 @@ export const AuditAction = {
   EMAIL_VERIFIED:           "EMAIL_VERIFIED",
   // OPS-1 S2d — a fresh verification link was issued (token rotated) and sent.
   EMAIL_VERIFICATION_RESENT: "EMAIL_VERIFICATION_RESENT",
+  // OPS-2 S3a — an authenticated user requested an email-address change (a
+  // confirmation link was sent to the new address). The swap happens later
+  // (S3b) under EMAIL_CHANGE_COMPLETED.
+  EMAIL_CHANGE_REQUESTED:    "EMAIL_CHANGE_REQUESTED",
+  // OPS-2 S3b — the new address was confirmed and the account email was
+  // swapped (all sessions revoked; user re-authenticates with the new email).
+  EMAIL_CHANGE_COMPLETED:    "EMAIL_CHANGE_COMPLETED",
 
   // ── Password ─────────────────────────────────────────────────────────────────
   PASSWORD_CHANGED:         "PASSWORD_CHANGED",

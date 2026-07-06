@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
       where: {
         OR: [{ email: identifier }, { username: identifier }],
       },
-      select: { id: true, passwordHash: true, totpEnabled: true },
+      select: { id: true, passwordHash: true, totpEnabled: true, emailVerifiedAt: true },
     });
 
     // Always run bcrypt to prevent timing-based user enumeration
@@ -51,6 +51,16 @@ export async function POST(req: NextRequest) {
 
     if (!valid || !user) {
       return NextResponse.json({ ok: false });
+    }
+
+    // ── Email verification gate (OPS-1 S2e — block mode) ──────────────────────
+    // Reveal "unverified" ONLY after a correct password, so this is not an
+    // enumeration vector (the caller already proved they own the account).
+    // Bad credentials fall through the generic { ok: false } above. authorize()
+    // in lib/auth.ts is the authoritative block; this is the UX signal so the
+    // login page can show the verify message + resend affordance.
+    if (!user.emailVerifiedAt) {
+      return NextResponse.json({ ok: false, reason: "unverified" });
     }
 
     return NextResponse.json({

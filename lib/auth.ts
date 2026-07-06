@@ -61,7 +61,7 @@ export const authOptions: NextAuthOptions = {
               { username: identifier },
             ],
           },
-          select: { id: true, email: true, name: true, username: true, passwordHash: true, role: true, totpEnabled: true, totpSecret: true },
+          select: { id: true, email: true, name: true, username: true, passwordHash: true, role: true, totpEnabled: true, totpSecret: true, emailVerifiedAt: true },
         });
 
         if (!user || !user.passwordHash) {
@@ -95,6 +95,28 @@ export const authOptions: NextAuthOptions = {
               userId:   user.id,
               action:   "LOGIN_FAILED",
               metadata: { identifier, reason: "invalid_password", role: user.role },
+            },
+          });
+          return null;
+        }
+
+        // ── Email verification gate (OPS-1 S2e — block mode) ──────────────────
+        // Unverified accounts cannot log in — no exemptions, including
+        // SYSTEM_ADMIN (admin accounts are highest-risk and must prove email
+        // ownership). Existing accounts were backfilled to verified in S2b, so
+        // only genuinely-unverified new signups are blocked. Checked before
+        // TOTP so an unverified user never reaches the 2FA step. Password reset
+        // is deliberately NOT gated on verification. The generic
+        // CredentialsSignin error is fine here — the two-step login UI surfaces
+        // the specific "verify your email" message via /api/auth/pre-login.
+        if (!user.emailVerifiedAt) {
+          await db.auditLog.create({
+            data: {
+              userId:   user.id,
+              action:   "LOGIN_FAILED",
+              ipAddress,
+              userAgent,
+              metadata: { identifier, reason: "email_unverified", role: user.role },
             },
           });
           return null;

@@ -12,6 +12,9 @@ import type { EmailTemplate, EmailTemplateName } from "@/lib/email/types";
 import { smokeTemplate } from "@/lib/email/templates/smoke";
 import { passwordResetTemplate } from "@/lib/email/templates/password-reset";
 import { emailVerificationTemplate } from "@/lib/email/templates/email-verification";
+import { spaceInviteTemplate } from "@/lib/email/templates/space-invite";
+import { securityAlertTemplate } from "@/lib/email/templates/security-alert";
+import { emailChangeTemplate } from "@/lib/email/templates/email-change";
 
 /**
  * name -> template. Typed so `send.ts` can look up a template by name and get a
@@ -22,6 +25,9 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateName, EmailTemplate<never>> = 
   smoke:                smokeTemplate as EmailTemplate<never>,
   "password-reset":     passwordResetTemplate as EmailTemplate<never>,
   "email-verification": emailVerificationTemplate as EmailTemplate<never>,
+  "space-invite":       spaceInviteTemplate as EmailTemplate<never>,
+  "security-alert":     securityAlertTemplate as EmailTemplate<never>,
+  "email-change":       emailChangeTemplate as EmailTemplate<never>,
 };
 
 export function getTemplate(name: EmailTemplateName): EmailTemplate<never> {

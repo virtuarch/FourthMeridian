@@ -11,6 +11,9 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
 import { hashResetToken } from "@/lib/password-reset-token";
+import { revokeAllUserSessions } from "@/lib/sessions";
+import { sendEmail } from "@/lib/email/send";
+import { formatDateTime } from "@/lib/format";
 import { limitByIp } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
@@ -55,11 +58,27 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // Harden (OPS-2 S2b): a reset is a logged-out flow with no current session
+    // to preserve, and implies possible compromise — revoke ALL of the user's
+    // active sessions so nothing survives the reset. They re-authenticate with
+    // the new password.
+    const revokedSessions = await revokeAllUserSessions(user.id);
+
+    // Notify the account's own email that a reset completed. NON-THROWING: a
+    // delivery failure is logged and recorded, but never fails the reset.
+    const emailResult = await sendEmail("security-alert", user.email, {
+      title:   "Your password was reset",
+      message: `Your Fourth Meridian password was reset on ${formatDateTime(new Date().toISOString())}.`,
+    });
+    if (emailResult.status === "error") {
+      console.error("[reset-password] security-alert email failed to send:", emailResult.error);
+    }
+
     await db.auditLog.create({
       data: {
         userId: user.id,
         action: "PASSWORD_RESET_COMPLETE",
-        metadata: { email: user.email },
+        metadata: { email: user.email, revokedSessions, emailStatus: emailResult.status },
       },
     });
 

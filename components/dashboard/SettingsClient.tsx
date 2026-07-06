@@ -3,8 +3,11 @@
 import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
 import { useState, Suspense } from "react";
 import { useSession } from "next-auth/react";
-import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight } from "lucide-react";
+import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight, Monitor, History, Mail } from "lucide-react";
 import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
+import { ActiveSessions } from "@/components/security/ActiveSessions";
+import { SecurityHistory } from "@/components/security/SecurityHistory";
+import { ChangeEmailForm } from "@/components/security/ChangeEmailForm";
 import { TotpSection } from "@/components/dashboard/TotpSection";
 import { displaySpaceName } from "@/lib/format";
 import Link from "next/link";
@@ -508,6 +511,19 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
         </form>
       </DataCard>
 
+      {/* ── Email address (OPS-2 S3a) ── */}
+      <DataCard>
+        <div className="flex items-center gap-2 mb-1">
+          <Mail size={15} style={{ color: "var(--text-secondary)" }} />
+          <DataCardTitle>Email Address</DataCardTitle>
+        </div>
+        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
+          Change the email address for your account. We&apos;ll send a confirmation
+          link to the new address.
+        </p>
+        <ChangeEmailForm currentEmail={initialProfile.email} />
+      </DataCard>
+
       {/* ── Two-factor authentication ── */}
       <DataCard>
         <div className="flex items-center gap-2 mb-4">
@@ -517,6 +533,30 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
         <Suspense fallback={<div className="h-16 rounded-xl animate-pulse" style={{ background: "var(--surface-inset)" }} />}>
           <TotpSection />
         </Suspense>
+      </DataCard>
+
+      {/* ── Active sessions (OPS-2 S1) ── */}
+      <DataCard>
+        <div className="flex items-center gap-2 mb-1">
+          <Monitor size={15} style={{ color: "var(--text-secondary)" }} />
+          <DataCardTitle>Active Sessions</DataCardTitle>
+        </div>
+        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
+          Devices currently signed in to your account. Revoke any you don&apos;t recognize.
+        </p>
+        <ActiveSessions />
+      </DataCard>
+
+      {/* ── Security history (OPS-2 S1) ── */}
+      <DataCard>
+        <div className="flex items-center gap-2 mb-1">
+          <History size={15} style={{ color: "var(--text-secondary)" }} />
+          <DataCardTitle>Security History</DataCardTitle>
+        </div>
+        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
+          Recent sign-ins and security changes on your account.
+        </p>
+        <SecurityHistory />
       </DataCard>
 
       {/* ── Data & Archive ── */}

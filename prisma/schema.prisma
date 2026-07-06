@@ -315,6 +315,15 @@ model User {
   emailVerifiedAt         DateTime?
   emailVerificationToken  String?        @unique
   emailVerificationExpiry DateTime?
+  // OPS-2 S3a — authenticated email-change seam. `pendingEmail` holds the
+  // requested new address (not yet active); the token columns mirror the
+  // verification/reset pattern (hashed at rest, single outstanding token, 1h
+  // TTL). NOT swapped until the S3b confirm consumer lands. `pendingEmail` is
+  // intentionally NOT @unique — final uniqueness is enforced at swap against
+  // the live `email @unique`.
+  pendingEmail            String?
+  emailChangeToken        String?        @unique
+  emailChangeExpiry       DateTime?
   lastBriefViewedAt    DateTime? // set when user views the Daily Brief page
   // MC1 Phase 3 (D-1/D-2) — the user's DEFAULT reporting currency. A default
   // ONLY: it seeds reportingCurrency for Spaces this user creates (copy-once

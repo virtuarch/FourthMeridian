@@ -49,7 +49,10 @@ export type DomainEvent =
   // EXERCISED (Timeline T-1) — audit-only, no handler. `invitedEmail` carries a
   // safe display handle (name or @username), NOT a real email — the activity
   // consumer currently reads `meta.invitedEmail`; key rename is deferred debt.
-  | (DomainEventEnvelope & { type: "MemberInvited"; payload: { invitedUserId: string; role: string; invitedEmail: string } })
+  // `emailStatus` (OPS-1 S3): the outcome of the invitation notification email
+  // ("sent" | "captured" | "skipped" | "error"). Optional — additive, the
+  // activity consumer ignores unknown keys; older emit sites remain valid.
+  | (DomainEventEnvelope & { type: "MemberInvited"; payload: { invitedUserId: string; role: string; invitedEmail: string; emailStatus?: string } })
   | (DomainEventEnvelope & { type: "MemberJoined"; payload: { userId: string; role: string } }) // EXERCISED (Timeline T-1) — audit-only, no handler
   | (DomainEventEnvelope & { type: "MemberRemoved"; payload: { removedUserId: string; removedName: string; newStatus: string } }) // EXERCISED (Slice 3) — removed by an admin/owner
   | (DomainEventEnvelope & { type: "MemberLeft"; payload: { removedUserId: string; removedName: string; newStatus: string } }) // EXERCISED (Slice 3) — self-leave

@@ -13,6 +13,9 @@ import { db } from "@/lib/db";
 import bcrypt from "bcryptjs";
 import { requireFreshUser } from "@/lib/session";
 import { withApiHandler } from "@/lib/api";
+import { revokeOtherUserSessions } from "@/lib/sessions";
+import { sendEmail } from "@/lib/email/send";
+import { formatDateTime } from "@/lib/format";
 
 export const PATCH = withApiHandler(async (req: NextRequest) => {
   // Sensitive action — always a live revocation check, never the cache.
@@ -33,7 +36,7 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
 
   const dbUser = await db.user.findUnique({
     where:  { id: user.id },
-    select: { passwordHash: true },
+    select: { passwordHash: true, email: true },
   });
 
   if (!dbUser?.passwordHash) {
@@ -59,10 +62,26 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
     data:  { passwordHash: newHash },
   });
 
+  // Harden (OPS-2 S2): revoke every OTHER session so a stolen session can't
+  // outlive a password change. The current session is preserved — the user
+  // stays signed in on this device. Same helper backs sign-out-everywhere.
+  const revokedOtherSessions = await revokeOtherUserSessions(user.id, user.sessionToken);
+
+  // Notify the account's own email. NON-THROWING: a delivery failure is logged
+  // and recorded, but never fails the password change.
+  const emailResult = await sendEmail("security-alert", dbUser.email, {
+    title:   "Your password was changed",
+    message: `Your Fourth Meridian password was changed on ${formatDateTime(new Date().toISOString())}.`,
+  });
+  if (emailResult.status === "error") {
+    console.error("[user/password] security-alert email failed to send:", emailResult.error);
+  }
+
   await db.auditLog.create({
     data: {
       userId: user.id,
       action: "PASSWORD_CHANGED",
+      metadata: { revokedOtherSessions, emailStatus: emailResult.status },
     },
   });
 
