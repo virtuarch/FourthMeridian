@@ -3,11 +3,13 @@
 import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
 import { useState, Suspense } from "react";
 import { useSession } from "next-auth/react";
-import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight, Monitor, History, Mail } from "lucide-react";
+import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight, Monitor, History, Mail, UserX, Trash2 } from "lucide-react";
 import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { ActiveSessions } from "@/components/security/ActiveSessions";
 import { SecurityHistory } from "@/components/security/SecurityHistory";
 import { ChangeEmailForm } from "@/components/security/ChangeEmailForm";
+import { DeactivateAccountCard } from "@/components/security/DeactivateAccountCard";
+import { DeleteAccountCard } from "@/components/security/DeleteAccountCard";
 import { TotpSection } from "@/components/dashboard/TotpSection";
 import { displaySpaceName } from "@/lib/format";
 import Link from "next/link";
@@ -585,6 +587,32 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
           </div>
           <ChevronRight size={15} style={{ color: "var(--text-faint)" }} />
         </Link>
+      </DataCard>
+
+      {/* ── Deactivate account (OPS-2 S4) ── */}
+      <DataCard>
+        <div className="flex items-center gap-2 mb-1">
+          <UserX size={15} style={{ color: "var(--accent-negative)" }} />
+          <DataCardTitle>Deactivate Account</DataCardTitle>
+        </div>
+        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
+          Temporarily deactivate your account. Your data is kept and nothing is
+          deleted — sign in again anytime to reactivate.
+        </p>
+        <DeactivateAccountCard />
+      </DataCard>
+
+      {/* ── Delete account (OPS-2 S7b) ── */}
+      <DataCard>
+        <div className="flex items-center gap-2 mb-1">
+          <Trash2 size={15} style={{ color: "var(--accent-negative)" }} />
+          <DataCardTitle>Delete Account</DataCardTitle>
+        </div>
+        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
+          Permanently delete your account and all your data. You&apos;ll have 7
+          days to cancel by signing back in — after that it can&apos;t be undone.
+        </p>
+        <DeleteAccountCard />
       </DataCard>
     </div>
   );

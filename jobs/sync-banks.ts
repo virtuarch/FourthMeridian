@@ -38,8 +38,12 @@ export interface SyncBanksResult {
 }
 
 export async function syncBanks(): Promise<SyncBanksResult> {
+  // OPS-2 S4: skip items belonging to deactivated users — a deactivated
+  // account shouldn't keep accruing Plaid sync calls (billing honesty). The
+  // items themselves stay ACTIVE; syncing resumes automatically on
+  // reactivation (deactivatedAt back to null).
   const items = await db.plaidItem.findMany({
-    where:  { status: PlaidItemStatus.ACTIVE },
+    where:  { status: PlaidItemStatus.ACTIVE, user: { deactivatedAt: null } },
     select: { id: true, institutionName: true },
   });
 

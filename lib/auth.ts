@@ -24,6 +24,8 @@ import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
 import { verifyTOTP } from "@/lib/totp";
+import { sendEmail } from "@/lib/email/send";
+import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
 import { getCachedRevocation, setCachedRevocation, invalidateSession } from "@/lib/session-cache";
 
@@ -36,6 +38,14 @@ export const authOptions: NextAuthOptions = {
         password:     { label: "Password",          type: "password" },
         totpCode:     { label: "TOTP Code",         type: "text"     },
         recoveryCode: { label: "Recovery Code",     type: "text"     },
+        // OPS-2 S4 — explicit opt-in to reactivate a deactivated account as
+        // part of this login. Set to "true" only by the login page's
+        // "Reactivate and sign in" button; never auto-set.
+        reactivate:   { label: "Reactivate",        type: "text"     },
+        // OPS-2 S7a — explicit opt-in to CANCEL a pending account deletion as
+        // part of this login. Set to "true" only by the login page's "Cancel
+        // deletion and sign in" button; never auto-set. Mirrors `reactivate`.
+        cancelDeletion: { label: "Cancel Deletion",  type: "text"     },
       },
 
       async authorize(credentials, req) {
@@ -61,7 +71,7 @@ export const authOptions: NextAuthOptions = {
               { username: identifier },
             ],
           },
-          select: { id: true, email: true, name: true, username: true, passwordHash: true, role: true, totpEnabled: true, totpSecret: true, emailVerifiedAt: true },
+          select: { id: true, email: true, name: true, username: true, passwordHash: true, role: true, totpEnabled: true, totpSecret: true, emailVerifiedAt: true, deactivatedAt: true, deletionScheduledAt: true, deletionRequestedAt: true },
         });
 
         if (!user || !user.passwordHash) {
@@ -117,6 +127,56 @@ export const authOptions: NextAuthOptions = {
               ipAddress,
               userAgent,
               metadata: { identifier, reason: "email_unverified", role: user.role },
+            },
+          });
+          return null;
+        }
+
+        // ── Deactivation gate (OPS-2 S4) ──────────────────────────────────────
+        // A deactivated account cannot log in UNLESS this attempt explicitly
+        // opted in to reactivation (the login page's "Reactivate and sign in"
+        // button sets reactivate:"true" after pre-login surfaced the state).
+        // Checked after the password and verification gates but BEFORE TOTP —
+        // reactivation itself only happens further down, after the FULL auth
+        // (incl. second factor) succeeds, so a password alone never
+        // reactivates a 2FA-protected account.
+        const wantsReactivation =
+          (credentials as Record<string, string>).reactivate === "true";
+
+        // ── Pending-deletion gate (OPS-2 S7a) ─────────────────────────────────
+        // Mirrors the deactivation gate but is checked FIRST: a pending account
+        // also has deactivatedAt set, and a valid cancelDeletion attempt must
+        // not be blocked by the deactivation gate below. Deny login unless the
+        // user explicitly opted to cancel the deletion (the login page's
+        // "Cancel deletion and sign in" button sets cancelDeletion:"true").
+        // The cancellation itself only happens further down, after FULL auth.
+        const wantsCancelDeletion =
+          (credentials as Record<string, string>).cancelDeletion === "true";
+        if (user.deletionScheduledAt && !wantsCancelDeletion) {
+          await db.auditLog.create({
+            data: {
+              userId:   user.id,
+              action:   "LOGIN_FAILED",
+              ipAddress,
+              userAgent,
+              metadata: { identifier, reason: "pending_deletion", role: user.role },
+            },
+          });
+          return null;
+        }
+
+        // OPS-2 S4 deactivation gate. The extra `!(deletionScheduledAt &&
+        // wantsCancelDeletion)` term lets a valid cancel-deletion attempt (which
+        // also carries deactivatedAt) through to full auth; it never lets a
+        // merely-deactivated account (deletionScheduledAt null) bypass the gate.
+        if (user.deactivatedAt && !wantsReactivation && !(user.deletionScheduledAt && wantsCancelDeletion)) {
+          await db.auditLog.create({
+            data: {
+              userId:   user.id,
+              action:   "LOGIN_FAILED",
+              ipAddress,
+              userAgent,
+              metadata: { identifier, reason: "account_deactivated", role: user.role },
             },
           });
           return null;
@@ -200,6 +260,68 @@ export const authOptions: NextAuthOptions = {
               return null;
             }
             // verifyRecoveryCode marks the code used; write the login event below
+          }
+        }
+
+        // ── Reactivation (OPS-2 S4) ───────────────────────────────────────────
+        // Full auth has succeeded (password + TOTP/recovery where enabled) and
+        // the user explicitly asked to reactivate — clear the flag, audit, and
+        // notify. Email is NON-THROWING: a delivery failure never blocks the
+        // reactivation or the login.
+        if (user.deactivatedAt && wantsReactivation) {
+          await db.$transaction([
+            db.user.update({
+              where: { id: user.id },
+              data:  { deactivatedAt: null },
+            }),
+            db.auditLog.create({
+              data: {
+                userId:   user.id,
+                action:   AuditAction.ACCOUNT_REACTIVATED,
+                ipAddress,
+                userAgent,
+                metadata: { deactivatedAt: user.deactivatedAt.toISOString() },
+              },
+            }),
+          ]);
+
+          const emailResult = await sendEmail("security-alert", user.email, {
+            title:   "Your account was reactivated",
+            message: `Your Fourth Meridian account was reactivated on ${formatDateTime(new Date().toISOString())}.`,
+          });
+          if (emailResult.status === "error") {
+            console.error("[auth] reactivation security-alert email failed to send:", emailResult.error);
+          }
+        }
+
+        // ── Deletion cancellation (OPS-2 S7a) ─────────────────────────────────
+        // Full auth has succeeded and the user explicitly asked to cancel a
+        // pending deletion — clear the two deletion timestamps AND the
+        // deactivatedAt lockout they were set alongside, audit, and notify.
+        // Mirrors the reactivation leg above; email is NON-THROWING.
+        if (user.deletionScheduledAt && wantsCancelDeletion) {
+          await db.$transaction([
+            db.user.update({
+              where: { id: user.id },
+              data:  { deletionRequestedAt: null, deletionScheduledAt: null, deactivatedAt: null },
+            }),
+            db.auditLog.create({
+              data: {
+                userId:   user.id,
+                action:   AuditAction.ACCOUNT_DELETION_CANCELLED,
+                ipAddress,
+                userAgent,
+                metadata: { deletionScheduledAt: user.deletionScheduledAt.toISOString() },
+              },
+            }),
+          ]);
+
+          const emailResult = await sendEmail("security-alert", user.email, {
+            title:   "Your account deletion was cancelled",
+            message: `Your scheduled Fourth Meridian account deletion was cancelled on ${formatDateTime(new Date().toISOString())}. Your account is active again.`,
+          });
+          if (emailResult.status === "error") {
+            console.error("[auth] deletion-cancellation security-alert email failed to send:", emailResult.error);
           }
         }
 

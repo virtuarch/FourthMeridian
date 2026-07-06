@@ -76,8 +76,10 @@ import type { SpaceContext } from '@/lib/space';
 /** Raw shape returned by the Prisma select on SpaceAccountLink. */
 type AccountLinkRow = {
   visibilityLevel: VisibilityLevel;
-  addedByUserId:   string;
-  addedByUser:     { firstName: string | null; name: string | null };
+  // OPS-2 S5 — nullable since SpaceAccountLink.addedByUserId flipped to
+  // SetNull: a link whose adder's account was deleted has a null adder.
+  addedByUserId:   string | null;
+  addedByUser:     { firstName: string | null; name: string | null } | null;
   financialAccount: {
     id:              string;
     name:            string;
@@ -331,8 +333,8 @@ async function assembleAccounts(
     accounts = links.map((link): AccountSummaryItem => {
       const fa         = link.financialAccount;
       const isFull     = link.visibilityLevel === VisibilityLevel.FULL;
-      const ownerName  = link.addedByUser.firstName?.trim() ||
-                         link.addedByUser.name?.trim().split(' ')[0] ||
+      const ownerName  = link.addedByUser?.firstName?.trim() ||
+                         link.addedByUser?.name?.trim().split(' ')[0] ||
                          null;
 
       const needsReauth = fa.connections.some(
@@ -421,8 +423,8 @@ async function assembleAccounts(
   const trackedAccounts: TrackedAccountLite[] = links.map((link) => {
     const fa       = link.financialAccount;
     const isFull   = link.visibilityLevel === VisibilityLevel.FULL;
-    const ownerName = link.addedByUser.firstName?.trim() ||
-                      link.addedByUser.name?.trim().split(' ')[0] ||
+    const ownerName = link.addedByUser?.firstName?.trim() ||
+                      link.addedByUser?.name?.trim().split(' ')[0] ||
                       null;
 
     if (isFull) {

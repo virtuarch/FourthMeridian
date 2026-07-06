@@ -43,6 +43,20 @@ function LoginForm() {
   const [verifySending, setVerifySending] = useState(false);
   const [verifyMsg,     setVerifyMsg]     = useState("");
 
+  // Reactivation (OPS-2 S4) — pre-login returned reason:"deactivated" after a
+  // correct password. `reactivateOffer` shows the explicit "Reactivate and
+  // sign in" affordance; `reactivateMode` is set ONLY by that button and adds
+  // reactivate:"true" to the signIn credentials (never auto-set).
+  const [reactivateOffer, setReactivateOffer] = useState<null | { totpRequired: boolean }>(null);
+  const [reactivateMode,  setReactivateMode]  = useState(false);
+
+  // Pending-deletion cancel (OPS-2 S7b) — pre-login returned reason:"pending_deletion"
+  // after a correct password. Mirrors the reactivation affordance: the button
+  // adds cancelDeletion:"true" to the signIn credentials (never auto-set); the
+  // S7a authorize() leg clears the deletion timestamps after FULL auth.
+  const [pendingDeletionOffer, setPendingDeletionOffer] = useState<null | { totpRequired: boolean }>(null);
+  const [cancelDeletionMode,   setCancelDeletionMode]   = useState(false);
+
   const totpInputRef     = useRef<HTMLInputElement>(null);
   const recoveryInputRef = useRef<HTMLInputElement>(null);
 
@@ -82,6 +96,8 @@ function LoginForm() {
     if (!identifier.trim() || !password) return;
 
     setError(""); setNotice(""); setLoading(true);
+    setReactivateOffer(null); setReactivateMode(false);
+    setPendingDeletionOffer(null); setCancelDeletionMode(false);
 
     try {
       const res  = await fetch("/api/auth/pre-login", {
@@ -92,6 +108,24 @@ function LoginForm() {
       const data = await res.json();
 
       if (!data.ok) {
+        // Deactivated account (OPS-2 S4): a correct password on a deactivated
+        // account returns reason:"deactivated" — offer explicit reactivation.
+        // Password is deliberately KEPT in state: the reactivate button
+        // re-submits it through the normal signIn flow.
+        // Pending deletion (OPS-2 S7b): a correct password on a pending-deletion
+        // account returns reason:"pending_deletion" — offer explicit cancellation
+        // (handled by the S7a cancelDeletion login leg). Checked before the
+        // deactivated branch since a pending account is also deactivated.
+        if (data.reason === "pending_deletion") {
+          setPendingDeletionOffer({ totpRequired: !!data.totpRequired });
+          setLoading(false);
+          return;
+        }
+        if (data.reason === "deactivated") {
+          setReactivateOffer({ totpRequired: !!data.totpRequired });
+          setLoading(false);
+          return;
+        }
         // Block mode (OPS-1 S2e): a correct password on an unverified account
         // returns reason:"unverified" — show a clear instruction and point at
         // the resend affordance below, rather than the generic error.
@@ -120,6 +154,44 @@ function LoginForm() {
     }
   }
 
+  // ── Reactivate and sign in (OPS-2 S4) ──────────────────────────────────────
+  // Explicit opt-in only. With 2FA enabled the flow routes through the normal
+  // TOTP screen first — reactivation happens server-side only after FULL auth
+  // succeeds (lib/auth.ts).
+
+  async function handleReactivate() {
+    if (!reactivateOffer) return;
+    setError("");
+    setReactivateMode(true);
+
+    if (reactivateOffer.totpRequired) {
+      setStep("totp");
+      return;
+    }
+
+    setLoading(true);
+    await completeSignIn({ identifier, password, reactivate: true });
+  }
+
+  // ── Cancel deletion and sign in (OPS-2 S7b) ────────────────────────────────
+  // Explicit opt-in only. With 2FA enabled the flow routes through the normal
+  // TOTP screen first — cancellation happens server-side only after FULL auth
+  // succeeds (lib/auth.ts cancelDeletion leg).
+
+  async function handleCancelDeletion() {
+    if (!pendingDeletionOffer) return;
+    setError("");
+    setCancelDeletionMode(true);
+
+    if (pendingDeletionOffer.totpRequired) {
+      setStep("totp");
+      return;
+    }
+
+    setLoading(true);
+    await completeSignIn({ identifier, password, cancelDeletion: true });
+  }
+
   // ── Step 2a: TOTP code ─────────────────────────────────────────────────────
 
   async function handleTotpSubmit(e: React.FormEvent) {
@@ -128,7 +200,7 @@ function LoginForm() {
     if (code.length !== 6) return;
 
     setError(""); setLoading(true);
-    await completeSignIn({ identifier, password, totpCode: code });
+    await completeSignIn({ identifier, password, totpCode: code, reactivate: reactivateMode, cancelDeletion: cancelDeletionMode });
   }
 
   // ── Step 2b: Recovery code ─────────────────────────────────────────────────
@@ -138,7 +210,7 @@ function LoginForm() {
     if (!recoveryCode.trim()) return;
 
     setError(""); setLoading(true);
-    await completeSignIn({ identifier, password, recoveryCode: recoveryCode.trim() });
+    await completeSignIn({ identifier, password, recoveryCode: recoveryCode.trim(), reactivate: reactivateMode, cancelDeletion: cancelDeletionMode });
   }
 
   // ── Shared: call NextAuth signIn ───────────────────────────────────────────
@@ -148,12 +220,16 @@ function LoginForm() {
     password:     string;
     totpCode?:    string;
     recoveryCode?: string;
+    reactivate?:  boolean;
+    cancelDeletion?: boolean;
   }) {
     const result = await signIn("credentials", {
       identifier:   params.identifier.toLowerCase().trim(),
       password:     params.password,
       totpCode:     params.totpCode     ?? "",
       recoveryCode: params.recoveryCode ?? "",
+      reactivate:   params.reactivate ? "true" : "",
+      cancelDeletion: params.cancelDeletion ? "true" : "",
       redirect:     false,
     });
 
@@ -185,6 +261,10 @@ function LoginForm() {
     setTotpCode("");
     setRecoveryCode("");
     setError("");
+    setReactivateMode(false);
+    setCancelDeletionMode(false);
+    // Deliberately keep reactivateOffer / pendingDeletionOffer — the panel
+    // re-renders on the credentials step so the user can try again.
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -202,6 +282,58 @@ function LoginForm() {
       {error && (
         <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-4 py-3 text-sm text-red-400 text-center">
           {error}
+        </div>
+      )}
+
+      {/* ── Reactivation offer (OPS-2 S4) ──────────────────────────────────── */}
+      {step === "credentials" && reactivateOffer && (
+        <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20 space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0">
+              <ShieldCheck size={18} className="text-blue-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-white">This account is deactivated</p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Your data is intact. Reactivate to sign back in — everything will
+                be exactly as you left it.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleReactivate}
+            disabled={loading}
+            className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+          >
+            {loading ? <><Loader2 size={15} className="animate-spin" /> Reactivating…</> : "Reactivate and sign in"}
+          </button>
+        </div>
+      )}
+
+      {/* ── Pending-deletion cancel offer (OPS-2 S7b) ──────────────────────── */}
+      {step === "credentials" && pendingDeletionOffer && (
+        <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/20 space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center shrink-0">
+              <ShieldCheck size={18} className="text-amber-400" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-white">This account is scheduled for deletion</p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Sign in to cancel the deletion — your data is still intact and
+                everything will be restored exactly as you left it.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleCancelDeletion}
+            disabled={loading}
+            className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+          >
+            {loading ? <><Loader2 size={15} className="animate-spin" /> Cancelling…</> : "Cancel deletion and sign in"}
+          </button>
         </div>
       )}
 

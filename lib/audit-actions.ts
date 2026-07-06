@@ -25,6 +25,26 @@ export const AuditAction = {
   // swapped (all sessions revoked; user re-authenticates with the new email).
   EMAIL_CHANGE_COMPLETED:    "EMAIL_CHANGE_COMPLETED",
 
+  // ── Account lifecycle (OPS-2 S4) ─────────────────────────────────────────────
+  // The user deactivated their own account (fresh auth + password re-auth;
+  // all sessions revoked; data intact — deactivated ≠ deleted).
+  ACCOUNT_DEACTIVATED:      "ACCOUNT_DEACTIVATED",
+  // The user reactivated at login via the explicit "Reactivate and sign in"
+  // leg (full auth incl. TOTP; clears User.deactivatedAt).
+  ACCOUNT_REACTIVATED:      "ACCOUNT_REACTIVATED",
+  // OPS-2 S6 — the user exported a copy of their personal data (fresh auth;
+  // synchronous ZIP download). Recorded so the export is auditable and shows
+  // in the user's own security history.
+  DATA_EXPORTED:            "DATA_EXPORTED",
+  // OPS-2 S7 — account-deletion lifecycle. REQUESTED/CANCELLED are written
+  // while the account still exists (user-facing, in security history). DELETED
+  // is written by the S7c purge just before db.user.delete(); its userId is
+  // then SetNull'd by the cascade, so it survives anonymized as platform
+  // forensics (not in the user allowlist). Only the constants land in S7a.
+  ACCOUNT_DELETION_REQUESTED: "ACCOUNT_DELETION_REQUESTED",
+  ACCOUNT_DELETION_CANCELLED: "ACCOUNT_DELETION_CANCELLED",
+  ACCOUNT_DELETED:            "ACCOUNT_DELETED",
+
   // ── Password ─────────────────────────────────────────────────────────────────
   PASSWORD_CHANGED:         "PASSWORD_CHANGED",
   PASSWORD_RESET:           "PASSWORD_RESET",
@@ -125,6 +145,17 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
       AuditAction.LOGIN_FAILED,
       AuditAction.LOGOUT,
       AuditAction.SPACE_SWITCH,
+    ],
+  },
+  {
+    label: "Account",
+    actions: [
+      AuditAction.ACCOUNT_DEACTIVATED,
+      AuditAction.ACCOUNT_REACTIVATED,
+      AuditAction.DATA_EXPORTED,
+      AuditAction.ACCOUNT_DELETION_REQUESTED,
+      AuditAction.ACCOUNT_DELETION_CANCELLED,
+      AuditAction.ACCOUNT_DELETED,
     ],
   },
   {

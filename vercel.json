@@ -8,6 +8,10 @@
     {
       "path": "/api/jobs/fetch-fx-rates",
       "schedule": "30 6 * * *"
+    },
+    {
+      "path": "/api/jobs/process-deletions",
+      "schedule": "0 7 * * *"
     }
   ]
 }

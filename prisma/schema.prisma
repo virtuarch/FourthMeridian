@@ -324,6 +324,24 @@ model User {
   pendingEmail            String?
   emailChangeToken        String?        @unique
   emailChangeExpiry       DateTime?
+  // OPS-2 S4 — account deactivation. Null = active; timestamp = when the user
+  // deactivated. Deactivated ≠ deleted: all data, Space memberships, and
+  // PlaidItems stay intact — only login is gated (lib/auth.ts +
+  // /api/auth/pre-login) and the bank-sync cron skips the user's items
+  // (jobs/sync-banks.ts). Cleared by the explicit reactivation leg of login
+  // (`reactivate` credential flag; requires full auth incl. TOTP).
+  deactivatedAt           DateTime?
+  // OPS-2 S7a — account-deletion foundations. Null = not scheduled for
+  // deletion. deletionRequestedAt records WHEN the user asked to delete;
+  // deletionScheduledAt is when the purge becomes due (requestedAt + grace).
+  // Pending-deletion reuses deactivatedAt as the login/sync lockout (set
+  // alongside these in S7b); deletionScheduledAt is the discriminator the
+  // login gate reads to show "pending deletion — cancel?" instead of the
+  // deactivation message. Cleared together by the login cancelDeletion leg
+  // (lib/auth.ts, mirrors the S4 reactivation leg). No purge/cron/route in
+  // S7a — those are S7b/S7c. See OPS2_S7_ACCOUNT_DELETION_INVESTIGATION.md.
+  deletionRequestedAt     DateTime?
+  deletionScheduledAt     DateTime?
   lastBriefViewedAt    DateTime? // set when user views the Daily Brief page
   // MC1 Phase 3 (D-1/D-2) — the user's DEFAULT reporting currency. A default
   // ONLY: it seeds reportingCurrency for Spaces this user creates (copy-once
@@ -895,8 +913,16 @@ model SpaceAccountLink {
   financialAccountId String
   financialAccount   FinancialAccount     @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
   kind               SpaceAccountLinkKind
-  addedByUserId      String
-  addedByUser        User                 @relation("SpaceAccountLinkAdder", fields: [addedByUserId], references: [id], onDelete: Cascade)
+  // OPS-2 S5 — nullable + SetNull (was required + Cascade). SAL doctrine is
+  // revoke-don't-delete (status: REVOKED exists for exactly this); a hard
+  // cascade on the adder's deletion would orphan accounts (including HOME
+  // links) that other members rely on. The S7 pipeline revokes via status;
+  // the FK then nulls harmlessly. Null addedByUserId = "adder's account no
+  // longer exists" — the share-revoke route's self-check is null-safe (a
+  // nulled adder simply requires OWNER/ADMIN to revoke).
+  // See docs/initiatives/ops2/OPS2_S5_DELETION_INVENTORY.md.
+  addedByUserId      String?
+  addedByUser        User?                @relation("SpaceAccountLinkAdder", fields: [addedByUserId], references: [id], onDelete: SetNull)
   visibilityLevel    VisibilityLevel      @default(FULL)
   status             ShareStatus          @default(ACTIVE)
   revokedAt          DateTime?
@@ -975,8 +1001,13 @@ model SpaceGoal {
   id              String       @id @default(cuid())
   spaceId         String
   space           Space        @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  createdByUserId String
-  createdBy       User         @relation("GoalCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  // OPS-2 S5 — nullable + SetNull (was required + Cascade). A goal created in
+  // a SHARED Space is the Space's data, not the creator's: deleting the
+  // creator must never destroy other members' goals, contributions, or
+  // check-ins. Null createdByUserId = "creator's account no longer exists".
+  // See docs/initiatives/ops2/OPS2_S5_DELETION_INVENTORY.md.
+  createdByUserId String?
+  createdBy       User?        @relation("GoalCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   name            String
   description     String?
   category        GoalCategory @default(GENERAL)

@@ -73,8 +73,10 @@ export interface NormalizedAccount {
 /** Raw share row shape expected by normalizeSharedAccounts. */
 export interface ShareRow {
   visibilityLevel:  string;
-  addedByUserId:    string;
-  addedByUser:      { firstName: string | null; name: string | null };
+  // OPS-2 S5 — nullable since SpaceAccountLink.addedByUserId flipped to
+  // SetNull: a link whose adder's account was deleted has a null adder.
+  addedByUserId:    string | null;
+  addedByUser:      { firstName: string | null; name: string | null } | null;
   financialAccount: {
     id:             string;
     name:           string;
@@ -220,7 +222,9 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
     string,
     {
       count:          number;
-      ownerId:        string;
+      // OPS-2 S5 — null when the adder's account was deleted (SetNull); such
+      // rows still group correctly (the map key stringifies null uniformly).
+      ownerId:        string | null;
       ownerFirstName: string | null;
       baseLabel:      string;  // singular, no owner prefix
       type:           string;
@@ -252,8 +256,8 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
 
     // BALANCE_ONLY — derive owner name and base label, then group.
     const ownerFirstName =
-      share.addedByUser.firstName?.trim() ||
-      share.addedByUser.name?.trim().split(" ")[0] ||
+      share.addedByUser?.firstName?.trim() ||
+      share.addedByUser?.name?.trim().split(" ")[0] ||
       null;
 
     // Base label has no owner prefix — the prefix is added after aggregation

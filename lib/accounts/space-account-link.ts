@@ -151,7 +151,11 @@ export async function computeLinkKind(
 }
 
 export interface SpaceAccountLinkWriteFields {
-  addedByUserId:    string;
+  // OPS-2 S5 — nullable since SpaceAccountLink.addedByUserId flipped to
+  // SetNull. Live call sites always pass a real user id; null flows only when
+  // re-pointing a link whose original adder's account was deleted
+  // (lib/accounts/reconcile.ts merge path preserves the null).
+  addedByUserId:    string | null;
   visibilityLevel:  VisibilityLevel;
   status:           ShareStatus;
   revokedAt?:       Date | null;

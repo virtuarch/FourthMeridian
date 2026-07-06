@@ -9,6 +9,9 @@
  *   { ok: false }                        — bad credentials
  *   { ok: true, totpRequired: false }    — login can complete in one step
  *   { ok: true, totpRequired: true }     — TOTP screen must be shown
+ *   { ok: false, reason: "unverified" }  — correct password, email unverified
+ *   { ok: false, reason: "deactivated", totpRequired } — correct password,
+ *     account deactivated (OPS-2 S4); login page offers reactivation
  *
  * Security notes:
  *   - Timing-safe: always runs bcrypt even when user is not found (dummy hash).
@@ -42,7 +45,7 @@ export async function POST(req: NextRequest) {
       where: {
         OR: [{ email: identifier }, { username: identifier }],
       },
-      select: { id: true, passwordHash: true, totpEnabled: true, emailVerifiedAt: true },
+      select: { id: true, passwordHash: true, totpEnabled: true, emailVerifiedAt: true, deactivatedAt: true, deletionScheduledAt: true },
     });
 
     // Always run bcrypt to prevent timing-based user enumeration
@@ -61,6 +64,29 @@ export async function POST(req: NextRequest) {
     // login page can show the verify message + resend affordance.
     if (!user.emailVerifiedAt) {
       return NextResponse.json({ ok: false, reason: "unverified" });
+    }
+
+    // ── Pending-deletion gate (OPS-2 S7a) ──────────────────────────────────────
+    // A pending-deletion account also has deactivatedAt set (S7b), so this is
+    // checked BEFORE the deactivation gate to surface the distinct "pending
+    // deletion — cancel?" affordance instead of the generic reactivate one.
+    // Same post-password non-enumeration argument. authorize() in lib/auth.ts
+    // is the authoritative block (and performs the cancellation once full auth
+    // succeeds via the cancelDeletion leg). totpRequired routes the cancel leg
+    // through the TOTP screen when 2FA is enabled.
+    if (user.deletionScheduledAt) {
+      return NextResponse.json({ ok: false, reason: "pending_deletion", totpRequired: user.totpEnabled });
+    }
+
+    // ── Deactivation gate (OPS-2 S4) ───────────────────────────────────────────
+    // Same post-password non-enumeration argument as "unverified": revealed
+    // ONLY after a correct password. The login page shows a "Reactivate and
+    // sign in" affordance; authorize() in lib/auth.ts is the authoritative
+    // block (and performs the reactivation once full auth succeeds). We also
+    // return totpRequired so the reactivation leg can route through the TOTP
+    // screen when 2FA is enabled.
+    if (user.deactivatedAt) {
+      return NextResponse.json({ ok: false, reason: "deactivated", totpRequired: user.totpEnabled });
     }
 
     return NextResponse.json({
