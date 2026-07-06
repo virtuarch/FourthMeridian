@@ -8,6 +8,7 @@ import { getDebtTransactions, getTransactions }        from "@/lib/data/transact
 import { getSpaceContext }                         from "@/lib/space";
 import { serializeSpaceConversionContext }        from "@/lib/money/server-context";
 import { yesterdayUTCISO }                         from "@/lib/fx/config";
+import { DisplayCurrencyProvider }                 from "@/lib/currency-context";
 
 // Co-locate compute with the Singapore-region Supabase instance — see
 // lib/space.ts / perf audit notes. Applies to this page's serverless
@@ -20,18 +21,30 @@ export default async function DashboardPage() {
   const isPersonal = ctx.space.type === "PERSONAL";
 
   // Non-personal spaces render the planning dashboard (client-side data fetching)
+  //
+  // MC1 nav currency-staleness fix — source the display currency from THIS
+  // page's freshly resolved Space context (the page re-runs on every
+  // navigation, including a Space switch), not only from the shared /dashboard
+  // layout provider (which App Router preserves across same-layout navigation
+  // and would keep the previous Space's currency until a manual refresh). A
+  // nested provider overrides the ambient one; all-USD is unchanged.
+  // key={ctx.spaceId} remounts the host on a same-type switch so no stale
+  // client state (widget/space moneyCtx, snapshots) carries between Spaces.
   if (!isPersonal) {
     return (
-      <Suspense fallback={null}>
-        <SpaceDashboard
-          spaceId={ctx.spaceId}
-          spaceName={ctx.space.name}
-          spaceType={ctx.space.type}
-          category={ctx.space.category}
-          myRole={ctx.role}
-          currentUserId={ctx.userId}
-        />
-      </Suspense>
+      <DisplayCurrencyProvider currency={ctx.space.reportingCurrency}>
+        <Suspense fallback={null}>
+          <SpaceDashboard
+            key={ctx.spaceId}
+            spaceId={ctx.spaceId}
+            spaceName={ctx.space.name}
+            spaceType={ctx.space.type}
+            category={ctx.space.category}
+            myRole={ctx.role}
+            currentUserId={ctx.userId}
+          />
+        </Suspense>
+      </DisplayCurrencyProvider>
     );
   }
 
@@ -70,23 +83,26 @@ export default async function DashboardPage() {
   });
 
   return (
-    <Suspense fallback={null}>
-      <DashboardClient
-        spaceId={ctx.spaceId}
-        spaceName={ctx.space.name}
-        category={ctx.space.category}
-        myRole={ctx.role}
-        currentUserId={ctx.userId}
-        accounts={accounts}
-        holdings={holdings}
-        snapshots={snapshots}
-        advice={advice}
-        ficoScore={ficoData.score}
-        ficoUpdatedAt={ficoData.updatedAt}
-        debtTransactions={debtTransactions}
-        transactions={transactions}
-        moneyCtx={moneyCtx}
-      />
-    </Suspense>
+    <DisplayCurrencyProvider currency={ctx.space.reportingCurrency}>
+      <Suspense fallback={null}>
+        <DashboardClient
+          key={ctx.spaceId}
+          spaceId={ctx.spaceId}
+          spaceName={ctx.space.name}
+          category={ctx.space.category}
+          myRole={ctx.role}
+          currentUserId={ctx.userId}
+          accounts={accounts}
+          holdings={holdings}
+          snapshots={snapshots}
+          advice={advice}
+          ficoScore={ficoData.score}
+          ficoUpdatedAt={ficoData.updatedAt}
+          debtTransactions={debtTransactions}
+          transactions={transactions}
+          moneyCtx={moneyCtx}
+        />
+      </Suspense>
+    </DisplayCurrencyProvider>
   );
 }

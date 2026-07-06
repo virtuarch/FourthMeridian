@@ -1049,6 +1049,13 @@ export function SpacesClient({
       if (res.ok) {
         setActiveId(spaceId);
         window.dispatchEvent(new CustomEvent(SPACE_LIST_CHANGED_EVENT));
+        // MC1 nav currency-staleness fix — the display-currency provider lives
+        // in the shared /dashboard layout, which App Router does NOT re-run on
+        // same-layout navigation. Without invalidating the Router Cache the
+        // previous Space's currency would follow into the next Space until a
+        // manual refresh. router.refresh() re-runs the layout with the new
+        // active-Space cookie (parity with Sidebar.handleSwitch).
+        router.refresh();
         router.push("/dashboard");
       }
     } finally {
