@@ -154,6 +154,88 @@ export interface Transaction {
   classifierVersion?: number | null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TransactionDetail (TI-1 — Transaction Intelligence Phase 1)
+// The canonical single-transaction inspection DTO: a superset of the list-row
+// `Transaction` above, stored-data-only (no new capture), Prisma-free (same
+// convention as every type in this module). Served by
+// GET /api/transactions/[id] via getTransactionDetail()
+// (lib/data/transactions.ts) under the KD-15 visibility predicate.
+// Internal/provider identifiers (plaidTransactionId, externalTransactionId,
+// merchantEntityId, importBatchId, FK ids) are deliberately NOT exposed —
+// provenance is resolved server-side into the display-safe blocks below.
+// See docs/investigations/TRANSACTION_INTELLIGENCE_DETAIL_VIEW_INVESTIGATION_2026-07-06.md §1–§2.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** How this transaction entered Fourth Meridian. */
+export type TransactionProvenanceSource = 'plaid' | 'import' | 'manual';
+
+/** Resolved parent-account context (never raw FKs). */
+export interface TransactionDetailAccount {
+  id:          string;
+  /** Resolved display name: displayName ?? officialName ?? plaidName ?? name. */
+  name:        string;
+  institution: string;
+  /** Last-4 mask when known (canonical accounts only). */
+  mask:        string | null;
+  type:        AccountType;
+  /** True when resolved from the legacy Account model (pre-migration rows). */
+  legacy:      boolean;
+}
+
+/** Display-safe import/sync provenance. */
+export interface TransactionDetailProvenance {
+  source: TransactionProvenanceSource;
+  /** Import batch source when source === 'import'. */
+  importSource?:   'CSV' | 'EXCEL' | 'QUICKBOOKS';
+  /** Original uploaded filename when source === 'import'. */
+  importFilename?: string | null;
+  /** ISO datetime the import completed, when source === 'import'. */
+  importedAt?:     string | null;
+}
+
+/**
+ * The "other side" of the movement when it is a known owned account
+ * (Transaction.counterpartyAccountId, KD-18 seam). `visible: false` means a
+ * counterparty exists but the current Space's link does not grant account
+ * detail — render as "another account", never by name (fails closed).
+ */
+export interface TransactionDetailCounterparty {
+  visible:    boolean;
+  accountId?: string;
+  name?:      string;
+}
+
+/**
+ * MC1 read-time conversion of the native amount into the Space's reporting
+ * currency, at the transaction's own date (historical FX, never today's
+ * rate). Null when the conversion adds no information (clean identity —
+ * native === reporting and nothing estimated). `rate`/`effectiveDateISO` are
+ * null on estimated pass-throughs (rate miss / null-residue currency).
+ */
+export interface TransactionDetailReporting {
+  amount:           number;
+  currency:         string;
+  estimated:        boolean;
+  rate:             number | null;
+  effectiveDateISO: string | null;
+}
+
+export interface TransactionDetail extends Transaction {
+  // Raw Plaid personal_finance_category — the PROVIDER's opinion, persisted
+  // since FlowType P3; distinct from Fourth Meridian semantics (flowType).
+  pfcPrimary:         string | null;
+  pfcDetailed:        string | null;
+  pfcConfidenceLevel: string | null;
+  /** ISO datetime the row was first seen by Fourth Meridian. */
+  createdAt: string;
+
+  account:      TransactionDetailAccount;
+  provenance:   TransactionDetailProvenance;
+  counterparty: TransactionDetailCounterparty | null;
+  reporting:    TransactionDetailReporting | null;
+}
+
 export interface AiAdvice {
   id: string;
   summary: string;

@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { ShareStatus } from "@prisma/client";
 import { grantsTransactionDetail } from "@/lib/ai/visibility";
+import { serializeTransactionRow } from "@/lib/transactions/serialize";
 
 export async function GET(
   _req: NextRequest,
@@ -61,24 +62,13 @@ export async function GET(
     orderBy: { date: "desc" },
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const transactions = rows.map((r: any) => ({
-    id:          r.id,
-    accountId:   r.accountId ?? r.financialAccountId,
-    date:        r.date.toISOString().split("T")[0],
-    merchant:    r.merchant,
-    description: r.description ?? undefined,
-    category:    r.category,
-    amount:      r.amount,
-    pending:     r.pending,
-    // FlowType metadata (P5 Slice 1 — additive; consumed since P5 Slice 2 by the
-    // Banking/Space flow totals, and downstream by the Slice 3 debt rollup).
-    flowType:                 r.flowType ?? null,
-    flowDirection:            r.flowDirection ?? null,
-    classificationConfidence: r.classificationConfidence ?? null,
-    classificationReason:     r.classificationReason ?? null,
-    classifierVersion:        r.classifierVersion ?? null,
-  }));
+  // TI-1: canonical serialization via the shared serializer
+  // (lib/transactions/serialize.ts). This route's previous inline copy had
+  // DRIFTED — it omitted `currency` (the MC1 Phase 0 native-currency stamp
+  // every dashboard list carries), so the payload now additionally includes
+  // `currency`, aligning the account modal with every other transaction
+  // read. Additive only; all previously-present fields are unchanged.
+  const transactions = rows.map(serializeTransactionRow);
 
   return NextResponse.json({ transactions });
 }

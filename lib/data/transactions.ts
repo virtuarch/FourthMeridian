@@ -40,10 +40,27 @@
 
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { Transaction, InvestmentTransaction } from "@/types";
+import {
+  Transaction,
+  InvestmentTransaction,
+  TransactionDetail,
+  TransactionDetailAccount,
+  TransactionDetailCounterparty,
+  TransactionDetailProvenance,
+  TransactionDetailReporting,
+} from "@/types";
 import { ShareStatus } from "@prisma/client";
 
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
+// TI-1: canonical row → DTO serialization (single derivation site — replaces
+// the three inline mappings this file previously duplicated).
+import {
+  serializeTransactionRow,
+  serializeInvestmentTransactionRow,
+} from "@/lib/transactions/serialize";
+import { transactionDetailWhere } from "@/lib/transactions/detail-query";
+import { convertMoney } from "@/lib/money/convert";
+import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 
 const BANKING_CATEGORIES = [
   "Income","Transfer","Groceries","Dining","Shopping","Travel",
@@ -73,27 +90,9 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
     orderBy: { date: "desc" },
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rows.map((r: any) => ({
-    id:          r.id,
-    accountId:   r.accountId ?? r.financialAccountId,
-    date:        r.date.toISOString().split("T")[0],
-    merchant:    r.merchant,
-    description: r.description ?? undefined,
-    category:    r.category as Transaction["category"],
-    amount:      r.amount,
-    pending:     r.pending,
-    // MC1 Phase 3 Slice 6 — native currency for client-surface flow-total
-    // conversion (Phase 0 stamp; null = pre-provenance residue).
-    currency:    r.currency ?? null,
-    // FlowType metadata (P5 Slice 1 — additive; consumed since P5 Slice 2 by the
-    // Banking/Space flow totals, and downstream by the Slice 3 debt rollup).
-    flowType:                 r.flowType ?? null,
-    flowDirection:            r.flowDirection ?? null,
-    classificationConfidence: r.classificationConfidence ?? null,
-    classificationReason:     r.classificationReason ?? null,
-    classifierVersion:        r.classifierVersion ?? null,
-  }));
+  // TI-1: canonical serialization — byte-identical to the previous inline
+  // mapping (pinned by lib/transactions/serialize.golden.test.ts).
+  return rows.map(serializeTransactionRow);
 }
 
 /** Transactions for debt accounts only (credit card activity), newest first. */
@@ -114,27 +113,9 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
     orderBy: { date: "desc" },
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rows.map((r: any) => ({
-    id:          r.id,
-    accountId:   r.accountId ?? r.financialAccountId,
-    date:        r.date.toISOString().split("T")[0],
-    merchant:    r.merchant,
-    description: r.description ?? undefined,
-    category:    r.category as Transaction["category"],
-    amount:      r.amount,
-    pending:     r.pending,
-    // MC1 Phase 3 Slice 4 — native currency for the per-liability rollup's
-    // conversion (Phase 0 stamp; null = pre-provenance residue).
-    currency:    r.currency ?? null,
-    // FlowType metadata (P5 Slice 1 — additive; consumed since P5 Slice 2 by the
-    // Banking/Space flow totals, and downstream by the Slice 3 debt rollup).
-    flowType:                 r.flowType ?? null,
-    flowDirection:            r.flowDirection ?? null,
-    classificationConfidence: r.classificationConfidence ?? null,
-    classificationReason:     r.classificationReason ?? null,
-    classifierVersion:        r.classifierVersion ?? null,
-  }));
+  // TI-1: canonical serialization — byte-identical to the previous inline
+  // mapping (pinned by lib/transactions/serialize.golden.test.ts).
+  return rows.map(serializeTransactionRow);
 }
 
 /** Investment transactions (Buy/Sell/Dividend/Split/Fee), newest first. */
@@ -155,14 +136,170 @@ export async function getInvestmentTransactions(): Promise<InvestmentTransaction
     orderBy: { date: "desc" },
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rows.map((r: any) => ({
-    id:          r.id,
-    accountId:   r.accountId ?? r.financialAccountId,
-    date:        r.date.toISOString().split("T")[0],
-    ticker:      r.merchant,
-    description: r.description ?? "",
-    category:    r.category as InvestmentTransaction["category"],
-    amount:      r.amount,
-  }));
+  // TI-1: canonical serialization — byte-identical to the previous inline
+  // mapping (pinned by lib/transactions/serialize.golden.test.ts).
+  return rows.map(serializeInvestmentTransactionRow);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TI-1 — single-transaction detail read
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Resolved account display name — the schema-documented resolution order. */
+function resolveAccountName(fa: {
+  name: string;
+  displayName: string | null;
+  officialName: string | null;
+  plaidName: string | null;
+}): string {
+  return fa.displayName ?? fa.officialName ?? fa.plaidName ?? fa.name;
+}
+
+/**
+ * The canonical single-transaction detail read (TI-1).
+ *
+ * Visibility: transactionDetailWhere() (lib/transactions/detail-query.ts) —
+ * the row-scoped form of the exact KD-15 predicate the list reads above
+ * apply. Returns null (→ caller 404s) for: nonexistent id, soft-deleted row,
+ * row outside the Space, non-FULL share, soft-deleted FinancialAccount.
+ * Fails closed; "not found" and "not yours" are indistinguishable.
+ *
+ * Stored-data-only: every field is read from existing columns/relations —
+ * no new capture, no writes. Internal/provider identifiers are resolved into
+ * display-safe blocks and never exposed raw (see TransactionDetail in
+ * types/index.ts).
+ *
+ * Counterparty (KD-18 seam): resolved by NAME only when the counterparty
+ * account itself is visible to this Space at a transaction-detail-granting
+ * tier — the SAL sub-query below carries the same shared predicate, so the
+ * KD-15 tripwires cover it. Otherwise `{ visible: false }` (rendered as
+ * "another account", never by name).
+ *
+ * Reporting conversion (MC1): read-time, at the row's own date, into the
+ * Space's reporting currency via the canonical server context. Pure
+ * presentation — never mutates or persists anything. Omitted (null) on the
+ * clean identity path so all-native-currency Spaces see no conversion block.
+ */
+export async function getTransactionDetail(
+  id: string,
+  ctx?: { spaceId: string },
+): Promise<TransactionDetail | null> {
+  const { spaceId } = ctx ?? (await getSpaceContext());
+
+  const row = await db.transaction.findFirst({
+    where: transactionDetailWhere(id, spaceId),
+    include: {
+      account: {
+        select: { id: true, name: true, institution: true, type: true },
+      },
+      financialAccount: {
+        select: {
+          id: true, name: true, displayName: true, officialName: true,
+          plaidName: true, institution: true, mask: true, type: true,
+        },
+      },
+      importBatch: {
+        select: {
+          source: true, originalFilename: true,
+          completedAt: true, createdAt: true,
+        },
+      },
+      counterpartyAccount: {
+        select: {
+          id: true, name: true, displayName: true, officialName: true,
+          plaidName: true, deletedAt: true,
+          // Name-exposure gate: visible only through an ACTIVE link granting
+          // transaction detail (same predicate as every other read here).
+          spaceAccountLinks: {
+            where: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } },
+            select: { id: true },
+          },
+        },
+      },
+    },
+  });
+  if (!row) return null;
+
+  // ── Resolved account context (never raw FKs) ───────────────────────────────
+  let account: TransactionDetailAccount;
+  if (row.financialAccount) {
+    const fa = row.financialAccount;
+    account = {
+      id:          fa.id,
+      name:        resolveAccountName(fa),
+      institution: fa.institution,
+      mask:        fa.mask ?? null,
+      type:        fa.type,
+      legacy:      false,
+    };
+  } else if (row.account) {
+    account = {
+      id:          row.account.id,
+      name:        row.account.name,
+      institution: row.account.institution,
+      mask:        null,
+      type:        row.account.type,
+      legacy:      true,
+    };
+  } else {
+    // Unreachable by the WHERE construction (one parent path must have
+    // matched); fail closed rather than fabricate context.
+    return null;
+  }
+
+  // ── Provenance (display-safe; raw ids stay internal) ───────────────────────
+  const provenance: TransactionDetailProvenance = row.importBatch
+    ? {
+        source:         "import",
+        importSource:   row.importBatch.source,
+        importFilename: row.importBatch.originalFilename ?? null,
+        importedAt:     (row.importBatch.completedAt ?? row.importBatch.createdAt).toISOString(),
+      }
+    : row.plaidTransactionId
+      ? { source: "plaid" }
+      : { source: "manual" };
+
+  // ── Counterparty (fails closed on name exposure) ───────────────────────────
+  let counterparty: TransactionDetailCounterparty | null = null;
+  if (row.counterpartyAccountId) {
+    const cp = row.counterpartyAccount;
+    counterparty =
+      cp && cp.deletedAt === null && cp.spaceAccountLinks.length > 0
+        ? { visible: true, accountId: cp.id, name: resolveAccountName(cp) }
+        : { visible: false };
+  }
+
+  // ── MC1 reporting conversion (read-time, row's own date) ───────────────────
+  const dateISO = row.date.toISOString().split("T")[0];
+  const moneyCtx = await buildSpaceConversionContextById(spaceId, {
+    currencies: [row.currency ?? null],
+    dates:      [dateISO],
+  });
+  const conv = convertMoney(
+    { amount: row.amount, currency: row.currency ?? null },
+    dateISO,
+    moneyCtx,
+  );
+  const reporting: TransactionDetailReporting | null =
+    conv.conversion === null && !conv.estimated
+      ? null // clean identity — the block adds no information
+      : {
+          amount:           conv.amount,
+          currency:         conv.currency,
+          estimated:        conv.estimated,
+          rate:             conv.conversion?.rate ?? null,
+          effectiveDateISO: conv.conversion?.effectiveDateISO ?? null,
+        };
+
+  return {
+    ...serializeTransactionRow(row),
+    pfcPrimary:         row.pfcPrimary ?? null,
+    pfcDetailed:        row.pfcDetailed ?? null,
+    pfcConfidenceLevel: row.pfcConfidenceLevel ?? null,
+    createdAt:          row.createdAt.toISOString(),
+    account,
+    provenance,
+    counterparty,
+    reporting,
+  };
 }
