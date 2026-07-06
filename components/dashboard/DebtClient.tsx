@@ -10,7 +10,9 @@ import {
   Check, Search, ChevronLeft, ChevronRight, ChevronDown,
 } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
+import { EstimatedChip } from "@/components/ui/EstimatedChip";
 import { formatDate as formatDateUTC } from "@/lib/format";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
 import {
@@ -131,6 +133,14 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
     () => (moneyCtx ? rehydrateContext(moneyCtx) : undefined),
     [moneyCtx],
   );
+  // MC1 Phase 4 Slice 1 (D-1) — the CONVERTED aggregates (total debt paid,
+  // per-card rollup) format in the display currency. The credit-utilization
+  // sums above stay on the constant until they are conversion-threaded
+  // (recorded as a residual finding), and per-card/per-row values keep the
+  // constant (itemized rule).
+  const displayCurrency = useDisplayCurrency();
+  const fmtAggFull = (n: number) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, maximumFractionDigits: 2 }).format(Math.abs(n));
   const rollupRows = useMemo(
     () => transactions.map((t) => ({ ...t, dateISO: t.date, currency: t.currency ?? null })),
     [transactions],
@@ -460,6 +470,17 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
   const debtPaidByCard = useMemo(
     () => (selectedCardId ? [] : rollupDebtPaymentsByAccount(baseTxs.map((t) => rollupRowById.get(t.id) ?? t), conversionCtx)),
     [selectedCardId, baseTxs, rollupRowById, conversionCtx],
+  );
+
+  // MC1 P4 Slice 3 (D-5) — estimation taint for the Total Debt Paid figure:
+  // derived from the same rows/context via the rollup's per-entry flags
+  // (computed over the FULL base set so it also covers the selected-card view).
+  const debtPaidEstimated = useMemo(
+    () =>
+      conversionCtx
+        ? rollupDebtPaymentsByAccount(baseTxs.map((t) => rollupRowById.get(t.id) ?? t), conversionCtx).some((e) => e.estimated)
+        : false,
+    [baseTxs, rollupRowById, conversionCtx],
   );
 
   return (
@@ -1024,14 +1045,14 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                 )}
                 {totalDebtPaid > 0 && (
                   <span className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>
-                    Total Debt Paid: {fmtFull(totalDebtPaid)}
+                    Total Debt Paid: {debtPaidEstimated ? "\u2248 " : ""}{fmtAggFull(totalDebtPaid)}{debtPaidEstimated && <EstimatedChip />}
                   </span>
                 )}
                 {/* Per-liability breakdown (P5 Slice 3 / KD-18) — only when
                     more than one card received payments in this range. */}
                 {debtPaidByCard.length > 1 && debtPaidByCard.map((e) => (
                   <span key={e.accountId} className="text-xs" style={{ color: "var(--text-muted)" }}>
-                    {cards.find((c) => c.id === e.accountId)?.name ?? "Other"}: {fmtFull(e.total)}
+                    {cards.find((c) => c.id === e.accountId)?.name ?? "Other"}: {e.estimated ? "\u2248 " : ""}{fmtAggFull(e.total)}{e.estimated && <EstimatedChip />}
                   </span>
                 ))}
               </div>
@@ -1098,7 +1119,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
               <div className="flex items-center gap-1 text-xs" style={{ color: "var(--text-muted)" }}>
                 <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{filteredTxs.length}</span> transactions
                 {totalDebtPaid > 0 && (
-                  <span className="ml-3 font-semibold" style={{ color: "var(--text-secondary)" }}>Total Debt Paid: {fmtFull(totalDebtPaid)}</span>
+                  <span className="ml-3 font-semibold" style={{ color: "var(--text-secondary)" }}>Total Debt Paid: {debtPaidEstimated ? "\u2248 " : ""}{fmtAggFull(totalDebtPaid)}{debtPaidEstimated && <EstimatedChip />}</span>
                 )}
               </div>
             </div>

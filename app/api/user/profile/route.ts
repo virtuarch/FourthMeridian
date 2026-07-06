@@ -8,6 +8,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { EmploymentStatus, UseCase } from "@prisma/client";
 import { requireUser } from "@/lib/session";
@@ -27,11 +28,13 @@ export async function GET() {
       // DOB is encrypted — return a flag so the client knows if it's set
       dateOfBirthEncrypted: true,
       preferredSpaceId: true,
+      reportingCurrency: true, // MC1 Phase 4 Slice 2 — user default (copy-once seed)
     },
   }) as {
     email: string; username: string | null; firstName: string | null;
     lastName: string | null; employmentStatus: string | null; useCase: string | null;
     dateOfBirthEncrypted: string | null; preferredSpaceId: string | null;
+    reportingCurrency: string;
   } | null;
 
   if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -45,6 +48,7 @@ export async function GET() {
     useCase:              dbUser.useCase              ?? "",
     hasDob:               !!dbUser.dateOfBirthEncrypted,
     preferredSpaceId: dbUser.preferredSpaceId ?? null,
+    reportingCurrency:    dbUser.reportingCurrency ?? "USD",
   });
 }
 
@@ -53,7 +57,7 @@ export async function PATCH(req: NextRequest) {
   if (err) return err;
 
   const body = await req.json();
-  const { username, firstName, lastName, employmentStatus, useCase, dateOfBirth, preferredSpaceId } = body;
+  const { username, firstName, lastName, employmentStatus, useCase, dateOfBirth, preferredSpaceId, reportingCurrency } = body;
 
   // ── Validate username if provided ─────────────────────────────────────────
   if (username !== undefined) {
@@ -81,6 +85,18 @@ export async function PATCH(req: NextRequest) {
   if (employmentStatus      !== undefined) data.employmentStatus      = employmentStatus as EmploymentStatus || null;
   if (useCase               !== undefined) data.useCase               = useCase as UseCase || null;
   if (dateOfBirth           !== undefined) data.dateOfBirthEncrypted  = dateOfBirth ? encryptWithPurpose(dateOfBirth, EncryptionPurpose.DATE_OF_BIRTH) : null;
+  // MC1 Phase 4 Slice 2 (plan D-3) — the user's DEFAULT reporting currency.
+  // Copy-once seed for NEW Spaces only (POST /api/spaces); never re-denominates
+  // existing Spaces. Allowlist-validated: FX_BASE + SUPPORTED_QUOTES, 400 on
+  // anything else (same rule as the Space PATCH).
+  if (reportingCurrency !== undefined) {
+    const parsed = parseReportingCurrencyInput(reportingCurrency);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+    data.reportingCurrency = parsed.value;
+  }
+
   if (preferredSpaceId  !== undefined) {
     // Validate that user is actually a member of this space (or null to clear)
     if (preferredSpaceId !== null) {

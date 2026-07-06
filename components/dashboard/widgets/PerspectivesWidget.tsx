@@ -159,8 +159,11 @@ function PerspectiveCard({ item, compact }: { item: PerspectiveCardItem; compact
       <p className="text-sm font-semibold text-[var(--text-primary)] mt-3">{item.label}</p>
       {headline && (
         <p className={`text-lg leading-tight mt-1 ${TONE_VALUE[headline.tone ?? "neutral"]}`}>
+          {/* MC1 P4 Slice 3 (D-5): result-level currency estimation (LensResult.estimated)
+              joins the pre-existing metric-level heuristic marker — one visual language. */}
+          {item.result?.estimated ? "\u2248 " : ""}
           {formatMetricValue(headline)}
-          {headline.estimated && (
+          {(headline.estimated || item.result?.estimated) && (
             <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] align-middle">
               est.
             </span>

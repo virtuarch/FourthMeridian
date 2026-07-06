@@ -28,6 +28,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
 import {
   X, Settings, Users, Target, Landmark, LayoutDashboard,
   AlertTriangle, Loader2, Crown, Shield, Eye, EyeOff,
@@ -66,6 +67,8 @@ type SpaceDetail = {
   type:        string;
   category:    string;
   isPublic:    boolean;
+  /** MC1 Phase 4 Slice 2 — authoritative reporting currency (present on the GET include). */
+  reportingCurrency?: string;
   createdAt:   string;
   members:     Member[];
   myRole:      string | null;
@@ -317,6 +320,10 @@ function GeneralTab({
   const [description, setDescription] = useState(space.description ?? "");
   const [isPublic,    setIsPublic]    = useState(space.isPublic);
   const [category,    setCategory]    = useState(space.category);
+  // MC1 Phase 4 Slice 2 (plan D-2) — Space reporting-currency selector.
+  const [reportingCurrency, setReportingCurrency] = useState(space.reportingCurrency ?? "USD");
+  const settingsRouter = useRouter();
+  const currencyChanged = reportingCurrency !== (space.reportingCurrency ?? "USD");
   const [busy,        setBusy]        = useState(false);
   const [error,       setError]       = useState("");
   const [saved,       setSaved]       = useState(false);
@@ -337,13 +344,19 @@ function GeneralTab({
           description: description.trim() || null,
           isPublic,
           category,
+          // MC1 P4 Slice 2 — only sent when changed (audit stays quiet otherwise)
+          ...(currencyChanged ? { reportingCurrency } : {}),
         }),
       });
       if (!res.ok) {
         const d = await res.json();
         setError(d.error ?? "Failed to save");
       } else {
-        onSaved({ name: name.trim(), description: description.trim() || null, isPublic, category });
+        onSaved({ name: name.trim(), description: description.trim() || null, isPublic, category, reportingCurrency });
+        // MC1 P4 Slice 2 — a currency change re-denominates every aggregate
+        // at read time; refresh the current view so converted totals and the
+        // display-currency provider pick it up immediately.
+        if (currencyChanged) settingsRouter.refresh();
         // Sidebar caches its Space list client-side and only refetches on this
         // event — without it, a rename here (e.g. fixing legacy "X's Dashboard"
         // grammar) would update the page but leave the sidebar showing the old
@@ -360,7 +373,8 @@ function GeneralTab({
     name.trim()       !== space.name ||
     (description.trim() || null) !== space.description ||
     isPublic          !== space.isPublic ||
-    category          !== space.category;
+    category          !== space.category ||
+    currencyChanged;
 
   return (
     <div className="space-y-5">
@@ -450,6 +464,31 @@ function GeneralTab({
                 <span className="text-xs text-[var(--text-primary)] truncate">{CATEGORY_LABELS[cat]}</span>
               </button>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* Reporting currency — MC1 Phase 4 Slice 2 (plan D-2) */}
+      <div>
+        <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1.5">Reporting currency</label>
+        <select
+          value={reportingCurrency}
+          onChange={(e) => setReportingCurrency(e.target.value)}
+          className="w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--meridian-400)] transition-colors"
+        >
+          {[FX_BASE, ...SUPPORTED_QUOTES].map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
+        <p className="text-[10px] text-[var(--text-muted)] mt-1.5">
+          Totals, charts, and AI summaries for this Space are shown in this currency.
+        </p>
+        {currencyChanged && (
+          <div className="mt-2 px-3 py-2.5 rounded-xl border border-[rgba(255,196,87,.35)] bg-[rgba(255,196,87,.08)]">
+            <p className="text-xs text-[var(--text-primary)]">
+              Totals, charts, and AI summaries will show {reportingCurrency} from now on.
+              Past history keeps the currency it was recorded in — nothing is converted or rewritten.
+            </p>
           </div>
         )}
       </div>

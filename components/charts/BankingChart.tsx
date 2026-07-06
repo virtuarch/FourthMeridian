@@ -4,6 +4,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "rec
 import { Snapshot } from "@/types";
 import { Interval, cutoffForInterval } from "./NetWorthChart";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { ChartFirstDayPlaceholder } from "./ChartFirstDayPlaceholder";
 
 interface Props {
@@ -21,11 +22,11 @@ const INTERVALS: { label: Interval; days: number | "ytd" }[] = [
   { label: "1Y",  days: 365 },
 ];
 
-const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(n);
+const fmtBase = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, notation: "compact", maximumFractionDigits: 1 }).format(n);
 
-const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(n);
+const fmtFullBase = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 0 }).format(n);
 
 function tickFormat(dateStr: string, interval: Interval): string {
   const d = new Date(dateStr + "T12:00:00");
@@ -42,6 +43,11 @@ const SERIES = [
 ] as const;
 
 export function BankingChart({ snapshots, interval, onIntervalChange }: Props) {
+  // MC1 Phase 4 Slice 1 (D-1) — aggregate surfaces format in the Space's
+  // reporting currency; USD fallback when no provider is mounted.
+  const displayCurrency = useDisplayCurrency();
+  const fmt = (n: number) => fmtBase(n, displayCurrency); // MC1 P4 Slice 1 — aggregate display currency
+  const fmtFull = (n: number) => fmtFullBase(n, displayCurrency); // MC1 P4 Slice 1 — aggregate display currency
   const filtered = useMemo(() => {
     const cutoff = cutoffForInterval(interval);
     return snapshots.filter((s) => s.date >= cutoff);

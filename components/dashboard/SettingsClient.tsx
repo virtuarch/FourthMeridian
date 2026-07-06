@@ -1,5 +1,6 @@
 "use client";
 
+import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
 import { useState, Suspense } from "react";
 import { useSession } from "next-auth/react";
 import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight } from "lucide-react";
@@ -16,6 +17,8 @@ interface Profile {
   firstName:            string;
   lastName:             string;
   employmentStatus:     string;
+  /** MC1 Phase 4 Slice 2 — user default reporting currency (copy-once seed for new Spaces). */
+  reportingCurrency:    string;
   useCase:              string;
   hasDob:               boolean;
   preferredSpaceId: string | null;
@@ -53,6 +56,10 @@ const USE_CASE_OPTIONS: SelectOption[] = [
 ];
 
 const EMPLOYMENT_LABELS = Object.fromEntries(EMPLOYMENT_OPTIONS.map((o) => [o.value, o.label]));
+
+// MC1 Phase 4 Slice 2 (plan D-3) — approved reporting currencies (FX_BASE +
+// SUPPORTED_QUOTES; same allowlist the API enforces).
+const CURRENCY_OPTIONS: SelectOption[] = [FX_BASE, ...SUPPORTED_QUOTES].map((c) => ({ value: c, label: c }));
 const USE_CASE_LABELS   = Object.fromEntries(USE_CASE_OPTIONS.map((o)   => [o.value, o.label]));
 
 // ── Shared input styling (Atlas tokens) ──────────────────────────────────────
@@ -380,6 +387,15 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
           onSave={(val) => saveField({ dateOfBirth: val })}
           inputType="date"
           helpText="Stored encrypted · used for age-appropriate financial advice"
+        />
+
+        <InlineField
+          label="Default reporting currency"
+          value={initialProfile.reportingCurrency}
+          displayValue={initialProfile.reportingCurrency}
+          onSave={(val) => saveField({ reportingCurrency: val })}
+          selectOptions={CURRENCY_OPTIONS}
+          helpText="Default for new Spaces you create. Changing it never affects existing Spaces."
         />
 
         <InlineField

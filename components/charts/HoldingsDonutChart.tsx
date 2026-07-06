@@ -73,10 +73,14 @@ function heatFg(change: number): string {
 }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
-const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(n);
-const fmtCompact = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(n);
+// MC1 P4 Slice 5 — aggregate labels (totals/center) take the display
+// currency via the wrapper below; NOTE: segment values are native holding
+// values, so mixed-currency allocation proportions remain approximate until
+// per-position conversion is designed (recorded at the Phase 4 closeout).
+const fmtFull = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(n);
+const fmtCompact = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, notation: "compact", maximumFractionDigits: 1 }).format(n);
 function fmtQty(q: number) {
   if (q === 0) return "—";
   return q % 1 === 0 ? q.toFixed(0) : q < 0.01 ? q.toFixed(6) : q.toFixed(4);

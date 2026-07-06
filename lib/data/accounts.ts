@@ -287,6 +287,7 @@ export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]>
     value:     r.value,
     change24h: r.change24h,
     isCash:    r.isCash,
+    currency:  r.currency ?? null, // MC1 P4 Slice 5 — conversion input
   }));
 }
 

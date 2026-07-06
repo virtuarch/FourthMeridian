@@ -725,6 +725,29 @@ function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtPaymentL
 
   lines.push(`Space: ${displaySpaceName(ctx.space.name)}`);
   lines.push(`Your role: ${ctx.role}`);
+
+  // ── MC1 Phase 4 Slice 7 (plan D-9) — currency presentation ─────────────────
+  // ONE label line, always (totals have converted at read time since MC1
+  // Phase 3), and ONE estimation disclosure emitted only when any section's
+  // estimated flag is true. Deliberately never per-number and never repeated —
+  // same single-insertion doctrine as the KD-18 attribution disclosure.
+  const reportingCur = ctx.space.reportingCurrency ?? 'USD';
+  lines.push(
+    `All totals are in ${reportingCur} (this Space's reporting currency); ` +
+    `per-account values are shown in their native currency.`
+  );
+  const accountsEstimated =
+    (ctx.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData | undefined)?.totalsEstimated === true;
+  const txnEstimated = getTransactionsSummary(ctx)?.estimated === true;
+  const holdingsEstimated =
+    (ctx.domains[FinanceDomains.HOLDINGS_SUMMARY]?.data as { totalsEstimated?: boolean } | undefined)
+      ?.totalsEstimated === true;
+  if (accountsEstimated || txnEstimated || holdingsEstimated) {
+    lines.push(
+      'Some converted totals are approximate (missing or dated exchange rates); ' +
+      'treat affected figures as estimates.'
+    );
+  }
   lines.push('');
 
   // ── Analysis window (D6 provenance) ─────────────────────────────────────────

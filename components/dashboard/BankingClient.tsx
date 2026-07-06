@@ -7,18 +7,18 @@ import { PortfolioHistoryChart, ChartSeries } from "@/components/charts/Portfoli
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
 import { Search, X, Check, Building2, Landmark, CreditCard, ChevronDown } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
+import { EstimatedChip } from "@/components/ui/EstimatedChip";
 import { formatDate } from "@/lib/format";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtAbs = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
-const fmtTx = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
-// Compact formatter for summary card headlines — keeps 6–8-figure numbers on one line
-const fmtCompact = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(n));
+// (fmtTx / module fmtCompact removed — MC1 P4 Slice 1: their call sites were
+// all aggregate totals, now formatted by the display-currency locals inside
+// the component. fmtAbs remains for itemized per-account rows.)
 
 // ── Chart config ──────────────────────────────────────────────────────────────
 type BankingSlice = "cash" | "savings" | "debt" | "netLiquid";
@@ -101,18 +101,19 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
     () => (moneyCtx ? rehydrateContext(moneyCtx) : undefined),
     [moneyCtx],
   );
+  // MC1 Phase 4 Slice 1 (D-1) — aggregate totals (cash/debt/net, institution
+  // subtotals, flow totals) format in the display currency; per-account and
+  // per-transaction rows keep the constant (itemized rule).
+  const displayCurrency = useDisplayCurrency();
+  const fmtAggCompact = (n: number) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(n));
+  const fmtAggAbs = (n: number) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, maximumFractionDigits: 2 }).format(Math.abs(n));
   const balanceInTarget = useCallback(
     (a: Account): number =>
       conversionCtx
         ? convertMoney({ amount: a.balance, currency: a.currency ?? null }, yesterdayUTCISO(), conversionCtx).amount
         : a.balance,
-    [conversionCtx],
-  );
-  const txAmount = useCallback(
-    (t: Transaction): number =>
-      conversionCtx
-        ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, conversionCtx).amount
-        : t.amount,
     [conversionCtx],
   );
   const [chartSlice, setChartSlice]               = useState<BankingSlice>("cash");
@@ -161,9 +162,24 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
     return order.map((inst) => ({ institution: inst, accounts: groups[inst] }));
   }, [accounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const totalCash  = [...checking, ...savings].reduce((s, a) => s + balanceInTarget(a), 0);
-  // Net debt: positive balances = you owe, negative = bank owes you (credit). Sum gives net owed.
-  const totalDebt  = debt.reduce((s, a) => s + balanceInTarget(a), 0);
+  // MC1 P4 Slice 3 (D-5) — same sums, same order, plus estimation taint for
+  // the quiet "est." indicator (map-then-reduce: no closure mutation, per
+  // react-hooks/immutability). Identity conversions never taint.
+  const { totalCash, totalDebt, balancesEstimated } = useMemo(() => {
+    const conv = (a: Account) =>
+      conversionCtx
+        ? convertMoney({ amount: a.balance, currency: a.currency ?? null }, yesterdayUTCISO(), conversionCtx)
+        : { amount: a.balance, estimated: false };
+    const cashConv = [...checking, ...savings].map(conv);
+    // Net debt: positive balances = you owe, negative = bank owes you (credit). Sum gives net owed.
+    const debtConv = debt.map(conv);
+    return {
+      totalCash: cashConv.reduce((s, c) => s + c.amount, 0),
+      totalDebt: debtConv.reduce((s, c) => s + c.amount, 0),
+      balancesEstimated: cashConv.some((c) => c.estimated) || debtConv.some((c) => c.estimated),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts, conversionCtx]);
   const netLiquid  = totalCash - totalDebt;
 
   // ── Transaction filtering ────────────────────────────────────────────────
@@ -194,16 +210,24 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
   // Spend = SPENDING + FEE + INTEREST outflows, minus REFUND (clamped ≥ 0).
   // In = INCOME only. Transfers/debt payments/investments/adjustments/unknowns
   // are excluded from both. JSX/labels/colors below are unchanged.
-  const grossSpend = filteredTxs
-    .filter((t) => t.flowType != null && FLOW_COST.has(t.flowType))
-    .reduce((s, t) => s + Math.abs(txAmount(t)), 0);
-  const spendRefunds = filteredTxs
-    .filter((t) => t.flowType === "REFUND")
-    .reduce((s, t) => s + Math.abs(txAmount(t)), 0);
-  const totalSpend = Math.max(0, grossSpend - spendRefunds);
-  const totalCredit = filteredTxs
-    .filter((t) => t.flowType === "INCOME")
-    .reduce((s, t) => s + Math.abs(txAmount(t)), 0);
+  // MC1 P4 Slice 3 — flow totals with estimation taint (same populations and
+  // order; map-then-reduce, no closure mutation).
+  const { totalSpend, totalCredit, flowEstimated } = useMemo(() => {
+    const conv = (t: Transaction) =>
+      conversionCtx
+        ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, conversionCtx)
+        : { amount: t.amount, estimated: false };
+    const cost    = filteredTxs.filter((t) => t.flowType != null && FLOW_COST.has(t.flowType)).map(conv);
+    const refunds = filteredTxs.filter((t) => t.flowType === "REFUND").map(conv);
+    const income  = filteredTxs.filter((t) => t.flowType === "INCOME").map(conv);
+    const grossSpend   = cost.reduce((s, c) => s + Math.abs(c.amount), 0);
+    const spendRefunds = refunds.reduce((s, c) => s + Math.abs(c.amount), 0);
+    return {
+      totalSpend:  Math.max(0, grossSpend - spendRefunds),
+      totalCredit: income.reduce((s, c) => s + Math.abs(c.amount), 0),
+      flowEstimated: [...cost, ...refunds, ...income].some((c) => c.estimated),
+    };
+  }, [filteredTxs, conversionCtx]);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   const acctName = (id: string) => accounts.find((a) => a.id === id)?.name ?? id;
@@ -258,18 +282,18 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
         <DataCard>
           <DataCardTitle>Total Cash</DataCardTitle>
-          <p className="text-3xl font-bold mt-1" style={{ color: "var(--accent-positive)" }}>{fmtCompact(totalCash)}</p>
+          <p className="text-3xl font-bold mt-1" style={{ color: "var(--accent-positive)" }}>{balancesEstimated ? "\u2248 " : ""}{fmtAggCompact(totalCash)}{balancesEstimated && <EstimatedChip />}</p>
           <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Checking + Savings</p>
         </DataCard>
         <DataCard>
           <DataCardTitle>Total Debt</DataCardTitle>
-          <p className="text-3xl font-bold mt-1" style={{ color: "var(--accent-negative)" }}>{fmtCompact(totalDebt)}</p>
+          <p className="text-3xl font-bold mt-1" style={{ color: "var(--accent-negative)" }}>{balancesEstimated ? "\u2248 " : ""}{fmtAggCompact(totalDebt)}{balancesEstimated && <EstimatedChip />}</p>
           <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Cards</p>
         </DataCard>
         <DataCard className="col-span-2 lg:col-span-1">
           <DataCardTitle>Net Liquid</DataCardTitle>
           <p className="text-3xl font-bold mt-1" style={{ color: netLiquid >= 0 ? "var(--text-primary)" : "var(--accent-negative)" }}>
-            {fmtCompact(netLiquid)}
+            {balancesEstimated ? "\u2248 " : ""}{fmtAggCompact(netLiquid)}{balancesEstimated && <EstimatedChip />}
           </p>
           <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Cash minus card balances</p>
         </DataCard>
@@ -321,7 +345,7 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
 
                 <div className="flex items-center gap-3">
                   <p className="text-sm font-semibold tabular-nums" style={{ color: netPos ? "var(--text-primary)" : "var(--accent-negative)" }}>
-                    {!netPos ? "-" : ""}{fmtAbs(Math.abs(instTotal))}
+                    {!netPos ? "-" : ""}{fmtAggAbs(Math.abs(instTotal))}
                   </p>
                   <ChevronDown
                     size={16}
@@ -455,12 +479,12 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
           </span>
           {totalSpend > 0 && (
             <span style={{ color: "var(--text-secondary)" }}>
-              Spend: <span className="font-semibold" style={{ color: "var(--accent-negative)" }}>-{fmtTx(totalSpend)}</span>
+              Spend: <span className="font-semibold" style={{ color: "var(--accent-negative)" }}>-{flowEstimated ? "\u2248 " : ""}{fmtAggAbs(totalSpend)}{flowEstimated && <EstimatedChip />}</span>
             </span>
           )}
           {totalCredit > 0 && (
             <span style={{ color: "var(--text-secondary)" }}>
-              In: <span className="font-semibold" style={{ color: "var(--accent-positive)" }}>+{fmtTx(totalCredit)}</span>
+              In: <span className="font-semibold" style={{ color: "var(--accent-positive)" }}>+{flowEstimated ? "\u2248 " : ""}{fmtAggAbs(totalCredit)}{flowEstimated && <EstimatedChip />}</span>
             </span>
           )}
         </div>

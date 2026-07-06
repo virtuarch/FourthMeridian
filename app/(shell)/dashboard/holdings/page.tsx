@@ -1,17 +1,26 @@
 import { getAccounts, getHoldings } from "@/lib/data/accounts";
+import { getSpaceContext } from "@/lib/space";
+import { buildSpaceConversionContext } from "@/lib/money/server-context";
+import { convertMoney } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import { EstimatedChip } from "@/components/ui/EstimatedChip";
 import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { TrendingUp, TrendingDown } from "lucide-react";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
 
-const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(n);
+// MC1 P4 Slice 5 — aggregate totals format in the Space's reporting currency
+// (server component: currency passed explicitly); itemized position rows keep
+// their native values.
+const fmt = (n: number, cur: string = "USD") =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(n);
 
 export default async function HoldingsPage() {
+  const ctx = await getSpaceContext();
   const [allAccounts, allHoldings] = await Promise.all([
-    getAccounts(),
-    getHoldings(),
+    getAccounts({ spaceId: ctx.spaceId }),
+    getHoldings({ spaceId: ctx.spaceId }),
   ]);
 
   const investmentAccountIds = allAccounts
@@ -19,7 +28,20 @@ export default async function HoldingsPage() {
     .map((a) => a.id);
 
   const holdings = allHoldings.filter((h) => investmentAccountIds.includes(h.accountId));
-  const total = holdings.reduce((sum, h) => sum + h.value, 0);
+
+  // MC1 P4 Slice 5 (F-5) — the headline total converts into the Space's
+  // reporting currency at the latest close; per-position rows below stay
+  // native. All-USD Spaces: identity, numerically unchanged.
+  const moneyCtx = await buildSpaceConversionContext(ctx.space, {
+    currencies: holdings.map((h) => h.currency ?? null),
+    dates:      [yesterdayUTCISO()],
+  });
+  const conv = holdings.map((h) =>
+    convertMoney({ amount: h.value, currency: h.currency ?? null }, yesterdayUTCISO(), moneyCtx),
+  );
+  const total = conv.reduce((sum, c) => sum + c.amount, 0);
+  const totalEstimated = conv.some((c) => c.estimated);
+  const displayCurrency = ctx.space.reportingCurrency;
 
   return (
     <div className="space-y-4 pb-4">
@@ -27,7 +49,7 @@ export default async function HoldingsPage() {
 
       <DataCard>
         <DataCardTitle>Total Holdings Value</DataCardTitle>
-        <p className="text-3xl font-bold mt-1" style={{ color: "var(--text-primary)" }}>{fmt(total)}</p>
+        <p className="text-3xl font-bold mt-1" style={{ color: "var(--text-primary)" }}>{totalEstimated ? "\u2248 " : ""}{fmt(total, displayCurrency)}{totalEstimated && <EstimatedChip />}</p>
       </DataCard>
 
       <DataCard>

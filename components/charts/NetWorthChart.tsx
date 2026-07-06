@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { Snapshot } from "@/types";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { ChartFirstDayPlaceholder } from "./ChartFirstDayPlaceholder";
 import { EstimatedHistoryBadge } from "./EstimatedHistoryBadge";
 
@@ -25,11 +26,11 @@ const INTERVALS: { label: Interval; days: number | "ytd" }[] = [
   { label: "1Y",  days: 365 },
 ];
 
-const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 0 }).format(n);
+const fmtBase = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, notation: "compact", maximumFractionDigits: 0 }).format(n);
 
-const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(n);
+const fmtFullBase = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 0 }).format(n);
 
 export function cutoffForInterval(interval: Interval): string {
   const now = new Date();
@@ -48,6 +49,11 @@ function tickFormat(dateStr: string, interval: Interval): string {
 }
 
 export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode = false, fill = false }: Props) {
+  // MC1 Phase 4 Slice 1 (D-1) — aggregate surfaces format in the Space's
+  // reporting currency; USD fallback when no provider is mounted.
+  const displayCurrency = useDisplayCurrency();
+  const fmt = (n: number) => fmtBase(n, displayCurrency); // MC1 P4 Slice 1 — aggregate display currency
+  const fmtFull = (n: number) => fmtFullBase(n, displayCurrency); // MC1 P4 Slice 1 — aggregate display currency
   const filtered = useMemo(() => {
     const cutoff = cutoffForInterval(interval);
     return snapshots.filter((s) => s.date >= cutoff);

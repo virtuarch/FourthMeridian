@@ -1,13 +1,14 @@
 /**
  * Display currency constants
  *
- * This is the single source of truth for the app's display currency.
- * Currently hardcoded to USD — replace the source here (user preference,
- * space preference, or app-wide setting) when multi-currency support
- * is added. No changes to individual components should be needed.
- *
- * Future shape:
- *   export const DEFAULT_DISPLAY_CURRENCY = userPreference ?? spacePreference ?? "USD";
+ * DEFAULT_DISPLAY_CURRENCY is the build-time constant and universal FALLBACK.
+ * The runtime per-Space display currency (MC1 Phase 4, plan D-1) is supplied
+ * by lib/currency-context.tsx: the dashboard layout mounts
+ * DisplayCurrencyProvider with Space.reportingCurrency, and AGGREGATE surfaces
+ * read it via useDisplayCurrency() (which falls back to this constant when no
+ * provider is mounted — the kill switch). ITEMIZED rows (a single account's
+ * balance, a single transaction) format in their own native row `currency`,
+ * never the display currency.
  */
 
 export const DEFAULT_DISPLAY_CURRENCY = "USD";

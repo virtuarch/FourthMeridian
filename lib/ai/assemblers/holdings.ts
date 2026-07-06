@@ -44,6 +44,10 @@
  */
 
 import { db } from '@/lib/db';
+import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
+import { convertMoney, identityContext } from '@/lib/money/convert';
+import { buildSpaceConversionContext } from '@/lib/money/server-context';
+import { yesterdayUTCISO } from '@/lib/fx/config';
 import { ShareStatus, VisibilityLevel } from '@prisma/client';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
@@ -87,6 +91,7 @@ const CONCENTRATION_BANDS: Array<{
 // ---------------------------------------------------------------------------
 
 type HoldingRow = {
+  currency: string | null; // MC1 P4 Slice 5 — Phase 0 stamp; conversion input
   symbol: string;
   name:   string;
   value:  number;
@@ -129,7 +134,7 @@ async function assembleHoldings(
       financialAccount: {
         select: {
           holdings: {
-            select: { symbol: true, name: true, value: true, isCash: true },
+            select: { symbol: true, name: true, value: true, isCash: true, currency: true },
           },
         },
       },
@@ -137,6 +142,30 @@ async function assembleHoldings(
   });
 
   // ── Aggregate totals + FULL-visibility position map ─────────────────────────
+  // MC1 Phase 4 Slice 5 (F-5) — aggregate value totals convert into the
+  // Space's reporting currency at the latest close; per-position rows keep
+  // their native values (itemized rule). Unresolvable conversions degrade per
+  // D-3 (native + totalsEstimated taint). Identity fallback if the Space row
+  // vanished mid-request. All-USD Spaces are numerically identical.
+  const spaceRow = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
+  });
+  const allHoldings = links.flatMap((l) => l.financialAccount.holdings);
+  const moneyCtx = spaceRow
+    ? await buildSpaceConversionContext(spaceRow, {
+        currencies: allHoldings.map((h) => h.currency ?? null),
+        dates:      [yesterdayUTCISO()],
+      })
+    : identityContext(DEFAULT_DISPLAY_CURRENCY);
+  const closeISO = yesterdayUTCISO();
+  let totalsEstimated = false;
+  const valueInTarget = (h: { value: number; currency: string | null }): number => {
+    const c = convertMoney({ amount: h.value, currency: h.currency ?? null }, closeISO, moneyCtx);
+    if (c.estimated) totalsEstimated = true;
+    return c.amount;
+  };
+
   let totalPortfolioValue = 0;
   let investedValue       = 0;
   let cashValue           = 0;
@@ -155,11 +184,13 @@ async function assembleHoldings(
 
     for (const h of holdings) {
       // Aggregate value totals include every visibility level — sums only.
-      totalPortfolioValue += h.value;
+      // MC1 P4 Slice 5 — converted into the reporting currency (identity for USD).
+      const v = valueInTarget(h);
+      totalPortfolioValue += v;
       if (h.isCash) {
-        cashValue += h.value;
+        cashValue += v;
       } else {
-        investedValue += h.value;
+        investedValue += v;
       }
 
       // Position/concentration detail: FULL, non-cash only.
@@ -217,6 +248,7 @@ async function assembleHoldings(
     totalPortfolioValue,
     investedValue,
     cashValue,
+    totalsEstimated, // MC1 P4 Slice 5 (D-7) — data-only until the AI-presentation slice
     cashPct,
     positionCount: rankedPositions.length,
     analyzedInvestedValue,

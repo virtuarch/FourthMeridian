@@ -55,6 +55,7 @@ import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { SpaceTrendHero, type HeroPoint } from "@/components/dashboard/widgets/SpaceTrendHero";
 import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
 import { SpaceTransactionsPanel } from "@/components/dashboard/widgets/SpaceTransactionsPanel";
+import type { SerializedConversionContext } from "@/lib/money/convert";
 import { getSpaceHeroDef } from "@/lib/space-hero";
 import type { Snapshot, Transaction, Account as PersonalAccount } from "@/types";
 
@@ -1860,6 +1861,9 @@ export function SpaceDashboard({
   // preview + every shared Space's Transactions tab doorway).
   const [snapshots,         setSnapshots]         = useState<Snapshot[] | null>(null);
   const [spaceTransactions, setSpaceTransactions] = useState<Transaction[] | null>(null);
+  // MC1 P4 Slice 6 (F-6) — serialized conversion context from the same fetch;
+  // undefined => the panel's context-less native sums (kill switch).
+  const [spaceMoneyCtx, setSpaceMoneyCtx] = useState<SerializedConversionContext | undefined>(undefined);
 
   // Overview composition switcher (IA refactor point 2/3) — which
   // full-canvas Overview composition is shown. "overview" is the default,
@@ -2036,7 +2040,11 @@ export function SpaceDashboard({
     let active = true;
     fetch(`/api/spaces/${spaceId}/transactions`)
       .then((r) => (r.ok ? r.json() : { transactions: [] }))
-      .then((data) => { if (active) setSpaceTransactions(data?.transactions ?? []); })
+      .then((data) => {
+        if (!active) return;
+        setSpaceTransactions(data?.transactions ?? []);
+        setSpaceMoneyCtx(data?.moneyCtx ?? undefined); // MC1 P4 Slice 6 (F-6)
+      })
       .catch(() => { if (active) setSpaceTransactions([]); });
     return () => { active = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2300,6 +2308,7 @@ export function SpaceDashboard({
               transactions={spaceTransactions}
               accounts={accounts.map((a) => ({ ...a, type: a.type as PersonalAccount["type"] })) as PersonalAccount[]}
               scopeNote={TX_SCOPE_NOTE}
+              moneyCtx={spaceMoneyCtx}
             />
           )
         )}

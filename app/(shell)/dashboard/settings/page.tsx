@@ -21,11 +21,13 @@ export default async function SettingsPage() {
         useCase:              true,
         dateOfBirthEncrypted: true,
         preferredSpaceId: true,
+        reportingCurrency:    true, // MC1 Phase 4 Slice 2
       },
     }) as Promise<{
       email: string; username: string | null; firstName: string | null;
       lastName: string | null; employmentStatus: string | null; useCase: string | null;
       dateOfBirthEncrypted: string | null; preferredSpaceId: string | null;
+      reportingCurrency: string;
     } | null>,
     db.spaceMember.findMany({
       // Archived/trashed spaces can't be set as the default landing
@@ -55,6 +57,7 @@ export default async function SettingsPage() {
         useCase:              user.useCase              ?? "",
         hasDob:               !!user.dateOfBirthEncrypted,
         preferredSpaceId: user.preferredSpaceId ?? null,
+        reportingCurrency:    user.reportingCurrency ?? "USD", // MC1 P4 Slice 2
       }}
       spaces={spaces}
     />

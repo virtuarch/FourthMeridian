@@ -23,6 +23,7 @@
 
 import { ReactNode, ElementType } from "react";
 import { TrendingUp, TrendingDown, ShieldCheck, Landmark, Scale, Wallet } from "lucide-react";
+import { EstimatedChip } from "@/components/ui/EstimatedChip";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { formatCurrency } from "@/lib/format";
 
@@ -55,12 +56,15 @@ function Tile({
   trendPct,
   icon: Icon,
   onClick,
+  estimated,
 }: {
   label: string;
   value: string;
   sub?: ReactNode;
   trendPct?: number | null;
   icon: ElementType;
+  /** MC1 P4 Slice 3 (D-5) — renders the muted "est." chip after the value. */
+  estimated?: boolean;
   /** Opens a Glass modal with the full picture behind this number (IA
    *  refactor point 4) — reuses existing chart/widget/business logic,
    *  never a new computation. Tiles with no real destination yet stay
@@ -82,7 +86,7 @@ function Tile({
         <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">{label}</p>
         <Icon size={13} className="text-[var(--text-muted)] shrink-0" />
       </div>
-      <p className="text-xl font-bold text-[var(--text-primary)] mt-1.5 tabular-nums truncate">{value}</p>
+      <p className="text-xl font-bold text-[var(--text-primary)] mt-1.5 tabular-nums truncate">{value}{estimated && <EstimatedChip />}</p>
       {(sub !== undefined || trendPct !== undefined) && (
         <div className="flex items-center gap-1.5 mt-1 min-h-[15px]">
           {trendPct !== undefined && trendPct !== null && <Trend pct={trendPct} />}
@@ -94,6 +98,12 @@ function Tile({
 }
 
 export interface KpiRowProps {
+  /**
+   * MC1 Phase 4 Slice 3 (D-5) — true when the classification totals feeding
+   * netWorth/totalAssets/totalLiabilities carry estimated conversions.
+   * Silent (no marker) when false/omitted.
+   */
+  estimated?: boolean;
   netWorth: number;
   /** Signed percentage change over the host's selected interval; null = no baseline yet. */
   netWorthChangePct: number | null;
@@ -114,6 +124,7 @@ export interface KpiRowProps {
 }
 
 export function KpiRow({
+  estimated,
   netWorth,
   netWorthChangePct,
   totalAssets,
@@ -133,15 +144,17 @@ export function KpiRow({
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
       <Tile
         label="Net Worth"
-        value={formatCurrency(netWorth)}
+        value={`${estimated ? "\u2248 " : ""}${formatCurrency(netWorth)}`}
+        estimated={estimated}
         trendPct={netWorthChangePct}
         icon={Scale}
         onClick={onNetWorthClick}
       />
-      <Tile label="Total Assets" value={formatCurrency(totalAssets)} icon={Landmark} onClick={onAssetsClick} />
+      <Tile label="Total Assets" value={`${estimated ? "\u2248 " : ""}${formatCurrency(totalAssets)}`} estimated={estimated} icon={Landmark} onClick={onAssetsClick} />
       <Tile
         label="Total Liabilities"
-        value={formatCurrency(Math.abs(totalLiabilities))}
+        value={`${estimated ? "\u2248 " : ""}${formatCurrency(Math.abs(totalLiabilities))}`}
+        estimated={estimated}
         icon={Wallet}
         onClick={onLiabilitiesClick}
       />

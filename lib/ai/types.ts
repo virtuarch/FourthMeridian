@@ -734,7 +734,13 @@ export interface HoldingsConcentration {
  * `topPositions` is omitted when scopeHint === 'brief'.
  */
 export interface HoldingsSummaryData {
-  /** All visible holdings incl. synthetic cash rows. */
+  /**
+   * MC1 Phase 4 Slice 5 (D-7) — true when any converted holding value in the
+   * totals was estimated (rate walked back / missing, or null-residue
+   * currency). Data-only: no prompt or serializer consumes it yet.
+   */
+  totalsEstimated:     boolean;
+  /** All visible holdings incl. synthetic cash rows (converted into the Space's reporting currency). */
   totalPortfolioValue: number;
   /** Non-cash holdings across all visible accounts. */
   investedValue:       number;
@@ -878,6 +884,12 @@ export interface SpaceContext_AI {
     name:     string;
     type:     string;
     category: string;
+    /**
+     * MC1 Phase 4 Slice 7 — the Space's reporting currency, for the
+     * serializer's one-line currency label. Optional so existing test
+     * fixtures stay valid; the serializer falls back to "USD".
+     */
+    reportingCurrency?: string;
   };
   domains:     Record<string, ContextDomainSection>;
   signals:     ContextSignal[];

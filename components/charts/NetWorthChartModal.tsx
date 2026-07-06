@@ -6,6 +6,7 @@ import {
 import { Snapshot } from "@/types";
 import { Interval, cutoffForInterval } from "./NetWorthChart";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 
 interface Props {
@@ -40,14 +41,14 @@ const SERIES = [
 
 export type SeriesKey = (typeof SERIES)[number]["key"];
 
-const fmt = (n: number) =>
+const fmtBase = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 0,
+    style: "currency", currency: cur, notation: "compact", maximumFractionDigits: 0,
   }).format(n);
 
-const fmtFull = (n: number) =>
+const fmtFullBase = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0,
+    style: "currency", currency: cur, maximumFractionDigits: 0,
   }).format(n);
 
 // X-axis: "09 Jun"
@@ -78,6 +79,11 @@ const MODAL_TITLE: Record<SeriesKey, string> = {
 };
 
 export function NetWorthChartModal({ snapshots, initialInterval, onClose, initialSeries }: Props) {
+  // MC1 Phase 4 Slice 1 (D-1) — aggregate surfaces format in the Space's
+  // reporting currency; USD fallback when no provider is mounted.
+  const displayCurrency = useDisplayCurrency();
+  const fmt = (n: number) => fmtBase(n, displayCurrency); // MC1 P4 Slice 1 — aggregate display currency
+  const fmtFull = (n: number) => fmtFullBase(n, displayCurrency); // MC1 P4 Slice 1 — aggregate display currency
   const [interval, setInterval]         = useState<Interval>(initialInterval);
   const [active, setActive]             = useState<Set<SeriesKey>>(new Set([initialSeries ?? "netWorth"]));
 

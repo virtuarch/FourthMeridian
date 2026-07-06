@@ -11,6 +11,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { ChartFirstDayPlaceholder } from "./ChartFirstDayPlaceholder";
 
 export interface ChartSeries {
@@ -39,18 +40,18 @@ const INTERVALS = [
   { label: "1Y",  days: 365 },
 ];
 
-const fmtCompact = (n: number) =>
+const fmtCompactBase = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: DEFAULT_DISPLAY_CURRENCY,
+    currency: cur,
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(n);
 
-const fmtFull = (n: number) =>
+const fmtFullBase = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: DEFAULT_DISPLAY_CURRENCY,
+    currency: cur,
     maximumFractionDigits: 0,
   }).format(n);
 
@@ -62,6 +63,11 @@ function fmtAxisDate(dateStr: string, days: number) {
 }
 
 export function PortfolioHistoryChart({ data, series, activeKeys, title }: Props) {
+  // MC1 Phase 4 Slice 1 (D-1) — aggregate surfaces format in the Space's
+  // reporting currency; USD fallback when no provider is mounted.
+  const displayCurrency = useDisplayCurrency();
+  const fmtCompact = (n: number) => fmtCompactBase(n, displayCurrency); // MC1 P4 Slice 1 — aggregate display currency
+  const fmtFull = (n: number) => fmtFullBase(n, displayCurrency); // MC1 P4 Slice 1 — aggregate display currency
   // Determine which intervals are available given the data length
   const availableIntervals = INTERVALS.filter((i) => data.length >= i.days);
 

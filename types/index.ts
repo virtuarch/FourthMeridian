@@ -62,6 +62,8 @@ export interface Holding {
   price: number;
   value: number;
   change24h: number;
+  /** MC1 P4 Slice 5 — native currency of price/value (Phase 0 stamp; null = residue). */
+  currency?: string | null;
   /** True for synthetic rows computed by the sync job (account.balance − positions sum). */
   isCash: boolean;
 }

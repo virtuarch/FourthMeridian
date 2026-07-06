@@ -23,6 +23,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { SpaceMemberRole }           from "@prisma/client";
 import { requireSpaceRole }          from "@/lib/session";
 import { getTransactions }           from "@/lib/data/transactions";
+import { db }                        from "@/lib/db";
+import { serializeSpaceConversionContext } from "@/lib/money/server-context";
 
 export async function GET(
   req: NextRequest,
@@ -34,5 +36,24 @@ export async function GET(
   if (err) return err;
 
   const transactions = await getTransactions({ spaceId });
-  return NextResponse.json({ transactions });
+
+  // MC1 Phase 4 Slice 6 (F-6, plan D-8) — a serialized conversion context
+  // rides the payload so the client-fetched SpaceTransactionsPanel can
+  // convert its flow totals into this Space's reporting currency (each row
+  // at its own date), exactly like the server-page surfaces do. USD Spaces
+  // (and any Space whose rows are all already in the target) serialize an
+  // EMPTY entry table — a few bytes, identical client math. Degrades to
+  // undefined (panel falls back to native sums) if the Space row vanished.
+  const space = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
+  });
+  const moneyCtx = space
+    ? await serializeSpaceConversionContext(space, {
+        currencies: transactions.map((t) => t.currency ?? null),
+        dates:      transactions.map((t) => t.date),
+      })
+    : undefined;
+
+  return NextResponse.json({ transactions, moneyCtx });
 }

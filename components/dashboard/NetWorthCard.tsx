@@ -1,7 +1,8 @@
 "use client";
 import { DataCard } from "@/components/atlas/DataCard";
 import { TrendingUp, TrendingDown } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
+import { EstimatedChip } from "@/components/ui/EstimatedChip";
 
 interface Props {
   netWorth:          number;
@@ -13,11 +14,15 @@ interface Props {
   lastUpdated?:      string;
   title?:            string;
   hideInvestments?:  boolean;
+  /** MC1 P4 Slice 3 (D-5) — quiet "≈ / est." marker when the totals carry estimated conversions. */
+  estimated?:        boolean;
 }
 
-export function NetWorthCard({ netWorth, totalAssets, totalDebt, liquid, change30d, changeLabel, lastUpdated, title = "Net Worth", hideInvestments = false }: Props) {
+export function NetWorthCard({ netWorth, totalAssets, totalDebt, liquid, change30d, changeLabel, lastUpdated, title = "Net Worth", hideInvestments = false, estimated = false }: Props) {
+  // MC1 Phase 4 Slice 1 (D-1) — all values on this card are aggregates.
+  const displayCurrency = useDisplayCurrency();
   const fmt = (n: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(n);
+    new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, maximumFractionDigits: 0 }).format(n);
   const positive = change30d >= 0;
   const prevWorth = netWorth - change30d;
   const pct = prevWorth !== 0 ? (change30d / Math.abs(prevWorth)) * 100 : 0;
@@ -25,7 +30,7 @@ export function NetWorthCard({ netWorth, totalAssets, totalDebt, liquid, change3
   return (
     <DataCard title={title} className="col-span-2">
       <div className="flex items-end justify-between mt-1">
-        <p className="text-4xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>{fmt(netWorth)}</p>
+        <p className="text-4xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>{estimated ? "\u2248 " : ""}{fmt(netWorth)}{estimated && <EstimatedChip />}</p>
         <div className="flex flex-col items-end mb-1 gap-0.5">
           <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>{changeLabel}</span>
           <span

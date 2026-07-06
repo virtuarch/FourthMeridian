@@ -18,6 +18,7 @@ import { Account, Transaction, TransactionCategory } from "@/types";
 import { DataCard } from "@/components/atlas/DataCard";
 import { Search, X } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
@@ -81,9 +82,9 @@ interface Props {
   scopeNote?:   string;
   /**
    * MC1 Phase 3 Slice 6 (F-1, D-6) — serialized Space conversion context.
-   * Optional: absent => context-less native sums (the kill switch; the
-   * SpaceDashboard client-fetched instance stays context-less for now —
-   * recorded as a Phase 3 closeout finding). Provided by DashboardClient.
+   * Optional: absent => context-less native sums (the kill switch).
+   * Provided by DashboardClient (server-page props) and — since MC1 Phase 4
+   * Slice 6 closed F-6 — by SpaceDashboard via the transactions API payload.
    */
   moneyCtx?:    SerializedConversionContext;
 }
@@ -96,6 +97,11 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     () => (moneyCtx ? rehydrateContext(moneyCtx) : undefined),
     [moneyCtx],
   );
+  // MC1 Phase 4 Slice 1 (D-1) — summary totals format in the display
+  // currency; transaction rows keep the constant (itemized rule).
+  const displayCurrency = useDisplayCurrency();
+  const fmtAgg = (n: number) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, maximumFractionDigits: 2 }).format(Math.abs(n));
   const rowAmount = useCallback(
     (t: Transaction): number =>
       conversionCtx
@@ -336,13 +342,13 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
         {totalSpend > 0 && (
           <span style={{ color: "var(--text-secondary)" }}>
             Spend:{" "}
-            <span className="font-semibold" style={{ color: "var(--accent-negative)" }}>-{fmt(totalSpend)}</span>
+            <span className="font-semibold" style={{ color: "var(--accent-negative)" }}>-{fmtAgg(totalSpend)}</span>
           </span>
         )}
         {totalIn > 0 && (
           <span style={{ color: "var(--text-secondary)" }}>
             In:{" "}
-            <span className="font-semibold" style={{ color: "var(--accent-positive)" }}>+{fmt(totalIn)}</span>
+            <span className="font-semibold" style={{ color: "var(--accent-positive)" }}>+{fmtAgg(totalIn)}</span>
           </span>
         )}
       </div>

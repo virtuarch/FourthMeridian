@@ -50,6 +50,8 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate, formatRelativeTime, possessive } from "@/lib/format";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
+import { DisplayCurrencyProvider, useDisplayCurrency } from "@/lib/currency-context";
+import { ViewCurrencyOverride, type ViewOverride } from "@/components/dashboard/widgets/ViewCurrencyOverride";
 import { SPACE_TAB_LABELS, SpaceTabId } from "@/lib/space-nav";
 import { getPerspectivesForCategory, getCompositionSwitcherItems, PERSPECTIVE_GROUPS, type PerspectiveGroup } from "@/lib/perspectives";
 import type { LensResult } from "@/lib/perspective-engine/types";
@@ -294,6 +296,23 @@ export function DashboardClient({
     () => (moneyCtx ? rehydrateContext(moneyCtx) : undefined),
     [moneyCtx],
   );
+  // MC1 Phase 4 Slice 8 (D-10) — the EPHEMERAL "view as" override. Pure
+  // in-memory state: never persisted, never consulted by writers; a reload
+  // resets to the Space's saved currency by construction.
+  const [viewOverride, setViewOverride] = useState<ViewOverride | null>(null);
+  const effectiveCtx = useMemo(
+    () => (viewOverride ? rehydrateContext(viewOverride.moneyCtx) : conversionCtx),
+    [viewOverride, conversionCtx],
+  );
+
+  // MC1 Phase 4 Slice 1 (D-1) — aggregate totals format in the display
+  // currency; per-account rows below keep the constant (itemized rule).
+  const displayCurrency = useDisplayCurrency();
+  const effectiveDisplayCurrency = viewOverride?.currency ?? displayCurrency;
+  const fmtAggAbs = (n: number) =>
+    new Intl.NumberFormat("en-US", {
+      style: "currency", currency: effectiveDisplayCurrency, maximumFractionDigits: 2,
+    }).format(Math.abs(n));
   const router        = useRouter();
   const searchParams  = useSearchParams();
   const { data: session } = useSession();
@@ -418,10 +437,10 @@ export function DashboardClient({
   // Full-portfolio classification (all accounts, for allocation donut + cash/investment totals)
   // MC1 P3 Slice 6 — converts into the Space's reporting currency when the
   // serialized context prop is present (identical math for all-USD Spaces).
-  const classification = useMemo(() => classifyAccounts(accounts, conversionCtx), [accounts, conversionCtx]);
+  const classification = useMemo(() => classifyAccounts(accounts, effectiveCtx), [accounts, effectiveCtx]);
 
   // Tab-scoped classification (filtered accounts, for NetWorthCard headline stats)
-  const tabClassification = useMemo(() => classifyAccounts(filtered, conversionCtx), [filtered, conversionCtx]);
+  const tabClassification = useMemo(() => classifyAccounts(filtered, effectiveCtx), [filtered, effectiveCtx]);
 
   const stats = useMemo(() => ({
     netWorth: tabClassification.netWorth,
@@ -750,7 +769,7 @@ export function DashboardClient({
                       ? sectionTotal > 0 ? "text-[var(--accent-negative)]" : "text-[var(--accent-positive)]"
                       : "text-white"
                   }`}>
-                    {fmtAbs(Math.abs(sectionTotal))}
+                    {fmtAggAbs(Math.abs(sectionTotal))}
                   </p>
                 )}
                 {/* Real <button> — valid here because the parent is a <div>, not a <button> */}
@@ -970,7 +989,7 @@ export function DashboardClient({
               </div>
               <div className="flex items-center gap-3">
                 <p className="text-sm font-semibold tabular-nums" style={{ color: "var(--text-primary)" }}>
-                  {fmtAbs(sectionTotal)}
+                  {fmtAggAbs(sectionTotal)}
                 </p>
                 {isOpen
                   ? <ChevronUp   size={16} className="text-[var(--text-muted)] shrink-0" />
@@ -1267,11 +1286,13 @@ export function DashboardClient({
           feeds the Overview's RecentTransactionsPanel and AI context), so no
           additional server request is needed. */}
       {isTransactions && (
+        <DisplayCurrencyProvider currency={effectiveDisplayCurrency}>
         <SpaceTransactionsPanel
           transactions={transactions}
           accounts={accounts}
-          moneyCtx={moneyCtx}
+          moneyCtx={viewOverride?.moneyCtx ?? moneyCtx}
         />
+        </DisplayCurrencyProvider>
       )}
 
       {/* Members tab — real data via the existing space-detail endpoint
@@ -1343,7 +1364,17 @@ export function DashboardClient({
               ) : (
               <>
               {/* KPI strip — Net Worth, Assets, Liabilities, Cash Flow, Credit Score */}
+              <div className="mb-2 flex justify-end">
+                {/* MC1 P4 Slice 8 — ephemeral view-as override (preview only) */}
+                <ViewCurrencyOverride
+                  spaceCurrency={displayCurrency}
+                  override={viewOverride}
+                  onChange={setViewOverride}
+                />
+              </div>
+              <DisplayCurrencyProvider currency={effectiveDisplayCurrency}>
               <KpiRow
+                estimated={classification.estimated}
                 netWorth={classification.netWorth}
                 netWorthChangePct={netWorthChangePct}
                 totalAssets={classification.totalAssets}
@@ -1357,6 +1388,7 @@ export function DashboardClient({
                 onCashFlowClick={() => setCashFlowModalOpen(true)}
                 onCreditClick={() => handleFilterChange("credit")}
               />
+              </DisplayCurrencyProvider>
 
               {/* Net Worth / Allocation — two columns on desktop. The AI
                   Daily Brief panel was removed from this row (Space
@@ -1439,9 +1471,11 @@ export function DashboardClient({
             <>
               <PersonalSectionCard title="Banking">
                 <div className="space-y-3">
+                  <DisplayCurrencyProvider currency={effectiveDisplayCurrency}>
                   <NetWorthCard
                     title="Banking"
                     hideInvestments
+                    estimated={tabClassification.estimated}
                     netWorth={stats.netWorth}
                     totalAssets={stats.assets}
                     totalDebt={stats.debt}
@@ -1450,6 +1484,7 @@ export function DashboardClient({
                     changeLabel={chartInterval}
                     lastUpdated={fmtAccountDate}
                   />
+                  </DisplayCurrencyProvider>
                   <div className="grid grid-cols-2 gap-3">
                     <CashOnHandCard
                       accounts={cashAccounts}

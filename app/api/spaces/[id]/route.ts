@@ -147,7 +147,14 @@ export const PATCH = withApiHandler(async (
       action:      archivedAt !== undefined
         ? (archivedAt ? AuditAction.SPACE_ARCHIVED : AuditAction.SPACE_UNARCHIVED)
         : AuditAction.SPACE_UPDATE,
-      metadata:    { name: space.name, isPublic: space.isPublic, category },
+      metadata:    {
+        name: space.name, isPublic: space.isPublic, category,
+        // MC1 Phase 4 Slice 2 (plan D-4) — record currency changes with
+        // from/to; omitted entirely when the field wasn't part of this PATCH.
+        ...(resolvedReportingCurrency !== undefined && resolvedReportingCurrency !== existing.reportingCurrency
+          ? { reportingCurrency: { from: existing.reportingCurrency, to: resolvedReportingCurrency } }
+          : {}),
+      },
       ipAddress:   getClientIp(req),
     },
   });

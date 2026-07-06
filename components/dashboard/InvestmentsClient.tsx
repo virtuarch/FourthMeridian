@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { formatDate } from "@/lib/format";
 import { Account, Holding, InvestmentTransaction } from "@/types";
 
@@ -15,6 +15,8 @@ interface InvestmentsProps {
   portfolioHistory:       PortfolioHistoryPoint[];
   preselectedId:          string | null;
   investmentTransactions: InvestmentTransaction[];
+  /** MC1 P4 Slice 5 (F-5, D-6) — serialized Space conversion context; absent => native sums (kill switch). */
+  moneyCtx?:              SerializedConversionContext;
 }
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
 import { AssetDrawer } from "@/components/dashboard/AssetDrawer";
@@ -38,11 +40,13 @@ import {
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
+import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import { EstimatedChip } from "@/components/ui/EstimatedChip";
 
 const fmt = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(n);
-const fmtCompact = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(n);
 function truncAddr(addr: string) {
   return addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr;
 }
@@ -298,7 +302,12 @@ const CHART_TITLE: Record<InvestmentFilter, string> = {
   all:    "Total Portfolio History",
 };
 
-export function InvestmentsClient({ accounts, holdings, portfolioHistory, preselectedId, investmentTransactions }: InvestmentsProps) {
+export function InvestmentsClient({ accounts, holdings, portfolioHistory, preselectedId, investmentTransactions, moneyCtx }: InvestmentsProps) {
+  // MC1 P4 Slice 5 — rehydrated context + display-currency aggregate formatter.
+  const conversionCtx = useMemo(() => (moneyCtx ? rehydrateContext(moneyCtx) : undefined), [moneyCtx]);
+  const displayCurrency = useDisplayCurrency();
+  const fmtAggCompact = (n: number) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, notation: "compact", maximumFractionDigits: 1 }).format(n);
   // Seed filter and selection from deep-link
   const preAcct = preselectedId ? accounts.find((a) => a.id === preselectedId) : null;
   const initialFilter: InvestmentFilter =
@@ -334,7 +343,14 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
   const allStockHoldings = holdings.filter((h) =>
     stocks.map((a) => a.id).includes(h.accountId)
   );
-  const totalStocks = stocks.reduce((s, a) => s + a.balance, 0);
+  // MC1 P4 Slice 5 — aggregate totals converted at the latest close; taint
+  // drives the quiet "est." indicator (map-then-reduce, same order).
+  const stockConv = stocks.map((a) =>
+    conversionCtx
+      ? convertMoney({ amount: a.balance, currency: a.currency ?? null }, yesterdayUTCISO(), conversionCtx)
+      : { amount: a.balance, estimated: false },
+  );
+  const totalStocks = stockConv.reduce((s, c) => s + c.amount, 0);
 
   // ── Crypto data — wallet addresses only ─────────────────────────────
   const baseCryptoAccounts = accounts.filter((a) => a.type === "crypto");
@@ -367,7 +383,13 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
     ...cryptoRows.filter((r) =>  r.removable).sort((a, b) => b.balance - a.balance), // wallets by exposure
   ];
 
-  const totalCrypto = allCryptoAccounts.reduce((s, a) => s + (a.balance || 0), 0);
+  const cryptoConv = allCryptoAccounts.map((a) =>
+    conversionCtx
+      ? convertMoney({ amount: a.balance || 0, currency: a.currency ?? null }, yesterdayUTCISO(), conversionCtx)
+      : { amount: a.balance || 0, estimated: false },
+  );
+  const totalCrypto = cryptoConv.reduce((s, c) => s + c.amount, 0);
+  const investTotalsEstimated = stockConv.some((c) => c.estimated) || cryptoConv.some((c) => c.estimated);
 
   // ── Chart: which series to show ─────────────────────────────────────
   const chartActiveKeys =
@@ -452,7 +474,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
             <DataCardTitle>Stocks & Funds</DataCardTitle>
             {filter === "stocks" && <Check size={13} style={{ color: "var(--accent-info)" }} />}
           </div>
-          <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>{fmtCompact(totalStocks)}</p>
+          <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>{investTotalsEstimated ? "\u2248 " : ""}{fmtAggCompact(totalStocks)}{investTotalsEstimated && <EstimatedChip />}</p>
           <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{stocks.length} accounts</p>
         </DataCard>
 
@@ -461,7 +483,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
             <DataCardTitle>Crypto</DataCardTitle>
             {filter === "crypto" && <Check size={13} style={{ color: "var(--accent-info)" }} />}
           </div>
-          <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>{fmtCompact(totalCrypto)}</p>
+          <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>{investTotalsEstimated ? "\u2248 " : ""}{fmtAggCompact(totalCrypto)}{investTotalsEstimated && <EstimatedChip />}</p>
           <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{allCryptoAccounts.length} wallets</p>
         </DataCard>
 
@@ -470,7 +492,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
             <DataCardTitle>Total Portfolio</DataCardTitle>
             {filter === "all" && <Check size={13} style={{ color: "var(--accent-info)" }} />}
           </div>
-          <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>{fmtCompact(totalStocks + totalCrypto)}</p>
+          <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>{investTotalsEstimated ? "\u2248 " : ""}{fmtAggCompact(totalStocks + totalCrypto)}{investTotalsEstimated && <EstimatedChip />}</p>
           <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{stocks.length + allCryptoAccounts.length} accounts</p>
         </DataCard>
       </div>
