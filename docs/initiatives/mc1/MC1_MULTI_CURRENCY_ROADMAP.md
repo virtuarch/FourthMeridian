@@ -24,7 +24,7 @@ Five invariants make "world-class later without redesign" true (§9.3): every mo
 | **MC1 Phase 1** | **FX provider/service** — provider abstraction, immutable dated rate archive (`FxRate`), deterministic rate service, failover, caching. No consumers yet. ✅ **Delivered 2026-07-05** (`8689e2d`→closing commits; `MC1_PHASE1_CLOSEOUT_REPORT_2026-07-05.md`). |
 | **MC1 Phase 2** | **Read-time conversion** via the shared money service (`lib/money/` — `convertMoney()`), threaded through both aggregation families; target hardwired USD; behavior-neutral. ✅ **Delivered 2026-07-05** (`030dc07`→closing commits; `MC1_PHASE2_CLOSEOUT_REPORT_2026-07-05.md` — Phase 3 enters via findings F-1…F-4). |
 | **MC1 Phase 3** | **Space/User reporting currency** — `Space.reportingCurrency` (authoritative) + `User.reportingCurrency` (copy-once default for new Spaces); the conversion-target flip. ✅ **Delivered 2026-07-05** (`257f63f`→closing commits; `MC1_PHASE3_CLOSEOUT_REPORT_2026-07-05.md` — Phase 4 enters via six recorded findings). |
-| **MC1 Phase 4** | **Currency selector and UX** — Space/User selectors, ephemeral view override, chart/snapshot display rules, AI presentation contract. |
+| **MC1 Phase 4** | **Currency selector and UX** — Space/User selectors, ephemeral view override, chart/snapshot display rules, AI presentation contract. ✅ **Delivered 2026-07-05** — **MC1 COMPLETE** (`MC1_FINAL_CLOSEOUT_REPORT_2026-07-05.md`). |
 
 Decisions explicitly recorded as part of this approval:
 
