@@ -24,6 +24,7 @@
 import { ReactNode, ElementType } from "react";
 import { TrendingUp, TrendingDown, ShieldCheck, Landmark, Scale, Wallet } from "lucide-react";
 import { EstimatedChip } from "@/components/ui/EstimatedChip";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { formatCurrency } from "@/lib/format";
 
@@ -125,6 +126,7 @@ export interface KpiRowProps {
 
 export function KpiRow({
   estimated,
+
   netWorth,
   netWorthChangePct,
   totalAssets,
@@ -140,24 +142,34 @@ export function KpiRow({
 }: KpiRowProps) {
   const band = ficoScore !== null ? creditBand(ficoScore) : null;
 
+  // MC1 QA Q1 — these tiles render CONVERTED classification values (Phase 3),
+  // so their labels must use the display currency, not lib/format's USD
+  // default (the "converts but still shows $" bug). The Slice 8 provider
+  // wrapper already supplies the effective currency here.
+  const displayCurrency = useDisplayCurrency();
+  const fmtDisplay = (n: number) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, maximumFractionDigits: 0 }).format(n);
+
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
       <Tile
         label="Net Worth"
-        value={`${estimated ? "\u2248 " : ""}${formatCurrency(netWorth)}`}
+        value={`${estimated ? "\u2248 " : ""}${fmtDisplay(netWorth)}`}
         estimated={estimated}
         trendPct={netWorthChangePct}
         icon={Scale}
         onClick={onNetWorthClick}
       />
-      <Tile label="Total Assets" value={`${estimated ? "\u2248 " : ""}${formatCurrency(totalAssets)}`} estimated={estimated} icon={Landmark} onClick={onAssetsClick} />
+      <Tile label="Total Assets" value={`${estimated ? "\u2248 " : ""}${fmtDisplay(totalAssets)}`} estimated={estimated} icon={Landmark} onClick={onAssetsClick} />
       <Tile
         label="Total Liabilities"
-        value={`${estimated ? "\u2248 " : ""}${formatCurrency(Math.abs(totalLiabilities))}`}
+        value={`${estimated ? "\u2248 " : ""}${fmtDisplay(Math.abs(totalLiabilities))}`}
         estimated={estimated}
         icon={Wallet}
         onClick={onLiabilitiesClick}
       />
+      {/* MC1 QA Q1 — cashFlowMTD is an UNCONVERTED native sum; label follows
+          value (constant USD) until Q2 converts the value, then the label follows. */}
       <Tile
         label="Cash Flow (MTD)"
         value={formatCurrency(cashFlowMTD)}

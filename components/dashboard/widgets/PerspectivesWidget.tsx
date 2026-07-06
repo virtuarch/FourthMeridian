@@ -47,6 +47,7 @@ import {
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { TONE_VALUE } from "@/components/atlas/tones";
 import { formatCurrency, formatDate, formatPercent } from "@/lib/format";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import type { PerspectiveDef } from "@/lib/perspectives";
 import type { LensMetric, LensResult } from "@/lib/perspective-engine/types";
 
@@ -69,10 +70,12 @@ export interface PerspectiveCardItem extends PerspectiveDef {
   result?: LensResult;
 }
 
-/** Render a LensMetric value per its declared format (shared lib/format). */
-function formatMetricValue(m: LensMetric): string {
+/** Render a LensMetric value per its declared format (shared lib/format).
+ *  MC1 QA Q1 — currency metrics carry CONVERTED lens values (Phase 3 Slice 5),
+ *  so the caller passes the display currency; USD default preserved for safety. */
+function formatMetricValue(m: LensMetric, displayCurrency?: string): string {
   switch (m.format) {
-    case "currency": return formatCurrency(Number(m.value));
+    case "currency": return formatCurrency(Number(m.value), displayCurrency);
     case "percent":  return formatPercent(Number(m.value));
     case "date":     return formatDate(String(m.value));
     case "count":    return String(m.value);
@@ -105,6 +108,8 @@ export function PerspectivesWidget({
 }
 
 function PerspectiveCard({ item, compact }: { item: PerspectiveCardItem; compact: boolean }) {
+  // MC1 QA Q1 — lens currency values are converted (Phase 3 Slice 5); labels follow.
+  const displayCurrency = useDisplayCurrency();
   const Icon = ICON_MAP[item.icon] ?? Sparkles;
   const clickable = !!item.onSelect;
   const lensBacked = !!item.lensId;
@@ -162,7 +167,7 @@ function PerspectiveCard({ item, compact }: { item: PerspectiveCardItem; compact
           {/* MC1 P4 Slice 3 (D-5): result-level currency estimation (LensResult.estimated)
               joins the pre-existing metric-level heuristic marker — one visual language. */}
           {item.result?.estimated ? "\u2248 " : ""}
-          {formatMetricValue(headline)}
+          {formatMetricValue(headline, displayCurrency)}
           {(headline.estimated || item.result?.estimated) && (
             <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] align-middle">
               est.

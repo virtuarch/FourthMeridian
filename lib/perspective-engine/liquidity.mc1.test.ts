@@ -92,6 +92,20 @@ const usdRows: LiquidityAccountRow[] = [
   check("non-USD: exact-only conversion → estimated false", exactOnly.estimated === false);
 }
 
+// ── QA Q1: verdict labels follow the context target ──────────────────────────
+{
+  // Identity context with a EUR target over EUR-native rows: values pass
+  // through as EUR amounts, so the verdict's embedded formatting must be €.
+  const eurCtx = identityContext("EUR");
+  const r = computeLiquidity(scope, options, [row("a", "checking", 1200, "EUR")], eurCtx);
+  check("verdict label: EUR-target verdict formats in €", (r.verdict ?? "").includes("€"));
+  check("verdict label: no $ leaks into a EUR-target verdict", !(r.verdict ?? "").includes("$"));
+
+  // No context ⇒ historical USD default, exactly as before (kill switch).
+  const legacy = computeLiquidity(scope, options, usdRows);
+  check("verdict label: context-less verdict keeps the USD default", (legacy.verdict ?? "").includes("$"));
+}
+
 // ── privacy/provenance shape untouched by the flip ────────────────────────────
 {
   const r = computeLiquidity(scope, options, usdRows, identityContext("USD"));

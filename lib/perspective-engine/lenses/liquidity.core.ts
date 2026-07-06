@@ -262,8 +262,11 @@ export function computeLiquidity(
   }
 
   // ── Verdict (deterministic template — amounts only, never names) ─────────
-  const fmtCash = formatCurrency(cashNow);
-  const fmtMkt  = formatCurrency(marketable);
+  // MC1 QA Q1 — verdict amounts are converted into ctx.target when a context
+  // is supplied; the embedded labels must match (label follows value). No
+  // context ⇒ lib/format's USD default, exactly as before.
+  const fmtCash = formatCurrency(cashNow, ctx?.target);
+  const fmtMkt  = formatCurrency(marketable, ctx?.target);
   let verdict: string;
   if (cashNow > 0 && marketable > 0) {
     verdict = `About ${fmtCash} is available as cash now, and roughly ${fmtMkt} more could be raised by selling investments.`;
