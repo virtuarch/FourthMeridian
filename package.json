@@ -14,7 +14,8 @@
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset",
     "backfill:ai-agents": "tsx scripts/backfill-ai-agents.ts",
-    "backfill:snapshots": "tsx scripts/backfill-snapshots.ts"
+    "backfill:snapshots": "tsx scripts/backfill-snapshots.ts",
+    "audit:flow-desync": "tsx scripts/audit-flow-desync.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
