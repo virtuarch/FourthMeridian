@@ -19,15 +19,23 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
+import { env } from "@/lib/env";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
+import { hashResetToken } from "@/lib/password-reset-token";
+import { sendEmail } from "@/lib/email/send";
+import { buildVerifyUrl } from "@/lib/email/verify-url";
 import { possessive } from "@/lib/format";
 import { EmploymentStatus, UseCase, SpaceMemberRole } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
+
+// OPS-1 S2b — email-verification token TTL (mirrors password reset: 1 hour).
+const VERIFICATION_TTL_MS = 60 * 60 * 1000;
 
 export async function POST(req: NextRequest) {
   try {
@@ -83,19 +91,29 @@ export async function POST(req: NextRequest) {
     const passwordHash = await bcrypt.hash(password, 12);
     const dateOfBirthEncrypted = dateOfBirth ? encryptWithPurpose(dateOfBirth, EncryptionPurpose.DATE_OF_BIRTH) : undefined;
 
+    // ── Email-verification token (OPS-1 S2b) ──────────────────────────────────
+    // New signups start UNVERIFIED (emailVerifiedAt stays null). Only the hash
+    // is persisted; rawVerificationToken lives solely in the outbound email.
+    // STORED-BUT-NOT-CONSUMED: no verify/resend route or login gate reads these
+    // yet — this slice only proves the email is sent and the state is stored.
+    const rawVerificationToken = crypto.randomBytes(32).toString("hex");
+    const verificationExpiry   = new Date(Date.now() + VERIFICATION_TTL_MS);
+
     // ── Create user + space atomically ───────────────────────────────────
     const user = await db.$transaction(async (tx) => {
       const newUser = await tx.user.create({
         data: {
-          email:                normalizedEmail,
-          username:             normalizedUsername,
-          name:                 `${firstName.trim()} ${lastName.trim()}`,
-          firstName:            firstName.trim(),
-          lastName:             lastName.trim(),
-          dateOfBirthEncrypted: dateOfBirthEncrypted ?? null,
-          employmentStatus:     (employmentStatus as EmploymentStatus) ?? null,
-          useCase:              (useCase as UseCase) ?? null,
+          email:                   normalizedEmail,
+          username:                normalizedUsername,
+          name:                    `${firstName.trim()} ${lastName.trim()}`,
+          firstName:               firstName.trim(),
+          lastName:                lastName.trim(),
+          dateOfBirthEncrypted:    dateOfBirthEncrypted ?? null,
+          employmentStatus:        (employmentStatus as EmploymentStatus) ?? null,
+          useCase:                 (useCase as UseCase) ?? null,
           passwordHash,
+          emailVerificationToken:  hashResetToken(rawVerificationToken),
+          emailVerificationExpiry: verificationExpiry,
         },
       });
 
@@ -149,6 +167,17 @@ export async function POST(req: NextRequest) {
 
       return newUser;
     });
+
+    // ── Send the verification email (OPS-1 S2b) ───────────────────────────────
+    // After commit so the token is persisted. Absolute link from the trusted
+    // env base (never the request Host). Non-throwing: a delivery failure is
+    // logged but never fails registration (the account already exists, and the
+    // consumer/resend flow is a later slice).
+    const verifyUrl = buildVerifyUrl(env.NEXT_PUBLIC_APP_URL, rawVerificationToken);
+    const emailResult = await sendEmail("email-verification", normalizedEmail, { verifyUrl });
+    if (emailResult.status === "error") {
+      console.error("[register] verification email failed to send:", emailResult.error);
+    }
 
     return NextResponse.json({ success: true, userId: user.id }, { status: 201 });
   } catch (err) {

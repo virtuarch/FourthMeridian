@@ -38,8 +38,36 @@ function LoginForm() {
   });
   const [loading, setLoading] = useState(false);
 
+  // Verification resend (identifier-based) — uses the typed identifier. The
+  // endpoint is non-enumerating, so we always show the same generic message.
+  const [verifySending, setVerifySending] = useState(false);
+  const [verifyMsg,     setVerifyMsg]     = useState("");
+
   const totpInputRef     = useRef<HTMLInputElement>(null);
   const recoveryInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleResendVerification() {
+    if (verifySending) return;
+    if (!identifier.trim()) {
+      setVerifyMsg("Enter your email or username above first.");
+      return;
+    }
+    setVerifySending(true);
+    setVerifyMsg("");
+    try {
+      await fetch("/api/auth/verify-email/resend", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ identifier: identifier.toLowerCase().trim() }),
+      });
+      // Non-enumerating: identical message regardless of account state.
+      setVerifyMsg("If your account needs verification, a new link has been sent.");
+    } catch {
+      setVerifyMsg("Couldn't send right now. Please try again.");
+    } finally {
+      setVerifySending(false);
+    }
+  }
 
   // Auto-focus TOTP input when step changes
   useEffect(() => {
@@ -224,6 +252,18 @@ function LoginForm() {
           >
             {loading ? <><Loader2 size={15} className="animate-spin" /> Checking…</> : "Sign In"}
           </button>
+
+          <div className="text-center pt-1">
+            <button
+              type="button"
+              onClick={handleResendVerification}
+              disabled={verifySending}
+              className="text-xs text-gray-500 hover:text-blue-400 transition-colors disabled:opacity-50"
+            >
+              {verifySending ? "Sending…" : "Didn't receive your verification email? Resend"}
+            </button>
+            {verifyMsg && <p className="text-xs text-gray-400 mt-1">{verifyMsg}</p>}
+          </div>
         </form>
       )}
 

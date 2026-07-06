@@ -35,6 +35,7 @@ const _e = {
   DATABASE_URL:         process.env.DATABASE_URL,
   NEXTAUTH_SECRET:      process.env.NEXTAUTH_SECRET,
   NEXTAUTH_URL:         process.env.NEXTAUTH_URL,
+  NEXT_PUBLIC_APP_URL:  process.env.NEXT_PUBLIC_APP_URL,
   ENCRYPTION_KEY:       process.env.ENCRYPTION_KEY,
 
   PLAID_CLIENT_ID:      process.env.PLAID_CLIENT_ID,
@@ -44,6 +45,9 @@ const _e = {
   OPENAI_API_KEY:       process.env.OPENAI_API_KEY,
   ETHERSCAN_API_KEY:    process.env.ETHERSCAN_API_KEY,
   HELIUS_API_KEY:       process.env.HELIUS_API_KEY,
+
+  RESEND_API_KEY:       process.env.RESEND_API_KEY,
+  EMAIL_FROM_DEFAULT:   process.env.EMAIL_FROM_DEFAULT,
 
   DISABLE_SYSTEM_ADMIN: process.env.DISABLE_SYSTEM_ADMIN,
   NODE_ENV:             process.env.NODE_ENV,
@@ -98,6 +102,12 @@ export const env = {
   // should be set in production.
   get NEXTAUTH_URL()    { return _e.NEXTAUTH_URL; },
 
+  // Trusted public base URL for absolute links in outbound email (e.g. password
+  // reset). Read from env — NEVER from a request Host header — so a poisoned
+  // Host cannot redirect a reset link to an attacker domain. Falls back to
+  // localhost in dev (mirrors app/layout.tsx metadataBase).
+  get NEXT_PUBLIC_APP_URL() { return _e.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"; },
+
   // ── Plaid ─────────────────────────────────────────────────────────────────
   get PLAID_CLIENT_ID() { return _e.PLAID_CLIENT_ID; },
   get PLAID_SECRET()    { return _e.PLAID_SECRET; },
@@ -112,6 +122,14 @@ export const env = {
   // ── Crypto ────────────────────────────────────────────────────────────────
   get ETHERSCAN_API_KEY()  { return _e.ETHERSCAN_API_KEY; },
   get HELIUS_API_KEY()     { return _e.HELIUS_API_KEY; },
+
+  // ── Email ─────────────────────────────────────────────────────────────────
+  // NOTE: lib/email/providers/resend.ts (the only Resend SDK import site) reads
+  // process.env.RESEND_API_KEY directly so it can fail loudly at call time;
+  // this accessor exists for feature-flag checks, not for the SDK client.
+  get RESEND_API_KEY()     { return _e.RESEND_API_KEY; },
+  /** Optional default From identity; falls back to the per-purpose sender map. */
+  get EMAIL_FROM_DEFAULT() { return _e.EMAIL_FROM_DEFAULT; },
 
   // ── Admin ─────────────────────────────────────────────────────────────────
   /** When true, all SYSTEM_ADMIN logins are blocked. */
@@ -128,6 +146,8 @@ export const env = {
   get isSolanaEnabled()   { return !!_e.HELIUS_API_KEY; },
   /** Either crypto network is available. */
   get isCryptoEnabled()   { return !!_e.ETHERSCAN_API_KEY || !!_e.HELIUS_API_KEY; },
+  /** Real email delivery is available when the Resend key is set (see lib/email/providers/resend.ts). */
+  get isEmailEnabled()    { return !!_e.RESEND_API_KEY; },
 
   // ── Runtime ───────────────────────────────────────────────────────────────
   get isDev()    { return _e.NODE_ENV === "development"; },

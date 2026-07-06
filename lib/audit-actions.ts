@@ -12,6 +12,11 @@ export const AuditAction = {
   LOGIN_FAILED:             "LOGIN_FAILED",
   LOGOUT:                   "LOGOUT",
   SPACE_SWITCH:         "SPACE_SWITCH",
+  // OPS-1 S2c — a first-class account-lifecycle event: the user proved
+  // ownership of their email by consuming a verification link.
+  EMAIL_VERIFIED:           "EMAIL_VERIFIED",
+  // OPS-1 S2d — a fresh verification link was issued (token rotated) and sent.
+  EMAIL_VERIFICATION_RESENT: "EMAIL_VERIFICATION_RESENT",
 
   // ── Password ─────────────────────────────────────────────────────────────────
   PASSWORD_CHANGED:         "PASSWORD_CHANGED",

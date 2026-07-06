@@ -305,6 +305,16 @@ model User {
   passwordResetToken   String?           @unique
   passwordResetExpiry  DateTime?
   forcePasswordReset   Boolean           @default(false) // set true by admin; user must change on next login
+  // OPS-1 S2b — email verification seam. `emailVerifiedAt` is the verification
+  // state (null = unverified; timestamp = when verified). Token columns mirror
+  // the password-reset pattern (hashed at rest, single outstanding token, 1h
+  // TTL). STORED-BUT-NOT-CONSUMED in S2b: new signups receive a verification
+  // email and these are written, but NO route/gate reads them yet. Existing
+  // users are backfilled to verified by the S2b migration so they are never
+  // treated as unverified.
+  emailVerifiedAt         DateTime?
+  emailVerificationToken  String?        @unique
+  emailVerificationExpiry DateTime?
   lastBriefViewedAt    DateTime? // set when user views the Daily Brief page
   // MC1 Phase 3 (D-1/D-2) — the user's DEFAULT reporting currency. A default
   // ONLY: it seeds reportingCurrency for Spaces this user creates (copy-once

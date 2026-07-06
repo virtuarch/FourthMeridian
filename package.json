@@ -37,7 +37,8 @@
     "react-markdown": "^8.0.7",
     "react-plaid-link": "^4.1.1",
     "recharts": "^3.8.1",
-    "remark-gfm": "^3.0.1"
+    "remark-gfm": "^3.0.1",
+    "resend": "^6.17.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

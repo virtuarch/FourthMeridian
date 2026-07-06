@@ -155,6 +155,12 @@ Recorded here after they landed on `feature/v2.5-spaces-completion` (between the
 | PAV | PublishedAccountView | Parked | See §8 | Freeze doc §9.3 | — |
 | TI | Transaction Intelligence | **Phase 1 Complete** (2026-07-06) | Phase 1 delivered — includes the **TI-1** canonical transaction row→DTO serialization single-site (replaces the previously duplicated inline mappings), golden-pinned | `lib/transactions/serialize.ts`; `lib/data/transactions.ts`; `lib/transactions/serialize.golden.test.ts` | Phase 2 (scope on the platform runway) |
 
+### Platform operations track (OPS-x — see §4 for the namespace prefix)
+
+| ID | Name | Status | Description | Evidence | Next milestone |
+|---|---|---|---|---|---|
+| OPS-1 | Platform Operations Foundation | **Active** · S0/S1 landed | The minimum operational floor before any external beta user. **S0/S1 (email substrate):** additive, behavior-neutral, zero production callers — `lib/email/` chokepoint (`sendEmail`), non-throwing `EmailResult`, sender identity map, Resend adapter behind a single grep-enforced SDK import site, credential-free capture transport for dev/test, one generic smoke template. Password reset (Slice 2), verification (Slice 3), and later slices deliberately un-wired | `docs/initiatives/ops1/OPS1_OPERATIONAL_FLOOR_PLAN.md`; `docs/initiatives/ops1/OPS1_S0_S1_IMPLEMENTATION_PROPOSAL.md`; `lib/email/*`; `lib/env.ts` | Slice 2 — real password reset over the email seam |
+
 ## 4. Initiative naming — alias table
 
 The D-number collision is resolved by **freezing, not renumbering**. `PHASE_2_DECISION_MATRIX.md` is the sole authority for D1–D14, forever. Historical commits/docs are not edited.
@@ -166,7 +172,7 @@ The D-number collision is resolved by **freezing, not renumbering**. `PHASE_2_DE
 | "D6/D7 Provider Catalog — Slice 1" (`lib/providers/catalog.ts`) | **D6/D7** | Correct usage — matrix meaning |
 | "D6 Institution Catalog investigation" | **D6** | Correct usage |
 
-**Namespace rule going forward:** new initiatives get a **track prefix + number**, allocated only in this file, with a `docs/initiatives/<id>/` folder created at allocation time so an ID can never be squatted twice. Track prefixes: `AI-x` (intelligence), `UI-x` (design system), `L-x` (launch/ops), `MC-x` (multi-currency / money-model — allocated 2026-07-03, first member `MC1`), `PE-x` (deterministic perspective/lens layer — allocated 2026-07-03, first member `PE1`), `DB-x` (physical database schema hygiene / legacy physical-name cleanup — allocated 2026-07-05, first member `DB1`). This is recommended over a single flat namespace (`AI-x` alone or continuing D-numbers) because the flat D-namespace is exactly what collided: unrelated tracks competed for adjacent integers. Prefixes make the track self-evident in a commit message.
+**Namespace rule going forward:** new initiatives get a **track prefix + number**, allocated only in this file, with a `docs/initiatives/<id>/` folder created at allocation time so an ID can never be squatted twice. Track prefixes: `AI-x` (intelligence), `UI-x` (design system), `L-x` (launch/ops), `MC-x` (multi-currency / money-model — allocated 2026-07-03, first member `MC1`), `PE-x` (deterministic perspective/lens layer — allocated 2026-07-03, first member `PE1`), `DB-x` (physical database schema hygiene / legacy physical-name cleanup — allocated 2026-07-05, first member `DB1`), `OPS-x` (platform operations foundation — external-world substrate: email, observability, legal, beta gate — allocated 2026-07-06, first member `OPS-1`). This is recommended over a single flat namespace (`AI-x` alone or continuing D-numbers) because the flat D-namespace is exactly what collided: unrelated tracks competed for adjacent integers. Prefixes make the track self-evident in a commit message.
 
 ## 5. Roadmap
 
