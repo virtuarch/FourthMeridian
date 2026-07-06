@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { useDisplayCurrency } from "@/lib/currency-context";
 
 interface Props {
   cash:         number;
@@ -20,21 +21,19 @@ const SEGMENTS = [
 ] as const;
 
 // ── Formatters ────────────────────────────────────────────────────────────────
-function fmtCompact(n: number): string {
-  if (n >= 1_000_000) {
-    const v = n / 1_000_000;
-    return `$${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)}M`;
-  }
-  if (n >= 1_000) {
-    const v = n / 1_000;
-    return `$${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)}k`;
-  }
-  return `$${n.toFixed(0)}`;
+// MC1 QA Q2 — this chart's feed is the CONVERTED classification allocation,
+// so labels follow the display currency. The hand-rolled `$..k` template was
+// replaced with Intl compact notation so non-USD symbols render correctly
+// (for USD the output shape is equivalent: $1.2k / $3M / $850).
+function fmtCompactBase(n: number, cur: string = "USD"): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency", currency: cur, notation: "compact", maximumFractionDigits: 1,
+  }).format(n);
 }
 
-function fmtFull(n: number): string {
+function fmtFullBase(n: number, cur: string = "USD"): string {
   return new Intl.NumberFormat("en-US", {
-    style: "currency", currency: "USD", maximumFractionDigits: 0,
+    style: "currency", currency: cur, maximumFractionDigits: 0,
   }).format(n);
 }
 
@@ -47,6 +46,11 @@ const STROKE = 22;
 const CIRC   = 2 * Math.PI * MID_R;
 
 export function AllocationChart({ cash, investments, crypto, debt, realAssets = 0 }: Props) {
+  // MC1 QA Q2 — this chart's feed is the CONVERTED classification (host
+  // allocation object), so labels follow the display currency.
+  const displayCurrency = useDisplayCurrency();
+  const fmtCompact = (n: number) => fmtCompactBase(n, displayCurrency);
+  const fmtFull    = (n: number) => fmtFullBase(n, displayCurrency);
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   // Order must match SEGMENTS: cash, investments, crypto, realAssets, debt

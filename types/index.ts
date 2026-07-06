@@ -81,6 +81,12 @@ export interface Snapshot {
   // D2.x Slice 4 — true for reconstructed/backfilled historical rows. Optional
   // so existing constructors default to undefined (treated as not-estimated).
   isEstimated?: boolean;
+  // MC1 QA Q4b — true when this off-stamp point's FX rate MISSED, so its values
+  // are native/unconverted and sit at a different magnitude than the resolving
+  // points. Additive and absent on homogeneous histories and successful
+  // conversions (byte-identical DTOs), letting a presentation guard drop only
+  // the genuinely mixed-unit points from a series.
+  fxMiss?: true;
 }
 
 export type TransactionCategory =

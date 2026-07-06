@@ -26,7 +26,6 @@ import { TrendingUp, TrendingDown, ShieldCheck, Landmark, Scale, Wallet } from "
 import { EstimatedChip } from "@/components/ui/EstimatedChip";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
-import { formatCurrency } from "@/lib/format";
 
 function creditBand(score: number): { label: string; cls: string } {
   if (score >= 740) return { label: "Excellent", cls: "text-[var(--emerald-400)]" };
@@ -105,6 +104,8 @@ export interface KpiRowProps {
    * Silent (no marker) when false/omitted.
    */
   estimated?: boolean;
+  /** MC1 QA Q2 — cash-flow value is now converted by the host; taint for its tile. */
+  cashFlowEstimated?: boolean;
   netWorth: number;
   /** Signed percentage change over the host's selected interval; null = no baseline yet. */
   netWorthChangePct: number | null;
@@ -126,6 +127,7 @@ export interface KpiRowProps {
 
 export function KpiRow({
   estimated,
+  cashFlowEstimated,
 
   netWorth,
   netWorthChangePct,
@@ -168,11 +170,12 @@ export function KpiRow({
         icon={Wallet}
         onClick={onLiabilitiesClick}
       />
-      {/* MC1 QA Q1 — cashFlowMTD is an UNCONVERTED native sum; label follows
-          value (constant USD) until Q2 converts the value, then the label follows. */}
+      {/* MC1 QA Q2 — cashFlowMTD now converts in the host (per-row dates), so
+          its label follows into the display currency. */}
       <Tile
         label="Cash Flow (MTD)"
-        value={formatCurrency(cashFlowMTD)}
+        value={`${cashFlowEstimated ? "\u2248 " : ""}${fmtDisplay(cashFlowMTD)}`}
+        estimated={cashFlowEstimated}
         trendPct={cashFlowChangePct}
         icon={TrendingUp}
         onClick={onCashFlowClick}

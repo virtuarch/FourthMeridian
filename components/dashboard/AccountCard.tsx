@@ -21,8 +21,8 @@ interface Props {
 export function AccountCard({ account }: Props) {
   const Icon = icons[account.type] ?? Building2;
   const isDebt = account.type === "debt";
-  const fmt = (n: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
+  const fmt = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(Math.abs(n));
 
   return (
     <DataCard>
@@ -40,7 +40,7 @@ export function AccountCard({ account }: Props) {
           </div>
         </div>
         <p className="text-2xl font-bold" style={{ color: isDebt ? "var(--accent-negative)" : "var(--text-primary)" }}>
-          {isDebt ? "-" : ""}{fmt(account.balance)}
+          {isDebt ? "-" : ""}{fmt(account.balance, account.currency ?? DEFAULT_DISPLAY_CURRENCY)}
         </p>
         <p className="text-xs" style={{ color: "var(--text-faint)" }}>
           Updated {formatDate(account.lastUpdated)}

@@ -45,8 +45,9 @@ import { convertMoney, rehydrateContext, type SerializedConversionContext } from
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { EstimatedChip } from "@/components/ui/EstimatedChip";
 
-const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(n);
+// MC1 QA Q3 — itemized rows pass the ROW's own currency; default preserved.
+const fmt = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(n);
 function truncAddr(addr: string) {
   return addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr;
 }
@@ -61,6 +62,8 @@ interface CryptoRow {
   name: string;         // display label (wallet nickname)
   source: string;
   balance: number;
+  /** MC1 QA Q3 — native currency of balance (optional; USD fallback). */
+  currency?: string | null;
   quantity?: number;    // native token amount (e.g. 0.085 BTC)
   price?: number;
   change24h?: number;
@@ -368,6 +371,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
       name:          acct.name,
       source:        isExchange ? acct.institution : "Self-custodied",
       balance:       acct.balance,
+      currency:      acct.currency ?? null, // MC1 QA Q3 — itemized row label
       quantity:      acct.nativeBalance,
       walletAddress: acct.walletAddress,
       walletChain:   acct.walletChain,
@@ -522,7 +526,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                   <div className="rounded-[14px] border p-4" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-inset)" }}>
                     <p className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>{a.institution}</p>
                     <p className="text-sm font-semibold truncate mb-2" style={{ color: "var(--text-primary)" }}>{a.name}</p>
-                    <p className="text-2xl font-bold" style={{ color: "var(--text-primary)" }}>{fmt(a.balance)}</p>
+                    <p className="text-2xl font-bold" style={{ color: "var(--text-primary)" }}>{fmt(a.balance, a.currency ?? DEFAULT_DISPLAY_CURRENCY)}</p>
                     <p className="text-xs mt-1" style={{ color: "var(--text-faint)" }}>Updated {formatDate(a.lastUpdated)}</p>
                   </div>
                   {sel && (
@@ -568,12 +572,12 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                       <div>
                         <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{h.symbol}</p>
                         <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-                          {h.quantity} shares · {fmt(h.price)}
+                          {h.quantity} shares · {fmt(h.price, h.currency ?? DEFAULT_DISPLAY_CURRENCY)}
                         </p>
                       </div>
                     </div>
                     <div className="text-right">
-                      <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(h.value)}</p>
+                      <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(h.value, h.currency ?? DEFAULT_DISPLAY_CURRENCY)}</p>
                       <span
                         className="flex items-center justify-end gap-0.5 text-xs font-medium"
                         style={{ color: h.change24h >= 0 ? "var(--accent-positive)" : "var(--accent-negative)" }}
@@ -680,7 +684,7 @@ export function InvestmentsClient({ accounts, holdings, portfolioHistory, presel
                               </p>
                             </div>
                             <div className="text-right shrink-0">
-                              <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(row.balance)}</p>
+                              <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(row.balance, row.currency ?? DEFAULT_DISPLAY_CURRENCY)}</p>
                               {row.quantity !== undefined ? (
                                 <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
                                   {row.quantity} {row.walletChain}

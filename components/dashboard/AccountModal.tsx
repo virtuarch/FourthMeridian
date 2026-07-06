@@ -55,14 +55,14 @@ function AssetLogo({
 }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
-const fmtUSD = (n: number) =>
+const fmtUSD = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2,
+    style: "currency", currency: cur, maximumFractionDigits: 2,
   }).format(Math.abs(n));
 
-const fmtCompact = (n: number) =>
+const fmtCompact = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1,
+    style: "currency", currency: cur, notation: "compact", maximumFractionDigits: 1,
   }).format(Math.abs(n));
 
 // ── Category colors ───────────────────────────────────────────────────────────
@@ -371,7 +371,7 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
             </div>
             <div className="text-right shrink-0 mr-2">
               <p className={`text-sm font-bold tabular-nums ${isDebt && account.balance > 0 ? "text-[var(--coral-400)]" : "text-[var(--text-primary)]"}`}>
-                {isDebt && account.balance > 0 ? "−" : ""}{fmtCompact(account.balance)}
+                {isDebt && account.balance > 0 ? "−" : ""}{fmtCompact(account.balance, account.currency ?? DEFAULT_DISPLAY_CURRENCY)}
               </p>
               <p className="text-xs text-[var(--text-muted)] mt-0.5">balance</p>
             </div>
@@ -581,7 +581,7 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
                   </div>
                   <div>
                     <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Price</p>
-                    <p className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums">{fmtCompact(h.price)}</p>
+                    <p className="text-xs font-semibold text-[var(--text-secondary)] tabular-nums">{fmtCompact(h.price, h.currency ?? account.currency ?? DEFAULT_DISPLAY_CURRENCY)}</p>
                   </div>
                   {h.change24h !== 0 && (
                     <div>
@@ -593,7 +593,7 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
                   )}
                   <div>
                     <p className="text-[10px] text-[var(--text-muted)] mb-0.5">Value</p>
-                    <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums">{fmtCompact(h.value)}</p>
+                    <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums">{fmtCompact(h.value, h.currency ?? account.currency ?? DEFAULT_DISPLAY_CURRENCY)}</p>
                   </div>
                 </div>
               </button>
@@ -652,8 +652,8 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
             style={{ borderBottom: "1px solid var(--border-hairline)" }}
           >
             {[
-              { label: "Value",  value: fmtUSD(chartHolding.value),  cls: "text-[var(--text-primary)]" },
-              { label: "Price",  value: fmtUSD(chartHolding.price),  cls: "text-[var(--text-primary)]" },
+              { label: "Value",  value: fmtUSD(chartHolding.value, chartHolding.currency ?? account.currency ?? DEFAULT_DISPLAY_CURRENCY),  cls: "text-[var(--text-primary)]" },
+              { label: "Price",  value: fmtUSD(chartHolding.price, chartHolding.currency ?? account.currency ?? DEFAULT_DISPLAY_CURRENCY),  cls: "text-[var(--text-primary)]" },
               {
                 label: "Qty",
                 value: chartHolding.quantity % 1 === 0
@@ -757,7 +757,7 @@ function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
             ? tx.amount < 0 ? "text-[var(--coral-400)]" : "text-[var(--emerald-400)]"
             : isCredit ? "text-[var(--emerald-400)]" : "text-[var(--text-primary)]"
         }`}>
-          {isCredit ? "+" : "−"}{fmtUSD(tx.amount)}
+          {isCredit ? "+" : "−"}{fmtUSD(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
         </p>
       </div>
     </div>

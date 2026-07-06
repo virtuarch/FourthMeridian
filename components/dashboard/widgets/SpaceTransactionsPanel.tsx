@@ -22,10 +22,11 @@ import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
-const fmt = (n: number) =>
+// MC1 QA Q3 — itemized transaction rows pass the ROW's own currency.
+const fmt = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
   new Intl.NumberFormat("en-US", {
     style:                 "currency",
-    currency:              DEFAULT_DISPLAY_CURRENCY,
+    currency:              cur,
     maximumFractionDigits: 2,
   }).format(Math.abs(n));
 
@@ -433,7 +434,7 @@ function TxRow({
       {/* Amount */}
       <div className="shrink-0 text-right">
         <p className="text-sm font-bold tabular-nums" style={{ color: isCredit ? "var(--accent-positive)" : "var(--text-primary)" }}>
-          {isCredit ? "+" : "−"}{fmt(tx.amount)}
+          {isCredit ? "+" : "−"}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
         </p>
       </div>
     </div>

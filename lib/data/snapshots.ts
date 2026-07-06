@@ -96,6 +96,10 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       date: r.date.toISOString().split("T")[0],
       ...converted.values,
       isEstimated: (r.isEstimated ?? false) || converted.estimated,
+      // MC1 QA Q4b — additive: only a genuine rate MISS (native pass-through)
+      // sets this; resolving off-stamp rows omit it, so homogeneous histories
+      // stay byte-identical. The hero series drops these points downstream.
+      ...(converted.missed ? { fxMiss: true as const } : {}),
     };
   });
 }
@@ -106,41 +110,89 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
  * schema/business-logic changes. One query covers every space card on
  * the page instead of N round trips.
  *
- * MC1 note: deliberately NOT stamp-aware — the whole SpacesClient card
- * surface (values, labels, and these sparklines) is deferred together
- * (recorded at the Phase 4 closeout); mixing a converted sparkline with
- * unconverted labels would be worse than the status quo.
+ * MC1 QA Q5 — each card labels in ITS OWN Space.reportingCurrency (never the
+ * active Space's currency), returned here as `currency`.
  *
- * Returns a map keyed by spaceId. Spaces with no snapshot history
- * yet (brand new) resolve to netWorth: 0, trend: [], asOf: null — the card
- * renders its "no history yet" state from that.
+ * MC1 QA Q5b — the card is stamp-aware WITH conversion (fixing Q5's regression,
+ * where a hard filter to current-currency rows blanked a Space recently
+ * switched to a currency with zero snapshots stamped in it). Each off-stamp
+ * point converts read-time at its OWN date via the Space's conversion context;
+ * only genuinely unconvertible points (a rate miss) are omitted — never the
+ * whole card — so the series stays single-unit without ever blanking. The
+ * homogeneous fast path is preserved: a Space whose rows are all stamped in its
+ * current currency (every all-USD Space) builds no context and maps values
+ * byte-identically to the pre-MC1 shape.
+ *
+ * Returns a map keyed by spaceId. Spaces with no convertible history yet
+ * resolve to netWorth: 0, trend: [], asOf: null — the card renders its
+ * "no history yet" state from that.
  */
 export async function getSpaceNetWorthSummaries(
   spaceIds: string[]
-): Promise<Record<string, { netWorth: number; trend: number[]; asOf: string | null }>> {
+): Promise<Record<string, { netWorth: number; currency: string; trend: number[]; asOf: string | null }>> {
   if (spaceIds.length === 0) return {};
+
+  // Each Space's own reporting currency (the card label source). Selected here
+  // so no card ever borrows the active Space's currency.
+  const spaces = await db.space.findMany({
+    where:  { id: { in: spaceIds } },
+    select: { id: true, reportingCurrency: true },
+  });
+  const currencyById = new Map(spaces.map((s) => [s.id, s.reportingCurrency ?? "USD"]));
 
   const rows = await db.spaceSnapshot.findMany({
     where:   { spaceId: { in: spaceIds } },
     orderBy: { date: "asc" },
-    select:  { spaceId: true, date: true, netWorth: true },
+    select:  { spaceId: true, date: true, netWorth: true, reportingCurrency: true },
   });
 
-  const bySpace = new Map<string, { date: Date; netWorth: number }[]>();
+  const bySpace = new Map<string, { date: Date; netWorth: number; stamp: string }[]>();
   for (const r of rows) {
     const list = bySpace.get(r.spaceId) ?? [];
-    list.push({ date: r.date, netWorth: r.netWorth });
+    list.push({ date: r.date, netWorth: r.netWorth, stamp: r.reportingCurrency ?? "USD" });
     bySpace.set(r.spaceId, list);
   }
 
-  const result: Record<string, { netWorth: number; trend: number[]; asOf: string | null }> = {};
+  const result: Record<string, { netWorth: number; currency: string; trend: number[]; asOf: string | null }> = {};
   for (const id of spaceIds) {
-    const series = bySpace.get(id) ?? [];
-    const recent = series.slice(-14); // last ~2 weeks for the card sparkline
-    const latest = series[series.length - 1];
+    const currency = currencyById.get(id) ?? "USD";
+    const series   = bySpace.get(id) ?? [];
+
+    // Build a conversion context only when the Space has off-stamp rows; a
+    // homogeneous Space (all rows already in `currency`) keeps the fast path
+    // and never touches the FX archive.
+    const offStamp = series.filter((s) => s.stamp !== currency);
+    const stampCtx = offStamp.length > 0
+      ? await buildSpaceConversionContext(
+          { reportingCurrency: currency },
+          {
+            currencies: [...new Set(offStamp.map((s) => s.stamp))],
+            dates:      [...new Set(offStamp.map((s) => s.date.toISOString().slice(0, 10)))],
+          },
+        )
+      : null;
+
+    // Convert each point at its own date; keep on-stamp rows as-is. Omit ONLY
+    // the points whose rate missed (they would be native-magnitude, mixing
+    // units) — every convertible point stays, so the card never blanks merely
+    // because its history predates the currency switch.
+    const points: { date: Date; value: number }[] = [];
+    for (const s of series) {
+      if (!stampCtx || s.stamp === currency) {
+        points.push({ date: s.date, value: s.netWorth });
+        continue;
+      }
+      const conv = convertStampedValues({ v: s.netWorth }, s.stamp, s.date.toISOString().slice(0, 10), stampCtx);
+      if (conv.missed) continue; // unconvertible — drop this point only
+      points.push({ date: s.date, value: conv.values.v });
+    }
+
+    const recent = points.slice(-14); // last ~2 weeks for the card sparkline
+    const latest = points[points.length - 1];
     result[id] = {
-      netWorth: latest?.netWorth ?? 0,
-      trend:    recent.map((s) => s.netWorth),
+      netWorth: latest?.value ?? 0,
+      currency,
+      trend:    recent.map((p) => p.value),
       asOf:     latest?.date.toISOString() ?? null,
     };
   }

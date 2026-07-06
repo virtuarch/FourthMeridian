@@ -42,10 +42,12 @@ import {
   SpaceCategory,
 } from "@/lib/space-presets";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { formatDate as formatDateUTC, displaySpaceName } from "@/lib/format";
 import {
   SPACE_LIST_CHANGED_EVENT,
   SPACE_ACCOUNTS_CHANGED_EVENT,
+  SPACE_CURRENCY_CHANGED_EVENT,
 } from "@/lib/space-nav";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { GlassButton } from "@/components/atlas/GlassButton";
@@ -356,7 +358,21 @@ function GeneralTab({
         // MC1 P4 Slice 2 — a currency change re-denominates every aggregate
         // at read time; refresh the current view so converted totals and the
         // display-currency provider pick it up immediately.
-        if (currencyChanged) settingsRouter.refresh();
+        //
+        // MC1 QA Q6 — router.refresh() re-runs the server tree (layout provider
+        // + card props) but NOT a client host's own spaceId-keyed fetches;
+        // broadcast so SpaceDashboard refetches its snapshots/perspectives/tx
+        // for the changed Space. The PATCH has already persisted the new
+        // currency, so an immediate refetch returns new-currency data — the
+        // event and refresh are independent, so ordering between them is safe.
+        if (currencyChanged) {
+          window.dispatchEvent(
+            new CustomEvent(SPACE_CURRENCY_CHANGED_EVENT, {
+              detail: { spaceId: space.id, currency: reportingCurrency },
+            }),
+          );
+          settingsRouter.refresh();
+        }
         // Sidebar caches its Space list client-side and only refetches on this
         // event — without it, a rename here (e.g. fixing legacy "X's Dashboard"
         // grammar) would update the page but leave the sidebar showing the old
@@ -801,6 +817,9 @@ function GoalsTab({
   spaceId: string;
   canManage:   boolean;
 }) {
+  // MC1 QA Q4b — goal values are Space-native aggregates; labels follow the
+  // Space's display currency (account rows below stay row-native).
+  const displayCurrency = useDisplayCurrency();
   const [goals,        setGoals]        = useState<Goal[]>([]);
   const [loading,      setLoading]      = useState(true);
   const [showForm,     setShowForm]     = useState(false);
@@ -998,7 +1017,7 @@ function GoalsTab({
                         style={{ width: `${pct}%` }} />
                     </div>
                     <div className="flex items-center justify-between">
-                      <p className="text-[10px] text-[var(--text-muted)]">{formatBalance(g.currentAmount)} of {formatBalance(g.targetAmount)}</p>
+                      <p className="text-[10px] text-[var(--text-muted)]">{formatBalance(g.currentAmount, displayCurrency)} of {formatBalance(g.targetAmount, displayCurrency)}</p>
                       <div className="flex items-center gap-2">
                         {g.targetDate && (
                           <p className={`text-[10px] flex items-center gap-1 ${isOverdue ? "text-[var(--coral-400)]" : "text-[var(--text-muted)]"}`}>
@@ -1024,7 +1043,7 @@ function GoalsTab({
                       <CheckCircle2 size={14} className="text-[var(--emerald-500)]" />
                     </button>
                     <p className="text-sm text-[var(--text-secondary)] flex-1 truncate">{g.name}</p>
-                    <p className="text-xs text-[var(--emerald-400)] shrink-0">{formatBalance(g.targetAmount)}</p>
+                    <p className="text-xs text-[var(--emerald-400)] shrink-0">{formatBalance(g.targetAmount, displayCurrency)}</p>
                     {canManage && (
                       <button onClick={() => handleDelete(g.id)} disabled={deletingId === g.id}
                         className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--coral-400)] hover:bg-[rgba(237,82,71,.10)] disabled:opacity-50 transition-colors">

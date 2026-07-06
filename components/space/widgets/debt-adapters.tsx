@@ -18,6 +18,10 @@
 import { BreakdownWidget, type BreakdownItem, type BreakdownViewMode } from "@/components/space/widgets/BreakdownWidget";
 import { DebtPayoffSection, type DebtPayoffAccount } from "@/components/space/sections/DebtPayoffSection";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatCurrency } from "@/lib/format";
+import { convertMoney } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
 
 // ─── Color scale ──────────────────────────────────────────────────────────────
 
@@ -75,26 +79,45 @@ export interface DebtAdapterAccount {
  * @param accounts   - All accounts passed to the section; non-debt are ignored
  * @param viewMode   - "donut" | "bar" | "list" (default: "donut")
  * @param emptyText  - Optional override for the empty-state subtitle
+ * @param ctx        - MC1 QA Q4 — optional conversion context. Present ⇒ slice
+ *                     values and the min-payment footer convert into ctx.target
+ *                     (a donut over mixed native currencies has dishonest
+ *                     proportions) and labels follow; per-account meta stays
+ *                     native. Absent ⇒ today's behavior byte-for-byte.
  */
 export function renderDebtBreakdownChart(
   accounts:  DebtAdapterAccount[],
   viewMode?: BreakdownViewMode,
   emptyText?: string,
+  ctx?:      ConversionContext,
 ): React.ReactElement {
-  const sorted = [...accounts.filter((a) => a.type === "debt")]
-    .sort((a, b) => b.balance - a.balance);
-  const n            = sorted.length;
-  const totalMinPmt  = sorted.reduce((s, a) => s + (a.minimumPayment ?? 0), 0);
+  const inDisp = (amount: number, currency: string | null | undefined): { amount: number; estimated: boolean } => {
+    if (!ctx) return { amount, estimated: false };
+    const c = convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx);
+    return { amount: c.amount, estimated: c.estimated };
+  };
 
-  const items: BreakdownItem[] = sorted.map((a, i) => ({
+  const converted = accounts
+    .filter((a) => a.type === "debt")
+    .map((a) => ({ a, bal: inDisp(a.balance, a.currency) }));
+  // Sort by the display-currency value so colour ranking matches the visual share.
+  const sorted = [...converted].sort((x, y) => y.bal.amount - x.bal.amount);
+  const n = sorted.length;
+
+  const minConv     = sorted.map(({ a }) => inDisp(a.minimumPayment ?? 0, a.currency));
+  const totalMinPmt = minConv.reduce((s, c) => s + c.amount, 0);
+  const minTainted  = minConv.some((c) => c.estimated);
+
+  const items: BreakdownItem[] = sorted.map(({ a, bal }, i) => ({
     id:    a.id,
     label: a.name,
-    value: a.balance,
+    value: bal.amount,
     color: debtColor(i, n),
     meta:  a.institution || undefined,
     meta2: [
       a.interestRate   != null ? `${a.interestRate.toFixed(2)}% APR`        : null,
-      a.minimumPayment != null ? `${formatBalance(a.minimumPayment)}/mo min` : null,
+      // Itemized meta stays native — the row's own currency labels its own amount.
+      a.minimumPayment != null ? `${formatBalance(a.minimumPayment, a.currency)}/mo min` : null,
     ].filter(Boolean).join(" · ") || undefined,
   }));
 
@@ -103,11 +126,15 @@ export function renderDebtBreakdownChart(
       items={items}
       viewMode={viewMode ?? "donut"}
       itemNoun="account"
+      // Only supplied alongside a context so the context-less default
+      // formatter (and all-USD pixels) are untouched; lib/format's
+      // formatCurrency matches the widget's default exactly.
+      {...(ctx ? { formatValue: (v: number) => formatCurrency(v, ctx.target) } : {})}
       footer={totalMinPmt > 0 ? (
         <div className="text-center">
           <p className="text-[11px] text-[var(--text-muted)]">Minimum monthly payments</p>
           <p className="text-sm font-semibold text-white mt-0.5">
-            {formatBalance(totalMinPmt)}
+            {minTainted ? "≈ " : ""}{formatBalance(totalMinPmt, ctx?.target)}
             <span className="text-[10px] text-[var(--text-faint)] ml-0.5">/mo</span>
           </p>
         </div>
@@ -129,17 +156,22 @@ export function renderDebtBreakdownChart(
  * @param accounts          - All accounts; non-debt are ignored by DebtPayoffSection
  * @param fullscreen        - Whether to render in expanded modal mode
  * @param onCloseFullscreen - Callback when user closes the fullscreen view
+ * @param ctx               - MC1 QA Q4 — optional conversion context, passed
+ *                            through to the planner (aggregates convert +
+ *                            labels follow; absent ⇒ today's behavior).
  */
 export function renderDebtPayoffCalculator(
   accounts:           DebtPayoffAccount[],
   fullscreen?:        boolean,
   onCloseFullscreen?: () => void,
+  ctx?:               ConversionContext,
 ): React.ReactElement {
   return (
     <DebtPayoffSection
       accounts={accounts}
       fullscreen={fullscreen}
       onCloseFullscreen={onCloseFullscreen}
+      ctx={ctx}
     />
   );
 }

@@ -15,8 +15,8 @@ interface Props {
 const fmt = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 1 }).format(n);
 
-const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(n);
+const fmtFull = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(n);
 
 export function AccountGroupCard({ title, accounts, lastUpdated, maxItems, compact }: Props) {
   const total    = accounts.reduce((s, a) => s + a.balance, 0);
@@ -46,7 +46,7 @@ export function AccountGroupCard({ title, accounts, lastUpdated, maxItems, compa
                 </div>
               </div>
               <div className="text-right shrink-0">
-                <p className="text-xs font-semibold tabular-nums" style={{ color: "var(--text-primary)" }}>{fmtFull(a.balance)}</p>
+                <p className="text-xs font-semibold tabular-nums" style={{ color: "var(--text-primary)" }}>{fmtFull(a.balance, a.currency ?? DEFAULT_DISPLAY_CURRENCY)}</p>
                 {!compact && a.nativeBalance != null && (
                   <p className="text-xs" style={{ color: "var(--text-faint)" }}>{a.nativeBalance} {a.walletChain}</p>
                 )}

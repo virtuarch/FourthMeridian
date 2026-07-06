@@ -69,7 +69,7 @@ export default async function HoldingsPage() {
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(h.value)}</p>
+                  <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(h.value, h.currency ?? "USD")}</p>
                   <div className="flex items-center justify-end gap-0.5 text-xs font-medium" style={{ color: positive ? "var(--accent-positive)" : "var(--accent-negative)" }}>
                     {positive ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
                     {positive ? "+" : ""}{h.change24h}% 24h

@@ -48,7 +48,9 @@ function TxRow({ tx }: { tx: Transaction }) {
         ].join(" ")}
       >
         {isCredit ? "+" : "−"}
-        {formatCurrencyExact(Math.abs(tx.amount))}
+        {/* MC1 QA Q4b — itemized row: format in the transaction's own native
+            currency (null-residue falls back to the display default). */}
+        {formatCurrencyExact(Math.abs(tx.amount), tx.currency ?? undefined)}
       </p>
     </div>
   );

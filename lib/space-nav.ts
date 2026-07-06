@@ -130,3 +130,10 @@ export const SPACE_INVITES_CHANGED_EVENT  = "space-invites-changed";
 export const SPACE_ACCOUNTS_CHANGED_EVENT = "space-accounts-changed";
 export const SPACE_GOALS_CHANGED_EVENT    = "space-goals-changed";
 export const OPEN_CREATE_SPACE_EVENT      = "open-create-space";
+// MC1 QA Q6 — a Space's reporting currency changed. router.refresh() re-runs
+// the server tree (layout DisplayCurrencyProvider + card props), but a client
+// host's own fetched data (SpaceDashboard's snapshots/perspectives/tx) keys on
+// spaceId and won't re-run; this event tells such hosts to refetch the
+// currency-sensitive data so the whole view updates without a manual reload.
+// CustomEvent detail: { spaceId, currency } — hosts ignore other Spaces' ids.
+export const SPACE_CURRENCY_CHANGED_EVENT = "space-currency-changed";

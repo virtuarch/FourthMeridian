@@ -49,13 +49,31 @@ const row = { netWorth: 1000, cash: 400, debt: 100, netLiquid: 300 };
   check("derived identities preserved under conversion (cash − debt = netLiquid)",
     r.values.cash - r.values.debt === r.values.netLiquid);
   check("off-stamp conversion is always estimation-flagged (summed-total approximation)", r.estimated === true);
+  check("successful resolution is NOT a miss (values converted, not native)", r.missed === false);
 }
 
-// ── miss ⇒ native + estimated (D-3) ──────────────────────────────────────────
+// ── miss ⇒ native + estimated + missed (D-3 / Q4b) ───────────────────────────
 {
   const r = convertStampedValues(row, "SAR", "2026-01-15", ctx);
   check("missing rate: stored values pass through unchanged", r.values.netWorth === 1000 && r.values.cash === 400);
   check("missing rate: estimated flag set", r.estimated === true);
+  // Q4b: `missed` discriminates the genuine native pass-through (mixed unit)
+  // from an exact-but-approximate conversion — the guard drops only these.
+  check("missing rate: missed flag set (drives the hero-series guard)", r.missed === true);
+}
+
+// ── walked-back rate still resolves (estimated, but NOT missed) ───────────────
+{
+  const walkCtx: ConversionContext = {
+    target: "USD",
+    resolve: (from, dateISO) =>
+      from === "EUR"
+        ? { kind: "rate", rate: 1.1, requestedDateISO: dateISO, effectiveDates: { from: "2026-01-10", to: dateISO }, staleness: "walked-back" }
+        : { kind: "miss", quote: from, requestedDateISO: dateISO },
+  };
+  const r = convertStampedValues(row, "EUR", "2026-01-15", walkCtx);
+  check("walked-back: values converted (1000 × 1.1)", r.values.netWorth === 1100);
+  check("walked-back: estimated true but missed false", r.estimated === true && r.missed === false);
 }
 
 // ── determinism ───────────────────────────────────────────────────────────────

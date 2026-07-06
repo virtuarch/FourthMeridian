@@ -20,6 +20,8 @@
  */
 
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
+import { buildSpaceConversionContextById } from "@/lib/money/server-context";
+import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import { registerLens } from "../registry";
 import type { ComputeOptions, LensResult, PerspectiveScope } from "../types";
 import { computeDebt, type DebtAccountRow } from "./debt.core";
@@ -38,6 +40,8 @@ async function debtLens(
     id:              account.id,
     type:            account.type,
     balance:         account.balance,
+    // MC1 QA Q2 — conversion input (non-identifying).
+    currency:        account.currency ?? null,
     lastUpdated:     account.lastUpdated,
     visibilityLevel: visibilityLevel as string,
     interestRate:              account.interestRate ?? undefined,
@@ -46,7 +50,14 @@ async function debtLens(
     promoAprEndDate:           account.debtProfile?.promoAprEndDate ?? undefined,
   }));
 
-  return computeDebt(scope, options, lensRows);
+  // MC1 QA Q2 — real space context (same seam as the liquidity lens flip);
+  // by-id helper keeps @/lib/db out of this adapter, identity fallback inside.
+  const ctx = await buildSpaceConversionContextById(scope.spaceId, {
+    currencies: lensRows.map((r) => r.currency ?? null),
+    dates:      [minusDaysISO(toISODateUTC(options.now()), 1)],
+  });
+
+  return computeDebt(scope, options, lensRows, ctx);
 }
 
 registerLens("debt", debtLens);

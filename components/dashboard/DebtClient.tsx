@@ -11,7 +11,8 @@ import {
 } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
-import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
+import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
 import { EstimatedChip } from "@/components/ui/EstimatedChip";
 import { formatDate as formatDateUTC } from "@/lib/format";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
@@ -22,10 +23,11 @@ import {
 } from "@/lib/debt";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
-const fmtUSD = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(Math.abs(n));
-const fmtFull = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
+// MC1 QA Q3 — itemized rows pass the ROW's own currency; default preserved.
+const fmtUSD = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 0 }).format(Math.abs(n));
+const fmtFull = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(Math.abs(n));
 
 // ── Category badge ─────────────────────────────────────────────────────────────
 // Step C: category colour-coding neutralised to a single ink chip; the label
@@ -139,6 +141,8 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
   // (recorded as a residual finding), and per-card/per-row values keep the
   // constant (itemized rule).
   const displayCurrency = useDisplayCurrency();
+  const fmtAggUtil = (n: number) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, maximumFractionDigits: 0 }).format(Math.abs(n));
   const fmtAggFull = (n: number) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, maximumFractionDigits: 2 }).format(Math.abs(n));
   const rollupRows = useMemo(
@@ -422,12 +426,32 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
   // Only revolving accounts (credit cards, LOC, HELOC) factor into utilization
   const limitedCards   = cards.filter((c) => isRevolving(c.debtSubtype) && c.creditLimit && c.creditLimit > 0);
   const owedCards      = limitedCards.filter((c) => c.balance > 0);
-  const totalUsed      = cards.reduce((s, a) => s + Math.max(0, a.balance), 0);
-  const totalLimit     = limitedCards.reduce((s, a) => s + (a.creditLimit ?? 0), 0);
-  const totalAvailable = totalLimit - owedCards.reduce((s, a) => s + a.balance, 0);
-  const overallUtil    = totalLimit > 0
-    ? (owedCards.reduce((s, a) => s + a.balance, 0) / totalLimit) * 100
-    : 0;
+  // MC1 QA Q2 (F-7) — utilization aggregates convert into the reporting
+  // currency at the latest close (limit and balance share a card's native
+  // currency, so the utilization RATIO is unchanged by conversion; the money
+  // figures re-denominate). Map-then-reduce, no closure mutation; taint
+  // drives the quiet "est." indicator. Per-card rows below stay native.
+  const { totalUsed, totalLimit, totalAvailable, overallUtil, utilizationEstimated } = useMemo(() => {
+    const conv = (amount: number, currency: string | null | undefined) =>
+      conversionCtx
+        ? convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), conversionCtx)
+        : { amount, estimated: false };
+    const usedConv  = cards.map((a) => conv(Math.max(0, a.balance), a.currency));
+    const limitConv = limitedCards.map((a) => conv(a.creditLimit ?? 0, a.currency));
+    const owedConv  = owedCards.map((a) => conv(a.balance, a.currency));
+    const used  = usedConv.reduce((s, c) => s + c.amount, 0);
+    const limit = limitConv.reduce((s, c) => s + c.amount, 0);
+    const owed  = owedConv.reduce((s, c) => s + c.amount, 0);
+    return {
+      totalUsed:      used,
+      totalLimit:     limit,
+      totalAvailable: limit - owed,
+      overallUtil:    limit > 0 ? (owed / limit) * 100 : 0,
+      utilizationEstimated:
+        [...usedConv, ...limitConv, ...owedConv].some((c) => c.estimated),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts, conversionCtx]);
   // hasChargecards reserved for future charge card UI distinction
   // const hasChargecards = cards.some((c) => !c.creditLimit);
 
@@ -624,17 +648,17 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <DataCard>
             <DataCardTitle>Total Used</DataCardTitle>
-            <p className="text-2xl font-bold mt-1" style={{ color: "var(--accent-negative)" }}>{fmtUSD(totalUsed)}</p>
+            <p className="text-2xl font-bold mt-1" style={{ color: "var(--accent-negative)" }}>{utilizationEstimated ? "\u2248 " : ""}{fmtAggUtil(totalUsed)}{utilizationEstimated && <EstimatedChip />}</p>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{cards.length} card{cards.length !== 1 ? "s" : ""}</p>
           </DataCard>
           <DataCard>
             <DataCardTitle>Total Limit</DataCardTitle>
-            <p className="text-2xl font-bold mt-1" style={{ color: "var(--text-primary)" }}>{fmtUSD(totalLimit)}</p>
+            <p className="text-2xl font-bold mt-1" style={{ color: "var(--text-primary)" }}>{utilizationEstimated ? "\u2248 " : ""}{fmtAggUtil(totalLimit)}{utilizationEstimated && <EstimatedChip />}</p>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Combined credit</p>
           </DataCard>
           <DataCard>
             <DataCardTitle>Available</DataCardTitle>
-            <p className="text-2xl font-bold mt-1" style={{ color: "var(--accent-positive)" }}>{fmtUSD(totalAvailable)}</p>
+            <p className="text-2xl font-bold mt-1" style={{ color: "var(--accent-positive)" }}>{utilizationEstimated ? "\u2248 " : ""}{fmtAggUtil(totalAvailable)}{utilizationEstimated && <EstimatedChip />}</p>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Limit minus balance</p>
           </DataCard>
           <DataCard>
@@ -720,10 +744,10 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                     </div>
                     <div className="text-right">
                       <p className="text-sm font-bold tabular-nums" style={{ color: isCredit ? "var(--accent-positive)" : "var(--accent-negative)" }}>
-                        {isCredit ? `+${fmtUSD(used)}` : `−${fmtUSD(used)}`}
+                        {isCredit ? `+${fmtUSD(used, card.currency ?? DEFAULT_DISPLAY_CURRENCY)}` : `−${fmtUSD(used, card.currency ?? DEFAULT_DISPLAY_CURRENCY)}`}
                       </p>
                       {revolving && !isCredit && limit && (
-                        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>of {fmtUSD(limit)}</p>
+                        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>of {fmtUSD(limit, card.currency ?? DEFAULT_DISPLAY_CURRENCY)}</p>
                       )}
                     </div>
                   </button>
@@ -736,7 +760,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                           <span className="font-semibold" style={{ color: utilTextColor(util) }}>
                             {util.toFixed(1)}% used
                           </span>
-                          <span style={{ color: "var(--text-muted)" }}>{fmtUSD(available ?? 0)} available</span>
+                          <span style={{ color: "var(--text-muted)" }}>{fmtUSD(available ?? 0, card.currency ?? DEFAULT_DISPLAY_CURRENCY)} available</span>
                         </div>
                         <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "var(--surface-inset)" }}>
                           <div className={`h-full rounded-full transition-all ${utilColor(util)}`} style={{ width: `${Math.min(util, 100)}%` }} />
@@ -759,7 +783,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
                               {card.minimumPaymentIsEstimated ? "Est. Min Payment" : "Min Payment"}
                             </p>
                             <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                              {fmtUSD(card.minimumPayment)}/mo
+                              {fmtUSD(card.minimumPayment, card.currency ?? DEFAULT_DISPLAY_CURRENCY)}/mo
                             </p>
                           </div>
                         )}
@@ -1200,7 +1224,7 @@ function TxRow({ tx, cards, selectedCardId }: {
       </div>
       <div className="shrink-0 text-right">
         <p className="text-sm font-bold tabular-nums" style={{ color: isCredit ? "var(--accent-positive)" : "var(--text-primary)" }}>
-          {isCredit ? "+" : "−"}{fmtFull(tx.amount)}
+          {isCredit ? "+" : "−"}{fmtFull(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
         </p>
       </div>
     </div>

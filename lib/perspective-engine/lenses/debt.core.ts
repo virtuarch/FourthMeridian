@@ -41,6 +41,9 @@
  */
 
 import { formatCurrency } from "@/lib/format";
+import { convertMoney } from "@/lib/money/convert";
+import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
 import type {
   ComputeOptions,
   LensAssumption,
@@ -74,6 +77,12 @@ export interface DebtAccountRow {
   /** AccountType string: checking | savings | investment | crypto | debt | other */
   type:    string;
   balance: number;
+  /**
+   * MC1 QA Q2 — native currency of balance/minimumPayment (Phase 0 stamp;
+   * non-identifying). Only consulted when a ConversionContext is supplied;
+   * absent/null = null-residue (native pass-through + estimated, plan D-3).
+   */
+  currency?: string | null;
   /** ISO timestamp of last balance write. */
   lastUpdated: string;
   /** SpaceAccountLink.visibilityLevel string (existing model). */
@@ -98,8 +107,23 @@ export function computeDebt(
   scope:   PerspectiveScope,
   options: ComputeOptions,
   rows:    DebtAccountRow[],
+  // MC1 QA Q2 — optional conversion context (classifier/liquidity pattern).
+  // Absent ⇒ the original raw addition, byte-for-byte (kill switch).
+  ctx?:    ConversionContext,
 ): LensResult {
   const computedAt = options.now().toISOString();
+
+  // Latest close relative to the INJECTED clock (pure, fixture-deterministic).
+  const valuationDateISO = ctx ? minusDaysISO(toISODateUTC(options.now()), 1) : undefined;
+  const estFlag = { estimated: false };
+
+  /** Money amount in the context target (native + taint per D-3 when unresolvable). */
+  const inTarget = (amount: number, currency: string | null | undefined): number => {
+    if (!ctx) return amount;
+    const c = convertMoney({ amount, currency: currency ?? null }, valuationDateISO!, ctx);
+    if (c.estimated) estFlag.estimated = true;
+    return c.amount;
+  };
   const base = {
     lensId: "debt" as const,
     lensVersion: DEBT_LENS_VERSION,
@@ -188,7 +212,8 @@ export function computeDebt(
   }
 
   // ── Sums (fail closed: metadata read from FULL rows only) ─────────────────
-  const totalDebt = countable.reduce((s, r) => s + Math.abs(r.balance), 0);
+  // MC1 QA Q2 — balances convert per row; APRs are rates (never converted).
+  const totalDebt = countable.reduce((s, r) => s + Math.abs(inTarget(r.balance, r.currency)), 0);
 
   let monthlyInterest = 0;
   let rateWeighted = 0;
@@ -201,7 +226,7 @@ export function computeDebt(
   const todayIsoDate = computedAt.slice(0, 10); // YYYY-MM-DD from the injected clock
 
   for (const r of fullRows) {
-    const bal = Math.abs(r.balance);
+    const bal = Math.abs(inTarget(r.balance, r.currency));
     if (typeof r.interestRate === "number") {
       monthlyInterest  += bal * (r.interestRate / 100 / 12);
       rateWeighted     += bal * r.interestRate;
@@ -210,7 +235,7 @@ export function computeDebt(
       unknownRateFullCount++;
     }
     if (typeof r.minimumPayment === "number") {
-      minPayments += r.minimumPayment;
+      minPayments += inTarget(r.minimumPayment, r.currency);
       minPaymentsKnown = true;
       if (r.minimumPaymentIsEstimated) anyMinEstimated = true;
     }
@@ -294,9 +319,9 @@ export function computeDebt(
   if (totalDebt === 0) {
     verdict = "No outstanding debt balances in this Space.";
   } else if (interestKnown) {
-    verdict = `You carry ${formatCurrency(totalDebt)} of debt across ${plural(n, "account")}, accruing an estimated ${formatCurrency(monthlyInterest)}/month in interest at known rates.`;
+    verdict = `You carry ${formatCurrency(totalDebt, ctx?.target)} of debt across ${plural(n, "account")}, accruing an estimated ${formatCurrency(monthlyInterest, ctx?.target)}/month in interest at known rates.`;
   } else {
-    verdict = `You carry ${formatCurrency(totalDebt)} of debt across ${plural(n, "account")}; no interest rates are on file yet.`;
+    verdict = `You carry ${formatCurrency(totalDebt, ctx?.target)} of debt across ${plural(n, "account")}; no interest rates are on file yet.`;
   }
 
   return {
@@ -305,6 +330,9 @@ export function computeDebt(
     verdict,
     headline,
     metrics,
+    // MC1 QA Q2 (D-7) — emitted only when a context was supplied, so
+    // context-less results serialize byte-identically (kill switch).
+    ...(ctx ? { estimated: estFlag.estimated } : {}),
     assumptions,
     provenance,
   };

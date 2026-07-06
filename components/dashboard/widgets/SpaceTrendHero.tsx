@@ -28,6 +28,7 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "rec
 import { TrendingDown, TrendingUp, Loader2 } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { formatDate } from "@/lib/format";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import type { HeroFraming } from "@/lib/space-hero";
 
 export interface HeroPoint {
@@ -36,19 +37,32 @@ export interface HeroPoint {
   value: number;
 }
 
-function fmtCurrency(n: number): string {
+// MC1 QA Q4 — the hero's points are this Space's own SpaceSnapshot stamps,
+// which are written in Space.reportingCurrency (Phase 3 flip), so the label
+// follows the value via the host-supplied `currency` prop. Hosts that don't
+// pass one keep the historical USD default (kill switch).
+function fmtCurrency(n: number, currency: string): string {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: "USD",
+    currency,
     maximumFractionDigits: 0,
   }).format(n);
 }
 
-function fmtAxis(n: number): string {
+/** Currency symbol for compact axis ticks (USD → "$", so all-USD renders identically). */
+function currencySymbol(currency: string): string {
+  const part = new Intl.NumberFormat("en-US", { style: "currency", currency })
+    .formatToParts(0)
+    .find((p) => p.type === "currency");
+  return part?.value ?? "$";
+}
+
+function fmtAxis(n: number, currency: string): string {
+  const sym = currencySymbol(currency);
   const abs = Math.abs(n);
-  if (abs >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000)     return `$${Math.round(n / 1_000)}k`;
-  return `$${Math.round(n)}`;
+  if (abs >= 1_000_000) return `${sym}${(n / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000)     return `${sym}${Math.round(n / 1_000)}k`;
+  return `${sym}${Math.round(n)}`;
 }
 
 function tickFormat(iso: string): string {
@@ -64,6 +78,7 @@ export function SpaceTrendHero({
   loading = false,
   headlineOverride,
   sublineNote,
+  currency = DEFAULT_DISPLAY_CURRENCY,
 }: {
   title: string;
   points: HeroPoint[];
@@ -71,6 +86,9 @@ export function SpaceTrendHero({
   chartType?: "monotone" | "stepAfter";
   scopeLabel?: string;
   loading?: boolean;
+  /** MC1 QA Q4 — currency of the snapshot values (Space.reportingCurrency).
+   *  Defaults to the historical USD label (kill switch). */
+  currency?: string;
   /** Optional replacement headline (e.g. Emergency Fund "4.2 months");
    *  the dollar value moves to the subline when set. */
   headlineOverride?: string;
@@ -127,7 +145,7 @@ export function SpaceTrendHero({
 
       <div className="flex items-baseline gap-3 mt-3 flex-wrap">
         <p className="text-3xl font-bold tabular-nums text-[var(--text-primary)]">
-          {headlineOverride ?? fmtCurrency(latest.value)}
+          {headlineOverride ?? fmtCurrency(latest.value, currency)}
         </p>
         {delta !== null && delta !== 0 && (
           <span
@@ -137,14 +155,14 @@ export function SpaceTrendHero({
             ].join(" ")}
           >
             <DeltaIcon size={12} />
-            {delta > 0 ? "+" : "−"}{fmtCurrency(Math.abs(delta)).replace("$", "$")}
+            {delta > 0 ? "+" : "−"}{fmtCurrency(Math.abs(delta), currency)}
             <span className="font-normal text-[var(--text-muted)]">{deltaLabel}</span>
           </span>
         )}
       </div>
       {(headlineOverride || sublineNote) && (
         <p className="text-xs text-[var(--text-muted)] mt-1">
-          {headlineOverride ? `${fmtCurrency(latest.value)}${sublineNote ? ` · ${sublineNote}` : ""}` : sublineNote}
+          {headlineOverride ? `${fmtCurrency(latest.value, currency)}${sublineNote ? ` · ${sublineNote}` : ""}` : sublineNote}
         </p>
       )}
 
@@ -174,7 +192,7 @@ export function SpaceTrendHero({
                 padding={{ left: 12, right: 4 }}
               />
               <YAxis
-                tickFormatter={fmtAxis}
+                tickFormatter={(v) => fmtAxis(Number(v), currency)}
                 tick={{ fontSize: 10, fill: "#6b7280" }}
                 tickLine={false}
                 axisLine={false}
@@ -182,7 +200,7 @@ export function SpaceTrendHero({
                 domain={["auto", "auto"]}
               />
               <Tooltip
-                formatter={(v) => [fmtCurrency(Number(v ?? 0)), title]}
+                formatter={(v) => [fmtCurrency(Number(v ?? 0), currency), title]}
                 labelFormatter={(l) => formatDate(String(l))}
                 contentStyle={{
                   background: "rgba(17,24,39,0.95)",

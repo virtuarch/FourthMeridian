@@ -49,7 +49,7 @@ import { exchangeSymbol } from "@/lib/exchangeSymbol";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate, formatRelativeTime, possessive } from "@/lib/format";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
+import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { DisplayCurrencyProvider, useDisplayCurrency } from "@/lib/currency-context";
 import { ViewCurrencyOverride, type ViewOverride } from "@/components/dashboard/widgets/ViewCurrencyOverride";
 import { SPACE_TAB_LABELS, SpaceTabId } from "@/lib/space-nav";
@@ -544,16 +544,25 @@ export function DashboardClient({
     const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const prevYm = ym(prevDate.getFullYear(), prevDate.getMonth());
 
-    const sumForMonth = (label: string) =>
-      transactions.filter((t) => t.date.slice(0, 7) === label).reduce((s, t) => s + t.amount, 0);
-
-    const mtd = sumForMonth(thisYm);
+    // MC1 QA Q2 — each row converts at its own date (map-then-reduce, taint
+    // tracked); identity for all-USD, so numbers are unchanged there.
+    const convFor = (label: string) =>
+      transactions
+        .filter((t) => t.date.slice(0, 7) === label)
+        .map((t) =>
+          effectiveCtx
+            ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, effectiveCtx)
+            : { amount: t.amount, estimated: false },
+        );
+    const mtdConv = convFor(thisYm);
+    const mtd = mtdConv.reduce((s, c) => s + c.amount, 0);
     const hasPrevMonth = transactions.some((t) => t.date.slice(0, 7) === prevYm);
-    const prev = hasPrevMonth ? sumForMonth(prevYm) : null;
+    const prevConv = hasPrevMonth ? convFor(prevYm) : null;
+    const prev = prevConv ? prevConv.reduce((s, c) => s + c.amount, 0) : null;
     const changePct = prev !== null && prev !== 0 ? ((mtd - prev) / Math.abs(prev)) * 100 : null;
 
-    return { mtd, changePct };
-  }, [transactions]);
+    return { mtd, changePct, estimated: [...mtdConv, ...(prevConv ?? [])].some((c) => c.estimated) };
+  }, [transactions, effectiveCtx]);
 
   const isBanking      = filter === "banking";
   const isInvestments  = filter === "investments";
@@ -1380,6 +1389,7 @@ export function DashboardClient({
                 totalAssets={classification.totalAssets}
                 totalLiabilities={classification.totalLiabilities}
                 cashFlowMTD={cashFlow.mtd}
+                cashFlowEstimated={cashFlow.estimated}
                 cashFlowChangePct={cashFlow.changePct}
                 ficoScore={ficoScore}
                 onNetWorthClick={() => { setChartSeries("netWorth"); setChartExpanded(true); }}
@@ -1489,10 +1499,12 @@ export function DashboardClient({
                     <CashOnHandCard
                       accounts={cashAccounts}
                       lastUpdated={fmtAccountDate}
+                      ctx={effectiveCtx}
                     />
                     <DebtCard
                       accounts={accounts.filter((a) => a.type === "debt")}
                       lastUpdated={fmtAccountDate}
+                      ctx={effectiveCtx}
                     />
                   </div>
                 </div>

@@ -95,6 +95,13 @@ export interface AssetValueWidgetProps {
    * Falls back to undefined (empty state) if not provided.
    */
   accountBalance?: number;
+  /**
+   * MC1 QA Q4 — currency of `accountBalance` as supplied by the adapter
+   * (the Space's reporting currency when the host converted the balance).
+   * Explicit `config.currency` still wins (legacy per-section override);
+   * absent both, the historical USD default applies (kill switch).
+   */
+  currency?: string;
 }
 
 // ─── Copy by asset type ───────────────────────────────────────────────────────
@@ -136,14 +143,14 @@ function toStringVal(v: unknown): string | undefined {
 
 // `title` is part of the widget contract for future standalone/fullscreen renders.
 // The SectionCard header currently renders the label, so it is intentionally unused here.
-export function AssetValueWidget({ title: _title, assetType, config, accountBalance }: AssetValueWidgetProps) {
+export function AssetValueWidget({ title: _title, assetType, config, accountBalance, currency: currencyProp }: AssetValueWidgetProps) {
   // currentValue: live account balance takes precedence over any legacy config value.
   // Config should never store a dollar value — but handle it as a fallback for
   // any rows seeded before this convention was established.
   const currentValue  = accountBalance ?? toNumber((config as Record<string, unknown> | null | undefined)?.["currentValue"]);
   const purchasePrice = toNumber(config?.purchasePrice);
   const purchaseDate  = toStringVal(config?.purchaseDate);
-  const currency      = toStringVal(config?.currency) ?? DEFAULT_DISPLAY_CURRENCY;
+  const currency      = toStringVal(config?.currency) ?? currencyProp ?? DEFAULT_DISPLAY_CURRENCY;
   // Support both 'note' (legacy) and 'notes' (current seed field)
   const note          = toStringVal(config?.note) ?? toStringVal(config?.notes);
 

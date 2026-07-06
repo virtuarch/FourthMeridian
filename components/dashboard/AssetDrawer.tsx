@@ -11,6 +11,8 @@ interface AssetInfo {
   symbol:       string;
   name:         string;
   value:        number;
+  /** MC1 QA Q3 — native currency of value/price (optional; USD fallback). */
+  currency?:    string | null;
   quantity?:    number;
   price?:       number;
   change24h?:   number;
@@ -26,8 +28,8 @@ interface Props {
   onClose: () => void;
 }
 
-const fmt = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(n);
+const fmt = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(n);
 
 export function AssetDrawer({ asset, onClose }: Props) {
   useEffect(() => {
@@ -69,7 +71,7 @@ export function AssetDrawer({ asset, onClose }: Props) {
             <div>
               <p className="text-base font-bold" style={{ color: "var(--text-primary)" }}>{asset.name}</p>
               <div className="flex items-center gap-2">
-                <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{fmt(asset.value)}</p>
+                <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{fmt(asset.value, asset.currency ?? DEFAULT_DISPLAY_CURRENCY)}</p>
                 {asset.change24h !== undefined && (
                   <span
                     className="flex items-center gap-0.5 text-xs font-semibold"
@@ -98,7 +100,7 @@ export function AssetDrawer({ asset, onClose }: Props) {
           {asset.price !== undefined && (
             <div>
               <p className="text-xs" style={{ color: "var(--text-muted)" }}>Price</p>
-              <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(asset.price)}</p>
+              <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(asset.price, asset.currency ?? DEFAULT_DISPLAY_CURRENCY)}</p>
             </div>
           )}
           {asset.source && (
@@ -134,9 +136,9 @@ export function AssetDrawer({ asset, onClose }: Props) {
                         <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>{h.name}</p>
                       </div>
                       <div className="text-right shrink-0">
-                        <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(h.value)}</p>
+                        <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{fmt(h.value, h.currency ?? asset.currency ?? DEFAULT_DISPLAY_CURRENCY)}</p>
                         <div className="flex items-center justify-end gap-1 mt-0.5">
-                          <span className="text-xs" style={{ color: "var(--text-muted)" }}>{h.quantity} @ {fmt(h.price)}</span>
+                          <span className="text-xs" style={{ color: "var(--text-muted)" }}>{h.quantity} @ {fmt(h.price, h.currency ?? asset.currency ?? DEFAULT_DISPLAY_CURRENCY)}</span>
                           <span
                             className="text-xs font-semibold"
                             style={{ color: pos ? "var(--accent-positive)" : "var(--accent-negative)" }}

@@ -39,6 +39,7 @@ import {
   SPACE_TAB_LABELS,
   SPACE_GOALS_CHANGED_EVENT,
   SPACE_ACCOUNTS_CHANGED_EVENT,
+  SPACE_CURRENCY_CHANGED_EVENT,
 } from "@/lib/space-nav";
 import { getPerspectivesForCategory, getCompositionSwitcherItems } from "@/lib/perspectives";
 import type { LensResult } from "@/lib/perspective-engine/types";
@@ -55,7 +56,10 @@ import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { SpaceTrendHero, type HeroPoint } from "@/components/dashboard/widgets/SpaceTrendHero";
 import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
 import { SpaceTransactionsPanel } from "@/components/dashboard/widgets/SpaceTransactionsPanel";
-import type { SerializedConversionContext } from "@/lib/money/convert";
+import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
+import { useDisplayCurrency } from "@/lib/currency-context";
 import { getSpaceHeroDef } from "@/lib/space-hero";
 import type { Snapshot, Transaction, Account as PersonalAccount } from "@/types";
 
@@ -205,6 +209,13 @@ function formatBalance(amount: number, currency = DEFAULT_DISPLAY_CURRENCY) {
   }).format(amount);
 }
 
+// MC1 QA Q4b — the bare currency symbol for a form-toggle glyph (e.g. "$",
+// "€", "﷼"). USD ⇒ "$", so all-USD Spaces render the toggle unchanged.
+function currencySymbol(currency: string): string {
+  const parts = new Intl.NumberFormat("en-US", { style: "currency", currency }).formatToParts(0);
+  return parts.find((p) => p.type === "currency")?.value ?? currency;
+}
+
 const ACCOUNT_TYPE_LABELS: Record<string, string> = {
   checking:   "Checking",
   savings:    "Savings",
@@ -340,6 +351,9 @@ function GoalsCard({
   canManage:   boolean;
   onAddGoal?:  () => void;
 }) {
+  // MC1 QA Q4b — goal config values are Space-native aggregates (no row stamp);
+  // labels follow the Space's display currency.
+  const displayCurrency = useDisplayCurrency();
   const [goals,        setGoals]        = useState<SpaceGoal[]>([]);
   const [loading,      setLoading]      = useState(true);
   const [openMenuId,   setOpenMenuId]   = useState<string | null>(null);
@@ -523,8 +537,8 @@ function GoalsCard({
               </div>
             </div>
             <div className="text-right shrink-0">
-              <p className="text-sm font-medium text-white">{formatBalance(g.currentAmount)}</p>
-              <p className="text-[10px] text-[var(--text-muted)]">of {formatBalance(g.targetAmount ?? 0)}</p>
+              <p className="text-sm font-medium text-white">{formatBalance(g.currentAmount, displayCurrency)}</p>
+              <p className="text-[10px] text-[var(--text-muted)]">of {formatBalance(g.targetAmount ?? 0, displayCurrency)}</p>
             </div>
           </div>
           <div className="h-1.5 bg-[var(--surface-inset)] rounded-full overflow-hidden">
@@ -604,15 +618,15 @@ function GoalsCard({
               </div>
             </div>
             <div className="text-right shrink-0">
-              <p className={`text-sm font-medium ${overBudget ? "text-[var(--accent-negative)]" : "text-white"}`}>{formatBalance(spent)}</p>
-              <p className="text-[10px] text-[var(--text-muted)]">of {formatBalance(limit)}/mo</p>
+              <p className={`text-sm font-medium ${overBudget ? "text-[var(--accent-negative)]" : "text-white"}`}>{formatBalance(spent, displayCurrency)}</p>
+              <p className="text-[10px] text-[var(--text-muted)]">of {formatBalance(limit, displayCurrency)}/mo</p>
             </div>
           </div>
           <div className="h-1.5 bg-[var(--surface-inset)] rounded-full overflow-hidden">
             <div className={`h-full rounded-full transition-all ${overBudget ? "bg-red-500" : pct > 80 ? "bg-yellow-500" : "bg-green-500"}`} style={{ width: `${pct}%` }} />
           </div>
           <p className={`text-[10px] text-right ${overBudget ? "text-[var(--accent-negative)]" : "text-[var(--text-faint)]"}`}>
-            {overBudget ? `${formatBalance(spent - limit)} over budget` : `${formatBalance(limit - spent)} remaining`}
+            {overBudget ? `${formatBalance(spent - limit, displayCurrency)} over budget` : `${formatBalance(limit - spent, displayCurrency)} remaining`}
           </p>
         </div>
       );
@@ -639,12 +653,12 @@ function GoalsCard({
               <span className="text-base shrink-0">📉</span>
               <div className="min-w-0">
                 <p className="text-sm font-medium text-white truncate">{g.name}</p>
-                {snapshot > 0 && <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Started at {formatBalance(snapshot)}</p>}
+                {snapshot > 0 && <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Started at {formatBalance(snapshot, displayCurrency)}</p>}
               </div>
             </div>
             <div className="text-right shrink-0">
-              <p className="text-sm font-medium text-[var(--accent-positive)]">−{formatBalance(paid)}</p>
-              {target > 0 && <p className="text-[10px] text-[var(--text-muted)]">goal: −{formatBalance(target)}</p>}
+              <p className="text-sm font-medium text-[var(--accent-positive)]">−{formatBalance(paid, displayCurrency)}</p>
+              {target > 0 && <p className="text-[10px] text-[var(--text-muted)]">goal: −{formatBalance(target, displayCurrency)}</p>}
             </div>
           </div>
           {target > 0 && (
@@ -689,7 +703,7 @@ function GoalsCard({
                 {g.goalType === "HABIT" ? (
                   <p className="text-xs text-[var(--accent-positive)] shrink-0">{g.longestStreak} streak</p>
                 ) : g.targetAmount ? (
-                  <p className="text-xs text-[var(--accent-positive)] shrink-0">{formatBalance(g.targetAmount)}</p>
+                  <p className="text-xs text-[var(--accent-positive)] shrink-0">{formatBalance(g.targetAmount, displayCurrency)}</p>
                 ) : null}
                 <GoalMenu g={g} />
               </div>
@@ -888,6 +902,15 @@ type SectionRenderProps = {
   closePayoffFullscreen: () => void;
   /** Parsed section.config — passed through to config-driven widgets */
   config:                Record<string, unknown> | null;
+  /**
+   * MC1 QA Q4 — conversion context targeting the Space's reporting currency
+   * (rehydrated from GET /api/money/view-context in the host). Present ⇒
+   * section aggregates convert per-row at the latest close and labels follow
+   * ctx.target; absent (fetch pending/failed) ⇒ the original raw sums with
+   * the historical default label, byte-for-byte (kill switch). Itemized
+   * per-account rows stay native either way.
+   */
+  ctx?:                  ConversionContext;
 };
 
 // ─── ProgressWidget adapter helpers ──────────────────────────────────────────
@@ -907,10 +930,35 @@ function cfgStr(v: unknown): string | undefined {
   return v == null ? undefined : String(v);
 }
 
-/** Sum balances from accounts matching any of the given type strings. */
-function sumAccounts(accounts: SpaceAccount[], ...types: string[]): number {
-  const set = new Set(types);
-  return accounts.filter((a) => set.has(a.type)).reduce((s, a) => s + a.balance, 0);
+/**
+ * MC1 QA Q4 — row amount in the display currency, valued at the latest close.
+ * Without a context this is the identity pass-through (kill switch); with one,
+ * unresolvable rows keep their native amount and taint the sum (plan D-3).
+ */
+function toDisplay(
+  amount:   number,
+  currency: string | null | undefined,
+  ctx?:     ConversionContext,
+): { amount: number; estimated: boolean } {
+  if (!ctx) return { amount, estimated: false };
+  const c = convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx);
+  return { amount: c.amount, estimated: c.estimated };
+}
+
+/** Sum balances (in the display currency when a context is supplied) from
+ *  accounts matching any of the given type strings — map-then-reduce so the
+ *  estimated taint survives the sum. */
+function sumAccounts(
+  accounts: SpaceAccount[],
+  ctx:      ConversionContext | undefined,
+  ...types: string[]
+): { sum: number; estimated: boolean } {
+  const set  = new Set(types);
+  const conv = accounts.filter((a) => set.has(a.type)).map((a) => toDisplay(a.balance, a.currency, ctx));
+  return {
+    sum:       conv.reduce((s, c) => s + c.amount, 0),
+    estimated: conv.some((c) => c.estimated),
+  };
 }
 
 /**
@@ -941,20 +989,25 @@ function projectFV(
 // These are reused across multiple section keys that share the same data shape.
 
 const renderNetWorth = (p: SectionRenderProps): React.ReactElement => {
-  const assets = p.accounts.filter((a) => a.type !== "debt").reduce((s, a) => s + a.balance, 0);
-  const debt   = p.accounts.filter((a) => a.type === "debt").reduce((s, a) => s + a.balance, 0);
+  // MC1 QA Q4 — aggregates convert into the Space's reporting currency
+  // (map-then-reduce keeps the taint); labels follow via ctx.target.
+  const assetConv = p.accounts.filter((a) => a.type !== "debt").map((a) => toDisplay(a.balance, a.currency, p.ctx));
+  const debtConv  = p.accounts.filter((a) => a.type === "debt").map((a) => toDisplay(a.balance, a.currency, p.ctx));
+  const assets = assetConv.reduce((s, c) => s + c.amount, 0);
+  const debt   = debtConv.reduce((s, c) => s + c.amount, 0);
   const net    = assets - debt;
+  const est    = assetConv.some((c) => c.estimated) || debtConv.some((c) => c.estimated) ? "≈ " : "";
   return (
     <SummaryWidget
       primary={p.accounts.length > 0 ? {
-        value: formatBalance(net),
+        value: `${est}${formatBalance(net, p.ctx?.target)}`,
         label: "Net worth across all shared accounts",
         color: net >= 0 ? "white" : "red",
         size:  "3xl",
       } : undefined}
       stats={p.accounts.length > 0 ? [
-        { label: "Total assets", value: formatBalance(assets), accent: "green" },
-        { label: "Total debt",   value: formatBalance(debt),   accent: "red"   },
+        { label: "Total assets", value: `${est}${formatBalance(assets, p.ctx?.target)}`, accent: "green" },
+        { label: "Total debt",   value: `${est}${formatBalance(debt, p.ctx?.target)}`,   accent: "red"   },
       ] : undefined}
       emptyHeadline="No accounts shared yet"
       emptySubline="Share accounts on the Spaces page to see net worth."
@@ -965,11 +1018,15 @@ const renderNetWorth = (p: SectionRenderProps): React.ReactElement => {
 
 const renderDebtSummary = (p: SectionRenderProps): React.ReactElement => {
   const debts = p.accounts.filter((a) => a.type === "debt");
-  const total = debts.reduce((s, a) => s + a.balance, 0);
+  // MC1 QA Q4 — headline total converts (labels follow); per-account rows
+  // below stay native (itemized doctrine, already labeled with a.currency).
+  const conv  = debts.map((a) => toDisplay(a.balance, a.currency, p.ctx));
+  const total = conv.reduce((s, c) => s + c.amount, 0);
+  const est   = conv.some((c) => c.estimated) ? "≈ " : "";
   return (
     <SummaryWidget
       primary={debts.length > 0 ? {
-        value: formatBalance(total),
+        value: `${est}${formatBalance(total, p.ctx?.target)}`,
         label: "Total outstanding debt",
         color: "red",
         size:  "2xl",
@@ -990,11 +1047,14 @@ const renderDebtSummary = (p: SectionRenderProps): React.ReactElement => {
 
 const renderInvestmentSummary = (p: SectionRenderProps): React.ReactElement => {
   const investments = p.accounts.filter((a) => a.type === "investment");
-  const total = investments.reduce((s, a) => s + a.balance, 0);
+  // MC1 QA Q4 — headline total converts (labels follow); rows stay native.
+  const conv  = investments.map((a) => toDisplay(a.balance, a.currency, p.ctx));
+  const total = conv.reduce((s, c) => s + c.amount, 0);
+  const est   = conv.some((c) => c.estimated) ? "≈ " : "";
   return (
     <SummaryWidget
       primary={investments.length > 0 ? {
-        value: formatBalance(total),
+        value: `${est}${formatBalance(total, p.ctx?.target)}`,
         label: "Total investments",
         color: "blue",
         size:  "2xl",
@@ -1028,9 +1088,10 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
       p.accounts,
       viewMode,
       "Share your debt accounts from Manage → Add Accounts to see your debt breakdown.",
+      p.ctx,
     );
   },
-  "debt_payoff_calculator": (p) => renderDebtPayoffCalculator(p.accounts, p.payoffFullscreen, p.closePayoffFullscreen),
+  "debt_payoff_calculator": (p) => renderDebtPayoffCalculator(p.accounts, p.payoffFullscreen, p.closePayoffFullscreen, p.ctx),
   "investment_summary":     renderInvestmentSummary,
   "investment_allocation":  renderInvestmentSummary, // TODO: replace with BreakdownWidget when adapter is ready
   "retirement_accounts":    renderInvestmentSummary,
@@ -1049,12 +1110,17 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
       (cfg?.accountId ? others.find((a) => a.id === cfg.accountId) : undefined) ??
       others.find((a) => /home|house|property|real.?estate|condo|apt|cabin|cottage|villa/i.test(a.name)) ??
       others[0];
+    // MC1 QA Q4 — the live balance is a Space aggregate: convert into the
+    // reporting currency and label to match. An explicit config.currency is
+    // the legacy per-section override — respect it untouched (no conversion).
+    const hasCfgCur = cfgStr(cfg?.currency) != null;
     return (
       <AssetValueWidget
         title="Property Value"
         assetType="property"
         config={cfg}
-        accountBalance={match?.balance}
+        accountBalance={match && !hasCfgCur ? toDisplay(match.balance, match.currency, p.ctx).amount : match?.balance}
+        currency={hasCfgCur ? undefined : p.ctx?.target}
       />
     );
   },
@@ -1065,12 +1131,14 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
       (cfg?.accountId ? others.find((a) => a.id === cfg.accountId) : undefined) ??
       others.find((a) => /car|vehicle|truck|suv|van|motor|rv|boat|cr-v|camry|f-150|tesla|bmw|audi/i.test(a.name)) ??
       others[0];
+    const hasCfgCur = cfgStr(cfg?.currency) != null;
     return (
       <AssetValueWidget
         title="Vehicle Value"
         assetType="vehicle"
         config={cfg}
-        accountBalance={match?.balance}
+        accountBalance={match && !hasCfgCur ? toDisplay(match.balance, match.currency, p.ctx).amount : match?.balance}
+        currency={hasCfgCur ? undefined : p.ctx?.target}
       />
     );
   },
@@ -1081,12 +1149,14 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
       (cfg?.accountId ? others.find((a) => a.id === cfg.accountId) : undefined) ??
       others.find((a) => /equip|tool|machine|laptop|computer|hardware|gear|camera|studio/i.test(a.name)) ??
       others[0];
+    const hasCfgCur = cfgStr(cfg?.currency) != null;
     return (
       <AssetValueWidget
         title="Equipment Value"
         assetType="equipment"
         config={cfg}
-        accountBalance={match?.balance}
+        accountBalance={match && !hasCfgCur ? toDisplay(match.balance, match.currency, p.ctx).amount : match?.balance}
+        currency={hasCfgCur ? undefined : p.ctx?.target}
       />
     );
   },
@@ -1100,12 +1170,14 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
     const targetAmount  = cfgNum(cfg.totalBudget)  ?? null;
     const currentAmount = cfgNum(cfg.amountSpent)  ?? 0;
     const deadline      = cfgStr(cfg.departureDate);
+    // MC1 QA Q4 — config amounts carry no currency stamp: they are entered in
+    // the Space's own currency, so no conversion — labels follow ctx.target.
     const stats: ProgressStat[] = [];
     if (targetAmount != null) {
       const rem = targetAmount - currentAmount;
       stats.push({
         label:  rem >= 0 ? "Remaining" : "Over budget",
-        value:  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(Math.abs(rem)),
+        value:  formatBalance(Math.abs(rem), p.ctx?.target),
         accent: rem >= 0 ? "green" : "red",
       });
     }
@@ -1113,6 +1185,7 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
       <ProgressWidget
         currentAmount={targetAmount != null ? currentAmount : null}
         targetAmount={targetAmount}
+        currency={p.ctx?.target}
         currentLabel="Spent so far"
         targetLabel="Budget"
         progressLabel="of budget used"
@@ -1131,15 +1204,18 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
     const cfg           = p.config ?? {};
     const targetAmount  = cfgNum(cfg.totalBudget) ?? null;
     const deadline      = cfgStr(cfg.departureDate);
-    // Live balance from shared savings/checking accounts
-    const currentAmount = sumAccounts(p.accounts, "savings", "checking");
+    // Live balance from shared savings/checking accounts — MC1 QA Q4:
+    // converted into the reporting currency so the sum is honest across
+    // mixed-currency accounts; the config target is Space-native already.
+    const { sum: currentAmount, estimated } = sumAccounts(p.accounts, p.ctx, "savings", "checking");
+    const est = estimated ? "≈ " : "";
     const stats: ProgressStat[] = [];
     if (targetAmount != null) {
       const remaining = targetAmount - currentAmount;
       if (remaining > 0) {
         stats.push({
           label:  "Still needed",
-          value:  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(remaining),
+          value:  `${est}${formatBalance(remaining, p.ctx?.target)}`,
           accent: "orange",
         });
       } else {
@@ -1150,6 +1226,7 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
       <ProgressWidget
         currentAmount={currentAmount}
         targetAmount={targetAmount}
+        currency={p.ctx?.target}
         currentLabel="Saved (from shared accounts)"
         targetLabel="Goal"
         progressLabel="funded"
@@ -1169,7 +1246,9 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
     const targetMonths   = cfgNum(cfg.targetMonths)   ?? 6;
     const monthlyExp     = cfgNum(cfg.monthlyExpenses) ?? null;
     const targetAmount   = monthlyExp != null ? targetMonths * monthlyExp : null;
-    const currentAmount  = sumAccounts(p.accounts, "savings");
+    // MC1 QA Q4 — converted savings vs. a Space-native expense figure keeps
+    // the months-covered ratio in one currency.
+    const { sum: currentAmount } = sumAccounts(p.accounts, p.ctx, "savings");
     const monthsCovered  = monthlyExp != null && monthlyExp > 0
       ? currentAmount / monthlyExp
       : null;
@@ -1190,6 +1269,7 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
       <ProgressWidget
         currentAmount={currentAmount}
         targetAmount={targetAmount}
+        currency={p.ctx?.target}
         currentLabel="Current savings balance"
         targetLabel={`${targetMonths}-month target`}
         progressLabel="funded"
@@ -1209,8 +1289,10 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
     const currentAge     = cfgNum(cfg.currentAge)         ?? null;
     const expectedReturn = cfgNum(cfg.expectedReturn)     ?? 7;
     const annualContrib  = cfgNum(cfg.annualContribution) ?? 0;
-    // Live investment account balances
-    const currentAmount  = sumAccounts(p.accounts, "investment");
+    // Live investment account balances — MC1 QA Q4: converted, so the FV
+    // projection (a planner aggregate) is computed and labeled in the
+    // Space's reporting currency.
+    const { sum: currentAmount, estimated } = sumAccounts(p.accounts, p.ctx, "investment");
     const yearsLeft      = retirementAge != null && currentAge != null
       ? Math.max(0, retirementAge - currentAge)
       : null;
@@ -1223,7 +1305,7 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
       const onTrack   = targetAmount != null && projected >= targetAmount;
       stats.push({
         label:  "Projected at retirement",
-        value:  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(projected),
+        value:  `${estimated ? "≈ " : ""}${formatBalance(projected, p.ctx?.target)}`,
         accent: onTrack ? "green" : targetAmount != null ? "orange" : "default",
       });
     }
@@ -1231,6 +1313,7 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
       <ProgressWidget
         currentAmount={currentAmount}
         targetAmount={targetAmount}
+        currency={p.ctx?.target}
         currentLabel="Current investments"
         targetLabel="Retirement target"
         progressLabel="of goal"
@@ -1253,6 +1336,7 @@ function SectionCard({
   category,
   canManage,
   onAddGoal,
+  ctx,
 }: {
   section:     DashboardSection;
   accounts:    SpaceAccount[];
@@ -1260,6 +1344,8 @@ function SectionCard({
   category:    string;
   canManage:   boolean;
   onAddGoal?:  () => void;
+  /** MC1 QA Q4 — see SectionRenderProps.ctx. */
+  ctx?:        ConversionContext;
 }) {
   const [collapsed,        setCollapsed]        = useState(false);
   const [payoffFullscreen, setPayoffFullscreen] = useState(false);
@@ -1289,11 +1375,17 @@ function SectionCard({
   // ── Payoff summary for collapsed state ─────────────────────────────────────
   let payoffSummary: string | null = null;
   if (isDebtPayoff) {
-    const debtAccs  = accounts.filter((a) => a.type === "debt");
-    const totalBal  = debtAccs.reduce((s, a) => s + a.balance, 0);
-    const totalMin  = debtAccs.reduce((s, a) => s + (a.minimumPayment ?? 0), 0);
+    // MC1 QA Q4 — the collapsed summary simulates over aggregates, so the
+    // sums (and APR weights) use display-currency amounts; the resulting
+    // copy is time-only, so no label change is involved.
+    const debtAccs = accounts.filter((a) => a.type === "debt");
+    const balConv  = debtAccs.map((a) => toDisplay(a.balance, a.currency, ctx));
+    const totalBal = balConv.reduce((s, c) => s + c.amount, 0);
+    const totalMin = debtAccs
+      .map((a) => toDisplay(a.minimumPayment ?? 0, a.currency, ctx))
+      .reduce((s, c) => s + c.amount, 0);
     if (totalBal > 0 && totalMin > 0) {
-      const avgApr      = debtAccs.reduce((s, a) => s + (a.interestRate ?? 0) * a.balance, 0) / totalBal;
+      const avgApr      = debtAccs.reduce((s, a, i) => s + (a.interestRate ?? 0) * balConv[i].amount, 0) / totalBal;
       const monthlyRate = avgApr / 100 / 12;
       const result      = simulatePayoff(totalBal, monthlyRate, totalMin);
       if (result) {
@@ -1323,12 +1415,13 @@ function SectionCard({
         accounts,
         "donut",
         "Share your debt accounts from Manage → Add Accounts to see your debt breakdown.",
+        ctx,
       );
     }
-    if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen);
+    if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen, ctx);
 
     const render = SectionRegistry[section.key];
-    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config });
+    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx });
     return <ContextualCard sectionKey={section.key} label={section.label} />;
   }
 
@@ -1516,7 +1609,9 @@ function AddGoalModal({
   onClose:           () => void;
   onCreated:         () => void;
 }) {
-  const displayCurrency = DEFAULT_DISPLAY_CURRENCY;
+  // MC1 QA Q4b — form labels describe Space-native amounts; follow the Space's
+  // display currency instead of the hardcoded USD constant.
+  const displayCurrency = useDisplayCurrency();
 
   const showCategoryPicker = !(spaceCategory in SPACE_TO_GOAL_CATEGORY);
   const defaultCategory    = SPACE_TO_GOAL_CATEGORY[spaceCategory] ?? "GENERAL";
@@ -1763,7 +1858,7 @@ function AddGoalModal({
                     <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">Account to pay down</label>
                     <select value={linkedAccountId} onChange={(e) => setLinkedAccountId(e.target.value)} className={selectCls}>
                       {debtAccounts.map((a) => (
-                        <option key={a.id} value={a.id}>{a.name} — {formatBalance(a.balance)}</option>
+                        <option key={a.id} value={a.id}>{a.name} — {formatBalance(a.balance, a.currency)}</option>
                       ))}
                     </select>
                   </div>
@@ -1776,7 +1871,7 @@ function AddGoalModal({
                         className={`flex-1 py-2 text-xs font-semibold transition-colors ${
                           reductionMode === m ? "bg-blue-500/15 text-[var(--accent-info)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
                         }`}
-                      >{m === "amount" ? `$ Amount` : "% Percent"}</button>
+                      >{m === "amount" ? `${currencySymbol(displayCurrency)} Amount` : "% Percent"}</button>
                     ))}
                   </div>
                   <input
@@ -1864,6 +1959,52 @@ export function SpaceDashboard({
   // MC1 P4 Slice 6 (F-6) — serialized conversion context from the same fetch;
   // undefined => the panel's context-less native sums (kill switch).
   const [spaceMoneyCtx, setSpaceMoneyCtx] = useState<SerializedConversionContext | undefined>(undefined);
+
+  // ── MC1 QA Q4 — widget/planner conversion context ──────────────────────────
+  // The dashboard layout mounts DisplayCurrencyProvider with this Space's
+  // reportingCurrency (this component only renders as the active Space), so
+  // the hook IS the Space's currency. The view-context route covers exactly
+  // what the section widgets aggregate: account balances at the latest close.
+  // Fetch failure ⇒ undefined ⇒ every consumer's kill switch (today's render).
+  const displayCurrency = useDisplayCurrency();
+  const [widgetMoneyCtx, setWidgetMoneyCtx] = useState<SerializedConversionContext | undefined>(undefined);
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/money/view-context?target=${encodeURIComponent(displayCurrency)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (active) setWidgetMoneyCtx(data?.moneyCtx ?? undefined); })
+      .catch(() => { if (active) setWidgetMoneyCtx(undefined); });
+    return () => { active = false; };
+  }, [displayCurrency]);
+  const widgetCtx = useMemo(
+    () => (widgetMoneyCtx ? rehydrateContext(widgetMoneyCtx) : undefined),
+    [widgetMoneyCtx],
+  );
+
+  // ── MC1 QA Q6 — live-update after a reporting-currency change ───────────────
+  // The dashboard layout's DisplayCurrencyProvider and the /view-context fetch
+  // above already follow `displayCurrency` (updated by the modal's
+  // router.refresh()). But this host's OWN fetched data — snapshots (hero),
+  // perspectives (converted lens metrics) and space transactions (F-6 context)
+  // — keys on spaceId and would keep the old currency's values. A bump of this
+  // nonce re-runs those three fetches; the tx fetch also needs its cached list
+  // cleared so its "already loaded" guard lets it re-run. All server routes
+  // read the Space's now-persisted reportingCurrency, so the refetch is
+  // currency-correct regardless of refresh timing. All-USD: the event never
+  // fires (currencyChanged is false), so nothing here ever runs.
+  const [currencyNonce, setCurrencyNonce] = useState(0);
+  useEffect(() => {
+    function onCurrencyChanged(e: Event) {
+      const detail = (e as CustomEvent<{ spaceId?: string }>).detail;
+      // Ignore currency changes for other Spaces (e.g. edited from the Spaces list).
+      if (detail?.spaceId && detail.spaceId !== spaceId) return;
+      setSpaceTransactions(null);       // clear the tx fetch's "already loaded" guard
+      setSpaceMoneyCtx(undefined);
+      setCurrencyNonce((n) => n + 1);
+    }
+    window.addEventListener(SPACE_CURRENCY_CHANGED_EVENT, onCurrencyChanged);
+    return () => window.removeEventListener(SPACE_CURRENCY_CHANGED_EVENT, onCurrencyChanged);
+  }, [spaceId]);
 
   // Overview composition switcher (IA refactor point 2/3) — which
   // full-canvas Overview composition is shown. "overview" is the default,
@@ -2003,7 +2144,8 @@ export function SpaceDashboard({
       })
       .catch(() => { if (active) setLensResults(null); });
     return () => { active = false; };
-  }, [spaceId]);
+    // currencyNonce (Q6): refetch converted lens metrics after a currency change.
+  }, [spaceId, currencyNonce]);
 
   // Header member count — same endpoint SpaceMembersWidget/ManageSpaceModal use.
   useEffect(() => {
@@ -2026,8 +2168,9 @@ export function SpaceDashboard({
       .then((data) => { if (active) setSnapshots(data?.snapshots ?? []); })
       .catch(() => { if (active) setSnapshots([]); });
     return () => { active = false; };
+  // currencyNonce (Q6): re-fetch the stamp-aware hero series after a currency change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, category]);
+  }, [spaceId, category, currencyNonce]);
 
   // ── Space transactions (KD-15-filtered on the server) ────────────────────
   // Flow-identified templates show an Overview preview, so they fetch up
@@ -2047,8 +2190,10 @@ export function SpaceDashboard({
       })
       .catch(() => { if (active) setSpaceTransactions([]); });
     return () => { active = false; };
+  // currencyNonce (Q6): re-fetch tx rows + F-6 context after a currency change
+  // (the handler also nulls spaceTransactions to release the guard above).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, isFlowCategory, activeTab, spaceTransactions === null]);
+  }, [spaceId, isFlowCategory, activeTab, spaceTransactions === null, currencyNonce]);
 
   useEffect(() => {
     Promise.all([
@@ -2126,8 +2271,11 @@ export function SpaceDashboard({
     .sort((a, b) => a.order - b.order);
 
   // ── Hero series (Space Template Redesign) ─────────────────────────────────
+  // MC1 QA Q4b — drop fxMiss points (off-stamp rows whose FX rate missed, so
+  // their values are native/unconverted) so the hero series never plots mixed
+  // units: a shorter honest trend beats a silently mixed-magnitude one.
   const heroPoints: HeroPoint[] = heroDef && snapshots
-    ? snapshots.map((s) => ({ date: s.date, value: heroDef.value(s) }))
+    ? snapshots.filter((s) => !s.fxMiss).map((s) => ({ date: s.date, value: heroDef.value(s) }))
     : [];
 
   // Debt Space preview = the PAYMENTS story (template polish D6): only
@@ -2154,7 +2302,8 @@ export function SpaceDashboard({
     if (!isNaN(monthlyExp) && monthlyExp > 0) {
       const months = heroPoints[heroPoints.length - 1].value / monthlyExp;
       heroHeadlineOverride = `${months.toFixed(1)} months covered`;
-      heroSublineNote      = `at ${formatBalance(monthlyExp)}/mo expenses`;
+      // MC1 QA Q4 — the config expense figure is Space-native; label follows.
+      heroSublineNote      = `at ${formatBalance(monthlyExp, displayCurrency)}/mo expenses`;
     }
   }
 
@@ -2354,6 +2503,7 @@ export function SpaceDashboard({
                     category={category}
                     canManage={canManage}
                     onAddGoal={() => setShowAddGoal(true)}
+                    ctx={widgetCtx}
                   />
                 ))
               )}
@@ -2413,6 +2563,9 @@ export function SpaceDashboard({
                 loading={snapshots === null}
                 headlineOverride={heroHeadlineOverride}
                 sublineNote={heroSublineNote}
+                // MC1 QA Q4 — SpaceSnapshot values are stamped in this Space's
+                // reportingCurrency (P3 flip); the label follows the value.
+                currency={displayCurrency}
               />
             )}
 
@@ -2455,6 +2608,7 @@ export function SpaceDashboard({
                   category={category}
                   canManage={canManage}
                   onAddGoal={() => setShowAddGoal(true)}
+                  ctx={widgetCtx}
                 />
               ))
             )}

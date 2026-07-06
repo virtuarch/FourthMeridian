@@ -94,6 +94,9 @@ type SpaceItem = {
   myRole?: string | null;
   accountCount?: number;
   netWorth: number;
+  // MC1 QA Q5 — this Space's OWN reporting currency for its card labels
+  // (never the active Space's). Defaults to USD upstream.
+  currency: string;
   trend: number[];
   lastUpdated: string | null;
 };
@@ -491,7 +494,7 @@ function SpaceCard({
           {metricLabelForCategory(category)}
         </p>
         <p className="text-[1.6rem] font-bold text-[var(--text-primary)] tabular-nums leading-none">
-          {space.trend.length > 0 ? formatCurrency(space.netWorth) : "—"}
+          {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
         </p>
       </div>
 
@@ -655,7 +658,7 @@ function PublicSpaceCard({ space, onOpen }: { space: SpaceItem; onOpen: () => vo
           {metricLabelForCategory(category)}
         </p>
         <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums truncate">
-          {space.trend.length > 0 ? formatCurrency(space.netWorth) : "—"}
+          {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
         </p>
         <p className="text-[9px] text-[var(--text-muted)] mt-0.5 truncate">
           {formatActivity(space.lastUpdated, space.createdAt)}
@@ -778,7 +781,7 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
                   {metricLabelForCategory(category)}
                 </p>
                 <p className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">
-                  {space.trend.length > 0 ? formatCurrency(space.netWorth) : "—"}
+                  {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
                 </p>
               </div>
               <Sparkline values={space.trend} tone={tone} />

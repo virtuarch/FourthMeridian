@@ -131,6 +131,8 @@ export default async function SpacesPage() {
       myRole:       m.role as string,
       accountCount: m.space._count.accounts,
       netWorth:     nw?.netWorth ?? 0,
+      // MC1 QA Q5 — each card labels in its OWN Space's reporting currency.
+      currency:     nw?.currency ?? "USD",
       trend:        nw?.trend ?? [],
       lastUpdated:  nw?.asOf ?? null,
     };
@@ -149,6 +151,8 @@ export default async function SpacesPage() {
       members:      serializeMembers(w.members),
       accountCount: w._count.accounts,
       netWorth:     nw?.netWorth ?? 0,
+      // MC1 QA Q5 — each card labels in its OWN Space's reporting currency.
+      currency:     nw?.currency ?? "USD",
       trend:        nw?.trend ?? [],
       lastUpdated:  nw?.asOf ?? null,
     };

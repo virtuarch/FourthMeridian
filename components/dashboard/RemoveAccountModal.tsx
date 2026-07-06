@@ -150,9 +150,10 @@ export function RemoveAccountModal({ accounts, onClose }: Props) {
                             <p className="text-xs text-[var(--text-muted)]">
                               {typeLabel[a.type] ?? a.type} ·{" "}
                               <span className="tabular-nums">
+                                {/* MC1 QA Q3 — itemized: row's own currency */}
                                 {new Intl.NumberFormat("en-US", {
                                   style: "currency",
-                                  currency: DEFAULT_DISPLAY_CURRENCY,
+                                  currency: a.currency ?? DEFAULT_DISPLAY_CURRENCY,
                                   maximumFractionDigits: 0,
                                 }).format(Math.abs(a.balance))}
                               </span>

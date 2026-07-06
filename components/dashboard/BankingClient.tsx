@@ -14,8 +14,9 @@ import { EstimatedChip } from "@/components/ui/EstimatedChip";
 import { formatDate } from "@/lib/format";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
-const fmtAbs = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
+// MC1 QA Q3 — itemized rows pass the ROW's own currency; default preserved.
+const fmtAbs = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(Math.abs(n));
 // (fmtTx / module fmtCompact removed — MC1 P4 Slice 1: their call sites were
 // all aggregate totals, now formatted by the display-currency locals inside
 // the component. fmtAbs remains for itemized per-account rows.)
@@ -403,7 +404,7 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
                                 ? a.balance > 0 ? "var(--accent-negative)" : "var(--accent-positive)"
                                 : "var(--text-primary)",
                             }}>
-                              {isDebt ? (a.balance > 0 ? "-" : "+") : ""}{fmtAbs(Math.abs(a.balance))}
+                              {isDebt ? (a.balance > 0 ? "-" : "+") : ""}{fmtAbs(Math.abs(a.balance), a.currency ?? DEFAULT_DISPLAY_CURRENCY)}
                             </p>
                             {isSelected
                               ? <p className="text-xs flex items-center gap-1 justify-end mt-0.5" style={{ color: "var(--accent-info)" }}><Check size={9} /> active</p>
@@ -525,8 +526,9 @@ function TxRow({
   hideAccount: boolean;
 }) {
   const isCredit = tx.amount > 0;
+  // MC1 QA Q3 — itemized transaction row: the row's own currency.
   const fmt = (n: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
+    new Intl.NumberFormat("en-US", { style: "currency", currency: tx.currency ?? DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
 
   const dateObj = new Date(tx.date + "T12:00:00");
 

@@ -1,4 +1,4 @@
-import { CSSProperties } from "react";
+import { CSSProperties, ReactNode } from "react";
 import { DataCard } from "@/components/atlas/DataCard";
 
 /** Semantic state tone, resolved to Atlas accent / ink tokens below.
@@ -24,6 +24,8 @@ export interface SummaryStatRow {
 interface Props {
   title:        string;
   value:        string;   // pre-formatted headline (compact currency)
+  /** MC1 QA Q2 — optional node rendered after the headline (the "est." chip). */
+  valueSuffix?: ReactNode;
   valueTone?:   StatTone;
   message:      string;
   messageTone?: StatTone;
@@ -45,7 +47,7 @@ interface Props {
  * Card layout.
  */
 export function SummaryStatCard({
-  title, value, valueTone = "none",
+  title, value, valueSuffix, valueTone = "none",
   message, messageTone = "neutral",
   rows, lastUpdated,
 }: Props) {
@@ -53,7 +55,7 @@ export function SummaryStatCard({
 
   return (
     <DataCard title={title}>
-      <p className="text-2xl font-bold mt-1" style={color(valueTone)}>{value}</p>
+      <p className="text-2xl font-bold mt-1" style={color(valueTone)}>{value}{valueSuffix}</p>
 
       <p className="text-xs font-medium mt-1.5" style={color(messageTone)}>{message}</p>
 
