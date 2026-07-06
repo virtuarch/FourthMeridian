@@ -6,7 +6,48 @@
 **Branch:** `feature/v2.5-spaces-completion`
 **Initiative type:** Data-corpus certification (prerequisite to Merchant Intelligence)
 **Doctrine:** Investigation first · smallest implementation · no opportunistic refactors · preserve architecture · surgical commits · stop when scope is complete
-**Status:** Phase 1 ✅ · Phase 2 ✅ · Phase 3 ⏸ (awaiting approval) · Phase 4 ⏸ (awaiting approval)
+**Status:** Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ (executed 2026-07-06 — **no remediation was required**) · Phase 4 ✅ (**corpus certified**)
+**Outcome:** **CERTIFICATION, not remediation.** The live corpus already contained zero FlowType/Category desynchronizations at execution time. See the Resolution section immediately below; Phases 1–2 are preserved verbatim as the (correct-at-the-time) derivation that this outcome supersedes.
+
+---
+
+## RESOLUTION (2026-07-06) — the initiative certified the corpus; no rows were changed
+
+### What execution found
+
+The runbook was run against the live database exactly as planned:
+
+| Step | Result |
+|---|---|
+| `backfill-flowtype.ts` (dry-run) | **Nothing to classify** |
+| `backfill-flowtype.ts --apply` | **Nothing to classify** (0 written) |
+| `npm run audit:flow-desync` | **PASSED** — Transfer→TRANSFER: 0, Payment→DEBT_PAYMENT: 0, Fee→FEE: 0 |
+| `npm test` | **45/45 passed** |
+
+The dry-run reporting "nothing to classify" is decisive: **every** row already carries a non-null `flowType`/`flowDirection` at `classifierVersion ≥ 1`, and the audit confirms **zero** deterministic-category disagreements. The Phase-2 invalidate `UPDATE` was therefore never needed and was not run. The corpus was already certified.
+
+### Why the derivation expected 51 REFUND rows that do not exist
+
+The Phase-1 figure of 51 was, by its own stated caveat, a *derivation from 2026-07-04 apply-logs and code, never a live measurement* — the DB was unreachable from the analysis sandbox, and the report explicitly instructed Phase 0 to **stop and re-derive if the live count ≠ 51**. That guard fired exactly as designed. Reconciling the derivation with the live state:
+
+1. **The desync was a point-in-time artifact of one standalone script, closed by a normal write path before execution.** The CC-1 correction shipped *twice on 2026-07-04, minutes apart*: (a) the one-time `backfill-cc-payment-categories.ts --apply` at 21:52 (rewrote `category` only — the seam), and (b) commit `275a9c8` "Merchant intelligence foundation" at **21:57**, which added `if (detailed.includes("CREDIT_CARD_PAYMENT")) return "Payment"` to **`mapPlaidCategory`** — i.e. it promoted the CC-1 rule into the *live sync write path*. Since `b6278be` (2026-07-03) the sync path already recomputes flow via `buildFlowWriteFields` from that same category, in one atomic write (`syncTransactions.ts:206,227,270`). So any subsequent sync of those transactions rewrites `category=Payment` **and** `flowType=DEBT_PAYMENT` together, consistently.
+2. **There were ample re-sync events in the window.** The D2x Plaid history-sync initiative ran extensively on 2026-07-04 and 2026-07-05 (`06ae257`, `0a5b787`, `a3d895d`, `5fcf43b`, closed `0cfd029` on 07-05 16:31). Every touched credit-card-payment row passed through the corrected, atomic `mapPlaidCategory + buildFlowWriteFields` path and left consistent. (Equivalently: if any authoritative `backfill-flowtype --apply` first-classified those rows *after* the 21:52 category rewrite, they were classified `DEBT_PAYMENT` directly and were never `REFUND`. Both paths converge on the same live result.)
+3. **The version-gate finding is technically correct but was no longer load-bearing for this data.** The blindspot in `backfill-flowtype.ts`'s selection predicate (algorithm-version aware, input-staleness blind) is a real, still-present structural property — but its *data consequence* (stranded REFUND rows) requires that **no** consistency-preserving write touch the rows after the standalone category rewrite. In this corpus, the sync path did touch them. The architecture observation stands; the specific data-defect instance did not survive to execution.
+
+### Answers to the four questions posed
+
+1. **Was the remediation already applied previously?** Not the documented runbook (git shows no clear-version-and-rerun; `FLOW_CLASSIFIER_VERSION` is still `1`; the Phase-2 `UPDATE` was never run). But an **equivalent correction** was already in place through the normal sync write path — the CC-1 rule lives in `mapPlaidCategory`, and sync writes category+flow atomically. The seam that only the standalone category script had opened was closed by ordinary syncs before this initiative ran.
+2. **Were the backfill logs describing historical state rather than current state?** **Yes.** `scripts/.backfill-logs/*.json` are immutable *apply records* of the 2026-07-04 category transitions — a historical event log, not a snapshot of current rows. Between 07-04 and execution the corpus continued to be written by sync/import, which the logs cannot reflect.
+3. **Was the version-gate investigation technically correct but no longer applicable?** **Exactly.** The predicate blindspot is genuine and still exists in code; its predicted *data* impact was a 07-04-state hypothesis that a later atomic write path had already resolved. Correct analysis, superseded instance.
+4. **Update the docs to reflect certification, not remediation.** Done — this section, the finalized `CERTIFICATION_2026-07-06.md`, and the STATUS.md residual-debt entry.
+
+### Net outcome and what remains true
+
+- **The transaction corpus is certified: zero FlowType/Category desynchronizations.** Merchant Intelligence may begin.
+- **The investigation was not wasted.** It produced the *permanent* certification apparatus that now proves the property and prevents regression: `scripts/audit-flow-desync.ts` (`npm run audit:flow-desync`), the pure regression test `lib/transactions/flow-desync-invariant.test.ts`, and `RUNBOOK.sql`. Remediation was simply found unnecessary — the desired end-state already held.
+- **The architectural items in §1.8 remain open and deliberately unfixed** (version-gate input blindspot; backfill `--rollback` modes; the absent single category-write choke point — MI's entry gate). Certification of the current data does not close them; they are MI-runway design items, unchanged by this outcome.
+
+> **Note on preservation:** Phases 1–4 below are retained *verbatim* as written pre-execution. They correctly describe the derivation and the plan given the information then available; the Resolution above is the authoritative outcome and supersedes the "51 rows will be changed" expectation wherever the two differ.
 
 ---
 
