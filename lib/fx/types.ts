@@ -85,6 +85,26 @@ export interface FxArchiveReader {
     dateISO: string,
     maxStaleDays: number,
   ): Promise<{ dateISO: string; rate: number } | null>;
+
+  /**
+   * MC1 QA perf P0 — batch window read. Every stored (base→quote) row for the
+   * given quotes with date in [fromISO, toISO] (inclusive), any order. Lets a
+   * caller preload one window in a single query and then resolve many
+   * (currency, date) pairs from an in-memory snapshot, collapsing what was one
+   * point read per date into O(1) round-trips. Purely an access-pattern seam:
+   * the resolution algorithm (service.ts) is unchanged — a snapshot built from
+   * this read serves `readLatestOnOrBefore` with identical walk-back semantics.
+   *
+   * OPTIONAL: pure in-memory test fakes and older readers may omit it; callers
+   * MUST fall back to the per-date `readLatestOnOrBefore` path when it is
+   * absent, preserving byte-identical behavior.
+   */
+  readRange?(
+    base: string,
+    quotes: readonly string[],
+    fromISO: string,
+    toISO: string,
+  ): Promise<{ quote: string; dateISO: string; rate: number }[]>;
 }
 
 /** Full archive contract (reader + append-only writer). Implemented by lib/fx/archive.ts. */

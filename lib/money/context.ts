@@ -31,6 +31,7 @@
  */
 
 import { createFxService } from "@/lib/fx/service";
+import { FX_BASE, MAX_STALE_DAYS, assertISODate, minusDaysISO } from "@/lib/fx/config";
 import type { FxArchiveReader, Resolution } from "@/lib/fx/types";
 import type { ConversionContext } from "./types";
 
@@ -45,8 +46,87 @@ export interface BuildConversionContextOptions {
 
 const key = (from: string, dateISO: string): string => `${from}|${dateISO}`;
 
+/** True iff `s` is a well-formed ISO calendar date (never throws — for filtering). */
+function isValidISO(s: string): boolean {
+  try { assertISODate(s); return true; } catch { return false; }
+}
+
+/**
+ * MC1 QA perf P0 — an in-memory FxArchiveReader over a preloaded window of
+ * rows. Serves `readLatestOnOrBefore` with the EXACT walk-back semantics of the
+ * Prisma archive (latest date in [dateISO − maxStaleDays, dateISO], inclusive),
+ * so the resolution algorithm (service.ts) produces byte-identical results —
+ * only the data source differs. ISO date strings compare chronologically, so
+ * lexical ordering is used directly.
+ */
+function inMemorySnapshotReader(
+  base: string,
+  rows: readonly { quote: string; dateISO: string; rate: number }[],
+): FxArchiveReader {
+  const byQuote = new Map<string, { dateISO: string; rate: number }[]>();
+  for (const r of rows) {
+    const list = byQuote.get(r.quote) ?? [];
+    list.push({ dateISO: r.dateISO, rate: r.rate });
+    byQuote.set(r.quote, list);
+  }
+  // Newest-first per quote so the first in-window hit is the latest ≤ dateISO
+  // (mirrors the archive's `orderBy date desc` findFirst).
+  for (const list of byQuote.values()) {
+    list.sort((a, b) => (a.dateISO < b.dateISO ? 1 : a.dateISO > b.dateISO ? -1 : 0));
+  }
+  return {
+    async readLatestOnOrBefore(reqBase, quote, dateISO, maxStaleDays) {
+      if (reqBase !== base) return null;
+      const list = byQuote.get(quote);
+      if (!list) return null;
+      const floorISO = minusDaysISO(dateISO, maxStaleDays);
+      for (const row of list) {
+        if (row.dateISO > dateISO) continue;   // too new — keep scanning down
+        if (row.dateISO < floorISO) break;      // past the walk-back window (desc)
+        return { dateISO: row.dateISO, rate: row.rate };
+      }
+      return null;
+    },
+  };
+}
+
+/**
+ * MC1 QA perf P0 — batch-preload the archive window one `readRange` covers, and
+ * return an in-memory reader the resolution loop resolves against. The quotes
+ * are every non-USD leg the service will touch (each `from` plus the `target`;
+ * USD is definitional and never stored). The window spans
+ * [min(dates) − MAX_STALE_DAYS, max(dates)] so every per-date walk-back the
+ * service performs is fully covered. Malformed dates are excluded from the
+ * WINDOW math only — they still flow to the resolve loop, where the service's
+ * date assertion turns them into a miss exactly as before.
+ */
+async function preloadSnapshotReader(
+  reader: FxArchiveReader,
+  currencies: readonly string[],
+  target: string,
+  dates: readonly string[],
+): Promise<FxArchiveReader> {
+  const quotes = [...new Set([...currencies, target])].filter((q) => q !== FX_BASE);
+  const validDates = dates.filter(isValidISO).sort();
+  if (quotes.length === 0 || validDates.length === 0) {
+    return inMemorySnapshotReader(FX_BASE, []);
+  }
+  const fromISO = minusDaysISO(validDates[0], MAX_STALE_DAYS);
+  const toISO   = validDates[validDates.length - 1];
+  const rows    = await reader.readRange!(FX_BASE, quotes, fromISO, toISO);
+  return inMemorySnapshotReader(FX_BASE, rows);
+}
+
 /**
  * Prefetch all needed rates and return a frozen, synchronous ConversionContext.
+ *
+ * P0 (perf): when the reader exposes the batch `readRange` seam and there is
+ * real work to do, the archive window is preloaded in ONE query and every pair
+ * is resolved against an in-memory snapshot — collapsing O(currencies × dates)
+ * sequential DB round-trips into O(1). The resolution loop below is otherwise
+ * unchanged, so the produced table is byte-identical to the per-date path.
+ * Readers without `readRange` (pure test fakes) and the empty all-USD case
+ * (no currencies) fall through to the original behavior untouched.
  *
  * @param reader — the Phase 1 archive read seam. Production: `fxArchive`
  *                 (lib/fx/archive). Tests: an in-memory fake.
@@ -56,10 +136,18 @@ export async function buildConversionContext(
   reader: FxArchiveReader,
 ): Promise<ConversionContext> {
   const { target } = opts;
-  const service = createFxService(reader);
 
   const currencies = [...new Set(opts.currencies.filter((c): c is string => c != null && c !== target))];
   const dates      = [...new Set(opts.dates)];
+
+  // P0: resolve against a one-query in-memory snapshot when possible; otherwise
+  // the original reader (sequential per-date reads) — identical results.
+  const resolveReader =
+    currencies.length > 0 && dates.length > 0 && typeof reader.readRange === "function"
+      ? await preloadSnapshotReader(reader, currencies, target, dates)
+      : reader;
+
+  const service = createFxService(resolveReader);
 
   const table = new Map<string, Resolution>();
   for (const from of currencies) {

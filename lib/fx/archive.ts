@@ -54,6 +54,23 @@ export const fxArchive: FxArchive = {
     return row ? { dateISO: toISODateUTC(row.date), rate: row.rate } : null;
   },
 
+  // MC1 QA perf P0 — one indexed range read for a whole prefetch window,
+  // replacing N sequential point reads. Same @@index([quote, date]) serves the
+  // (quote IN …, date BETWEEN …) scan. No ordering guarantee is promised: the
+  // in-memory snapshot the caller builds re-derives walk-back per date.
+  async readRange(base, quotes, fromISO, toISO) {
+    if (quotes.length === 0) return [];
+    const rows = await db.fxRate.findMany({
+      where: {
+        base,
+        quote: { in: [...quotes] },
+        date:  { gte: isoToDate(fromISO), lte: isoToDate(toISO) },
+      },
+      select: { quote: true, date: true, rate: true },
+    });
+    return rows.map((r) => ({ quote: r.quote, dateISO: toISODateUTC(r.date), rate: r.rate }));
+  },
+
   async writeBatch(source, rows) {
     // Batch provenance is required: one batch = one adapter's complete answer
     // (plan D2). RateResult deliberately carries no per-row source field.
