@@ -135,6 +135,11 @@ import { getImportProviderCapabilities } from "@/lib/imports/provider-capabiliti
 // FlowType P5 Slice 0 — same classification contract as the Plaid sync write path.
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
 import { buildFlowInputFromRow, buildFlowWriteFields } from "@/lib/transactions/plaid-flow-input";
+// TI2-5 — stamp durable TI facts beside FlowType on the import write paths.
+// Imports carry no provider metadata, so only the honestly-derivable facts are
+// non-null (settlementState from pending=false; fxApplied from the single
+// account currency; tiFactsVersion). Provider-only facts stay NULL.
+import { buildTransactionFacts } from "@/lib/transactions/transaction-facts";
 // Merchant Intelligence M4 — stamp merchant identity + category provenance on
 // newly-imported rows, consistent with Plaid sync and the historical backfill.
 // Imports carry no provider merchant-entity id or counterparties, so no
@@ -344,6 +349,24 @@ export const POST = withApiHandler(async (
     return buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
   }
 
+  // TI2-5 — durable TI facts for imported rows. Reuses buildTransactionFacts with
+  // only the context imports genuinely know: no provider metadata (empty capture),
+  // pending=false (imports are posted), and the row's currency (always the target
+  // account's currency — files carry no per-row currency). The builder yields
+  // settlementState=POSTED, fxApplied (false when currency known, else null), and
+  // tiFactsVersion; every provider-only fact degrades to null. paymentMethod is
+  // forced to null (not the builder's UNKNOWN sentinel): these providers never
+  // supply payment metadata, so NULL — "not captured" — is the honest state.
+  function computeFactFields(rowCurrency: string | null) {
+    const facts = buildTransactionFacts({
+      captured:        { pfcConfidenceLevel: null, merchantEntityId: null, counterparties: [] },
+      pending:         false,
+      rowCurrency,
+      accountCurrency: flowAcct?.currency ?? null,
+    });
+    return { ...facts, paymentMethod: null };
+  }
+
   for (const row of rows) {
     const lineNumber = row.lineNumber; // data-row index, 1-indexed, header row excluded
 
@@ -418,6 +441,7 @@ export const POST = withApiHandler(async (
             // carry no per-row currency column).
             currency:              flowAcct?.currency ?? null,
             ...finalFlow,
+            ...computeFactFields(flowAcct?.currency ?? null),
             ...mi,
           },
         });
@@ -470,7 +494,7 @@ export const POST = withApiHandler(async (
                 // else stamp the target account's currency opportunistically.
                 // Deliberately NOT part of computeQuickBooksUpdateDiff —
                 // currency must never be what *triggers* an update.
-                data:  { ...diff, ...flowFields, currency: existing.currency ?? flowAcct?.currency ?? null },
+                data:  { ...diff, ...flowFields, ...computeFactFields(existing.currency ?? flowAcct?.currency ?? null), currency: existing.currency ?? flowAcct?.currency ?? null },
               });
               updatedTransactionIds.push(result.transactionId);
             }
