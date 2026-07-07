@@ -186,10 +186,10 @@ Verify:
 - One root `ENCRYPTION_KEY`; subkeys via HKDF-SHA-256 per purpose (`PLAID_ACCESS_TOKEN`, `TOTP_SECRET`, `DATE_OF_BIRTH`, `CONNECTION_CREDENTIAL`).
 
 ### □ Key rotation
-Priority: Medium · Status: ⏳ Future · Owner: OPS-4
+Priority: Medium · Status: ⚠️ Needs work (runbook ✅ OPS-4 S6; drill + script pending) · Owner: OPS-4 → operator
 Verify:
 - v1→v2 re-encryption path and `detectCiphertextVersion` audit exist.
-- **Future:** documented rotation runbook (rotate root key, re-encrypt, retire v1 branch after 0 v1 rows + backup window). Confirm preview/prod do not share `ENCRYPTION_KEY`.
+- Rotation runbook exists: `docs/operations/KEY_ROTATION_RUNBOOK.md` (all five secrets; ENCRYPTION_KEY procedure incl. the named re-encryption-script gap). Remaining to close this item: write `scripts/rotate-encryption-key.ts` per the runbook's shape, drill it against a restored backup, and confirm preview/prod do not share `ENCRYPTION_KEY` (Vercel env scopes).
 
 ### □ Environment variables
 Priority: Critical · Status: ⚠️ Needs work · Owner: PO1
@@ -536,8 +536,8 @@ Use this as the backlog. Each open item is assigned to the initiative that shoul
 - Plaid per-user rate limits (M3) · Medium
 - Registration/invite enumeration hardening (M4) · Medium
 
-**OPS-4**
-- Key-rotation runbook + preview/prod key separation · Medium
+**OPS-4** *(initiative complete 2026-07-07 — S6)*
+- Key-rotation runbook ✅ (`docs/operations/KEY_ROTATION_RUNBOOK.md`) · residue: rotation-script drill + preview/prod key-separation confirmation (operator) · Medium
 
 **OPS-5**
 - Admin least-privilege review + re-enable admin-TOTP guard · High

@@ -265,7 +265,7 @@ No integrity, security, or availability impact.
 ### 7.6 Secret exposure
 - **Immediate containment:** Rotate the exposed secret immediately, understanding the blast radius:
   - `NEXTAUTH_SECRET` → rotating logs everyone out (mass re-login; communicate).
-  - `ENCRYPTION_KEY` → **do NOT casually rotate**; it decrypts Plaid tokens, TOTP secrets, DOB. Rotation requires the re-encryption runbook (OPS-4). If truly exposed, follow that process; interim, restrict access and assess exposure.
+  - `ENCRYPTION_KEY` → **do NOT casually rotate**; it decrypts Plaid tokens, TOTP secrets, DOB. Rotation follows `docs/operations/KEY_ROTATION_RUNBOOK.md` (OPS-4 S6 — includes the re-encryption procedure and its named tooling gap). If truly exposed, follow that process; interim, restrict access and assess exposure.
   - `CRON_SECRET` → rotate; update Vercel env; crons resume next run.
   - `RESEND_API_KEY` / Plaid keys → rotate at the provider + update env.
   - `DATABASE_URL` credentials → rotate DB password + update env.
@@ -545,7 +545,7 @@ Requires:
 **Roadmap mapping (open improvements):**
 - **OPS-2:** login/TOTP brute-force enforcement; auth-incident tooling.
 - **OPS-3:** notification/queue observability; degradation playbooks.
-- **OPS-4:** `ENCRYPTION_KEY` rotation runbook (referenced by §7.6).
+- **OPS-4:** ✅ delivered — `docs/operations/KEY_ROTATION_RUNBOOK.md` (all secrets incl. `ENCRYPTION_KEY`, §7.6's reference), `docs/operations/BACKGROUND_JOBS_RUNBOOK.md`, JobRun ledger + dispatcher + notification retry + dead-job detection. Open residue: the ENCRYPTION_KEY re-encryption *script* and drill (documented gap in the rotation runbook).
 - **OPS-5:** admin least-privilege + de-privileging propagation; impersonation audit.
 - **PO1:** monitoring/alerting/paging, backups + restore drills, log retention, deploy-freeze/rollback tooling.
 - **Future:** SLOs, multi-region DR, retention policy, pen-test/compliance.

@@ -83,8 +83,9 @@ const REQUIRED_KEYS: (keyof typeof _e)[] = [
 //     but production email links and auth redirects must never guess.
 //   - RESEND_API_KEY: without it lib/email/send.ts silently captures instead
 //     of sending — acceptable in dev, a broken password-reset flow in prod.
-//   - CRON_SECRET: vercel.json schedules three jobs; unset means every cron
-//     request 401s (jobs enabled ⇒ secret required).
+//   - CRON_SECRET: vercel.json schedules the single dispatcher cron (OPS-4
+//     S2, /api/jobs/dispatch); unset means every cron request 401s
+//     (jobs enabled ⇒ secret required).
 const PROD_REQUIRED_KEYS: (keyof typeof _e)[] = [
   "NEXTAUTH_URL",
   "NEXT_PUBLIC_APP_URL",
