@@ -26,7 +26,9 @@ import { requireUser } from "@/lib/session";
 import { limitByUser } from "@/lib/rate-limit";
 
 export async function POST() {
-  const [user, err] = await requireUser();
+  // SEC-FIX-1 — enrolment endpoint: a forced-setup-pending session must be
+  // able to reach it, so opt out of the TOTP-enrolment gate.
+  const [user, err] = await requireUser({ allowTotpSetupPending: true });
   if (err) return err;
 
   const limited = await limitByUser(user.id, "totp-setup", { limit: 5, windowSec: 900 });

@@ -53,8 +53,13 @@ export const authOptions: NextAuthOptions = {
       async authorize(credentials, req) {
         if (!credentials?.identifier || !credentials?.password) return null;
 
-        const ipAddress = (req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim()
-          ?? (req?.headers?.["x-real-ip"] as string | undefined)
+        // SEC-FIX-1 — prioritise cf-connecting-ip (set by Cloudflare, not
+        // client-spoofable) so the rate-limit/audit IP matches lib/api.ts
+        // getRequestMeta(); fall back to the x-forwarded-for chain then
+        // x-real-ip for non-Cloudflare paths.
+        const ipAddress = (req?.headers?.["cf-connecting-ip"] as string | undefined)?.trim()
+          ?? (req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim()
+          ?? (req?.headers?.["x-real-ip"] as string | undefined)?.trim()
           ?? null;
         const userAgent = (req?.headers?.["user-agent"] as string | undefined) ?? null;
 
@@ -436,7 +441,9 @@ export const authOptions: NextAuthOptions = {
 
         if (cached !== null) {
           valid = cached;
-          console.log(`[auth] session callback revocation check: CACHE HIT, ${Date.now() - tRevoke}ms, valid=${valid}`);
+          if (process.env.NODE_ENV !== "production") {
+            console.log(`[auth] session callback revocation check: CACHE HIT, ${Date.now() - tRevoke}ms, valid=${valid}`);
+          }
         } else {
           const dbSession = await db.userSession.findFirst({
             where:  { sessionToken, revokedAt: null },
@@ -444,7 +451,9 @@ export const authOptions: NextAuthOptions = {
           });
           valid = !!dbSession;
           setCachedRevocation(sessionToken, valid);
-          console.log(`[auth] session callback revocation check: LIVE DB, ${Date.now() - tRevoke}ms, valid=${valid}`);
+          if (process.env.NODE_ENV !== "production") {
+            console.log(`[auth] session callback revocation check: LIVE DB, ${Date.now() - tRevoke}ms, valid=${valid}`);
+          }
 
           if (valid) {
             // Bump lastActiveAt (fire-and-forget — don't block the response).

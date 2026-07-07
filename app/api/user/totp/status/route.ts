@@ -12,7 +12,9 @@ import { countRemainingCodes } from "@/lib/recovery-codes";
 import { requireUser } from "@/lib/session";
 
 export async function GET() {
-  const [user, err] = await requireUser();
+  // SEC-FIX-1 — enrolment surface: the settings/security page reads TOTP
+  // status while setup is still pending, so opt out of the enrolment gate.
+  const [user, err] = await requireUser({ allowTotpSetupPending: true });
   if (err) return err;
 
   const dbUser = await db.user.findUnique({

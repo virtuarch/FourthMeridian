@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
+import { requireUser } from "@/lib/session";
 import { ShareStatus } from "@prisma/client";
 import { grantsTransactionDetail } from "@/lib/ai/visibility";
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
@@ -9,6 +10,12 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // SEC-FIX-1 — this route authenticates via getSpaceContext(); add the
+  // shared guard so a forced-TOTP-enrolment-pending session is denied at
+  // the API layer (the page middleware never runs on /api/*).
+  const [, authErr] = await requireUser();
+  if (authErr) return authErr;
+
   const { id } = await params;
 
   const { spaceId } = await getSpaceContext();

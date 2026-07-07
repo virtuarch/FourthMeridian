@@ -25,7 +25,9 @@ import { limitByUser } from "@/lib/rate-limit";
 import { createNotification } from "@/lib/notifications/create";
 
 export async function POST(req: NextRequest) {
-  const [user, err] = await requireUser();
+  // SEC-FIX-1 — enrolment endpoint: a forced-setup-pending session must be
+  // able to reach it, so opt out of the TOTP-enrolment gate.
+  const [user, err] = await requireUser({ allowTotpSetupPending: true });
   if (err) return err;
 
   if (user.role !== "SYSTEM_ADMIN") {

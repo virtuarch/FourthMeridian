@@ -62,6 +62,22 @@ export type SessionUser = {
   role:         UserRole;
   username:     string | null;
   sessionToken: string | null;
+  /**
+   * True when the platform requires TOTP for this user's role but they have
+   * not enrolled yet (SEC-FIX-1). Used by the guards below to deny API access
+   * to a pending session — see totpSetupPending().
+   */
+  requireTotpSetup: boolean;
+};
+
+/**
+ * SEC-FIX-1 — options accepted by the session guards to opt a route out of
+ * the forced-TOTP-enrolment gate. Only the TOTP-enrolment endpoints
+ * (/api/user/totp/{setup,verify,status}) set allowTotpSetupPending so a
+ * pending user can still complete setup.
+ */
+export type SessionGuardOptions = {
+  allowTotpSetupPending?: boolean;
 };
 
 /** Space membership row included with requireSpaceRole results. */
@@ -86,11 +102,33 @@ async function resolveUser(): Promise<SessionUser | null> {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return null;
   return {
-    id:           session.user.id,
-    role:         session.user.role,
-    username:     session.user.username ?? null,
-    sessionToken: session.sessionToken  ?? null,
+    id:               session.user.id,
+    role:             session.user.role,
+    username:         session.user.username ?? null,
+    sessionToken:     session.sessionToken  ?? null,
+    requireTotpSetup: session.requireTotpSetup ?? false,
   };
+}
+
+// ── Forced-TOTP-enrolment gate (SEC-FIX-1) ────────────────────────────────────
+
+/**
+ * Returns true when this session must be denied because the platform requires
+ * TOTP enrolment it has not completed.
+ *
+ * WHY HERE: the browser middleware (proxy.ts) only redirects page navigations
+ * (/dashboard/*, /admin/*) to the setup screen — its matcher never runs on
+ * /api/*. Without this check a pending session (authenticated by password but
+ * not yet enrolled) could call data/admin APIs directly. Enforcing at this
+ * shared authorization layer closes that gap for every route that uses the
+ * guards below. The enrolment endpoints themselves pass
+ * { allowTotpSetupPending: true } so setup can still be completed.
+ */
+function totpSetupPending(
+  user: SessionUser,
+  opts?: SessionGuardOptions,
+): boolean {
+  return user.requireTotpSetup && !opts?.allowTotpSetupPending;
 }
 
 // ── requireUser ───────────────────────────────────────────────────────────────
@@ -100,11 +138,14 @@ async function resolveUser(): Promise<SessionUser | null> {
  *
  * Returns `[user, null]` when authenticated, `[null, 401]` otherwise.
  */
-export async function requireUser(): Promise<
+export async function requireUser(
+  opts?: SessionGuardOptions,
+): Promise<
   [SessionUser, null] | [null, NextResponse]
 > {
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
+  if (totpSetupPending(user, opts)) return [null, forbidden()];
   return [user, null];
 }
 
@@ -121,11 +162,14 @@ export async function requireUser(): Promise<
  * revoking sessions, anything destructive or security-relevant. Ordinary
  * page loads and read-only requests should keep using requireUser().
  */
-export async function requireFreshUser(): Promise<
+export async function requireFreshUser(
+  opts?: SessionGuardOptions,
+): Promise<
   [SessionUser, null] | [null, NextResponse]
 > {
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
+  if (totpSetupPending(user, opts)) return [null, forbidden()];
   if (!user.sessionToken) return [null, unauthorized()];
 
   const t0 = Date.now();
@@ -133,7 +177,9 @@ export async function requireFreshUser(): Promise<
     where:  { sessionToken: user.sessionToken, revokedAt: null },
     select: { id: true },
   });
-  console.log(`[session] requireFreshUser live revocation check: ${Date.now() - t0}ms, valid=${!!dbSession}`);
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[session] requireFreshUser live revocation check: ${Date.now() - t0}ms, valid=${!!dbSession}`);
+  }
 
   if (!dbSession) return [null, unauthorized()];
 
@@ -157,6 +203,7 @@ export async function requireSystemAdmin(): Promise<
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
   if (user.role !== UserRole.SYSTEM_ADMIN) return [null, forbidden()];
+  if (totpSetupPending(user)) return [null, forbidden()];
   return [user, null];
 }
 
@@ -174,6 +221,7 @@ export async function requireFreshSystemAdmin(): Promise<
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
   if (user.role !== UserRole.SYSTEM_ADMIN) return [null, forbidden()];
+  if (totpSetupPending(user)) return [null, forbidden()];
   if (!user.sessionToken) return [null, unauthorized()];
 
   const t0 = Date.now();
@@ -181,7 +229,9 @@ export async function requireFreshSystemAdmin(): Promise<
     where:  { sessionToken: user.sessionToken, revokedAt: null },
     select: { id: true },
   });
-  console.log(`[session] requireFreshSystemAdmin live revocation check: ${Date.now() - t0}ms, valid=${!!dbSession}`);
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[session] requireFreshSystemAdmin live revocation check: ${Date.now() - t0}ms, valid=${!!dbSession}`);
+  }
 
   if (!dbSession) return [null, unauthorized()];
 
@@ -223,6 +273,7 @@ export async function requireSpaceRole(
 > {
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
+  if (totpSetupPending(user)) return [null, forbidden()];
 
   const membership = await db.spaceMember.findUnique({
     where:  { spaceId_userId: { spaceId, userId: user.id } },

@@ -35,6 +35,7 @@
 
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSpaceContext } from "@/lib/space";
+import { requireUser } from "@/lib/session";
 import { performPlaidTokenExchange, parsePlaidError } from "@/lib/plaid/exchangeToken";
 import { runDeferredHistorySync } from "@/lib/plaid/backgroundHistorySync";
 import { limitByUser } from "@/lib/rate-limit";
@@ -54,6 +55,12 @@ export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
+    // SEC-FIX-1 — this route authenticates via getSpaceContext(); add the
+    // shared guard so a forced-TOTP-enrolment-pending session is denied at
+    // the API layer (the page middleware never runs on /api/*).
+    const [, authErr] = await requireUser();
+    if (authErr) return authErr;
+
     const { public_token, institution_id, institution_name } = await req.json();
 
     if (!public_token || !institution_id || !institution_name) {
