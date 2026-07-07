@@ -1,9 +1,12 @@
 /**
  * GET /api/jobs/sync-banks
  *
- * Vercel Cron entrypoint for jobs/sync-banks.ts's syncBanks() — D2 Step 7C.
- * Schedule lives in vercel.json (daily; Vercel Hobby-plan cron jobs cannot
- * run more often than once per day).
+ * Per-job entrypoint for jobs/sync-banks.ts's syncBanks() — D2 Step 7C.
+ * Since OPS-4 S2 the production schedule runs through the single dispatcher
+ * cron (app/api/jobs/dispatch — 06:00 UTC slot); this route stays deployed
+ * as the manual/fallback entrypoint and the individual-revert target (point
+ * a vercel.json cron back here to detach the job from the dispatcher
+ * without a code change).
  *
  * Auth: Vercel automatically sends `Authorization: Bearer ${CRON_SECRET}`
  * on cron-triggered requests when CRON_SECRET is set on the project. Any

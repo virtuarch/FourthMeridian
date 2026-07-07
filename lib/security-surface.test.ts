@@ -12,8 +12,9 @@
  *   2. Every sensitive path carries its rate-limit call: TOTP
  *      setup/verify/disable/recovery-codes, password change, email-change
  *      request, export, Plaid link/exchange/refresh/sync.
- *   3. instrumentation.ts runs validateEnv() at boot and does NOT invoke
- *      startScheduler() (OPS-4 stays un-started).
+ *   3. instrumentation.ts runs validateEnv() at boot and does NOT start any
+ *      in-process scheduler (background dispatch is cron-driven via
+ *      app/api/jobs/dispatch since OPS-4 S2 — never a boot side effect).
  *   4. /api/health exposes no env secrets.
  */
 
@@ -78,8 +79,8 @@ const inst = src("instrumentation.ts");
 // startScheduler stays un-invoked, which must not trip the code scan.
 const instCode = inst.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 check("validateEnv() invoked at boot", /validateEnv\(\)/.test(instCode));
-check("startScheduler is NOT invoked (OPS-4 un-started)", !instCode.includes("startScheduler"));
-check("scheduler module is NOT imported", !instCode.includes("jobs/scheduler"));
+check("no in-process scheduler at boot (dispatch is cron-driven, OPS-4 S2)", !instCode.includes("startScheduler"));
+check("no scheduler module import at boot", !instCode.includes("jobs/scheduler"));
 
 console.log("4. Health endpoint leaks no secrets");
 const health = src("app/api/health/route.ts");

@@ -4,7 +4,10 @@
  * Permanently deletes SpaceGoal rows that have been in the trash
  * (deletedAt IS NOT NULL) for more than 7 days.
  *
- * Run daily via the scheduler. Safe to run multiple times — idempotent.
+ * NOT YET SCHEDULED: the in-process scheduler that once registered this job
+ * was retired dormant in OPS-4 S2 — this body has never run in production.
+ * It registers with the dispatcher (lib/jobs/registry.ts) in OPS-4 S3, not
+ * before. Safe to run multiple times — idempotent.
  */
 
 import { db } from "@/lib/db";

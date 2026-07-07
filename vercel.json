@@ -2,16 +2,8 @@
   "regions": ["sin1"],
   "crons": [
     {
-      "path": "/api/jobs/sync-banks",
-      "schedule": "0 6 * * *"
-    },
-    {
-      "path": "/api/jobs/fetch-fx-rates",
-      "schedule": "30 6 * * *"
-    },
-    {
-      "path": "/api/jobs/process-deletions",
-      "schedule": "0 7 * * *"
+      "path": "/api/jobs/dispatch",
+      "schedule": "0,30 6-7 * * *"
     }
   ]
 }

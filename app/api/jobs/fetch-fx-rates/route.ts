@@ -1,11 +1,11 @@
 /**
  * GET /api/jobs/fetch-fx-rates
  *
- * Vercel Cron entrypoint for jobs/fetch-fx-rates.ts's fetchFxRates() —
- * MC1 Phase 1 Slice 4. Schedule lives in vercel.json (daily 06:30 UTC,
- * after the 06:00 sync-banks run; Vercel Hobby-plan cron jobs cannot run
- * more often than once per day — this uses the plan's second and last
- * Hobby cron slot).
+ * Per-job entrypoint for jobs/fetch-fx-rates.ts's fetchFxRates() —
+ * MC1 Phase 1 Slice 4. Since OPS-4 S2 the production schedule runs through
+ * the single dispatcher cron (app/api/jobs/dispatch — 06:30 UTC slot, after
+ * the 06:00 sync-banks slot); this route stays deployed as the
+ * manual/fallback entrypoint and the individual-revert target.
  *
  * Auth: identical to app/api/jobs/sync-banks/route.ts — Vercel sends
  * `Authorization: Bearer ${CRON_SECRET}` on cron-triggered requests when

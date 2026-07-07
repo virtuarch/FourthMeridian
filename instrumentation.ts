@@ -15,9 +15,10 @@
  *
  * EXPLICIT NON-GOALS (do not add here without their own decision record)
  * ----------------------------------------------------------------------
- *   - startScheduler() (jobs/scheduler.ts) stays UN-INVOKED. Background-job
- *     dispatch is OPS-4/D5 territory; it must not become a side effect of this
- *     file finally existing.
+ *   - Background-job dispatch stays OUT of this file. The dormant in-process
+ *     scheduler was retired in OPS-4 S2 — scheduled work runs through the
+ *     cron-driven dispatcher (app/api/jobs/dispatch + lib/jobs/registry.ts)
+ *     and must never become a boot side effect of this file.
  *   - Error reporting (Sentry or equivalent) is NOT configured yet. When it
  *     is adopted, this register() is the intended init point for the server
  *     side (with PII/body scrubbing — financial data must never ride an error

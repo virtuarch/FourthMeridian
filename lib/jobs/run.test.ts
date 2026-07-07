@@ -211,9 +211,13 @@ async function main(): Promise<void> {
       "all three cron routes run their body through runJob",
       routes.every((src) => src.includes("runJob(")),
     );
+    // R4 — the cleanup tail rides the process-deletions job. Since S2 the
+    // composed body has a single definition site (lib/jobs/registry.ts),
+    // shared by the fallback route and the dispatcher.
+    const registrySrc = readFileSync("lib/jobs/registry.ts", "utf8");
     check(
-      "notification cleanup still rides process-deletions (R4)",
-      routes[2].includes("cleanupNotifications"),
+      "notification cleanup still rides process-deletions (R4, via shared body)",
+      registrySrc.includes("cleanupNotifications(") && routes[2].includes("runProcessDeletions"),
     );
   }
 

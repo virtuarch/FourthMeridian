@@ -186,13 +186,20 @@ async function run(): Promise<void> {
 
   // ── Source-scan: scheduling discipline ──────────────────────────────────────
   {
+    // Since OPS-4 S2 the schedule is the single dispatcher cron; cleanup
+    // still consumes NO cron slot of its own (the F7 intent, unchanged).
     const vercel = readFileSync("vercel.json", "utf8");
     const crons = (vercel.match(/"path"/g) ?? []).length;
-    check("no new cron slot consumed (3 pre-existing entries)", crons === 3 && !vercel.includes("notification"));
+    check(
+      "no cron slot consumed by cleanup (single dispatcher entry)",
+      crons === 1 && vercel.includes("/api/jobs/dispatch") && !vercel.includes("notification"),
+    );
 
-    const route = readFileSync("app/api/jobs/process-deletions/route.ts", "utf8");
-    check("cleanup rides the existing process-deletions cron tail", route.includes("cleanupNotifications("));
-    check("cleanup failure cannot fail the host run", route.includes("non-fatal"));
+    // The composed process-deletions body (single definition site since
+    // OPS-4 S2) still carries the cleanup tail — R4/F7.
+    const body = readFileSync("lib/jobs/registry.ts", "utf8");
+    check("cleanup rides the process-deletions job tail", body.includes("cleanupNotifications("));
+    check("cleanup failure cannot fail the host run", body.includes("non-fatal"));
 
     // Strip comments so doctrine text (which legitimately NAMES the forbidden
     // things) doesn't trip the scan — only executable constructs count.

@@ -3,19 +3,15 @@
  *
  * Background job: incrementally syncs transactions for every active
  * PlaidItem, via the shared syncTransactionsForItem() function (see
- * lib/plaid/syncTransactions.ts). Runs on a fixed interval registered in
- * jobs/scheduler.ts.
+ * lib/plaid/syncTransactions.ts).
  *
- * This file existed as an empty `export {}` stub (named for exactly this
- * purpose, per the original jobs/scheduler.ts doc comment: "stub until Plaid
- * integration is wired") before this change — filling it in wires a
- * pre-existing placeholder rather than introducing new job infrastructure.
- * Note startScheduler() itself still isn't invoked anywhere (no
- * instrumentation.ts hook) — that's a separate, pre-existing gap, so the
- * scheduler.ts registration is dormant. Production scheduling instead goes
- * through app/api/jobs/sync-banks/route.ts (D2 Step 7C), a Vercel Cron
- * target that calls this same function directly — see vercel.json for the
- * schedule.
+ * SCHEDULING (OPS-4 S2): registered in lib/jobs/registry.ts (06:00 UTC slot)
+ * and executed by the single dispatcher cron (app/api/jobs/dispatch),
+ * ledgered through runJob(). The per-job route
+ * app/api/jobs/sync-banks/route.ts (D2 Step 7C) remains as the
+ * manual/fallback entrypoint. The historical in-process jobs/scheduler.ts —
+ * dormant since birth (startScheduler() was never invoked) — was retired in
+ * S2; the registry is its successor.
  *
  * Idempotent and safe to overlap with a user-triggered sync of the same
  * item — both paths upsert on the unique Transaction.plaidTransactionId, so

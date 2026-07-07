@@ -1,9 +1,12 @@
 /**
  * GET /api/jobs/process-deletions  (OPS-2 S7c)
  *
- * Vercel Cron entrypoint for jobs/process-deletions.ts's processDeletions() —
- * the irreversible account-deletion purge. Schedule lives in vercel.json
- * (daily 07:00 UTC, after the 06:00 sync-banks and 06:30 fetch-fx-rates runs).
+ * Per-job entrypoint for the irreversible account-deletion purge. Since
+ * OPS-4 S2 the production schedule runs through the single dispatcher cron
+ * (app/api/jobs/dispatch — 07:00 UTC slot); this route stays deployed as the
+ * manual/fallback entrypoint and the individual-revert target (point a
+ * vercel.json cron back here to detach the job from the dispatcher without
+ * a code change).
  *
  * Auth: identical to the other cron routes — Vercel sends
  * `Authorization: Bearer ${CRON_SECRET}` on cron-triggered requests when
@@ -14,21 +17,17 @@
  * best-effort per user (a single failure never blocks the rest and is retried
  * on the next daily run). See lib/account-deletion/purge.ts for the pipeline.
  *
- * OPS-3 S6 — notification retention rides this cron's tail (frozen F7: no
- * dispatcher exists and cleanup must not consume a cron slot). Bounded
- * best-effort updateMany/deleteMany sweeps (see lib/notifications/cleanup.ts);
- * a cleanup failure never fails the purge run. When the PF1 dispatcher lands,
- * cleanupNotifications() moves there and this tail call is deleted.
+ * OPS-3 S6 — notification retention rides this job's tail (S0 ruling R4;
+ * relocates to its own registration in S3, not before). The composed body —
+ * purge + cleanup tail, ONE "process-deletions" JobRun — has a single
+ * definition site, runProcessDeletions() in lib/jobs/registry.ts, shared
+ * verbatim with the dispatcher so the two paths can never drift.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
 import { runJob } from "@/lib/jobs/run";
-import { processDeletions } from "@/jobs/process-deletions";
-import {
-  cleanupNotifications,
-  type NotificationCleanupResult,
-} from "@/lib/notifications/cleanup";
+import { runProcessDeletions } from "@/lib/jobs/registry";
 
 // Headroom for looping over the (small) set of due accounts in one invocation —
 // matches the sync-banks / fetch-fx-rates precedent (Hobby-plan max).
@@ -42,29 +41,10 @@ export const GET = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // OPS-4 S1 — the whole scheduled unit of work (purge + OPS-3 cleanup tail)
-  // is ONE JobRun: the ledger records what this cron actually does. Behavior
-  // unchanged — same call order, same error semantics (cleanup stays
-  // best-effort/non-fatal per OPS-3 F7), same response shape. Auth stays in
-  // the route (S0 ruling R3); the cleanup keeps riding this cron (ruling R4).
-  const run = await runJob(
-    "process-deletions",
-    async () => {
-      const deletions = await processDeletions();
-
-      // OPS-3 S6 — notification retention (best-effort tail; never fails the run).
-      let notificationCleanup: NotificationCleanupResult | { error: string };
-      try {
-        notificationCleanup = await cleanupNotifications();
-      } catch (err) {
-        console.error("[process-deletions] notification cleanup failed (non-fatal):", err);
-        notificationCleanup = { error: err instanceof Error ? err.message : String(err) };
-      }
-
-      return { deletions, notificationCleanup };
-    },
-    { trigger: "cron" },
-  );
+  // OPS-4 S1/S2 — the composed body (purge + OPS-3 cleanup tail) is ONE
+  // ledgered JobRun; same call order, same error semantics, same response
+  // shape as pre-S2. Definition site: lib/jobs/registry.ts.
+  const run = await runJob("process-deletions", runProcessDeletions, { trigger: "cron" });
 
   return NextResponse.json({ ok: true, ...run.deletions, notificationCleanup: run.notificationCleanup });
 }, "GET /api/jobs/process-deletions");

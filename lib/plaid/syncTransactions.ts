@@ -9,12 +9,10 @@
  *  - app/api/plaid/exchange-token/route.ts — initial sync, immediately after
  *    a successful Link flow (accounts already imported by that point).
  *  - app/api/plaid/sync/route.ts — manual "Sync Now" endpoint.
- *  - jobs/sync-banks.ts — a pre-existing stub (`export {}`, present since the
- *    v1.0 foundation commit, named for exactly this purpose) now wired to
- *    call this function. jobs/scheduler.ts already registers it on a fixed
- *    interval. Note: startScheduler() itself is not invoked anywhere yet (no
- *    instrumentation.ts hook) — a pre-existing gap unrelated to this work, so
- *    the interval is registered but dormant until that's wired up separately.
+ *  - jobs/sync-banks.ts — the daily scheduled sync, registered in
+ *    lib/jobs/registry.ts and executed by the dispatcher cron
+ *    (app/api/jobs/dispatch) since OPS-4 S2 (the dormant in-process
+ *    jobs/scheduler.ts was retired in that slice).
  *  - a future Plaid webhook handler (SYNC_UPDATES_AVAILABLE) — endpoint
  *    itself deliberately out of scope for this pass (needs public endpoint
  *    handling, signature verification, retry/error handling of its own);
