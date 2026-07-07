@@ -135,13 +135,21 @@ console.log("Merchant Intelligence M1 schema tripwires (MI1)");
 // ── 5. NO MerchantAsset table (explicit non-goal) ────────────────────────────
 check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test(schema));
 
-// ── 6. M4/M5 boundary: stamping + rule-writes confined to designated sites; M6 not started ─
+// ── 6. M4/M5/M6 boundary: writes confined to designated sites; read cutover is read-only ─
 {
   // Genuinely-pure MI modules (no client, data-shape identifiers only).
   const PURE_MI = new Set([
     "lib/transactions/merchant-resolver.ts",
     "lib/transactions/merchant-backfill.ts",
     "lib/transactions/merchant-enrichment.ts",
+    "lib/transactions/merchant-display.ts",
+  ]);
+  // M6 READ surfaces — they consume resolved merchant identity (merchantId /
+  // resolvedMerchant in selects, merchantDisplayName in output) but never write.
+  const READ_SURFACES = new Set([
+    "lib/transactions/serialize.ts",
+    "lib/data/transactions.ts",
+    "lib/ai/assemblers/transactions.ts",
   ]);
   // The shared writer + the designated write sites that stamp MI onto a
   // Transaction (live paths + the M5 correction workflow). Any OTHER module
@@ -176,10 +184,12 @@ check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test
   );
 
   // (b) MI stamping is confined to the designated write sites + pure data shapes.
+  //     Read surfaces reference merchantId in SELECTs (reads), not writes — excluded.
   const stamps = source.filter(
     (s) =>
       !PURE_MI.has(s.f) &&
       !WRITE_SITES.has(s.f) &&
+      !READ_SURFACES.has(s.f) &&
       /\b(categorySource|categoryRuleId|merchantId)\s*:/.test(s.text),
   );
   check(
@@ -198,15 +208,22 @@ check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test
     }
   }
 
-  // (d) M6 boundary — NO read cutover: the AI assembler does not consume resolved
-  //     merchant identity yet.
-  const assemblers = source.filter((s) => /^lib\/ai\/assemblers\//.test(s.f));
-  const readCutover = assemblers.filter((s) =>
-    /merchant-resolver|merchant-write|resolvedMerchant|\.merchantId\b/.test(s.text),
-  );
+  // (d) M6 read cutover — the read surfaces consume resolved merchant identity and
+  //     are READ-ONLY: none of them writes the merchant tables or a transaction's
+  //     MI columns (Merchant Intelligence is read-only in M6).
+  for (const f of READ_SURFACES) {
+    const mod = source.find((s) => s.f === f);
+    if (mod) {
+      check(
+        `${f} does not write the merchant tables (read-only cutover)`,
+        !/\b(prisma|db|client|tx)\.(merchant|merchantAlias|merchantRule)\.(create|createMany|update|updateMany|upsert|delete)/.test(mod.text),
+      );
+    }
+  }
+  const readCutover: { f: string }[] = []; // retained for the trailing assertion below
   check(
-    "no AI read cutover to resolved merchant identity yet (M6 not started)",
-    readCutover.length === 0,
+    "M6 read surfaces are wired (read cutover present)",
+    source.some((s) => s.f === "lib/ai/assemblers/transactions.ts" && /resolvedMerchant/.test(s.text)),
     readCutover.map((s) => s.f).join(", "),
   );
 

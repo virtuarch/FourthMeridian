@@ -138,7 +138,15 @@ export interface Transaction {
   id: string;
   accountId: string;
   date: string;           // ISO date (YYYY-MM-DD)
-  merchant: string;       // cleaned merchant name
+  merchant: string;       // RAW provider descriptor — never lost (forensic/import round-trip)
+  /**
+   * MI M6 read cutover — resolved Merchant Intelligence presentation (additive):
+   *   merchantDisplayName = Merchant.displayName when resolved, else `merchant`.
+   *   merchantLogoUrl     = Merchant.logoUrl when present, else null (icon fallback).
+   * The raw `merchant` above is always preserved alongside these.
+   */
+  merchantDisplayName?: string;
+  merchantLogoUrl?: string | null;
   description?: string;  // raw/full description
   category: TransactionCategory;
   amount: number;         // positive = credit (money in), negative = debit (money out)

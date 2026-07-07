@@ -181,7 +181,10 @@ const MAX_EXPLICIT_WINDOW_DAYS = 800; // ~26 months
 
 type TxnRow = {
   date:     Date;
-  merchant: string;
+  merchant: string;   // RAW provider descriptor — preserved for forensic use
+  // MI M6 read cutover — resolved Merchant identity (null/absent when unresolved).
+  merchantId?:       string | null;
+  resolvedMerchant?: { displayName: string } | null;
   category: TransactionCategory;
   amount:   number;
   pending:  boolean;
@@ -275,6 +278,9 @@ async function assembleTransactions(
     select: {
       date:          true,
       merchant:      true,
+      // MI M6 read cutover — resolved Merchant identity (additive join).
+      merchantId:       true,
+      resolvedMerchant: { select: { displayName: true } },
       category:      true,
       amount:        true,
       pending:       true,
@@ -540,6 +546,18 @@ async function assembleTransactions(
   // internal transfers, debt payments, fees, and refunds out of "top merchants
   // by spend"; inflows are rolled up separately into `incomeSources` below.
 
+  // MI M6 read cutover — group + display by the RESOLVED Merchant identity when
+  // present (so aliases like "WALMART #1842" / "WM SUPERCENTER" collapse to one
+  // "Walmart"), falling back to the per-request normalizer for unresolved rows.
+  // The raw descriptor stays on txn.merchant for forensic use.
+  function merchantGroupOf(txn: TxnRow): { key: string; name: string } {
+    if (txn.merchantId && txn.resolvedMerchant) {
+      return { key: `id:${txn.merchantId}`, name: txn.resolvedMerchant.displayName };
+    }
+    const { canonicalKey, canonicalName } = normalizeMerchant(txn.merchant);
+    return { key: canonicalKey, name: canonicalName };
+  }
+
   let merchants: MerchantSummary[] | undefined;
 
   if (scopeHint !== 'brief') {
@@ -560,7 +578,7 @@ async function assembleTransactions(
       // debt payments, fees, and refunds structurally cannot surface here.
       if (txn.flowType !== FlowType.SPENDING) continue;
 
-      const { canonicalKey, canonicalName } = normalizeMerchant(txn.merchant);
+      const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
       const iso = txn.date.toISOString().split('T')[0];
       const abs = Math.abs(txn.amount);
 
@@ -641,7 +659,7 @@ async function assembleTransactions(
       if (txn.flowType !== FlowType.INCOME) continue;
       if (txn.amount <= 0) continue;
 
-      const { canonicalKey, canonicalName } = normalizeMerchant(txn.merchant);
+      const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
       const iso = txn.date.toISOString().split('T')[0];
 
       const agg = incomeMap.get(canonicalKey) ?? {
@@ -1086,6 +1104,9 @@ async function assembleDrilldown(
     select: {
       date:        true,
       merchant:    true,
+      // MI M6 read cutover — resolved Merchant identity (additive join).
+      merchantId:       true,
+      resolvedMerchant: { select: { displayName: true } },
       description: true,
       category:    true,
       amount:      true,
@@ -1120,7 +1141,10 @@ async function assembleDrilldown(
       r.financialAccount?.displayName ?? r.financialAccount?.name ?? r.account?.name ?? undefined;
     return {
       date:     r.date.toISOString().split('T')[0],
-      merchant: normalizeMerchant(r.merchant).canonicalName,
+      // MI M6 read cutover — resolved Merchant display name, else the normalizer.
+      merchant: r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName,
+      // Forensic preservation — the original provider descriptor is never lost.
+      ...(r.merchant !== (r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName) ? { rawMerchant: r.merchant } : {}),
       ...(r.description ? { description: r.description } : {}),
       amount:   Math.round(r.amount * 100) / 100,
       category: r.category,

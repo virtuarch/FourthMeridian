@@ -473,7 +473,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
       if (catFilter && tx.category !== catFilter) return false;
       if (search) {
         const q = search.toLowerCase();
-        if (!tx.merchant.toLowerCase().includes(q) && !(tx.description ?? "").toLowerCase().includes(q)) return false;
+        if (!tx.merchant.toLowerCase().includes(q) && !(tx.merchantDisplayName ?? "").toLowerCase().includes(q) /* MI M6 — alias-aware */ && !(tx.description ?? "").toLowerCase().includes(q)) return false;
       }
       return true;
     });
@@ -1214,7 +1214,7 @@ function TxRow({ tx, cards, selectedCardId }: {
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{tx.merchant}</p>
+          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{tx.merchantDisplayName ?? tx.merchant}{/* MI M6 — resolved name, raw fallback */}</p>
           {tx.pending && <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>Pending</span>}
         </div>
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">

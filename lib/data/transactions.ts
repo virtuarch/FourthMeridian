@@ -88,6 +88,8 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
       category: { in: BANKING_CATEGORIES as never[] },
     },
     orderBy: { date: "desc" },
+    // MI M6 read cutover — resolved Merchant presentation (additive join).
+    include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } } },
   });
 
   // TI-1: canonical serialization — byte-identical to the previous inline
@@ -111,6 +113,8 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
       category: { in: BANKING_CATEGORIES as never[] },
     },
     orderBy: { date: "desc" },
+    // MI M6 read cutover — resolved Merchant presentation (additive join).
+    include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } } },
   });
 
   // TI-1: canonical serialization — byte-identical to the previous inline
@@ -189,6 +193,8 @@ export async function getTransactionDetail(
   const row = await db.transaction.findFirst({
     where: transactionDetailWhere(id, spaceId),
     include: {
+      // MI M6 read cutover — resolved Merchant presentation (additive join).
+      resolvedMerchant: { select: { displayName: true, logoUrl: true } },
       account: {
         select: { id: true, name: true, institution: true, type: true },
       },

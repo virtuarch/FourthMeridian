@@ -162,7 +162,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       if (cutoff        && tx.date        < cutoff)         return false;
       if (pendingFilter === "cleared" &&  tx.pending)       return false;
       if (pendingFilter === "pending" && !tx.pending)       return false;
-      if (q && !tx.merchant.toLowerCase().includes(q) && !(tx.description ?? "").toLowerCase().includes(q)) {
+      if (q && !tx.merchant.toLowerCase().includes(q) && !(tx.merchantDisplayName ?? "").toLowerCase().includes(q) /* MI M6 — alias-aware */ && !(tx.description ?? "").toLowerCase().includes(q)) {
         return false;
       }
       return true;
@@ -414,7 +414,7 @@ function TxRow({
       {/* Merchant + meta */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{tx.merchant}</p>
+          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{tx.merchantDisplayName ?? tx.merchant}{/* MI M6 — resolved name, raw fallback */}</p>
           {tx.pending && (
             <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>
               Pending

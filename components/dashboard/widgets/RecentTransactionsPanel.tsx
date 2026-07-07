@@ -35,7 +35,7 @@ function TxRow({ tx }: { tx: Transaction }) {
         <Receipt size={13} className="text-[var(--text-muted)]" />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-[var(--text-primary)] truncate">{tx.merchant}</p>
+        <p className="text-sm font-medium text-[var(--text-primary)] truncate">{tx.merchantDisplayName ?? tx.merchant}{/* MI M6 — resolved name, raw fallback */}</p>
         <p className="text-xs text-[var(--text-muted)] mt-0.5">
           {txDateLabel(tx.date)}
           {tx.pending ? " · Pending" : ""}

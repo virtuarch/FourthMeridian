@@ -51,6 +51,11 @@ function legacyListMapper(r: any) {
     accountId:   r.accountId ?? r.financialAccountId,
     date:        r.date.toISOString().split("T")[0],
     merchant:    r.merchant,
+    // MI M6 read cutover — CONSCIOUS extension (see module header): resolved
+    // presentation is additive, raw `merchant` above is preserved. Same key
+    // order + fallbacks as serializeTransactionRow.
+    merchantDisplayName: r.resolvedMerchant?.displayName ?? r.merchant,
+    merchantLogoUrl:     r.resolvedMerchant?.logoUrl ?? null,
     description: r.description ?? undefined,
     category:    r.category,
     amount:      r.amount,
@@ -89,7 +94,7 @@ const fixtures: TransactionRowLike[] = [
     accountId: null,
     financialAccountId: 'fa_1',
     date: new Date('2026-06-14T00:00:00.000Z'),
-    merchant: 'Blue Bottle Coffee',
+    merchant: 'SQ *BLUE BOTTLE #442',
     description: 'SQ *BLUE BOTTLE #442',
     category: 'Dining',
     amount: -15.33,
@@ -100,6 +105,8 @@ const fixtures: TransactionRowLike[] = [
     classificationConfidence: 0.95,
     classificationReason: 'PLAID_PFC_DETAILED',
     classifierVersion: 1,
+    // MI M6 — a resolved Merchant (raw descriptor above is preserved).
+    resolvedMerchant: { displayName: 'Blue Bottle', logoUrl: 'https://logos/bb.png' },
   },
   // Legacy-FK row, null-heavy (pre-provenance residue).
   {
@@ -241,6 +248,24 @@ const div = serializeInvestmentTransactionRow(investmentFixtures[1]);
 check('investment null description → empty string (not undefined)',
   div.description === '');
 check('investment ticker sourced from merchant column', div.ticker === 'SCHD');
+
+// ---------------------------------------------------------------------------
+// 3b. MI M6 read cutover — resolved presentation (additive; raw preserved)
+// ---------------------------------------------------------------------------
+
+const resolved = serializeTransactionRow(fixtures[0]);
+check('resolved row: merchantDisplayName is the Merchant displayName',
+  resolved.merchantDisplayName === 'Blue Bottle');
+check('resolved row: merchantLogoUrl is the Merchant logo',
+  resolved.merchantLogoUrl === 'https://logos/bb.png');
+check('resolved row: RAW merchant descriptor is preserved',
+  resolved.merchant === 'SQ *BLUE BOTTLE #442');
+
+const unresolved = serializeTransactionRow(fixtures[1]); // no resolvedMerchant
+check('unresolved row: merchantDisplayName falls back to raw merchant',
+  unresolved.merchantDisplayName === 'PAYROLL DEPOSIT');
+check('unresolved row: merchantLogoUrl falls back to null (icon)',
+  unresolved.merchantLogoUrl === null);
 
 // ---------------------------------------------------------------------------
 // 4. The deliberate drift FIX — account-modal payload gains `currency`

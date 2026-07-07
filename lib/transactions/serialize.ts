@@ -33,6 +33,7 @@
  */
 
 import type { Transaction, InvestmentTransaction } from "@/types";
+import { merchantDisplayName, merchantLogoUrl, type ResolvedMerchantLike } from "@/lib/transactions/merchant-display";
 
 /**
  * The scalar fields the serializers read, shaped exactly like a
@@ -55,6 +56,10 @@ export interface TransactionRowLike {
   classificationConfidence?: number | null;
   classificationReason?:     string | null;
   classifierVersion?:        number | null;
+  // MI M6 — the resolved Merchant, from `include: { resolvedMerchant: { select:
+  // { displayName, logoUrl } } }`. Optional: reads that omit the join fall back
+  // to the raw `merchant` and a null logo (icon).
+  resolvedMerchant?:         ResolvedMerchantLike | null;
 }
 
 /**
@@ -74,6 +79,9 @@ export function serializeTransactionRow(r: TransactionRowLike): Transaction {
     accountId:   (r.accountId ?? r.financialAccountId) as string,
     date:        r.date.toISOString().split("T")[0],
     merchant:    r.merchant,
+    // MI M6 read cutover — resolved presentation (additive; raw `merchant` kept).
+    merchantDisplayName: merchantDisplayName(r.merchant, r.resolvedMerchant),
+    merchantLogoUrl:     merchantLogoUrl(r.resolvedMerchant),
     description: r.description ?? undefined,
     category:    r.category as Transaction["category"],
     amount:      r.amount,

@@ -229,6 +229,7 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
         const q = search.toLowerCase();
         if (
           !t.merchant.toLowerCase().includes(q) &&
+          !(t.merchantDisplayName ?? "").toLowerCase().includes(q) && // MI M6 — alias-aware
           !(t.description ?? "").toLowerCase().includes(q)
         ) return false;
       }
@@ -716,8 +717,10 @@ function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
   const catCls   = CAT_COLORS[tx.category] ?? "bg-[var(--surface-inset)] text-[var(--text-muted)]";
   const dateObj  = new Date(tx.date + "T12:00:00");
 
-  // Investment transactions use merchant as ticker
-  const primaryLabel   = tx.merchant;
+  // Investment transactions use merchant as ticker. MI M6 — banking rows show the
+  // resolved Merchant display name; investment/unresolved rows fall back to the
+  // raw merchant (the ticker), which is always preserved.
+  const primaryLabel   = tx.merchantDisplayName ?? tx.merchant;
   const secondaryLabel = tx.description && tx.description !== tx.merchant ? tx.description : null;
 
   return (

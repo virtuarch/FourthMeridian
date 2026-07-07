@@ -199,6 +199,9 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
           const q = search.toLowerCase();
           if (
             !tx.merchant.toLowerCase().includes(q) &&
+            // MI M6 — alias-aware search: the resolved display name matches
+            // every alias of a merchant (WALMART #1842 / WM SUPERCENTER → "Walmart").
+            !(tx.merchantDisplayName ?? "").toLowerCase().includes(q) &&
             !(tx.description ?? "").toLowerCase().includes(q)
           ) return false;
         }
@@ -547,7 +550,13 @@ function TxRow({
       {/* Merchant + meta */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{tx.merchant}</p>
+          {/* MI M6 — merchant logo when resolved; else the existing text-only rendering. */}
+          {tx.merchantLogoUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={tx.merchantLogoUrl} alt="" className="w-4 h-4 rounded-sm shrink-0" />
+          )}
+          {/* MI M6 — resolved display name, falling back to the raw descriptor. */}
+          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{tx.merchantDisplayName ?? tx.merchant}</p>
           {tx.pending && (
             <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>
               Pending

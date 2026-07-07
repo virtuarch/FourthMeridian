@@ -60,6 +60,8 @@ export async function GET(
       deletedAt: null,
     },
     orderBy: { date: "desc" },
+    // MI M6 read cutover — resolved Merchant presentation (additive join).
+    include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } } },
   });
 
   // TI-1: canonical serialization via the shared serializer

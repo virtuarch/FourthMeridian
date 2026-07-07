@@ -482,7 +482,8 @@ export interface RecurringCandidate {
  */
 export interface DrilldownTransaction {
   date:         string;  // YYYY-MM-DD
-  merchant:     string;  // canonical display name
+  merchant:     string;  // MI M6 — resolved Merchant display name (else normalized)
+  rawMerchant?: string;  // MI M6 — original provider descriptor, when it differs (forensic)
   description?: string;  // raw provider description when available
   amount:       number;  // signed (negative = spend)
   category:     string;  // TransactionCategory value
