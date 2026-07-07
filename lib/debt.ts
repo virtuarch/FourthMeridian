@@ -7,6 +7,7 @@
 
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
+import { isDebtPayment } from "@/lib/transactions/flow-predicates";
 
 /**
  * Estimates a monthly minimum payment when the user has supplied an APR but
@@ -75,7 +76,7 @@ function rowAmount(
 export function totalDebtPaid(txs: DebtPaymentTxnLike[], ctx?: ConversionContext): number {
   let sum = 0;
   for (const t of txs) {
-    if (t.flowType === 'DEBT_PAYMENT') sum += Math.abs(rowAmount(t, ctx));
+    if (isDebtPayment(t.flowType)) sum += Math.abs(rowAmount(t, ctx));
   }
   return sum;
 }
@@ -105,7 +106,7 @@ export function rollupDebtPaymentsByAccount(
 ): DebtPaymentRollupEntry[] {
   const byAccount = new Map<string, DebtPaymentRollupEntry>();
   for (const t of txs) {
-    if (t.flowType !== 'DEBT_PAYMENT') continue;
+    if (!isDebtPayment(t.flowType)) continue;
     let entry = byAccount.get(t.accountId);
     if (!entry) {
       entry = { accountId: t.accountId, total: 0, count: 0, estimated: false };

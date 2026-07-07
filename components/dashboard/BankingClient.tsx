@@ -12,6 +12,7 @@ import { convertMoney, rehydrateContext, type SerializedConversionContext } from
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { EstimatedChip } from "@/components/ui/EstimatedChip";
 import { formatDate } from "@/lib/format";
+import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 // MC1 QA Q3 — itemized rows pass the ROW's own currency; default preserved.
@@ -57,8 +58,8 @@ const ALL_CATEGORIES: TransactionCategory[] = [
   "Travel", "Subscriptions", "Utilities", "Interest", "Payment", "Other",
 ];
 
-// FlowType P5 Slice 2 — money-out cost flows that count toward the "Spend" chip.
-const FLOW_COST = new Set(["SPENDING", "FEE", "INTEREST"]);
+// FlowType P5 Slice 2 / TI1 — money-out cost flows that count toward the "Spend"
+// chip. Membership now lives in the single-authority predicate module.
 
 type TimeFilter = "all" | "90d" | "30d" | "7d";
 
@@ -221,9 +222,9 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
       conversionCtx
         ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, conversionCtx)
         : { amount: t.amount, estimated: false };
-    const cost    = filteredTxs.filter((t) => t.flowType != null && FLOW_COST.has(t.flowType)).map(conv);
-    const refunds = filteredTxs.filter((t) => t.flowType === "REFUND").map(conv);
-    const income  = filteredTxs.filter((t) => t.flowType === "INCOME").map(conv);
+    const cost    = filteredTxs.filter((t) => isCostFlow(t.flowType)).map(conv);
+    const refunds = filteredTxs.filter((t) => isRefund(t.flowType)).map(conv);
+    const income  = filteredTxs.filter((t) => isIncome(t.flowType)).map(conv);
     const grossSpend   = cost.reduce((s, c) => s + Math.abs(c.amount), 0);
     const spendRefunds = refunds.reduce((s, c) => s + Math.abs(c.amount), 0);
     return {

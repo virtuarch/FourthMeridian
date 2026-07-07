@@ -74,6 +74,7 @@ import type {
   DrilldownTransaction,
 } from '@/lib/ai/types';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
+import { isCostFlow, isRefund, isIncome, isTransfer, isDebtPayment } from '@/lib/transactions/flow-predicates';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { convertMoney, identityContext } from '@/lib/money/convert';
 import { buildSpaceConversionContext } from '@/lib/money/server-context';
@@ -122,19 +123,12 @@ const BANKING_FLOWS: FlowType[] = [
   FlowType.INTEREST,
 ];
 
-/**
- * FlowType P5 Slice 4 (D-2) — flows counted in expenseTotal (gross Σ|amount|):
- * SPENDING, plus FEE (newly reachable), plus INTEREST charges (parity with the
- * legacy fall-through that already counted them). Mirrors the dashboard's
- * Slice-2 FLOW_COST set. REFUND is disclosed separately (refundTotal, D-3) and
- * NEVER netted here — the KD-17 debit-only reconciliation between byCategory
- * and expenseTotal depends on it.
- */
-const EXPENSE_FLOWS = new Set<FlowType>([
-  FlowType.SPENDING,
-  FlowType.FEE,
-  FlowType.INTEREST,
-]);
+// FlowType P5 Slice 4 (D-2) / TI1 — flows counted in expenseTotal (gross
+// Σ|amount|): SPENDING + FEE + INTEREST charges. This membership (the former
+// local EXPENSE_FLOWS set, which mirrored the dashboard's FLOW_COST) now lives
+// in the single-authority predicate `isCostFlow`. REFUND is disclosed
+// separately (refundTotal, D-3) and NEVER netted here — the KD-17 debit-only
+// reconciliation between byCategory and expenseTotal depends on it.
 
 /**
  * Safety cap on rows fetched per assembly. Aggregation covers these rows;
@@ -372,12 +366,12 @@ async function assembleTransactions(
     // lands in exactly one bucket; INVESTMENT/ADJUSTMENT/UNKNOWN never reach
     // this loop (excluded by the BANKING_FLOWS query filter).
 
-    if (txn.flowType === FlowType.TRANSFER) {
+    if (isTransfer(txn.flowType)) {
       transferTotal += Math.abs(amt);
       continue;
     }
 
-    if (txn.flowType === FlowType.DEBT_PAYMENT) {
+    if (isDebtPayment(txn.flowType)) {
       // Source-side legs only (amount < 0). Destination-side INFLOW legs on
       // debt accounts are deliberately excluded — counting both sides would
       // double-count; the per-liability view is Slice 3's DebtClient rollup.
@@ -385,7 +379,7 @@ async function assembleTransactions(
       continue;
     }
 
-    if (txn.flowType === FlowType.INCOME) {
+    if (isIncome(txn.flowType)) {
       if (amt > 0) {
         incomeTotal += amt;
         // Largest selected in TARGET units (identical under identity); the row
@@ -398,7 +392,7 @@ async function assembleTransactions(
       continue;
     }
 
-    if (txn.flowType === FlowType.REFUND) {
+    if (isRefund(txn.flowType)) {
       // D-3: disclosed gross; never netted into expenseTotal (KD-17) and
       // never counted as income (a refund reverses prior spending).
       refundTotal += Math.abs(amt);
@@ -406,7 +400,7 @@ async function assembleTransactions(
     }
 
     // D-2: SPENDING + FEE + INTEREST charges, gross.
-    if (txn.flowType !== null && EXPENSE_FLOWS.has(txn.flowType)) {
+    if (isCostFlow(txn.flowType)) {
       expenseTotal += Math.abs(amt);
       if (!largestExpenseRow || Math.abs(amt) > largestExpenseAmt) {
         largestExpenseRow = txn;
@@ -502,10 +496,7 @@ async function assembleTransactions(
 
     for (const txn of settled) {
       // Slice 4: flow-based exclusion (was category Transfer/Payment).
-      if (
-        txn.flowType === FlowType.TRANSFER ||
-        txn.flowType === FlowType.DEBT_PAYMENT
-      ) continue;
+      if (isTransfer(txn.flowType) || isDebtPayment(txn.flowType)) continue;
 
       const key     = txn.merchant.trim().toLowerCase();
       const group   = merchantMap.get(key) ?? { amounts: [], category: txn.category };
@@ -897,15 +888,15 @@ export function buildMonthlyBreakdown(
     b.categoryAgg.set(txn.category, agg);
 
     // FlowType P5 Slice 4 — same flow partition rules as the window loop.
-    if (txn.flowType === FlowType.TRANSFER) {
+    if (isTransfer(txn.flowType)) {
       b.transferTotal += Math.abs(amt);
-    } else if (txn.flowType === FlowType.DEBT_PAYMENT) {
+    } else if (isDebtPayment(txn.flowType)) {
       if (amt < 0) b.debtPaymentTotal += Math.abs(amt);
-    } else if (txn.flowType === FlowType.INCOME) {
+    } else if (isIncome(txn.flowType)) {
       if (amt > 0) b.incomeTotal += amt;
-    } else if (txn.flowType === FlowType.REFUND) {
+    } else if (isRefund(txn.flowType)) {
       b.refundTotal += Math.abs(amt);
-    } else if (txn.flowType !== null && EXPENSE_FLOWS.has(txn.flowType)) {
+    } else if (isCostFlow(txn.flowType)) {
       b.expenseTotal += Math.abs(amt);
     }
   }

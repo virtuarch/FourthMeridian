@@ -62,6 +62,7 @@ import { checkSpendingCategoryInvariant } from '@/lib/ai/assemblers/transactions
 // FlowType P5 Slice 6 — flow-derived serializer sets + per-liability debt
 // payments (KD-18 relaxation, backed by the Slice 3 rollup).
 import { classifyFlow } from '@/lib/transactions/flow-classifier';
+import { SERIALIZED_SPENDING_FLOWS } from '@/lib/transactions/flow-predicates';
 import { getDebtTransactions } from '@/lib/data/transactions';
 import { rollupDebtPaymentsByAccount } from '@/lib/debt';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
@@ -434,7 +435,8 @@ const CATEGORY_SYNONYMS: Record<string, string> = {
 // post-Slice-4 newcomers resolve correctly by construction: Dividend → INCOME
 // (excluded — no more $0 average lines), Fee → FEE (included). The probe uses
 // amount −1 because byCategory `total` is the KD-17 debit-only population.
-const SERIALIZED_SPENDING_FLOWS = new Set(['SPENDING', 'FEE']);
+// TI1 — SERIALIZED_SPENDING_FLOWS is now imported from the single-authority
+// predicate module (lib/transactions/flow-predicates.ts).
 const NON_SPENDING_CATEGORY_NAMES: ReadonlySet<string> = new Set(
   (Object.values(TransactionCategory) as string[]).filter(
     (c) => !SERIALIZED_SPENDING_FLOWS.has(classifyFlow({ category: c, amount: -1 }).flowType),

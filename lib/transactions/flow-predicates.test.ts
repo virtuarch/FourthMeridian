@@ -1,0 +1,81 @@
+/**
+ * lib/transactions/flow-predicates.test.ts
+ *
+ * TI1 — locks the membership of the single-authority predicates so a future
+ * edit cannot silently change what counts as spend / income / a transfer / etc.
+ * These sets reproduce the pre-TI1 consumer definitions byte-for-byte; the
+ * assertions below are the behavior-neutrality contract for the migration.
+ *
+ * Pure module, no DB — runnable under `tsx`.
+ */
+
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  COST_FLOWS,
+  SERIALIZED_SPENDING_FLOWS,
+  isCostFlow,
+  isSerializedSpendingFlow,
+  isSpendLedgerFlow,
+  isExcludedFromSpendLedger,
+  isIncome,
+  isRefund,
+  isTransfer,
+  isDebtPayment,
+  isInvestmentFlow,
+} from './flow-predicates';
+
+// Every FlowType value (mirrors flow-classifier.ts FlowType union).
+const ALL: string[] = [
+  'SPENDING', 'INCOME', 'REFUND', 'DEBT_PAYMENT', 'TRANSFER',
+  'INVESTMENT', 'FEE', 'INTEREST', 'ADJUSTMENT', 'UNKNOWN',
+];
+
+test('COST_FLOWS is exactly the pre-TI1 FLOW_COST / EXPENSE_FLOWS set', () => {
+  assert.deepEqual([...COST_FLOWS].sort(), ['FEE', 'INTEREST', 'SPENDING']);
+  for (const ft of ALL) {
+    assert.equal(isCostFlow(ft), ['SPENDING', 'FEE', 'INTEREST'].includes(ft));
+  }
+});
+
+test('SERIALIZED_SPENDING_FLOWS is exactly {SPENDING, FEE} (narrower than cost)', () => {
+  assert.deepEqual([...SERIALIZED_SPENDING_FLOWS].sort(), ['FEE', 'SPENDING']);
+  for (const ft of ALL) {
+    assert.equal(isSerializedSpendingFlow(ft), ['SPENDING', 'FEE'].includes(ft));
+  }
+  // The deliberate divergence: INTEREST is a cost flow but NOT serialized-spending.
+  assert.equal(isCostFlow('INTEREST'), true);
+  assert.equal(isSerializedSpendingFlow('INTEREST'), false);
+});
+
+test('spend-ledger is exactly {SPENDING, REFUND} and its complement is total', () => {
+  for (const ft of ALL) {
+    const inLedger = ft === 'SPENDING' || ft === 'REFUND';
+    assert.equal(isSpendLedgerFlow(ft), inLedger);
+    assert.equal(isExcludedFromSpendLedger(ft), !inLedger);
+  }
+});
+
+test('single-value predicates match strict equality', () => {
+  for (const ft of ALL) {
+    assert.equal(isIncome(ft), ft === 'INCOME');
+    assert.equal(isRefund(ft), ft === 'REFUND');
+    assert.equal(isTransfer(ft), ft === 'TRANSFER');
+    assert.equal(isDebtPayment(ft), ft === 'DEBT_PAYMENT');
+    assert.equal(isInvestmentFlow(ft), ft === 'INVESTMENT');
+  }
+});
+
+test('null / undefined flow is never a member of any set', () => {
+  for (const v of [null, undefined]) {
+    assert.equal(isCostFlow(v), false);
+    assert.equal(isSerializedSpendingFlow(v), false);
+    assert.equal(isSpendLedgerFlow(v), false);
+    assert.equal(isExcludedFromSpendLedger(v), true); // complement: null is excluded
+    assert.equal(isIncome(v), false);
+    assert.equal(isRefund(v), false);
+    assert.equal(isTransfer(v), false);
+    assert.equal(isDebtPayment(v), false);
+    assert.equal(isInvestmentFlow(v), false);
+  }
+});

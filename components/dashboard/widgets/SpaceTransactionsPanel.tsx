@@ -20,6 +20,7 @@ import { Search, X } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
+import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
 // MC1 QA Q3 — itemized transaction rows pass the ROW's own currency.
@@ -40,8 +41,8 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
   "Travel", "Subscriptions", "Utilities", "Interest", "Payment", "Other",
 ];
 
-// FlowType P5 Slice 2 — money-out cost flows that count toward the "Spend" chip.
-const FLOW_COST = new Set(["SPENDING", "FEE", "INTEREST"]);
+// FlowType P5 Slice 2 / TI1 — money-out cost flows that count toward the "Spend"
+// chip. Membership now lives in the single-authority predicate module.
 
 // ── Date-range filter ─────────────────────────────────────────────────────────
 type DateRange = "all" | "90d" | "30d" | "7d";
@@ -174,14 +175,14 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   // FEE + INTEREST outflows minus REFUND (clamped ≥ 0); In = INCOME only.
   // Transfers/debt payments/investments/adjustments/unknowns excluded from both.
   const grossSpend = filtered
-    .filter((t) => t.flowType != null && FLOW_COST.has(t.flowType))
+    .filter((t) => isCostFlow(t.flowType))
     .reduce((s, t) => s + Math.abs(rowAmount(t)), 0);
   const spendRefunds = filtered
-    .filter((t) => t.flowType === "REFUND")
+    .filter((t) => isRefund(t.flowType))
     .reduce((s, t) => s + Math.abs(rowAmount(t)), 0);
   const totalSpend = Math.max(0, grossSpend - spendRefunds);
   const totalIn = filtered
-    .filter((t) => t.flowType === "INCOME")
+    .filter((t) => isIncome(t.flowType))
     .reduce((s, t) => s + Math.abs(rowAmount(t)), 0);
 
   // ── Active filter chip helpers ─────────────────────────────────────────

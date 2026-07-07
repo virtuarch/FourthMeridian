@@ -34,6 +34,10 @@
  * later Prisma enum (P3) can promote them 1:1.
  */
 
+// TI1 — the spend-ledger membership definition lives in the single-authority
+// predicate module. Value-only import from a zero-import pure module: no cycle.
+import { isSpendLedgerFlow } from './flow-predicates';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Enums (TypeScript-only in P1 — no Prisma enum is created this phase)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -263,9 +267,14 @@ export function classifyFlow(input: FlowClassificationInput): FlowClassification
 // Convenience predicates (for safe call-site routing in later phases)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** True when the flow contributes to the spend ledger (spend or its reversal). */
+/**
+ * True when the flow contributes to the spend ledger (spend or its reversal).
+ * TI1 — delegates to the single-authority predicate so the SPENDING|REFUND
+ * membership is defined once; this object-shaped wrapper stays for the existing
+ * `isExcludedFromSpending(classifyFlow(...))` call site in annotations.ts.
+ */
 export function isSpendingFlow(c: FlowClassification): boolean {
-  return c.flowType === 'SPENDING' || c.flowType === 'REFUND';
+  return isSpendLedgerFlow(c.flowType);
 }
 
 /**
