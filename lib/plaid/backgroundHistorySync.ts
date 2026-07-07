@@ -32,6 +32,7 @@ import { db } from "@/lib/db";
 import { ShareStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth, plaidErrorSummary } from "@/lib/plaid/errors";
+import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { backfillSpaceSnapshots } from "@/lib/snapshots/backfill";
 
 /**
@@ -107,6 +108,8 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<void>
           where: { id: plaidItemId },
           data:  { status: health.status, errorCode: health.errorCode },
         });
+        // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
+        await notifyItemSyncFailed(plaidItemId);
       }
     } catch (updateErr) {
       console.error(

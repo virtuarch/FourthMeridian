@@ -33,6 +33,11 @@ import { AuditAction, type AuditActionType } from "@/lib/audit-actions";
 import type { DomainEvent, DomainEventType } from "@/lib/events/types";
 import { regenerateSnapshotOnShareChange } from "@/lib/events/handlers/snapshot";
 import { notifySpaceInviteReceived } from "@/lib/events/handlers/space-invite-notification";
+import {
+  notifyMemberRemoved,
+  notifyMemberRoleChanged,
+  notifySpaceInviteAccepted,
+} from "@/lib/events/handlers/space-member-notifications";
 
 /** Either the shared Prisma client or an active transaction client. */
 type DbClient = Prisma.TransactionClient | typeof db;
@@ -76,14 +81,19 @@ const DOMAIN_EVENT_ACTION: Partial<Record<DomainEventType, AuditActionType>> = {
  *            revoked in the same request, changing the space's active shares).
  *   OPS-3 S1: SPACE_INVITE_RECEIVED notification on MemberInvited (the first
  *            notification producer; see lib/notifications/create.ts).
+ *   OPS-3 S5 Wave 2: Spaces membership notifications on MemberJoined /
+ *            MemberRemoved / MemberRoleChanged (MemberLeft deliberately has
+ *            no notification handler — wave-entry ruling; snapshot only).
  */
 type DomainEventHandler = (event: DomainEvent) => void | Promise<void>;
 const HANDLERS: Partial<Record<DomainEventType, DomainEventHandler[]>> = {
   AccountShared:       [regenerateSnapshotOnShareChange],
   AccountShareRevoked: [regenerateSnapshotOnShareChange],
-  MemberRemoved:       [regenerateSnapshotOnShareChange],
+  MemberRemoved:       [regenerateSnapshotOnShareChange, notifyMemberRemoved],
   MemberLeft:          [regenerateSnapshotOnShareChange],
   MemberInvited:       [notifySpaceInviteReceived],
+  MemberJoined:        [notifySpaceInviteAccepted],
+  MemberRoleChanged:   [notifyMemberRoleChanged],
 };
 
 /**

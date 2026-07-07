@@ -30,6 +30,7 @@ import { db } from "@/lib/db";
 import { PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 
 export interface SyncBanksResult {
   succeeded: number;
@@ -70,6 +71,8 @@ export async function syncBanks(): Promise<SyncBanksResult> {
           where: { id: item.id },
           data:  { status: health.status, errorCode: health.errorCode },
         });
+        // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
+        await notifyItemSyncFailed(item.id);
       }
     }
   }

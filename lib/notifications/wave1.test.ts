@@ -81,11 +81,10 @@ for (const [file, types] of Object.entries(WAVE1_SITES)) {
   );
 }
 
-// Wave discipline: 1b and later waves are NOT wired.
-for (const deferred of ["EMAIL_VERIFIED", "RECOVERY_CODE_USED", "RECOVERY_CODES_REGENERATED", "TWO_FACTOR_RESET",
-                        "SPACE_INVITE_ACCEPTED", "MEMBER_REMOVED", "MEMBER_ROLE_CHANGED", "SYNC_FAILED",
-                        "DUPLICATE_DETECTED", "IMPORT_COMPLETED"] as const) {
-  check(`${deferred} remains VOCABULARY (later wave, not started)`,
+// Wave discipline: 1b is NOT wired. (Wave 2 → wave2.test.ts; Wave 3 →
+// wave3.test.ts own their wave states.)
+for (const deferred of ["EMAIL_VERIFIED", "RECOVERY_CODE_USED", "RECOVERY_CODES_REGENERATED", "TWO_FACTOR_RESET"] as const) {
+  check(`${deferred} remains VOCABULARY (Wave 1b, not started)`,
     NOTIFICATION_REGISTRY[deferred].status === "VOCABULARY");
 }
 

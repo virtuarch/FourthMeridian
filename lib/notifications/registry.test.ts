@@ -209,6 +209,15 @@ const WIRED = new Set<string>([
   "ACCOUNT_DELETION_REQUESTED",
   "ACCOUNT_DELETION_CANCELLED",
   "DATA_EXPORTED",
+  // OPS-3 S5 Wave 2 — Spaces membership, EV-1 handlers:
+  "SPACE_INVITE_ACCEPTED",
+  "MEMBER_REMOVED",
+  "MEMBER_ROLE_CHANGED",
+  // OPS-3 S5 Wave 3 — financial (SYNC_COMPLETED resolved-no-rows;
+  // DUPLICATE_DETECTED vocabulary — no PENDING substrate exists):
+  "SYNC_FAILED",
+  "IMPORT_COMPLETED",
+  "IMPORT_COMPLETED_WITH_ERRORS",
 ]);
 for (const [key, e] of entries) {
   if (WIRED.has(key)) {

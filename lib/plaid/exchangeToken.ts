@@ -40,6 +40,7 @@ import {
   ConnectionStatus,
 } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { AuditAction } from "@/lib/audit-actions";
 import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
@@ -152,6 +153,12 @@ export async function performPlaidTokenExchange(
       status:          PlaidItemStatus.ACTIVE,
     },
   });
+
+  // OPS-3 S5 Wave 3 — a relink through Link update mode resolves an open
+  // SYNC_FAILED condition immediately (don't wait for the next sync): retire
+  // the :open key + archive the stale "needs attention" row. No-op for brand
+  // new items. Best-effort.
+  await retireItemSyncFailure(plaidItem.id);
 
   // 5. D2 Slice A — Connection dual-write (PLAID).
   // Upsert a Connection row keyed on (userId, provider=PLAID,

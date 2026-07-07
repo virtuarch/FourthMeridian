@@ -23,6 +23,7 @@ import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 import { refreshPlaidItem, refreshAllActiveItemsForUser, type RefreshSummary, type RefreshItemResult } from "@/lib/plaid/refresh";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { checkManualRefreshCooldown, markManualRefreshed, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
 
 interface RefreshBody {
@@ -78,6 +79,8 @@ export const POST = withApiHandler(async (req: NextRequest) => {
           where: { id: item.id },
           data:  { status: health.status, errorCode: health.errorCode },
         });
+        // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
+        await notifyItemSyncFailed(item.id);
       }
       return NextResponse.json({ error: "Refresh failed" }, { status: 500 });
     }

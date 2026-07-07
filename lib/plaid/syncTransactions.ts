@@ -66,6 +66,7 @@ import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import { ProviderType, PlaidItemStatus } from "@prisma/client";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
+import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
 import { findByFingerprint } from "@/lib/transactions/fingerprint";
 // Pure Plaid → TransactionCategory mapping, extracted to a Prisma-free module so
 // it is unit-testable in isolation (lib/transactions/plaid-category.test.ts).
@@ -367,6 +368,11 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
     where: { id: plaidItemDbId },
     data:  { cursor: cursor ?? null, lastSyncedAt: new Date(), status: PlaidItemStatus.ACTIVE, errorCode: null },
   });
+
+  // OPS-3 S5 Wave 3 — the item provably works again: retire the open
+  // SYNC_FAILED condition (releases the :open dedupe key + archives the stale
+  // "needs attention" row) so a FUTURE outage notifies afresh. Best-effort.
+  await retireItemSyncFailure(plaidItemDbId);
 
   console.log(
     `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, skippedMissingAccount ${skippedMissingAccount}, removed ${removed}`

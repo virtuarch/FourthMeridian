@@ -118,6 +118,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
+import { createNotification } from "@/lib/notifications/create";
 import { getSpaceContext } from "@/lib/space";
 import { ImportBatchStatus, ImportSource, Prisma } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
@@ -464,6 +465,24 @@ export const POST = withApiHandler(async (
       completedAt:   new Date(),
     },
   });
+
+  // OPS-3 S5 Wave 3 — batch-completion record for the bell (the importing
+  // user; particularly valuable for the WITH_ERRORS case, whose row count
+  // detail outlives the response toast). Non-throwing by contract; dedupe
+  // none (each batch is a distinct fact).
+  await createNotification(
+    finalStatus === ImportBatchStatus.COMPLETED_WITH_ERRORS
+      ? {
+          type: "IMPORT_COMPLETED_WITH_ERRORS",
+          userId: user.id,
+          data: { batchId: batch.id, errorCount: failed, rowCount: created },
+        }
+      : {
+          type: "IMPORT_COMPLETED",
+          userId: user.id,
+          data: { batchId: batch.id, rowCount: created },
+        },
+  );
 
   // D2 Step 4D-4 — one batch-level audit event, written only if at least
   // one row was actually overwritten (diff was non-empty for at least one

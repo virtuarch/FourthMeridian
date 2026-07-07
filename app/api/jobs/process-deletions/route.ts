@@ -13,11 +13,21 @@
  * Behavior: purges every account past its grace window, one at a time,
  * best-effort per user (a single failure never blocks the rest and is retried
  * on the next daily run). See lib/account-deletion/purge.ts for the pipeline.
+ *
+ * OPS-3 S6 — notification retention rides this cron's tail (frozen F7: no
+ * dispatcher exists and cleanup must not consume a cron slot). Bounded
+ * best-effort updateMany/deleteMany sweeps (see lib/notifications/cleanup.ts);
+ * a cleanup failure never fails the purge run. When the PF1 dispatcher lands,
+ * cleanupNotifications() moves there and this tail call is deleted.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
 import { processDeletions } from "@/jobs/process-deletions";
+import {
+  cleanupNotifications,
+  type NotificationCleanupResult,
+} from "@/lib/notifications/cleanup";
 
 // Headroom for looping over the (small) set of due accounts in one invocation —
 // matches the sync-banks / fetch-fx-rates precedent (Hobby-plan max).
@@ -32,5 +42,15 @@ export const GET = withApiHandler(async (req: NextRequest) => {
   }
 
   const result = await processDeletions();
-  return NextResponse.json({ ok: true, ...result });
+
+  // OPS-3 S6 — notification retention (best-effort tail; never fails the run).
+  let notificationCleanup: NotificationCleanupResult | { error: string };
+  try {
+    notificationCleanup = await cleanupNotifications();
+  } catch (err) {
+    console.error("[process-deletions] notification cleanup failed (non-fatal):", err);
+    notificationCleanup = { error: err instanceof Error ? err.message : String(err) };
+  }
+
+  return NextResponse.json({ ok: true, ...result, notificationCleanup });
 }, "GET /api/jobs/process-deletions");

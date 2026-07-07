@@ -322,6 +322,9 @@ export const NOTIFICATION_REGISTRY = {
   },
   SPACE_INVITE_ACCEPTED: {
     ...SPACES,
+    // WIRED (OPS-3 S5 Wave 2): EV-1 handler on MemberJoined
+    // (lib/events/handlers/space-member-notifications.ts).
+    status: "WIRED" as const,
     id: "SPACE_INVITE_ACCEPTED",
     icon: "user-plus",
     // Notifies the INVITER. spaceId rides the column; names are display payload.
@@ -333,6 +336,8 @@ export const NOTIFICATION_REGISTRY = {
   },
   MEMBER_REMOVED: {
     ...SPACES,
+    // WIRED (OPS-3 S5 Wave 2): EV-1 handler on MemberRemoved.
+    status: "WIRED" as const,
     id: "MEMBER_REMOVED",
     icon: "user-minus",
     // Notifies the REMOVED user. spaceId column carries the Space pointer.
@@ -343,6 +348,8 @@ export const NOTIFICATION_REGISTRY = {
   },
   MEMBER_ROLE_CHANGED: {
     ...SPACES,
+    // WIRED (OPS-3 S5 Wave 2): EV-1 handler on MemberRoleChanged.
+    status: "WIRED" as const,
     id: "MEMBER_ROLE_CHANGED",
     icon: "users",
     // Notifies the TARGET user.
@@ -370,6 +377,11 @@ export const NOTIFICATION_REGISTRY = {
   // ══ FINANCIAL — producers: S5 Wave 3.
   SYNC_FAILED: {
     ...FINANCIAL,
+    // WIRED (OPS-3 S5 Wave 3): produced at every health-classified failure
+    // site (sync-banks cron, refresh/sync routes, refreshAllActiveItemsForUser,
+    // background history sync) via lib/plaid/sync-notifications.ts; the :open
+    // key is retired on recovery (completed sync / Link relink).
+    status: "WIRED" as const,
     id: "SYNC_FAILED",
     priority: "HIGH" as const,
     // Actionable (reconnect) → email on by default.
@@ -387,10 +399,11 @@ export const NOTIFICATION_REGISTRY = {
       href: "/dashboard/connections",
     }),
   },
-  // VOCABULARY pending open decision D2 (S5 Wave-3 entry): recommendation is
-  // to create NO rows for this type — /dashboard/connections already surfaces
-  // sync state. Declared so the id is reserved either way; defaultChannels is
-  // empty (off everywhere) per the baseline's noise ruling.
+  // D2 RESOLVED at Wave-3 entry (OPS-3 S5): NO rows are created for this type
+  // — /dashboard/connections is the surface for healthy-sync state, and a
+  // daily per-item ping is noise by construction. The id stays reserved
+  // (VOCABULARY) with empty defaultChannels; reopening D2 means wiring a
+  // producer AND flipping these defaults consciously.
   SYNC_COMPLETED: {
     ...FINANCIAL,
     id: "SYNC_COMPLETED",
@@ -405,6 +418,12 @@ export const NOTIFICATION_REGISTRY = {
       href: "/dashboard/connections",
     }),
   },
+  // VOCABULARY by Wave-3 investigation ruling (repository drift from the
+  // original inventory): the ONLY DuplicateAccountCandidate writer today is
+  // the automatic-merge path, which creates CONFIRMED_DUPLICATE rows with
+  // resolvedAt = detectedAt — no PENDING/review-gap rows exist, so there is
+  // nothing actionable to notify about (auto-merges are silent by design).
+  // Wire this when a human-review (PENDING) duplicate flow ships.
   DUPLICATE_DETECTED: {
     ...FINANCIAL,
     id: "DUPLICATE_DETECTED",
@@ -426,6 +445,9 @@ export const NOTIFICATION_REGISTRY = {
   },
   IMPORT_COMPLETED: {
     ...FINANCIAL,
+    // WIRED (OPS-3 S5 Wave 3): inline at batch completion
+    // (app/api/accounts/[id]/import).
+    status: "WIRED" as const,
     id: "IMPORT_COMPLETED",
     priority: "NORMAL" as const,
     defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],
@@ -442,6 +464,8 @@ export const NOTIFICATION_REGISTRY = {
   // a distinct type because priority is registry-static.
   IMPORT_COMPLETED_WITH_ERRORS: {
     ...FINANCIAL,
+    // WIRED (OPS-3 S5 Wave 3): inline at batch completion.
+    status: "WIRED" as const,
     id: "IMPORT_COMPLETED_WITH_ERRORS",
     priority: "HIGH" as const,
     defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],

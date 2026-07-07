@@ -160,7 +160,7 @@ function isUniqueViolation(err: unknown): boolean {
  * A missing/non-string placeholder value is a producer bug → THROW (input
  * validation, same class as an unknown type).
  */
-function fillDedupeTemplate(
+export function fillDedupeTemplate(
   template: string,
   userId: string,
   data: NotificationRenderData,
