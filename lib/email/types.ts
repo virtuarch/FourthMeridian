@@ -69,7 +69,8 @@ export interface EmailProvider {
 /**
  * The typed template registry key space. Grows one entry per real template as
  * later slices land. S1: smoke. S2a: password-reset. S2b: email-verification.
- * S3: space-invite. OPS-2 S2: security-alert.
+ * S3: space-invite. OPS-2 S2: security-alert. OPS-3 S4: notification (the one
+ * generic awareness email — see lib/email/templates/notification.ts).
  */
 export type EmailTemplateName =
   | "smoke"
@@ -77,7 +78,8 @@ export type EmailTemplateName =
   | "email-verification"
   | "space-invite"
   | "security-alert"
-  | "email-change";
+  | "email-change"
+  | "notification";
 
 /**
  * A template turns typed `data` into the subject + text of a message. The

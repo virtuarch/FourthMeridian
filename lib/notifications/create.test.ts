@@ -27,6 +27,11 @@ import type {
   PreferenceClient,
   PreferenceOverride,
 } from "@/lib/notifications/preferences";
+import type {
+  ChannelAdapter,
+  ChannelMessage,
+  ChannelResult,
+} from "@/lib/notifications/types";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -38,6 +43,23 @@ function check(name: string, cond: boolean, detail?: string): void {
   }
 }
 
+// Environment tolerance, NOT test logic: importing lib/db.ts constructs the
+// shared PrismaClient, whose library engine warms up in the background. On a
+// machine whose generated engine doesn't match the platform (e.g. a Linux
+// sandbox with a darwin-generated client), that warm-up floating-rejects with
+// PrismaClientInitializationError — a pre-existing artifact every db-importing
+// test carries (they normally exit before it surfaces; this file awaits long
+// enough for it to fire). NOTHING in this file uses Prisma — every client is
+// injected — so that one rejection class is ignored; anything else still fails
+// the run. Inert on a correctly generated machine.
+process.on("unhandledRejection", (err) => {
+  if ((err as { constructor?: { name?: string } })?.constructor?.name === "PrismaClientInitializationError") {
+    return;
+  }
+  console.error("  ✗ unexpected unhandled rejection:", err);
+  process.exit(1);
+});
+
 // ── In-memory fake client simulating the unique constraint ──────────────────
 
 interface FakeRow {
@@ -48,12 +70,36 @@ interface FakeRow {
   data: Record<string, unknown>;
 }
 
-function makeFakeClient(seed: FakeRow[] = []) {
+interface FakeDelivery {
+  notificationId: string;
+  channel: string;
+  status: string;
+  provider: string | null;
+  providerMessageId: string | null;
+  error: string | null;
+  attempts: number;
+  deliveredAt: Date | null;
+}
+
+function makeFakeClient(seed: FakeRow[] = [], emails: Record<string, string> = { u1: "u1@example.com" }) {
   const rows: FakeRow[] = [...seed];
+  const deliveries: FakeDelivery[] = [];
   let nextId = 1;
   const calls = { create: 0, findUnique: 0, update: 0 };
 
   const client: NotificationWriteClient = {
+    user: {
+      async findUnique({ where }) {
+        const email = emails[where.id];
+        return email ? { email } : null;
+      },
+    },
+    notificationDelivery: {
+      async create({ data }) {
+        deliveries.push({ ...data });
+        return { id: `d${deliveries.length}` };
+      },
+    },
     notification: {
       async create({ data }) {
         calls.create++;
@@ -92,8 +138,25 @@ function makeFakeClient(seed: FakeRow[] = []) {
       },
     },
   };
-  return { client, rows, calls };
+  return { client, rows, deliveries, calls };
 }
+
+// Fake EMAIL adapter (OPS-3 S4): scripted ChannelResult + message capture, so
+// delivery bookkeeping is asserted without touching the real email chokepoint.
+function makeFakeAdapter(result: ChannelResult) {
+  const messages: ChannelMessage[] = [];
+  const adapter: ChannelAdapter = {
+    channel: "EMAIL",
+    name: "fake-email",
+    async deliver(message) {
+      messages.push(message);
+      return result;
+    },
+  };
+  return { adapter, messages };
+}
+// Silent adapter for tests that aren't about email: skip, no assertions.
+const silentAdapter = makeFakeAdapter({ status: "skipped", provider: "fake-email" }).adapter;
 
 // Fake preference client (OPS-3 S3): the chokepoint now resolves the IN_APP
 // preference before inserting, so every call injects one (no live DB in unit
@@ -121,7 +184,7 @@ async function run(): Promise<void> {
     try {
       await createNotification(
         { type: "NOT_A_REAL_TYPE" as NotificationTypeId, userId: "u1" },
-        { client: makeFakeClient().client, prefClient: defaultPrefs },
+        { client: makeFakeClient().client, prefClient: defaultPrefs, emailAdapter: silentAdapter },
       );
     } catch {
       threw = true;
@@ -140,7 +203,7 @@ async function run(): Promise<void> {
         data: metadata,
         auditLogId: "audit_123",
       },
-      { client: fake.client, prefClient: defaultPrefs },
+      { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter },
     );
     const row = fake.rows[0]?.data as Record<string, unknown>;
     check("creates a row and reports created", res.status === "created" && res.id === "n1");
@@ -155,7 +218,7 @@ async function run(): Promise<void> {
     const fake = makeFakeClient();
     await createNotification(
       { type: "PASSWORD_CHANGED", userId: "u1" },
-      { client: fake.client, prefClient: defaultPrefs },
+      { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter },
     );
     const row = fake.rows[0]?.data as Record<string, unknown>;
     check("metadata omitted entirely when no data supplied", !("metadata" in row));
@@ -170,9 +233,9 @@ async function run(): Promise<void> {
       userId: "u1",
       data: { plaidItemId: "item_1", institutionName: "Chase" },
     };
-    const first = await createNotification(input, { client: fake.client, prefClient: defaultPrefs });
-    const second = await createNotification(input, { client: fake.client, prefClient: defaultPrefs });
-    const third = await createNotification(input, { client: fake.client, prefClient: defaultPrefs });
+    const first = await createNotification(input, { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter });
+    const second = await createNotification(input, { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter });
+    const third = await createNotification(input, { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter });
     check("first occurrence creates", first.status === "created");
     check(
       "dedupe key filled from registry template",
@@ -184,7 +247,7 @@ async function run(): Promise<void> {
 
     // Archived holder → key released, new outage notifies again.
     fake.rows[0].archivedAt = new Date();
-    const fourth = await createNotification(input, { client: fake.client, prefClient: defaultPrefs });
+    const fourth = await createNotification(input, { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter });
     check("archived holder releases its key and re-notifies", fourth.status === "created");
     check("old row's key was released", fake.rows[0].dedupeKey === null);
     check("new open row holds the key", fake.rows[1]?.dedupeKey === "SYNC_FAILED:item:item_1:open");
@@ -196,11 +259,11 @@ async function run(): Promise<void> {
     const fake = makeFakeClient();
     const a = await createNotification(
       { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_A" } },
-      { client: fake.client, prefClient: defaultPrefs },
+      { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter },
     );
     const b = await createNotification(
       { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_B" } },
-      { client: fake.client, prefClient: defaultPrefs },
+      { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter },
     );
     check("distinct conditions are not cross-suppressed", a.status === "created" && b.status === "created");
   }
@@ -211,7 +274,7 @@ async function run(): Promise<void> {
     try {
       await createNotification(
         { type: "SYNC_FAILED", userId: "u1", data: {} }, // missing plaidItemId
-        { client: makeFakeClient().client, prefClient: defaultPrefs },
+        { client: makeFakeClient().client, prefClient: defaultPrefs, emailAdapter: silentAdapter },
       );
     } catch {
       threw = true;
@@ -222,6 +285,16 @@ async function run(): Promise<void> {
   // ── 5. Runtime DB failure → non-throwing error result ──────────────────────
   {
     const broken: NotificationWriteClient = {
+      user: {
+        async findUnique() {
+          return null;
+        },
+      },
+      notificationDelivery: {
+        async create() {
+          return { id: "d" };
+        },
+      },
       notification: {
         async create() {
           throw new Error("connection lost");
@@ -236,7 +309,7 @@ async function run(): Promise<void> {
     };
     const res = await createNotification(
       { type: "PASSWORD_CHANGED", userId: "u1" },
-      { client: broken, prefClient: defaultPrefs },
+      { client: broken, prefClient: defaultPrefs, emailAdapter: silentAdapter },
     );
     check(
       "runtime DB error resolves to an error result, never throws",
@@ -265,7 +338,7 @@ async function run(): Promise<void> {
     check("expiry mirrors SpaceInvite.expiresAt", input.expiresAt === invite.expiresAt);
 
     const fake = makeFakeClient();
-    const res = await createNotification(input, { client: fake.client, prefClient: defaultPrefs });
+    const res = await createNotification(input, { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter });
     const row = fake.rows[0]?.data as Record<string, unknown>;
     check("invite producer creates exactly one notification", res.status === "created" && fake.rows.length === 1);
     check("invite title renders with the Space name", row.title === "You're invited to Hogan Family");
@@ -295,7 +368,7 @@ async function run(): Promise<void> {
     ]);
     const res = await createNotification(
       { type: "SPACE_INVITE_RECEIVED", userId: "u1", data: { inviteId: "i", spaceName: "S", inviterName: "@x" } },
-      { client: fake.client, prefClient: offSpaces },
+      { client: fake.client, prefClient: offSpaces, emailAdapter: silentAdapter },
     );
     check("in-app-disabled category is skipped", res.status === "skipped");
     check("skipped creates no row", fake.rows.length === 0 && fake.calls.create === 0);
@@ -308,7 +381,7 @@ async function run(): Promise<void> {
     ]);
     const res = await createNotification(
       { type: "PASSWORD_CHANGED", userId: "u1" },
-      { client: fake.client, prefClient: hostile },
+      { client: fake.client, prefClient: hostile, emailAdapter: silentAdapter },
     );
     check("locked category cannot be muted at the chokepoint", res.status === "created" && fake.rows.length === 1);
   }
@@ -317,7 +390,7 @@ async function run(): Promise<void> {
     const fake = makeFakeClient();
     const res = await createNotification(
       { type: "SYNC_COMPLETED", userId: "u1", data: { plaidItemId: "p", institutionName: "Chase" } },
-      { client: fake.client, prefClient: defaultPrefs },
+      { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter },
     );
     check("default-off type (SYNC_COMPLETED) is skipped with no override rows", res.status === "skipped");
   }
@@ -336,12 +409,102 @@ async function run(): Promise<void> {
     const fake = makeFakeClient();
     const res = await createNotification(
       { type: "SPACE_INVITE_RECEIVED", userId: "u1", data: { inviteId: "i", spaceName: "S", inviterName: "@x" } },
-      { client: fake.client, prefClient: broken },
+      { client: fake.client, prefClient: broken, emailAdapter: silentAdapter },
     );
     check(
       "preference-read failure resolves to error, never throws",
       res.status === "error" && (res.error ?? "").includes("pref store down"),
     );
+  }
+
+  // ── 9. Email delivery + NotificationDelivery bookkeeping (OPS-3 S4) ─────────
+  const inviteInput = {
+    type: "SPACE_INVITE_RECEIVED" as NotificationTypeId, // default: IN_APP + EMAIL
+    userId: "u1",
+    data: { inviteId: "i1", spaceName: "Hogan Family", inviterName: "@chris" },
+  };
+  {
+    // Successful send → one row, EmailResult mapped field-for-field.
+    const fake = makeFakeClient();
+    const { adapter, messages } = makeFakeAdapter({ status: "sent", id: "msg_123", provider: "resend" });
+    const res = await createNotification(inviteInput, { client: fake.client, prefClient: defaultPrefs, emailAdapter: adapter });
+    check("created with email default-on", res.status === "created");
+    check("exactly one delivery row per attempt", fake.deliveries.length === 1);
+    const d = fake.deliveries[0];
+    check("delivery row: EMAIL channel, sent, verbatim provider fields",
+      d.channel === "EMAIL" && d.status === "sent" && d.provider === "resend" && d.providerMessageId === "msg_123" && d.error === null);
+    check("deliveredAt set on sent", d.deliveredAt !== null);
+    check("attempts starts at 1 (retries are OPS-4)", d.attempts === 1);
+    check("delivery row anchored to the created notification", d.notificationId === res.id);
+    check("adapter got the recipient email + rendered copy",
+      messages[0]?.email === "u1@example.com" && messages[0]?.title === "You're invited to Hogan Family");
+  }
+  {
+    // Failed send → row records the failure; deliveredAt stays null.
+    const fake = makeFakeClient();
+    const { adapter } = makeFakeAdapter({ status: "error", provider: "resend", error: "550 mailbox unavailable" });
+    const res = await createNotification(inviteInput, { client: fake.client, prefClient: defaultPrefs, emailAdapter: adapter });
+    const d = fake.deliveries[0];
+    check("failed send still creates the notification", res.status === "created");
+    check("failure recorded verbatim", d?.status === "error" && d.error === "550 mailbox unavailable" && d.deliveredAt === null);
+  }
+  {
+    // EMAIL preference off → created, NO delivery row, adapter never called.
+    const fake = makeFakeClient();
+    const { adapter, messages } = makeFakeAdapter({ status: "sent", provider: "resend" });
+    const emailOff = makePrefClient([{ category: "SPACES", channel: "EMAIL", enabled: false }]);
+    const res = await createNotification(inviteInput, { client: fake.client, prefClient: emailOff, emailAdapter: adapter });
+    check("EMAIL-disabled: notification created, no delivery row, adapter untouched",
+      res.status === "created" && fake.deliveries.length === 0 && messages.length === 0);
+  }
+  {
+    // Locked ACCOUNT_SECURITY: hostile EMAIL-off rows are ignored — email ships.
+    const fake = makeFakeClient();
+    const { adapter } = makeFakeAdapter({ status: "sent", id: "m", provider: "resend" });
+    const hostileOff = makePrefClient([{ category: "ACCOUNT_SECURITY", channel: "EMAIL", enabled: false }]);
+    const res = await createNotification({ type: "PASSWORD_CHANGED", userId: "u1" },
+      { client: fake.client, prefClient: hostileOff, emailAdapter: adapter });
+    check("locked category emails despite hostile override", res.status === "created" && fake.deliveries[0]?.status === "sent");
+  }
+  {
+    // Default IN_APP-only type → created, no email attempt.
+    const fake = makeFakeClient();
+    const { adapter, messages } = makeFakeAdapter({ status: "sent", provider: "resend" });
+    const res = await createNotification(
+      { type: "MEMBER_REMOVED", userId: "u1", data: { spaceName: "S" } },
+      { client: fake.client, prefClient: defaultPrefs, emailAdapter: adapter },
+    );
+    check("in-app-only default sends no email", res.status === "created" && fake.deliveries.length === 0 && messages.length === 0);
+  }
+  {
+    // Duplicate suppression → no second email, no second delivery row.
+    const fake = makeFakeClient();
+    const { adapter, messages } = makeFakeAdapter({ status: "sent", provider: "resend" });
+    const emailOnFinancial = makePrefClient([{ category: "FINANCIAL", channel: "EMAIL", enabled: true }]);
+    const syncInput = { type: "SYNC_FAILED" as NotificationTypeId, userId: "u1", data: { plaidItemId: "p1", institutionName: "Chase" } };
+    const first = await createNotification(syncInput, { client: fake.client, prefClient: emailOnFinancial, emailAdapter: adapter });
+    const second = await createNotification(syncInput, { client: fake.client, prefClient: emailOnFinancial, emailAdapter: adapter });
+    check("suppressed duplicate ships no second email",
+      first.status === "created" && second.status === "suppressed" && fake.deliveries.length === 1 && messages.length === 1);
+  }
+  {
+    // Recipient row missing → adapter reports skipped; the skip is recorded.
+    const fake = makeFakeClient([], {} /* no emails */);
+    const { adapter } = makeFakeAdapter({ status: "skipped", provider: "fake-email" });
+    await createNotification(inviteInput, { client: fake.client, prefClient: defaultPrefs, emailAdapter: adapter });
+    check("skipped attempt still leaves a delivery row (bookkeeping invariant)",
+      fake.deliveries[0]?.status === "skipped" && fake.deliveries[0].deliveredAt === null);
+  }
+  {
+    // Adapter integration: the DEFAULT adapter rides the OPS-1 chokepoint;
+    // NODE_ENV=test forces the capture transport (never a real send — the
+    // send.ts contract), and the captured outcome lands in the delivery row.
+    (process.env as Record<string, string>).NODE_ENV = "test";
+    const fake = makeFakeClient();
+    const res = await createNotification(inviteInput, { client: fake.client, prefClient: defaultPrefs });
+    const d = fake.deliveries[0];
+    check("default adapter delivers through OPS-1 sendEmail (capture transport)",
+      res.status === "created" && d?.channel === "EMAIL" && d.status === "captured" && d.provider === "capture");
   }
 
   // ── 7. Source-scan: wiring + chokepoint exclusivity ─────────────────────────
