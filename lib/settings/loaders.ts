@@ -20,6 +20,10 @@ import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
+import {
+  getPreferenceMatrix,
+  type PreferenceMatrixRow,
+} from "@/lib/notifications/preferences";
 
 export interface SpaceOption {
   id:   string;
@@ -104,6 +108,7 @@ export async function getSecurity(): Promise<SecurityData> {
 export interface PreferencesData {
   reportingCurrency: string;
   preferredSpaceId:  string | null;
+  timezone:          string | null; // OPS-3 S3 — IANA zone; null = never set
   spaces:            SpaceOption[];
 }
 
@@ -113,8 +118,8 @@ export async function getPreferences(): Promise<PreferencesData> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (db as any).user.findUnique({
       where:  { id: userId },
-      select: { reportingCurrency: true, preferredSpaceId: true },
-    }) as Promise<{ reportingCurrency: string; preferredSpaceId: string | null } | null>,
+      select: { reportingCurrency: true, preferredSpaceId: true, timezone: true },
+    }) as Promise<{ reportingCurrency: string; preferredSpaceId: string | null; timezone: string | null } | null>,
     db.spaceMember.findMany({
       // Archived/trashed spaces can't be set as the default landing space —
       // exclude them from this picker (unchanged from the former page.tsx).
@@ -129,6 +134,7 @@ export async function getPreferences(): Promise<PreferencesData> {
   return {
     reportingCurrency: user.reportingCurrency ?? "USD",
     preferredSpaceId:  user.preferredSpaceId ?? null,
+    timezone:          user.timezone ?? null,
     spaces: memberships.map((m) => ({
       id:   m.space.id,
       name: m.space.name,
@@ -147,4 +153,17 @@ export async function getPreferences(): Promise<PreferencesData> {
  */
 export async function getDataPrivacy(): Promise<void> {
   await requireUserId();
+}
+
+// ── Notifications (OPS-3 S3) ──────────────────────────────────────────────────
+
+/**
+ * The effective category × channel preference matrix for the Notifications
+ * settings page. All resolution logic lives in lib/notifications/preferences.ts
+ * (default-by-absence, locked categories) — this loader only guards auth and
+ * delegates, per the per-page-loader architecture.
+ */
+export async function getNotificationPreferences(): Promise<PreferenceMatrixRow[]> {
+  const userId = await requireUserId();
+  return getPreferenceMatrix(userId);
 }

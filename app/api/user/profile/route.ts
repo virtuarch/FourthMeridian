@@ -15,6 +15,16 @@ import { requireUser } from "@/lib/session";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
 
+// OPS-3 S3 — an IANA zone is valid iff the runtime's Intl accepts it.
+function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function GET() {
   const [user, err] = await requireUser();
   if (err) return err;
@@ -57,7 +67,7 @@ export async function PATCH(req: NextRequest) {
   if (err) return err;
 
   const body = await req.json();
-  const { username, firstName, lastName, employmentStatus, useCase, dateOfBirth, preferredSpaceId, reportingCurrency } = body;
+  const { username, firstName, lastName, employmentStatus, useCase, dateOfBirth, preferredSpaceId, reportingCurrency, timezone } = body;
 
   // ── Validate username if provided ─────────────────────────────────────────
   if (username !== undefined) {
@@ -95,6 +105,19 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: parsed.error }, { status: 400 });
     }
     data.reportingCurrency = parsed.value;
+  }
+
+  // OPS-3 S3 — the user's IANA timezone (Settings → Preferences). Validated by
+  // asking Intl itself (the runtime IS the timezone authority — no hand-rolled
+  // allowlist to drift). Empty string / null clears back to "never set".
+  if (timezone !== undefined) {
+    if (timezone === null || timezone === "") {
+      data.timezone = null;
+    } else if (typeof timezone === "string" && isValidTimezone(timezone)) {
+      data.timezone = timezone;
+    } else {
+      return NextResponse.json({ error: "Unknown timezone." }, { status: 400 });
+    }
   }
 
   if (preferredSpaceId  !== undefined) {

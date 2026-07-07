@@ -45,6 +45,10 @@
 
 import { db } from "@/lib/db";
 import {
+  isChannelEnabledForUser,
+  type PreferenceClient,
+} from "@/lib/notifications/preferences";
+import {
   getNotificationDefinition,
   type NotificationTypeId,
 } from "@/lib/notifications/registry";
@@ -93,9 +97,14 @@ export interface NotificationWriteClient {
   };
 }
 
-/** The outcome of a createNotification call. Runtime-non-throwing contract. */
+/**
+ * The outcome of a createNotification call. Runtime-non-throwing contract.
+ * "skipped" (OPS-3 S3) mirrors EmailResult's vocabulary: no row was written
+ * BY DESIGN — the recipient disabled the type's category for IN_APP and the
+ * category is not locked. Preference resolution: lib/notifications/preferences.ts.
+ */
 export interface CreateNotificationResult {
-  status: "created" | "suppressed" | "error";
+  status: "created" | "suppressed" | "skipped" | "error";
   /** The Notification row id when status === "created". */
   id?: string;
   /** Human-readable reason when status === "error". */
@@ -146,7 +155,7 @@ function fillDedupeTemplate(
  */
 export async function createNotification(
   input: NotificationInput<NotificationTypeId>,
-  ctx?: { client?: NotificationWriteClient },
+  ctx?: { client?: NotificationWriteClient; prefClient?: PreferenceClient },
 ): Promise<CreateNotificationResult> {
   // 1. Registry gate — unknown types throw at the producer (programmer error).
   const def = getNotificationDefinition(input.type);
@@ -163,6 +172,25 @@ export async function createNotification(
     throw new Error(
       `createNotification: input.data for "${input.type}" must be a plain object`,
     );
+  }
+
+  // 1b. Preference gate (OPS-3 S3, frozen F11): the Notification row IS the
+  // in-app delivery, so an IN_APP-disabled category creates no row. Locked
+  // categories short-circuit to enabled inside the resolver. A preference-
+  // read failure is a runtime error → non-throwing error result.
+  try {
+    const inAppEnabled = await isChannelEnabledForUser(
+      input.userId,
+      input.type,
+      "IN_APP",
+      ctx?.prefClient ? { client: ctx.prefClient } : undefined,
+    );
+    if (!inAppEnabled) return { status: "skipped" };
+  } catch (prefErr) {
+    return {
+      status: "error",
+      error: prefErr instanceof Error ? prefErr.message : String(prefErr),
+    };
   }
 
   // 2. Dedupe key (F3). "refresh" falls back to suppress in v1 (frozen).

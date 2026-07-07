@@ -343,6 +343,11 @@ model User {
   deletionRequestedAt     DateTime?
   deletionScheduledAt     DateTime?
   lastBriefViewedAt    DateTime? // set when user views the Daily Brief page
+  // OPS-3 S3 — the user's IANA timezone (e.g. "America/New_York"). A general
+  // preference (Settings → Preferences), not notification-specific: consumed
+  // by future digests (S6), quiet hours (OPS-4), and Brief greetings. Null =
+  // never set; consumers fall back to UTC.
+  timezone             String?
   // MC1 Phase 3 (D-1/D-2) — the user's DEFAULT reporting currency. A default
   // ONLY: it seeds reportingCurrency for Spaces this user creates (copy-once
   // at POST /api/spaces) and denominates nothing by itself. NO retroactive
@@ -389,6 +394,9 @@ model User {
   // Notifications (OPS-3 S1) — the user's inbox; Cascade (unlike AuditLog's
   // SetNull) because notifications are per-user awareness, not forensics.
   notifications Notification[]
+  // Notification preference overrides (OPS-3 S3) — rows exist ONLY when the
+  // user deviates from the registry default (default-by-absence).
+  notificationPreferences NotificationPreference[]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1786,4 +1794,27 @@ model NotificationDelivery {
 
   @@index([notificationId])
   @@index([channel, status, createdAt]) // OPS-5 failure-rate queries
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NotificationPreference (OPS-3 S3) — category × channel preference OVERRIDES.
+// DEFAULT-BY-ABSENCE (frozen F11): a row exists only when the user deviates
+// from the registry default (lib/notifications/registry.ts). Resolution order,
+// enforced in lib/notifications/preferences.ts:
+//   locked category → forced on · override row → row wins · else registry default.
+// ACCOUNT_SECURITY is locked — the API rejects writes for it, so no row for
+// that category can ever exist. category/channel are registry-validated
+// strings, never DB enums (adding a category must not require a migration).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model NotificationPreference {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category  String // NotificationCategory constant
+  channel   String // "IN_APP" | "EMAIL" (PUSH/SMS/WEBHOOK are vocabulary)
+  enabled   Boolean
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, category, channel])
 }

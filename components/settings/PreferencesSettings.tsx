@@ -14,12 +14,29 @@ import { InlineField, INPUT_BASE, inputStyle, type SelectOption } from "@/compon
 import { useProfileSave } from "@/components/settings/useProfileSave";
 import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { displaySpaceName } from "@/lib/format";
-import { Loader2, LayoutDashboard, Coins } from "lucide-react";
+import { Loader2, LayoutDashboard, Coins, Globe } from "lucide-react";
 import type { PreferencesData, SpaceOption } from "@/lib/settings/loaders";
 
 // Approved reporting currencies (FX_BASE + SUPPORTED_QUOTES; same allowlist the
 // API enforces).
 const CURRENCY_OPTIONS: SelectOption[] = [FX_BASE, ...SUPPORTED_QUOTES].map((c) => ({ value: c, label: c }));
+
+// OPS-3 S3 — IANA zones from the browser's own Intl (the same authority the
+// API validates against); "" clears back to "Not set". The try/catch keeps
+// engines without supportedValuesOf from crashing the page (they just get the
+// current value only).
+function timezoneOptions(current: string | null): SelectOption[] {
+  let zones: string[] = [];
+  try {
+    zones = Intl.supportedValuesOf("timeZone");
+  } catch {
+    zones = current ? [current] : [];
+  }
+  return [
+    { value: "", label: "Not set (UTC)" },
+    ...zones.map((z) => ({ value: z, label: z.replace(/_/g, " ") })),
+  ];
+}
 
 // ── Preferred space card (moved verbatim from SettingsClient) ─────────────────
 
@@ -124,6 +141,24 @@ export function PreferencesSettings({ preferences }: { preferences: PreferencesD
           onSave={(val) => saveField({ reportingCurrency: val })}
           selectOptions={CURRENCY_OPTIONS}
           helpText="Default for new Spaces you create. Changing it never affects existing Spaces."
+        />
+      </DataCard>
+
+      {/* OPS-3 S3 — timezone lives HERE (a general preference consumed by
+          future digests and Brief greetings), not on the Notifications page. */}
+      <DataCard>
+        <div className="flex items-center gap-2 mb-1">
+          <Globe size={15} style={{ color: "var(--text-secondary)" }} />
+          <DataCardTitle>Timezone</DataCardTitle>
+        </div>
+
+        <InlineField
+          label="Your timezone"
+          value={preferences.timezone ?? ""}
+          displayValue={preferences.timezone ? preferences.timezone.replace(/_/g, " ") : "Not set (UTC)"}
+          onSave={(val) => saveField({ timezone: val })}
+          selectOptions={timezoneOptions(preferences.timezone)}
+          helpText="Used for daily summaries and greetings. UTC until set."
         />
       </DataCard>
 

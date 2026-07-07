@@ -23,6 +23,10 @@ import {
 } from "@/lib/notifications/create";
 import { buildSpaceInviteNotificationInput } from "@/lib/events/handlers/space-invite-notification";
 import type { NotificationTypeId } from "@/lib/notifications/registry";
+import type {
+  PreferenceClient,
+  PreferenceOverride,
+} from "@/lib/notifications/preferences";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -91,6 +95,23 @@ function makeFakeClient(seed: FakeRow[] = []) {
   return { client, rows, calls };
 }
 
+// Fake preference client (OPS-3 S3): the chokepoint now resolves the IN_APP
+// preference before inserting, so every call injects one (no live DB in unit
+// tests). Empty rows = pure registry defaults.
+function makePrefClient(rows: PreferenceOverride[] = []): PreferenceClient {
+  return {
+    notificationPreference: {
+      async findMany() {
+        return rows;
+      },
+      async upsert() {
+        throw new Error("not used by the chokepoint");
+      },
+    },
+  };
+}
+const defaultPrefs = makePrefClient();
+
 async function run(): Promise<void> {
   console.log("createNotification chokepoint (OPS-3 S1)");
 
@@ -100,7 +121,7 @@ async function run(): Promise<void> {
     try {
       await createNotification(
         { type: "NOT_A_REAL_TYPE" as NotificationTypeId, userId: "u1" },
-        { client: makeFakeClient().client },
+        { client: makeFakeClient().client, prefClient: defaultPrefs },
       );
     } catch {
       threw = true;
@@ -119,7 +140,7 @@ async function run(): Promise<void> {
         data: metadata,
         auditLogId: "audit_123",
       },
-      { client: fake.client },
+      { client: fake.client, prefClient: defaultPrefs },
     );
     const row = fake.rows[0]?.data as Record<string, unknown>;
     check("creates a row and reports created", res.status === "created" && res.id === "n1");
@@ -134,7 +155,7 @@ async function run(): Promise<void> {
     const fake = makeFakeClient();
     await createNotification(
       { type: "PASSWORD_CHANGED", userId: "u1" },
-      { client: fake.client },
+      { client: fake.client, prefClient: defaultPrefs },
     );
     const row = fake.rows[0]?.data as Record<string, unknown>;
     check("metadata omitted entirely when no data supplied", !("metadata" in row));
@@ -149,9 +170,9 @@ async function run(): Promise<void> {
       userId: "u1",
       data: { plaidItemId: "item_1", institutionName: "Chase" },
     };
-    const first = await createNotification(input, { client: fake.client });
-    const second = await createNotification(input, { client: fake.client });
-    const third = await createNotification(input, { client: fake.client });
+    const first = await createNotification(input, { client: fake.client, prefClient: defaultPrefs });
+    const second = await createNotification(input, { client: fake.client, prefClient: defaultPrefs });
+    const third = await createNotification(input, { client: fake.client, prefClient: defaultPrefs });
     check("first occurrence creates", first.status === "created");
     check(
       "dedupe key filled from registry template",
@@ -163,7 +184,7 @@ async function run(): Promise<void> {
 
     // Archived holder → key released, new outage notifies again.
     fake.rows[0].archivedAt = new Date();
-    const fourth = await createNotification(input, { client: fake.client });
+    const fourth = await createNotification(input, { client: fake.client, prefClient: defaultPrefs });
     check("archived holder releases its key and re-notifies", fourth.status === "created");
     check("old row's key was released", fake.rows[0].dedupeKey === null);
     check("new open row holds the key", fake.rows[1]?.dedupeKey === "SYNC_FAILED:item:item_1:open");
@@ -175,11 +196,11 @@ async function run(): Promise<void> {
     const fake = makeFakeClient();
     const a = await createNotification(
       { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_A" } },
-      { client: fake.client },
+      { client: fake.client, prefClient: defaultPrefs },
     );
     const b = await createNotification(
       { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_B" } },
-      { client: fake.client },
+      { client: fake.client, prefClient: defaultPrefs },
     );
     check("distinct conditions are not cross-suppressed", a.status === "created" && b.status === "created");
   }
@@ -190,7 +211,7 @@ async function run(): Promise<void> {
     try {
       await createNotification(
         { type: "SYNC_FAILED", userId: "u1", data: {} }, // missing plaidItemId
-        { client: makeFakeClient().client },
+        { client: makeFakeClient().client, prefClient: defaultPrefs },
       );
     } catch {
       threw = true;
@@ -215,7 +236,7 @@ async function run(): Promise<void> {
     };
     const res = await createNotification(
       { type: "PASSWORD_CHANGED", userId: "u1" },
-      { client: broken },
+      { client: broken, prefClient: defaultPrefs },
     );
     check(
       "runtime DB error resolves to an error result, never throws",
@@ -244,7 +265,7 @@ async function run(): Promise<void> {
     check("expiry mirrors SpaceInvite.expiresAt", input.expiresAt === invite.expiresAt);
 
     const fake = makeFakeClient();
-    const res = await createNotification(input, { client: fake.client });
+    const res = await createNotification(input, { client: fake.client, prefClient: defaultPrefs });
     const row = fake.rows[0]?.data as Record<string, unknown>;
     check("invite producer creates exactly one notification", res.status === "created" && fake.rows.length === 1);
     check("invite title renders with the Space name", row.title === "You're invited to Hogan Family");
@@ -262,6 +283,64 @@ async function run(): Promise<void> {
     check(
       "inviter identity falls back to name when no username (route convention)",
       input.data?.inviterName === "Anon",
+    );
+  }
+
+  // ── 8. Preference enforcement (OPS-3 S3, frozen F11) ────────────────────────
+  {
+    // Category disabled for IN_APP → no row, "skipped" (mirrors EmailResult).
+    const fake = makeFakeClient();
+    const offSpaces = makePrefClient([
+      { category: "SPACES", channel: "IN_APP", enabled: false },
+    ]);
+    const res = await createNotification(
+      { type: "SPACE_INVITE_RECEIVED", userId: "u1", data: { inviteId: "i", spaceName: "S", inviterName: "@x" } },
+      { client: fake.client, prefClient: offSpaces },
+    );
+    check("in-app-disabled category is skipped", res.status === "skipped");
+    check("skipped creates no row", fake.rows.length === 0 && fake.calls.create === 0);
+  }
+  {
+    // Locked ACCOUNT_SECURITY ignores hostile override rows — always created.
+    const fake = makeFakeClient();
+    const hostile = makePrefClient([
+      { category: "ACCOUNT_SECURITY", channel: "IN_APP", enabled: false },
+    ]);
+    const res = await createNotification(
+      { type: "PASSWORD_CHANGED", userId: "u1" },
+      { client: fake.client, prefClient: hostile },
+    );
+    check("locked category cannot be muted at the chokepoint", res.status === "created" && fake.rows.length === 1);
+  }
+  {
+    // Default-by-absence: SYNC_COMPLETED defaults off → skipped with no rows.
+    const fake = makeFakeClient();
+    const res = await createNotification(
+      { type: "SYNC_COMPLETED", userId: "u1", data: { plaidItemId: "p", institutionName: "Chase" } },
+      { client: fake.client, prefClient: defaultPrefs },
+    );
+    check("default-off type (SYNC_COMPLETED) is skipped with no override rows", res.status === "skipped");
+  }
+  {
+    // A preference-read failure is a non-throwing error result.
+    const broken: PreferenceClient = {
+      notificationPreference: {
+        async findMany() {
+          throw new Error("pref store down");
+        },
+        async upsert() {
+          throw new Error("unused");
+        },
+      },
+    };
+    const fake = makeFakeClient();
+    const res = await createNotification(
+      { type: "SPACE_INVITE_RECEIVED", userId: "u1", data: { inviteId: "i", spaceName: "S", inviterName: "@x" } },
+      { client: fake.client, prefClient: broken },
+    );
+    check(
+      "preference-read failure resolves to error, never throws",
+      res.status === "error" && (res.error ?? "").includes("pref store down"),
     );
   }
 

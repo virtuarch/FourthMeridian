@@ -2,17 +2,18 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { User, ShieldCheck, SlidersHorizontal, Database, ChevronRight, Archive } from "lucide-react";
+import { User, ShieldCheck, SlidersHorizontal, BellRing, Database, ChevronRight, Archive } from "lucide-react";
 import { DataCard } from "@/components/atlas/DataCard";
 
 // Settings directory — the permanent entry point for Settings (UX-1). Each
-// card navigates to its section. Notifications arrives with OPS-3; no
-// placeholder route is created here.
+// card navigates to its section. Notifications arrived with OPS-3 S3 (the
+// "one directory line" the UX-1 Phase 2 design reserved).
 const SECTIONS = [
-  { href: "/dashboard/settings/account",     icon: User,              title: "Account",        desc: "Manage your personal information." },
-  { href: "/dashboard/settings/security",    icon: ShieldCheck,       title: "Security",       desc: "Password, email, sessions, security history." },
-  { href: "/dashboard/settings/preferences", icon: SlidersHorizontal, title: "Preferences",    desc: "Reporting currency and personal defaults." },
-  { href: "/dashboard/settings/data",        icon: Database,          title: "Data & Privacy", desc: "Export, archive, privacy tools." },
+  { href: "/dashboard/settings/account",       icon: User,              title: "Account",        desc: "Manage your personal information." },
+  { href: "/dashboard/settings/security",      icon: ShieldCheck,       title: "Security",       desc: "Password, email, sessions, security history." },
+  { href: "/dashboard/settings/preferences",   icon: SlidersHorizontal, title: "Preferences",    desc: "Reporting currency and personal defaults." },
+  { href: "/dashboard/settings/notifications", icon: BellRing,          title: "Notifications",  desc: "What we tell you about, and where." },
+  { href: "/dashboard/settings/data",          icon: Database,          title: "Data & Privacy", desc: "Export, archive, privacy tools." },
 ] as const;
 
 export default async function SettingsPage() {
