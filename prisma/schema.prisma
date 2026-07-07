@@ -385,6 +385,10 @@ model User {
 
   // DuplicateAccountCandidate — tracks who resolved the review
   resolvedDuplicates DuplicateAccountCandidate[] @relation("DuplicateResolver")
+
+  // Notifications (OPS-3 S1) — the user's inbox; Cascade (unlike AuditLog's
+  // SetNull) because notifications are per-user awareness, not forensics.
+  notifications Notification[]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -448,6 +452,9 @@ model Space {
   // an upload's headers. See
   // docs/initiatives/d2/implementation/D2_STEP4D5B_IMPLEMENTATION_PLAN.md.
   importMappingProfiles  ImportMappingProfile[]
+
+  // Notifications (OPS-3 S1) — optional Space context; SetNull on Space delete.
+  notifications Notification[]
 
   @@index([type])
   @@index([isPublic])
@@ -1684,4 +1691,99 @@ model FxRate {
   @@unique([date, base, quote])
   // Walk-back scans (base is constant USD): latest date ≤ asked, per quote.
   @@index([quote, date])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Notification (OPS-3 S1) — the per-recipient, user-facing awareness record.
+// Frozen design: docs/initiatives/ops3/OPS3_IMPLEMENTATION_PLAN.md §2.
+//
+// The Notification row IS the in-app delivery (no NotificationDelivery row is
+// written for the IN_APP channel — deliveries exist only for external
+// channels). Lifecycle is nullable timestamps, never a status enum:
+// unread (readAt null) → read → archived; expiresAt hides at any stage.
+//
+// category/type are strings validated by lib/notifications/registry.ts (the
+// AuditAction idiom — adding a type must never require a migration). ALL
+// writes go through lib/notifications/create.ts, the single chokepoint.
+//
+// auditLogId is a SOFT ref (no FK — AuditLog is append-only forensics with
+// SetNull anonymization; the two objects have different retention and PII
+// posture). dedupeKey is condition identity (suppress-while-open); the unique
+// constraint is reserved at birth because retrofitting it onto a populated
+// table would require a dedupe backfill. There is deliberately NO
+// sourceEventId column (frozen ruling — OPS3_SOURCEEVENTID_OWNERSHIP_REVIEW).
+//
+// TRUST BOUNDARY (F14): Platform Operations / OPS-5 reads AGGREGATES and
+// delivery METADATA over these tables — never title/body, which are
+// tenant-scoped product content.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum NotificationPriority {
+  LOW // digest-foldable, no badge urgency
+  NORMAL // default
+  HIGH // sync failed, goal risk
+  CRITICAL // security / account lifecycle — locked category, cannot be muted
+}
+
+model Notification {
+  id      String @id @default(cuid())
+  userId  String // recipient — always a single user; the inbox dies with the account
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  spaceId String? // optional Space context
+  space   Space?  @relation(fields: [spaceId], references: [id], onDelete: SetNull)
+
+  category String // NotificationCategory — registry-validated string, never a DB enum
+  type     String // registry id, PO1 P0 grammar (e.g. "SPACE_INVITE_RECEIVED")
+  priority NotificationPriority @default(NORMAL)
+
+  title      String
+  body       String? @db.Text
+  href       String? // in-app destination
+  metadata   Json? // shape per the type's registry pointer contract (F6)
+  auditLogId String? // soft ref to the AuditLog fact — no FK by design (F5)
+  dedupeKey  String? // condition identity, template owned by the registry entry (F3)
+
+  readAt     DateTime? // null = unread
+  archivedAt DateTime? // null = live in the feed (dismiss == archive)
+  expiresAt  DateTime? // null = never expires; past = hidden from all queries
+  createdAt  DateTime  @default(now())
+
+  deliveries NotificationDelivery[]
+
+  // Dedupe constraint reserved at birth (Postgres treats NULLs as distinct,
+  // so keyless rows — the majority — are unconstrained).
+  @@unique([userId, dedupeKey])
+  @@index([userId, archivedAt, createdAt]) // feed + history
+  @@index([userId, readAt]) // unread badge count
+  @@index([category, createdAt]) // OPS-5 aggregate queries
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NotificationDelivery (OPS-3 S1) — one row per EXTERNAL-channel delivery
+// attempt (EMAIL in S4; PUSH/SMS/WEBHOOK are vocabulary). status mirrors the
+// OPS-1 EmailResult contract verbatim. Append-only in spirit: attempts
+// progress, history is never rewritten — this is the raw substrate for OPS-4
+// retries and OPS-5 provider-health rollups.
+//
+// NO WRITER EXISTS in S1 by design: the table ships with the one OPS-3
+// migration; the S4 email adapter is its first writer. openedAt/clickedAt
+// arrive with the future Resend-webhook consumer (frozen ruling F10 —
+// columns are deferred until a writer exists).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model NotificationDelivery {
+  id                String       @id @default(cuid())
+  notificationId    String
+  notification      Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  channel           String // "EMAIL" now; others are vocabulary — string, not enum
+  status            String // "sent" | "captured" | "skipped" | "error" — EmailResult verbatim
+  provider          String? // e.g. "resend" | "capture"
+  providerMessageId String?
+  error             String?
+  attempts          Int          @default(1)
+  deliveredAt       DateTime? // set when status = "sent"
+  createdAt         DateTime     @default(now())
+
+  @@index([notificationId])
+  @@index([channel, status, createdAt]) // OPS-5 failure-rate queries
 }
