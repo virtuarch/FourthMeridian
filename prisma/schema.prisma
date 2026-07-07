@@ -1252,6 +1252,51 @@ enum CategorySource {
   LEGACY // pre-MI derivation retrofitted by backfill
 }
 
+// ── Transaction Intelligence (TI2 — additive; nothing reads/writes yet) ───────
+// Durable single-row transaction-fact enums. TI2-1 creates the types only; the
+// builder (TI2-3) and writers (TI2-4/5) come in later slices. Values follow the
+// ratified TI2/TI2A vocabulary — UNKNOWN is the honesty valve, never a fabricated
+// claim. New enum TYPES (not ALTER TYPE ADD VALUE), so this slice is reversible.
+
+/// How the payment was transacted (Plaid `payment_channel`).
+enum PaymentChannel {
+  ONLINE
+  IN_STORE
+  OTHER
+  UNKNOWN
+}
+
+/// Payment instrument. Derived and partial — many rows resolve to UNKNOWN.
+/// WALLET/CRYPTO deliberately absent: not derivable from Plaid transaction data.
+enum PaymentMethod {
+  CARD
+  ACH
+  WIRE
+  CHECK
+  CASH
+  INTERNAL_TRANSFER
+  UNKNOWN
+}
+
+/// Settlement lifecycle state. TI2 owns pending/posted only; REVERSED/VOIDED are
+/// relational transitions owned by TI4 and deliberately absent here.
+enum SettlementState {
+  PENDING
+  POSTED
+}
+
+/// Provider counterparty class (Plaid `counterparties[].type` subset). The
+/// "owned account" determination is relational and owned by TI4, not here.
+enum CounterpartyType {
+  MERCHANT
+  FINANCIAL_INSTITUTION
+  INCOME_SOURCE
+  PAYMENT_APP
+  MARKETPLACE
+  PAYMENT_TERMINAL
+  UNKNOWN
+}
+
 /// Scope at which a MerchantRule applies. USER is the live scope (author's own
 /// corrections, M5). SPACE is schema'd but its writer/reader is deferred to its
 /// own slice — a shared row cannot hold two Spaces' truths (SpaceAccountLink makes
@@ -1378,6 +1423,31 @@ model Transaction {
   categorySource   CategorySource?
   categoryRuleId   String?
   categoryRule     MerchantRule?   @relation("MerchantRuleTransactions", fields: [categoryRuleId], references: [id], onDelete: SetNull)
+
+  // ── Transaction Intelligence (TI2 — additive, nullable; nothing reads/writes yet) ─
+  // Durable single-row "what actually happened" facts, computed once at write by a
+  // future TI2-3 builder and stamped by TI2-4/5 writers; read from TI5. TI2-1 (this
+  // slice) creates the columns/enums ONLY — no writer, no reader, no capture.
+  // All nullable with NO default: null = "pre-TI2 / not captured", never a
+  // manufactured claim (MC1 Phase 0 doctrine, as MI's categorySource).
+  //   paymentChannel        — how the payment was transacted (Plaid payment_channel).
+  //   paymentMethod         — instrument, honesty-valved to UNKNOWN; partial coverage.
+  //   settlementState       — pending/posted only; reversed/voided are TI4.
+  //   authorizedAt          — when authorized (Plaid authorized_date); distinct from posted `date`.
+  //   counterpartyType      — provider counterparty class; "owned account" is TI4.
+  //   fxApplied             — the row's currency differed from its account's currency.
+  //   pendingTransactionRef — raw Plaid pending_transaction_id seed for TI4's
+  //                           pending→posted reconciliation. SYSTEM: never AI/UI.
+  //                           Intentionally UNINDEXED until TI4's reconciler queries it.
+  //   tiFactsVersion        — shared backfill-gating version (the classifierVersion pattern).
+  paymentChannel        PaymentChannel?
+  paymentMethod         PaymentMethod?
+  settlementState       SettlementState?
+  authorizedAt          DateTime?        @db.Date
+  counterpartyType      CounterpartyType?
+  fxApplied             Boolean?
+  pendingTransactionRef String?
+  tiFactsVersion        Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
