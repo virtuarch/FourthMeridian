@@ -57,6 +57,26 @@ export interface CapturedPlaidMetadata {
   pfcConfidenceLevel: string | null;
   merchantEntityId:   string | null;
   counterparties:     CapturedCounterparty[];
+
+  // ── TI2-2 metadata capture (approved TI2A-safe fields) ──────────────────────
+  // Carried in memory for the TI2-3 fact builder; NOTHING persists these yet.
+  // Optional so the row-sourced backfill path (buildFlowInputFromRow), which has
+  // no Plaid payload, legitimately omits them. Deny-listed PII — account_numbers,
+  // counterparties.phone_number, payment_meta.{payer,payee,by_order_of,ppd_id,
+  // reference_number}, account_owner, and all location — is NEVER read (see
+  // buildPlaidFlowInput); the safest control is to never touch those fields.
+  /** Plaid payment_channel (online / in store / other). Feeds TI2 paymentChannel. */
+  paymentChannel?:        string | null;
+  /** Plaid authorized_date ("YYYY-MM-DD"). Feeds TI2 authorizedAt. */
+  authorizedDate?:        string | null;
+  /** Plaid pending_transaction_id — a TI4 pending→posted seed. Never AI/UI. */
+  pendingTransactionRef?: string | null;
+  /** Plaid transaction_code — weak future paymentMethod input only. */
+  transactionCode?:       string | null;
+  /** Plaid payment_meta.payment_method ONLY — weak future paymentMethod input. */
+  paymentMetaMethod?:     string | null;
+  /** Plaid check_number — weak future paymentMethod input (Check hint). */
+  checkNumber?:           string | null;
 }
 
 export interface PlaidFlowInputResult {
@@ -106,10 +126,22 @@ export function buildPlaidFlowInput(
     // c.account_numbers intentionally dropped — deny-listed.
   }));
 
+  // TI2-2 — read ONLY payment_meta.payment_method. The identity subfields
+  // (payer / payee / by_order_of / ppd_id / reference_number) are deny-listed
+  // and deliberately never referenced here, so they can never reach a struct.
+  const paymentMeta = txn.payment_meta ?? null;
+
   const captured: CapturedPlaidMetadata = {
     pfcConfidenceLevel: pfc?.confidence_level ?? null,
     merchantEntityId:   txn.merchant_entity_id ?? null,
     counterparties,
+    // TI2-2 approved TI2A-safe fields (captured only; nothing persists them yet).
+    paymentChannel:        txn.payment_channel != null ? String(txn.payment_channel) : null,
+    authorizedDate:        txn.authorized_date ?? null,
+    pendingTransactionRef: txn.pending_transaction_id ?? null,
+    transactionCode:       txn.transaction_code != null ? String(txn.transaction_code) : null,
+    paymentMetaMethod:     paymentMeta?.payment_method ?? null,
+    checkNumber:           txn.check_number ?? null,
   };
 
   return { input, captured };
