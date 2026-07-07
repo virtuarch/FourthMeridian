@@ -80,8 +80,8 @@ async function main(): Promise<void> {
   // ── 2. Registry integrity — pre-S2 jobs at their slots + S3 maintenance ───
   {
     const byName = new Map(SCHEDULED_JOBS.map((j) => [j.name, j]));
-    check("registry holds exactly the six S2+S3 jobs (S4 not started)",
-      SCHEDULED_JOBS.length === 6, `got ${SCHEDULED_JOBS.length}`);
+    check("registry holds exactly the seven S2+S3+S4 jobs (S5 not started)",
+      SCHEDULED_JOBS.length === 7, `got ${SCHEDULED_JOBS.length}`);
     check("names unique", byName.size === SCHEDULED_JOBS.length);
     check("sync-banks keeps its 06:00 UTC slot",
       byName.get("sync-banks")?.hourUTC === 6 && byName.get("sync-banks")?.minuteUTC === 0);
@@ -89,13 +89,16 @@ async function main(): Promise<void> {
       byName.get("fetch-fx-rates")?.hourUTC === 6 && byName.get("fetch-fx-rates")?.minuteUTC === 30);
     check("process-deletions keeps its 07:00 UTC slot",
       byName.get("process-deletions")?.hourUTC === 7 && byName.get("process-deletions")?.minuteUTC === 0);
-    check("S3 maintenance jobs occupy the 07:30 slot (no new cron entry needed)",
-      (["notification-cleanup", "purge-trash", "rate-limit-sweep"] as const).every(
+    check("S3/S4 maintenance jobs occupy the 07:30 slot (no new cron entry needed)",
+      (["notification-cleanup", "notification-retry", "purge-trash", "rate-limit-sweep"] as const).every(
         (name) => byName.get(name)?.hourUTC === 7 && byName.get(name)?.minuteUTC === 30,
       ));
+    check("notification-retry sequenced AFTER notification-cleanup (never re-mail aged-out rows)",
+      SCHEDULED_JOBS.findIndex((j) => j.name === "notification-retry") >
+        SCHEDULED_JOBS.findIndex((j) => j.name === "notification-cleanup"));
     check("all slots on half-hour boundaries", SCHEDULED_JOBS.every((j) => j.minuteUTC === 0 || j.minuteUTC === 30));
-    check("deferred work stays deferred (no digest / snapshot / retry / quiet-hours jobs)",
-      !SCHEDULED_JOBS.some((j) => /digest|snapshot|retry|quiet/i.test(j.name)));
+    check("deferred work stays deferred (no digest / snapshot / quiet-hours jobs)",
+      !SCHEDULED_JOBS.some((j) => /digest|snapshot|quiet/i.test(j.name)));
   }
 
   // ── 3. Execution through the runner, in registry order, trigger "cron" ────
@@ -169,9 +172,12 @@ async function main(): Promise<void> {
     const code = ["lib/jobs/dispatch.ts", "lib/jobs/registry.ts", "app/api/jobs/dispatch/route.ts"]
       .map((p) => readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, ""))
       .join("\n");
-    check("no queue/retry/telemetry/scheduler infrastructure in dispatcher code",
+    // (Since S4 the registry legitimately calls retryNotifications() — the
+    // registered consumer body; framework-style retry constructs remain
+    // banned and are scanned in lib/jobs/notification-retry.test.ts.)
+    check("no queue/telemetry/scheduler infrastructure in dispatcher code",
       !/setInterval|setTimeout|node-cron|BullMQ|new Queue|SQS|EventBridge|startScheduler/i.test(code) &&
-        !/\bretry\w*\(/i.test(code) &&
+        !/\b(withRetry|pRetry|retryWrapper|backoff)\w*\(/i.test(code) &&
         !/telemetry/i.test(code));
   }
 

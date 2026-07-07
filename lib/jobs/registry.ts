@@ -34,9 +34,13 @@
  * balances — a scheduled snapshot would stamp stale balances as fresh
  * daily facts).
  *
- * DELIBERATELY NOT HERE (S0 rulings): notification retry (S4) · dead-job
- * detection (S5) · run-ai-advice, sync-crypto, take-snapshot (v2.6b /
- * deferred — R7).
+ * S4 (2026-07-07): notification-retry — the F16 outbox consumer
+ * (jobs/retry-notifications.ts) — registered on the 07:30 slot, sequenced
+ * AFTER notification-cleanup so freshly aged-out notifications are never
+ * re-mailed.
+ *
+ * DELIBERATELY NOT HERE (S0 rulings): dead-job detection (S5) ·
+ * run-ai-advice, sync-crypto, take-snapshot (v2.6b / deferred — R7).
  *
  * IMPORT-LIGHT BY DESIGN: job bodies are dynamic-imported inside each run()
  * — never at module load. Several bodies transitively import provider
@@ -93,6 +97,16 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     hourUTC: 7,
     minuteUTC: 30,
     run: async () => (await import("@/lib/notifications/cleanup")).cleanupNotifications(),
+  },
+  // S4 — the NotificationDelivery outbox consumer (bounded attempts;
+  // claim-first duplicate-send prevention). MUST stay after
+  // notification-cleanup in this slot: cleanup first, then retry, so an
+  // aged-out notification is closed as obsolete rather than re-mailed.
+  {
+    name: "notification-retry",
+    hourUTC: 7,
+    minuteUTC: 30,
+    run: async () => (await import("@/jobs/retry-notifications")).retryNotifications(),
   },
   // First production scheduling ever — makes the 7-day goal-trash retention
   // promise true (dormant since the v1.0 scheduler that never ran).

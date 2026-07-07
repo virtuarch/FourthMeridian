@@ -23,8 +23,10 @@
  * bookkeeping is single-sited HERE so no path can deliver without recording
  * (the OPS-5 invariant). Delivery runs post-response via next/server after()
  * when a request scope exists, inline otherwise (unit tests, scripts).
- * NOT HERE (later slices, by frozen scope): digests and cleanup (S6),
- * retries (OPS-4 — attempts is recorded, never incremented here).
+ * NOT HERE (by frozen scope): digests (S6, deferred) · cleanup (S6 — a
+ * dispatcher job since OPS-4 S3) · retries (OPS-4 S4 —
+ * jobs/retry-notifications.ts consumes the outbox; attempts starts at 1
+ * HERE and is incremented only there).
  *
  * NON-THROWING at runtime: after input validation, every DB outcome resolves
  * to a CreateNotificationResult — a notification failure must never fail the

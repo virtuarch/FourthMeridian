@@ -8,9 +8,10 @@
  * fake applying the same predicate Prisma would. Covers: sweep behavior
  * (WHERE-guarded cutoff, boundary, idempotency, summary shape) · registry
  * facts (three S3 registrations at 07:30; process-deletions single-purpose)
- * · deferral tripwires (digests and snapshot cadence NOT registered; no S4+
- * infrastructure: no notification-retry consumer, no dead-job detection,
- * no attempts increment anywhere in lib/jobs).
+ * · deferral tripwires (digests and snapshot cadence NOT registered; no
+ * S5+ infrastructure in the S3 surfaces: no dead-job detection, no retry
+ * logic inside the S3 job bodies themselves — the S4 retry consumer lives
+ * in jobs/retry-notifications.ts, deliberately outside this scan).
  */
 
 import { readFileSync } from "node:fs";
@@ -103,15 +104,16 @@ async function main(): Promise<void> {
       !routeSrc.includes("cleanupNotifications"));
   }
 
-  // ── 3. Deferrals stay deferred; no S4+ infrastructure ─────────────────────
+  // ── 3. Deferrals stay deferred; no S5+ infrastructure in S3 surfaces ──────
   {
     check("no digest job registered (deferred: template/preference/marker absent)",
       !SCHEDULED_JOBS.some((j) => /digest/i.test(j.name)));
     check("no snapshot-cadence job registered (deferred: stale-balance semantics unresolved)",
       !SCHEDULED_JOBS.some((j) => /snapshot/i.test(j.name)));
 
-    // Comment-stripped code scan over the jobs layer: no retry consumer, no
-    // dead-job detection, no queue/telemetry (S4/S5/PO1 tripwires).
+    // Comment-stripped code scan over the S3 surfaces: no retry logic inside
+    // the S3 bodies (the S4 consumer is its own module), no dead-job
+    // detection, no queue/telemetry (S5/PO1 tripwires).
     const code = [
       "lib/jobs/run.ts",
       "lib/jobs/registry.ts",
@@ -122,7 +124,7 @@ async function main(): Promise<void> {
     ]
       .map((p) => readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, ""))
       .join("\n");
-    check("no notification-retry consumer in the jobs layer",
+    check("no retry logic inside the S3 job bodies / dispatcher core",
       !/notificationDelivery|attempts\s*[:+]/i.test(code));
     check("no dead-job detection / alerting in the jobs layer",
       !/expected.*absent|sendEmail|alert/i.test(code));
