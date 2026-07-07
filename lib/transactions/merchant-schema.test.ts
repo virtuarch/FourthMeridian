@@ -14,11 +14,13 @@
  *   • categorySource is nullable with NO default (MC1 Phase 0 provenance doctrine)
  *   • Merchant enrichment fields exist (storage shape only)
  *   • NO MerchantAsset model exists
- *   • NO runtime resolver / reader / writer of the new schema exists yet
+ *   • the M2 resolver is PURE (no db import, no prisma calls) and nothing
+ *     persists / writes the new schema yet (M4 not started)
  *   • NO UI/API consumes the new schema yet
  *
  * If a later change starts M2 (a resolver, a write, a read) without updating this
- * test, it fails first — pinning "M1 is schema-only, M2 not started".
+ * test, it fails first — pinning "schema is additive/behavior-neutral, and M2 is
+ * a pure resolver with no persistence (M3/M4 not started)".
  *
  * Ratification: docs/initiatives/mi1/MI1_M0_RATIFICATION_2026-07-07.md.
  */
@@ -132,41 +134,53 @@ console.log("Merchant Intelligence M1 schema tripwires (MI1)");
 // ── 5. NO MerchantAsset table (explicit non-goal) ────────────────────────────
 check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test(schema));
 
-// ── 6. NO runtime resolver / reader / writer / UI / API yet (M2 not started) ─
+// ── 6. M2 boundary: pure resolver exists; NO persistence / write / M3-M4 yet ─
 {
+  const RESOLVER = "lib/transactions/merchant-resolver.ts";
   const source = [
     ...collectSource(path.join(ROOT, "lib")),
     ...collectSource(path.join(ROOT, "app")),
   ]
-    // The schema-scan test module itself is excluded by the .test.ts filter.
+    // Test modules are excluded by the .test.ts filter in collectSource.
     .map((f) => ({ f: path.relative(ROOT, f), text: readFileSync(f, "utf8") }));
 
-  // No code reads or writes the new tables (generated client accessors).
+  // (a) No persistence: nothing reads or writes the new tables (M4 owns that).
   const tableAccess = source.filter((s) =>
     /\bprisma\.(merchant|merchantAlias|merchantRule)\b/.test(s.text),
   );
   check(
-    "no code queries prisma.merchant / merchantAlias / merchantRule (no reader/writer)",
+    "no code queries prisma.merchant / merchantAlias / merchantRule (no persistence)",
     tableAccess.length === 0,
     tableAccess.map((s) => s.f).join(", "),
   );
 
-  // No writer stamps the new provenance/identity columns.
-  const stamps = source.filter((s) => /\b(categorySource|categoryRuleId|merchantId)\s*:/.test(s.text));
+  // (b) No WRITE path stamps the new columns onto a transaction. The M2 resolver
+  //     returns them as PURE DATA (allowed); every other module must be clean.
+  const stamps = source.filter(
+    (s) => s.f !== RESOLVER && /\b(categorySource|categoryRuleId|merchantId)\s*:/.test(s.text),
+  );
   check(
-    "no writer stamps categorySource / categoryRuleId / merchantId (no write resolver)",
+    "no write path stamps categorySource / categoryRuleId / merchantId (M4 not started)",
     stamps.length === 0,
     stamps.map((s) => s.f).join(", "),
   );
 
-  // No M2/M4 resolver helpers exist yet.
-  const resolvers = source.filter((s) =>
-    /\b(resolveCategoryWithSource|buildCategoryRewrite|resolveMerchantIdentity|mintMerchant)\b/.test(s.text),
+  // (c) The M2 resolver is PURE — imports no db client and calls no prisma.
+  const resolver = source.find((s) => s.f === RESOLVER);
+  check("M2 resolver module exists", resolver !== undefined);
+  if (resolver) {
+    check("M2 resolver imports no db client", !/["']@\/lib\/db["']/.test(resolver.text));
+    check("M2 resolver calls no prisma.*", !/\bprisma\./.test(resolver.text));
+  }
+
+  // (d) No M3/M4 helpers exist yet (backfill / mint / write-time rewrite).
+  const later = source.filter((s) =>
+    /\b(buildCategoryRewrite|resolveMerchantIdentity|mintMerchant)\b/.test(s.text),
   );
   check(
-    "no M2/M4 resolver helper exists yet",
-    resolvers.length === 0,
-    resolvers.map((s) => s.f).join(", "),
+    "no M3/M4 backfill/mint/rewrite helper exists yet",
+    later.length === 0,
+    later.map((s) => s.f).join(", "),
   );
 }
 
