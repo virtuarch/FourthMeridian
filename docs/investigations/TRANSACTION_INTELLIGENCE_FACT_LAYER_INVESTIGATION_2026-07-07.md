@@ -216,6 +216,42 @@ Sequencing against the live roadmap: TI1 is safe immediately (zero schema, pure 
 
 ---
 
+## 7A. Metadata Capture Doctrine (ratified at TI2A)
+
+Ratified following the TI2A metadata-capture & PII-boundary investigation, before TI2 implementation begins. Transaction Intelligence recognizes exactly **three** metadata classes. Every ignored provider field must be placed in one of them.
+
+### 1. Captured → Durable Fact
+
+Provider metadata that directly becomes a durable Transaction Intelligence fact. Examples:
+
+- `payment_channel` → `paymentChannel`
+- `authorized_date` → `authorizedAt`
+- `counterparties.type` → `counterpartyType`
+- `pending` / `date` → `settlementState`
+- currency comparison (row vs account) → `fxApplied`
+
+These become typed, nullable columns and are the **only** metadata surfaced through TI.
+
+### 2. Captured → Future Seed
+
+Metadata intentionally captured today because an already-ratified future architecture requires it, but which is not itself a user-visible fact. Example:
+
+- `pending_transaction_id` → TI4 pending→posted reconciliation
+
+Seeds **never** appear in AI, **never** appear in UI, **never** become business facts directly, and exist solely to enable future deterministic computation. This class stays intentionally small (the `merchantEntityId` precedent: a non-PII stable id only).
+
+### 3. Never Captured
+
+Provider metadata that must never be persisted — account numbers, payer/payee identities, `account_owner`, phone numbers, precise location, and any other deny-listed PII. The preferred security model remains: **"If it is never stored, it can never leak."**
+
+### Guiding rule
+
+Do not capture metadata because it might be useful someday. Capture metadata only when **(a)** it produces a shipping durable fact, or **(b)** it is the minimum non-PII seed required for an already-ratified future architecture. Otherwise, do not persist it.
+
+This doctrine is part of TI's architectural contract alongside: compute once; reuse everywhere; AI consumes durable facts, never raw provider metadata; and *Transaction Intelligence is not a provider-metadata archive.*
+
+---
+
 ## 8. Risks
 
 **Ownership drift between TI and MI.** The clean split is *TI owns "what happened," MI owns "who."* `flowType`/method/lifecycle/groupings are TI; merchant/category are MI. The danger zones are the shared row and the shared rewrite contract: TI must never write `category` or `merchantId`, and MI must never write `flowType`. The existing `merchant-corrections.ts` contract (category change → `classifyFlow` re-run) is the model — TI extends it to "category change → re-stamp category-dependent TI facts too," through one helper, so the three can never desync.
