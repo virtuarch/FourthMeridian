@@ -15,7 +15,8 @@
  * Security notes:
  *   - Both verification paths are required — cannot bypass by omitting both.
  *   - TOTP code verification uses ±1 window to handle clock drift.
- *   - TODO: rate-limit to ~5 attempts / 15 min before public deployment.
+ *   - Rate-limited per user (OPS-1 S4) — the password fallback is otherwise
+ *     brute-forceable from a hijacked session.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -26,11 +27,15 @@ import { verifyTOTP } from "@/lib/totp";
 import bcrypt from "bcryptjs";
 import { requireFreshUser } from "@/lib/session";
 import { createNotification } from "@/lib/notifications/create";
+import { limitByUser } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
   // Sensitive action (disables 2FA) — always a live revocation check.
   const [user, err] = await requireFreshUser();
   if (err) return err;
+
+  const limited = await limitByUser(user.id, "totp-disable", { limit: 5, windowSec: 900 });
+  if (limited) return limited;
 
   const body         = await req.json();
   const totpCode     = (body.totpCode as string | undefined)?.replace(/\s/g, "");

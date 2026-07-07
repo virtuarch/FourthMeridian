@@ -25,7 +25,7 @@ import { buildEmailChangeUrl } from "@/lib/email/email-change-url";
 import { formatDateTime } from "@/lib/format";
 import { createNotification } from "@/lib/notifications/create";
 import { AuditAction } from "@/lib/audit-actions";
-import { limitByIp } from "@/lib/rate-limit";
+import { limitByIp, limitByUser } from "@/lib/rate-limit";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CHANGE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -38,6 +38,11 @@ export async function POST(req: NextRequest) {
     // Sensitive identity action — always a live revocation check, never cache.
     const [user, err] = await requireFreshUser();
     if (err) return err;
+
+    // OPS-1 S4 — per-user limit alongside the per-IP one above: a hijacked
+    // session rotating IPs must not get unlimited password-guess attempts here.
+    const userLimited = await limitByUser(user.id, "email-change-request", { limit: 5, windowSec: 900 });
+    if (userLimited) return userLimited;
 
     const { newEmail, currentPassword } = await req.json().catch(() => ({}));
 

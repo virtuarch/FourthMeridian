@@ -14,7 +14,7 @@
  *   - Writes RECOVERY_CODES_REGENERATED audit log
  *   - Returns { ok: true, recoveryCodes: [...] } — shown once only
  *
- * TODO: rate-limit to ~3 attempts / 15 min before public deployment.
+ * Rate-limited per user (OPS-1 S4): max 3 attempts / 15 min.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -23,11 +23,15 @@ import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { verifyTOTP } from "@/lib/totp";
 import { requireFreshUser } from "@/lib/session";
+import { limitByUser } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
   // Sensitive action (regenerates recovery codes) — always a live check.
   const [user, err] = await requireFreshUser();
   if (err) return err;
+
+  const limited = await limitByUser(user.id, "totp-recovery-codes", { limit: 3, windowSec: 900 });
+  if (limited) return limited;
 
   const body     = await req.json();
   const totpCode = (body.totpCode as string | undefined)?.replace(/\s/g, "");

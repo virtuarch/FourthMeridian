@@ -13,8 +13,7 @@
  * If the user does not complete verification it remains in the
  * "pending" state (totpEnabled = false) until they try again.
  *
- * TODO: rate-limit this endpoint (max 5 setup attempts / 15 min per user)
- *       before public deployment.
+ * Rate-limited per user (OPS-1 S4): max 5 setup attempts / 15 min.
  */
 
 import { NextResponse } from "next/server";
@@ -24,10 +23,14 @@ import { AuditAction } from "@/lib/audit-actions";
 import { generateSecret, otpauthUri } from "@/lib/totp";
 import QRCode from "qrcode";
 import { requireUser } from "@/lib/session";
+import { limitByUser } from "@/lib/rate-limit";
 
 export async function POST() {
   const [user, err] = await requireUser();
   if (err) return err;
+
+  const limited = await limitByUser(user.id, "totp-setup", { limit: 5, windowSec: 900 });
+  if (limited) return limited;
 
   const dbUser = await db.user.findUnique({
     where:  { id: user.id },

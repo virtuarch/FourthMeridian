@@ -49,6 +49,10 @@ const _e = {
   RESEND_API_KEY:       process.env.RESEND_API_KEY,
   EMAIL_FROM_DEFAULT:   process.env.EMAIL_FROM_DEFAULT,
 
+  CRON_SECRET:          process.env.CRON_SECRET,
+  RATE_LIMIT_ENABLED:   process.env.RATE_LIMIT_ENABLED,
+  RATE_LIMIT_SHADOW:    process.env.RATE_LIMIT_SHADOW,
+
   DISABLE_SYSTEM_ADMIN: process.env.DISABLE_SYSTEM_ADMIN,
   NODE_ENV:             process.env.NODE_ENV,
 } as const;
@@ -74,20 +78,54 @@ const REQUIRED_KEYS: (keyof typeof _e)[] = [
   "ENCRYPTION_KEY",
 ];
 
+// OPS-1 S6 — required in production only. Dev/test keep working without them:
+//   - NEXTAUTH_URL / NEXT_PUBLIC_APP_URL: auto-detected / localhost in dev,
+//     but production email links and auth redirects must never guess.
+//   - RESEND_API_KEY: without it lib/email/send.ts silently captures instead
+//     of sending — acceptable in dev, a broken password-reset flow in prod.
+//   - CRON_SECRET: vercel.json schedules three jobs; unset means every cron
+//     request 401s (jobs enabled ⇒ secret required).
+const PROD_REQUIRED_KEYS: (keyof typeof _e)[] = [
+  "NEXTAUTH_URL",
+  "NEXT_PUBLIC_APP_URL",
+  "RESEND_API_KEY",
+  "CRON_SECRET",
+];
+
 /**
  * Validates all required environment variables in one pass.
- * Call this from instrumentation.ts or app startup code.
+ * Runs at server boot via instrumentation.ts (OPS-1 S6).
  * Throws with a complete list of missing variables.
  */
 export function validateEnv(): void {
-  const missing = REQUIRED_KEYS.filter((k) => !_e[k]);
-  if (missing.length === 0) return;
+  const isProd  = _e.NODE_ENV === "production";
+  const missing = [
+    ...REQUIRED_KEYS.filter((k) => !_e[k]),
+    ...(isProd ? PROD_REQUIRED_KEYS.filter((k) => !_e[k]) : []),
+  ];
 
-  throw new Error(
-    `[env] Missing required environment variable${missing.length > 1 ? "s" : ""}:\n` +
-    missing.map((k) => `  • ${k}`).join("\n") +
-    `\n\nSee .env.example for setup instructions.`
-  );
+  if (missing.length > 0) {
+    throw new Error(
+      `[env] Missing required environment variable${missing.length > 1 ? "s" : ""}:\n` +
+      missing.map((k) => `  • ${k}`).join("\n") +
+      `\n\nSee .env.example for setup instructions.`
+    );
+  }
+
+  // RATE_LIMIT_ENABLED (OPS-1 S4 polarity): production is limited by default;
+  // "false" is an explicit emergency opt-out. Never fatal — but loud.
+  if (isProd && _e.RATE_LIMIT_ENABLED === "false") {
+    console.warn(
+      "[env] RATE_LIMIT_ENABLED=false in production — rate limiting is DISABLED. " +
+      "This should be a temporary emergency measure only."
+    );
+  }
+  const rl = _e.RATE_LIMIT_ENABLED;
+  if (rl !== undefined && rl !== "" && rl !== "true" && rl !== "false") {
+    console.warn(
+      `[env] RATE_LIMIT_ENABLED has unexpected value ${JSON.stringify(rl)} — expected "true" or "false".`
+    );
+  }
 }
 
 // ── Public env object ─────────────────────────────────────────────────────────

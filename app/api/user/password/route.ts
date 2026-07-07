@@ -17,11 +17,16 @@ import { revokeOtherUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
 import { formatDateTime } from "@/lib/format";
 import { createNotification } from "@/lib/notifications/create";
+import { limitByUser } from "@/lib/rate-limit";
 
 export const PATCH = withApiHandler(async (req: NextRequest) => {
   // Sensitive action — always a live revocation check, never the cache.
   const [user, err] = await requireFreshUser();
   if (err) return err;
+
+  // OPS-1 S4 — blunt current-password brute force from a foothold session.
+  const limited = await limitByUser(user.id, "password-change", { limit: 5, windowSec: 900 });
+  if (limited) return limited;
 
   const { currentPassword, newPassword } = await req.json();
 

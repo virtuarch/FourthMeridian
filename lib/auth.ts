@@ -29,6 +29,7 @@ import { createNotification } from "@/lib/notifications/create";
 import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
 import { getCachedRevocation, setCachedRevocation, invalidateSession } from "@/lib/session-cache";
+import { limitByKey } from "@/lib/rate-limit";
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -58,6 +59,17 @@ export const authOptions: NextAuthOptions = {
         const userAgent = (req?.headers?.["user-agent"] as string | undefined) ?? null;
 
         const identifier = credentials.identifier.toLowerCase().trim();
+
+        // ── Rate limit (OPS-1 S4) — the REAL credentials callback path ────────
+        // Keyed on the submitted identifier, checked BEFORE any user lookup or
+        // password/TOTP work. The companion per-IP limit lives in the NextAuth
+        // route wrapper (app/api/auth/[...nextauth]/route.ts), where a proper
+        // 429 can still be returned; here a limited attempt is denied like any
+        // other failed login (non-enumerating — same generic CredentialsSignin).
+        // Deliberately no auditLog write on the limited path: under a
+        // brute-force burst the limiter must not amplify DB writes.
+        const idLimited = await limitByKey(identifier, "login-id", { limit: 10, windowSec: 900 });
+        if (idLimited) return null;
 
         // ── Kill switch: disable SYSTEM_ADMIN login via env flag ──────────────
         // Set DISABLE_SYSTEM_ADMIN=true before going to production to lock out

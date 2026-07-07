@@ -24,6 +24,7 @@ import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { checkManualRefreshCooldown, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
+import { limitByUser } from "@/lib/rate-limit";
 
 interface SyncBody {
   plaidItemId?: string;
@@ -32,6 +33,11 @@ interface SyncBody {
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;
+
+  // OPS-1 S4 — coarse per-user backstop over the per-item cooldown below
+  // (the cooldown is per PlaidItem; many items would otherwise multiply it).
+  const limited = await limitByUser(user.id, "plaid-sync", { limit: 20, windowSec: 3600 });
+  if (limited) return limited;
 
   const body = await req.json().catch(() => ({})) as SyncBody;
 

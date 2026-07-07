@@ -37,6 +37,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { getSpaceContext } from "@/lib/space";
 import { performPlaidTokenExchange, parsePlaidError } from "@/lib/plaid/exchangeToken";
 import { runDeferredHistorySync } from "@/lib/plaid/backgroundHistorySync";
+import { limitByUser } from "@/lib/rate-limit";
 
 // D2.x Slice 1 (fast-path split). This request returns as soon as the fast
 // slice is durable — token exchanged, accounts/balances persisted, holdings
@@ -64,6 +65,12 @@ export async function POST(req: NextRequest) {
     // rather than the institution owner's, which is why that flow calls
     // exchange-expanded-history-token instead of this endpoint.
     const { userId, spaceId } = await getSpaceContext();
+
+    // OPS-1 S4 — token exchange triggers a full import (Plaid API + heavy DB
+    // writes); a legitimate user links a handful of institutions, not dozens
+    // in fifteen minutes.
+    const limited = await limitByUser(userId, "plaid-exchange-token", { limit: 10, windowSec: 900 });
+    if (limited) return limited;
 
     const result = await performPlaidTokenExchange({
       userId,

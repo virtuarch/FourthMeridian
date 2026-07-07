@@ -17,10 +17,13 @@
  *     across Vercel's isolated serverless instances and cold starts.
  *   - Everything else (local dev / test): in-memory Map. Zero DB writes.
  *
- * FEATURE FLAG
+ * FEATURE FLAG  (OPS-1 S4 polarity — production default-ON)
  * ------------
- *   - RATE_LIMIT_ENABLED must be "true" to do anything. Unset/anything else →
- *     every call is a pure pass-through (returns null, no store access).
+ *   - Production (NODE_ENV === "production"): limiting is ACTIVE unless
+ *     RATE_LIMIT_ENABLED === "false". A missing var can no longer mean
+ *     "unprotected" — the explicit opt-out exists only as an emergency valve.
+ *   - Dev/test: limiting is off unless RATE_LIMIT_ENABLED === "true"
+ *     (unchanged, so local dev and the unit suite stay friction-free).
  *   - RATE_LIMIT_SHADOW === "true" → log-only: over-limit requests are counted
  *     and logged as "[rate-limit] SHADOW ..." but never blocked. Use this to
  *     measure real traffic before enforcing.
@@ -61,7 +64,18 @@ interface RateLimitOutcome {
   retryAfterSec: number;
 }
 
-const isEnabled = () => process.env.RATE_LIMIT_ENABLED === "true";
+/**
+ * OPS-1 S4 — default-on in production. Exported for deterministic tests of the
+ * polarity; call sites should keep using limitByIp/limitByUser/limitByKey.
+ */
+export function isRateLimitingEnabled(): boolean {
+  if (process.env.NODE_ENV === "production") {
+    return process.env.RATE_LIMIT_ENABLED !== "false";
+  }
+  return process.env.RATE_LIMIT_ENABLED === "true";
+}
+
+const isEnabled = () => isRateLimitingEnabled();
 const isShadow  = () => process.env.RATE_LIMIT_SHADOW  === "true";
 const dbBackendActive = () => process.env.NODE_ENV === "production";
 
@@ -179,4 +193,19 @@ export function limitByUser(
   cfg: RateLimitConfig,
 ): Promise<NextResponse | null> {
   return enforce(`user:${name}:${userId}`, cfg);
+}
+
+/**
+ * Generic composite-key limit for contexts that have neither a Request object
+ * nor an authenticated user — e.g. the NextAuth authorize() callback, which
+ * keys on the submitted login identifier (OPS-1 S4). The caller decides how to
+ * react: route handlers return the NextResponse as-is; authorize() treats a
+ * non-null result as a denial and returns null.
+ */
+export function limitByKey(
+  key: string,
+  name: string,
+  cfg: RateLimitConfig,
+): Promise<NextResponse | null> {
+  return enforce(`key:${name}:${key}`, cfg);
 }

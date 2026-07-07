@@ -31,10 +31,15 @@ import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client";
+import { limitByUser } from "@/lib/rate-limit";
 
 export async function GET(req: NextRequest) {
   const [user, err] = await requireUser();
   if (err) return err;
+
+  // OPS-1 S4 — each call mints a Plaid Link token (external API cost).
+  const limited = await limitByUser(user.id, "plaid-link-token", { limit: 10, windowSec: 900 });
+  if (limited) return limited;
 
   try {
     // D2-7E — explicit reconnect by PlaidItem ID (reconnect badge).
