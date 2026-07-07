@@ -23,6 +23,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
+import { runJob } from "@/lib/jobs/run";
 import { fetchFxRates } from "@/jobs/fetch-fx-rates";
 
 // One provider HTTP call plus a small DB write — 60s is generous headroom,
@@ -37,6 +38,8 @@ export const GET = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await fetchFxRates();
+  // OPS-4 S1 — ledgered via runJob(); behavior unchanged (result verbatim,
+  // errors propagate). Auth stays in the route (S0 ruling R3).
+  const result = await runJob("fetch-fx-rates", fetchFxRates, { trigger: "cron" });
   return NextResponse.json({ ok: true, ...result });
 }, "GET /api/jobs/fetch-fx-rates");

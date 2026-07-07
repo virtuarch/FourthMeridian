@@ -18,10 +18,16 @@
  *
  * No retry/backoff here — one run, one attempt per item, same as the
  * manual routes. See jobs/sync-banks.ts for per-item error handling.
+ *
+ * OPS-4 S1 — the body runs through runJob(), which records the execution in
+ * the append-only JobRun ledger. Observational only: behavior is unchanged
+ * (result returned verbatim; errors propagate as before). Auth stays HERE,
+ * not in the wrapper (S0 ruling R3: existing cron routes unchanged).
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
+import { runJob } from "@/lib/jobs/run";
 import { syncBanks } from "@/jobs/sync-banks";
 
 // Headroom for looping over every active PlaidItem in one invocation.
@@ -37,6 +43,6 @@ export const GET = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await syncBanks();
+  const result = await runJob("sync-banks", syncBanks, { trigger: "cron" });
   return NextResponse.json({ ok: true, ...result });
 }, "GET /api/jobs/sync-banks");

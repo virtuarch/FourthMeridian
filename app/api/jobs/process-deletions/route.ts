@@ -23,6 +23,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
+import { runJob } from "@/lib/jobs/run";
 import { processDeletions } from "@/jobs/process-deletions";
 import {
   cleanupNotifications,
@@ -41,16 +42,29 @@ export const GET = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await processDeletions();
+  // OPS-4 S1 — the whole scheduled unit of work (purge + OPS-3 cleanup tail)
+  // is ONE JobRun: the ledger records what this cron actually does. Behavior
+  // unchanged — same call order, same error semantics (cleanup stays
+  // best-effort/non-fatal per OPS-3 F7), same response shape. Auth stays in
+  // the route (S0 ruling R3); the cleanup keeps riding this cron (ruling R4).
+  const run = await runJob(
+    "process-deletions",
+    async () => {
+      const deletions = await processDeletions();
 
-  // OPS-3 S6 — notification retention (best-effort tail; never fails the run).
-  let notificationCleanup: NotificationCleanupResult | { error: string };
-  try {
-    notificationCleanup = await cleanupNotifications();
-  } catch (err) {
-    console.error("[process-deletions] notification cleanup failed (non-fatal):", err);
-    notificationCleanup = { error: err instanceof Error ? err.message : String(err) };
-  }
+      // OPS-3 S6 — notification retention (best-effort tail; never fails the run).
+      let notificationCleanup: NotificationCleanupResult | { error: string };
+      try {
+        notificationCleanup = await cleanupNotifications();
+      } catch (err) {
+        console.error("[process-deletions] notification cleanup failed (non-fatal):", err);
+        notificationCleanup = { error: err instanceof Error ? err.message : String(err) };
+      }
 
-  return NextResponse.json({ ok: true, ...result, notificationCleanup });
+      return { deletions, notificationCleanup };
+    },
+    { trigger: "cron" },
+  );
+
+  return NextResponse.json({ ok: true, ...run.deletions, notificationCleanup: run.notificationCleanup });
 }, "GET /api/jobs/process-deletions");
