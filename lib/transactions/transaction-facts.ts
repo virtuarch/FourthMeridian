@@ -206,3 +206,57 @@ export function buildTransactionFacts(input: TransactionFactsInput): Transaction
     tiFactsVersion:        TI_FACTS_VERSION,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TI3 — historical backfill (row-backed).
+//
+// Historical rows have NO captured provider metadata (payment_channel etc. were
+// never stored), so only the facts derivable from EXISTING stored columns can be
+// reconstructed: settlementState (from `pending`), fxApplied (row vs account
+// currency), and the version stamp. Provider-only facts are NOT part of the
+// return type — they stay NULL forever unless a future re-sync captures them.
+// Reuses buildTransactionFacts so the derivation logic is never duplicated.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** An empty capture sidecar — a historical row carries no provider metadata. */
+const EMPTY_CAPTURED: CapturedPlaidMetadata = {
+  pfcConfidenceLevel: null,
+  merchantEntityId:   null,
+  counterparties:     [],
+};
+
+/** Stored-row inputs the backfill can honestly read. */
+export interface BackfillFactRow {
+  pending:         boolean;
+  /** Transaction.currency (row denomination). */
+  currency:        string | null;
+  /** Parent account's currency (FinancialAccount or legacy Account). */
+  accountCurrency: string | null;
+}
+
+/** The ONLY columns TI3 writes — provider-only facts are excluded by design. */
+export interface BackfillFactFields {
+  settlementState: TransactionFactFields["settlementState"];
+  fxApplied:       TransactionFactFields["fxApplied"];
+  tiFactsVersion:  TransactionFactFields["tiFactsVersion"];
+}
+
+/**
+ * Derives the backfillable TI facts from a stored row. Pure, deterministic,
+ * never throws. The provider-only facts buildTransactionFacts also computes
+ * (paymentMethod → UNKNOWN, etc.) are deliberately dropped here — the backfill
+ * must never write them, so they are not returned.
+ */
+export function buildBackfillFacts(row: BackfillFactRow): BackfillFactFields {
+  const facts = buildTransactionFacts({
+    captured:        EMPTY_CAPTURED,
+    pending:         row.pending,
+    rowCurrency:     row.currency,
+    accountCurrency: row.accountCurrency,
+  });
+  return {
+    settlementState: facts.settlementState,
+    fxApplied:       facts.fxApplied,
+    tiFactsVersion:  facts.tiFactsVersion,
+  };
+}
