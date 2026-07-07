@@ -254,7 +254,11 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
       firstName: user.firstName, lastName: user.lastName, dateOfBirth,
       employmentStatus: user.employmentStatus, useCase: user.useCase,
       role: user.role, emailVerifiedAt: iso(user.emailVerifiedAt),
-      pendingEmail: user.pendingEmail, deactivatedAt: iso(user.deactivatedAt),
+      // A completed email change leaves pendingEmail == email until the token's
+      // TTL lapses (OPS-2 idempotent-confirm fix) — that is not a real pending
+      // change, so don't surface it as one.
+      pendingEmail: user.pendingEmail && user.pendingEmail !== user.email ? user.pendingEmail : null,
+      deactivatedAt: iso(user.deactivatedAt),
       lastBriefViewedAt: iso(user.lastBriefViewedAt),
       createdAt: iso(user.createdAt), updatedAt: iso(user.updatedAt),
     },
@@ -336,11 +340,22 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   const notes = [
     "Shared-Space data is limited to what you own or can see at FULL visibility; other members' private data is excluded.",
     "Converted / snapshot totals are estimates when a currency conversion was applied.",
-    "Transactions cover banking activity; investment positions are in holdings.csv.",
   ];
+  if (data.holdings.length) {
+    notes.push("Transactions cover banking activity; investment positions are in holdings.csv.");
+  }
   if (truncated) {
     notes.push(`Transactions were capped at the newest ${data.transactions.length} rows (KD-7 5,000-row limit).`);
   }
+
+  // Tabular CSVs are included only when their section has rows — no empty files
+  // ship. data.json (below) stays stable and always carries every section
+  // (empty arrays included). buildExportZip() honours exactly this list.
+  const files = ["manifest.json", "data.json"];
+  if (data.transactions.length) files.push("transactions.csv");
+  if (data.accounts.length)     files.push("accounts.csv");
+  if (data.holdings.length)     files.push("holdings.csv");
+  if (data.snapshots.length)    files.push("snapshots.csv");
 
   return {
     manifest: {
@@ -349,7 +364,7 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
       schemaVersion: SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
       userId,
-      files: ["manifest.json", "data.json", "transactions.csv", "accounts.csv", "holdings.csv", "snapshots.csv"],
+      files,
       counts,
       truncated,
       notes,

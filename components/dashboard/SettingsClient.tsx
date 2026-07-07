@@ -3,13 +3,14 @@
 import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
 import { useState, Suspense } from "react";
 import { useSession } from "next-auth/react";
-import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight, Monitor, History, Mail, UserX, Trash2 } from "lucide-react";
+import { Pencil, Check, X, Loader2, Eye, EyeOff, ShieldCheck, User, LayoutDashboard, Archive, ChevronRight, Monitor, History, Mail, UserX, Trash2, Download } from "lucide-react";
 import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { ActiveSessions } from "@/components/security/ActiveSessions";
 import { SecurityHistory } from "@/components/security/SecurityHistory";
 import { ChangeEmailForm } from "@/components/security/ChangeEmailForm";
 import { DeactivateAccountCard } from "@/components/security/DeactivateAccountCard";
 import { DeleteAccountCard } from "@/components/security/DeleteAccountCard";
+import { ExportDataCard } from "@/components/security/ExportDataCard";
 import { TotpSection } from "@/components/dashboard/TotpSection";
 import { displaySpaceName } from "@/lib/format";
 import Link from "next/link";
@@ -587,6 +588,19 @@ export function SettingsClient({ initialProfile, spaces }: Props) {
           </div>
           <ChevronRight size={15} style={{ color: "var(--text-faint)" }} />
         </Link>
+      </DataCard>
+
+      {/* ── Your data — standalone export (OPS-2 polish; temporary entry point) ── */}
+      <DataCard>
+        <div className="flex items-center gap-2 mb-1">
+          <Download size={15} style={{ color: "var(--text-secondary)" }} />
+          <DataCardTitle>Your Data</DataCardTitle>
+        </div>
+        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
+          Download a copy of your Fourth Meridian data (profile, accounts,
+          transactions, and more) as a ZIP.
+        </p>
+        <ExportDataCard />
       </DataCard>
 
       {/* ── Deactivate account (OPS-2 S4) ── */}

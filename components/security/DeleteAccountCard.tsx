@@ -20,6 +20,7 @@
 
 import { useState } from "react";
 import { signOut } from "next-auth/react";
+import { downloadDataExport } from "@/components/security/downloadDataExport";
 import { Loader2, Trash2, Download } from "lucide-react";
 
 const GRACE_DAYS = 7;
@@ -36,28 +37,9 @@ export function DeleteAccountCard() {
     if (exporting) return;
     setExporting(true);
     setError("");
-    try {
-      const res = await fetch("/api/user/export", { method: "POST" });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error ?? "Couldn't export your data. Please try again.");
-        setExporting(false);
-        return;
-      }
-      const blob = await res.blob();
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href     = url;
-      a.download = `fourth-meridian-export-${new Date().toISOString().slice(0, 10)}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      setError("Something went wrong exporting your data. Please try again.");
-    } finally {
-      setExporting(false);
-    }
+    const result = await downloadDataExport();
+    if (!result.ok) setError(result.error);
+    setExporting(false);
   }
 
   async function handleSubmit(e: React.FormEvent) {

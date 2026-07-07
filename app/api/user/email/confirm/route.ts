@@ -6,17 +6,24 @@
  *
  * TOKEN-AUTHENTICATED, NOT SESSION-AUTHENTICATED: the confirmation link is
  * usually clicked from the new inbox while logged out, so the hashed token is
- * the bearer authorization (bound to one specific pending change). POST-only,
- * so email prefetchers / link scanners hitting the /confirm-email-change PAGE
- * (a GET) never burn the token. Rate-limited.
+ * the bearer authorization (bound to one specific pending change). Rate-limited.
  *
- * NON-IDEMPOTENT (unlike verify-email): a successful swap CLEARS the token, so
- * a second click resolves no user → { status: "invalid" }. Correct for a
- * one-time state transition.
+ * IDEMPOTENT within the token TTL (OPS-2 UX fix). The confirm page auto-POSTs on
+ * load, so any entity that loads the URL and runs its JS — an email-link
+ * pre-scanner, a SafeLinks/redirect pre-check, or a browser refresh — can fire
+ * the confirm before the human's own click renders. Previously the swap cleared
+ * the token, so that second POST resolved no user and the human saw a false
+ * "Invalid link" even though the email had already changed. Now the swap does
+ * NOT clear pendingEmail / emailChangeToken / emailChangeExpiry; the 1h expiry
+ * bounds the token instead. A repeated confirmation whose account email already
+ * equals pendingEmail (isEmailChangeAlreadyApplied) returns "changed" without
+ * re-swapping, re-revoking sessions, or duplicating the audit row. The lingering
+ * columns are a no-op (email already equals pendingEmail); Settings/export treat
+ * that state as "no pending change".
  *
  * Body: { token: string }
  * Responses (always JSON with a `status`):
- *   200 { success: true,  status: "changed", newEmail }  — swapped
+ *   200 { success: true,  status: "changed", newEmail }  — swapped, or idempotent repeat
  *   400 { success: false, status: "expired" }            — link past its TTL
  *   400 { success: false, status: "email_taken" }        — address now in use
  *   400 { success: false, status: "invalid" }            — no/unknown token or no pending change
@@ -29,6 +36,7 @@ import { hashResetToken } from "@/lib/password-reset-token";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { AuditAction } from "@/lib/audit-actions";
 import { limitByIp } from "@/lib/rate-limit";
+import { isEmailChangeAlreadyApplied } from "@/lib/email/email-change-confirm";
 
 export async function POST(req: NextRequest) {
   try {
@@ -57,6 +65,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, status: "expired" }, { status: 400 });
     }
 
+    // Idempotent success (OPS-2 UX fix): the swap already happened for this
+    // token's target (email already equals pendingEmail), so a repeated confirm
+    // — from a scanner/redirect pre-check or a browser refresh — returns
+    // "changed" without re-swapping, re-revoking sessions, or writing a second
+    // EMAIL_CHANGE_COMPLETED audit row. This is what prevents the false
+    // "Invalid link" the human used to see after the email had already changed.
+    if (isEmailChangeAlreadyApplied(user)) {
+      return NextResponse.json({ success: true, status: "changed", newEmail: user.pendingEmail });
+    }
+
     const oldEmail = user.email;
     const newEmail = user.pendingEmail;
 
@@ -71,18 +89,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, status: "email_taken" }, { status: 400 });
     }
 
-    // ── Swap (one transaction) ────────────────────────────────────────────────
+    // ── Swap ───────────────────────────────────────────────────────────────────
     // email = pendingEmail; re-stamp emailVerifiedAt so S2e block-mode never
-    // locks the user out; clear the pending-change columns (single-use).
+    // locks the user out. OPS-2 UX fix: do NOT clear pendingEmail /
+    // emailChangeToken / emailChangeExpiry here — leaving them lets a repeated
+    // confirmation of the same token hit the idempotent branch above ("changed")
+    // instead of a false "invalid". The 1h expiry bounds the token; the lingering
+    // columns are a harmless no-op (email now equals pendingEmail) and are
+    // overwritten by the next email-change request. Settings/export treat
+    // email === pendingEmail as "no pending change".
     try {
       await db.user.update({
         where: { id: user.id },
         data:  {
-          email:             newEmail,
-          emailVerifiedAt:   new Date(),
-          pendingEmail:      null,
-          emailChangeToken:  null,
-          emailChangeExpiry: null,
+          email:           newEmail,
+          emailVerifiedAt: new Date(),
         },
       });
     } catch (e) {

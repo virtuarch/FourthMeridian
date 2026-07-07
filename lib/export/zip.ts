@@ -22,12 +22,17 @@ import {
 export async function buildExportZip(data: ExportData): Promise<Buffer> {
   const zip = new JSZip();
 
+  // manifest.json + data.json are always present; each tabular CSV is written
+  // only when assemble.ts listed it in manifest.files (i.e. it has rows), so no
+  // empty CSV ever ships. data.json still carries every section for stability.
+  const include = (name: string) => data.manifest.files.includes(name);
+
   zip.file("manifest.json", JSON.stringify(data.manifest, null, 2));
   zip.file("data.json", JSON.stringify(data, null, 2));
-  zip.file("transactions.csv", toTransactionsCsv(data.transactions));
-  zip.file("accounts.csv", toAccountsCsv(data.accounts));
-  zip.file("holdings.csv", toHoldingsCsv(data.holdings));
-  zip.file("snapshots.csv", toSnapshotsCsv(data.snapshots));
+  if (include("transactions.csv")) zip.file("transactions.csv", toTransactionsCsv(data.transactions));
+  if (include("accounts.csv"))     zip.file("accounts.csv", toAccountsCsv(data.accounts));
+  if (include("holdings.csv"))     zip.file("holdings.csv", toHoldingsCsv(data.holdings));
+  if (include("snapshots.csv"))    zip.file("snapshots.csv", toSnapshotsCsv(data.snapshots));
 
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }

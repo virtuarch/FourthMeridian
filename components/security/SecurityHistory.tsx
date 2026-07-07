@@ -11,7 +11,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, Globe } from "lucide-react";
 import { formatDateTime } from "@/lib/format";
-import type { ParsedUA } from "@/lib/ua-parser";
+import { formatDevice, type ParsedUA } from "@/lib/ua-parser";
 
 type SecurityEvent = {
   id:        string;
@@ -69,7 +69,7 @@ export function SecurityHistory() {
                 {e.label}
               </p>
               <div className="flex items-center gap-3 flex-wrap">
-                <span className="text-xs text-gray-600">{e.parsed.browser} on {e.parsed.os}</span>
+                <span className="text-xs text-gray-600">{formatDevice(e.parsed)}</span>
                 {e.ipAddress && (
                   <span className="flex items-center gap-1 text-xs text-gray-600 font-mono">
                     <Globe size={10} /> {e.ipAddress}
