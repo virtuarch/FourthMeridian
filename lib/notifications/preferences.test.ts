@@ -120,15 +120,25 @@ async function run(): Promise<void> {
     !resolveChannelEnabled(syncFailed, "IN_APP", [{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]),
   );
 
-  // ── Pure resolution: locked beats everything ────────────────────────────────
+  // ── Pure resolution: locked = registry defaults authoritative (S5) ─────────
+  // Overrides are IGNORED in both directions: hostile disables can't mute the
+  // bell, and hostile enables can't switch on the notification email (the
+  // security EMAIL guarantee lives in the OPS-2 security-alert flow).
   const hostileOff: PreferenceOverride[] = [
     { category: "ACCOUNT_SECURITY", channel: "IN_APP", enabled: false },
     { category: "ACCOUNT_SECURITY", channel: "EMAIL", enabled: false },
   ];
+  const hostileOn: PreferenceOverride[] = [
+    { category: "ACCOUNT_SECURITY", channel: "EMAIL", enabled: true },
+  ];
   check(
-    "locked category is forced ON even against hostile override rows",
-    resolveChannelEnabled(password, "IN_APP", hostileOff) &&
-      resolveChannelEnabled(password, "EMAIL", hostileOff),
+    "locked: in-app stays ON against hostile disable rows",
+    resolveChannelEnabled(password, "IN_APP", hostileOff),
+  );
+  check(
+    "locked: notification email stays OFF (default) — even against enable rows",
+    !resolveChannelEnabled(password, "EMAIL", hostileOff) &&
+      !resolveChannelEnabled(password, "EMAIL", hostileOn),
   );
 
   // ── Matrix ──────────────────────────────────────────────────────────────────
@@ -140,8 +150,8 @@ async function run(): Promise<void> {
     check("matrix has one row per non-DIGEST category", matrix.length === PREFERENCE_CATEGORIES.length);
     const security = matrix.find((r) => r.category === "ACCOUNT_SECURITY");
     check(
-      "matrix: locked row is checked on every channel",
-      security?.locked === true && security.channels.IN_APP && security.channels.EMAIL,
+      "matrix: locked row shows the authoritative defaults (in-app on, email off)",
+      security?.locked === true && security.channels.IN_APP && !security.channels.EMAIL,
     );
     const spaces = matrix.find((r) => r.category === "SPACES");
     check(
@@ -171,8 +181,9 @@ async function run(): Promise<void> {
       (await isChannelEnabledForUser("u1", "SYNC_FAILED", "IN_APP", { client })) === false,
     );
     check(
-      "isChannelEnabledForUser: locked types skip straight to true",
-      (await isChannelEnabledForUser("u1", "PASSWORD_CHANGED", "IN_APP", { client })) === true,
+      "isChannelEnabledForUser: locked types resolve from registry defaults, no read",
+      (await isChannelEnabledForUser("u1", "PASSWORD_CHANGED", "IN_APP", { client })) === true &&
+        (await isChannelEnabledForUser("u1", "PASSWORD_CHANGED", "EMAIL", { client })) === false,
     );
   }
 

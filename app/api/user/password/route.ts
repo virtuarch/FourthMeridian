@@ -16,6 +16,7 @@ import { withApiHandler } from "@/lib/api";
 import { revokeOtherUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
 import { formatDateTime } from "@/lib/format";
+import { createNotification } from "@/lib/notifications/create";
 
 export const PATCH = withApiHandler(async (req: NextRequest) => {
   // Sensitive action — always a live revocation check, never the cache.
@@ -77,12 +78,20 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
     console.error("[user/password] security-alert email failed to send:", emailResult.error);
   }
 
-  await db.auditLog.create({
+  const auditRow = await db.auditLog.create({
     data: {
       userId: user.id,
       action: "PASSWORD_CHANGED",
       metadata: { revokedOtherSessions, emailStatus: emailResult.status },
     },
+  });
+
+  // OPS-3 S5 Wave 1 — in-app mirror of the alert above (bell only; the email
+  // guarantee stays with the security-alert send). Non-throwing by contract.
+  await createNotification({
+    type: "PASSWORD_CHANGED",
+    userId: user.id,
+    auditLogId: auditRow.id,
   });
 
   return NextResponse.json({ success: true });

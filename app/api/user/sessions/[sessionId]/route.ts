@@ -10,6 +10,8 @@ import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { requireFreshUser } from "@/lib/session";
 import { invalidateSession } from "@/lib/session-cache";
+import { createNotification } from "@/lib/notifications/create";
+import { parseUserAgent } from "@/lib/ua-parser";
 
 export async function DELETE(
   req: NextRequest,
@@ -41,7 +43,7 @@ export async function DELETE(
     );
   }
 
-  await db.$transaction([
+  const [, auditRow] = await db.$transaction([
     db.userSession.update({
       where: { id: sessionId },
       data:  { revokedAt: new Date() },
@@ -58,6 +60,20 @@ export async function DELETE(
   // We have the exact token that was just revoked — targeted invalidation
   // instead of clearing the whole cache.
   invalidateSession(target.sessionToken);
+
+  // OPS-3 S5 Wave 1 — bell mirror. `device` is the parsed display label the
+  // Active Sessions surface already shows (never the raw UA). Skipped for a
+  // self-revocation of the CURRENT session — the user is watching themselves
+  // sign out; a ping would be noise.
+  if (!isCurrent) {
+    const parsed = parseUserAgent(target.userAgent ?? "");
+    await createNotification({
+      type: "SESSION_REVOKED",
+      userId,
+      auditLogId: auditRow.id,
+      data: { device: [parsed.browser, parsed.os].filter(Boolean).join(" · ") || "A device" },
+    });
+  }
 
   return NextResponse.json({ success: true, isCurrent: !!isCurrent });
 }

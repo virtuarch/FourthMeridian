@@ -25,6 +25,7 @@ import { AuditAction } from "@/lib/audit-actions";
 import { verifyTOTP } from "@/lib/totp";
 import bcrypt from "bcryptjs";
 import { requireFreshUser } from "@/lib/session";
+import { createNotification } from "@/lib/notifications/create";
 
 export async function POST(req: NextRequest) {
   // Sensitive action (disables 2FA) — always a live revocation check.
@@ -75,7 +76,7 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Disable 2FA ──────────────────────────────────────────────────────────────
-  await db.$transaction([
+  const [, , auditRow] = await db.$transaction([
     db.user.update({
       where: { id: user.id },
       data:  { totpSecret: null, totpEnabled: false },
@@ -90,6 +91,14 @@ export async function POST(req: NextRequest) {
       },
     }),
   ]);
+
+  // OPS-3 S5 Wave 1 — bell mirror, AFTER the transaction commits (fact first,
+  // ping second). Non-throwing.
+  await createNotification({
+    type: "TWO_FACTOR_DISABLED",
+    userId: user.id,
+    auditLogId: auditRow.id,
+  });
 
   return NextResponse.json({ ok: true });
 }

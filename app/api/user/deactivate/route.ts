@@ -29,6 +29,7 @@ import { formatDateTime } from "@/lib/format";
 import { AuditAction } from "@/lib/audit-actions";
 import { limitByIp } from "@/lib/rate-limit";
 import { UserRole } from "@prisma/client";
+import { createNotification } from "@/lib/notifications/create";
 
 export async function POST(req: NextRequest) {
   try {
@@ -97,12 +98,19 @@ export async function POST(req: NextRequest) {
       console.error("[user/deactivate] security-alert email failed to send:", emailResult.error);
     }
 
-    await db.auditLog.create({
+    const auditRow = await db.auditLog.create({
       data: {
         userId:   user.id,
         action:   AuditAction.ACCOUNT_DEACTIVATED,
         metadata: { revokedSessions, emailStatus: emailResult.status },
       },
+    });
+
+    // OPS-3 S5 Wave 1 — bell mirror, seen on reactivation. Non-throwing.
+    await createNotification({
+      type: "ACCOUNT_DEACTIVATED",
+      userId: user.id,
+      auditLogId: auditRow.id,
     });
 
     return NextResponse.json({ success: true });

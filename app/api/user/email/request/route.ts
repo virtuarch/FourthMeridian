@@ -23,6 +23,7 @@ import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
 import { buildEmailChangeUrl } from "@/lib/email/email-change-url";
 import { formatDateTime } from "@/lib/format";
+import { createNotification } from "@/lib/notifications/create";
 import { AuditAction } from "@/lib/audit-actions";
 import { limitByIp } from "@/lib/rate-limit";
 
@@ -106,12 +107,21 @@ export async function POST(req: NextRequest) {
       console.error("[email/request] old-address alert failed to send:", oldResult.error);
     }
 
-    await db.auditLog.create({
+    const auditRow = await db.auditLog.create({
       data: {
         userId:   user.id,
         action:   AuditAction.EMAIL_CHANGE_REQUESTED,
         metadata: { newEmail: normalizedNew, emailStatusNew: newResult.status, emailStatusOld: oldResult.status },
       },
+    });
+
+    // OPS-3 S5 Wave 1 — bell mirror. pendingEmail is MASKED at the producer
+    // (registry pointer contract): the bell never carries the full new address.
+    await createNotification({
+      type: "EMAIL_CHANGE_REQUESTED",
+      userId: user.id,
+      auditLogId: auditRow.id,
+      data: { pendingEmail: normalizedNew.replace(/^(.).*(@.*)$/, "$1***$2") },
     });
 
     return NextResponse.json({ success: true });

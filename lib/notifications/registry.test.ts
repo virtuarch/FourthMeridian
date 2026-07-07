@@ -107,9 +107,12 @@ for (const [key] of entries) {
 for (const [key, e] of entries) {
   if (e.category === "ACCOUNT_SECURITY") {
     check(`${key}: ACCOUNT_SECURITY is locked`, e.locked === true);
+    // S5 amendment: security types are IN_APP-only in the notification system —
+    // the EMAIL guarantee lives in the OPS-2 security-alert flow (unconditional,
+    // outside this system). Routing email here too would double-email events.
     check(
-      `${key}: locked type keeps email on by default`,
-      e.defaultChannels.includes("EMAIL"),
+      `${key}: locked type is in-app only (email guarantee = security-alert flow)`,
+      e.defaultChannels.includes("IN_APP") && !e.defaultChannels.includes("EMAIL"),
     );
     check(`${key}: ACCOUNT_SECURITY is CRITICAL`, e.priority === "CRITICAL");
   } else {
@@ -193,6 +196,19 @@ for (const [key, e] of entries) {
 
 const WIRED = new Set<string>([
   "SPACE_INVITE_RECEIVED", // OPS-3 S1 — EV-1 handler on MemberInvited
+  // OPS-3 S5 Wave 1 — account & security, inline beside audit + security-alert:
+  "PASSWORD_CHANGED",
+  "PASSWORD_RESET",
+  "EMAIL_CHANGE_REQUESTED",
+  "EMAIL_CHANGE_COMPLETED",
+  "TWO_FACTOR_ENABLED",
+  "TWO_FACTOR_DISABLED",
+  "SESSION_REVOKED",
+  "ACCOUNT_DEACTIVATED",
+  "ACCOUNT_REACTIVATED",
+  "ACCOUNT_DELETION_REQUESTED",
+  "ACCOUNT_DELETION_CANCELLED",
+  "DATA_EXPORTED",
 ]);
 for (const [key, e] of entries) {
   if (WIRED.has(key)) {

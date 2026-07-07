@@ -25,6 +25,7 @@ import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
 import { verifyTOTP } from "@/lib/totp";
 import { sendEmail } from "@/lib/email/send";
+import { createNotification } from "@/lib/notifications/create";
 import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
 import { getCachedRevocation, setCachedRevocation, invalidateSession } from "@/lib/session-cache";
@@ -269,7 +270,7 @@ export const authOptions: NextAuthOptions = {
         // notify. Email is NON-THROWING: a delivery failure never blocks the
         // reactivation or the login.
         if (user.deactivatedAt && wantsReactivation) {
-          await db.$transaction([
+          const [, reactivationAudit] = await db.$transaction([
             db.user.update({
               where: { id: user.id },
               data:  { deactivatedAt: null },
@@ -292,6 +293,13 @@ export const authOptions: NextAuthOptions = {
           if (emailResult.status === "error") {
             console.error("[auth] reactivation security-alert email failed to send:", emailResult.error);
           }
+
+          // OPS-3 S5 Wave 1 — bell mirror; waiting when the fresh session opens.
+          await createNotification({
+            type: "ACCOUNT_REACTIVATED",
+            userId: user.id,
+            auditLogId: reactivationAudit.id,
+          });
         }
 
         // ── Deletion cancellation (OPS-2 S7a) ─────────────────────────────────
@@ -300,7 +308,7 @@ export const authOptions: NextAuthOptions = {
         // deactivatedAt lockout they were set alongside, audit, and notify.
         // Mirrors the reactivation leg above; email is NON-THROWING.
         if (user.deletionScheduledAt && wantsCancelDeletion) {
-          await db.$transaction([
+          const [, cancellationAudit] = await db.$transaction([
             db.user.update({
               where: { id: user.id },
               data:  { deletionRequestedAt: null, deletionScheduledAt: null, deactivatedAt: null },
@@ -323,6 +331,13 @@ export const authOptions: NextAuthOptions = {
           if (emailResult.status === "error") {
             console.error("[auth] deletion-cancellation security-alert email failed to send:", emailResult.error);
           }
+
+          // OPS-3 S5 Wave 1 — bell mirror; waiting when the fresh session opens.
+          await createNotification({
+            type: "ACCOUNT_DELETION_CANCELLED",
+            userId: user.id,
+            auditLogId: cancellationAudit.id,
+          });
         }
 
         // ── Create session record + audit log ─────────────────────────────────

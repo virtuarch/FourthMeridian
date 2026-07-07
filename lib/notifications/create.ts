@@ -292,20 +292,17 @@ export async function createNotification(
   // creates no row — and since the row anchors NotificationDelivery (FK),
   // no email ships either; the row is the delivery anchor by design (S3
   // semantics stand). A preference-read failure → non-throwing error result.
-  let emailEnabled = true;
+  let overrides: PreferenceOverride[] = [];
   if (!def.locked) {
+    // Locked categories never read overrides — registry defaults are
+    // authoritative for them (S5 amendment); resolveChannelEnabled handles it.
     try {
       const prefDb: PreferenceClient =
         ctx?.prefClient ?? (db as unknown as PreferenceClient);
-      const overrides: PreferenceOverride[] =
-        await prefDb.notificationPreference.findMany({
-          where: { userId: input.userId },
-          select: { category: true, channel: true, enabled: true },
-        });
-      if (!resolveChannelEnabled(def, "IN_APP", overrides)) {
-        return { status: "skipped" };
-      }
-      emailEnabled = resolveChannelEnabled(def, "EMAIL", overrides);
+      overrides = await prefDb.notificationPreference.findMany({
+        where: { userId: input.userId },
+        select: { category: true, channel: true, enabled: true },
+      });
     } catch (prefErr) {
       return {
         status: "error",
@@ -313,6 +310,10 @@ export async function createNotification(
       };
     }
   }
+  if (!resolveChannelEnabled(def, "IN_APP", overrides)) {
+    return { status: "skipped" };
+  }
+  const emailEnabled = resolveChannelEnabled(def, "EMAIL", overrides);
 
   // 2. Dedupe key (F3). "refresh" falls back to suppress in v1 (frozen).
   const dedupeKey =

@@ -61,8 +61,12 @@ function str(data: NotificationRenderData, key: string, fallback: string): strin
 const SECURITY = {
   category: "ACCOUNT_SECURITY" as const,
   priority: "CRITICAL" as const,
-  // Locked categories keep email on — the OPS-2 security-alert guarantee (F11).
-  defaultChannels: ["IN_APP", "EMAIL"] as const satisfies readonly NotificationChannel[],
+  // IN_APP only (S5 amendment — see OPS3_S5_PRODUCER_WAVES_INVESTIGATION.md §2):
+  // the EMAIL guarantee for security events lives in the OPS-2 security-alert
+  // flow (support@, unconditional, outside this system). Routing them through
+  // the notification EMAIL channel too would double-email every event.
+  // `locked` means the user cannot OVERRIDE these defaults, not "all on".
+  defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],
   locked: true,
   retention: DEFAULT_RETENTION,
   digestable: false,
@@ -117,6 +121,7 @@ export const NOTIFICATION_REGISTRY = {
   //    email has no User row to notify (named bypass #2).
   PASSWORD_CHANGED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — app/api/user/password
     id: "PASSWORD_CHANGED",
     icon: "key-round",
     pointerContract: [],
@@ -128,6 +133,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   PASSWORD_RESET: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — app/api/auth/reset-password
     id: "PASSWORD_RESET",
     icon: "key-round",
     pointerContract: [],
@@ -139,6 +145,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   EMAIL_CHANGE_REQUESTED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — app/api/user/email/request
     id: "EMAIL_CHANGE_REQUESTED",
     icon: "mail",
     // pendingEmail is display payload (masked at the producer), not a row pointer.
@@ -151,6 +158,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   EMAIL_CHANGE_COMPLETED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — app/api/user/email/confirm
     id: "EMAIL_CHANGE_COMPLETED",
     icon: "mail-check",
     pointerContract: [],
@@ -169,6 +177,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   TWO_FACTOR_ENABLED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — app/api/user/totp/verify
     id: "TWO_FACTOR_ENABLED",
     icon: "shield-check",
     pointerContract: [],
@@ -179,6 +188,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   TWO_FACTOR_DISABLED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — app/api/user/totp/disable
     id: "TWO_FACTOR_DISABLED",
     icon: "shield-off",
     pointerContract: [],
@@ -222,6 +232,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   SESSION_REVOKED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — app/api/user/sessions/[sessionId] (single; bulk self-revoke deliberately not wired)
     id: "SESSION_REVOKED",
     icon: "monitor-off",
     // Display payload describing the revoked session (producer-safe strings).
@@ -234,6 +245,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   ACCOUNT_DEACTIVATED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — app/api/user/deactivate
     id: "ACCOUNT_DEACTIVATED",
     icon: "user-x",
     pointerContract: [],
@@ -244,6 +256,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   ACCOUNT_REACTIVATED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — lib/auth.ts reactivation leg
     id: "ACCOUNT_REACTIVATED",
     icon: "user-check",
     pointerContract: [],
@@ -251,6 +264,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   ACCOUNT_DELETION_REQUESTED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — app/api/user/delete
     id: "ACCOUNT_DELETION_REQUESTED",
     icon: "trash-2",
     // scheduledFor: ISO date string (display payload).
@@ -265,6 +279,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   ACCOUNT_DELETION_CANCELLED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — lib/auth.ts cancel-deletion leg
     id: "ACCOUNT_DELETION_CANCELLED",
     icon: "undo-2",
     pointerContract: [],
@@ -272,6 +287,7 @@ export const NOTIFICATION_REGISTRY = {
   },
   DATA_EXPORTED: {
     ...SECURITY,
+    status: "WIRED" as const, // S5 W1 — app/api/user/export
     id: "DATA_EXPORTED",
     icon: "download",
     pointerContract: [],

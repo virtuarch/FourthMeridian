@@ -31,6 +31,7 @@ import { AuditAction } from "@/lib/audit-actions";
 import { limitByUser } from "@/lib/rate-limit";
 import { deletionPreflight, GRACE_DAYS, GRACE_MS } from "@/lib/account-deletion/preflight";
 import { UserRole } from "@prisma/client";
+import { createNotification } from "@/lib/notifications/create";
 
 export async function POST(req: NextRequest) {
   try {
@@ -121,7 +122,7 @@ export async function POST(req: NextRequest) {
       console.error("[user/delete] security-alert email failed to send:", emailResult.error);
     }
 
-    await db.auditLog.create({
+    const auditRow = await db.auditLog.create({
       data: {
         userId:   user.id,
         action:   AuditAction.ACCOUNT_DELETION_REQUESTED,
@@ -132,6 +133,15 @@ export async function POST(req: NextRequest) {
           emailStatus:         emailResult.status,
         },
       },
+    });
+
+    // OPS-3 S5 Wave 1 — bell mirror, seen if the user signs back in to cancel.
+    // scheduledFor is display payload per the registry pointer contract.
+    await createNotification({
+      type: "ACCOUNT_DELETION_REQUESTED",
+      userId: user.id,
+      auditLogId: auditRow.id,
+      data: { scheduledFor: formatDateTime(scheduledAt.toISOString()) },
     });
 
     return NextResponse.json({ success: true, scheduledAt: scheduledAt.toISOString() });

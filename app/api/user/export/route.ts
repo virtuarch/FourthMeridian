@@ -26,6 +26,7 @@ import { formatDateTime } from "@/lib/format";
 import { AuditAction } from "@/lib/audit-actions";
 import { assembleUserExport } from "@/lib/export/assemble";
 import { buildExportZip } from "@/lib/export/zip";
+import { createNotification } from "@/lib/notifications/create";
 
 export async function POST() {
   try {
@@ -61,12 +62,19 @@ export async function POST() {
       }
     }
 
-    await db.auditLog.create({
+    const auditRow = await db.auditLog.create({
       data: {
         userId:   user.id,
         action:   AuditAction.DATA_EXPORTED,
         metadata: { counts: data.manifest.counts, truncated: data.manifest.truncated, emailStatus },
       },
+    });
+
+    // OPS-3 S5 Wave 1 — bell mirror. Non-throwing.
+    await createNotification({
+      type: "DATA_EXPORTED",
+      userId: user.id,
+      auditLogId: auditRow.id,
     });
 
     const filename = `fourth-meridian-export-${new Date().toISOString().slice(0, 10)}.zip`;

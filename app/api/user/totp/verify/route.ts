@@ -22,6 +22,7 @@ import { AuditAction } from "@/lib/audit-actions";
 import { verifyTOTP } from "@/lib/totp";
 import { requireUser } from "@/lib/session";
 import { limitByUser } from "@/lib/rate-limit";
+import { createNotification } from "@/lib/notifications/create";
 
 export async function POST(req: NextRequest) {
   const [user, err] = await requireUser();
@@ -90,11 +91,18 @@ export async function POST(req: NextRequest) {
   );
 
   // generateRecoveryCodes writes RECOVERY_CODES_GENERATED; write TWO_FACTOR_ENABLED separately
-  await db.auditLog.create({
+  const auditRow = await db.auditLog.create({
     data: {
       userId: user.id,
       action: AuditAction.TWO_FACTOR_ENABLED,
     },
+  });
+
+  // OPS-3 S5 Wave 1 — bell mirror. Non-throwing.
+  await createNotification({
+    type: "TWO_FACTOR_ENABLED",
+    userId: user.id,
+    auditLogId: auditRow.id,
   });
 
   return NextResponse.json({

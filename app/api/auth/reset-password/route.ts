@@ -15,6 +15,7 @@ import { revokeAllUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
 import { formatDateTime } from "@/lib/format";
 import { limitByIp } from "@/lib/rate-limit";
+import { createNotification } from "@/lib/notifications/create";
 
 export async function POST(req: NextRequest) {
   try {
@@ -74,12 +75,20 @@ export async function POST(req: NextRequest) {
       console.error("[reset-password] security-alert email failed to send:", emailResult.error);
     }
 
-    await db.auditLog.create({
+    const auditRow = await db.auditLog.create({
       data: {
         userId: user.id,
         action: "PASSWORD_RESET_COMPLETE",
         metadata: { email: user.email, revokedSessions, emailStatus: emailResult.status },
       },
+    });
+
+    // OPS-3 S5 Wave 1 — bell mirror (registry type PASSWORD_RESET; the legacy
+    // audit string above is grandfathered, never renamed). Non-throwing.
+    await createNotification({
+      type: "PASSWORD_RESET",
+      userId: user.id,
+      auditLogId: auditRow.id,
     });
 
     return NextResponse.json({ success: true });

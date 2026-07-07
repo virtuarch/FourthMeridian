@@ -37,6 +37,7 @@ import { revokeAllUserSessions } from "@/lib/sessions";
 import { AuditAction } from "@/lib/audit-actions";
 import { limitByIp } from "@/lib/rate-limit";
 import { isEmailChangeAlreadyApplied } from "@/lib/email/email-change-confirm";
+import { createNotification } from "@/lib/notifications/create";
 
 export async function POST(req: NextRequest) {
   try {
@@ -118,12 +119,20 @@ export async function POST(req: NextRequest) {
     // the new email.
     const revokedSessions = await revokeAllUserSessions(user.id);
 
-    await db.auditLog.create({
+    const auditRow = await db.auditLog.create({
       data: {
         userId:   user.id,
         action:   AuditAction.EMAIL_CHANGE_COMPLETED,
         metadata: { oldEmail, newEmail, revokedSessions },
       },
+    });
+
+    // OPS-3 S5 Wave 1 — bell mirror, seen on next sign-in (all sessions were
+    // just revoked). Non-throwing.
+    await createNotification({
+      type: "EMAIL_CHANGE_COMPLETED",
+      userId: user.id,
+      auditLogId: auditRow.id,
     });
 
     return NextResponse.json({ success: true, status: "changed", newEmail });

@@ -87,7 +87,11 @@ export function resolveChannelEnabled(
   channel: PreferenceChannel,
   overrides: readonly PreferenceOverride[],
 ): boolean {
-  if (def.locked) return true; // locked categories cannot be muted (F11)
+  // Locked = the user cannot OVERRIDE — registry defaults are authoritative
+  // (S5 amendment; the S4 freeze's own words). Not "all channels on": the
+  // security EMAIL guarantee lives in the OPS-2 security-alert flow, and
+  // forcing the notification email too would double-email every event.
+  if (def.locked) return def.defaultChannels.includes(channel);
   const row = overrides.find(
     (o) => o.category === def.category && o.channel === channel,
   );
@@ -142,7 +146,9 @@ export async function getPreferenceMatrix(
     const channels = {} as Record<PreferenceChannel, boolean>;
     for (const ch of PREFERENCE_CHANNELS) {
       if (locked) {
-        channels[ch] = true;
+        // Locked rows render the authoritative registry defaults (disabled in
+        // the UI) — not all-on (S5 amendment).
+        channels[ch] = categoryDefault(category, ch);
       } else {
         const row = overrides.find((o) => o.category === category && o.channel === ch);
         channels[ch] = row ? row.enabled : categoryDefault(category, ch);
@@ -164,7 +170,8 @@ export async function isChannelEnabledForUser(
   ctx?: { client?: PreferenceClient },
 ): Promise<boolean> {
   const def = NOTIFICATION_REGISTRY[type];
-  if (def.locked) return true; // no read needed — locked is unconditional
+  // Locked: registry defaults authoritative, no read needed (S5 amendment).
+  if (def.locked) return (def.defaultChannels as readonly string[]).includes(channel);
   const overrides = await client(ctx).notificationPreference.findMany({
     where: { userId },
     select: { category: true, channel: true, enabled: true },

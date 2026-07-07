@@ -458,13 +458,16 @@ async function run(): Promise<void> {
       res.status === "created" && fake.deliveries.length === 0 && messages.length === 0);
   }
   {
-    // Locked ACCOUNT_SECURITY: hostile EMAIL-off rows are ignored — email ships.
+    // Locked ACCOUNT_SECURITY (S5 semantics): registry defaults authoritative
+    // — IN_APP only. No notification email ships (the security EMAIL guarantee
+    // is the OPS-2 security-alert flow), even against hostile ENABLE rows.
     const fake = makeFakeClient();
-    const { adapter } = makeFakeAdapter({ status: "sent", id: "m", provider: "resend" });
-    const hostileOff = makePrefClient([{ category: "ACCOUNT_SECURITY", channel: "EMAIL", enabled: false }]);
+    const { adapter, messages } = makeFakeAdapter({ status: "sent", id: "m", provider: "resend" });
+    const hostileOn = makePrefClient([{ category: "ACCOUNT_SECURITY", channel: "EMAIL", enabled: true }]);
     const res = await createNotification({ type: "PASSWORD_CHANGED", userId: "u1" },
-      { client: fake.client, prefClient: hostileOff, emailAdapter: adapter });
-    check("locked category emails despite hostile override", res.status === "created" && fake.deliveries[0]?.status === "sent");
+      { client: fake.client, prefClient: hostileOn, emailAdapter: adapter });
+    check("locked category never ships a notification email (security-alert owns email)",
+      res.status === "created" && fake.deliveries.length === 0 && messages.length === 0);
   }
   {
     // Default IN_APP-only type → created, no email attempt.
