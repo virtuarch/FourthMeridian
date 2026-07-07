@@ -45,6 +45,7 @@ import { RefreshButton } from "@/components/dashboard/RefreshButton";
 import { AtlasField } from "@/components/atlas/AtlasField";
 import { AppLogo } from "@/components/ui/AppLogo";
 import { CreateSpaceModal } from "@/components/dashboard/CreateSpaceModal";
+import { NotificationBell } from "@/components/notifications/NotificationBell";
 import { OPEN_CREATE_SPACE_EVENT } from "@/lib/space-nav";
 
 export function DashboardChrome({ children }: { children: ReactNode }) {
@@ -98,6 +99,7 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
             </div>
             <div className="flex items-center gap-2">
               <RefreshButton label="Refresh" />
+              <NotificationBell />
               <UserButton />
             </div>
           </div>
@@ -130,6 +132,9 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
           style={{ background: immersive ? "transparent" : "var(--glass-ultrathin)" }}
         >
           <RefreshButton label="Refresh Data" />
+          <div className="ml-3">
+            <NotificationBell />
+          </div>
         </header>
 
         {/* Page content */}
