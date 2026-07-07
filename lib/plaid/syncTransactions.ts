@@ -86,6 +86,11 @@ import {
   accumulateShadow,
   summarizeShadow,
 } from "@/lib/transactions/plaid-flow-input";
+// TI2-4 — durable Transaction Intelligence facts, stamped beside FlowType on the
+// Plaid write path. Additive: TI columns only, disjoint from flow/MI columns.
+// Computed once per payload from the already-derived classification + captured
+// metadata; never recomputed inside miData (facts are category-independent).
+import { buildTransactionFacts, NULL_TRANSACTION_FACTS } from "@/lib/transactions/transaction-facts";
 // Merchant Intelligence M4 — live write-time identity + category provenance and
 // identity-safe Plaid counterparty enrichment. Additive: MI columns only; the 7
 // original fields, flow columns, and currency are untouched. A resolution
@@ -249,6 +254,9 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       // USD here — null means "denomination not recorded".
       let currency: string | null = txn.iso_currency_code ?? null;
       let flowFields = NULL_FLOW_WRITE_FIELDS;
+      // TI2-4 — durable TI facts; degrade to all-null on any failure, mirroring
+      // flowFields. Computed once below from the same classification + captured.
+      let factFields = NULL_TRANSACTION_FACTS;
       // MI M4 — identity-safe Plaid counterparty enrichment, captured from the
       // same `captured` sidecar buildPlaidFlowInput already produces. Best-effort;
       // null on any classification failure.
@@ -279,6 +287,17 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         });
         const classification = classifyFlow(input);
         flowFields = buildFlowWriteFields(classification, input, captured, FLOW_CLASSIFIER_VERSION);
+        // TI2-4 — reuse the already-computed classification + captured metadata;
+        // do NOT re-run classifyFlow. TI facts are category-independent, so they
+        // are computed here once and never recomputed in miData's override branch.
+        factFields = buildTransactionFacts({
+          captured,
+          pending:         txn.pending,
+          rowCurrency:     currency,
+          accountCurrency: meta.currency,
+          flowType:        classification.flowType,
+          flowDirection:   classification.flowDirection,
+        });
         enrichment = plaidCounterpartyEnrichment(captured);
         if (shadowEnabled) accumulateShadow(shadowStats, classification, category, amount);
       } catch (e) {
@@ -289,7 +308,10 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       // currency (MC1 Phase 0 Slice 2) rides the shared fields object. Category +
       // flow are held SEPARATELY so a USER correction can override or preserve
       // them (MI M5) without disturbing the base fields.
-      const baseFields = { financialAccountId, date, merchant, description, amount, pending: txn.pending, currency };
+      // TI2-4 — factFields ride baseFields so they are stamped identically on all
+      // three write sites (create, modified-update, fingerprint-update), disjoint
+      // from category/flow (which ride `mi`) and independent of MI resolution.
+      const baseFields = { financialAccountId, date, merchant, description, amount, pending: txn.pending, currency, ...factFields };
       const defaultCategoryFlow = { category, ...flowFields };
 
       // MI M4/M5 — resolve merchant identity + category provenance, mint/reuse the
