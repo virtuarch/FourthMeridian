@@ -43,6 +43,17 @@ enum TransactionCategory {
   Dividend
   Split
   Fee
+  // MI1 M1 — expanded spend vocabulary (persisted-tier plan §2.3 / readiness
+  // investigation §4.5). Six committed spend categories that rescue PFC spend
+  // primaries currently collapsing to `Other`. Each has a committed producer in
+  // MI M2's resolution stack. Enum additions are irreversible — admitted here
+  // in their own migration file, additively; nothing writes them until M2.
+  Medical
+  Entertainment
+  Transport
+  PersonalCare
+  Services
+  Education
 }
 
 enum RiskLevel {
@@ -1225,6 +1236,52 @@ enum FlowClassificationReason {
   AMBIGUOUS_UNKNOWN
 }
 
+// ── Merchant Intelligence (MI1 M1 — additive, nothing reads/writes yet) ───────
+
+/// Provenance for a transaction's `category` — WHY it is what it is. Written by
+/// MI M2's resolution stack (one arm per source), read from M6. `Transaction.categorySource`
+/// is nullable with NO default: null = "pre-MI row, provenance unknown" (the MC1
+/// Phase 0 doctrine), never a manufactured claim. USER_OVERRIDE is the row-level
+/// human correction that dominates all detectors (forms-investigation ratchet).
+enum CategorySource {
+  PLAID_PFC // provider personal_finance_category (flow-structural primary/detailed)
+  USER_RULE // a MerchantRule authored by the user (MerchantRuleScope.USER)
+  GLOBAL_CATALOG // the in-code curated global merchant→category catalog (lib/transactions/merchant-rules.ts)
+  PFC_SPEND_BUCKET // expanded PFC spend primary mapped to a spend category
+  USER_OVERRIDE // explicit per-row human correction (row-level, dominates)
+  LEGACY // pre-MI derivation retrofitted by backfill
+}
+
+/// Scope at which a MerchantRule applies. USER is the live scope (author's own
+/// corrections, M5). SPACE is schema'd but its writer/reader is deferred to its
+/// own slice — a shared row cannot hold two Spaces' truths (SpaceAccountLink makes
+/// this structural). GLOBAL is deliberately absent: the global catalog stays in code.
+enum MerchantRuleScope {
+  USER
+  SPACE
+}
+
+/// Where a MerchantAlias mapping came from. Ambiguity is resolved by refusing the
+/// second mapping, not by ranking — this is provenance, not precedence.
+enum MerchantAliasSource {
+  PLAID
+  IMPORT
+  USER
+}
+
+/// Provider-neutral source of a Merchant's enrichment fields (website/logoUrl/…).
+/// PLAID_COUNTERPARTY is the first source (Plaid already sends this on every synced
+/// transaction and it is currently discarded). Other providers may later populate
+/// the SAME fields through a provider-neutral enrichment adapter — e.g. Coinbase
+/// metadata, Schwab/security metadata, or a future external enrichment provider.
+/// No provider-specific columns are added for these; only this source stamp changes.
+enum MerchantEnrichmentSource {
+  PLAID_COUNTERPARTY
+  COINBASE
+  SECURITY_METADATA
+  EXTERNAL_PROVIDER
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Transaction
 // Pulled from Plaid or entered manually. Positive = money in, negative = out.
@@ -1305,6 +1362,23 @@ model Transaction {
   // derivable). Nothing reads this until MC1 Phase 2+.
   currency String?
 
+  // ── Merchant Intelligence (MI1 M1 — additive, nullable; nothing reads/writes) ─
+  // Persisted merchant identity + category provenance foundation. Written by
+  // MI M2 (categorySource/categoryRuleId) and M4 (merchantId); read from M6.
+  // All three are nullable with NO default:
+  //   merchantId      — resolved Merchant FK; null = unresolved (pre-M4 rows).
+  //   categorySource  — WHY `category` is what it is; null = "pre-MI, provenance
+  //                     unknown" (MC1 Phase 0 doctrine), never a manufactured claim.
+  //   categoryRuleId  — the MerchantRule that set the category, when a rule did.
+  // onDelete: SetNull on both FKs mirrors importBatchId/counterpartyAccountId:
+  // deleting a Merchant or MerchantRule degrades the pointer to null, never
+  // deletes the transaction.
+  merchantId       String?
+  resolvedMerchant Merchant?       @relation("MerchantTransactions", fields: [merchantId], references: [id], onDelete: SetNull)
+  categorySource   CategorySource?
+  categoryRuleId   String?
+  categoryRule     MerchantRule?   @relation("MerchantRuleTransactions", fields: [categoryRuleId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1319,6 +1393,104 @@ model Transaction {
   @@index([financialAccountId, flowType, date])
   @@index([flowType, date])
   @@index([counterpartyAccountId])
+  // MI1 M1 — merchant-identity + category-provenance FK indexes (additive).
+  @@index([merchantId])
+  @@index([categoryRuleId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Merchant Intelligence — persisted identity foundation (MI1 M1)
+//
+// Additive, schema-only. Nothing reads or writes these tables yet:
+//   • write-time resolution      = M4
+//   • dictionary/category backfill = M3/M4
+//   • corrections (user rules)   = M5 (into TI P2's detail surface)
+//   • AI read cutover            = M6
+//
+// Deployment-global identity (no per-user/per-Space partition on Merchant itself);
+// PII-minting is guarded at the *resolver* (M4), never by this schema. There is
+// deliberately NO MerchantAsset table, NO blob/binary storage, NO fetch pipeline
+// in this initiative — see MI1_M0_RATIFICATION_2026-07-07.md §1.6 and the
+// readiness investigation §3.1 / §12.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One canonical merchant identity. `canonicalKey` is the resolver's exact-match
+/// key (no fuzzy/ML clustering, ever, in this initiative); `plaidEntityId` is the
+/// one approved provider id (mirrors Transaction.merchantEntityId, the forward seed
+/// that lets M4 backfill without a Plaid re-fetch). `defaultCategory` is informational.
+///
+/// Enrichment fields (all nullable) are a STORAGE SHAPE ONLY in M1 — no writer
+/// fills them yet. They are provider-NEUTRAL: Plaid counterparty is the first
+/// source (Plaid already sends website/logo_url per transaction and the platform
+/// discards it today — M4 will capture it), and other providers (Coinbase,
+/// Schwab/security metadata, a future external enrichment provider) may later
+/// populate the SAME fields through a provider-neutral enrichment adapter. External
+/// logo/favicon fetchers belong to a later enrichment slice AFTER the OPS-4
+/// dispatcher exists; do not fetch logos externally, cache binaries, or add blob
+/// storage / Brandfetch / Clearbit here.
+model Merchant {
+  id           String              @id @default(cuid())
+  canonicalKey String              @unique
+  displayName  String
+  plaidEntityId String?            @unique
+  defaultCategory TransactionCategory?
+
+  // ── Enrichment (nullable; storage shape only in M1 — no capture wiring) ──────
+  website             String?
+  logoUrl             String?
+  enrichmentSource    MerchantEnrichmentSource?
+  enrichmentConfidence Float?
+  enrichedAt          DateTime?
+
+  aliases      MerchantAlias[]
+  rules        MerchantRule[]
+  transactions Transaction[]       @relation("MerchantTransactions")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Alias memory: a raw descriptor key that resolves to one Merchant. `aliasKey`
+/// is globally unique — ambiguity is resolved by REFUSING the second mapping, not
+/// by ranking. `sample` keeps one raw example for auditability; `source` records
+/// where the mapping came from (provenance, not precedence).
+model MerchantAlias {
+  id         String              @id @default(cuid())
+  aliasKey   String              @unique
+  sample     String?
+  source     MerchantAliasSource
+  merchantId String
+  merchant   Merchant            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([merchantId])
+}
+
+/// A merchant→category rule. `scope` USER is the live scope (M5, the author's own
+/// corrections); SPACE is schema'd but its writer/reader is deferred to its own
+/// slice. GLOBAL is deliberately absent — the global catalog stays in code
+/// (lib/transactions/merchant-rules.ts). `ownerUserId` / `spaceId` are nullable
+/// seams populated by the scope's own slice; no FK relation is wired in M1 (no
+/// reader/writer exists to justify a cascade posture yet).
+model MerchantRule {
+  id          String            @id @default(cuid())
+  merchantId  String
+  merchant    Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  category    TransactionCategory
+  scope       MerchantRuleScope
+  ownerUserId String?
+  spaceId     String?
+
+  transactions Transaction[]    @relation("MerchantRuleTransactions")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([merchantId])
+  @@index([ownerUserId])
+  @@index([spaceId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1817,4 +1989,44 @@ model NotificationPreference {
   updatedAt DateTime @updatedAt
 
   @@unique([userId, category, channel])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JobRun (OPS-4 S1) — the background-job execution ledger. Append-only dated
+// fact table (the AuditLog / FxRate / SyncIssue idiom): one row per scheduled
+// unit of work, written ONLY by lib/jobs/run.ts's runJob() wrapper.
+// Frozen design: docs/initiatives/ops4/OPS4_BACKGROUND_JOBS_INVESTIGATION_
+// 2026-07-07.md §6 S1 + docs/initiatives/ops4/OPS4_S0_RULINGS.md.
+//
+// APPEND-ONLY SEMANTICS: a row is created when a run starts (status
+// "running") and receives exactly ONE completion write (status/completedAt/
+// durationMs/summary/errorSummary). No update after completion, ever; no
+// deletes (retention policy deferred by ruling R2 — arrives with the S3
+// sweep, not before).
+//
+// TRUST BOUNDARY (inherits OPS-3 F14 / PO1 telemetry doctrine): summary
+// carries counts, kinds, dates, and IDs ONLY — never user content, merchant
+// strings, or monetary values. A summary field containing user content is a
+// KD-1-class defect. This table is a fact ledger, NOT a metrics/telemetry
+// system: counters and rollups belong to PO1 Phases 1/3 (ruling R8).
+//
+// jobName/trigger/status are strings, never DB enums (the registry idiom —
+// adding a job must not require a migration).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model JobRun {
+  id           String    @id @default(cuid())
+  jobName      String // e.g. "sync-banks" | "fetch-fx-rates" | "process-deletions"
+  trigger      String // "cron" now; "manual" | "script" are vocabulary
+  executionId  String    @unique // wrapper-generated UUID; correlates console logs to this row
+  status       String // "running" | "succeeded" | "failed"
+  startedAt    DateTime
+  completedAt  DateTime? // set by the single completion write
+  durationMs   Int? // wall-clock, set at completion
+  summary      Json? // counts/kinds/IDs only — never user content or monetary values
+  errorSummary String? // truncated message only (no stack), set when status = "failed"
+  createdAt    DateTime  @default(now())
+
+  @@index([jobName, startedAt]) // "did last night's X run?"
+  @@index([status, startedAt]) // failure scans
 }
