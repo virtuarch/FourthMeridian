@@ -14,13 +14,15 @@
  *   • categorySource is nullable with NO default (MC1 Phase 0 provenance doctrine)
  *   • Merchant enrichment fields exist (storage shape only)
  *   • NO MerchantAsset model exists
- *   • the M2 resolver is PURE (no db import, no prisma calls) and nothing
- *     persists / writes the new schema yet (M4 not started)
+ *   • the M2 resolver and M3 backfill planner are PURE (no db import, no prisma
+ *     calls); the only DB writer is the offline backfill script (scripts/)
+ *   • NO live sync/import/read path consumes MI yet (M4 not started)
  *   • NO UI/API consumes the new schema yet
  *
- * If a later change starts M2 (a resolver, a write, a read) without updating this
- * test, it fails first — pinning "schema is additive/behavior-neutral, and M2 is
- * a pure resolver with no persistence (M3/M4 not started)".
+ * If a later change starts M4 (live sync/import wiring, a read cutover) without
+ * updating this test, it fails first — pinning "schema is additive/behavior-
+ * neutral; M2/M3 are pure with the only writes in the offline backfill script;
+ * M4 not started".
  *
  * Ratification: docs/initiatives/mi1/MI1_M0_RATIFICATION_2026-07-07.md.
  */
@@ -134,9 +136,15 @@ console.log("Merchant Intelligence M1 schema tripwires (MI1)");
 // ── 5. NO MerchantAsset table (explicit non-goal) ────────────────────────────
 check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test(schema));
 
-// ── 6. M2 boundary: pure resolver exists; NO persistence / write / M3-M4 yet ─
+// ── 6. M3 boundary: pure resolver + pure backfill planner; NO live wiring yet ─
 {
+  // The M2 resolver and the M3 backfill PLANNER are pure lib modules that carry
+  // the new column names as data-shape identifiers; they are allowlisted from
+  // the "no write path" scan. (The M3 backfill SCRIPT that does persist lives in
+  // scripts/, which collectSource deliberately does not scan.)
   const RESOLVER = "lib/transactions/merchant-resolver.ts";
+  const BACKFILL = "lib/transactions/merchant-backfill.ts";
+  const PURE_MI = new Set([RESOLVER, BACKFILL]);
   const source = [
     ...collectSource(path.join(ROOT, "lib")),
     ...collectSource(path.join(ROOT, "app")),
@@ -144,44 +152,60 @@ check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test
     // Test modules are excluded by the .test.ts filter in collectSource.
     .map((f) => ({ f: path.relative(ROOT, f), text: readFileSync(f, "utf8") }));
 
-  // (a) No persistence: nothing reads or writes the new tables (M4 owns that).
+  // (a) No persistence in lib/app: the new tables are only ever touched by the
+  //     offline backfill script (in scripts/, unscanned). Live reader/writer = M4.
   const tableAccess = source.filter((s) =>
     /\bprisma\.(merchant|merchantAlias|merchantRule)\b/.test(s.text),
   );
   check(
-    "no code queries prisma.merchant / merchantAlias / merchantRule (no persistence)",
+    "no lib/app code queries prisma.merchant / merchantAlias / merchantRule (no live persistence)",
     tableAccess.length === 0,
     tableAccess.map((s) => s.f).join(", "),
   );
 
-  // (b) No WRITE path stamps the new columns onto a transaction. The M2 resolver
-  //     returns them as PURE DATA (allowed); every other module must be clean.
+  // (b) No WRITE path stamps the new columns onto a transaction. The pure MI
+  //     modules carry them as data (allowed); every other module must be clean.
   const stamps = source.filter(
-    (s) => s.f !== RESOLVER && /\b(categorySource|categoryRuleId|merchantId)\s*:/.test(s.text),
+    (s) => !PURE_MI.has(s.f) && /\b(categorySource|categoryRuleId|merchantId)\s*:/.test(s.text),
   );
   check(
-    "no write path stamps categorySource / categoryRuleId / merchantId (M4 not started)",
+    "no live write path stamps categorySource / categoryRuleId / merchantId",
     stamps.length === 0,
     stamps.map((s) => s.f).join(", "),
   );
 
-  // (c) The M2 resolver is PURE — imports no db client and calls no prisma.
-  const resolver = source.find((s) => s.f === RESOLVER);
-  check("M2 resolver module exists", resolver !== undefined);
-  if (resolver) {
-    check("M2 resolver imports no db client", !/["']@\/lib\/db["']/.test(resolver.text));
-    check("M2 resolver calls no prisma.*", !/\bprisma\./.test(resolver.text));
+  // (c) The pure MI modules are PURE — no db client import, no prisma calls.
+  for (const f of PURE_MI) {
+    const mod = source.find((s) => s.f === f);
+    check(`${f} exists`, mod !== undefined);
+    if (mod) {
+      check(`${f} imports no db client`, !/["']@\/lib\/db["']/.test(mod.text));
+      check(`${f} calls no prisma.*`, !/\bprisma\./.test(mod.text));
+    }
   }
 
-  // (d) No M3/M4 helpers exist yet (backfill / mint / write-time rewrite).
-  const later = source.filter((s) =>
-    /\b(buildCategoryRewrite|resolveMerchantIdentity|mintMerchant)\b/.test(s.text),
+  // (d) M4 / read-cutover boundary: the live Plaid sync, the import pipeline, and
+  //     the AI assembler do NOT yet consume the MI resolver/backfill, and no
+  //     category-rewrite helper exists.
+  const livePaths = source.filter((s) =>
+    /^lib\/plaid\//.test(s.f) ||
+    /^lib\/imports\//.test(s.f) ||
+    /^lib\/ai\/assemblers\//.test(s.f) ||
+    /^app\/api\/accounts\/.*\/(import|transactions)\//.test(s.f),
+  );
+  const wired = livePaths.filter((s) =>
+    /merchant-resolver|merchant-backfill|\bresolveMerchant\b/.test(s.text),
   );
   check(
-    "no M3/M4 backfill/mint/rewrite helper exists yet",
-    later.length === 0,
-    later.map((s) => s.f).join(", "),
+    "no live sync/import/read path consumes the MI resolver yet (M4 not started)",
+    wired.length === 0,
+    wired.map((s) => s.f).join(", "),
   );
+  // Look for an actual declaration, not a doc-comment mention in the MI modules.
+  const rewrite = source.filter(
+    (s) => !PURE_MI.has(s.f) && /(function|const)\s+buildCategoryRewrite\b/.test(s.text),
+  );
+  check("no category-rewrite helper exists yet (deferred)", rewrite.length === 0, rewrite.map((s) => s.f).join(", "));
 }
 
 // ── 7. Summary ───────────────────────────────────────────────────────────────

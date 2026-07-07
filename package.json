@@ -15,6 +15,7 @@
     "db:reset": "prisma migrate reset",
     "backfill:ai-agents": "tsx scripts/backfill-ai-agents.ts",
     "backfill:snapshots": "tsx scripts/backfill-snapshots.ts",
+    "backfill:merchant-intelligence": "tsx scripts/backfill-merchant-intelligence.ts",
     "audit:flow-desync": "tsx scripts/audit-flow-desync.ts"
   },
   "prisma": {
