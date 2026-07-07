@@ -58,6 +58,12 @@ export interface ScheduledJob {
   hourUTC: number;
   /** Fire minute — half-hour slots only (the dispatch matching granularity). */
   minuteUTC: 0 | 30;
+  /**
+   * Expected cadence for dead-job detection (OPS-4 S5, lib/jobs/health.ts).
+   * Optional — absent means daily (every current job). Read ONLY by the
+   * health check; the dispatcher never consults it.
+   */
+  expectedEveryHours?: number;
   /** The job body. Result becomes the JobRun summary (counts/kinds/IDs only). */
   run: () => Promise<unknown>;
 }
