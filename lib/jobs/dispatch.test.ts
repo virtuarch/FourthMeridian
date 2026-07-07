@@ -7,8 +7,8 @@
  * NO LIVE DATABASE: dispatchDueJobs takes an injected jobs list + runner, so
  * no real job body (and no Prisma) ever executes here. Covers: slot matching
  * (exact minute, late-fire tolerance within the half-hour, slot boundaries,
- * empty slots) · registry integrity (the three S2 jobs at their pre-S2
- * slots, unique names, half-hour minutes) · execution through the runner
+ * empty slots) · registry integrity (S2 jobs at their pre-S2 slots, S3
+ * maintenance jobs at 07:30, unique names, half-hour minutes) · execution through the runner
  * (= runJob in production) with trigger "cron" · sequencing (registry
  * order) · isolation (a failing job never blocks a sibling; dispatch never
  * throws) · no-op ticks · source scans (single vercel.json cron on the
@@ -77,11 +77,11 @@ async function main(): Promise<void> {
     check("wrong hour matches nothing", dueJobs(utc(5, 59), jobs).length === 0);
   }
 
-  // ── 2. Registry integrity — the three S2 jobs at their pre-S2 slots ───────
+  // ── 2. Registry integrity — pre-S2 jobs at their slots + S3 maintenance ───
   {
     const byName = new Map(SCHEDULED_JOBS.map((j) => [j.name, j]));
-    check("registry holds exactly the three pre-S2 jobs (S3 not started)",
-      SCHEDULED_JOBS.length === 3, `got ${SCHEDULED_JOBS.length}`);
+    check("registry holds exactly the six S2+S3 jobs (S4 not started)",
+      SCHEDULED_JOBS.length === 6, `got ${SCHEDULED_JOBS.length}`);
     check("names unique", byName.size === SCHEDULED_JOBS.length);
     check("sync-banks keeps its 06:00 UTC slot",
       byName.get("sync-banks")?.hourUTC === 6 && byName.get("sync-banks")?.minuteUTC === 0);
@@ -89,9 +89,13 @@ async function main(): Promise<void> {
       byName.get("fetch-fx-rates")?.hourUTC === 6 && byName.get("fetch-fx-rates")?.minuteUTC === 30);
     check("process-deletions keeps its 07:00 UTC slot",
       byName.get("process-deletions")?.hourUTC === 7 && byName.get("process-deletions")?.minuteUTC === 0);
+    check("S3 maintenance jobs occupy the 07:30 slot (no new cron entry needed)",
+      (["notification-cleanup", "purge-trash", "rate-limit-sweep"] as const).every(
+        (name) => byName.get(name)?.hourUTC === 7 && byName.get(name)?.minuteUTC === 30,
+      ));
     check("all slots on half-hour boundaries", SCHEDULED_JOBS.every((j) => j.minuteUTC === 0 || j.minuteUTC === 30));
-    check("no S3+ registrations (purge-trash / digests / sweeps absent)",
-      !SCHEDULED_JOBS.some((j) => /purge|digest|sweep|snapshot|retry/i.test(j.name)));
+    check("deferred work stays deferred (no digest / snapshot / retry / quiet-hours jobs)",
+      !SCHEDULED_JOBS.some((j) => /digest|snapshot|retry|quiet/i.test(j.name)));
   }
 
   // ── 3. Execution through the runner, in registry order, trigger "cron" ────
@@ -148,6 +152,8 @@ async function main(): Promise<void> {
     const cronPaths = [...vercel.matchAll(/"path":\s*"([^"]+)"/g)].map((m) => m[1]);
     check("vercel.json has exactly ONE cron — the dispatcher",
       cronPaths.length === 1 && cronPaths[0] === "/api/jobs/dispatch");
+    check("the single cron's expression already covers every registered slot (S3 added none)",
+      vercel.includes("0,30 6-7 * * *"));
 
     const dispatchRoute = readFileSync("app/api/jobs/dispatch/route.ts", "utf8");
     check("dispatcher route keeps CRON_SECRET protection",

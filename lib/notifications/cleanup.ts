@@ -21,13 +21,15 @@
  * updateMany/deleteMany against absolute cutoffs; a second run in the same
  * instant matches zero rows.
  *
- * SCHEDULING (frozen F7 — verified at S6 entry): NO dispatcher exists (PF1
- * not landed) and the cron budget is spoken for, so this function consumes
- * NO cron slot — it is invoked at the tail of the existing daily
- * process-deletions cron handler (bounded best-effort, the house idiom).
- * When the PF1 dispatcher lands, this function registers there unchanged.
- * Deliberately NOT here: digests (dispatcher-gated), retries (OPS-4),
- * schedulers, queues.
+ * SCHEDULING (OPS-4 S3 — the move F7 promised, executed): registered as its
+ * own dispatcher job ("notification-cleanup", lib/jobs/registry.ts, 07:30
+ * UTC slot) and executed through runJob(), this function UNCHANGED. It still
+ * consumes NO cron slot of its own (the single dispatcher cron's existing
+ * expression covers the slot — F7's intent, kept). Isolation from the
+ * account-deletion purge is now structural: a cleanup failure is its own
+ * failed JobRun and can never touch the process-deletions run.
+ * Deliberately NOT here: digests (deferred — OPS4_S3 closeout), retries
+ * (OPS-4 S4), schedulers, queues.
  */
 
 import { db } from "@/lib/db";

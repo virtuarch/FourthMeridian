@@ -17,17 +17,16 @@
  * best-effort per user (a single failure never blocks the rest and is retried
  * on the next daily run). See lib/account-deletion/purge.ts for the pipeline.
  *
- * OPS-3 S6 — notification retention rides this job's tail (S0 ruling R4;
- * relocates to its own registration in S3, not before). The composed body —
- * purge + cleanup tail, ONE "process-deletions" JobRun — has a single
- * definition site, runProcessDeletions() in lib/jobs/registry.ts, shared
- * verbatim with the dispatcher so the two paths can never drift.
+ * SINGLE-PURPOSE since OPS-4 S3: the OPS-3 notification-retention tail that
+ * rode this job (S0 ruling R4) relocated to its own dispatcher registration
+ * ("notification-cleanup", 07:30 UTC slot) — exactly the move the OPS-3
+ * headers promised. This route does deletions, nothing else.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
 import { runJob } from "@/lib/jobs/run";
-import { runProcessDeletions } from "@/lib/jobs/registry";
+import { processDeletions } from "@/jobs/process-deletions";
 
 // Headroom for looping over the (small) set of due accounts in one invocation —
 // matches the sync-banks / fetch-fx-rates precedent (Hobby-plan max).
@@ -41,10 +40,8 @@ export const GET = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // OPS-4 S1/S2 — the composed body (purge + OPS-3 cleanup tail) is ONE
-  // ledgered JobRun; same call order, same error semantics, same response
-  // shape as pre-S2. Definition site: lib/jobs/registry.ts.
-  const run = await runJob("process-deletions", runProcessDeletions, { trigger: "cron" });
+  // OPS-4 S1 — ledgered via runJob(); same JobRun name as the dispatcher path.
+  const result = await runJob("process-deletions", processDeletions, { trigger: "cron" });
 
-  return NextResponse.json({ ok: true, ...run.deletions, notificationCleanup: run.notificationCleanup });
+  return NextResponse.json({ ok: true, ...result });
 }, "GET /api/jobs/process-deletions");

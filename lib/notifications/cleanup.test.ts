@@ -195,11 +195,19 @@ async function run(): Promise<void> {
       crons === 1 && vercel.includes("/api/jobs/dispatch") && !vercel.includes("notification"),
     );
 
-    // The composed process-deletions body (single definition site since
-    // OPS-4 S2) still carries the cleanup tail — R4/F7.
-    const body = readFileSync("lib/jobs/registry.ts", "utf8");
-    check("cleanup rides the process-deletions job tail", body.includes("cleanupNotifications("));
-    check("cleanup failure cannot fail the host run", body.includes("non-fatal"));
+    // Since OPS-4 S3, cleanup is its OWN dispatcher registration (the move
+    // the header promised) and process-deletions is single-purpose again.
+    // Isolation is structural: dispatcher per-job try/catch + own JobRun.
+    const registry = readFileSync("lib/jobs/registry.ts", "utf8");
+    check(
+      "cleanup registered as its own dispatcher job",
+      registry.includes('"notification-cleanup"') && registry.includes("cleanupNotifications("),
+    );
+    const deletionsRoute = readFileSync("app/api/jobs/process-deletions/route.ts", "utf8");
+    check(
+      "process-deletions no longer owns the cleanup tail (single-purpose)",
+      !deletionsRoute.includes("cleanupNotifications"),
+    );
 
     // Strip comments so doctrine text (which legitimately NAMES the forbidden
     // things) doesn't trip the scan — only executable constructs count.
