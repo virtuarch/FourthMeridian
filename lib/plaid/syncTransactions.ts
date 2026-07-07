@@ -86,6 +86,13 @@ import {
   accumulateShadow,
   summarizeShadow,
 } from "@/lib/transactions/plaid-flow-input";
+// Merchant Intelligence M4 — live write-time identity + category provenance and
+// identity-safe Plaid counterparty enrichment. Additive: MI columns only; the 7
+// original fields, flow columns, and currency are untouched. A resolution
+// failure degrades to null MI columns and never blocks the transaction write.
+import { resolveMerchantWrite } from "@/lib/transactions/merchant-write";
+import { plaidCounterpartyEnrichment, type EnrichmentCapture } from "@/lib/transactions/merchant-enrichment";
+import type { CategorySource } from "@prisma/client";
 
 export interface SyncTransactionsResult {
   /** Count of transactions Plaid reported in its `added` array this run (Plaid's own count, unchanged semantics). */
@@ -140,17 +147,18 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   // Account-context cache for the classifier (accountType/debtSubtype), which
   // the write path does not otherwise load. Populated lazily per account.
   // Independent of the resolveFinancialAccountId path used by writes.
-  const accountMetaCache = new Map<string, { type: string | null; debtSubtype: string | null; currency: string | null }>();
-  async function resolveAccountMeta(financialAccountId: string): Promise<{ type: string | null; debtSubtype: string | null; currency: string | null }> {
+  const accountMetaCache = new Map<string, { type: string | null; debtSubtype: string | null; currency: string | null; ownerUserId: string | null }>();
+  async function resolveAccountMeta(financialAccountId: string): Promise<{ type: string | null; debtSubtype: string | null; currency: string | null; ownerUserId: string | null }> {
     const cached = accountMetaCache.get(financialAccountId);
     if (cached) return cached;
     const fa = await db.financialAccount.findUnique({
       where:  { id: financialAccountId },
       // currency: MC1 Phase 0 Slice 2 — account-level fallback for the
       // per-transaction currency stamp when Plaid omits iso_currency_code.
-      select: { type: true, debtSubtype: true, currency: true },
+      // createdByUserId (MI M5): the account owner whose USER MerchantRules apply.
+      select: { type: true, debtSubtype: true, currency: true, createdByUserId: true },
     });
-    const meta = { type: (fa?.type as string | undefined) ?? null, debtSubtype: fa?.debtSubtype ?? null, currency: fa?.currency ?? null };
+    const meta = { type: (fa?.type as string | undefined) ?? null, debtSubtype: fa?.debtSubtype ?? null, currency: fa?.currency ?? null, ownerUserId: fa?.createdByUserId ?? null };
     accountMetaCache.set(financialAccountId, meta);
     return meta;
   }
@@ -241,6 +249,10 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       // USD here — null means "denomination not recorded".
       let currency: string | null = txn.iso_currency_code ?? null;
       let flowFields = NULL_FLOW_WRITE_FIELDS;
+      // MI M4 — identity-safe Plaid counterparty enrichment, captured from the
+      // same `captured` sidecar buildPlaidFlowInput already produces. Best-effort;
+      // null on any classification failure.
+      let enrichment: EnrichmentCapture | null = null;
       try {
         const meta = await resolveAccountMeta(financialAccountId);
         currency = currency ?? meta.currency;
@@ -267,22 +279,70 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         });
         const classification = classifyFlow(input);
         flowFields = buildFlowWriteFields(classification, input, captured, FLOW_CLASSIFIER_VERSION);
+        enrichment = plaidCounterpartyEnrichment(captured);
         if (shadowEnabled) accumulateShadow(shadowStats, classification, category, amount);
       } catch (e) {
         console.warn(`[flowtype] classification skipped for ${txn.transaction_id} — writing null flow columns:`, e);
       }
 
       // The 7 original values are byte-identical; flow columns are additive.
-      // currency (MC1 Phase 0 Slice 2) rides the shared fields object so all
-      // three outcomes below (update-by-plaidId, fingerprint update, create)
-      // stamp identically.
-      const fields = { financialAccountId, date, merchant, description, category, amount, pending: txn.pending, currency, ...flowFields };
+      // currency (MC1 Phase 0 Slice 2) rides the shared fields object. Category +
+      // flow are held SEPARATELY so a USER correction can override or preserve
+      // them (MI M5) without disturbing the base fields.
+      const baseFields = { financialAccountId, date, merchant, description, amount, pending: txn.pending, currency };
+      const defaultCategoryFlow = { category, ...flowFields };
+
+      // MI M4/M5 — resolve merchant identity + category provenance, mint/reuse the
+      // Merchant (+ alias + safe enrichment), apply an owner USER rule (override),
+      // or preserve an existing USER_* correction. Returns the full mergeable
+      // patch (category/flow + MI columns). Never blocks the write on failure.
+      async function miData(current: {
+        merchantId: string | null;
+        categorySource: CategorySource | null;
+      }): Promise<Record<string, unknown>> {
+        try {
+          const meta = await resolveAccountMeta(financialAccountId as string);
+          const mi = await resolveMerchantWrite(
+            db,
+            {
+              merchant,
+              description,
+              provider: {
+                pfcPrimary:         txn.personal_finance_category?.primary ?? null,
+                pfcDetailed:        txn.personal_finance_category?.detailed ?? null,
+                pfcConfidenceLevel: txn.personal_finance_category?.confidence_level ?? null,
+              },
+              merchantEntityId:      txn.merchant_entity_id ?? null,
+              currentCategory:       category,
+              currentCategorySource: current.categorySource,
+              currentMerchantId:     current.merchantId,
+              ownerUserId:           meta.ownerUserId,
+            },
+            enrichment,
+          );
+          const columns = mi.setMerchantId && mi.merchantId ? { merchantId: mi.merchantId } : {};
+          // PRESERVE — existing USER_OVERRIDE / USER_RULE: do not touch category/flow.
+          if (mi.preserveExisting) return { ...columns };
+          // OVERRIDE — a USER rule applies its category; re-derive flow from it
+          // through the authoritative pipeline so category and flowType stay in sync.
+          if (mi.category) {
+            const { input, captured } = buildPlaidFlowInput(txn, { category: mi.category, amount, accountType: meta.type, debtSubtype: meta.debtSubtype });
+            const overrideFlow = buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
+            return { ...columns, category: mi.category, ...overrideFlow, categorySource: "USER_RULE", ...(mi.categoryRuleId ? { categoryRuleId: mi.categoryRuleId } : {}) };
+          }
+          // NORMAL — default category + flow, stamp confirmed provenance.
+          return { ...columns, ...defaultCategoryFlow, ...(mi.categorySource ? { categorySource: mi.categorySource } : {}) };
+        } catch (e) {
+          console.warn(`[merchant-intelligence] resolution skipped for ${txn.transaction_id} — writing default category/flow, no MI:`, e);
+          return { ...defaultCategoryFlow };
+        }
+      }
 
       try {
         // 1. Exact match — same row Plaid is telling us about.
         const existingByPlaidId = await db.transaction.findUnique({
           where:  { plaidTransactionId: txn.transaction_id },
-          select: { id: true },
+          select: { id: true, merchantId: true, categorySource: true },
         });
 
         if (existingByPlaidId) {
@@ -290,7 +350,8 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
           // been tombstoned by a prior removed[] and Plaid now re-sends it in
           // added/modified, it is live again — Plaid only sends added/modified
           // for live transactions, so clearing deletedAt here is correct.
-          await db.transaction.update({ where: { id: existingByPlaidId.id }, data: { ...fields, deletedAt: null } });
+          const mi = await miData({ merchantId: existingByPlaidId.merchantId, categorySource: existingByPlaidId.categorySource });
+          await db.transaction.update({ where: { id: existingByPlaidId.id }, data: { ...baseFields, deletedAt: null, ...mi } });
           updatedByPlaidId++;
           continue;
         }
@@ -301,9 +362,16 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         const fingerprintMatch = await findByFingerprint(financialAccountId, date, amount, merchant, txn.pending);
 
         if (fingerprintMatch) {
+          // Read the matched row's current MI state so the update never
+          // re-points an existing merchant or overwrites set provenance.
+          const cur = await db.transaction.findUnique({
+            where:  { id: fingerprintMatch.id },
+            select: { merchantId: true, categorySource: true },
+          });
+          const mi = await miData({ merchantId: cur?.merchantId ?? null, categorySource: cur?.categorySource ?? null });
           await db.transaction.update({
             where: { id: fingerprintMatch.id },
-            data:  { ...fields, plaidTransactionId: txn.transaction_id },
+            data:  { ...baseFields, plaidTransactionId: txn.transaction_id, ...mi },
           });
           updatedByFingerprint++;
           console.warn(
@@ -312,8 +380,11 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
           continue;
         }
 
-        // 3. Genuinely new transaction.
-        await db.transaction.create({ data: { ...fields, plaidTransactionId: txn.transaction_id } });
+        // 3. Genuinely new transaction. `category` is included explicitly as the
+        // required baseline; miData's category (normal/override) overrides it via
+        // the later spread (preserve never occurs on a create).
+        const mi = await miData({ merchantId: null, categorySource: null });
+        await db.transaction.create({ data: { ...baseFields, category, plaidTransactionId: txn.transaction_id, ...mi } });
         created++;
       } catch (e) {
         console.error(`[plaid sync] failed to upsert transaction ${txn.transaction_id}:`, e);

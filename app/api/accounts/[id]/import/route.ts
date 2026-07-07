@@ -120,7 +120,7 @@ import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { createNotification } from "@/lib/notifications/create";
 import { getSpaceContext } from "@/lib/space";
-import { ImportBatchStatus, ImportSource, Prisma } from "@prisma/client";
+import { ImportBatchStatus, ImportSource, Prisma, type CategorySource } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import {
@@ -135,6 +135,12 @@ import { getImportProviderCapabilities } from "@/lib/imports/provider-capabiliti
 // FlowType P5 Slice 0 — same classification contract as the Plaid sync write path.
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
 import { buildFlowInputFromRow, buildFlowWriteFields } from "@/lib/transactions/plaid-flow-input";
+// Merchant Intelligence M4 — stamp merchant identity + category provenance on
+// newly-imported rows, consistent with Plaid sync and the historical backfill.
+// Imports carry no provider merchant-entity id or counterparties, so no
+// enrichment is captured here. Best-effort: a failure degrades to null MI
+// columns and never blocks the import.
+import { resolveMerchantWrite } from "@/lib/transactions/merchant-write";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -358,7 +364,8 @@ export const POST = withApiHandler(async (
 
       if (result.outcome === "CREATE") {
         // FlowType P5 Slice 0 — classify from the incoming row (no Plaid PFC).
-        const flowFields = computeFlowFields({
+        let finalCategory: typeof row.category = row.category;
+        let finalFlow = computeFlowFields({
           category:           row.category,
           amount:             row.amount,
           merchant:           row.merchant,
@@ -368,13 +375,41 @@ export const POST = withApiHandler(async (
           pfcConfidenceLevel: null,
           merchantEntityId:   null,
         });
+        // MI M4/M5 — resolve identity + provenance for the new row (no provider
+        // hints/enrichment on imports); apply the importer's USER rule if the
+        // merchant has one, re-deriving flow from the corrected category. The
+        // import CREATE path never hits an existing USER_* row (create only), so
+        // no preserve case arises. Best-effort; never blocks the create.
+        const mi: { merchantId?: string; categorySource?: CategorySource; categoryRuleId?: string } = {};
+        try {
+          const miResult = await resolveMerchantWrite(db, {
+            merchant:        row.merchant,
+            description:     row.description,
+            currentCategory: row.category,
+            ownerUserId:     user.id,
+          });
+          if (miResult.setMerchantId && miResult.merchantId) mi.merchantId = miResult.merchantId;
+          if (miResult.category) {
+            finalCategory = miResult.category;
+            finalFlow = computeFlowFields({
+              category: finalCategory, amount: row.amount, merchant: row.merchant, description: row.description,
+              pfcPrimary: null, pfcDetailed: null, pfcConfidenceLevel: null, merchantEntityId: null,
+            });
+            mi.categorySource = "USER_RULE";
+            if (miResult.categoryRuleId) mi.categoryRuleId = miResult.categoryRuleId;
+          } else if (miResult.categorySource) {
+            mi.categorySource = miResult.categorySource;
+          }
+        } catch (miErr) {
+          console.warn(`[merchant-intelligence] import resolution skipped for row ${lineNumber} — writing null MI columns:`, miErr);
+        }
         await db.transaction.create({
           data: {
             financialAccountId,
             date:                  row.date,
             merchant:              row.merchant,
             description:           row.description,
-            category:              row.category,
+            category:              finalCategory,
             amount:                row.amount,
             pending:               false,
             externalTransactionId: row.externalTransactionId,
@@ -382,7 +417,8 @@ export const POST = withApiHandler(async (
             // MC1 Phase 0 Slice 2 — the target account's currency (files
             // carry no per-row currency column).
             currency:              flowAcct?.currency ?? null,
-            ...flowFields,
+            ...finalFlow,
+            ...mi,
           },
         });
         created++;

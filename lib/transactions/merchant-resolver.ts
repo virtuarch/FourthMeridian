@@ -166,7 +166,7 @@ const WEB_TLD_SUFFIX = /\.(com|net|org|io|co|app|ai|dev|store|shop)$/i;
  * the single existing canonical normalizer (lib/transactions/merchant.ts) — no
  * new normalizer is introduced — then applies the deterministic web-suffix strip.
  */
-function normalizeIdentity(raw: string): { canonicalKey: string; displayName: string } {
+export function normalizeMerchantIdentity(raw: string): { canonicalKey: string; displayName: string } {
   const { canonicalName } = normalizeMerchant(raw);
   const displayName = canonicalName.replace(WEB_TLD_SUFFIX, "") || canonicalName;
   return { canonicalKey: displayName.toUpperCase(), displayName };
@@ -251,7 +251,7 @@ export function resolveMerchant(
   input: MerchantResolverInput,
   context: ResolverContext = {},
 ): MerchantResolution {
-  const { canonicalKey, displayName } = normalizeIdentity(input.merchant);
+  const { canonicalKey, displayName } = normalizeMerchantIdentity(input.merchant);
   const aliasKey = canonicalKey;
   const merchantEntityId = input.merchantEntityId ?? null;
 

@@ -14,15 +14,14 @@
  *   • categorySource is nullable with NO default (MC1 Phase 0 provenance doctrine)
  *   • Merchant enrichment fields exist (storage shape only)
  *   • NO MerchantAsset model exists
- *   • the M2 resolver and M3 backfill planner are PURE (no db import, no prisma
- *     calls); the only DB writer is the offline backfill script (scripts/)
- *   • NO live sync/import/read path consumes MI yet (M4 not started)
- *   • NO UI/API consumes the new schema yet
+ *   • the pure MI modules (resolver, backfill planner, enrichment) stay PURE
+ *   • MI stamping (M4) is confined to the designated write sites only
+ *   • NO AI read cutover (M6) and NO MerchantRule writes / user corrections (M5)
  *
- * If a later change starts M4 (live sync/import wiring, a read cutover) without
+ * If a later change starts M5 (user corrections) or M6 (read cutover) without
  * updating this test, it fails first — pinning "schema is additive/behavior-
- * neutral; M2/M3 are pure with the only writes in the offline backfill script;
- * M4 not started".
+ * neutral; M4 live stamping is confined to the designated write sites;
+ * M5/M6 not started".
  *
  * Ratification: docs/initiatives/mi1/MI1_M0_RATIFICATION_2026-07-07.md.
  */
@@ -136,15 +135,28 @@ console.log("Merchant Intelligence M1 schema tripwires (MI1)");
 // ── 5. NO MerchantAsset table (explicit non-goal) ────────────────────────────
 check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test(schema));
 
-// ── 6. M3 boundary: pure resolver + pure backfill planner; NO live wiring yet ─
+// ── 6. M4/M5 boundary: stamping + rule-writes confined to designated sites; M6 not started ─
 {
-  // The M2 resolver and the M3 backfill PLANNER are pure lib modules that carry
-  // the new column names as data-shape identifiers; they are allowlisted from
-  // the "no write path" scan. (The M3 backfill SCRIPT that does persist lives in
-  // scripts/, which collectSource deliberately does not scan.)
-  const RESOLVER = "lib/transactions/merchant-resolver.ts";
-  const BACKFILL = "lib/transactions/merchant-backfill.ts";
-  const PURE_MI = new Set([RESOLVER, BACKFILL]);
+  // Genuinely-pure MI modules (no client, data-shape identifiers only).
+  const PURE_MI = new Set([
+    "lib/transactions/merchant-resolver.ts",
+    "lib/transactions/merchant-backfill.ts",
+    "lib/transactions/merchant-enrichment.ts",
+  ]);
+  // The shared writer + the designated write sites that stamp MI onto a
+  // Transaction (live paths + the M5 correction workflow). Any OTHER module
+  // stamping these columns is a rogue write.
+  const WRITE_SITES = new Set([
+    "lib/transactions/merchant-write.ts",
+    "lib/transactions/merchant-corrections.ts",
+    "lib/plaid/syncTransactions.ts",
+    "app/api/accounts/[id]/import/route.ts",
+    "app/api/transactions/[id]/correct/route.ts",
+  ]);
+  // The M5 sites permitted to write MerchantRule rows (user corrections).
+  const RULE_WRITE_SITES = new Set([
+    "lib/transactions/merchant-corrections.ts",
+  ]);
   const source = [
     ...collectSource(path.join(ROOT, "lib")),
     ...collectSource(path.join(ROOT, "app")),
@@ -152,24 +164,26 @@ check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test
     // Test modules are excluded by the .test.ts filter in collectSource.
     .map((f) => ({ f: path.relative(ROOT, f), text: readFileSync(f, "utf8") }));
 
-  // (a) No persistence in lib/app: the new tables are only ever touched by the
-  //     offline backfill script (in scripts/, unscanned). Live reader/writer = M4.
+  // (a) Merchant-table persistence goes through the shared writer only (which
+  //     uses an injected `client`, not a module-level `prisma`/`db` handle).
   const tableAccess = source.filter((s) =>
-    /\bprisma\.(merchant|merchantAlias|merchantRule)\b/.test(s.text),
+    /\b(prisma|db)\.(merchant|merchantAlias|merchantRule)\b/.test(s.text),
   );
   check(
-    "no lib/app code queries prisma.merchant / merchantAlias / merchantRule (no live persistence)",
+    "no module reaches the merchant tables via a global prisma/db handle",
     tableAccess.length === 0,
     tableAccess.map((s) => s.f).join(", "),
   );
 
-  // (b) No WRITE path stamps the new columns onto a transaction. The pure MI
-  //     modules carry them as data (allowed); every other module must be clean.
+  // (b) MI stamping is confined to the designated write sites + pure data shapes.
   const stamps = source.filter(
-    (s) => !PURE_MI.has(s.f) && /\b(categorySource|categoryRuleId|merchantId)\s*:/.test(s.text),
+    (s) =>
+      !PURE_MI.has(s.f) &&
+      !WRITE_SITES.has(s.f) &&
+      /\b(categorySource|categoryRuleId|merchantId)\s*:/.test(s.text),
   );
   check(
-    "no live write path stamps categorySource / categoryRuleId / merchantId",
+    "MI columns are stamped only by the designated write sites (no rogue stamping)",
     stamps.length === 0,
     stamps.map((s) => s.f).join(", "),
   );
@@ -184,24 +198,31 @@ check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test
     }
   }
 
-  // (d) M4 / read-cutover boundary: the live Plaid sync, the import pipeline, and
-  //     the AI assembler do NOT yet consume the MI resolver/backfill, and no
-  //     category-rewrite helper exists.
-  const livePaths = source.filter((s) =>
-    /^lib\/plaid\//.test(s.f) ||
-    /^lib\/imports\//.test(s.f) ||
-    /^lib\/ai\/assemblers\//.test(s.f) ||
-    /^app\/api\/accounts\/.*\/(import|transactions)\//.test(s.f),
-  );
-  const wired = livePaths.filter((s) =>
-    /merchant-resolver|merchant-backfill|\bresolveMerchant\b/.test(s.text),
+  // (d) M6 boundary — NO read cutover: the AI assembler does not consume resolved
+  //     merchant identity yet.
+  const assemblers = source.filter((s) => /^lib\/ai\/assemblers\//.test(s.f));
+  const readCutover = assemblers.filter((s) =>
+    /merchant-resolver|merchant-write|resolvedMerchant|\.merchantId\b/.test(s.text),
   );
   check(
-    "no live sync/import/read path consumes the MI resolver yet (M4 not started)",
-    wired.length === 0,
-    wired.map((s) => s.f).join(", "),
+    "no AI read cutover to resolved merchant identity yet (M6 not started)",
+    readCutover.length === 0,
+    readCutover.map((s) => s.f).join(", "),
   );
-  // Look for an actual declaration, not a doc-comment mention in the MI modules.
+
+  // (e) M5 boundary — MerchantRule writes (user corrections) are confined to the
+  //     correction workflow; no other module creates/updates rules, and no
+  //     category-rewrite helper exists.
+  const ruleWrites = source.filter(
+    (s) =>
+      !RULE_WRITE_SITES.has(s.f) &&
+      /\b(prisma|db|client|tx)\.merchantRule\.(create|createMany|update|updateMany|upsert)\b/.test(s.text),
+  );
+  check(
+    "MerchantRule writes are confined to the M5 correction workflow",
+    ruleWrites.length === 0,
+    ruleWrites.map((s) => s.f).join(", "),
+  );
   const rewrite = source.filter(
     (s) => !PURE_MI.has(s.f) && /(function|const)\s+buildCategoryRewrite\b/.test(s.text),
   );

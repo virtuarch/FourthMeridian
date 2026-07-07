@@ -37,7 +37,10 @@
 import { db } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
 import { resolveMerchant } from "@/lib/transactions/merchant-resolver";
-import { computeBackfillPlan, type ExistingIdentity } from "@/lib/transactions/merchant-backfill";
+import { computeBackfillPlan } from "@/lib/transactions/merchant-backfill";
+// M4 — the mint/reuse + alias upsert logic is single-sourced in merchant-write.ts
+// and shared with the live sync/import paths; this script reuses it (no duplication).
+import { lookupExisting, applyMerchantPlan } from "@/lib/transactions/merchant-write";
 
 const argv = process.argv.slice(2);
 
@@ -53,28 +56,6 @@ const EXCLUDE_DELETED = argv.includes("--exclude-deleted");
 const VERBOSE         = argv.includes("--verbose");
 const BATCH           = intFlag("--batch", 500);
 const LIMIT           = intFlag("--limit", Number.POSITIVE_INFINITY);
-
-/** Look up an existing merchant + alias for a row's normalized identity. */
-async function lookupExisting(
-  canonicalKey: string,
-  aliasKey: string,
-  plaidEntityId: string | null,
-): Promise<ExistingIdentity> {
-  // Alias is the strongest signal: it names both existence and the merchant.
-  const aliasRow = await db.merchantAlias.findUnique({
-    where: { aliasKey },
-    select: { merchantId: true },
-  });
-  if (aliasRow) return { existingMerchant: { id: aliasRow.merchantId }, aliasExists: true };
-
-  // Else resolve the merchant by its stable provider id, then canonical key.
-  if (plaidEntityId) {
-    const byEntity = await db.merchant.findUnique({ where: { plaidEntityId }, select: { id: true } });
-    if (byEntity) return { existingMerchant: byEntity, aliasExists: false };
-  }
-  const byKey = await db.merchant.findUnique({ where: { canonicalKey }, select: { id: true } });
-  return { existingMerchant: byKey, aliasExists: false };
-}
 
 async function main(): Promise<void> {
   const where: Prisma.TransactionWhereInput = EXCLUDE_DELETED
@@ -140,7 +121,7 @@ async function main(): Promise<void> {
       const already = seenKeys.get(canonicalKey);
       const existing = already
         ? { existingMerchant: { id: already }, aliasExists: true }
-        : await lookupExisting(canonicalKey, aliasKey, r.merchantEntityId);
+        : await lookupExisting(db, canonicalKey, aliasKey, r.merchantEntityId);
 
       const plan = computeBackfillPlan(
         {
@@ -163,32 +144,10 @@ async function main(): Promise<void> {
 
       if (APPLY && !plan.skip) {
         await db.$transaction(async (tx) => {
-          let merchantId = plan.reuseMerchantId;
-          if (plan.mintMerchant) {
-            const m = await tx.merchant.upsert({
-              where: { canonicalKey: plan.mintMerchant.canonicalKey },
-              create: {
-                canonicalKey: plan.mintMerchant.canonicalKey,
-                displayName: plan.mintMerchant.displayName,
-                plaidEntityId: plan.mintMerchant.plaidEntityId,
-              },
-              update: {}, // idempotent: never overwrite an existing merchant's fields
-              select: { id: true },
-            });
-            merchantId = m.id;
-          }
-          if (plan.createAlias && merchantId) {
-            await tx.merchantAlias.upsert({
-              where: { aliasKey: plan.createAlias.aliasKey },
-              create: {
-                aliasKey: plan.createAlias.aliasKey,
-                source: plan.createAlias.source,
-                merchantId,
-              },
-              update: {}, // never re-point an existing alias (avoid over-merge)
-              select: { id: true },
-            });
-          }
+          // Mint/reuse Merchant + alias via the shared helper (single-sourced
+          // with the live sync/import paths). Enrichment is null here: the
+          // backfill has no provider counterparty payload (no Plaid re-fetch).
+          const { merchantId } = await applyMerchantPlan(tx, plan, null);
           // Raw, parameterized update of ONLY the MI columns. Guarded by
           // `merchantId IS NULL` so it is idempotent and can never overwrite an
           // existing assignment; deliberately does NOT bump updatedAt.
