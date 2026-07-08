@@ -123,6 +123,25 @@ interface Props {
   category:      string;
   myRole:        string;
   currentUserId?: string;
+  /**
+   * SP-2A-4a — Personal shell-swap seam. When provided, the Overview hero
+   * region renders this instead of the getSpaceHeroDef/SpaceTrendHero path,
+   * and it owns day-zero presentation (the shell's OverviewSetupCard is
+   * suppressed). Receives the shell's already-fetched data — no duplicate
+   * fetching. Omitted ⇒ shared-Space behavior byte-identical.
+   */
+  renderHero?: (ctx: {
+    accounts:  SpaceAccount[];
+    snapshots: Snapshot[] | null;
+    loading:   boolean;
+  }) => React.ReactNode;
+  /**
+   * SP-2A-4a — initial rail tab override (e.g. mapped from a legacy
+   * /dashboard?tab= deep link by the caller). No URL synchronization.
+   * Omitted ⇒ existing section-derived default. Applied once, after the
+   * first data load, exactly where the default would have been chosen.
+   */
+  initialTab?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -1921,9 +1940,12 @@ function AddGoalModal({
 export function SpaceDashboard({
   spaceId,
   spaceName,
+  spaceType,
   category,
   myRole,
   currentUserId = "",
+  renderHero,
+  initialTab,
 }: Props) {
   const router = useRouter();
 
@@ -2026,7 +2048,7 @@ export function SpaceDashboard({
     ? accounts.reduce((best, a) => (a.lastUpdated > best ? a.lastUpdated : best), accounts[0].lastUpdated)
     : null;
 
-  // Fixed rail options — starts from railVisibleTabs("shared") (v2.5
+  // Fixed rail options — starts from railVisibleTabs(railHost) (v2.5
   // honesty slice: placeholder tabs — Finances/Documents, plus Transactions
   // on non-personal Spaces — get no rail control until real; see
   // lib/space-nav.ts). On top of that, SETTINGS only renders a button for
@@ -2037,7 +2059,12 @@ export function SpaceDashboard({
   // setActiveTab("TIMELINE") below) that now opens the modal instead of
   // switching rail pages. Order is inherited from SPACE_TAB_ORDER — these
   // filters never reorder.
-  const railOptions: { id: string; label: string }[] = railVisibleTabs("shared")
+  // SP-2A-4a — host derives from spaceType instead of the previous hardcoded
+  // "shared". railVisibleTabs("personal") and ("shared") return identical
+  // lists today (SHARED_ONLY_PLACEHOLDER_TABS is empty), so shared Spaces —
+  // and any future Personal mount — inherit the same fixed rail order.
+  const railHost = spaceType === "PERSONAL" ? ("personal" as const) : ("shared" as const);
+  const railOptions: { id: string; label: string }[] = railVisibleTabs(railHost)
     .filter((id) => id !== "SETTINGS" || canManage)
     .filter((id) => id !== "TIMELINE")
     .map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
@@ -2161,7 +2188,10 @@ export function SpaceDashboard({
   // Only chartable categories (lib/space-hero.ts) fetch snapshot history.
   const heroDef = getSpaceHeroDef(category);
   useEffect(() => {
-    if (!heroDef) return;
+    // SP-2A-4a: a custom hero (renderHero) receives snapshots through its
+    // ctx, so it needs the fetch even for categories with no heroDef
+    // (PERSONAL deliberately has none — lib/space-hero.ts).
+    if (!heroDef && !renderHero) return;
     let active = true;
     fetch(`/api/spaces/${spaceId}/snapshots`)
       .then((r) => (r.ok ? r.json() : { snapshots: [] }))
@@ -2207,6 +2237,14 @@ export function SpaceDashboard({
       // Set default tab from real section data — never default to SETTINGS
       if (!initialTabSet.current) {
         initialTabSet.current = true;
+        // SP-2A-4a: caller-provided initial tab (e.g. a mapped legacy
+        // ?tab= deep link) wins over the section-derived default. Applied
+        // once, here, so the existing defaulting below is otherwise
+        // untouched. No URL synchronization.
+        if (initialTab) {
+          setActiveTab(initialTab);
+          return;
+        }
         const enabledTabs = new Set(secs.filter((s) => s.enabled).map((s) => s.tab));
         // Template polish: a Space with a trend hero has a real Overview
         // even when its signature modules live on other tabs (post-
@@ -2438,7 +2476,7 @@ export function SpaceDashboard({
 
         {/* Finances / Documents — no rail control and no body on this host
             (v2.5 honesty slice): gated off the rail by
-            railVisibleTabs("shared") in lib/space-nav.ts until a real
+            railVisibleTabs(railHost) in lib/space-nav.ts until a real
             feature backs them. The ids remain valid members of
             NEW_SPACE_TABS so internal gating below keeps working. */}
 
@@ -2552,7 +2590,13 @@ export function SpaceDashboard({
                 headline + delta + this Space's primary trend, from its own
                 SpaceSnapshot history. Only chartable categories have a
                 heroDef; day-zero Spaces show the setup card instead. */}
-            {activeTab === "OVERVIEW" && composition === "overview" &&
+            {/* SP-2A-4a — custom hero seam: when the caller provides
+                renderHero it owns this slot entirely (including day-zero
+                presentation), and the SpaceTrendHero path below is skipped. */}
+            {activeTab === "OVERVIEW" && composition === "overview" && renderHero &&
+              renderHero({ accounts, snapshots, loading })}
+
+            {activeTab === "OVERVIEW" && composition === "overview" && !renderHero &&
              accounts.length > 0 && heroDef && (
               <SpaceTrendHero
                 title={heroDef.title}
@@ -2569,11 +2613,12 @@ export function SpaceDashboard({
               />
             )}
 
-            {activeTab === "OVERVIEW" && !loading && accounts.length === 0 ? (
+            {activeTab === "OVERVIEW" && !loading && accounts.length === 0 && !renderHero ? (
               /* Day-zero Overview (v2.5 honesty slice): one consolidated
                  setup card instead of a stack of per-widget empty states
                  that all ask for the same thing. Other tabs keep their own
-                 per-section empty states. */
+                 per-section empty states. A custom hero (renderHero) owns
+                 day-zero presentation itself, so the card is suppressed. */
               <OverviewSetupCard
                 canManage={canManage}
                 onAddAccounts={() => setShowManage(true)}
@@ -2584,7 +2629,9 @@ export function SpaceDashboard({
               // change preview + doorways IS the Overview composition — an
               // empty-state card under the lede reads as breakage. Other
               // tabs (and hero-less categories) keep the honest empty state.
-              activeTab === "OVERVIEW" && heroDef && accounts.length > 0 ? null : (
+              // SP-2A-4a: a custom hero counts like a heroDef here — an
+              // empty-state card under a rendering hero reads as breakage.
+              activeTab === "OVERVIEW" && (renderHero || (heroDef && accounts.length > 0)) ? null : (
               <div className="text-center py-12">
                 <LayoutDashboard size={30} className="text-[var(--text-faint)] mx-auto mb-3" />
                 <p className="text-sm text-[var(--text-muted)]">No sections on this tab</p>
