@@ -6,11 +6,9 @@ import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { NetWorthCard } from "./NetWorthCard";
 import { CashOnHandCard } from "./CashOnHandCard";
-import { NetWorthChart, Interval, cutoffForInterval } from "@/components/charts/NetWorthChart";
+import { Interval, cutoffForInterval } from "@/components/charts/NetWorthChart";
 import { CashChart } from "@/components/charts/CashChart";
 import { BankingChart } from "@/components/charts/BankingChart";
-import { NetWorthChartModal, type SeriesKey } from "@/components/charts/NetWorthChartModal";
-import { AllocationChart } from "@/components/charts/AllocationChart";
 import { Account, Holding, Snapshot, AiAdvice, Transaction } from "@/types";
 import {
   ChevronDown,
@@ -20,7 +18,6 @@ import {
   CreditCard,
   Bitcoin,
   TrendingUp,
-  Maximize2,
   Wallet,
   Pencil,
   Check,
@@ -40,18 +37,18 @@ import { HoldingsDonutChart } from "@/components/charts/HoldingsDonutChart";
 import { AccountModal } from "@/components/dashboard/AccountModal";
 import { DebtClient } from "@/components/dashboard/DebtClient";
 import { ConnectAccountButton } from "@/components/dashboard/ConnectAccountButton";
+import { PersonalHero } from "@/components/dashboard/PersonalHero";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { ManageSpaceModal } from "@/components/dashboard/ManageSpaceModal";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { exchangeSymbol } from "@/lib/exchangeSymbol";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate, formatRelativeTime, possessive } from "@/lib/format";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { DisplayCurrencyProvider, useDisplayCurrency } from "@/lib/currency-context";
-import { ViewCurrencyOverride, type ViewOverride } from "@/components/dashboard/widgets/ViewCurrencyOverride";
+import { type ViewOverride } from "@/components/dashboard/widgets/ViewCurrencyOverride";
 import { SPACE_TAB_LABELS, SpaceTabId } from "@/lib/space-nav";
 import { getPerspectivesForCategory, getCompositionSwitcherItems, PERSPECTIVE_GROUPS, type PerspectiveGroup } from "@/lib/perspectives";
 import type { LensResult } from "@/lib/perspective-engine/types";
@@ -65,7 +62,6 @@ import { TimelineModal } from "@/components/dashboard/widgets/TimelineModal";
 import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
 import { SpaceMembersWidget } from "@/components/dashboard/widgets/SpaceMembersWidget";
 import { SpaceComingSoonPanel } from "@/components/dashboard/widgets/SpaceComingSoonPanel";
-import { KpiRow } from "@/components/dashboard/widgets/KpiRow";
 import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
 import { SpaceTransactionsPanel } from "@/components/dashboard/widgets/SpaceTransactionsPanel";
 
@@ -342,15 +338,9 @@ export function DashboardClient({
     VALID_TABS.includes(initialTab) ? initialTab : "dashboard"
   );
   const [chartInterval, setChartInterval] = useState<Interval>("1M");
-  const [chartExpanded, setChartExpanded] = useState(false);
-  // Which series the Net Worth chart modal opens focused on — lets the
-  // Total Assets/Total Liabilities KPI tiles (IA refactor point 4) reuse
-  // this same chart/modal instead of each needing its own.
-  const [chartSeries, setChartSeries] = useState<SeriesKey>("netWorth");
-  // Cash Flow KPI tile modal — reuses RecentTransactionsPanel (the same
-  // real transactions already fetched for the Overview preview) shown in
-  // full, no new aggregation logic.
-  const [cashFlowModalOpen, setCashFlowModalOpen] = useState(false);
+  // Chart-expand (chartExpanded/chartSeries) and cash-flow modal state moved
+  // into PersonalHero (SP-2A-4b) — the hero owns those interactions.
+  // chartInterval stays here: the Banking/Investments charts read it too.
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
 
   // Overview composition switcher (IA refactor point 2/3) — which
@@ -1353,36 +1343,19 @@ export function DashboardClient({
                   title={activeComposition.label}
                   description={activeComposition.description}
                 />
-              ) : accounts.length === 0 ? (
-                /* Day-zero Overview (v2.5 honesty slice): one consolidated
-                   setup card instead of an all-zero KPI strip, empty charts,
-                   and empty previews. Uses the existing ConnectAccountButton
-                   — no new concepts. */
-                <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-8 text-center">
-                  <Landmark size={24} className="text-[var(--text-muted)] mx-auto mb-3" />
-                  <p className="text-base font-semibold text-[var(--text-primary)]">Connect your first account</p>
-                  <p className="text-sm text-[var(--text-secondary)] mt-1 max-w-md mx-auto leading-relaxed">
-                    Net worth, cash flow, and activity appear here once an account is
-                    connected. Everything on this dashboard is computed from real data —
-                    sections appear as their data exists.
-                  </p>
-                  <div className="flex justify-center mt-5">
-                    <ConnectAccountButton />
-                  </div>
-                </GlassPanel>
               ) : (
               <>
-              {/* KPI strip — Net Worth, Assets, Liabilities, Cash Flow, Credit Score */}
-              <div className="mb-2 flex justify-end">
-                {/* MC1 P4 Slice 8 — ephemeral view-as override (preview only) */}
-                <ViewCurrencyOverride
-                  spaceCurrency={displayCurrency}
-                  override={viewOverride}
-                  onChange={setViewOverride}
-                />
-              </div>
-              <DisplayCurrencyProvider currency={effectiveDisplayCurrency}>
-              <KpiRow
+              {/* Hero — extracted to PersonalHero (SP-2A-4b): day-zero card,
+                  view-as override row, KPI strip, Net Worth / Allocation
+                  charts, and the chart-expand + cash-flow modals. Shared
+                  state (chartInterval, viewOverride) stays here because
+                  Banking/Investments consume it too. This same component is
+                  what SpaceDashboard's renderHero seam will mount in
+                  SP-2A-4c. */}
+              <PersonalHero
+                accountCount={accounts.length}
+                snapshots={snapshots}
+                transactions={transactions}
                 estimated={classification.estimated}
                 netWorth={classification.netWorth}
                 netWorthChangePct={netWorthChangePct}
@@ -1392,52 +1365,18 @@ export function DashboardClient({
                 cashFlowEstimated={cashFlow.estimated}
                 cashFlowChangePct={cashFlow.changePct}
                 ficoScore={ficoScore}
-                onNetWorthClick={() => { setChartSeries("netWorth"); setChartExpanded(true); }}
-                onAssetsClick={() => { setChartSeries("totalAssets"); setChartExpanded(true); }}
-                onLiabilitiesClick={() => { setChartSeries("totalDebt"); setChartExpanded(true); }}
-                onCashFlowClick={() => setCashFlowModalOpen(true)}
+                allocation={allocation}
+                chartInterval={chartInterval}
+                onChartIntervalChange={setChartInterval}
+                spaceCurrency={displayCurrency}
+                effectiveDisplayCurrency={effectiveDisplayCurrency}
+                viewOverride={viewOverride}
+                onViewOverrideChange={setViewOverride}
                 onCreditClick={() => handleFilterChange("credit")}
               />
-              </DisplayCurrencyProvider>
 
-              {/* Net Worth / Allocation — two columns on desktop. The AI
-                  Daily Brief panel was removed from this row (Space
-                  Template Redesign): its pipeline is a stub (D5 —
-                  run-ai-advice never runs), and a hero-adjacent slot can't
-                  be held by a placeholder. The slot returns as "Briefing"
-                  when D5 ships. */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-stretch">
-                <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4">
-                  <div className="flex items-center justify-between px-1 mb-2">
-                    <p className="text-sm font-semibold text-[var(--text-primary)]">Net Worth</p>
-                    <button
-                      onClick={() => setChartExpanded(true)}
-                      className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors touch-manipulation"
-                    >
-                      <Maximize2 size={14} />
-                    </button>
-                  </div>
-                  <NetWorthChart
-                    snapshots={snapshots}
-                    interval={chartInterval}
-                    onIntervalChange={setChartInterval}
-                    fill
-                  />
-                </GlassPanel>
-
-                <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4">
-                  <p className="text-sm font-semibold text-[var(--text-primary)] px-1 mb-2">Allocation</p>
-                  <AllocationChart
-                    cash={allocation.cash}
-                    investments={allocation.investments}
-                    crypto={allocation.crypto}
-                    debt={allocation.debt}
-                    realAssets={allocation.realAssets}
-                  />
-                </GlassPanel>
-
-              </div>
-
+              {accounts.length > 0 && (
+              <>
               {/* Perspectives row — lenses into this Space's data, routed
                   to existing real tabs where one exists. */}
               <div>
@@ -1471,6 +1410,8 @@ export function DashboardClient({
                   onViewAll={() => handleFilterChange("transactions")}
                 />
               </div>
+              </>
+              )}
               </>
               )}
             </>
@@ -1536,30 +1477,8 @@ export function DashboardClient({
         </div>
       )}
 
-      {/* Net Worth chart modal — also doubles as the Total Assets/Total
-          Liabilities KPI tile modal (IA refactor point 4), just opened
-          pre-focused on a different series of the same chart. */}
-      {chartExpanded && (
-        <NetWorthChartModal
-          snapshots={snapshots}
-          initialInterval={chartInterval}
-          initialSeries={chartSeries}
-          onClose={() => { setChartExpanded(false); setChartSeries("netWorth"); }}
-        />
-      )}
-
-      {/* Cash Flow KPI tile modal — the real transactions behind the Cash
-          Flow (MTD) number, reusing RecentTransactionsPanel as-is. */}
-      {cashFlowModalOpen && (
-        <GlassModal
-          title="Cash Flow"
-          subtitle="Every transaction behind this month's number"
-          onClose={() => setCashFlowModalOpen(false)}
-          size="lg"
-        >
-          <RecentTransactionsPanel transactions={transactions} previewCount={transactions.length} />
-        </GlassModal>
-      )}
+      {/* Net Worth chart modal + Cash Flow modal moved into PersonalHero
+          (SP-2A-4b) — the hero renders them itself. */}
 
       {/* Account detail modal */}
       {selectedAccount && (
