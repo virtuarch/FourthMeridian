@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect, useRef, Suspense } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { Account, Transaction, TransactionCategory } from "@/types";
-// TI5-3A — clickable rows open the Transaction Detail drawer via ?transaction=.
+// TI5-3A — clickable rows open the shared Transaction Detail drawer via
+// ?transaction=. The drawer itself is mounted once in DashboardChrome (TI5-3C).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
-import { TransactionDetailDrawer } from "@/components/transactions/TransactionDetailDrawer";
 import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { PortfolioHistoryChart, ChartSeries } from "@/components/charts/PortfolioHistoryChart";
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
@@ -519,12 +519,6 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
           )}
         </DataCard>
       </section>
-
-      {/* TI5-3A — detail drawer host; ?transaction= driven. Suspense wraps the
-          useSearchParams read inside the drawer. */}
-      <Suspense fallback={null}>
-        <TransactionDetailDrawer />
-      </Suspense>
     </div>
   );
 }

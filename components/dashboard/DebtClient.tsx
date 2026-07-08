@@ -21,6 +21,8 @@ import {
   totalDebtPaid as computeTotalDebtPaid,
   rollupDebtPaymentsByAccount,
 } from "@/lib/debt";
+// TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
+import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 // MC1 QA Q3 — itemized rows pass the ROW's own currency; default preserved.
@@ -128,6 +130,8 @@ const inputStyle: React.CSSProperties = { background: "var(--surface-inset)", bo
 // ── Main component ────────────────────────────────────────────────────────────
 export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions, moneyCtx }: Props) {
   const router = useRouter();
+  // TI5-3C — shared opener; rows call it to open the shell-mounted detail drawer.
+  const openTransaction = useOpenTransaction();
 
   // MC1 P3 Slice 6 — rehydrated once; each debt leg converts at its own row
   // date inside the rollups (identical math when absent / all-USD).
@@ -1096,7 +1100,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
               <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>No transactions in this range.</p>
             ) : (
               <div className="divide-y divide-[var(--border-hairline)]">
-                {compactSlice.map((tx) => <TxRow key={tx.id} tx={tx} cards={cards} selectedCardId={selectedCardId} />)}
+                {compactSlice.map((tx) => <TxRow key={tx.id} tx={tx} cards={cards} selectedCardId={selectedCardId} onOpen={() => openTransaction(tx.id)} />)}
               </div>
             )}
           </DataCard>
@@ -1152,7 +1156,7 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
             <div className="overflow-y-auto flex-1 divide-y divide-[var(--border-hairline)]">
               {pageSlice.length === 0
                 ? <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>No transactions match your filters.</p>
-                : pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} cards={cards} selectedCardId={selectedCardId} />)
+                : pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} cards={cards} selectedCardId={selectedCardId} onOpen={() => openTransaction(tx.id)} />)
               }
             </div>
 
@@ -1198,16 +1202,23 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
 }
 
 // ── Shared transaction row ────────────────────────────────────────────────────
-function TxRow({ tx, cards, selectedCardId }: {
+function TxRow({ tx, cards, selectedCardId, onOpen }: {
   tx: Transaction;
   cards: Array<{ id: string; name: string; creditLimit?: number }>;
   selectedCardId: string | null;
+  onOpen: () => void;
 }) {
   const isCredit = tx.amount > 0;
   const dateObj  = new Date(tx.date + "T12:00:00");
   const acctName = cards.find((c) => c.id === tx.accountId)?.name ?? "";
   return (
-    <div className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
+      className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
+    >
       <div className="w-9 shrink-0 text-center">
         <p className="text-xs font-semibold leading-none" style={{ color: "var(--text-secondary)" }}>{dateObj.toLocaleDateString("en-US", { day: "numeric" })}</p>
         <p className="text-xs mt-0.5" style={{ color: "var(--text-faint)" }}>{dateObj.toLocaleDateString("en-US", { month: "short" })}</p>

@@ -37,7 +37,10 @@
  */
 
 import { usePathname, useRouter } from "next/navigation";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, Suspense, useEffect, useState } from "react";
+// TI5-3C — single, shell-level Transaction Detail drawer host. Every transaction
+// surface opens THIS drawer via ?transaction=; there is exactly one instance.
+import { TransactionDetailDrawer } from "@/components/transactions/TransactionDetailDrawer";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { BottomNav } from "@/components/ui/BottomNav";
 import { UserButton } from "@/components/ui/UserButton";
@@ -145,6 +148,13 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
       {/* Mobile bottom nav */}
       <BottomNav />
+
+      {/* TI5-3C — the single Transaction Detail drawer, shared by every surface
+          (Banking, Space, Debt, AccountModal). ?transaction= driven; Suspense
+          wraps the useSearchParams read inside the drawer. */}
+      <Suspense fallback={null}>
+        <TransactionDetailDrawer />
+      </Suspense>
 
       <CreateSpaceModal
         open={createSpaceOpen}

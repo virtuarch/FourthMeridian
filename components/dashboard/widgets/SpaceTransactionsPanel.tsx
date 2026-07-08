@@ -21,6 +21,8 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
+// TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
+import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
 // MC1 QA Q3 — itemized transaction rows pass the ROW's own currency.
@@ -93,6 +95,8 @@ interface Props {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, moneyCtx }: Props) {
+  // TI5-3C — shared opener; rows call it to open the shell-mounted detail drawer.
+  const openTransaction = useOpenTransaction();
   // MC1 P3 Slice 6 — rehydrated once; per-row conversion at each row's own
   // date (identical math for all-USD Spaces / absent context).
   const conversionCtx = useMemo(
@@ -377,6 +381,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
                   tx={tx}
                   acctName={acctName(tx.accountId)}
                   acctInst={acctInst(tx.accountId)}
+                  onOpen={() => openTransaction(tx.id)}
                 />
               ))}
             </div>
@@ -392,16 +397,24 @@ function TxRow({
   tx,
   acctName,
   acctInst,
+  onOpen,
 }: {
   tx:       Transaction;
   acctName: string;
   acctInst: string;
+  onOpen:   () => void;
 }) {
   const isCredit = tx.amount > 0;
   const dateObj  = new Date(tx.date + "T12:00:00");
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
+      className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
+    >
       {/* Date column */}
       <div className="w-9 shrink-0 text-center">
         <p className="text-xs font-semibold leading-none" style={{ color: "var(--text-secondary)" }}>

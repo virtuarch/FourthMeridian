@@ -14,6 +14,9 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { useTheme } from "@/components/theme/ThemeProvider";
+// TI5-3C — rows open the shared Transaction Detail drawer (mounted in
+// DashboardChrome). Opening sets ?transaction=, so the drawer stacks over this modal.
+import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 
 // ── Stock / crypto logo ───────────────────────────────────────────────────────
 function AssetLogo({
@@ -146,6 +149,7 @@ interface Props {
 // ── Main component ────────────────────────────────────────────────────────────
 export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
   const router         = useRouter();
+  const openTransaction = useOpenTransaction(); // TI5-3C — shared drawer opener
   const { resolvedTheme } = useTheme();
   const isInvestment   = account.type === "investment" || account.type === "crypto";
   const isDebt         = account.type === "debt";
@@ -618,7 +622,7 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
           {txs && filtered.length === 0 && (
             <p className="text-sm text-[var(--text-muted)] text-center py-10">No transactions match your filters.</p>
           )}
-          {txs && pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} isDebt={isDebt} />)}
+          {txs && pageSlice.map((tx) => <TxRow key={tx.id} tx={tx} isDebt={isDebt} onOpen={() => openTransaction(tx.id)} />)}
         </div>
       )}
 
@@ -708,7 +712,7 @@ export function AccountModal({ account, holdings, onClose, onRemove }: Props) {
 }
 
 // ── Transaction row ───────────────────────────────────────────────────────────
-function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
+function TxRow({ tx, isDebt, onOpen }: { tx: Transaction; isDebt: boolean; onOpen: () => void }) {
   // For debt accounts: spending is positive (you owe more) → show as negative/red
   // amount > 0 = credit (money in / payment received)  → green
   // amount < 0 = debit (money out / charge)             → white
@@ -724,7 +728,13 @@ function TxRow({ tx, isDebt }: { tx: Transaction; isDebt: boolean }) {
   const secondaryLabel = tx.description && tx.description !== tx.merchant ? tx.description : null;
 
   return (
-    <div className="flex items-center gap-3 py-3 hover:bg-[var(--surface-hover)] transition-colors">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
+      className="flex items-center gap-3 py-3 hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
+    >
       {/* Date */}
       <div className="w-9 shrink-0 text-center">
         <p className="text-xs font-semibold text-[var(--text-secondary)] leading-none">
