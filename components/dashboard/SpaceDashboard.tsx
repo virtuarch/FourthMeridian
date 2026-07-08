@@ -19,8 +19,17 @@ import {
   Eye, EyeOff, ChevronDown, ChevronUp,
   CheckCircle2, Circle, Calendar, AlertCircle,
   X, MoreHorizontal, Archive, Trash2, RotateCcw, LogOut,
-  Compass, PiggyBank,
+  Compass, PiggyBank, GripVertical,
 } from "lucide-react";
+import {
+  DndContext, closestCenter, PointerSensor, KeyboardSensor,
+  useSensor, useSensors, type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext, verticalListSortingStrategy, arrayMove,
+  useSortable, sortableKeyboardCoordinates,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
 import { getWidgetMeta } from "@/lib/widget-registry";
 import { AssetValueWidget, type AssetValueConfig } from "@/components/space/widgets/AssetValueWidget";
@@ -1530,6 +1539,53 @@ function SectionCard({
 
 // ─── Settings tab ─────────────────────────────────────────────────────────────
 
+/**
+ * UX-CUST-1A — a single draggable section row shown in Edit Layout mode.
+ *
+ * Module-level (not defined during render) so the React Compiler doesn't flag
+ * it. The whole row is the drag target via {...listeners}; the grip is a purely
+ * visual affordance. Reorder is tab-scoped structurally: each tab renders its
+ * own SortableContext, so a row can never be dropped into another tab's list.
+ */
+function SortableSectionRow({ section }: { section: DashboardSection }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: section.id });
+
+  const style: React.CSSProperties = {
+    transform:  CSS.Transform.toString(transform),
+    transition,
+    opacity:    isDragging ? 0.5 : 1,
+    zIndex:     isDragging ? 10 : undefined,
+    position:   isDragging ? "relative" : undefined,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-[var(--surface-inset)] border border-[var(--border-hairline)] touch-none"
+    >
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        aria-label={`Reorder ${section.label}`}
+        className="p-1 -ml-1 rounded text-[var(--text-faint)] hover:text-[var(--text-secondary)] cursor-grab active:cursor-grabbing transition-colors touch-none"
+      >
+        <GripVertical size={14} />
+      </button>
+      <p className={`text-sm truncate flex-1 min-w-0 ${section.enabled ? "text-white" : "text-[var(--text-muted)]"}`}>
+        {section.label}
+      </p>
+      {!section.enabled && (
+        <span className="text-[10px] text-[var(--text-faint)] shrink-0 flex items-center gap-1">
+          <EyeOff size={10} /> Hidden
+        </span>
+      )}
+    </div>
+  );
+}
+
 function SettingsTab({
   sections,
   spaceId,
@@ -1540,6 +1596,19 @@ function SettingsTab({
   onUpdate:    () => void;
 }) {
   const [togglingId, setTogglingId] = useState<string | null>(null);
+
+  // ── Edit Layout mode (UX-CUST-1A) ──────────────────────────────────────────
+  // `draft` holds the in-progress per-tab ordering while editing; null = not
+  // editing (read/toggle mode, byte-identical to before). Save persists via the
+  // batch reorder endpoint (one call per changed tab); Cancel drops the draft.
+  const [draft,   setDraft]   = useState<Record<string, DashboardSection[]> | null>(null);
+  const [saving,  setSaving]  = useState(false);
+  const editing = draft !== null;
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   async function toggleSection(s: DashboardSection) {
     setTogglingId(s.id);
@@ -1560,44 +1629,147 @@ function SettingsTab({
     return acc;
   }, {});
 
+  function startEditing() {
+    // Snapshot current order (already tab-grouped, order-sorted from the API).
+    setDraft(Object.fromEntries(Object.entries(byTab).map(([tab, items]) => [tab, [...items]])));
+  }
+
+  function cancelEditing() {
+    setDraft(null);
+  }
+
+  function handleDragEnd(tab: string, e: DragEndEvent) {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const items   = prev[tab];
+      const oldIdx  = items.findIndex((s) => s.id === active.id);
+      const newIdx  = items.findIndex((s) => s.id === over.id);
+      if (oldIdx === -1 || newIdx === -1) return prev;
+      return { ...prev, [tab]: arrayMove(items, oldIdx, newIdx) };
+    });
+  }
+
+  async function saveLayout() {
+    if (!draft) return;
+    setSaving(true);
+    try {
+      // Persist only tabs whose order actually changed, one atomic call each.
+      const changedTabs = Object.entries(draft).filter(([tab, items]) => {
+        const original = byTab[tab] ?? [];
+        return items.some((s, i) => original[i]?.id !== s.id);
+      });
+      await Promise.all(
+        changedTabs.map(([tab, items]) =>
+          fetch(`/api/spaces/${spaceId}/sections/reorder`, {
+            method:  "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({ tab, sectionIds: items.map((s) => s.id) }),
+          }),
+        ),
+      );
+      setDraft(null);
+      onUpdate();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const groups = editing && draft ? draft : byTab;
+
   return (
     <div className="space-y-5">
-      <p className="text-xs text-[var(--text-muted)]">
-        Toggle sections to show or hide them on this Space&apos;s dashboard. Changes apply to all members.
-      </p>
-      {Object.entries(byTab).map(([tab, items]) => (
+      {/* Header: description + Edit Layout / Save·Cancel controls */}
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs text-[var(--text-muted)] flex-1">
+          {editing
+            ? "Drag sections to reorder them within each tab. Order applies to all members. Reordering does not change which tab a section belongs to."
+            : "Toggle sections to show or hide them on this Space’s dashboard. Changes apply to all members."}
+        </p>
+        {editing ? (
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={cancelEditing}
+              disabled={saving}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] border border-[var(--border-hairline)] transition-colors disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={saveLayout}
+              disabled={saving}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[var(--accent-info)] text-white transition-colors disabled:opacity-50"
+            >
+              {saving ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
+              Save
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={startEditing}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] border border-[var(--border-hairline)] transition-colors shrink-0"
+          >
+            <GripVertical size={12} /> Edit layout
+          </button>
+        )}
+      </div>
+
+      {Object.entries(groups).map(([tab, items]) => (
         <div key={tab}>
           <p className="text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-2">
             {TAB_LABELS[tab] ?? tab}
           </p>
-          <div className="space-y-1">
-            {items.map((s) => (
-              <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--surface-inset)]">
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm truncate ${s.enabled ? "text-white" : "text-[var(--text-muted)]"}`}>
-                    {s.label}
-                  </p>
+
+          {editing ? (
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={(e) => handleDragEnd(tab, e)}
+            >
+              <SortableContext items={items.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+                <div className="space-y-1.5">
+                  {items.map((s) => (
+                    <SortableSectionRow key={s.id} section={s} />
+                  ))}
                 </div>
-                <button
-                  onClick={() => toggleSection(s)}
-                  disabled={togglingId === s.id}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
-                    s.enabled
-                      ? "bg-blue-600/20 text-[var(--accent-info)] hover:bg-blue-600/30"
-                      : "bg-[var(--surface-inset)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-                  }`}
-                >
-                  {togglingId === s.id
-                    ? <Loader2 size={11} className="animate-spin" />
-                    : s.enabled
-                      ? <><Eye     size={11} /> Shown</>
-                      : <><EyeOff  size={11} /> Hidden</>}
-                </button>
-              </div>
-            ))}
-          </div>
+              </SortableContext>
+            </DndContext>
+          ) : (
+            <div className="space-y-1">
+              {items.map((s) => (
+                <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--surface-inset)]">
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm truncate ${s.enabled ? "text-white" : "text-[var(--text-muted)]"}`}>
+                      {s.label}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => toggleSection(s)}
+                    disabled={togglingId === s.id}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                      s.enabled
+                        ? "bg-blue-600/20 text-[var(--accent-info)] hover:bg-blue-600/30"
+                        : "bg-[var(--surface-inset)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
+                    }`}
+                  >
+                    {togglingId === s.id
+                      ? <Loader2 size={11} className="animate-spin" />
+                      : s.enabled
+                        ? <><Eye     size={11} /> Shown</>
+                        : <><EyeOff  size={11} /> Hidden</>}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ))}
+
+      {/* Reset to template order — deferred (UX-CUST-1A): correct template-order
+          restoration must account for legacy/custom section keys not present in
+          the current preset and is out of this slice's scope. Tracked for a
+          follow-up rather than shipped half-correct. */}
     </div>
   );
 }
