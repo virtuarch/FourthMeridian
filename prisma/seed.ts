@@ -38,7 +38,12 @@ import {
 } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { encryptWithPurpose, EncryptionPurpose } from "../lib/plaid/encryption";
-import { getPresetsForCategory, SpaceCategory } from "../lib/space-presets";
+import { SpaceCategory } from "../lib/space-presets";
+// SP-2.3 — seeded Spaces are born through the same registry/planner path as
+// the register route (SP-2A-3) and POST /api/spaces (SP-2.1): the planner is
+// authoritative everywhere a Space is born.
+import { getTemplateForCategory } from "../lib/space-templates/registry";
+import { planTemplateApplication } from "../lib/space-templates/apply";
 
 const prisma = new PrismaClient();
 
@@ -339,11 +344,15 @@ async function main() {
 
   // ── Dashboard sections ───────────────────────────────────────────────────────
   async function seedSections(spaceId: string, category: string) {
-    const presets = getPresetsForCategory(category);
-    if (presets.length === 0) return;
+    const template = getTemplateForCategory(category);
+    if (!template) {
+      throw new Error(`space-templates registry has no template for category ${category}`);
+    }
+    const { sectionsToCreate } = planTemplateApplication(template, new Set<string>());
+    if (sectionsToCreate.length === 0) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (prisma as any).spaceDashboardSection.createMany({
-      data: presets.map((s) => ({
+      data: sectionsToCreate.map((s) => ({
         spaceId, key: s.key, label: s.label,
         tab: s.tab, enabled: s.enabled, order: s.order, config: s.config ?? null,
       })),

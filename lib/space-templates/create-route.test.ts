@@ -14,7 +14,7 @@
  * templateId, enforces the live-template rule, and hardcodes no section keys.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { SpaceCategory, getPresetsForCategory } from "../space-presets";
 import { SPACE_TEMPLATES, getTemplate, getTemplateForCategory } from "./registry";
@@ -124,6 +124,67 @@ check(
   // Template names/icons must come from the registry object (tpl.*), never
   // re-declared locally.
   modalSrc.includes("tpl.icon") && modalSrc.includes("tpl.name")
+);
+
+// ── SP-2.3 — planner authority scan ───────────────────────────────────────────
+// Repo-wide guard: no production file may import getPresetsForCategory except
+// the registry itself (which composes templates FROM the presets). Every Space
+// birth path — register route, POST /api/spaces, prisma/seed.ts, backfill —
+// must flow through the registry/planner. lib/space-presets.ts (the defining
+// module) and *.test.ts files are exempt.
+
+function walk(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walk(full));
+    else if (/\.(ts|tsx)$/.test(entry.name)) out.push(full);
+  }
+  return out;
+}
+
+const ROOT = process.cwd();
+const PRESET_IMPORT_ALLOWLIST = new Set([
+  path.join("lib", "space-templates", "registry.ts"),
+]);
+
+const offenders: string[] = [];
+for (const dir of ["app", "components", "lib", "prisma", "scripts", "jobs"]) {
+  const abs = path.join(ROOT, dir);
+  let files: string[] = [];
+  try {
+    files = walk(abs);
+  } catch {
+    continue; // directory absent — nothing to scan
+  }
+  for (const file of files) {
+    const rel = path.relative(ROOT, file);
+    if (rel.endsWith(".test.ts")) continue;
+    if (PRESET_IMPORT_ALLOWLIST.has(rel)) continue;
+    if (rel === path.join("lib", "space-presets.ts")) continue;
+    const src = readFileSync(file, "utf8");
+    const importsPreset = [...src.matchAll(/import[\s\S]*?from\s*["'][^"']+["']/g)].some((m) =>
+      m[0].includes("getPresetsForCategory")
+    );
+    if (importsPreset) offenders.push(rel);
+  }
+}
+check(
+  "no production file bypasses the planner via getPresetsForCategory",
+  offenders.length === 0,
+  `offenders: ${offenders.join(", ")}`
+);
+
+// Seed births Spaces through the registry/planner like every other path.
+const seedSrc = readFileSync(path.join(ROOT, "prisma", "seed.ts"), "utf8");
+check(
+  "seed resolves templates from the registry",
+  seedSrc.includes("getTemplateForCategory(")
+);
+check(
+  "seed materializes via planTemplateApplication",
+  seedSrc.includes("planTemplateApplication(")
 );
 
 if (failures > 0) {
