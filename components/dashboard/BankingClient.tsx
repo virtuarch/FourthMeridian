@@ -1,7 +1,10 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef, Suspense } from "react";
 import { Account, Transaction, TransactionCategory } from "@/types";
+// TI5-3A — clickable rows open the Transaction Detail drawer via ?transaction=.
+import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
+import { TransactionDetailDrawer } from "@/components/transactions/TransactionDetailDrawer";
 import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
 import { PortfolioHistoryChart, ChartSeries } from "@/components/charts/PortfolioHistoryChart";
 import { PlaidLinkButton } from "@/components/plaid/PlaidLinkButton";
@@ -121,6 +124,8 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
   const [chartSlice, setChartSlice]               = useState<BankingSlice>("cash");
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(preselectedId);
   const [timeFilter, setTimeFilter]               = useState<TimeFilter>("all");
+  // TI5-3A — shared opener (Suspense-free); rows call it to open the detail drawer.
+  const openTransaction = useOpenTransaction();
   const [search, setSearch]                       = useState("");
   const [catFilter, setCatFilter]                 = useState<TransactionCategory | null>(null);
 
@@ -507,12 +512,19 @@ export function BankingClient({ accounts, transactions, portfolioHistory, presel
                   acctName={acctName(tx.accountId)}
                   acctInst={acctInst(tx.accountId)}
                   hideAccount={!!selectedAccountId}
+                  onOpen={() => openTransaction(tx.id)}
                 />
               ))}
             </div>
           )}
         </DataCard>
       </section>
+
+      {/* TI5-3A — detail drawer host; ?transaction= driven. Suspense wraps the
+          useSearchParams read inside the drawer. */}
+      <Suspense fallback={null}>
+        <TransactionDetailDrawer />
+      </Suspense>
     </div>
   );
 }
@@ -523,11 +535,13 @@ function TxRow({
   acctName,
   acctInst,
   hideAccount,
+  onOpen,
 }: {
   tx: Transaction;
   acctName: string;
   acctInst: string;
   hideAccount: boolean;
+  onOpen: () => void;
 }) {
   const isCredit = tx.amount > 0;
   // MC1 QA Q3 — itemized transaction row: the row's own currency.
@@ -537,7 +551,13 @@ function TxRow({
   const dateObj = new Date(tx.date + "T12:00:00");
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
+      className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
+    >
       {/* Date column */}
       <div className="w-9 shrink-0 text-center">
         <p className="text-xs font-semibold leading-none" style={{ color: "var(--text-secondary)" }}>
