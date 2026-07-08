@@ -145,7 +145,14 @@ export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode 
       </div>
 
       <ResponsiveContainer width="100%" height={chartHeight}>
-          <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: -20 }}>
+          <AreaChart
+            data={data}
+            // Y-axis clipping fix: left is 0 (was -20). A negative left margin
+            // pulled the axis band off the container's left edge and truncated
+            // the tick labels ("$8K", "-$3K", …) in narrow cards. Still
+            // width="100%" responsive; no horizontal scroll added.
+            margin={{ top: 4, right: 4, bottom: 4, left: 0 }}
+          >
             <defs>
               <linearGradient id="nwGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
@@ -166,7 +173,10 @@ export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode 
               tick={{ fontSize: 10, fill: "#6b7280" }}
               tickLine={false}
               axisLine={false}
-              width={44}
+              // Reserve room for the widest compact label incl. a leading
+              // "-"/"$" (e.g. "-$120K"); the old 44px clipped negatives.
+              // Reserved inside the responsive container ⇒ no horizontal scroll.
+              width={54}
             />
           <Tooltip
             contentStyle={{ background: "#1f2937", border: "1px solid #374151", borderRadius: 8, fontSize: 12 }}
