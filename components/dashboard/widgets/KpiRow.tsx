@@ -11,6 +11,10 @@
  * read), just presented as a slim glass strip instead of three stacked
  * cards, per the Spaces dashboard redesign.
  *
+ * Hosts may render a subset of tiles via the `tiles` prop (default: all
+ * five). The Personal Overview uses this to show only Cash Flow + Credit,
+ * because its Net Worth / Assets / Debt now live in the Net Worth card (A).
+ *
  * Every trend shown is computed from real data the host already has
  * (account snapshots for Net Worth, real transactions for Cash Flow) —
  * nothing here is fabricated. Tiles with no real historical baseline show
@@ -97,6 +101,10 @@ function Tile({
   );
 }
 
+/** The five tiles this strip can render, in canonical left-to-right order. */
+export type KpiTileKey = "netWorth" | "totalAssets" | "totalLiabilities" | "cashFlow" | "credit";
+const ALL_KPI_TILES: KpiTileKey[] = ["netWorth", "totalAssets", "totalLiabilities", "cashFlow", "credit"];
+
 export interface KpiRowProps {
   /**
    * MC1 Phase 4 Slice 3 (D-5) — true when the classification totals feeding
@@ -106,14 +114,21 @@ export interface KpiRowProps {
   estimated?: boolean;
   /** MC1 QA Q2 — cash-flow value is now converted by the host; taint for its tile. */
   cashFlowEstimated?: boolean;
-  netWorth: number;
+  /**
+   * Which tiles to render, in canonical order (default: all five). A host can
+   * pass a subset — e.g. the Personal Overview renders card A for net worth /
+   * assets / debt and asks this strip for only `["cashFlow", "credit"]`.
+   * Money props are only required for the tiles actually shown.
+   */
+  tiles?: KpiTileKey[];
+  netWorth?: number;
   /** Signed percentage change over the host's selected interval; null = no baseline yet. */
-  netWorthChangePct: number | null;
-  totalAssets: number;
-  totalLiabilities: number;
-  cashFlowMTD: number;
+  netWorthChangePct?: number | null;
+  totalAssets?: number;
+  totalLiabilities?: number;
+  cashFlowMTD?: number;
   /** Signed percentage change vs. last calendar month; null = no prior-month data. */
-  cashFlowChangePct: number | null;
+  cashFlowChangePct?: number | null;
   ficoScore: number | null;
   /** IA refactor point 4 — each tile opens a large Glass modal reusing the
    *  host's existing widgets/business logic. Omitting a handler leaves that
@@ -128,13 +143,13 @@ export interface KpiRowProps {
 export function KpiRow({
   estimated,
   cashFlowEstimated,
-
-  netWorth,
-  netWorthChangePct,
-  totalAssets,
-  totalLiabilities,
-  cashFlowMTD,
-  cashFlowChangePct,
+  tiles = ALL_KPI_TILES,
+  netWorth = 0,
+  netWorthChangePct = null,
+  totalAssets = 0,
+  totalLiabilities = 0,
+  cashFlowMTD = 0,
+  cashFlowChangePct = null,
   ficoScore,
   onNetWorthClick,
   onAssetsClick,
@@ -152,35 +167,56 @@ export function KpiRow({
   const fmtDisplay = (n: number) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, maximumFractionDigits: 0 }).format(n);
 
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+  // Render only the requested tiles (default: all five), in canonical order.
+  // Grid columns follow the count so a 2-tile subset (e.g. the Personal
+  // Overview's Cash Flow + Credit) doesn't stretch across five columns.
+  const shown = ALL_KPI_TILES.filter((t) => tiles.includes(t));
+  const gridCols =
+    shown.length <= 2 ? "grid-cols-2"
+    : shown.length === 3 ? "grid-cols-2 sm:grid-cols-3"
+    : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-5";
+
+  const tileNodes: Record<KpiTileKey, ReactNode> = {
+    netWorth: (
       <Tile
+        key="netWorth"
         label="Net Worth"
-        value={`${estimated ? "\u2248 " : ""}${fmtDisplay(netWorth)}`}
+        value={`${estimated ? "≈ " : ""}${fmtDisplay(netWorth)}`}
         estimated={estimated}
         trendPct={netWorthChangePct}
         icon={Scale}
         onClick={onNetWorthClick}
       />
-      <Tile label="Total Assets" value={`${estimated ? "\u2248 " : ""}${fmtDisplay(totalAssets)}`} estimated={estimated} icon={Landmark} onClick={onAssetsClick} />
+    ),
+    totalAssets: (
+      <Tile key="totalAssets" label="Total Assets" value={`${estimated ? "≈ " : ""}${fmtDisplay(totalAssets)}`} estimated={estimated} icon={Landmark} onClick={onAssetsClick} />
+    ),
+    totalLiabilities: (
       <Tile
+        key="totalLiabilities"
         label="Total Liabilities"
-        value={`${estimated ? "\u2248 " : ""}${fmtDisplay(Math.abs(totalLiabilities))}`}
+        value={`${estimated ? "≈ " : ""}${fmtDisplay(Math.abs(totalLiabilities))}`}
         estimated={estimated}
         icon={Wallet}
         onClick={onLiabilitiesClick}
       />
-      {/* MC1 QA Q2 — cashFlowMTD now converts in the host (per-row dates), so
-          its label follows into the display currency. */}
+    ),
+    // MC1 QA Q2 — cashFlowMTD now converts in the host (per-row dates), so
+    // its label follows into the display currency.
+    cashFlow: (
       <Tile
+        key="cashFlow"
         label="Cash Flow (MTD)"
-        value={`${cashFlowEstimated ? "\u2248 " : ""}${fmtDisplay(cashFlowMTD)}`}
+        value={`${cashFlowEstimated ? "≈ " : ""}${fmtDisplay(cashFlowMTD)}`}
         estimated={cashFlowEstimated}
         trendPct={cashFlowChangePct}
         icon={TrendingUp}
         onClick={onCashFlowClick}
       />
+    ),
+    credit: (
       <Tile
+        key="credit"
         label="Credit Score"
         value={ficoScore !== null ? String(ficoScore) : "—"}
         sub={
@@ -199,6 +235,12 @@ export function KpiRow({
         icon={ShieldCheck}
         onClick={onCreditClick}
       />
+    ),
+  };
+
+  return (
+    <div className={`grid ${gridCols} gap-3`}>
+      {shown.map((t) => tileNodes[t])}
     </div>
   );
 }

@@ -156,6 +156,14 @@ interface Props {
    * reporting currency — today's behavior, byte-identical.
    */
   perspectiveTargetCurrency?: string;
+  /**
+   * MC1 — when set (Personal "view as" override active), the Transactions-tab
+   * SUMMARY totals (Spend / In) convert through THIS context instead of the
+   * Space's saved-reporting-currency context, so the aggregates match the
+   * override symbol. Transaction ROWS stay native regardless. Omitted (shared
+   * Spaces, or no override) ⇒ the saved-currency context — today's behavior.
+   */
+  transactionsMoneyCtxOverride?: SerializedConversionContext;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -1962,6 +1970,7 @@ export function SpaceDashboard({
   initialTab,
   overviewTopSlot,
   perspectiveTargetCurrency,
+  transactionsMoneyCtxOverride,
 }: Props) {
   const router = useRouter();
 
@@ -2580,7 +2589,9 @@ export function SpaceDashboard({
               transactions={spaceTransactions}
               accounts={accounts.map((a) => ({ ...a, type: a.type as PersonalAccount["type"] })) as PersonalAccount[]}
               scopeNote={TX_SCOPE_NOTE}
-              moneyCtx={spaceMoneyCtx}
+              // MC1 view-as: summary totals convert through the override context
+              // when active; the panel's rows stay native either way.
+              moneyCtx={transactionsMoneyCtxOverride ?? spaceMoneyCtx}
             />
           )
         )}

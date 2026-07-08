@@ -110,6 +110,10 @@ export function PersonalDashboard({
         // Perspectives then recompute in the override currency; no override ⇒
         // today's reporting-currency behavior.
         perspectiveTargetCurrency={viewOverride?.currency}
+        // MC1 view-as: convert the Transactions summary (Spend / In) through the
+        // override context when active; rows stay native. Undefined ⇒ the
+        // saved-currency context (today's behavior).
+        transactionsMoneyCtxOverride={viewOverride?.moneyCtx}
         overviewTopSlot={
           <div className="flex justify-end">
             <ViewCurrencyOverride
