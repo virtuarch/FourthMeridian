@@ -16,6 +16,7 @@
     "backfill:ai-agents": "tsx scripts/backfill-ai-agents.ts",
     "backfill:snapshots": "tsx scripts/backfill-snapshots.ts",
     "backfill:merchant-intelligence": "tsx scripts/backfill-merchant-intelligence.ts",
+    "backfill:personal-sections": "tsx scripts/backfill-personal-sections.ts",
     "audit:flow-desync": "tsx scripts/audit-flow-desync.ts"
   },
   "prisma": {

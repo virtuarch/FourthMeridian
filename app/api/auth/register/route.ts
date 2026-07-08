@@ -28,8 +28,10 @@ import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
 import { buildVerifyUrl } from "@/lib/email/verify-url";
 import { possessive } from "@/lib/format";
-import { EmploymentStatus, UseCase, SpaceMemberRole } from "@prisma/client";
+import { EmploymentStatus, UseCase, SpaceMemberRole, Prisma } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
+import { getTemplateForCategory } from "@/lib/space-templates/registry";
+import { planTemplateApplication } from "@/lib/space-templates/apply";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
@@ -117,10 +119,39 @@ export async function POST(req: NextRequest) {
         },
       });
 
+      // SP-2A-3 — Personal Spaces are template-backed from birth: materialize
+      // the hidden `personal` template (lib/space-templates, SP-1) into
+      // SpaceDashboardSection rows, mirroring the POST /api/spaces
+      // materialization pattern. The planner is pure/synchronous; against an
+      // empty Space its plan equals getPresetsForCategory("PERSONAL")
+      // (parity-tested). Sections stay dormant on the Personal UI until the
+      // SP-2A-4 shell swap — this slice changes the data model only.
+      const personalTemplate = getTemplateForCategory("PERSONAL");
+      if (!personalTemplate) {
+        // Static registry invariant (guarded by lib/space-templates tests);
+        // throwing aborts the transaction rather than minting a sectionless
+        // Personal Space.
+        throw new Error("space-templates registry has no PERSONAL template");
+      }
+      const plannedSections = planTemplateApplication(
+        personalTemplate,
+        new Set<string>()
+      ).sectionsToCreate;
+
       const space = await tx.space.create({
         data: {
           name: `${possessive(firstName.trim())} Space`,
           type: "PERSONAL",
+          dashboardSections: {
+            create: plannedSections.map((s) => ({
+              key:     s.key,
+              label:   s.label,
+              tab:     s.tab,
+              enabled: s.enabled,
+              order:   s.order,
+              config:  s.config == null ? Prisma.DbNull : (s.config as Prisma.InputJsonValue),
+            })),
+          },
         },
       });
 
