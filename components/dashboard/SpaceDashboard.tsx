@@ -57,6 +57,7 @@ import {
   SPACE_CURRENCY_CHANGED_EVENT,
 } from "@/lib/space-nav";
 import { getPerspectivesForCategory, getCompositionSwitcherItems } from "@/lib/perspectives";
+import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { PerspectiveSwitcher, COMPOSITION_ICON_MAP } from "@/components/dashboard/widgets/PerspectiveSwitcher";
 import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
@@ -1698,6 +1699,97 @@ function SortableSectionCard({
   );
 }
 
+// ─── Perspective tab selector (UX-PER-3) ────────────────────────────────────────
+//
+// Free-form tab/pill selector for the Perspectives tab — NOT cards, and NOT
+// wrapped in any grouped container/track (so no enclosing card background).
+//   - Wide (md+): a 2-row / 3-column grid of lightweight pills (row-major, so a
+//     6-item category reads Wealth|Cash Flow|Liquidity / Investments|Debt|Goals).
+//   - Narrow: a compact <select>.
+// Accessible: role=tablist/tab, aria-selected, roving tabindex, arrow/Home/End
+// keyboard nav. Active pill is filled; inactive pills are subtle.
+function PerspectiveTabSelector({
+  items,
+  activeId,
+  onSelect,
+}: {
+  items:    { id: string; label: string; hasWorkspace: boolean }[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const btnRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  function move(toIdx: number) {
+    const n = items.length;
+    if (n === 0) return;
+    const i = ((toIdx % n) + n) % n;
+    onSelect(items[i].id);
+    btnRefs.current[i]?.focus();
+  }
+
+  function onKeyDown(e: React.KeyboardEvent, idx: number) {
+    switch (e.key) {
+      case "ArrowRight": e.preventDefault(); move(idx + 1); break;
+      case "ArrowLeft":  e.preventDefault(); move(idx - 1); break;
+      case "ArrowDown":  e.preventDefault(); move(idx + 3); break;
+      case "ArrowUp":    e.preventDefault(); move(idx - 3); break;
+      case "Home":       e.preventDefault(); move(0); break;
+      case "End":        e.preventDefault(); move(items.length - 1); break;
+    }
+  }
+
+  return (
+    <div>
+      {/* Narrow — compact dropdown */}
+      <div className="md:hidden">
+        <label htmlFor="perspective-select" className="sr-only">Perspective</label>
+        <select
+          id="perspective-select"
+          value={activeId ?? ""}
+          onChange={(e) => onSelect(e.target.value)}
+          className="w-full bg-[var(--surface-inset)] border border-[var(--border-hairline-strong)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-info)]"
+        >
+          {items.map((i) => (
+            <option key={i.id} value={i.id}>
+              {i.label}{i.hasWorkspace ? "" : " · soon"}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Wide — free-form 2×3 pill tabs, no enclosing container/background */}
+      <div role="tablist" aria-label="Perspectives" className="hidden md:grid grid-cols-3 gap-2">
+        {items.map((i, idx) => {
+          const active = i.id === activeId;
+          return (
+            <button
+              key={i.id}
+              ref={(el) => { btnRefs.current[idx] = el; }}
+              id={`ptab-${i.id}`}
+              role="tab"
+              type="button"
+              aria-selected={active}
+              tabIndex={active ? 0 : -1}
+              onClick={() => onSelect(i.id)}
+              onKeyDown={(e) => onKeyDown(e, idx)}
+              className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                active
+                  ? "bg-[var(--accent-info)] text-white"
+                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]"
+              }`}
+            >
+              <span className="truncate">{i.label}</span>
+              {!i.hasWorkspace && (
+                <span className={`text-[10px] ${active ? "text-white/70" : "text-[var(--text-faint)]"}`}>soon</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── Settings tab (REMOVED — UX-CUST-1A correction) ─────────────────────────────
 //
 // Settings is no longer an in-space tab. Section show/hide already lives in
@@ -2219,6 +2311,23 @@ export function SpaceDashboard({
   const compositionItems = useMemo(() => getCompositionSwitcherItems(category), [category]);
   const activeComposition = compositionItems.find((p) => p.id === composition);
 
+  // ── Perspective Workspace (UX-PER-3) ───────────────────────────────────────
+  // The Perspectives TAB is selector-driven (free-form tabs, not cards). The
+  // selector lists the category's Perspectives (overview already excluded from
+  // perspectiveItems); the selected one renders its workspace (widgets[] →
+  // virtual sections → existing SectionCard) or an honest placeholder below.
+  // Default = the first workspace-backed Perspective (Wealth) so the tab opens
+  // on a real workspace. The Overview doorway keeps `perspectiveItems` intact.
+  const [selectedPerspectiveId, setSelectedPerspectiveId] = useState<string | null>(null);
+  const defaultPerspectiveId =
+    perspectiveItems.find((p) => p.widgets && p.widgets.length > 0)?.id ??
+    perspectiveItems[0]?.id ??
+    null;
+  const activePerspectiveId = selectedPerspectiveId ?? defaultPerspectiveId;
+  const activePerspective = activePerspectiveId
+    ? perspectiveItems.find((p) => p.id === activePerspectiveId) ?? null
+    : null;
+
   async function handleLeave() {
     setLeaveBusy(true);
     try {
@@ -2686,15 +2795,54 @@ export function SpaceDashboard({
             section show/hide and layout controls moved to ManageSpaceModal →
             Overview. Opened via the "Manage" button above. */}
 
-        {/* Perspectives tab — full grid.
-            NOTE (UX-CUST-1A): Perspective cards are category-derived LENSES
-            (lib/perspectives.ts getPerspectivesForCategory), not
-            SpaceDashboardSection rows — they have no `order` to persist and no
-            clean no-schema promotion path. Per the correction's guidance they
-            stay FIXED (not draggable) rather than shipping fake drag/drop that
-            can't persist. Only section-backed cards (Overview stack) reorder. */}
+        {/* Perspectives tab — free-form tab SELECTOR + the selected
+            Perspective's WORKSPACE (UX-PER-3). Selecting a tab swaps the panel
+            below: workspace-backed Perspectives (widgets[]) render their widgets
+            through the EXISTING SectionCard/SectionRegistry compositor as
+            VIRTUAL, render-only sections (no persistence, no drag/drop, no
+            reorder — virtual ids never reach a mutation endpoint); others show
+            an honest "coming soon" placeholder. No card grid, no enclosing
+            container. Overview's Perspectives doorway is unchanged. */}
         {activeTab === "PERSPECTIVES" && (
-          <PerspectivesWidget items={perspectiveItems} variant="grid" />
+          <div className="space-y-5">
+            <PerspectiveTabSelector
+              items={perspectiveItems.map((p) => ({
+                id:           p.id,
+                label:        p.label,
+                hasWorkspace: !!(p.widgets && p.widgets.length > 0),
+              }))}
+              activeId={activePerspectiveId}
+              onSelect={setSelectedPerspectiveId}
+            />
+            <div
+              role="tabpanel"
+              aria-labelledby={activePerspectiveId ? `ptab-${activePerspectiveId}` : undefined}
+              className="space-y-3"
+            >
+              {activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
+                toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
+                  <SectionCard
+                    key={vs.id}
+                    section={vs}
+                    accounts={accounts}
+                    spaceId={spaceId}
+                    category={category}
+                    canManage={canManage}
+                    ctx={widgetCtx}
+                    snapshots={snapshots}
+                    snapshotCurrency={snapshotCurrency ?? displayCurrency}
+                  />
+                ))
+              ) : activePerspective ? (
+                <div className="text-center py-12">
+                  <p className="text-sm text-[var(--text-muted)]">{activePerspective.label}</p>
+                  <p className="text-xs text-[var(--text-faint)] mt-1">
+                    This perspective&apos;s workspace is coming soon.
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          </div>
         )}
 
         {/* Activity — a first-class rail tab now (Activity slice). It renders
