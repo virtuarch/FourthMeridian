@@ -184,6 +184,62 @@ const registry: WidgetRegistryEntry[] = [
     },
   },
 
+  // ── Wealth Perspective (UX-PER-3) — assets-only analytical widgets. ──────────
+  // Rendered as VIRTUAL sections in the Wealth workspace (never materialized as
+  // tab rows); the `tab` field is metadata only. Answer "Where is my money?".
+  {
+    implemented: true,
+    meta: {
+      key:         "wealth_by_account",
+      label:       "Wealth by Account",
+      description: "Every asset account ranked by balance — where your money actually sits.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Landmark",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "institution_allocation",
+      label:       "Institution Allocation",
+      description: "Assets grouped by institution — how concentrated your money is by provider.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Landmark",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "asset_allocation",
+      label:       "Asset Allocation",
+      description: "Assets by class — cash, investments, crypto, and real assets. Liabilities excluded.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "PieChart",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "wealth_concentration",
+      label:       "Wealth Concentration",
+      description: "How concentrated your assets are — largest account, top institution, diversification score.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Gem",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+
   // ── Accounts ────────────────────────────────────────────────────────────────
 
   {

@@ -43,10 +43,14 @@ for (const p of withWidgets) {
   }
 }
 
-// ── 2. Wealth workspace uses the exact expected section keys. ──
-check("wealth workspace = [net_worth, net_worth_chart, allocation]",
+// ── 2. Wealth workspace uses its purpose-built, assets-only widgets. ──
+check("wealth workspace = [wealth_by_account, asset_allocation, institution_allocation, wealth_concentration]",
   JSON.stringify(PERSPECTIVE_LIBRARY.wealth.widgets) ===
-    JSON.stringify(["net_worth", "net_worth_chart", "allocation"]));
+    JSON.stringify(["wealth_by_account", "asset_allocation", "institution_allocation", "wealth_concentration"]));
+// Doctrine: Wealth must NOT reuse the Overview widgets.
+check("wealth workspace excludes Overview widgets (net_worth / net_worth_chart / allocation)",
+  !(PERSPECTIVE_LIBRARY.wealth.widgets ?? []).some((k) =>
+    k === "net_worth" || k === "net_worth_chart" || k === "allocation"));
 
 // ── 3. toVirtualSections shape + virtual-id safety. ──
 const vs = toVirtualSections("wealth", ["net_worth", "net_worth_chart", "allocation"]);

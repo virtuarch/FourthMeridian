@@ -92,11 +92,13 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
   },
   wealth: {
     id: "wealth", label: "Wealth", icon: "Gem", status: "available", group: "Financial",
-    description: "Net worth trend across every account in this Space.",
-    // UX-PER-3 first workspace — reuses existing Overview lede section keys, so
-    // the Wealth workspace renders through the same SectionCard/SectionRegistry
-    // path (no new widgets, no new compositor).
-    widgets: ["net_worth", "net_worth_chart", "allocation"],
+    description: "Where your money is — assets by account, institution, and class.",
+    // UX-PER-3 Wealth workspace. Doctrine: Wealth answers "Where is my money?"
+    // and is ASSETS ONLY. It deliberately does NOT reuse the Overview widgets
+    // (net_worth / net_worth_chart / allocation-incl-debt) — those answer
+    // "What?" on the executive dashboard. These are purpose-built, assets-only
+    // analytical widgets rendered through the same SectionCard compositor.
+    widgets: ["wealth_by_account", "asset_allocation", "institution_allocation", "wealth_concentration"],
   },
   cashFlow: {
     id: "cashFlow", label: "Cash Flow", icon: "Waves", status: "comingSoon", group: "Financial",

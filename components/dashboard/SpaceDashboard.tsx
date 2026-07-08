@@ -47,6 +47,12 @@ import { formatDate, formatRelativeTime, displaySpaceName } from "@/lib/format";
 import { ManageSpaceModal } from "@/components/dashboard/ManageSpaceModal";
 import { simulatePayoff } from "@/components/space/sections/DebtPayoffSection";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
+import {
+  renderWealthByAccount,
+  renderInstitutionAllocation,
+  renderAssetAllocation,
+  renderWealthConcentration,
+} from "@/components/space/widgets/wealth-adapters";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import {
@@ -1205,6 +1211,11 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
   "net_worth":              renderNetWorth,
   "net_worth_chart":        (p) => <NetWorthChartSection snapshots={p.snapshots} ctx={p.ctx} snapshotCurrency={p.snapshotCurrency} />,
   "allocation":             (p) => <AllocationSection accounts={p.accounts} ctx={p.ctx} />,
+  // ── Wealth Perspective (UX-PER-3) — assets-only analytical widgets ──────────
+  "wealth_by_account":       (p) => renderWealthByAccount(p.accounts, p.ctx),
+  "institution_allocation":  (p) => renderInstitutionAllocation(p.accounts, p.ctx),
+  "asset_allocation":        (p) => renderAssetAllocation(p.accounts, p.ctx),
+  "wealth_concentration":    (p) => renderWealthConcentration(p.accounts, p.ctx),
   "net_worth_section":      renderNetWorth,       // deprecated alias — seeded pre-v2
   "accounts_overview":      (p) => <AccountsCard accounts={p.accounts} />,
   "business_accounts":      (p) => <AccountsCard accounts={p.accounts} />,
@@ -1459,13 +1470,16 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
 
 // ─── Section renderer ─────────────────────────────────────────────────────────
 
-// Unified Space Widget Layout (slice 1) — the Overview lede widgets (formerly
-// PersonalHero cards A/B/C). Keyed by section key, so any Space rendering these
-// exact keys gets the same treatment: a SOLID/frosted GlassPanel card (not the
-// faint ~5%-opacity SectionCard surface) and NO collapse affordance. They stay
-// section-backed and draggable in Edit Layout — the frosted surface also makes
-// the drag handle legible again (it was disappearing into the transparent card).
-const SOLID_LEDE_KEYS = new Set(["net_worth", "net_worth_chart", "allocation"]);
+// Solid/frosted, non-collapsible cards. Two families use this treatment:
+//  - the Overview lede widgets (formerly PersonalHero cards A/B/C), and
+//  - the Wealth Perspective's analytical widgets (UX-PER-3),
+// so the workspace reads as intentional analytical cards, not the faint
+// ~5%-opacity SectionCard surface. Keyed by section key; any Space rendering
+// these exact keys gets the treatment.
+const SOLID_LEDE_KEYS = new Set([
+  "net_worth", "net_worth_chart", "allocation",
+  "wealth_by_account", "institution_allocation", "asset_allocation", "wealth_concentration",
+]);
 
 function SectionCard({
   section,
