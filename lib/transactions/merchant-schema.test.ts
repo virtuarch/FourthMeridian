@@ -160,10 +160,16 @@ check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test
     "lib/plaid/syncTransactions.ts",
     "app/api/accounts/[id]/import/route.ts",
     "app/api/transactions/[id]/correct/route.ts",
+    // MI2 S1 — the sanctioned merge core re-points Transaction.merchantId /
+    // categoryRuleId (identity columns only) via an injected client, never a
+    // global handle. It is the explicit, human-invoked merge write site.
+    "lib/transactions/merchant-merge.ts",
   ]);
-  // The M5 sites permitted to write MerchantRule rows (user corrections).
+  // The sites permitted to write MerchantRule rows: M5 user corrections and the
+  // MI2 S1 merge core (move/fold of a duplicate's rules onto the survivor).
   const RULE_WRITE_SITES = new Set([
     "lib/transactions/merchant-corrections.ts",
+    "lib/transactions/merchant-merge.ts",
   ]);
   const source = [
     ...collectSource(path.join(ROOT, "lib")),
