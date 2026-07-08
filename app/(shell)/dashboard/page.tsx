@@ -31,7 +31,7 @@ function mapLegacyTabToShell(raw: string | undefined): string {
     case "credit":       return "DEBT";
     case "investments":  return "INVESTMENTS";
     case "activity":
-    case "timeline":     return "TIMELINE";
+    case "timeline":     return "ACTIVITY";
     default:             return "OVERVIEW";
   }
 }

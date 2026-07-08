@@ -59,10 +59,7 @@ import {
 import { getPerspectivesForCategory, getCompositionSwitcherItems } from "@/lib/perspectives";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { PerspectiveSwitcher, COMPOSITION_ICON_MAP } from "@/components/dashboard/widgets/PerspectiveSwitcher";
-import type { TimelineEvent } from "@/lib/timeline-types";
 import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
-import { SpaceTimelinePanel } from "@/components/dashboard/widgets/SpaceTimelineWidget";
-import { TimelineModal } from "@/components/dashboard/widgets/TimelineModal";
 import { SpaceMembersWidget } from "@/components/dashboard/widgets/SpaceMembersWidget";
 import { SpaceComingSoonPanel } from "@/components/dashboard/widgets/SpaceComingSoonPanel";
 import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
@@ -218,8 +215,10 @@ const PERSPECTIVE_MODAL_META: Record<string, { title: string; icon: React.Elemen
   RETIREMENT:  { title: "Retirement",  icon: PiggyBank },
 };
 
-/** New tab ids that live entirely on the fixed rail (not section-driven). */
-const NEW_SPACE_TABS = ["PERSPECTIVES", "TIMELINE", "FINANCES", "TRANSACTIONS", "MEMBERS", "DOCUMENTS"];
+/** New tab ids that live entirely on the fixed rail (not section-driven).
+ *  ACTIVITY is NOT here: it renders its recent_activity section inline through
+ *  the normal section system (Unified Space Widget Layout — Activity slice). */
+const NEW_SPACE_TABS = ["PERSPECTIVES", "FINANCES", "TRANSACTIONS", "MEMBERS", "DOCUMENTS"];
 
 /** Flow-identified templates (Space Template Redesign): money movement is
  *  part of these Spaces' story, so Transactions is a first-class Overview
@@ -2089,10 +2088,7 @@ export function SpaceDashboard({
   // Track whether we've set the initial tab from real data
   const initialTabSet = useRef(false);
 
-  // Fixed-rail additions — Timeline (real activity + placeholder event
-  // types) and the header member count, both read-only fetches against
-  // existing, unmodified endpoints. See SpaceTimelinePanel / SpaceMembersWidget.
-  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[] | null>(null);
+  // Header member count — read-only fetch against an existing endpoint.
   const [memberCount,    setMemberCount]    = useState<number | null>(null);
 
   // Perspective Engine results (commit 7) — keyed by lensId, fetched once
@@ -2178,16 +2174,12 @@ export function SpaceDashboard({
     : null;
 
   // Fixed rail options — starts from railVisibleTabs(railHost) (v2.5
-  // honesty slice: placeholder tabs — Finances/Documents, plus Transactions
-  // on non-personal Spaces — get no rail control until real; see
-  // lib/space-nav.ts). On top of that, SETTINGS only renders a button for
-  // managers, matching the old tabs.push("SETTINGS") gate below. TIMELINE
-  // is excluded too: it's now a modal launched from Overview's "Recent
-  // activity" preview (IA refactor point 1), not its own rail page —
-  // "TIMELINE" stays a valid activeTab value (NEW_SPACE_TABS,
-  // setActiveTab("TIMELINE") below) that now opens the modal instead of
-  // switching rail pages. Order is inherited from SPACE_TAB_ORDER — these
-  // filters never reorder.
+  // honesty slice: placeholder tabs — Finances/Documents — get no rail control
+  // until real; see lib/space-nav.ts). On top of that, SETTINGS only renders a
+  // button for managers. ACTIVITY is now a real rail tab (Unified Space Widget
+  // Layout — Activity slice): clicking it sets activeTab="ACTIVITY", which
+  // renders the recent_activity section inline. Order is inherited from
+  // SPACE_TAB_ORDER — these filters never reorder.
   // SP-2A-4a — host derives from spaceType instead of the previous hardcoded
   // "shared". railVisibleTabs("personal") and ("shared") return identical
   // lists today (SHARED_ONLY_PLACEHOLDER_TABS is empty), so shared Spaces —
@@ -2199,7 +2191,6 @@ export function SpaceDashboard({
     // in ManageSpaceModal → Overview. "SETTINGS" stays a valid tab id in
     // lib/space-nav for types/back-compat, but it renders no rail button here.
     .filter((id) => id !== "SETTINGS")
-    .filter((id) => id !== "TIMELINE")
     .map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
 
   // "overview" is filtered out here, not in lib/perspectives.ts: it's never
@@ -2279,25 +2270,9 @@ export function SpaceDashboard({
     return () => window.removeEventListener(SPACE_ACCOUNTS_CHANGED_EVENT, handleAccountsChanged);
   }, [loadAccounts]);
 
-  // Timeline data — real events from the existing activity route ONLY.
-  // v2.5 honesty slice: FUTURE_TIMELINE_EVENTS preview rows are no longer
-  // merged in — a Space's timeline shows what actually happened, and the
-  // presenter's built-in empty state ("Nothing has happened in this Space
-  // yet") takes over when that's nothing. Event types with no producer yet
-  // simply don't appear until their producers ship.
-  useEffect(() => {
-    let active = true;
-    fetch(`/api/spaces/${spaceId}/activity`)
-      .then((r) => (r.ok ? r.json() : { events: [] }))
-      .then((data) => {
-        if (!active) return;
-        const real: TimelineEvent[] = data?.events ?? [];
-        real.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        setTimelineEvents(real);
-      })
-      .catch(() => { if (active) setTimelineEvents([]); });
-    return () => { active = false; };
-  }, [spaceId]);
+  // (Activity slice) — the host no longer pre-fetches the activity feed for an
+  // Overview doorway/modal. The recent_activity SECTION (TimelineWidget) self-
+  // fetches /api/spaces/[id]/activity and paginates, so Activity owns its data.
 
   // Perspective Engine results — one batch fetch against the membership-
   // gated route (mirrors the activity fetch above). Failure of any kind
@@ -2407,18 +2382,18 @@ export function SpaceDashboard({
           setActiveTab("OVERVIEW");
           return;
         }
-        // ACTIVITY no longer has a rail button of its own — the fixed
-        // Timeline tab (real activity feed + placeholder event types)
-        // covers it now, so skip straight past it here. Also never open a
-        // Space directly into a Perspective-routed tab: those render as
-        // GlassModals now, and landing inside a modal is disorienting.
+        // Don't auto-default into ACTIVITY (prefer a content tab like
+        // Overview/Accounts), and never open a Space directly into a
+        // Perspective-routed tab: those render as GlassModals now, and landing
+        // inside a modal is disorienting.
         const firstTab = TAB_ORDER.find(
           (t) => t !== "ACTIVITY" && !PERSPECTIVE_ROUTED_TABS.includes(t) && enabledTabs.has(t)
         );
         if (firstTab) {
           setActiveTab(firstTab);
         } else if (enabledTabs.has("ACTIVITY")) {
-          setActiveTab("TIMELINE");
+          // ACTIVITY is a real rail tab now — land on it directly (no modal).
+          setActiveTab("ACTIVITY");
         } else {
           // No section tabs (e.g. CUSTOM space with no sections) — land on
           // Overview. Settings is no longer a tab; manage via ManageSpaceModal.
@@ -2553,42 +2528,20 @@ export function SpaceDashboard({
     }
   }
 
-  // SP Overview refinement — the two Overview doorway blocks (slots E & F),
-  // defined here so the OVERVIEW composition can order them per host: shared
-  // Spaces keep Recent Activity → Perspectives; a custom-hero (Personal)
-  // Overview renders Perspectives → Recent Activity. Both read data already
-  // fetched for the dedicated tabs — no duplication.
-  const recentActivityDoorway =
+  // Overview doorways. (Activity slice) — the Recent Activity preview is
+  // removed from Overview: Activity is now its own rail tab. The Recent
+  // Transactions preview stays on flow-identified Spaces (money movement is
+  // part of their story; it's a doorway to the Transactions tab, not Activity).
+  // Non-flow Spaces get nothing here now.
+  const recentTransactionsDoorway =
     isFlowCategory && accounts.length > 0 ? (
-      /* Flow-identified templates: money movement is part of the story —
-         Transactions is first-class, scope-labeled (KD-15 makes shared lists
-         structurally partial). */
-      <div className="md:grid md:grid-cols-2 md:gap-3 space-y-3 md:space-y-0">
-        <SpaceTimelinePanel
-          title="Recent activity"
-          events={timelineEvents ?? []}
-          loading={timelineEvents === null}
-          variant="preview"
-          previewCount={4}
-          onViewAll={() => setActiveTab("TIMELINE")}
-        />
-        <RecentTransactionsPanel
-          transactions={previewTransactions}
-          previewCount={5}
-          scopeNote={previewScopeNote}
-          onViewAll={() => setActiveTab("TRANSACTIONS")}
-        />
-      </div>
-    ) : (
-      <SpaceTimelinePanel
-        title="Recent activity"
-        events={timelineEvents ?? []}
-        loading={timelineEvents === null}
-        variant="preview"
-        previewCount={4}
-        onViewAll={() => setActiveTab("TIMELINE")}
+      <RecentTransactionsPanel
+        transactions={previewTransactions}
+        previewCount={5}
+        scopeNote={previewScopeNote}
+        onViewAll={() => setActiveTab("TRANSACTIONS")}
       />
-    );
+    ) : null;
 
   const perspectivesDoorway =
     accounts.length > 0 ? (
@@ -2611,19 +2564,10 @@ export function SpaceDashboard({
 
   return (
     <>
-      {/* Timeline modal — reuses activeTab === "TIMELINE"/"ACTIVITY" as the
-          open/closed flag (same toggle setActiveTab("TIMELINE") below and
-          deep links already drive), so nothing else about tab state needs
-          to change. No sub-nav filter here yet — unlike DashboardClient.tsx,
-          this dashboard has never had a Timeline filter row, so `filters`
-          is simply omitted (TimelineModal renders with no toolbar). */}
-      {(activeTab === "TIMELINE" || activeTab === "ACTIVITY") && (
-        <TimelineModal
-          events={timelineEvents ?? []}
-          loading={timelineEvents === null}
-          onClose={() => setActiveTab("OVERVIEW")}
-        />
-      )}
+      {/* (Activity slice) — the Timeline modal is gone. Activity is now a
+          first-class rail tab rendering the recent_activity section inline
+          (TimelineWidget, which self-fetches + paginates), so there's no
+          modal to launch. */}
 
       {showAddGoal && (
         <AddGoalModal
@@ -2753,10 +2697,9 @@ export function SpaceDashboard({
           <PerspectivesWidget items={perspectiveItems} variant="grid" />
         )}
 
-        {/* Timeline — no longer an inline tab body (IA refactor point 1).
-            activeTab === "TIMELINE"/"ACTIVITY" now just gates the
-            TimelineModal mount near the top of this component, instead of
-            switching what renders in the rail's content area. */}
+        {/* Activity — a first-class rail tab now (Activity slice). It renders
+            its recent_activity section through the shared section stack below
+            (activeTab === "ACTIVITY"), like Overview/Accounts. No modal. */}
 
         {/* Finances / Documents — no rail control and no body on this host
             (v2.5 honesty slice): gated off the rail by
@@ -2861,14 +2804,12 @@ export function SpaceDashboard({
           />
         )}
 
-        {/* Section cards — legacy data-driven tabs (Overview/Accounts).
-            Untouched rendering path; just gated off the rail's new ids now
-            that those have their own blocks, off Goals/Debt/Investments/
-            Retirement now that they're GlassModal launches (IA refactor
-            point 5) instead of full tab swaps, and off Overview specifically
-            when a comingSoon composition is active (the ComingSoonPanel
-            above takes its place). */}
-        {activeTab !== "SETTINGS" && activeTab !== "ACTIVITY" && !NEW_SPACE_TABS.includes(activeTab) &&
+        {/* Section cards — section-backed tabs (Overview / Accounts / Activity).
+            Untouched rendering path; gated off the rail's custom-body ids
+            (NEW_SPACE_TABS), off Goals/Debt/Investments/Retirement (GlassModal
+            launches), and off Overview when a comingSoon composition is active.
+            ACTIVITY renders its recent_activity section here (Activity slice). */}
+        {activeTab !== "SETTINGS" && !NEW_SPACE_TABS.includes(activeTab) &&
          !PERSPECTIVE_ROUTED_TABS.includes(activeTab) &&
          !(activeTab === "OVERVIEW" && composition !== "overview") && (
           <div className="space-y-3">
@@ -2999,11 +2940,11 @@ export function SpaceDashboard({
                 {spaceType === "PERSONAL" ? (
                   <>
                     {perspectivesDoorway}
-                    {recentActivityDoorway}
+                    {recentTransactionsDoorway}
                   </>
                 ) : (
                   <>
-                    {recentActivityDoorway}
+                    {recentTransactionsDoorway}
                     {perspectivesDoorway}
                   </>
                 )}

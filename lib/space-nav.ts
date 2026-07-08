@@ -24,7 +24,7 @@
 export type SpaceTabId =
   | "OVERVIEW"
   | "PERSPECTIVES"
-  | "TIMELINE"
+  | "ACTIVITY"
   | "FINANCES"
   | "ACCOUNTS"
   | "TRANSACTIONS"
@@ -35,7 +35,7 @@ export type SpaceTabId =
 export const SPACE_TAB_ORDER: SpaceTabId[] = [
   "OVERVIEW",
   "PERSPECTIVES",
-  "TIMELINE",
+  "ACTIVITY",
   "FINANCES",
   "ACCOUNTS",
   "TRANSACTIONS",
@@ -44,10 +44,15 @@ export const SPACE_TAB_ORDER: SpaceTabId[] = [
   "SETTINGS",
 ];
 
+// Unified Space Widget Layout — "ACTIVITY" is a first-class rail tab whose id
+// matches the SpaceDashboardTab.ACTIVITY section enum, so the recent_activity
+// section renders inline through the normal section system (like OVERVIEW /
+// ACCOUNTS). It replaces the former rail-only "TIMELINE" concept (which was a
+// modal launched from an Overview doorway).
 export const SPACE_TAB_LABELS: Record<SpaceTabId, string> = {
   OVERVIEW:     "Overview",
   PERSPECTIVES: "Perspectives",
-  TIMELINE:     "Timeline",
+  ACTIVITY:     "Activity",
   FINANCES:     "Finances",
   ACCOUNTS:     "Accounts",
   TRANSACTIONS: "Transactions",
@@ -106,8 +111,8 @@ export function isRailTabVisible(id: SpaceTabId, host: SpaceDashboardHost): bool
 /**
  * The rail for a host: SPACE_TAB_ORDER minus placeholder tabs, order
  * preserved. Hosts may apply further presentation filters on top (e.g.
- * SETTINGS only for managers, TIMELINE rendered as a modal launcher) but
- * must never re-add a tab this function excludes, and must never reorder.
+ * SETTINGS only for managers) but must never re-add a tab this function
+ * excludes, and must never reorder.
  */
 export function railVisibleTabs(host: SpaceDashboardHost): SpaceTabId[] {
   return SPACE_TAB_ORDER.filter((id) => isRailTabVisible(id, host));

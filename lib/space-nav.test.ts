@@ -62,7 +62,7 @@ check("TRANSACTIONS is visible on personal", railVisibleTabs("personal").include
 
 // 3. Tabs with real content everywhere keep their rail slot on both hosts.
 const ALWAYS_REAL: SpaceTabId[] = [
-  "OVERVIEW", "PERSPECTIVES", "TIMELINE", "ACCOUNTS", "MEMBERS", "SETTINGS",
+  "OVERVIEW", "PERSPECTIVES", "ACTIVITY", "ACCOUNTS", "MEMBERS", "SETTINGS",
 ];
 for (const host of HOSTS) {
   for (const id of ALWAYS_REAL) {
@@ -85,15 +85,15 @@ for (const host of HOSTS) {
 // 5. Exact expected rails (update deliberately when a tab re-earns its slot).
 //    TRANSACTIONS re-earned its shared slot in the Space Template Redesign.
 check(
-  "shared rail is exactly OVERVIEW/PERSPECTIVES/TIMELINE/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
+  "shared rail is exactly OVERVIEW/PERSPECTIVES/ACTIVITY/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
   JSON.stringify(railVisibleTabs("shared")) ===
-    JSON.stringify(["OVERVIEW", "PERSPECTIVES", "TIMELINE", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
+    JSON.stringify(["OVERVIEW", "PERSPECTIVES", "ACTIVITY", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
   `got ${JSON.stringify(railVisibleTabs("shared"))}`,
 );
 check(
-  "personal rail is exactly OVERVIEW/PERSPECTIVES/TIMELINE/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
+  "personal rail is exactly OVERVIEW/PERSPECTIVES/ACTIVITY/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
   JSON.stringify(railVisibleTabs("personal")) ===
-    JSON.stringify(["OVERVIEW", "PERSPECTIVES", "TIMELINE", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
+    JSON.stringify(["OVERVIEW", "PERSPECTIVES", "ACTIVITY", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
   `got ${JSON.stringify(railVisibleTabs("personal"))}`,
 );
 
