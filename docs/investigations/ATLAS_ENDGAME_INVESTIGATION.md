@@ -236,7 +236,8 @@ the natural close, (B) only if the modal migration is deferred indefinitely.
 ## 9. Duplicate surface & blur recipes
 
 **Surface:** `GlassPanel` is canonical (30 importers). ~17 surfaces still
-inline `bg-[var(--glass-*)]` directly (`--glass-ultrathin`×10, `--glass-thin`×3,
+inline background fills that reference the `--glass-*` tokens directly, via
+arbitrary-value background utilities (`--glass-ultrathin`×10, `--glass-thin`×3,
 `--glass-thick`×3, `--glass-regular`×1). Nearly all of these live inside the
 **un-migrated modal recipes of §5** (their hand-rolled panels/scrims). They are
 not independent debt — they collapse when those modals adopt
