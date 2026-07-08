@@ -19,6 +19,7 @@ import { requireUser } from "@/lib/session";
 import { getSpaceContext } from "@/lib/space";
 import { getAccounts } from "@/lib/data/accounts";
 import { getTransactions } from "@/lib/data/transactions";
+import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { serializeSpaceConversionContext } from "@/lib/money/server-context";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
 import { yesterdayUTCISO } from "@/lib/fx/config";
@@ -33,22 +34,33 @@ export async function GET(req: NextRequest) {
   }
 
   const ctx = await getSpaceContext();
-  const [accounts, transactions] = await Promise.all([
+  const [accounts, transactions, snapshots] = await Promise.all([
     getAccounts({ spaceId: ctx.spaceId }),
     getTransactions({ spaceId: ctx.spaceId }),
+    // Snapshot dates + the Space's stamp currency are enumerated so the chart's
+    // per-point conversion resolves under the override instead of rate-missing
+    // (each historical net-worth point converts at its own date). Same 365-day
+    // window the Overview chart reads.
+    getRecentSnapshots(365, { spaceId: ctx.spaceId }),
   ]);
 
   // Same input coverage as the dashboard page's persisted-context prop —
-  // balances at the latest close, transaction rows at their own dates —
-  // but targeted at the requested view currency instead of the Space's.
+  // balances at the latest close, transaction rows at their own dates — plus
+  // the snapshot series (stamped in the Space's reporting currency, valued at
+  // each snapshot's own date), all targeted at the requested view currency.
   const moneyCtx = await serializeSpaceConversionContext(
     { reportingCurrency: parsed.value },
     {
       currencies: [
+        ctx.space.reportingCurrency, // snapshot totals' stamp currency (the "from" for chart points)
         ...accounts.map((a) => a.currency ?? null),
         ...transactions.map((t) => t.currency ?? null),
       ],
-      dates: [yesterdayUTCISO(), ...transactions.map((t) => t.date)],
+      dates: [
+        yesterdayUTCISO(),
+        ...transactions.map((t) => t.date),
+        ...snapshots.map((s) => s.date),
+      ],
     },
   );
 

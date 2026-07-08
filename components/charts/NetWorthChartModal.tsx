@@ -7,6 +7,8 @@ import { Snapshot } from "@/types";
 import { Interval, cutoffForInterval } from "./NetWorthChart";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
+import { convertMoney } from "@/lib/money/convert";
+import type { ConversionContext } from "@/lib/money/types";
 import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 
 interface Props {
@@ -17,6 +19,14 @@ interface Props {
    *  Assets/Total Liabilities) all open this same chart/modal, just focused
    *  on their own number, instead of each needing its own chart. */
   initialSeries?: SeriesKey;
+  /**
+   * MC1 — effective conversion context (Personal "view as" override). With
+   * `snapshotCurrency`, every series point is converted at its own date before
+   * formatting. Omitted ⇒ raw stamped values, unchanged.
+   */
+  ctx?:             ConversionContext;
+  /** Currency the snapshot totals are stamped in (the "from" currency). */
+  snapshotCurrency?: string;
 }
 
 const INTERVALS: { label: Interval; days: number | "ytd" }[] = [
@@ -78,7 +88,7 @@ const MODAL_TITLE: Record<SeriesKey, string> = {
   netWorth: "Net Worth", totalAssets: "Total Assets", totalDebt: "Total Liabilities",
 };
 
-export function NetWorthChartModal({ snapshots, initialInterval, onClose, initialSeries }: Props) {
+export function NetWorthChartModal({ snapshots, initialInterval, onClose, initialSeries, ctx, snapshotCurrency }: Props) {
   // MC1 Phase 4 Slice 1 (D-1) — aggregate surfaces format in the Space's
   // reporting currency; USD fallback when no provider is mounted.
   const displayCurrency = useDisplayCurrency();
@@ -92,12 +102,30 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
     return snapshots.filter((s) => s.date >= cutoff);
   }, [snapshots, interval]);
 
-  const data = filtered.map((s) => ({
-    date:        s.date,
-    netWorth:    s.netWorth,
-    totalAssets: s.totalAssets,
-    totalDebt:   s.totalDebt,
-  }));
+  // MC1 — convert each series point at its own date through the effective
+  // context (Personal "view as" override) before formatting. No ctx ⇒ raw
+  // stamped values, unchanged. Identity (target === snapshotCurrency) is a
+  // no-op; a rate miss returns native + estimated (D-3), surfaced below.
+  const { data, conversionEstimated } = useMemo(() => {
+    const conv = (raw: number, date: string): { amount: number; estimated: boolean } => {
+      if (!ctx || !snapshotCurrency) return { amount: raw, estimated: false };
+      const c = convertMoney({ amount: raw, currency: snapshotCurrency }, date, ctx);
+      return { amount: c.amount, estimated: c.estimated };
+    };
+    const rows = filtered.map((s) => {
+      const nw = conv(s.netWorth, s.date);
+      const ta = conv(s.totalAssets, s.date);
+      const td = conv(s.totalDebt, s.date);
+      return {
+        date:        s.date,
+        netWorth:    nw.amount,
+        totalAssets: ta.amount,
+        totalDebt:   td.amount,
+        estimated:   nw.estimated || ta.estimated || td.estimated,
+      };
+    });
+    return { data: rows, conversionEstimated: rows.some((r) => r.estimated) };
+  }, [filtered, ctx, snapshotCurrency]);
 
   const ticks = useMemo(() => evenTicks(data.map((d) => d.date), 15), [data]);
 
@@ -178,6 +206,12 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
               </button>
             ))}
           </div>
+
+          {conversionEstimated && (
+            <p className="text-[11px] text-[var(--text-muted)]">
+              ≈ Some values are estimated — no FX rate available for those dates.
+            </p>
+          )}
         </div>
       }
     >

@@ -126,6 +126,8 @@ export function PersonalDashboard({
             allocation={allocation}
             chartInterval={chartInterval}
             onChartIntervalChange={setChartInterval}
+            ctx={effectiveCtx}
+            snapshotCurrency={displayCurrency}
           />
         )}
       />

@@ -37,6 +37,7 @@ import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
 import { ConnectAccountButton } from "@/components/dashboard/ConnectAccountButton";
 import { useDisplayCurrency } from "@/lib/currency-context";
+import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";
 
 export interface PersonalHeroProps {
@@ -60,6 +61,15 @@ export interface PersonalHeroProps {
   /** Shared chart interval — owned by the host. */
   chartInterval:          Interval;
   onChartIntervalChange:  (i: Interval) => void;
+
+  /**
+   * MC1 — effective conversion context (the "view as" override, or the Space's
+   * own context). Forwarded to the Net Worth chart + modal so their plotted
+   * values convert, not just their labels. `snapshotCurrency` is the currency
+   * the snapshot totals are stamped in (the Space's reporting currency).
+   */
+  ctx?:              ConversionContext;
+  snapshotCurrency?: string;
 }
 
 export function PersonalHero({
@@ -72,6 +82,8 @@ export function PersonalHero({
   allocation,
   chartInterval,
   onChartIntervalChange,
+  ctx,
+  snapshotCurrency,
 }: PersonalHeroProps) {
   // Chart expand modal state — owned by the hero (nothing else reads it).
   const [chartExpanded, setChartExpanded] = useState(false);
@@ -142,6 +154,8 @@ export function PersonalHero({
           snapshots={snapshots}
           interval={chartInterval}
           onIntervalChange={onChartIntervalChange}
+          ctx={ctx}
+          snapshotCurrency={snapshotCurrency}
           fill
         />
       </GlassPanel>
@@ -166,6 +180,8 @@ export function PersonalHero({
           snapshots={snapshots}
           initialInterval={chartInterval}
           initialSeries={chartSeries}
+          ctx={ctx}
+          snapshotCurrency={snapshotCurrency}
           onClose={() => { setChartExpanded(false); setChartSeries("netWorth"); }}
         />
       )}

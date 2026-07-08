@@ -4,6 +4,8 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "rec
 import { Snapshot } from "@/types";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
+import { convertMoney } from "@/lib/money/convert";
+import type { ConversionContext } from "@/lib/money/types";
 import { ChartFirstDayPlaceholder } from "./ChartFirstDayPlaceholder";
 import { EstimatedHistoryBadge } from "./EstimatedHistoryBadge";
 
@@ -15,6 +17,19 @@ interface Props {
   onIntervalChange: (i: Interval) => void;
   cashMode?:        boolean;
   fill?:            boolean;
+  /**
+   * MC1 — effective conversion context (e.g. the Personal "view as" override).
+   * When provided together with `snapshotCurrency`, each point is CONVERTED at
+   * its own date before formatting, so the plotted values (not just the axis
+   * label) move to the target currency. Omitted ⇒ existing consumers plot the
+   * raw stamped values unchanged. `useDisplayCurrency()` still owns formatting.
+   */
+  ctx?:             ConversionContext;
+  /**
+   * The currency the snapshot totals are stamped in (the Space's reporting
+   * currency) — the "from" currency for conversion. Required alongside `ctx`.
+   */
+  snapshotCurrency?: string;
 }
 
 const INTERVALS: { label: Interval; days: number | "ytd" }[] = [
@@ -48,7 +63,7 @@ function tickFormat(dateStr: string, interval: Interval): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode = false, fill = false }: Props) {
+export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode = false, fill = false, ctx, snapshotCurrency }: Props) {
   // MC1 Phase 4 Slice 1 (D-1) — aggregate surfaces format in the Space's
   // reporting currency; USD fallback when no provider is mounted.
   const displayCurrency = useDisplayCurrency();
@@ -59,10 +74,24 @@ export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode 
     return snapshots.filter((s) => s.date >= cutoff);
   }, [snapshots, interval]);
 
-  const data = filtered.map((s) => ({
-    date:     s.date,
-    netWorth: cashMode ? s.totalCash : s.netWorth,
-  }));
+  // MC1 — CONVERT each point at its OWN date through the effective context
+  // before formatting (the fix for "symbol changes, value doesn't"). Without a
+  // ctx/snapshotCurrency pair (every existing consumer) the raw stamped value
+  // passes through unchanged. The identity fast path (target === snapshotCurrency)
+  // is a no-op, so the saved-currency chart stays byte-identical; only a real
+  // "view as" override moves the values. A rate miss returns the native amount
+  // flagged estimated (D-3) → surfaces the badge below.
+  const { data, conversionEstimated } = useMemo(() => {
+    const rows = filtered.map((s) => {
+      const raw = cashMode ? s.totalCash : s.netWorth;
+      if (ctx && snapshotCurrency) {
+        const c = convertMoney({ amount: raw, currency: snapshotCurrency }, s.date, ctx);
+        return { date: s.date, netWorth: c.amount, estimated: c.estimated };
+      }
+      return { date: s.date, netWorth: raw, estimated: false };
+    });
+    return { data: rows, conversionEstimated: rows.some((r) => r.estimated) };
+  }, [filtered, ctx, snapshotCurrency, cashMode]);
 
   const available = INTERVALS.filter(({ label }) => {
     const cutoff = cutoffForInterval(label);
@@ -77,16 +106,20 @@ export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode 
   // near-empty chart.
   if (snapshots.length === 1) {
     const s = snapshots[0];
+    const raw = cashMode ? s.totalCash : s.netWorth;
+    const value = ctx && snapshotCurrency
+      ? convertMoney({ amount: raw, currency: snapshotCurrency }, s.date, ctx).amount
+      : raw;
     return (
       <ChartFirstDayPlaceholder
-        value={cashMode ? s.totalCash : s.netWorth}
+        value={value}
         date={s.date}
         height={chartHeight}
       />
     );
   }
 
-  const hasEstimated = filtered.some((s) => s.isEstimated);
+  const hasEstimated = filtered.some((s) => s.isEstimated) || conversionEstimated;
 
   return (
     <div>
