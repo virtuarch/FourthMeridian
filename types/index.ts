@@ -235,6 +235,14 @@ export interface TransactionDetailReporting {
   effectiveDateISO: string | null;
 }
 
+// TI2 durable-fact unions (local, Prisma-free — same convention as FlowType).
+export type PaymentChannel = 'ONLINE' | 'IN_STORE' | 'OTHER' | 'UNKNOWN';
+export type PaymentMethod = 'CARD' | 'ACH' | 'WIRE' | 'CHECK' | 'CASH' | 'INTERNAL_TRANSFER' | 'UNKNOWN';
+export type SettlementState = 'PENDING' | 'POSTED';
+export type CounterpartyType =
+  | 'MERCHANT' | 'FINANCIAL_INSTITUTION' | 'INCOME_SOURCE'
+  | 'PAYMENT_APP' | 'MARKETPLACE' | 'PAYMENT_TERMINAL' | 'UNKNOWN';
+
 export interface TransactionDetail extends Transaction {
   // Raw Plaid personal_finance_category — the PROVIDER's opinion, persisted
   // since FlowType P3; distinct from Fourth Meridian semantics (flowType).
@@ -243,6 +251,20 @@ export interface TransactionDetail extends Transaction {
   pfcConfidenceLevel: string | null;
   /** ISO datetime the row was first seen by Fourth Meridian. */
   createdAt: string;
+
+  // ── TI2 durable facts (TI5-1 — detail-only read exposure) ──────────────────
+  // Already persisted on Transaction (TI2). Exposed here ONLY — the list-row
+  // `Transaction` DTO and its serializer are deliberately unchanged. Null =
+  // pre-TI2 / not captured / not derivable (never a manufactured claim).
+  paymentChannel:        PaymentChannel | null;
+  paymentMethod:         PaymentMethod | null;
+  settlementState:       SettlementState | null;
+  /** Plaid authorized_date as an ISO date ("YYYY-MM-DD"); distinct from posted `date`. */
+  authorizedAt:          string | null;
+  counterpartyType:      CounterpartyType | null;
+  fxApplied:             boolean | null;
+  pendingTransactionRef: string | null;
+  tiFactsVersion:        number | null;
 
   account:      TransactionDetailAccount;
   provenance:   TransactionDetailProvenance;

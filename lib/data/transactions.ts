@@ -303,6 +303,17 @@ export async function getTransactionDetail(
     pfcDetailed:        row.pfcDetailed ?? null,
     pfcConfidenceLevel: row.pfcConfidenceLevel ?? null,
     createdAt:          row.createdAt.toISOString(),
+    // TI5-1 — expose the already-persisted TI2 durable facts (detail-only; the
+    // list serializer and list DTOs are untouched). authorizedAt is rendered as
+    // an ISO date, mirroring how `date` is serialized.
+    paymentChannel:        row.paymentChannel ?? null,
+    paymentMethod:         row.paymentMethod ?? null,
+    settlementState:       row.settlementState ?? null,
+    authorizedAt:          row.authorizedAt ? row.authorizedAt.toISOString().split("T")[0] : null,
+    counterpartyType:      row.counterpartyType ?? null,
+    fxApplied:             row.fxApplied ?? null,
+    pendingTransactionRef: row.pendingTransactionRef ?? null,
+    tiFactsVersion:        row.tiFactsVersion ?? null,
     account,
     provenance,
     counterparty,
