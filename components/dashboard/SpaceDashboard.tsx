@@ -53,6 +53,12 @@ import {
   renderAssetAllocation,
   renderWealthConcentration,
 } from "@/components/space/widgets/wealth-adapters";
+import {
+  renderLiquidityLadder,
+  renderAccessibleCash,
+  renderEmergencyFundReadiness,
+  renderLiquidityConcentration,
+} from "@/components/space/widgets/liquidity-adapters";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import {
@@ -1216,6 +1222,11 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
   "institution_allocation":  (p) => renderInstitutionAllocation(p.accounts, p.ctx),
   "asset_allocation":        (p) => renderAssetAllocation(p.accounts, p.ctx),
   "wealth_concentration":    (p) => renderWealthConcentration(p.accounts, p.ctx),
+  // ── Liquidity Perspective (UX-PER-3) — access/readiness widgets ─────────────
+  "liquidity_ladder":        (p) => renderLiquidityLadder(p.accounts, p.ctx),
+  "accessible_cash":         (p) => renderAccessibleCash(p.accounts, p.ctx),
+  "emergency_fund_readiness":(p) => renderEmergencyFundReadiness(p.accounts, p.ctx),
+  "liquidity_concentration": (p) => renderLiquidityConcentration(p.accounts, p.ctx),
   "net_worth_section":      renderNetWorth,       // deprecated alias — seeded pre-v2
   "accounts_overview":      (p) => <AccountsCard accounts={p.accounts} />,
   "business_accounts":      (p) => <AccountsCard accounts={p.accounts} />,
@@ -1479,6 +1490,7 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
 const SOLID_LEDE_KEYS = new Set([
   "net_worth", "net_worth_chart", "allocation",
   "wealth_by_account", "institution_allocation", "asset_allocation", "wealth_concentration",
+  "liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration",
 ]);
 
 function SectionCard({

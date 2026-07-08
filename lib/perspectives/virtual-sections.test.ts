@@ -52,6 +52,16 @@ check("wealth workspace excludes Overview widgets (net_worth / net_worth_chart /
   !(PERSPECTIVE_LIBRARY.wealth.widgets ?? []).some((k) =>
     k === "net_worth" || k === "net_worth_chart" || k === "allocation"));
 
+// ── 2b. Liquidity workspace uses its purpose-built access/readiness widgets. ──
+check("liquidity workspace = [liquidity_ladder, accessible_cash, emergency_fund_readiness, liquidity_concentration]",
+  JSON.stringify(PERSPECTIVE_LIBRARY.liquidity.widgets) ===
+    JSON.stringify(["liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration"]));
+// Doctrine: Liquidity must NOT reuse Overview or Wealth widgets.
+check("liquidity workspace excludes Overview/Wealth widgets",
+  !(PERSPECTIVE_LIBRARY.liquidity.widgets ?? []).some((k) =>
+    k === "net_worth" || k === "net_worth_chart" || k === "allocation" ||
+    k === "wealth_by_account" || k === "asset_allocation"));
+
 // ── 3. toVirtualSections shape + virtual-id safety. ──
 const vs = toVirtualSections("wealth", ["net_worth", "net_worth_chart", "allocation"]);
 check("produces one virtual section per widget", vs.length === 3);

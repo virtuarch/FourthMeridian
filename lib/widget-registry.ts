@@ -240,6 +240,62 @@ const registry: WidgetRegistryEntry[] = [
     },
   },
 
+  // ── Liquidity Perspective (UX-PER-3) — access/readiness widgets. ────────────
+  // Rendered as VIRTUAL sections in the Liquidity workspace (never materialized
+  // as tab rows); `tab` is metadata only. Answer "How accessible is my money?".
+  {
+    implemented: true,
+    meta: {
+      key:         "liquidity_ladder",
+      label:       "Liquidity Ladder",
+      description: "Assets grouped by how fast you can reach them — now, within days, or illiquid.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Droplets",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "accessible_cash",
+      label:       "Accessible Cash",
+      description: "How much you can get at right now and within days, and what share of your money that is.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Wallet",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "emergency_fund_readiness",
+      label:       "Emergency Fund Readiness",
+      description: "Reachable cash as a safety buffer. Months of coverage appear once a monthly expense target is set.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "ShieldCheck",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "liquidity_concentration",
+      label:       "Liquidity Concentration",
+      description: "Whether your reachable cash is spread across accounts or sitting in one place.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Droplets",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+
   // ── Accounts ────────────────────────────────────────────────────────────────
 
   {

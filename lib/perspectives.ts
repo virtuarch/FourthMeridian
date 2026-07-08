@@ -123,6 +123,11 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     id: "liquidity", label: "Liquidity", icon: "Droplets", status: "available", group: "Financial",
     description: "How much you could get at, and how fast.",
     lensId: "liquidity",
+    // UX-PER-3 Liquidity workspace. Doctrine: Liquidity answers "How accessible
+    // is my money?" — access and readiness, not total wealth. Assets only;
+    // purpose-built widgets (no Overview / Wealth widget reuse). Rendered
+    // through the same SectionCard compositor as virtual sections.
+    widgets: ["liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration"],
   },
   retirement: {
     id: "retirement", label: "Retirement", icon: "PiggyBank", status: "available", group: "Retirement",
