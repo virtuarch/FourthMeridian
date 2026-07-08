@@ -49,8 +49,9 @@ function makeTemplate(
  * live   — exactly the categories exposed in the create picker today
  *          (PRIMARY_CATEGORIES + SECONDARY_CATEGORIES order).
  * hidden — categories that have presets but are not user-selectable:
- *          PERSONAL (created at registration, renders via DashboardClient)
- *          and GOAL (legacy — kept for the SpaceDashboard fallback path).
+ *          PERSONAL (created at registration, renders through the shared
+ *          SpaceDashboard shell) and GOAL (legacy — kept for the
+ *          SpaceDashboard fallback path).
  */
 export const SPACE_TEMPLATES: readonly SpaceTemplate[] = [
   // Primary picker row (featured — SP-2.2: mirrors the former PRIMARY_CATEGORIES)

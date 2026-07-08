@@ -260,8 +260,9 @@ const UNIVERSAL_SECTIONS: SectionPreset[] = [
 // section whose key lacks a SectionRegistry renderer. Universal sections
 // (Goals / Accounts / Activity) still append via getPresetsForCategory.
 const PRESET_MAP: Record<SpaceCategory, SectionPreset[]> = {
-  // Personal renders via DashboardClient, not sections — preset kept
-  // minimal + real for the SpaceDashboard fallback path.
+  // Personal now renders through the shared SpaceDashboard shell, which reads
+  // these sections (the Overview lede excepted — PersonalHero owns it).
+  // Preset kept minimal + real.
   [SpaceCategory.PERSONAL]: [
     NET_WORTH_SECTION,
     DEBT_SUMMARY_SECTION,

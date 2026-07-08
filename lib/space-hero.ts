@@ -11,8 +11,9 @@
  * Spaces landing rollup, Perspective Engine) without touching the widget.
  *
  * Categories with NO entry here intentionally have no trend hero:
- *   - PERSONAL renders via DashboardClient (KpiRow + NetWorthChart already
- *     form its hero).
+ *   - PERSONAL renders through the shared SpaceDashboard shell with a custom
+ *     hero (PersonalHero, injected via the renderHero seam — KpiRow +
+ *     NetWorthChart form that hero), so it needs no trend-hero def here.
  *   - GOAL / TRIP / VEHICLE / EQUIPMENT / CUSTOM / OTHER: no honest series
  *     exists for their lede (goal history isn't tracked; manual-asset
  *     categories are step functions better served by their value widgets).

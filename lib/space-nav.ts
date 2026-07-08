@@ -2,8 +2,8 @@
  * lib/space-nav.ts
  *
  * Canonical top-level tab rail shared by every individual Space dashboard
- * (Personal via DashboardClient.tsx, every other category via
- * SpaceDashboard.tsx). Per the Fourth Meridian Spaces redesign: every
+ * (every Space — Personal included — renders via SpaceDashboard.tsx). Per
+ * the Fourth Meridian Spaces redesign: every
  * Space — regardless of type — is built from the same modular skeleton.
  * Different Space types enable/disable modules; they do not get a
  * different tab order.
@@ -69,9 +69,9 @@ export const SPACE_TAB_LABELS: Record<SpaceTabId, string> = {
  * isRailTabVisible/railVisibleTabs below. Fixed ORDER remains law for
  * every tab that does appear.
  *
- * Note: TRANSACTIONS is real in the Personal Space (DashboardClient renders
- * SpaceTransactionsPanel) but has no real implementation in SpaceDashboard
- * (shared/non-personal Spaces) — hence the per-host gating below.
+ * Note: TRANSACTIONS is real for the personal host (SpaceDashboard renders
+ * SpaceTransactionsPanel on the personal shell) — the per-host gating below
+ * is kept ready for any future tab that ships personal-first.
  *
  * FUTURE ENHANCEMENT: once Finances and Documents features exist, and
  * Transactions is wired for shared Spaces, remove entries here so the tabs
@@ -79,8 +79,8 @@ export const SPACE_TAB_LABELS: Record<SpaceTabId, string> = {
  */
 export const PLACEHOLDER_SPACE_TABS: SpaceTabId[] = ["FINANCES", "DOCUMENTS"];
 
-/** Which dashboard implementation is asking — Personal (DashboardClient.tsx)
- *  or every other category (SpaceDashboard.tsx). */
+/** Which host is asking — the personal shell or a shared Space. Both render
+ *  through SpaceDashboard.tsx; the host only tunes rail/gating. */
 export type SpaceDashboardHost = "personal" | "shared";
 
 /** Tabs that are placeholders only on shared/non-personal Spaces.

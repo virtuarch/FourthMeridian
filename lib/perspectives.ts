@@ -20,12 +20,11 @@
  *     Property, Business Health as dedicated views) — the host renders a
  *     calm placeholder card. No `targetTab`.
  *
- * Host dashboards (DashboardClient.tsx, SpaceDashboard.tsx) each keep
- * their own short id-to-internal-tab map, because the two dashboards use
- * different internal tab id vocabularies (e.g. "credit" vs. "DEBT") for
- * historical reasons this pass intentionally leaves alone. Keeping that
- * map at the call site — instead of here — keeps this file honest about
- * being host-agnostic, the same separation lib/space-presets.ts uses.
+ * The host dashboard (SpaceDashboard.tsx) keeps its own short
+ * id-to-internal-tab map (e.g. the "debt" perspective routes to the "DEBT"
+ * tab). Keeping that map at the call site — instead of here — keeps this
+ * file honest about being host-agnostic, the same separation
+ * lib/space-presets.ts uses.
  */
 
 // Type-only import — erased at compile time, so this client-safe config file
