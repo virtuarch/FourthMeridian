@@ -142,6 +142,13 @@ interface Props {
    * first data load, exactly where the default would have been chosen.
    */
   initialTab?: string;
+  /**
+   * SP Overview refinement — additive slot rendered at the very top of the
+   * OVERVIEW tab, above the section cards / custom hero. The Personal host uses
+   * it for the "view as" currency control (which must sit above the Net Worth
+   * card). Omitted ⇒ nothing rendered ⇒ shared Spaces unchanged.
+   */
+  overviewTopSlot?: React.ReactNode;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -1946,6 +1953,7 @@ export function SpaceDashboard({
   currentUserId = "",
   renderHero,
   initialTab,
+  overviewTopSlot,
 }: Props) {
   const router = useRouter();
 
@@ -2304,9 +2312,16 @@ export function SpaceDashboard({
     );
   }
 
-  const sectionsForTab = enabledSections
-    .filter((s) => s.tab === activeTab)
-    .sort((a, b) => a.order - b.order);
+  // SP Overview refinement — when a custom hero owns the OVERVIEW (Personal),
+  // it renders its own Net Worth lede card (A), so the shell must NOT also
+  // render its OVERVIEW section cards (which would duplicate net worth). Other
+  // tabs, and shared Spaces (no renderHero), are unaffected.
+  const sectionsForTab =
+    renderHero && activeTab === "OVERVIEW"
+      ? []
+      : enabledSections
+          .filter((s) => s.tab === activeTab)
+          .sort((a, b) => a.order - b.order);
 
   // ── Hero series (Space Template Redesign) ─────────────────────────────────
   // MC1 QA Q4b — drop fxMiss points (off-stamp rows whose FX rate missed, so
@@ -2344,6 +2359,62 @@ export function SpaceDashboard({
       heroSublineNote      = `at ${formatBalance(monthlyExp, displayCurrency)}/mo expenses`;
     }
   }
+
+  // SP Overview refinement — the two Overview doorway blocks (slots E & F),
+  // defined here so the OVERVIEW composition can order them per host: shared
+  // Spaces keep Recent Activity → Perspectives; a custom-hero (Personal)
+  // Overview renders Perspectives → Recent Activity. Both read data already
+  // fetched for the dedicated tabs — no duplication.
+  const recentActivityDoorway =
+    isFlowCategory && accounts.length > 0 ? (
+      /* Flow-identified templates: money movement is part of the story —
+         Transactions is first-class, scope-labeled (KD-15 makes shared lists
+         structurally partial). */
+      <div className="md:grid md:grid-cols-2 md:gap-3 space-y-3 md:space-y-0">
+        <SpaceTimelinePanel
+          title="Recent activity"
+          events={timelineEvents ?? []}
+          loading={timelineEvents === null}
+          variant="preview"
+          previewCount={4}
+          onViewAll={() => setActiveTab("TIMELINE")}
+        />
+        <RecentTransactionsPanel
+          transactions={previewTransactions}
+          previewCount={5}
+          scopeNote={previewScopeNote}
+          onViewAll={() => setActiveTab("TRANSACTIONS")}
+        />
+      </div>
+    ) : (
+      <SpaceTimelinePanel
+        title="Recent activity"
+        events={timelineEvents ?? []}
+        loading={timelineEvents === null}
+        variant="preview"
+        previewCount={4}
+        onViewAll={() => setActiveTab("TIMELINE")}
+      />
+    );
+
+  const perspectivesDoorway =
+    accounts.length > 0 ? (
+      /* Doorways — hidden at day zero (every lens would open onto empty data;
+         the setup card is the one call to action). */
+      <div>
+        <div className="flex items-center justify-between px-1 mb-2">
+          <p className="text-sm font-semibold text-white">Perspectives</p>
+          <button
+            type="button"
+            onClick={() => setActiveTab("PERSPECTIVES")}
+            className="text-xs font-medium text-[var(--meridian-400)] hover:text-[var(--meridian-300)] transition-colors"
+          >
+            See all
+          </button>
+        </div>
+        <PerspectivesWidget items={perspectiveItems} variant="row" />
+      </div>
+    ) : null;
 
   return (
     <>
@@ -2586,16 +2657,24 @@ export function SpaceDashboard({
          !PERSPECTIVE_ROUTED_TABS.includes(activeTab) &&
          !(activeTab === "OVERVIEW" && composition !== "overview") && (
           <div className="space-y-3">
+            {/* SP Overview refinement — additive top slot (Personal: the
+                "view as" currency control), pinned above everything else on
+                the OVERVIEW tab. Shared Spaces pass nothing ⇒ inert. */}
+            {activeTab === "OVERVIEW" && composition === "overview" && overviewTopSlot}
+
             {/* Hero — the template contract's slot 1 (One Space, One Lede):
                 headline + delta + this Space's primary trend, from its own
                 SpaceSnapshot history. Only chartable categories have a
-                heroDef; day-zero Spaces show the setup card instead. */}
-            {/* SP-2A-4a — custom hero seam: when the caller provides
-                renderHero it owns this slot entirely (including day-zero
-                presentation), and the SpaceTrendHero path below is skipped. */}
-            {activeTab === "OVERVIEW" && composition === "overview" && renderHero &&
-              renderHero({ accounts, snapshots, loading })}
+                heroDef; day-zero Spaces show the setup card instead.
 
+                SP Overview refinement — composition order:
+                • Shared Spaces (no custom hero): SpaceTrendHero here at the
+                  top, then section cards, then the doorways below.
+                • Personal (renderHero present): the OVERVIEW section cards are
+                  suppressed (see sectionsForTab); the custom hero owns the
+                  whole body — Net Worth card (A) + chart (B) + allocation (C)
+                  — rendered below, then the doorways in Perspectives →
+                  Recent-Activity order. */}
             {activeTab === "OVERVIEW" && composition === "overview" && !renderHero &&
              accounts.length > 0 && heroDef && (
               <SpaceTrendHero
@@ -2660,61 +2739,37 @@ export function SpaceDashboard({
               ))
             )}
 
+            {/* SP-2A-4a custom hero seam (SP Overview refinement) — Personal
+                renders its opinionated Overview body HERE: Net Worth card (A),
+                Net Worth chart (B), Allocation (C). OVERVIEW section cards are
+                suppressed for this host (sectionsForTab), so the hero is the
+                sole lede. The custom hero owns day-zero presentation too.
+                Shared Spaces have no renderHero, so this is inert for them. */}
+            {activeTab === "OVERVIEW" && composition === "overview" && renderHero &&
+              renderHero({ accounts, snapshots, loading })}
+
             {/* Template contract slots 4 & 5 — change preview (Recent
-                activity + Recent transactions on flow templates), then
-                doorways (Perspectives row) LAST. Composition, not
-                duplication: everything reads data already fetched for the
-                dedicated tabs. */}
+                activity + Recent transactions on flow templates) and the
+                Perspectives doorway. Composition, not duplication: everything
+                reads data already fetched for the dedicated tabs.
+
+                SP Overview refinement — order depends on the host: a custom
+                hero (Personal) puts Perspectives (E) above Recent Activity (F)
+                per the canonical Personal Overview; shared Spaces keep the
+                original Recent-Activity-then-Perspectives order (byte-
+                identical). Both blocks are defined once above. */}
             {activeTab === "OVERVIEW" && composition === "overview" && (
               <div className="space-y-3 pt-2">
-                {isFlowCategory && accounts.length > 0 ? (
-                  /* Flow-identified templates: money movement is part of the
-                     story — Transactions is first-class, scope-labeled
-                     (KD-15 makes shared lists structurally partial). */
-                  <div className="md:grid md:grid-cols-2 md:gap-3 space-y-3 md:space-y-0">
-                    <SpaceTimelinePanel
-                      title="Recent activity"
-                      events={timelineEvents ?? []}
-                      loading={timelineEvents === null}
-                      variant="preview"
-                      previewCount={4}
-                      onViewAll={() => setActiveTab("TIMELINE")}
-                    />
-                    <RecentTransactionsPanel
-                      transactions={previewTransactions}
-                      previewCount={5}
-                      scopeNote={previewScopeNote}
-                      onViewAll={() => setActiveTab("TRANSACTIONS")}
-                    />
-                  </div>
+                {renderHero ? (
+                  <>
+                    {perspectivesDoorway}
+                    {recentActivityDoorway}
+                  </>
                 ) : (
-                  <SpaceTimelinePanel
-                    title="Recent activity"
-                    events={timelineEvents ?? []}
-                    loading={timelineEvents === null}
-                    variant="preview"
-                    previewCount={4}
-                    onViewAll={() => setActiveTab("TIMELINE")}
-                  />
-                )}
-
-                {/* Doorways — hidden at day zero (every lens would open
-                    onto empty data; the setup card is the one call to
-                    action). */}
-                {accounts.length > 0 && (
-                  <div>
-                    <div className="flex items-center justify-between px-1 mb-2">
-                      <p className="text-sm font-semibold text-white">Perspectives</p>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("PERSPECTIVES")}
-                        className="text-xs font-medium text-[var(--meridian-400)] hover:text-[var(--meridian-300)] transition-colors"
-                      >
-                        See all
-                      </button>
-                    </div>
-                    <PerspectivesWidget items={perspectiveItems} variant="row" />
-                  </div>
+                  <>
+                    {recentActivityDoorway}
+                    {perspectivesDoorway}
+                  </>
                 )}
               </div>
             )}

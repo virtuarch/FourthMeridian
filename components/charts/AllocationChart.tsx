@@ -9,6 +9,14 @@ interface Props {
   debt:         number;
   /** Manually-entered real assets: property, vehicles, equipment, etc. (AccountType.other) */
   realAssets?:  number;
+  /**
+   * Donut sizing. "fixed" (default) keeps the original 180px donut for any
+   * existing/narrow consumer. "responsive" lets the donut grow on wider
+   * layouts (e.g. the full-width Personal Overview Allocation card) while
+   * staying compact on narrow screens. Geometry/data are unchanged — only the
+   * rendered SVG size scales via the viewBox.
+   */
+  size?:        "fixed" | "responsive";
 }
 
 // ── Segment definitions ───────────────────────────────────────────────────────
@@ -45,7 +53,8 @@ const MID_R  = 62;
 const STROKE = 22;
 const CIRC   = 2 * Math.PI * MID_R;
 
-export function AllocationChart({ cash, investments, crypto, debt, realAssets = 0 }: Props) {
+export function AllocationChart({ cash, investments, crypto, debt, realAssets = 0, size = "fixed" }: Props) {
+  const responsive = size === "responsive";
   // MC1 QA Q2 — this chart's feed is the CONVERTED classification (host
   // allocation object), so labels follow the display currency.
   const displayCurrency = useDisplayCurrency();
@@ -91,10 +100,17 @@ export function AllocationChart({ cash, investments, crypto, debt, realAssets = 
     <div className="space-y-4">
       {/* ── Donut ── */}
       <div className="flex justify-center">
-        <div className="relative" style={{ width: SIZE, height: SIZE }}>
+        <div
+          className={
+            responsive
+              ? "relative w-[180px] h-[180px] sm:w-[220px] sm:h-[220px] lg:w-[264px] lg:h-[264px] max-w-full"
+              : "relative"
+          }
+          style={responsive ? undefined : { width: SIZE, height: SIZE }}
+        >
           <svg
-            width={SIZE}
-            height={SIZE}
+            width={responsive ? "100%" : SIZE}
+            height={responsive ? "100%" : SIZE}
             viewBox={`0 0 ${SIZE} ${SIZE}`}
             onMouseLeave={() => setHoveredIdx(null)}
           >
