@@ -2100,3 +2100,49 @@ model JobRun {
   @@index([jobName, startedAt]) // "did last night's X run?"
   @@index([status, startedAt]) // failure scans
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MerchantMergeDecision (MI2 S2 — Merchant Merge Review Queue)
+// The durable record of a HUMAN verdict on one candidate merchant pair.
+// Suggestions are NEVER persisted — the detector (lib/transactions/
+// merchant-merge-suggest.ts) recomputes them on demand; only decisions are
+// stored. The one thing not recomputable is a person's judgment: DISMISSED
+// suppresses a pair from ever re-surfacing; MERGED is the evidence-tagged audit
+// trail. One row per pair; a 3-way merge writes 2 rows sharing survivorKey.
+//
+// Keys are canonicalKey STRINGS, not FKs, because a merge DELETES the absorbed
+// Merchant row — an FK would dangle. decidedByUserId is a soft ref (no FK
+// relation), mirroring MerchantRule.ownerUserId, so this is a single additive
+// block that touches no existing model. Execution stays in mergeMerchants();
+// this table records the decision only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum MerchantMergeVerdict {
+  MERGED
+  DISMISSED
+}
+
+model MerchantMergeDecision {
+  id       String               @id @default(cuid())
+  // Order-independent pair key: the two canonicalKeys sorted + joined. THE
+  // dedupe/suppress key — makes "is this pair already decided?" an indexed
+  // lookup and blocks duplicate decisions. A dismissal is symmetric.
+  pairKey  String               @unique
+  verdict  MerchantMergeVerdict
+  // The surviving merchant's canonicalKey (meaningful for MERGED; for DISMISSED
+  // it is simply one of the two, informational). Durable — the survivor persists.
+  survivorKey String
+  // The absorbed merchant's canonicalKey — durable record of WHAT was merged
+  // even after that Merchant row is deleted (no FK possible).
+  absorbedKey String
+  // Evidence snapshot — WHY the decision was made. Regenerated evidence is
+  // unavailable post-merge; this is the audit reason + future promotion signal.
+  evidenceTier   String
+  evidenceSignal String?
+  // The operator who decided. Soft ref (no FK), mirrors MerchantRule.ownerUserId;
+  // survives user deletion without a cascade posture. Accountability only.
+  decidedByUserId String?
+  createdAt       DateTime      @default(now())
+
+  @@index([verdict, createdAt])
+}

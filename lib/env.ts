@@ -55,6 +55,12 @@ const _e = {
 
   DISABLE_SYSTEM_ADMIN: process.env.DISABLE_SYSTEM_ADMIN,
   NODE_ENV:             process.env.NODE_ENV,
+
+  // MI2 S2 — the designated Merchant Operations Space id. Optional: absent means
+  // the merge-review surface fails CLOSED (no one is a member of "no space"), so
+  // access is a deliberate SYSTEM_ADMIN act of creating the Space, setting this,
+  // and granting membership. Config, not schema, per the ratified refinement.
+  MERCHANT_OPS_SPACE_ID: process.env.MERCHANT_OPS_SPACE_ID,
 } as const;
 
 // ── Required variable getter ──────────────────────────────────────────────────
@@ -173,6 +179,10 @@ export const env = {
   // ── Admin ─────────────────────────────────────────────────────────────────
   /** When true, all SYSTEM_ADMIN logins are blocked. */
   get isSystemAdminDisabled() { return _e.DISABLE_SYSTEM_ADMIN === "true"; },
+
+  // ── Merchant Operations (MI2 S2) ────────────────────────────────────────────
+  /** The designated Merchant Operations Space id, or null when unset (gate fails closed). */
+  get merchantOpsSpaceId() { return _e.MERCHANT_OPS_SPACE_ID ?? null; },
 
   // ── Feature flags ─────────────────────────────────────────────────────────
   /** Plaid integration is available when both credentials are set. */
