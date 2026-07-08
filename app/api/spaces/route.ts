@@ -1,8 +1,10 @@
 /**
  * GET  /api/spaces  — list spaces the user belongs to + all public spaces
  * POST /api/spaces  — create a new SHARED space (user becomes OWNER)
- *                         Accepts optional `category` (SpaceCategory) and
- *                         generates default SpaceDashboardSection rows.
+ *                         Accepts optional `templateId` (SP-1 registry; must
+ *                         be a live template — category derives from it) or
+ *                         legacy `category` (SpaceCategory), and generates
+ *                         default SpaceDashboardSection rows.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -12,10 +14,12 @@ import { Prisma } from "@prisma/client";
 // before `prisma generate` has been re-run with the new schema values.
 // The string values are identical to what Prisma generates.
 import { requireUser } from "@/lib/session";
-import {
-  SpaceCategory,
-  getPresetsForCategory,
-} from "@/lib/space-presets";
+import { SpaceCategory } from "@/lib/space-presets";
+// SP-2.1 — the SP-1 template registry/planner is this route's sole
+// materialization source (same pattern as the register route, SP-2A-3).
+import { getTemplate, getTemplateForCategory } from "@/lib/space-templates/registry";
+import { planTemplateApplication } from "@/lib/space-templates/apply";
+import type { SpaceTemplate } from "@/lib/space-templates/types";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { reportingCurrencyForNewSpace } from "@/lib/spaces/reporting-currency";
@@ -61,10 +65,11 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   if (err) return err;
 
   const body = await req.json();
-  const { name, description, isPublic, category } = body as {
+  const { name, description, isPublic, templateId, category } = body as {
     name:         string;
     description?: string;
     isPublic?:    boolean;
+    templateId?:  string;
     category?:    SpaceCategory;
   };
 
@@ -72,14 +77,41 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Name is required" }, { status: 400 });
   }
 
-  // Validate category if provided
-  const resolvedCategory: SpaceCategory =
-    category && Object.values(SpaceCategory).includes(category)
-      ? category
-      : SpaceCategory.OTHER;
+  // ── Template resolution (SP-2.1) ──────────────────────────────────────────
+  // templateId, when provided, is authoritative: it must name a LIVE template
+  // (hidden templates — e.g. `personal` — are resolvable, not creatable; the
+  // 400 message deliberately doesn't distinguish unknown from hidden), and
+  // the Space's category derives from the template — any client-sent
+  // `category` is ignored. Without templateId, the legacy category path is
+  // preserved unchanged: validate, fall back to OTHER, resolve that
+  // category's template. Both paths materialize via the SP-1 planner, whose
+  // birth-plan output is parity-tested byte-identical to the
+  // getPresetsForCategory(resolvedCategory) call this replaces.
+  let template: SpaceTemplate;
+  if (templateId !== undefined) {
+    const found = typeof templateId === "string" ? getTemplate(templateId) : undefined;
+    if (!found || found.status !== "live") {
+      return NextResponse.json({ error: "Unknown template" }, { status: 400 });
+    }
+    template = found;
+  } else {
+    const legacyCategory: SpaceCategory =
+      category && Object.values(SpaceCategory).includes(category)
+        ? category
+        : SpaceCategory.OTHER;
+    const found = getTemplateForCategory(legacyCategory);
+    if (!found) {
+      // Static registry invariant — every SpaceCategory has a template
+      // (guarded by lib/space-templates tests).
+      throw new Error(`space-templates registry has no template for category ${legacyCategory}`);
+    }
+    template = found;
+  }
 
-  // Build default section rows for this category
-  const sectionPresets = getPresetsForCategory(resolvedCategory);
+  const resolvedCategory: SpaceCategory = template.category;
+
+  // Build default section rows from the template's birth plan
+  const sectionPresets = planTemplateApplication(template, new Set<string>()).sectionsToCreate;
 
   // MC1 Phase 3 Slice 1 (D-2) — copy-once: the new Space's reporting currency
   // is seeded from the creator's User default at creation and owned by the
@@ -146,7 +178,9 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       userId:      user.id,
       spaceId: space.id,
       action:      AuditAction.SPACE_CREATE,
-      metadata:    { name: space.name, isPublic: space.isPublic, category: resolvedCategory as string },
+      // templateId: weak provenance (SP-2 investigation §7) — the template
+      // that birthed this Space, recorded here pending the SP-3 column.
+      metadata:    { name: space.name, isPublic: space.isPublic, category: resolvedCategory as string, templateId: template.id },
       ipAddress:   getClientIp(req),
     },
   });
