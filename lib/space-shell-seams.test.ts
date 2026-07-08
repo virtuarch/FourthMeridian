@@ -4,14 +4,18 @@
  * SP-2A-4a guards (source-scan — no DOM runner exists in this repo).
  * Standalone tsx script:  npx tsx lib/space-shell-seams.test.ts
  *
- * Pins the shell-seam contract on SpaceDashboard:
- *  - renderHero / initialTab exist as OPTIONAL props (additive seam);
+ * Pins the shell-seam contract on SpaceDashboard. Updated for the Unified
+ * Space Widget Layout (slice 1), which DELETES the renderHero seam and makes
+ * Personal Overview section-backed:
+ *  - renderHero seam is removed; overviewTopSlot (currency control) is retained;
+ *  - initialTab remains an OPTIONAL prop;
  *  - the rail host is derived, not hardcoded "shared";
- *  - the SpaceTrendHero path is gated off when a custom hero is provided;
- *  - the day-zero OverviewSetupCard is suppressed under a custom hero;
- *  - page.tsx renders Personal through the shared SpaceDashboard shell
- *    (SP-2A-4c flip — via PersonalDashboard + the renderHero seam), and no
- *    longer references DashboardClient.
+ *  - the SpaceTrendHero path is gated on heroDef only (Personal has none, so its
+ *    chart is the net_worth_chart SECTION — no duplicate);
+ *  - the day-zero OverviewSetupCard shows for accounts.length === 0 (Personal too);
+ *  - snapshots are fetched for PERSONAL (net_worth_chart) or a heroDef;
+ *  - page.tsx renders Personal through the shared SpaceDashboard shell (via
+ *    PersonalDashboard), and no longer references DashboardClient.
  */
 
 import { readFileSync } from "node:fs";
@@ -31,13 +35,19 @@ const dashSrc = readFileSync(
   path.join(ROOT, "components", "dashboard", "SpaceDashboard.tsx"),
   "utf8"
 );
+/** dashSrc with comments stripped — for checks that must match real code, not
+ *  prose (e.g. "renderHero" still appears in explanatory comments). */
+const dashCode = dashSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
 const pageSrc = readFileSync(
   path.join(ROOT, "app", "(shell)", "dashboard", "page.tsx"),
   "utf8"
 );
 
-// Seams exist and are optional.
-check("renderHero is an optional prop", /renderHero\?:\s*\(ctx:/.test(dashSrc));
+// Unified Space Widget Layout (slice 1): the renderHero seam is DELETED —
+// Personal Overview is now section-backed (net_worth / net_worth_chart /
+// allocation), not a custom-hero body. overviewTopSlot (currency control) stays.
+check("renderHero seam is removed", !/renderHero/.test(dashCode));
+check("overviewTopSlot seam is retained", /overviewTopSlot\?:\s*React\.ReactNode/.test(dashSrc));
 check("initialTab is an optional prop", /initialTab\?:\s*string/.test(dashSrc));
 
 // Rail host is derived from spaceType, never hardcoded.
@@ -50,18 +60,20 @@ check(
   !dashSrc.includes('railVisibleTabs("shared")')
 );
 
-// Custom hero owns the slot: trend-hero path and day-zero card are gated.
+// Section-backed Overview: the trend hero renders only for chartable shared
+// Spaces (heroDef); Personal has no heroDef, so its chart is the
+// net_worth_chart SECTION, not a duplicated SpaceTrendHero.
 check(
-  "SpaceTrendHero path is skipped when renderHero is provided",
-  /&& !renderHero &&[\s\S]{0,120}heroDef &&/.test(dashSrc)
+  "SpaceTrendHero path is gated on heroDef only (no renderHero)",
+  /composition === "overview" &&\s*\n\s*accounts\.length > 0 && heroDef &&/.test(dashSrc)
 );
 check(
-  "day-zero OverviewSetupCard is suppressed under a custom hero",
-  /accounts\.length === 0 && !renderHero \?/.test(dashSrc)
+  "day-zero OverviewSetupCard shows for accounts.length === 0 (Personal included)",
+  /accounts\.length === 0 \?/.test(dashSrc) && !/accounts\.length === 0 && !renderHero/.test(dashSrc)
 );
 check(
-  "snapshots are fetched when a custom hero needs them",
-  dashSrc.includes("if (!heroDef && !renderHero) return;")
+  "snapshots are fetched for PERSONAL (net_worth_chart) or a heroDef",
+  dashSrc.includes('if (!heroDef && spaceType !== "PERSONAL") return;')
 );
 check(
   "initialTab is applied once at the section-derived defaulting site",

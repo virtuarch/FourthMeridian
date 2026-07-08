@@ -16,10 +16,10 @@ import { useRouter } from "next/navigation";
 import {
   Loader2, LayoutDashboard, Target, Landmark,
   CreditCard, TrendingUp, Settings, Plus,
-  Eye, EyeOff, ChevronDown, ChevronUp,
+  ChevronDown, ChevronUp,
   CheckCircle2, Circle, Calendar, AlertCircle,
   X, MoreHorizontal, Archive, Trash2, RotateCcw, LogOut,
-  Compass, PiggyBank, GripVertical,
+  Compass, PiggyBank, GripVertical, Maximize2,
 } from "lucide-react";
 import {
   DndContext, closestCenter, PointerSensor, KeyboardSensor,
@@ -36,6 +36,12 @@ import { AssetValueWidget, type AssetValueConfig } from "@/components/space/widg
 import { ProgressWidget, type ProgressStat } from "@/components/space/widgets/ProgressWidget";
 import { type BreakdownViewMode } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
+// Unified Space Widget Layout (slice 1) — Personal Overview lede widgets, now
+// section-backed (net_worth_chart + allocation).
+import { NetWorthChart, type Interval } from "@/components/charts/NetWorthChart";
+import { NetWorthChartModal } from "@/components/charts/NetWorthChartModal";
+import { AllocationChart } from "@/components/charts/AllocationChart";
+import { classifyAccounts } from "@/lib/account-classifier";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatDate, formatRelativeTime, displaySpaceName } from "@/lib/format";
 import { ManageSpaceModal } from "@/components/dashboard/ManageSpaceModal";
@@ -133,18 +139,6 @@ interface Props {
   myRole:        string;
   currentUserId?: string;
   /**
-   * SP-2A-4a — Personal shell-swap seam. When provided, the Overview hero
-   * region renders this instead of the getSpaceHeroDef/SpaceTrendHero path,
-   * and it owns day-zero presentation (the shell's OverviewSetupCard is
-   * suppressed). Receives the shell's already-fetched data — no duplicate
-   * fetching. Omitted ⇒ shared-Space behavior byte-identical.
-   */
-  renderHero?: (ctx: {
-    accounts:  SpaceAccount[];
-    snapshots: Snapshot[] | null;
-    loading:   boolean;
-  }) => React.ReactNode;
-  /**
    * SP-2A-4a — initial rail tab override (e.g. mapped from a legacy
    * /dashboard?tab= deep link by the caller). No URL synchronization.
    * Omitted ⇒ existing section-derived default. Applied once, after the
@@ -158,6 +152,16 @@ interface Props {
    * card). Omitted ⇒ nothing rendered ⇒ shared Spaces unchanged.
    */
   overviewTopSlot?: React.ReactNode;
+  /**
+   * Unified Space Widget Layout (slice 1) — the currency the Space's
+   * SpaceSnapshot totals are stamped in (its reporting currency), forwarded to
+   * the snapshot-backed `net_worth_chart` section as the conversion "from"
+   * side. The Personal host passes its reporting currency (read outside the
+   * "view as" provider) so the chart converts correctly under an override.
+   * Omitted ⇒ falls back to the shell's display currency (shared Spaces, where
+   * display === reporting).
+   */
+  snapshotCurrency?: string;
   /**
    * MC1 — when set (Personal "view as" override active), Perspective lenses are
    * fetched with this display-currency target so their metrics + verdict
@@ -179,16 +183,8 @@ interface Props {
 
 const TAB_ORDER = ["OVERVIEW", "GOALS", "ACCOUNTS", "DEBT", "INVESTMENTS", "RETIREMENT", "ACTIVITY"];
 
-const TAB_LABELS: Record<string, string> = {
-  OVERVIEW:    "Overview",
-  GOALS:       "Goals",
-  ACCOUNTS:    "Accounts",
-  DEBT:        "Debt",
-  INVESTMENTS: "Investments",
-  RETIREMENT:  "Retirement",
-  ACTIVITY:    "Activity",
-  SETTINGS:    "Settings",
-};
+// (TAB_LABELS removed with the in-space Settings tab — UX-CUST-1A correction.
+//  Rail labels come from SPACE_TAB_LABELS in lib/space-nav.ts.)
 
 // ─── Fixed Spaces rail (lib/space-nav.ts) ──────────────────────────────────────
 //
@@ -961,6 +957,15 @@ type SectionRenderProps = {
    * per-account rows stay native either way.
    */
   ctx?:                  ConversionContext;
+  /**
+   * Unified Space Widget Layout (slice 1) — SpaceSnapshot history for
+   * snapshot-backed widgets (net_worth_chart). Host-fetched once; null while
+   * loading. `snapshotCurrency` is the currency the snapshot totals are stamped
+   * in (the Space's reporting currency) — the "from" currency for the chart's
+   * conversion (ctx.target is the display/"view as" currency).
+   */
+  snapshots?:            Snapshot[] | null;
+  snapshotCurrency?:     string;
 };
 
 // ─── ProgressWidget adapter helpers ──────────────────────────────────────────
@@ -1123,8 +1128,83 @@ const renderInvestmentSummary = (p: SectionRenderProps): React.ReactElement => {
   );
 };
 
+// ── Unified Space Widget Layout (slice 1) — Overview lede sections ───────────
+// Formerly hardcoded in PersonalHero; now section-backed so they order/drag/
+// persist like any widget. Body-only: SectionCard supplies the card chrome +
+// title (the section label). Currency conversion follows the host's ctx
+// (ctx.target = the display / "view as" currency); the chart also needs the
+// snapshot stamp currency as the "from" side.
+
+function NetWorthChartSection({
+  snapshots,
+  ctx,
+  snapshotCurrency,
+}: {
+  snapshots?:        Snapshot[] | null;
+  ctx?:              ConversionContext;
+  snapshotCurrency?: string;
+}): React.ReactElement {
+  const [chartInterval, setChartInterval] = useState<Interval>("1M");
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <>
+      <div className="flex justify-end mb-1">
+        <button
+          onClick={() => setExpanded(true)}
+          aria-label="Expand chart"
+          className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors touch-manipulation"
+        >
+          <Maximize2 size={14} />
+        </button>
+      </div>
+      <NetWorthChart
+        snapshots={snapshots ?? []}
+        interval={chartInterval}
+        onIntervalChange={setChartInterval}
+        ctx={ctx}
+        snapshotCurrency={snapshotCurrency}
+        fill
+      />
+      {expanded && (
+        <NetWorthChartModal
+          snapshots={snapshots ?? []}
+          initialInterval={chartInterval}
+          initialSeries="netWorth"
+          ctx={ctx}
+          snapshotCurrency={snapshotCurrency}
+          onClose={() => setExpanded(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function AllocationSection({
+  accounts,
+  ctx,
+}: {
+  accounts: SpaceAccount[];
+  ctx?:     ConversionContext;
+}): React.ReactElement {
+  // classifyAccounts accepts SpaceAccount[] and converts through ctx when
+  // present (identical math for all-USD Spaces).
+  const c = classifyAccounts(accounts, ctx);
+  return (
+    <AllocationChart
+      cash={c.totalLiquid}
+      investments={c.totalInvestments}
+      crypto={c.totalDigitalAssets}
+      debt={c.totalLiabilities}
+      realAssets={c.totalRealAssets}
+      size="responsive"
+    />
+  );
+}
+
 const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElement> = {
   "net_worth":              renderNetWorth,
+  "net_worth_chart":        (p) => <NetWorthChartSection snapshots={p.snapshots} ctx={p.ctx} snapshotCurrency={p.snapshotCurrency} />,
+  "allocation":             (p) => <AllocationSection accounts={p.accounts} ctx={p.ctx} />,
   "net_worth_section":      renderNetWorth,       // deprecated alias — seeded pre-v2
   "accounts_overview":      (p) => <AccountsCard accounts={p.accounts} />,
   "business_accounts":      (p) => <AccountsCard accounts={p.accounts} />,
@@ -1379,6 +1459,14 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
 
 // ─── Section renderer ─────────────────────────────────────────────────────────
 
+// Unified Space Widget Layout (slice 1) — the Overview lede widgets (formerly
+// PersonalHero cards A/B/C). Keyed by section key, so any Space rendering these
+// exact keys gets the same treatment: a SOLID/frosted GlassPanel card (not the
+// faint ~5%-opacity SectionCard surface) and NO collapse affordance. They stay
+// section-backed and draggable in Edit Layout — the frosted surface also makes
+// the drag handle legible again (it was disappearing into the transparent card).
+const SOLID_LEDE_KEYS = new Set(["net_worth", "net_worth_chart", "allocation"]);
+
 function SectionCard({
   section,
   accounts,
@@ -1387,6 +1475,8 @@ function SectionCard({
   canManage,
   onAddGoal,
   ctx,
+  snapshots,
+  snapshotCurrency,
 }: {
   section:     DashboardSection;
   accounts:    SpaceAccount[];
@@ -1396,6 +1486,9 @@ function SectionCard({
   onAddGoal?:  () => void;
   /** MC1 QA Q4 — see SectionRenderProps.ctx. */
   ctx?:        ConversionContext;
+  /** Unified Space Widget Layout (slice 1) — see SectionRenderProps.snapshots. */
+  snapshots?:        Snapshot[] | null;
+  snapshotCurrency?: string;
 }) {
   const [collapsed,        setCollapsed]        = useState(false);
   const [payoffFullscreen, setPayoffFullscreen] = useState(false);
@@ -1421,6 +1514,8 @@ function SectionCard({
   const isDebtBreakdown = (isDebtSpace && section.key === "cash_flow") || section.key === "debt_breakdown_chart" || section.key === "recent_activity";
   // Payoff Planner shows a summary when collapsed
   const isDebtPayoff    = (isDebtSpace && section.key === "savings_rate") || section.key === "debt_payoff_calculator";
+  // Overview lede widgets: solid/frosted card, not collapsible (see SOLID_LEDE_KEYS).
+  const isSolidLede     = SOLID_LEDE_KEYS.has(section.key);
 
   // ── Payoff summary for collapsed state ─────────────────────────────────────
   let payoffSummary: string | null = null;
@@ -1471,8 +1566,22 @@ function SectionCard({
     if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen, ctx);
 
     const render = SectionRegistry[section.key];
-    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx });
+    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency });
     return <ContextualCard sectionKey={section.key} label={section.label} />;
+  }
+
+  // ── Solid Overview lede (Net Worth / chart / allocation) — frosted card,
+  //    NOT collapsible. Preserves the pre-section-backed PersonalHero card
+  //    treatment (GlassPanel) so these never use the faint SectionCard fill,
+  //    and keeps the drag handle legible. Left padding leaves room for the
+  //    Edit-Layout grip that overlays the card's top-left corner. */
+  if (isSolidLede) {
+    return (
+      <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4">
+        <p className="text-sm font-semibold text-[var(--text-primary)] px-1 mb-2">{displayLabel}</p>
+        {renderBody()}
+      </GlassPanel>
+    );
   }
 
   // ── Non-collapsible header (Debt Breakdown) ─────────────────────────────────
@@ -1537,242 +1646,65 @@ function SectionCard({
   );
 }
 
-// ─── Settings tab ─────────────────────────────────────────────────────────────
+// ─── Visible-surface reorder (UX-CUST-1A) ───────────────────────────────────────
 
 /**
- * UX-CUST-1A — a single draggable section row shown in Edit Layout mode.
+ * SortableSectionCard — wraps the *existing* SectionCard rendering path with a
+ * drag handle so section cards can be reordered directly on the visible
+ * dashboard while Edit Layout mode is active. It does not alter SectionCard;
+ * the card renders unchanged as children.
  *
- * Module-level (not defined during render) so the React Compiler doesn't flag
- * it. The whole row is the drag target via {...listeners}; the grip is a purely
- * visual affordance. Reorder is tab-scoped structurally: each tab renders its
- * own SortableContext, so a row can never be dropped into another tab's list.
+ * Layout: this only mounts inside the Edit-Layout SortableContext, so it always
+ * insets the card into a left gutter (`pl-8`) and drops the grip into that
+ * gutter (`left-0`). That way the handle never overlaps the card's title/content
+ * for ANY section type, and reverts to full width the moment Edit Layout exits
+ * (this wrapper is no longer rendered).
+ *
+ * Module-level (not created during render) so the React Compiler doesn't flag
+ * it. Tab-scoping is structural: the single SortableContext that mounts this
+ * only ever contains the active tab's visible cards, so a card can never be
+ * dropped into another tab.
  */
-function SortableSectionRow({ section }: { section: DashboardSection }) {
+function SortableSectionCard({
+  section,
+  children,
+}: {
+  section:  DashboardSection;
+  children: React.ReactNode;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: section.id });
 
   const style: React.CSSProperties = {
     transform:  CSS.Transform.toString(transform),
     transition,
-    opacity:    isDragging ? 0.5 : 1,
-    zIndex:     isDragging ? 10 : undefined,
-    position:   isDragging ? "relative" : undefined,
+    opacity:    isDragging ? 0.6 : 1,
+    zIndex:     isDragging ? 20 : undefined,
+    position:   "relative",
   };
 
   return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-[var(--surface-inset)] border border-[var(--border-hairline)] touch-none"
-    >
+    <div ref={setNodeRef} style={style} className="relative pl-8 touch-none">
       <button
         type="button"
         {...attributes}
         {...listeners}
         aria-label={`Reorder ${section.label}`}
-        className="p-1 -ml-1 rounded text-[var(--text-faint)] hover:text-[var(--text-secondary)] cursor-grab active:cursor-grabbing transition-colors touch-none"
+        className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--modal-surface)] border border-[var(--border-hairline-strong)] shadow-sm cursor-grab active:cursor-grabbing transition-colors touch-none"
       >
         <GripVertical size={14} />
       </button>
-      <p className={`text-sm truncate flex-1 min-w-0 ${section.enabled ? "text-white" : "text-[var(--text-muted)]"}`}>
-        {section.label}
-      </p>
-      {!section.enabled && (
-        <span className="text-[10px] text-[var(--text-faint)] shrink-0 flex items-center gap-1">
-          <EyeOff size={10} /> Hidden
-        </span>
-      )}
+      {children}
     </div>
   );
 }
 
-function SettingsTab({
-  sections,
-  spaceId,
-  onUpdate,
-}: {
-  sections:    DashboardSection[];
-  spaceId: string;
-  onUpdate:    () => void;
-}) {
-  const [togglingId, setTogglingId] = useState<string | null>(null);
-
-  // ── Edit Layout mode (UX-CUST-1A) ──────────────────────────────────────────
-  // `draft` holds the in-progress per-tab ordering while editing; null = not
-  // editing (read/toggle mode, byte-identical to before). Save persists via the
-  // batch reorder endpoint (one call per changed tab); Cancel drops the draft.
-  const [draft,   setDraft]   = useState<Record<string, DashboardSection[]> | null>(null);
-  const [saving,  setSaving]  = useState(false);
-  const editing = draft !== null;
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
-
-  async function toggleSection(s: DashboardSection) {
-    setTogglingId(s.id);
-    try {
-      await fetch(`/api/spaces/${spaceId}/sections/${s.id}`, {
-        method:  "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ enabled: !s.enabled }),
-      });
-      onUpdate();
-    } finally {
-      setTogglingId(null);
-    }
-  }
-
-  const byTab = sections.reduce<Record<string, DashboardSection[]>>((acc, s) => {
-    (acc[s.tab] ??= []).push(s);
-    return acc;
-  }, {});
-
-  function startEditing() {
-    // Snapshot current order (already tab-grouped, order-sorted from the API).
-    setDraft(Object.fromEntries(Object.entries(byTab).map(([tab, items]) => [tab, [...items]])));
-  }
-
-  function cancelEditing() {
-    setDraft(null);
-  }
-
-  function handleDragEnd(tab: string, e: DragEndEvent) {
-    const { active, over } = e;
-    if (!over || active.id === over.id) return;
-    setDraft((prev) => {
-      if (!prev) return prev;
-      const items   = prev[tab];
-      const oldIdx  = items.findIndex((s) => s.id === active.id);
-      const newIdx  = items.findIndex((s) => s.id === over.id);
-      if (oldIdx === -1 || newIdx === -1) return prev;
-      return { ...prev, [tab]: arrayMove(items, oldIdx, newIdx) };
-    });
-  }
-
-  async function saveLayout() {
-    if (!draft) return;
-    setSaving(true);
-    try {
-      // Persist only tabs whose order actually changed, one atomic call each.
-      const changedTabs = Object.entries(draft).filter(([tab, items]) => {
-        const original = byTab[tab] ?? [];
-        return items.some((s, i) => original[i]?.id !== s.id);
-      });
-      await Promise.all(
-        changedTabs.map(([tab, items]) =>
-          fetch(`/api/spaces/${spaceId}/sections/reorder`, {
-            method:  "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body:    JSON.stringify({ tab, sectionIds: items.map((s) => s.id) }),
-          }),
-        ),
-      );
-      setDraft(null);
-      onUpdate();
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const groups = editing && draft ? draft : byTab;
-
-  return (
-    <div className="space-y-5">
-      {/* Header: description + Edit Layout / Save·Cancel controls */}
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs text-[var(--text-muted)] flex-1">
-          {editing
-            ? "Drag sections to reorder them within each tab. Order applies to all members. Reordering does not change which tab a section belongs to."
-            : "Toggle sections to show or hide them on this Space’s dashboard. Changes apply to all members."}
-        </p>
-        {editing ? (
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={cancelEditing}
-              disabled={saving}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] border border-[var(--border-hairline)] transition-colors disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={saveLayout}
-              disabled={saving}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[var(--accent-info)] text-white transition-colors disabled:opacity-50"
-            >
-              {saving ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
-              Save
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={startEditing}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] border border-[var(--border-hairline)] transition-colors shrink-0"
-          >
-            <GripVertical size={12} /> Edit layout
-          </button>
-        )}
-      </div>
-
-      {Object.entries(groups).map(([tab, items]) => (
-        <div key={tab}>
-          <p className="text-[10px] font-semibold text-[var(--text-faint)] uppercase tracking-widest mb-2">
-            {TAB_LABELS[tab] ?? tab}
-          </p>
-
-          {editing ? (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={(e) => handleDragEnd(tab, e)}
-            >
-              <SortableContext items={items.map((s) => s.id)} strategy={verticalListSortingStrategy}>
-                <div className="space-y-1.5">
-                  {items.map((s) => (
-                    <SortableSectionRow key={s.id} section={s} />
-                  ))}
-                </div>
-              </SortableContext>
-            </DndContext>
-          ) : (
-            <div className="space-y-1">
-              {items.map((s) => (
-                <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--surface-inset)]">
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-sm truncate ${s.enabled ? "text-white" : "text-[var(--text-muted)]"}`}>
-                      {s.label}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => toggleSection(s)}
-                    disabled={togglingId === s.id}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
-                      s.enabled
-                        ? "bg-blue-600/20 text-[var(--accent-info)] hover:bg-blue-600/30"
-                        : "bg-[var(--surface-inset)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-                    }`}
-                  >
-                    {togglingId === s.id
-                      ? <Loader2 size={11} className="animate-spin" />
-                      : s.enabled
-                        ? <><Eye     size={11} /> Shown</>
-                        : <><EyeOff  size={11} /> Hidden</>}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-
-      {/* Reset to template order — deferred (UX-CUST-1A): correct template-order
-          restoration must account for legacy/custom section keys not present in
-          the current preset and is out of this slice's scope. Tracked for a
-          follow-up rather than shipped half-correct. */}
-    </div>
-  );
-}
+// ─── Settings tab (REMOVED — UX-CUST-1A correction) ─────────────────────────────
+//
+// Settings is no longer an in-space tab. Section show/hide already lives in
+// ManageSpaceModal → Overview (DashboardTab), which is also the home for the
+// layout controls (reset-to-default, saved layouts). The former in-space
+// SettingsTab component has been deleted; nothing renders SETTINGS here now.
 
 // ─── Add Goal inline modal ────────────────────────────────────────────────────
 
@@ -2138,9 +2070,9 @@ export function SpaceDashboard({
   category,
   myRole,
   currentUserId = "",
-  renderHero,
   initialTab,
   overviewTopSlot,
+  snapshotCurrency,
   perspectiveTargetCurrency,
   transactionsMoneyCtxOverride,
 }: Props) {
@@ -2262,7 +2194,11 @@ export function SpaceDashboard({
   // and any future Personal mount — inherit the same fixed rail order.
   const railHost = spaceType === "PERSONAL" ? ("personal" as const) : ("shared" as const);
   const railOptions: { id: string; label: string }[] = railVisibleTabs(railHost)
-    .filter((id) => id !== "SETTINGS" || canManage)
+    // UX-CUST-1A correction: Settings is no longer an in-space rail tab.
+    // Space-level settings (incl. section show/hide and layout controls) live
+    // in ManageSpaceModal → Overview. "SETTINGS" stays a valid tab id in
+    // lib/space-nav for types/back-compat, but it renders no rail button here.
+    .filter((id) => id !== "SETTINGS")
     .filter((id) => id !== "TIMELINE")
     .map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
 
@@ -2321,6 +2257,20 @@ export function SpaceDashboard({
     const res = await fetch(`/api/spaces/${spaceId}/accounts`);
     if (res.ok) setAccounts(await res.json());
   }, [spaceId]);
+
+  // ── Edit Layout mode (UX-CUST-1A) ──────────────────────────────────────────
+  // Lives on the visible dashboard surface: while active, the active tab's
+  // SectionCard stack shows drag handles and each drop persists the new order
+  // through the reorder endpoint. `savingLayout` guards the in-flight persist.
+  const [editingLayout, setEditingLayout] = useState(false);
+  const [savingLayout,  setSavingLayout]  = useState(false);
+  const layoutSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  // Leaving a tab exits Edit Layout — reorder is scoped to the tab you entered.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { setEditingLayout(false); }, [activeTab]);
 
   // Refetch accounts whenever another component (e.g. ManageSpaceModal Finances tab) signals a change
   useEffect(() => {
@@ -2391,10 +2341,11 @@ export function SpaceDashboard({
   // Only chartable categories (lib/space-hero.ts) fetch snapshot history.
   const heroDef = getSpaceHeroDef(category);
   useEffect(() => {
-    // SP-2A-4a: a custom hero (renderHero) receives snapshots through its
-    // ctx, so it needs the fetch even for categories with no heroDef
-    // (PERSONAL deliberately has none — lib/space-hero.ts).
-    if (!heroDef && !renderHero) return;
+    // Unified Space Widget Layout (slice 1): Personal has no heroDef but its
+    // Overview now includes the snapshot-backed `net_worth_chart` section, so
+    // it still needs the snapshot fetch. Shared non-chartable categories skip
+    // it as before. (Future: fetch when any snapshot-tier section is present.)
+    if (!heroDef && spaceType !== "PERSONAL") return;
     let active = true;
     fetch(`/api/spaces/${spaceId}/snapshots`)
       .then((r) => (r.ok ? r.json() : { snapshots: [] }))
@@ -2468,10 +2419,9 @@ export function SpaceDashboard({
           setActiveTab(firstTab);
         } else if (enabledTabs.has("ACTIVITY")) {
           setActiveTab("TIMELINE");
-        } else if (canManage) {
-          // CUSTOM space with no sections — Settings is fine here
-          setActiveTab("SETTINGS");
         } else {
+          // No section tabs (e.g. CUSTOM space with no sections) — land on
+          // Overview. Settings is no longer a tab; manage via ManageSpaceModal.
           setActiveTab("OVERVIEW");
         }
       }
@@ -2491,11 +2441,11 @@ export function SpaceDashboard({
     key in SectionRegistry ||
     (isDebtSpaceCategory && (key === "cash_flow" || key === "savings_rate"));
 
-  // Derive tabs from enabled sections (plus Settings for admins)
+  // Derive tabs from enabled sections. (Settings is no longer an in-space
+  // tab — section show/hide and layout controls live in ManageSpaceModal.)
   const enabledSections = sections.filter((s) => s.enabled && hasRenderer(s.key));
   const tabSet = Array.from(new Set(enabledSections.map((s) => s.tab)));
   const tabs   = TAB_ORDER.filter((t) => tabSet.includes(t));
-  if (canManage) tabs.push("SETTINGS");
 
   const catLabel = CATEGORY_LABELS[category as SpaceCategory] ?? category;
 
@@ -2507,16 +2457,64 @@ export function SpaceDashboard({
     );
   }
 
-  // SP Overview refinement — when a custom hero owns the OVERVIEW (Personal),
-  // it renders its own Net Worth lede card (A), so the shell must NOT also
-  // render its OVERVIEW section cards (which would duplicate net worth). Other
-  // tabs, and shared Spaces (no renderHero), are unaffected.
-  const sectionsForTab =
-    renderHero && activeTab === "OVERVIEW"
-      ? []
-      : enabledSections
-          .filter((s) => s.tab === activeTab)
-          .sort((a, b) => a.order - b.order);
+  // Unified Space Widget Layout (slice 1) — every tab (Personal OVERVIEW
+  // included) renders its ordered section stack. The former renderHero
+  // suppression that emptied Personal's Overview is gone: Net Worth / chart /
+  // allocation are now section-backed, so Edit Layout works here naturally.
+  const sectionsForTab = enabledSections
+    .filter((s) => s.tab === activeTab)
+    .sort((a, b) => a.order - b.order);
+
+  // ── Edit Layout drag persistence (UX-CUST-1A) ──────────────────────────────
+  // The visible stack is only the enabled+renderable subset of the tab, but the
+  // reorder endpoint requires the tab's FULL permutation. So we splice the new
+  // visible order back into the full tab list, keeping hidden/unrenderable
+  // sections pinned at their current positions, and send that. Tab-scoped by
+  // construction (only activeTab's sections are ever touched).
+  const canReorderTab =
+    canManage &&
+    sectionsForTab.length > 1 &&
+    activeTab !== "SETTINGS" && activeTab !== "ACTIVITY" &&
+    !NEW_SPACE_TABS.includes(activeTab) &&
+    !PERSPECTIVE_ROUTED_TABS.includes(activeTab);
+
+  async function handleSectionDragEnd(e: DragEndEvent) {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+
+    const visibleIds = sectionsForTab.map((s) => s.id);
+    const oldIdx = visibleIds.indexOf(String(active.id));
+    const newIdx = visibleIds.indexOf(String(over.id));
+    if (oldIdx === -1 || newIdx === -1) return;
+    const newVisible = arrayMove(visibleIds, oldIdx, newIdx);
+
+    // Full tab list in current order; substitute visible slots with the new
+    // visible sequence, leave hidden sections where they are.
+    const allTab = sections
+      .filter((s) => s.tab === activeTab)
+      .sort((a, b) => a.order - b.order);
+    const visibleSet = new Set(visibleIds);
+    let vp = 0;
+    const fullOrderIds = allTab.map((s) => (visibleSet.has(s.id) ? newVisible[vp++] : s.id));
+
+    // Optimistic: reassign order = index for this tab's rows.
+    const orderById = new Map(fullOrderIds.map((id, i) => [id, i]));
+    setSections((prev) =>
+      prev.map((s) => (orderById.has(s.id) ? { ...s, order: orderById.get(s.id)! } : s)),
+    );
+
+    setSavingLayout(true);
+    try {
+      await fetch(`/api/spaces/${spaceId}/sections/reorder`, {
+        method:  "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ tab: activeTab, sectionIds: fullOrderIds }),
+      });
+      await loadSections();
+    } finally {
+      setSavingLayout(false);
+    }
+  }
 
   // ── Hero series (Space Template Redesign) ─────────────────────────────────
   // MC1 QA Q4b — drop fxMiss points (off-stamp rows whose FX rate missed, so
@@ -2688,6 +2686,25 @@ export function SpaceDashboard({
           </div>
 
           <div className="flex items-center gap-2 shrink-0 ml-3">
+            {/* Edit Layout toggle (UX-CUST-1A) — visible-surface reorder for the
+                active tab's section cards. Shown only where a reorderable stack
+                exists; while active it flips to Done. */}
+            {(canReorderTab || editingLayout) && (
+              <button
+                onClick={() => setEditingLayout((v) => !v)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-colors border ${
+                  editingLayout
+                    ? "bg-[var(--accent-info)] text-white border-transparent"
+                    : "text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"
+                }`}
+              >
+                {savingLayout
+                  ? <Loader2 size={13} className="animate-spin" />
+                  : <GripVertical size={13} />}
+                {editingLayout ? "Done" : "Edit layout"}
+              </button>
+            )}
+
             {canManage && (
               <button
                 onClick={() => setShowManage(true)}
@@ -2721,16 +2738,17 @@ export function SpaceDashboard({
           onChange={setActiveTab}
         />
 
-        {/* Settings tab */}
-        {activeTab === "SETTINGS" && (
-          <SettingsTab
-            sections={sections}
-            spaceId={spaceId}
-            onUpdate={loadSections}
-          />
-        )}
+        {/* Settings is no longer an in-space tab (UX-CUST-1A correction):
+            section show/hide and layout controls moved to ManageSpaceModal →
+            Overview. Opened via the "Manage" button above. */}
 
-        {/* Perspectives tab — full grid. */}
+        {/* Perspectives tab — full grid.
+            NOTE (UX-CUST-1A): Perspective cards are category-derived LENSES
+            (lib/perspectives.ts getPerspectivesForCategory), not
+            SpaceDashboardSection rows — they have no `order` to persist and no
+            clean no-schema promotion path. Per the correction's guidance they
+            stay FIXED (not draggable) rather than shipping fake drag/drop that
+            can't persist. Only section-backed cards (Overview stack) reorder. */}
         {activeTab === "PERSPECTIVES" && (
           <PerspectivesWidget items={perspectiveItems} variant="grid" />
         )}
@@ -2792,7 +2810,7 @@ export function SpaceDashboard({
                   <p className="text-sm text-[var(--text-muted)]">No sections on this tab</p>
                   {canManage && (
                     <button
-                      onClick={() => setActiveTab("SETTINGS")}
+                      onClick={() => setShowManage(true)}
                       className="mt-2 text-xs text-[var(--accent-info)] hover:text-[var(--accent-info)] transition-colors"
                     >
                       Manage sections →
@@ -2864,15 +2882,11 @@ export function SpaceDashboard({
                 SpaceSnapshot history. Only chartable categories have a
                 heroDef; day-zero Spaces show the setup card instead.
 
-                SP Overview refinement — composition order:
-                • Shared Spaces (no custom hero): SpaceTrendHero here at the
-                  top, then section cards, then the doorways below.
-                • Personal (renderHero present): the OVERVIEW section cards are
-                  suppressed (see sectionsForTab); the custom hero owns the
-                  whole body — Net Worth card (A) + chart (B) + allocation (C)
-                  — rendered below, then the doorways in Perspectives →
-                  Recent-Activity order. */}
-            {activeTab === "OVERVIEW" && composition === "overview" && !renderHero &&
+                Shared chartable Spaces (heroDef) render SpaceTrendHero at the
+                top, then their section cards. Personal has no heroDef (its
+                trend is the `net_worth_chart` SECTION now), so this is inert
+                for Personal — no duplicate chart. */}
+            {activeTab === "OVERVIEW" && composition === "overview" &&
              accounts.length > 0 && heroDef && (
               <SpaceTrendHero
                 title={heroDef.title}
@@ -2889,31 +2903,28 @@ export function SpaceDashboard({
               />
             )}
 
-            {activeTab === "OVERVIEW" && !loading && accounts.length === 0 && !renderHero ? (
+            {activeTab === "OVERVIEW" && !loading && accounts.length === 0 ? (
               /* Day-zero Overview (v2.5 honesty slice): one consolidated
                  setup card instead of a stack of per-widget empty states
-                 that all ask for the same thing. Other tabs keep their own
-                 per-section empty states. A custom hero (renderHero) owns
-                 day-zero presentation itself, so the card is suppressed. */
+                 that all ask for the same thing. Personal day-zero now flows
+                 through here too (the hero no longer owns it). */
               <OverviewSetupCard
                 canManage={canManage}
                 onAddAccounts={() => setShowManage(true)}
                 onAddGoal={() => setShowAddGoal(true)}
               />
             ) : sectionsForTab.length === 0 ? (
-              // Template polish (D2): when the hero is rendering, hero +
+              // Template polish (D2): when the trend hero is rendering, hero +
               // change preview + doorways IS the Overview composition — an
-              // empty-state card under the lede reads as breakage. Other
-              // tabs (and hero-less categories) keep the honest empty state.
-              // SP-2A-4a: a custom hero counts like a heroDef here — an
-              // empty-state card under a rendering hero reads as breakage.
-              activeTab === "OVERVIEW" && (renderHero || (heroDef && accounts.length > 0)) ? null : (
+              // empty-state card under the lede reads as breakage. Hero-less
+              // categories keep the honest empty state.
+              activeTab === "OVERVIEW" && (heroDef && accounts.length > 0) ? null : (
               <div className="text-center py-12">
                 <LayoutDashboard size={30} className="text-[var(--text-faint)] mx-auto mb-3" />
                 <p className="text-sm text-[var(--text-muted)]">No sections on this tab</p>
                 {canManage && (
                   <button
-                    onClick={() => setActiveTab("SETTINGS")}
+                    onClick={() => setShowManage(true)}
                     className="mt-2 text-xs text-[var(--accent-info)] hover:text-[var(--accent-info)] transition-colors"
                   >
                     Manage sections →
@@ -2921,6 +2932,37 @@ export function SpaceDashboard({
                 )}
               </div>
               )
+            ) : editingLayout && canReorderTab ? (
+              /* Edit Layout (UX-CUST-1A): the same SectionCard stack, wrapped
+                 for drag reorder. Single SortableContext = active tab only, so
+                 reorder is tab-scoped and no card can cross tabs. Each drop
+                 persists via handleSectionDragEnd. */
+              <DndContext
+                sensors={layoutSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleSectionDragEnd}
+              >
+                <SortableContext
+                  items={sectionsForTab.map((s) => s.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {sectionsForTab.map((s) => (
+                    <SortableSectionCard key={s.id} section={s}>
+                      <SectionCard
+                        section={s}
+                        accounts={accounts}
+                        spaceId={spaceId}
+                        category={category}
+                        canManage={canManage}
+                        onAddGoal={() => setShowAddGoal(true)}
+                        ctx={widgetCtx}
+                        snapshots={snapshots}
+                        snapshotCurrency={snapshotCurrency ?? displayCurrency}
+                      />
+                    </SortableSectionCard>
+                  ))}
+                </SortableContext>
+              </DndContext>
             ) : (
               sectionsForTab.map((s) => (
                 <SectionCard
@@ -2932,32 +2974,29 @@ export function SpaceDashboard({
                   canManage={canManage}
                   onAddGoal={() => setShowAddGoal(true)}
                   ctx={widgetCtx}
+                  snapshots={snapshots}
+                  snapshotCurrency={snapshotCurrency ?? displayCurrency}
                 />
               ))
             )}
 
-            {/* SP-2A-4a custom hero seam (SP Overview refinement) — Personal
-                renders its opinionated Overview body HERE: Net Worth card (A),
-                Net Worth chart (B), Allocation (C). OVERVIEW section cards are
-                suppressed for this host (sectionsForTab), so the hero is the
-                sole lede. The custom hero owns day-zero presentation too.
-                Shared Spaces have no renderHero, so this is inert for them. */}
-            {activeTab === "OVERVIEW" && composition === "overview" && renderHero &&
-              renderHero({ accounts, snapshots, loading })}
+            {/* (Unified Space Widget Layout slice 1) — the former renderHero
+                custom-hero seam is deleted. Personal's Net Worth / chart /
+                allocation are now ordinary OVERVIEW sections rendered by the
+                stack above. */}
 
             {/* Template contract slots 4 & 5 — change preview (Recent
                 activity + Recent transactions on flow templates) and the
                 Perspectives doorway. Composition, not duplication: everything
                 reads data already fetched for the dedicated tabs.
 
-                SP Overview refinement — order depends on the host: a custom
-                hero (Personal) puts Perspectives (E) above Recent Activity (F)
-                per the canonical Personal Overview; shared Spaces keep the
-                original Recent-Activity-then-Perspectives order (byte-
-                identical). Both blocks are defined once above. */}
+                Order depends on the host: Personal puts Perspectives (E) above
+                Recent Activity (F) per the canonical Personal Overview; shared
+                Spaces keep the original Recent-Activity-then-Perspectives order
+                (byte-identical). Both blocks are defined once above. */}
             {activeTab === "OVERVIEW" && composition === "overview" && (
               <div className="space-y-3 pt-2">
-                {renderHero ? (
+                {spaceType === "PERSONAL" ? (
                   <>
                     {perspectivesDoorway}
                     {recentActivityDoorway}

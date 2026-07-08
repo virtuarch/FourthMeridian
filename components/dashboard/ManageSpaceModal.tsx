@@ -34,7 +34,7 @@ import {
   AlertTriangle, Loader2, Crown, Shield, Eye, EyeOff,
   UserMinus, Trash2, Mail, Plus, Check, Globe, Lock,
   Share2, Search, ChevronRight, AlertCircle, Calendar,
-  CheckCircle2, Circle, Pencil, Save, Archive, LogOut,
+  CheckCircle2, Circle, Pencil, Save, Archive, LogOut, RotateCcw,
 } from "lucide-react";
 import {
   CATEGORY_LABELS, CATEGORY_ICONS,
@@ -1365,7 +1365,18 @@ function DashboardTab({
 
   return (
     <div className="space-y-5">
-      <p className="text-xs text-[var(--text-muted)]">Toggle sections to show or hide them. Changes apply to all members.</p>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs text-[var(--text-muted)] flex-1">
+          Toggle sections to show or hide them. Changes apply to all members.
+        </p>
+        <button
+          type="button"
+          onClick={() => { setLoading(true); loadSections(); }}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] border border-[var(--border-hairline)] transition-colors shrink-0"
+        >
+          <RotateCcw size={12} /> Refresh
+        </button>
+      </div>
       {Object.entries(byTab).map(([tab, items]) => (
         <div key={tab}>
           <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-2">
@@ -1392,6 +1403,25 @@ function DashboardTab({
           </div>
         </div>
       ))}
+
+      {/* Layout (Unified Space Widget Layout, slice 1) — this modal is for
+          Space-level settings, NOT per-drag layout editing (that lives on the
+          dashboard via Edit layout). No reset/default-layout control here until
+          a real implementation exists. Saved layouts are a future slice and
+          render as a disabled placeholder only — not built here. */}
+      <div className="pt-4 border-t border-[var(--border-hairline)]">
+        <p className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-2">Layout</p>
+        <p className="text-xs text-[var(--text-muted)] mb-2">
+          To reorder sections, use <span className="text-[var(--text-primary)]">Edit layout</span> on the dashboard.
+        </p>
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl bg-[var(--surface-muted)]">
+          <div className="min-w-0">
+            <p className="text-sm text-[var(--text-primary)]">Saved layouts</p>
+            <p className="text-xs text-[var(--text-muted)]">Save and switch between dashboard layouts. Coming soon.</p>
+          </div>
+          <span className="text-[10px] font-medium text-[var(--text-muted)] bg-[var(--surface-hover-strong)] px-2 py-1 rounded-full shrink-0">Soon</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1615,7 +1645,11 @@ export function ManageSpaceModal({
     { id: "goals",     label: "Goals",       icon: <Target      size={14} />, show: false },
     { id: "finances",  label: "Add Accounts", icon: <Landmark    size={14} />, show: true },
     { id: "dashboard", label: "Overview",    icon: <LayoutDashboard size={14} />, show: canManage },
-    { id: "danger",    label: isOwner ? "Delete Space" : "Leave Space", icon: isOwner ? <Trash2 size={14} /> : <LogOut size={14} />, show: true },
+    // A Personal Space can never be deleted, archived, trashed, or left, so the
+    // danger tab has no valid action there — hide it entirely. Server routes
+    // also fail closed for PERSONAL (defense in depth; not UI-only). Gated on a
+    // loaded space so the Delete affordance never flashes before type is known.
+    { id: "danger",    label: isOwner ? "Delete Space" : "Leave Space", icon: isOwner ? <Trash2 size={14} /> : <LogOut size={14} />, show: !!space && space.type !== "PERSONAL" },
   ];
   const tabs = allTabs.filter((t) => t.show);
 
@@ -1686,7 +1720,7 @@ export function ManageSpaceModal({
           {activeTab === "dashboard" && canManage && (
             <DashboardTab spaceId={spaceId} />
           )}
-          {activeTab === "danger"               && (
+          {activeTab === "danger" && space?.type !== "PERSONAL" && (
             <DangerZoneTab
               space={space}
               myRole={myRole}

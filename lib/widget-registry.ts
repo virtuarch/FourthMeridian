@@ -153,6 +153,37 @@ const registry: WidgetRegistryEntry[] = [
     },
   },
 
+  // Unified Space Widget Layout (slice 1) — the Personal Overview lede
+  // (formerly hardcoded in PersonalHero) is now section-backed so it inherits
+  // order / drag / show-hide like any other widget.
+  {
+    implemented: true,
+    meta: {
+      key:         "net_worth_chart",
+      label:       "Net Worth over time",
+      description: "This Space's net-worth trend from its SpaceSnapshot history.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "TrendingUp",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: true,
+    },
+  },
+
+  {
+    implemented: true,
+    meta: {
+      key:         "allocation",
+      label:       "Allocation",
+      description: "How this Space's assets are split across cash, investments, crypto, and real assets.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "PieChart",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: true,
+    },
+  },
+
   // ── Accounts ────────────────────────────────────────────────────────────────
 
   {

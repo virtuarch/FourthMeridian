@@ -102,6 +102,25 @@ const NET_WORTH_SECTION: SectionPreset = {
   order:   0,
 };
 
+// Unified Space Widget Layout (slice 1) — the Personal Overview chart +
+// allocation, formerly hardcoded in PersonalHero, are now section-backed so
+// they order/drag/persist like any other widget. OVERVIEW, after net_worth.
+const NET_WORTH_CHART_SECTION: SectionPreset = {
+  key:     "net_worth_chart",
+  label:   "Net Worth over time",
+  tab:     SpaceDashboardTab.OVERVIEW,
+  enabled: true,
+  order:   1,
+};
+
+const ALLOCATION_SECTION: SectionPreset = {
+  key:     "allocation",
+  label:   "Allocation",
+  tab:     SpaceDashboardTab.OVERVIEW,
+  enabled: true,
+  order:   2,
+};
+
 // Space Template Redesign (approved investigation): CASH_FLOW_SECTION,
 // SAVINGS_RATE_SECTION, MONTHLY_EXPENSES, and BUSINESS_CASH_FLOW were
 // removed from this file. Their keys have no SectionRegistry renderer, so
@@ -265,6 +284,8 @@ const PRESET_MAP: Record<SpaceCategory, SectionPreset[]> = {
   // Preset kept minimal + real.
   [SpaceCategory.PERSONAL]: [
     NET_WORTH_SECTION,
+    NET_WORTH_CHART_SECTION,
+    ALLOCATION_SECTION,
     DEBT_SUMMARY_SECTION,
     INVESTMENT_SUMMARY,
   ],
