@@ -65,6 +65,15 @@ export interface PerspectiveDef {
    * placeholder).
    */
   lensId?: LensId;
+  /**
+   * UX-PER-3 (Perspective Workspace) — the ordered widget keys this Perspective
+   * renders as its workspace body. Each key MUST exist in WIDGET_REGISTRY
+   * (parity-tested in lib/perspectives/virtual-sections.test.ts) and reuse the
+   * same SectionCard/SectionRegistry compositor as tab sections. Rendered as
+   * VIRTUAL, render-only sections (no DB rows, no persistence, no drag/drop yet).
+   * Absent ⇒ today's behavior (host tab routing / lens card / comingSoon).
+   */
+  widgets?: readonly string[];
 }
 
 export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
@@ -82,8 +91,12 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     description: "Your full financial picture — net worth, cash flow, and recent activity in one view.",
   },
   wealth: {
-    id: "wealth", label: "Wealth", icon: "Gem", status: "comingSoon", group: "Financial",
+    id: "wealth", label: "Wealth", icon: "Gem", status: "available", group: "Financial",
     description: "Net worth trend across every account in this Space.",
+    // UX-PER-3 first workspace — reuses existing Overview lede section keys, so
+    // the Wealth workspace renders through the same SectionCard/SectionRegistry
+    // path (no new widgets, no new compositor).
+    widgets: ["net_worth", "net_worth_chart", "allocation"],
   },
   cashFlow: {
     id: "cashFlow", label: "Cash Flow", icon: "Waves", status: "comingSoon", group: "Financial",
