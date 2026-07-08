@@ -1,10 +1,9 @@
 import { Suspense }                                   from "react";
-import { DashboardClient }                             from "@/components/dashboard/DashboardClient";
 import { SpaceDashboard }                          from "@/components/dashboard/SpaceDashboard";
-import { getAccounts, getHoldings, getFicoData }       from "@/lib/data/accounts";
+import { PersonalDashboard }                       from "@/components/dashboard/PersonalDashboard";
+import { getAccounts, getFicoData }                    from "@/lib/data/accounts";
 import { getRecentSnapshots }                          from "@/lib/data/snapshots";
-import { getLatestAdvice }                             from "@/lib/data/advice";
-import { getDebtTransactions, getTransactions }        from "@/lib/data/transactions";
+import { getTransactions }                             from "@/lib/data/transactions";
 import { getSpaceContext }                         from "@/lib/space";
 import { serializeSpaceConversionContext }        from "@/lib/money/server-context";
 import { yesterdayUTCISO }                         from "@/lib/fx/config";
@@ -16,7 +15,32 @@ import { DisplayCurrencyProvider }                 from "@/lib/currency-context"
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
 
-export default async function DashboardPage() {
+/**
+ * SP-2A-4c — map a legacy Personal `?tab=` deep link onto the shared shell's
+ * tab vocabulary. The unified SpaceDashboard has no URL sync, so this is a
+ * one-shot initial-tab hint (applied once via the `initialTab` seam).
+ * Unknown/absent values (including the old `dashboard`/`overview` ids) fall
+ * back to OVERVIEW — the shell's own default.
+ */
+function mapLegacyTabToShell(raw: string | undefined): string {
+  switch (raw) {
+    case "banking":      return "ACCOUNTS";
+    case "transactions": return "TRANSACTIONS";
+    case "members":      return "MEMBERS";
+    case "settings":     return "SETTINGS";
+    case "credit":       return "DEBT";
+    case "investments":  return "INVESTMENTS";
+    case "activity":
+    case "timeline":     return "TIMELINE";
+    default:             return "OVERVIEW";
+  }
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   const ctx = await getSpaceContext();
   const isPersonal = ctx.space.type === "PERSONAL";
 
@@ -48,58 +72,57 @@ export default async function DashboardPage() {
     );
   }
 
-  // Personal space — existing full dashboard.
+  // Personal space — SP-2A-4c: renders through the shared SpaceDashboard
+  // shell, with PersonalHero injected via the renderHero seam. Server fetches
+  // are trimmed to what the hero needs (accounts, snapshots, FICO,
+  // transactions + hero moneyCtx); the shell client-fetches sections, goals,
+  // accounts, etc. itself, exactly like every other Space.
+  //
   // Context is resolved exactly once above (and cache()-deduped even if it
-  // weren't — see lib/space.ts). Pass the already-resolved
-  // spaceId/userId into each helper below instead of letting them call
-  // getSpaceContext() again, so this page makes zero redundant context
-  // lookups instead of relying solely on the cache() dedupe.
-  const [accounts, holdings, snapshots, advice, ficoData, debtTransactions, transactions] = await Promise.all([
+  // weren't — see lib/space.ts). Pass the already-resolved spaceId/userId
+  // into each helper below so this page makes zero redundant context lookups.
+  const sp = await searchParams;
+  const rawTab = typeof sp?.tab === "string" ? sp.tab : undefined;
+
+  const [accounts, snapshots, ficoData, transactions] = await Promise.all([
     getAccounts({ spaceId: ctx.spaceId }),
-    getHoldings({ spaceId: ctx.spaceId }),
     getRecentSnapshots(365, { spaceId: ctx.spaceId }),
-    getLatestAdvice({ spaceId: ctx.spaceId }),
     getFicoData({ userId: ctx.userId }),
-    getDebtTransactions({ spaceId: ctx.spaceId }),
     getTransactions({ spaceId: ctx.spaceId }),
   ]);
 
   // MC1 Phase 3 Slice 6 (F-1, D-6) — serialize the Space's conversion context
-  // for the client-side classify/flow math. Currencies and dates cover
-  // everything this client aggregates: account balances (latest close) plus
-  // every provided transaction row's own date. All-USD Spaces serialize an
-  // empty entry table (a few bytes; identical math).
+  // for the hero's client-side classify/flow math. Currencies and dates cover
+  // everything the hero aggregates: account balances (latest close) plus every
+  // provided transaction row's own date. All-USD Spaces serialize an empty
+  // entry table (a few bytes; identical math).
   const moneyCtx = await serializeSpaceConversionContext(ctx.space, {
     currencies: [
       ...accounts.map((a) => a.currency ?? null),
       ...transactions.map((t) => t.currency ?? null),
-      ...debtTransactions.map((t) => t.currency ?? null),
     ],
     dates: [
       yesterdayUTCISO(),
       ...transactions.map((t) => t.date),
-      ...debtTransactions.map((t) => t.date),
     ],
   });
 
   return (
     <DisplayCurrencyProvider currency={ctx.space.reportingCurrency}>
       <Suspense fallback={null}>
-        <DashboardClient
+        <PersonalDashboard
           key={ctx.spaceId}
           spaceId={ctx.spaceId}
           spaceName={ctx.space.name}
+          spaceType={ctx.space.type}
           category={ctx.space.category}
           myRole={ctx.role}
           currentUserId={ctx.userId}
+          initialTab={mapLegacyTabToShell(rawTab)}
           accounts={accounts}
-          holdings={holdings}
           snapshots={snapshots}
-          advice={advice}
-          ficoScore={ficoData.score}
-          ficoUpdatedAt={ficoData.updatedAt}
-          debtTransactions={debtTransactions}
           transactions={transactions}
+          ficoScore={ficoData.score}
           moneyCtx={moneyCtx}
         />
       </Suspense>

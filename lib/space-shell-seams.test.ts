@@ -9,8 +9,9 @@
  *  - the rail host is derived, not hardcoded "shared";
  *  - the SpaceTrendHero path is gated off when a custom hero is provided;
  *  - the day-zero OverviewSetupCard is suppressed under a custom hero;
- *  - page.tsx still renders Personal through DashboardClient (the flip is
- *    SP-2A-4c, not this slice).
+ *  - page.tsx renders Personal through the shared SpaceDashboard shell
+ *    (SP-2A-4c flip — via PersonalDashboard + the renderHero seam), and no
+ *    longer references DashboardClient.
  */
 
 import { readFileSync } from "node:fs";
@@ -73,10 +74,14 @@ check(
   !dashSrc.includes("useSearchParams")
 );
 
-// The flip has not happened: Personal still renders via DashboardClient.
+// The flip happened (SP-2A-4c): Personal renders through the shared shell
+// (PersonalDashboard + the renderHero seam), and page.tsx no longer
+// references DashboardClient.
 check(
-  "page.tsx still renders Personal through DashboardClient",
-  pageSrc.includes("DashboardClient") && pageSrc.includes('type === "PERSONAL"')
+  "page.tsx renders Personal through the shared shell, not DashboardClient",
+  !pageSrc.includes("DashboardClient") &&
+    pageSrc.includes("PersonalDashboard") &&
+    pageSrc.includes('type === "PERSONAL"')
 );
 
 if (failures > 0) {
