@@ -158,7 +158,9 @@ export function validateLensResult(result: LensResult): string[] {
 const UNREGISTERED_LENS_VERSION = 0;
 
 function defaultOptions(options?: Partial<ComputeOptions>): ComputeOptions {
-  return { now: options?.now ?? (() => new Date()) };
+  // Preserve targetCurrency (MC1 view-as override) alongside the injected
+  // clock; undefined by default ⇒ lenses target the Space's reporting currency.
+  return { now: options?.now ?? (() => new Date()), targetCurrency: options?.targetCurrency };
 }
 
 /**

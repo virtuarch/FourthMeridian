@@ -196,6 +196,15 @@ export interface LensResult {
  */
 export interface ComputeOptions {
   now: () => Date;
+  /**
+   * MC1 — optional display-currency override for read-time conversion. When
+   * set, conversion-aware lenses build their context targeting THIS currency
+   * instead of the Space's saved reporting currency, so the headline, verdict,
+   * and metric sums all recompute consistently in the requested currency (the
+   * Personal "view as" preview). Omitted ⇒ the Space's reporting currency —
+   * byte-identical to today for every existing caller.
+   */
+  targetCurrency?: string;
 }
 
 /**

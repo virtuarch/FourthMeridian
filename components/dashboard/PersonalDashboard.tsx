@@ -106,6 +106,10 @@ export function PersonalDashboard({
         myRole={myRole}
         currentUserId={currentUserId}
         initialTab={initialTab}
+        // MC1 view-as: only when an override is active (undefined otherwise) —
+        // Perspectives then recompute in the override currency; no override ⇒
+        // today's reporting-currency behavior.
+        perspectiveTargetCurrency={viewOverride?.currency}
         overviewTopSlot={
           <div className="flex justify-end">
             <ViewCurrencyOverride

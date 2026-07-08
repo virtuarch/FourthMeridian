@@ -149,6 +149,13 @@ interface Props {
    * card). Omitted ⇒ nothing rendered ⇒ shared Spaces unchanged.
    */
   overviewTopSlot?: React.ReactNode;
+  /**
+   * MC1 — when set (Personal "view as" override active), Perspective lenses are
+   * fetched with this display-currency target so their metrics + verdict
+   * convert. Omitted (shared Spaces, or no override) ⇒ computed in the Space's
+   * reporting currency — today's behavior, byte-identical.
+   */
+  perspectiveTargetCurrency?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -1954,6 +1961,7 @@ export function SpaceDashboard({
   renderHero,
   initialTab,
   overviewTopSlot,
+  perspectiveTargetCurrency,
 }: Props) {
   const router = useRouter();
 
@@ -2166,7 +2174,12 @@ export function SpaceDashboard({
   // keep their static descriptions — the engine's rollback property, live.
   useEffect(() => {
     let active = true;
-    fetch(`/api/spaces/${spaceId}/perspectives`)
+    // MC1 view-as: when an override target is set, ask the engine to recompute
+    // the lenses in that currency (headline + verdict + sums together).
+    const url = perspectiveTargetCurrency
+      ? `/api/spaces/${spaceId}/perspectives?target=${encodeURIComponent(perspectiveTargetCurrency)}`
+      : `/api/spaces/${spaceId}/perspectives`;
+    fetch(url)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!active) return;
@@ -2180,7 +2193,8 @@ export function SpaceDashboard({
       .catch(() => { if (active) setLensResults(null); });
     return () => { active = false; };
     // currencyNonce (Q6): refetch converted lens metrics after a currency change.
-  }, [spaceId, currencyNonce]);
+    // perspectiveTargetCurrency: refetch when the "view as" override changes.
+  }, [spaceId, currencyNonce, perspectiveTargetCurrency]);
 
   // Header member count — same endpoint SpaceMembersWidget/ManageSpaceModal use.
   useEffect(() => {

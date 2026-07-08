@@ -66,8 +66,12 @@ function main(): void {
     guardIdx < computeIdx && bailIdx < computeIdx);
 
   // ── Viewer identity (§5.9) ──────────────────────────────────────────────
+  // The SCOPE (first arg) must be exactly { spaceId, userId } — no foreign
+  // identity. A trailing options arg (e.g. the MC1 view-as { targetCurrency })
+  // is permitted after the scope object; the scope shape itself is what this
+  // pins.
   check("engine scope userId is the authenticated requester",
-    /computePerspectives\(\{\s*spaceId,\s*userId\s*\}\)/.test(code) &&
+    /computePerspectives\(\{\s*spaceId,\s*userId\s*\}\s*[,)]/.test(code) &&
     /const\s+userId\s*=\s*auth\.user\.id/.test(code));
   check("no foreign/stored identity reaches the scope",
     !/userId:\s*[a-zA-Z]+\.(ownerUserId|createdByUserId|addedByUserId)/.test(code));

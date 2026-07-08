@@ -20,7 +20,7 @@
  */
 
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
-import { buildSpaceConversionContextById } from "@/lib/money/server-context";
+import { buildSpaceConversionContext, buildSpaceConversionContextById } from "@/lib/money/server-context";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import { registerLens } from "../registry";
 import type { ComputeOptions, LensResult, PerspectiveScope } from "../types";
@@ -52,10 +52,16 @@ async function debtLens(
 
   // MC1 QA Q2 — real space context (same seam as the liquidity lens flip);
   // by-id helper keeps @/lib/db out of this adapter, identity fallback inside.
-  const ctx = await buildSpaceConversionContextById(scope.spaceId, {
+  // MC1 view-as override — target the requested display currency directly when
+  // supplied (Personal preview) so the whole lens recomputes consistently;
+  // otherwise the Space's reporting currency via the by-id helper (byte-identical).
+  const convOpts = {
     currencies: lensRows.map((r) => r.currency ?? null),
     dates:      [minusDaysISO(toISODateUTC(options.now()), 1)],
-  });
+  };
+  const ctx = options.targetCurrency
+    ? await buildSpaceConversionContext({ reportingCurrency: options.targetCurrency }, convOpts)
+    : await buildSpaceConversionContextById(scope.spaceId, convOpts);
 
   return computeDebt(scope, options, lensRows, ctx);
 }

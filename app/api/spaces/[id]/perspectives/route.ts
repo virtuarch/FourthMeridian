@@ -30,6 +30,7 @@ import { requireSpaceAction }        from "@/lib/spaces/authorize";
 import { withApiHandler }            from "@/lib/api";
 import { computePerspectives }       from "@/lib/perspective-engine";
 import type { LensResult }           from "@/lib/perspective-engine";
+import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
 
 // Lens registrations — imported for module side effects (house pattern:
 // lib/ai/assemblers/* register the same way). A lens is computable only
@@ -38,7 +39,7 @@ import "@/lib/perspective-engine/lenses/liquidity";
 import "@/lib/perspective-engine/lenses/debt";
 
 export const GET = withApiHandler(async (
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) => {
   const { id: spaceId } = await params;
@@ -49,8 +50,15 @@ export const GET = withApiHandler(async (
   if (err) return err;
   const userId = auth.user.id;
 
+  // ── Optional display-currency override (MC1 "view as" preview) ─────────────
+  // Read-only: when a valid supported currency is requested, lenses recompute
+  // in it (headline + verdict + sums consistently). Absent or invalid ⇒
+  // undefined ⇒ the Space's saved reporting currency — today's behavior.
+  const parsedTarget = parseReportingCurrencyInput(req.nextUrl.searchParams.get("target"));
+  const targetCurrency = parsedTarget.ok ? parsedTarget.value : undefined;
+
   // ── Compute — always as the requesting viewer ──────────────────────────────
-  const results: LensResult[] = await computePerspectives({ spaceId, userId });
+  const results: LensResult[] = await computePerspectives({ spaceId, userId }, { targetCurrency });
 
   return NextResponse.json({ results });
 }, "GET /api/spaces/[id]/perspectives");

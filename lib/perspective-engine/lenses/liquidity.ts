@@ -18,7 +18,7 @@
  */
 
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
-import { buildSpaceConversionContextById } from "@/lib/money/server-context";
+import { buildSpaceConversionContext, buildSpaceConversionContextById } from "@/lib/money/server-context";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import { registerLens } from "../registry";
 import type { ComputeOptions, LensResult, PerspectiveScope } from "../types";
@@ -53,10 +53,17 @@ async function liquidityLens(
   // the raw-addition behavior. The by-id helper keeps @/lib/db out of this
   // adapter (its test tripwires pin the KD-19-only read path) and degrades
   // to identity if the Space row vanished mid-request.
-  const ctx = await buildSpaceConversionContextById(scope.spaceId, {
+  // MC1 view-as override — when the caller supplies a display-currency target
+  // (Personal preview), value the lens directly in THAT currency so headline,
+  // verdict, and metric sums all recompute consistently. Otherwise fall back to
+  // the Space's reporting currency via the by-id helper — byte-identical.
+  const convOpts = {
     currencies: lensRows.map((r) => r.currency ?? null),
     dates:      [minusDaysISO(toISODateUTC(options.now()), 1)],
-  });
+  };
+  const ctx = options.targetCurrency
+    ? await buildSpaceConversionContext({ reportingCurrency: options.targetCurrency }, convOpts)
+    : await buildSpaceConversionContextById(scope.spaceId, convOpts);
 
   return computeLiquidity(scope, options, lensRows, ctx);
 }
