@@ -1,3 +1,8 @@
+// TI5-2 — the read-time relationship engine's output shape surfaces on the
+// detail DTO. Type-only import (erased at runtime); RelationshipResolver is a
+// zero-import pure module, so this adds no runtime dependency and no cycle.
+import type { TransactionRelationships } from '@/lib/transactions/RelationshipResolver';
+
 export type AccountType = 'checking' | 'savings' | 'investment' | 'crypto' | 'debt' | 'other';
 
 export type WalletChain = 'BTC' | 'ETH' | 'SOL' | 'BNB' | 'MATIC' | 'ADA' | 'XRP' | 'OTHER';
@@ -270,6 +275,11 @@ export interface TransactionDetail extends Transaction {
   provenance:   TransactionDetailProvenance;
   counterparty: TransactionDetailCounterparty | null;
   reporting:    TransactionDetailReporting | null;
+
+  // ── TI5-2 — read-time relationship facts (RelationshipResolver) ────────────
+  // Computed on read from a tiny candidate set; never persisted. Deterministic
+  // only (pendingPosted, duplicate); refundCandidate/transferCandidate are null.
+  relationships: TransactionRelationships;
 }
 
 export interface AiAdvice {

@@ -59,6 +59,9 @@ import {
   serializeInvestmentTransactionRow,
 } from "@/lib/transactions/serialize";
 import { transactionDetailWhere } from "@/lib/transactions/detail-query";
+// TI5-2 — the pure read-time relationship engine. Candidate gathering stays in
+// this data layer; the resolver receives (transaction, candidates) and nothing else.
+import { resolveTransactionRelationships } from "@/lib/transactions/RelationshipResolver";
 import { convertMoney } from "@/lib/money/convert";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 
@@ -297,6 +300,36 @@ export async function getTransactionDetail(
           effectiveDateISO: conv.conversion?.effectiveDateISO ?? null,
         };
 
+  // ── TI5-2 — read-time relationship resolution ──────────────────────────────
+  // Smallest honest candidate set: rows in the SAME account within a bounded
+  // window around this row's date — enough for the pending→posted authorization
+  // gap and same-day duplicates. deletedAt is NOT filtered (the pending row is
+  // tombstoned once it posts and must still resolve; the resolver excludes
+  // tombstoned rows from DUPLICATE matching itself). Candidates inherit the
+  // target account's visibility — that account already passed the detail gate
+  // above, so no new exposure. The resolver is pure; gathering stays here.
+  const RELATIONSHIP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+  const candidates = await db.transaction.findMany({
+    where: {
+      ...(row.financialAccountId
+        ? { financialAccountId: row.financialAccountId }
+        : { accountId: row.accountId }),
+      id:   { not: row.id },
+      date: {
+        gte: new Date(row.date.getTime() - RELATIONSHIP_WINDOW_MS),
+        lte: new Date(row.date.getTime() + RELATIONSHIP_WINDOW_MS),
+      },
+    },
+    select: {
+      id: true, accountId: true, financialAccountId: true,
+      plaidTransactionId: true, pendingTransactionRef: true,
+      date: true, amount: true, merchant: true, pending: true,
+      deletedAt: true, flowType: true,
+    },
+    take: 100, // safety cap; same-account ±window sets are tiny
+  });
+  const relationships = resolveTransactionRelationships(row, candidates);
+
   return {
     ...serializeTransactionRow(row),
     pfcPrimary:         row.pfcPrimary ?? null,
@@ -318,5 +351,6 @@ export async function getTransactionDetail(
     provenance,
     counterparty,
     reporting,
+    relationships,
   };
 }
