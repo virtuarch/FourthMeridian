@@ -27,7 +27,8 @@ import type { SpaceTemplate, TemplateStatus } from "./types";
 function makeTemplate(
   id: string,
   category: SpaceCategory,
-  status: TemplateStatus = "live"
+  status: TemplateStatus = "live",
+  featured = false
 ): SpaceTemplate {
   return {
     id,
@@ -38,6 +39,7 @@ function makeTemplate(
     sections:    getPresetsForCategory(category),
     version:     1,
     status,
+    featured,
   };
 }
 
@@ -51,13 +53,13 @@ function makeTemplate(
  *          and GOAL (legacy — kept for the SpaceDashboard fallback path).
  */
 export const SPACE_TEMPLATES: readonly SpaceTemplate[] = [
-  // Primary picker row
-  makeTemplate("household",      SpaceCategory.HOUSEHOLD),
-  makeTemplate("family",         SpaceCategory.FAMILY),
-  makeTemplate("debt-payoff",    SpaceCategory.DEBT_PAYOFF),
-  makeTemplate("emergency-fund", SpaceCategory.EMERGENCY_FUND),
-  makeTemplate("retirement",     SpaceCategory.RETIREMENT),
-  makeTemplate("investment",     SpaceCategory.INVESTMENT),
+  // Primary picker row (featured — SP-2.2: mirrors the former PRIMARY_CATEGORIES)
+  makeTemplate("household",      SpaceCategory.HOUSEHOLD,      "live", true),
+  makeTemplate("family",         SpaceCategory.FAMILY,         "live", true),
+  makeTemplate("debt-payoff",    SpaceCategory.DEBT_PAYOFF,    "live", true),
+  makeTemplate("emergency-fund", SpaceCategory.EMERGENCY_FUND, "live", true),
+  makeTemplate("retirement",     SpaceCategory.RETIREMENT,     "live", true),
+  makeTemplate("investment",     SpaceCategory.INVESTMENT,     "live", true),
   // Secondary picker row
   makeTemplate("business",       SpaceCategory.BUSINESS),
   makeTemplate("property",       SpaceCategory.PROPERTY),

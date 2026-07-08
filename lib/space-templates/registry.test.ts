@@ -107,6 +107,28 @@ for (const t of SPACE_TEMPLATES) {
   check(`template "${t.id}" has no duplicate section keys`, new Set(keys).size === keys.length);
 }
 
+// SP-2.2 — featured is presentation metadata for the create picker: only
+// live templates may be featured, and the featured set mirrors the former
+// PRIMARY_CATEGORIES row exactly.
+const featured = SPACE_TEMPLATES.filter((t) => t.featured === true);
+check(
+  "featured templates are all live",
+  featured.every((t) => t.status === "live")
+);
+check(
+  "featured set matches the primary picker categories",
+  featured.length === PRIMARY_CATEGORIES.length &&
+    (PRIMARY_CATEGORIES as string[]).every((cat) =>
+      featured.some((t) => t.category === cat)
+    )
+);
+check(
+  "non-featured live templates match the secondary picker categories",
+  live
+    .filter((t) => t.featured !== true)
+    .every((t) => (SECONDARY_CATEGORIES as string[]).includes(t.category))
+);
+
 // 11. Parity — for every SpaceCategory, the category's template sections
 //     deep-equal getPresetsForCategory(category). This is the SP-1 core
 //     guarantee: the registry is a formalization, not a fork.

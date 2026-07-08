@@ -76,13 +76,11 @@ import { FormModal } from "@/components/atlas/FormModal";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { displaySpaceName } from "@/lib/format";
 import { usePlaid } from "@/context/PlaidContext";
-import {
-  CATEGORY_LABELS,
-  CATEGORY_ICONS,
-  PRIMARY_CATEGORIES,
-  SECONDARY_CATEGORIES,
-  SpaceCategory,
-} from "@/lib/space-presets";
+// SP-2.2 — the picker is driven by the SP-1 template registry (live templates
+// only; hidden templates like `personal`/`goal` are excluded by
+// getLiveTemplates). Template metadata (name/icon/featured) comes from the
+// registry — nothing is duplicated here.
+import { getLiveTemplates } from "@/lib/space-templates/registry";
 import { CategoryIcon } from "@/components/dashboard/SpacesClient";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
@@ -181,7 +179,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [isPublic, setIsPublic] = useState(false);
-  const [category, setCategory] = useState<SpaceCategory | null>(null);
+  const [templateId, setTemplateId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -211,13 +209,14 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
   // did, now without a bespoke keydown listener.
   if (!open) return null;
 
-  const visibleCategories = showAll ? [...PRIMARY_CATEGORIES, ...SECONDARY_CATEGORIES] : PRIMARY_CATEGORIES;
+  const liveTemplates    = getLiveTemplates();
+  const visibleTemplates = showAll ? liveTemplates : liveTemplates.filter((t) => t.featured);
 
   function resetForm() {
     setName("");
     setDescription("");
     setIsPublic(false);
-    setCategory(null);
+    setTemplateId(null);
     setShowAll(false);
     setError("");
     setStep("create");
@@ -249,7 +248,10 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
           name:        name.trim(),
           description: description.trim() || undefined,
           isPublic,
-          category:    category ?? SpaceCategory.OTHER,
+          // SP-2.2 — send the selected template; when none is selected, omit
+          // templateId entirely so the server's legacy fallback (category →
+          // OTHER) applies, matching the previous behavior exactly.
+          ...(templateId ? { templateId } : {}),
         }),
       });
       if (!res.ok) {
@@ -352,23 +354,23 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
       <div>
         <label className="text-xs font-medium text-[var(--text-secondary)] mb-3 block">Space Type</label>
         <div className="grid grid-cols-2 gap-2.5">
-          {visibleCategories.map((cat) => {
-            const selected = category === cat;
+          {visibleTemplates.map((tpl) => {
+            const selected = templateId === tpl.id;
             return (
               <button
-                key={cat}
+                key={tpl.id}
                 type="button"
-                onClick={() => setCategory(selected ? null : cat)}
+                onClick={() => setTemplateId(selected ? null : tpl.id)}
                 className={[
                   "flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-sm)] border text-left transition-[transform,background-color,border-color] active:scale-[0.97]",
                   chipTone(selected),
                 ].join(" ")}
               >
                 <span className={selected ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)]"}>
-                  <CategoryIcon name={CATEGORY_ICONS[cat]} />
+                  <CategoryIcon name={tpl.icon} />
                 </span>
                 <span className={`text-xs truncate ${selected ? "text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)]"}`}>
-                  {CATEGORY_LABELS[cat]}
+                  {tpl.name}
                 </span>
               </button>
             );

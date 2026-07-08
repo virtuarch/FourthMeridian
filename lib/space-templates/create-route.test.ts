@@ -96,6 +96,36 @@ for (const key of allTemplateKeys) {
   check(`create route does not hardcode section key "${key}"`, !routeSrc.includes(`"${key}"`));
 }
 
+// ── SP-2.2 — CreateSpaceModal picker scans ────────────────────────────────────
+
+const modalSrc = readFileSync(
+  path.join(process.cwd(), "components", "dashboard", "CreateSpaceModal.tsx"),
+  "utf8"
+);
+
+check(
+  "modal sources the picker from getLiveTemplates()",
+  modalSrc.includes('from "@/lib/space-templates/registry"') &&
+    modalSrc.includes("getLiveTemplates()")
+);
+check(
+  "modal no longer imports category picker lists/metadata",
+  !["CATEGORY_LABELS", "CATEGORY_ICONS", "PRIMARY_CATEGORIES", "SECONDARY_CATEGORIES"].some(
+    (id) => modalSrc.includes(id)
+  )
+);
+check("modal sends templateId in the create request", modalSrc.includes("templateId"));
+check(
+  "modal does not send category in the create request",
+  !/category\s*:/.test(modalSrc)
+);
+check(
+  "modal does not duplicate template metadata",
+  // Template names/icons must come from the registry object (tpl.*), never
+  // re-declared locally.
+  modalSrc.includes("tpl.icon") && modalSrc.includes("tpl.name")
+);
+
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed.`);
   process.exit(1);

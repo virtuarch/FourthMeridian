@@ -50,4 +50,10 @@ export interface SpaceTemplate {
   /** Template content version. Bump when `sections` meaningfully change. */
   version: number;
   status: TemplateStatus;
+  /**
+   * SP-2.2 — presentation metadata only: featured templates render in the
+   * create picker's primary row; non-featured live templates appear behind
+   * "Show more types". Absent = not featured. No server-side meaning.
+   */
+  featured?: boolean;
 }
