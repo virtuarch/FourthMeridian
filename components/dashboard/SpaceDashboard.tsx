@@ -93,7 +93,7 @@ import {
   SPACE_ACCOUNTS_CHANGED_EVENT,
   SPACE_CURRENCY_CHANGED_EVENT,
 } from "@/lib/space-nav";
-import { getPerspectivesForCategory, getCompositionSwitcherItems } from "@/lib/perspectives";
+import { getPerspectivesForCategory, getCompositionSwitcherItems, PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
 import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { PerspectiveSwitcher, COMPOSITION_ICON_MAP } from "@/components/dashboard/widgets/PerspectiveSwitcher";
@@ -219,6 +219,44 @@ interface Props {
    * Spaces, or no override) ⇒ the saved-currency context — today's behavior.
    */
   transactionsMoneyCtxOverride?: SerializedConversionContext;
+}
+
+// ─── URL-backed tab state (?tab=…&perspective=…) ────────────────────────────────
+// Persist the active Space tab (and, on Perspectives, the selected Perspective)
+// in the query string via window.history — no server re-run, no full reload.
+// Only these rail tabs are URL-synced; modal-routed tabs (GOALS/DEBT/…) are not.
+const URL_SYNCED_TABS = new Set(["OVERVIEW", "PERSPECTIVES", "ACCOUNTS", "ACTIVITY", "TRANSACTIONS", "MEMBERS"]);
+// URL "tab" value → activeTab. Includes rail tabs, the modal-routed tabs, and
+// legacy aliases (timeline/banking/credit) so existing deep links keep working.
+const URL_TAB_ALIAS: Record<string, string> = {
+  overview: "OVERVIEW", perspectives: "PERSPECTIVES", accounts: "ACCOUNTS", banking: "ACCOUNTS",
+  activity: "ACTIVITY", timeline: "ACTIVITY", transactions: "TRANSACTIONS", members: "MEMBERS",
+  goals: "GOALS", debt: "DEBT", credit: "DEBT", investments: "INVESTMENTS", retirement: "RETIREMENT",
+};
+
+/** URL "tab" param → activeTab. Present-but-invalid ⇒ OVERVIEW. Absent ⇒ null. */
+function parseTabParam(raw: string | null): string | null {
+  if (!raw) return null;
+  return URL_TAB_ALIAS[raw.toLowerCase()] ?? "OVERVIEW";
+}
+/** cashFlow → "cash-flow"; wealth → "wealth". */
+function perspectiveIdToSlug(id: string): string {
+  return id.replace(/([A-Z])/g, (m) => `-${m.toLowerCase()}`);
+}
+/** "cash-flow" → cashFlow. */
+function slugToPerspectiveId(slug: string): string {
+  return slug.toLowerCase().replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
+}
+/** URL "perspective" param → id. Present-but-invalid ⇒ "wealth". Absent ⇒ null. */
+function parsePerspectiveParam(raw: string | null): string | null {
+  if (!raw) return null;
+  const id = slugToPerspectiveId(raw);
+  return id in PERSPECTIVE_LIBRARY ? id : "wealth";
+}
+function readUrlTabState(): { tab: string | null; perspective: string | null } {
+  if (typeof window === "undefined") return { tab: null, perspective: null };
+  const p = new URLSearchParams(window.location.search);
+  return { tab: parseTabParam(p.get("tab")), perspective: parsePerspectiveParam(p.get("perspective")) };
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -2448,6 +2486,44 @@ export function SpaceDashboard({
     ? perspectiveItems.find((p) => p.id === activePerspectiveId) ?? null
     : null;
 
+  // ── URL-backed tab state (write) ────────────────────────────────────────────
+  // Mirror activeTab (+ selected Perspective) into ?tab=…&perspective=… via
+  // window.history — no server re-run, no reload. First sync canonicalizes with
+  // replaceState; later user changes pushState so browser back/forward works.
+  // Only rail tabs are synced; modal-routed tabs (GOALS/DEBT/…) leave the URL.
+  const urlInitDone = useRef(false);
+  useEffect(() => {
+    if (!activeTab || typeof window === "undefined") return;
+    if (!URL_SYNCED_TABS.has(activeTab)) return;
+    const params = new URLSearchParams(window.location.search);
+    params.set("tab", activeTab.toLowerCase());
+    if (activeTab === "PERSPECTIVES" && activePerspectiveId) {
+      params.set("perspective", perspectiveIdToSlug(activePerspectiveId));
+    } else {
+      params.delete("perspective");
+    }
+    const next = `${window.location.pathname}?${params.toString()}`;
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (next === current) return;                 // already in sync (incl. after popstate)
+    if (!urlInitDone.current) {
+      urlInitDone.current = true;
+      window.history.replaceState(window.history.state, "", next);
+    } else {
+      window.history.pushState(window.history.state, "", next);
+    }
+  }, [activeTab, activePerspectiveId]);
+
+  // ── URL-backed tab state (read: browser back/forward) ───────────────────────
+  useEffect(() => {
+    function onPopState() {
+      const { tab, perspective } = readUrlTabState();
+      if (perspective) setSelectedPerspectiveId(perspective);
+      if (tab) setActiveTab(tab);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
   // ── Cash Flow workspace (UX-PER-3) ─────────────────────────────────────────
   // Workspace-local period state shared by every Cash Flow widget, and the
   // transactions conversion context (rehydrated F-6 / "view as" override) that
@@ -2626,12 +2702,14 @@ export function SpaceDashboard({
       // Set default tab from real section data — never default to SETTINGS
       if (!initialTabSet.current) {
         initialTabSet.current = true;
-        // SP-2A-4a: caller-provided initial tab (e.g. a mapped legacy
-        // ?tab= deep link) wins over the section-derived default. Applied
-        // once, here, so the existing defaulting below is otherwise
-        // untouched. No URL synchronization.
-        if (initialTab) {
-          setActiveTab(initialTab);
+        // URL-backed tab state: the query string (?tab=…&perspective=…) is the
+        // source of truth on load/refresh, then the caller's mapped legacy
+        // initialTab, then the section-derived default below.
+        const url = readUrlTabState();
+        if (url.perspective) setSelectedPerspectiveId(url.perspective);
+        const urlTab = url.tab ?? (initialTab || null);
+        if (urlTab) {
+          setActiveTab(urlTab);
           return;
         }
         const enabledTabs = new Set(secs.filter((s) => s.enabled).map((s) => s.tab));

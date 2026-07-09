@@ -76,14 +76,14 @@ check(
   /if \(!heroDef && spaceType !== "PERSONAL"[\s\S]{0,40}\) return;/.test(dashSrc)
 );
 check(
-  "initialTab is applied once at the section-derived defaulting site",
-  /initialTabSet\.current = true;[\s\S]{0,400}if \(initialTab\)/.test(dashSrc)
+  "initial tab is applied once — from the URL (?tab=), then the initialTab fallback",
+  /initialTabSet\.current = true;[\s\S]{0,400}readUrlTabState\(\)[\s\S]{0,200}initialTab/.test(dashSrc)
 );
 
 // No URL synchronization was added for tab state.
 check(
-  "SpaceDashboard does not read searchParams",
-  !dashSrc.includes("useSearchParams")
+  "URL tab state uses window.history (not the useSearchParams hook, which forces a Suspense boundary)",
+  !dashSrc.includes("useSearchParams") && dashSrc.includes("readUrlTabState")
 );
 
 // The flip happened (SP-2A-4c): Personal renders through the shared shell
