@@ -24,13 +24,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource, ProviderType } from "@prisma/client";
+import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource } from "@prisma/client";
 import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
-import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
+import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
@@ -84,7 +84,10 @@ export async function POST(req: NextRequest) {
     // lib/accounts/provider-identity.ts). Owner-scoped lookup above is
     // unchanged — this only mirrors activeFa's own identity, never another
     // owner's FinancialAccount, per the D2 Step 1D corrected model.
-    await dualWriteProviderAccountIdentity(activeFa.id, ProviderType.WALLET, walletAddress.trim());
+    // Wallet Provider v1.5 — ensure the real Connection(WALLET) spine and link
+    // the AccountConnection + ProviderAccountIdentity to it (also self-heals a
+    // wallet created before v1.5). Idempotent, non-fatal.
+    await alignWalletProviderSpine({ userId, financialAccountId: activeFa.id, address: walletAddress.trim(), chain });
 
     // walletAddress has no DB-level unique constraint, so an archived row
     // for this same address can exist alongside the active one (e.g. a
@@ -168,7 +171,8 @@ export async function POST(req: NextRequest) {
 
     // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
     // this user's own archived account — no cross-owner behavior involved.
-    await dualWriteProviderAccountIdentity(archivedFa.id, ProviderType.WALLET, walletAddress.trim());
+    // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine.
+    await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletAddress.trim(), chain });
 
     // BTC wallet sync v1 — populate the confirmed balance + USD value on
     // reactivate (best-effort, non-fatal). syncBtcWallet never throws; on
@@ -256,7 +260,9 @@ export async function POST(req: NextRequest) {
   // provider} lookup finds nothing and creates — no collision handling
   // needed: another owner's FinancialAccount for the same address (if any)
   // is an entirely separate row under the D2 Step 1D corrected model.
-  await dualWriteProviderAccountIdentity(fa.id, ProviderType.WALLET, walletAddress.trim());
+  // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine for the
+  // brand-new wallet (Connection → ProviderAccountIdentity → AccountConnection).
+  await alignWalletProviderSpine({ userId, financialAccountId: fa.id, address: walletAddress.trim(), chain });
   // D3 Step 3 HOME Semantics Correction — no separate HOME backfill call
   // needed here. computeLinkKind() (inside dualWriteSpaceAccountLink above)
   // now assigns HOME to the Space a brand-new account's first link is

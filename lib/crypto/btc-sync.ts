@@ -26,6 +26,7 @@
 
 import { db } from "@/lib/db";
 import { SyncIssueKind, type Prisma } from "@prisma/client";
+import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import {
   fetchConfirmedSats,
   fetchBtcUsdPrice,
@@ -92,7 +93,7 @@ export async function syncBtcWallet(
 ): Promise<BtcWalletSyncResult> {
   const account = await db.financialAccount.findUnique({
     where: { id: accountId },
-    select: { id: true, walletChain: true, walletAddress: true, deletedAt: true },
+    select: { id: true, ownerUserId: true, walletChain: true, walletAddress: true, deletedAt: true },
   });
 
   // Guard: only an active, addressed BTC wallet is syncable here.
@@ -139,6 +140,20 @@ export async function syncBtcWallet(
       lastUpdated: new Date(),
     },
   });
+
+  // Wallet Provider v1.5 — record this sync on the wallet's Connection spine
+  // (ensures/links Connection → identity → AccountConnection, and stamps
+  // lastSyncedAt). Best-effort/non-fatal and also serves as the lazy backfill
+  // for wallets created before v1.5. Does not alter the balance write above.
+  if (account.ownerUserId) {
+    await alignWalletProviderSpine({
+      userId:             account.ownerUserId,
+      financialAccountId: accountId,
+      address,
+      chain:              BTC_CHAIN,
+      markSynced:         true,
+    });
+  }
 
   return { accountId, ok: true, syncStatus: "synced", nativeBalance, balanceUsd, priceUsd };
 }
