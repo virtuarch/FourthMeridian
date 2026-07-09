@@ -54,6 +54,7 @@ interface Props {
 
 export function PersonalDashboard({
   spaceId, spaceName, spaceType, category, myRole, currentUserId, initialTab,
+  ficoScore,
 }: Props) {
   // EPHEMERAL "view as" override — pure in-memory, never persisted; a reload
   // resets to the Space's saved currency by construction.
@@ -76,6 +77,9 @@ export function PersonalDashboard({
         myRole={myRole}
         currentUserId={currentUserId}
         initialTab={initialTab}
+        // UX-PER-3 Debt — the user's FICO score for the Debt workspace's
+        // credit-health companion (never drives debt math).
+        ficoScore={ficoScore}
         // Reporting currency (snapshot stamp) → the chart section's "from" side;
         // the shell's ctx.target (effective display currency) is the "to" side,
         // so the chart converts correctly even under a "view as" override.

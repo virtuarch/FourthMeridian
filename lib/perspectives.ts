@@ -117,6 +117,14 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     id: "debt", label: "Debt", icon: "CreditCard", status: "available", group: "Financial",
     description: "Balances, payoff pace, and credit health.",
     lensId: "debt",
+    // UX-PER-3 Debt workspace. Doctrine: Debt answers "What do I owe?" and is
+    // LIABILITIES ONLY — it explains the shape, cost, and risk of debt (no
+    // assets / net worth / allocation / spending / goals). Reuses the existing
+    // Debt payoff calculator, credit-score card, and missing-info editor.
+    widgets: [
+      "debt_by_account", "debt_cost", "credit_utilization", "debt_history",
+      "debt_payoff_calculator", "credit_score", "debt_complete_info",
+    ],
   },
   /**
    * First library entry born lens-backed: no host tab behind it, no

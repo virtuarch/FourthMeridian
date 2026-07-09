@@ -352,6 +352,101 @@ const registry: WidgetRegistryEntry[] = [
     },
   },
 
+  // ── Debt Perspective (UX-PER-3) — liabilities-only (shape / cost / risk). ────
+  // Rendered as VIRTUAL sections in the Debt workspace; `tab` is metadata only.
+  // Answer "What do I owe?".
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_by_account",
+      label:       "Debt by Account",
+      description: "Every liability ranked by cost (APR) then size — the shape of what you owe.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_cost",
+      label:       "Interest Cost",
+      description: "Estimated monthly interest per debt (balance × APR ÷ 12) — which debts cost the most.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "credit_utilization",
+      label:       "Credit Utilization",
+      description: "Balance vs credit limit for revolving lines, highest utilization first.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_payoff_snapshot",
+      label:       "Payoff Snapshot",
+      description: "Total owed, minimum payments, highest-APR target, and an honest payoff estimate.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_history",
+      label:       "Debt History",
+      description: "Total debt over time from this Space's snapshot history.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "credit_score",
+      label:       "Credit Score",
+      description: "Your manual FICO score — a credit-health companion. Never drives debt calculations.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "ShieldCheck",
+      dataTier:    "none",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_complete_info",
+      label:       "Complete Debt Details",
+      description: "Fill in missing APR or minimum payment on your debt accounts.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+
   // ── Accounts ────────────────────────────────────────────────────────────────
 
   {

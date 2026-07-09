@@ -66,6 +66,14 @@ import {
   renderCashFlowByCategory,
 } from "@/components/space/widgets/cash-flow-adapters";
 import {
+  renderDebtByAccount,
+  renderDebtCost,
+  CreditUtilizationWidget,
+  renderDebtHistory,
+  renderCreditScore,
+  renderDebtCompleteInfo,
+} from "@/components/space/widgets/debt-perspective-adapters";
+import {
   CASH_FLOW_PERIODS,
   DEFAULT_CASH_FLOW_PERIOD,
   type CashFlowPeriod,
@@ -183,6 +191,13 @@ interface Props {
    * display === reporting).
    */
   snapshotCurrency?: string;
+  /**
+   * UX-PER-3 Debt — the user's manual FICO score (user-level), passed by the
+   * Personal host for the Debt workspace's credit-health companion. Absent ⇒
+   * the widget shows its "add score" affordance. Never drives debt math.
+   */
+  ficoScore?: number | null;
+  ficoUpdatedAt?: string;
   /**
    * MC1 — when set (Personal "view as" override active), Perspective lenses are
    * fetched with this display-currency target so their metrics + verdict
@@ -999,6 +1014,13 @@ type SectionRenderProps = {
   transactions?:         Transaction[] | null;
   txCtx?:                ConversionContext;
   period?:               CashFlowPeriod;
+  /**
+   * UX-PER-3 Debt — the user's manual credit score for the Debt workspace's
+   * credit-health companion (FicoCard). User-level, threaded from the Personal
+   * host; absent ⇒ FicoCard's "add score" affordance. Never drives debt math.
+   */
+  ficoScore?:            number | null;
+  ficoUpdatedAt?:        string;
 };
 
 // ─── ProgressWidget adapter helpers ──────────────────────────────────────────
@@ -1253,6 +1275,14 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
   "cash_flow_history":       (p) => renderCashFlowHistory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
   "income_vs_spending":      (p) => renderIncomeVsSpending(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
   "cash_flow_by_category":   (p) => renderCashFlowByCategory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
+  // ── Debt Perspective (UX-PER-3) — liabilities-only (shape/cost/risk) ────────
+  "debt_by_account":         (p) => renderDebtByAccount(p.accounts, p.ctx),
+  "debt_cost":               (p) => renderDebtCost(p.accounts, p.ctx),
+  "credit_utilization":      (p) => <CreditUtilizationWidget accounts={p.accounts} ctx={p.ctx} />,
+  "debt_history":            (p) => renderDebtHistory(p.snapshots, p.ctx),
+  "credit_score":            (p) => renderCreditScore(p.ficoScore, p.ficoUpdatedAt),
+  "debt_complete_info":      (p) => renderDebtCompleteInfo(p.accounts),
+  // debt_payoff_calculator is already registered above (reused from the Debt tab).
   "net_worth_section":      renderNetWorth,       // deprecated alias — seeded pre-v2
   "accounts_overview":      (p) => <AccountsCard accounts={p.accounts} />,
   "business_accounts":      (p) => <AccountsCard accounts={p.accounts} />,
@@ -1518,6 +1548,8 @@ const SOLID_LEDE_KEYS = new Set([
   "wealth_by_account", "institution_allocation", "asset_allocation", "wealth_concentration",
   "liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration",
   "cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category",
+  "debt_by_account", "debt_cost", "credit_utilization", "debt_payoff_snapshot",
+  "debt_history", "credit_score", "debt_complete_info", "debt_payoff_calculator",
 ]);
 
 function SectionCard({
@@ -1533,6 +1565,8 @@ function SectionCard({
   transactions,
   txCtx,
   period,
+  ficoScore,
+  ficoUpdatedAt,
 }: {
   section:     DashboardSection;
   accounts:    SpaceAccount[];
@@ -1549,6 +1583,9 @@ function SectionCard({
   transactions?:     Transaction[] | null;
   txCtx?:            ConversionContext;
   period?:           CashFlowPeriod;
+  /** UX-PER-3 Debt — see SectionRenderProps.ficoScore/ficoUpdatedAt. */
+  ficoScore?:        number | null;
+  ficoUpdatedAt?:    string;
 }) {
   const [collapsed,        setCollapsed]        = useState(false);
   const [payoffFullscreen, setPayoffFullscreen] = useState(false);
@@ -1626,7 +1663,7 @@ function SectionCard({
     if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen, ctx);
 
     const render = SectionRegistry[section.key];
-    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period });
+    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, ficoScore, ficoUpdatedAt });
     return <ContextualCard sectionKey={section.key} label={section.label} />;
   }
 
@@ -2224,6 +2261,8 @@ export function SpaceDashboard({
   initialTab,
   overviewTopSlot,
   snapshotCurrency,
+  ficoScore,
+  ficoUpdatedAt,
   perspectiveTargetCurrency,
   transactionsMoneyCtxOverride,
 }: Props) {
@@ -2395,6 +2434,9 @@ export function SpaceDashboard({
   // transaction fetch below when the workspace is open in a non-flow Space.
   const [cashFlowPeriod, setCashFlowPeriod] = useState<CashFlowPeriod>(DEFAULT_CASH_FLOW_PERIOD);
   const cashFlowActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "cashFlow";
+  // Debt workspace needs SpaceSnapshot history (the `debt` series) for its
+  // Debt History widget — trigger the snapshot fetch when it's open.
+  const debtWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "debt";
   const txConversionCtx = useMemo(() => {
     const serialized = transactionsMoneyCtxOverride ?? spaceMoneyCtx;
     return serialized ? rehydrateContext(serialized) : undefined;
@@ -2501,7 +2543,7 @@ export function SpaceDashboard({
     // Overview now includes the snapshot-backed `net_worth_chart` section, so
     // it still needs the snapshot fetch. Shared non-chartable categories skip
     // it as before. (Future: fetch when any snapshot-tier section is present.)
-    if (!heroDef && spaceType !== "PERSONAL") return;
+    if (!heroDef && spaceType !== "PERSONAL" && !debtWorkspaceActive) return;
     let active = true;
     fetch(`/api/spaces/${spaceId}/snapshots`)
       .then((r) => (r.ok ? r.json() : { snapshots: [] }))
@@ -2510,7 +2552,7 @@ export function SpaceDashboard({
     return () => { active = false; };
   // currencyNonce (Q6): re-fetch the stamp-aware hero series after a currency change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, category, currencyNonce]);
+  }, [spaceId, category, debtWorkspaceActive, currencyNonce]);
 
   // ── Space transactions (KD-15-filtered on the server) ────────────────────
   // Flow-identified templates show an Overview preview, so they fetch up
@@ -2920,6 +2962,8 @@ export function SpaceDashboard({
                     transactions={spaceTransactions}
                     txCtx={txConversionCtx}
                     period={cashFlowPeriod}
+                    ficoScore={ficoScore}
+                    ficoUpdatedAt={ficoUpdatedAt}
                   />
                 ))
               ) : activePerspective ? (

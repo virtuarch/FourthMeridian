@@ -72,6 +72,20 @@ check("cashFlow workspace excludes Overview/Wealth/Liquidity widgets",
     k === "net_worth" || k === "net_worth_chart" || k === "allocation" ||
     k === "wealth_by_account" || k === "liquidity_ladder"));
 
+// ── 2d. Debt workspace uses its liabilities-only widgets (incl. reused ones). ──
+check("debt workspace = [debt_by_account, debt_cost, credit_utilization, debt_history, debt_payoff_calculator, credit_score, debt_complete_info]",
+  JSON.stringify(PERSPECTIVE_LIBRARY.debt.widgets) ===
+    JSON.stringify([
+      "debt_by_account", "debt_cost", "credit_utilization", "debt_history",
+      "debt_payoff_calculator", "credit_score", "debt_complete_info",
+    ]));
+check("debt workspace includes the reused payoff calculator", (PERSPECTIVE_LIBRARY.debt.widgets ?? []).includes("debt_payoff_calculator"));
+// Doctrine: Debt must NOT reuse asset/net-worth/spending/goals widgets.
+check("debt workspace excludes asset/overview/cashflow widgets",
+  !(PERSPECTIVE_LIBRARY.debt.widgets ?? []).some((k) =>
+    k === "net_worth" || k === "allocation" || k === "wealth_by_account" ||
+    k === "asset_allocation" || k === "cash_flow_summary" || k === "cash_flow_by_category"));
+
 // ── 3. toVirtualSections shape + virtual-id safety. ──
 const vs = toVirtualSections("wealth", ["net_worth", "net_worth_chart", "allocation"]);
 check("produces one virtual section per widget", vs.length === 3);

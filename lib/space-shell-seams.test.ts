@@ -72,8 +72,8 @@ check(
   /accounts\.length === 0 \?/.test(dashSrc) && !/accounts\.length === 0 && !renderHero/.test(dashSrc)
 );
 check(
-  "snapshots are fetched for PERSONAL (net_worth_chart) or a heroDef",
-  dashSrc.includes('if (!heroDef && spaceType !== "PERSONAL") return;')
+  "snapshots are fetched for PERSONAL (net_worth_chart) or a heroDef (plus the Debt workspace)",
+  /if \(!heroDef && spaceType !== "PERSONAL"[\s\S]{0,40}\) return;/.test(dashSrc)
 );
 check(
   "initialTab is applied once at the section-derived defaulting site",
