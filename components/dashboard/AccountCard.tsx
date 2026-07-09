@@ -4,6 +4,7 @@ import { formatDate } from "@/lib/format";
 import { Account } from "@/types";
 import { Building2, TrendingUp, Bitcoin, CreditCard, PiggyBank } from "lucide-react";
 import { ReconnectAccountButton } from "@/components/dashboard/ReconnectAccountButton";
+import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
 
 const icons: Record<string, React.ElementType> = {
   checking: Building2,
@@ -51,6 +52,12 @@ export function AccountCard({ account }: Props) {
             account connected by someone else. */}
         {account.needsReauth && account.plaidItemId && (
           <ReconnectAccountButton plaidItemId={account.plaidItemId} />
+        )}
+        {/* Manual balance refresh — self-custodied crypto wallets only
+            (wallet-backed `type === "crypto"`). Plaid banks reconnect above;
+            they never render this. */}
+        {account.type === "crypto" && account.walletAddress && (
+          <SyncWalletButton accountId={account.id} syncStatus={account.syncStatus} />
         )}
       </div>
     </DataCard>

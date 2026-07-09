@@ -148,6 +148,31 @@ async function main(): Promise<void> {
   check("wallet route creates/imports no transactions",
     !/\bTransaction\b/.test(walletRoute) && !/\.transaction\.create/.test(walletRoute));
 
+  // ── PART C — manual sync affordance + active-dup backend correction ─────────
+
+  // Backend correction: the active-duplicate re-add branch now syncs too, so
+  // an already-existing BTC wallet has an automatic trigger. All three branches
+  // (active-dup, reactivate, new-create) must call syncBtcWallet.
+  check("wallet route syncs on re-add of an existing wallet (active-dup branch)",
+    walletRoute.includes("syncBtcWallet(activeFa.id)"));
+  check("wallet route syncs on all three branches",
+    (walletRoute.match(/syncBtcWallet\(/g) || []).length >= 3);
+
+  const card = code(read("components", "dashboard", "AccountCard.tsx"));
+  check("AccountCard renders SyncWalletButton", card.includes("SyncWalletButton"));
+  check("AccountCard gates the sync button to crypto wallet-backed accounts",
+    /type\s*===\s*["']crypto["']/.test(card) && card.includes("walletAddress"));
+
+  const btn = code(read("components", "dashboard", "SyncWalletButton.tsx"));
+  check("SyncWalletButton is a client component", btn.includes('"use client"') || btn.includes("'use client'"));
+  check("SyncWalletButton POSTs to the manual sync route",
+    btn.includes("/api/accounts/${accountId}/sync") && /method:\s*["']POST["']/.test(btn));
+  check("SyncWalletButton has a loading state", btn.includes("setLoading") && btn.includes("Loader2"));
+  check("SyncWalletButton refreshes on success", btn.includes("router.refresh()"));
+  check("SyncWalletButton shows an inline error on failure", btn.includes("setError"));
+  check("SyncWalletButton label: pending -> 'Sync wallet', else 'Refresh'",
+    /syncStatus\s*===\s*["']pending["']/.test(btn) && btn.includes("Sync wallet") && btn.includes("Refresh"));
+
   // ── Summary ─────────────────────────────────────────────────────────────────
   console.log(`\nbtc-sync: ${passes} passed, ${failures} failed`);
   process.exit(failures ? 1 : 0);

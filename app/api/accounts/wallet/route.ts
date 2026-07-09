@@ -105,6 +105,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // BTC wallet sync v1 — refresh the confirmed balance + USD value when an
+    // existing BTC wallet is re-added (best-effort, non-fatal; matches the
+    // create/reactivate branches). Without this, an already-existing wallet
+    // has no automatic sync trigger at all — the reported "re-add does nothing"
+    // bug. Runs BEFORE snapshot regen so the snapshot captures the fresh balance.
+    if (chain === BTC_CHAIN) {
+      try { await syncBtcWallet(activeFa.id); }
+      catch (syncErr) { console.warn(`[POST /api/accounts/wallet] BTC sync failed for ${activeFa.id} (non-fatal):`, syncErr); }
+    }
+
     // Regenerate SpaceSnapshot now that the share is active in this space —
     // same best-effort/non-fatal pattern as the reactivation branch below.
     try {
