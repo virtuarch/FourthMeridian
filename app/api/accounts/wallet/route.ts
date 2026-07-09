@@ -32,6 +32,7 @@ import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
+import { isExtendedKey } from "@/lib/crypto/btc-address-derivation";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -49,6 +50,13 @@ export async function POST(req: NextRequest) {
   if (!SUPPORTED_CHAINS.includes(chain)) {
     return NextResponse.json({ error: `Unsupported chain. Use: ${SUPPORTED_CHAINS.join(", ")}` }, { status: 400 });
   }
+
+  // Wallet Provider v4 — the address field also accepts a BTC xpub/ypub/zpub
+  // (watch-only descriptor). When it does, the stored walletAddress is the
+  // descriptor, the Connection credential is the descriptor, and per-address
+  // ProviderAccountIdentity rows are created by xpub discovery during sync —
+  // NOT here (hence descriptorOnly on the spine align below).
+  const isXpub = chain === BTC_CHAIN && isExtendedKey(walletAddress.trim());
 
   const { spaceId, userId } = await getSpaceContext();
 
@@ -87,7 +95,7 @@ export async function POST(req: NextRequest) {
     // Wallet Provider v1.5 — ensure the real Connection(WALLET) spine and link
     // the AccountConnection + ProviderAccountIdentity to it (also self-heals a
     // wallet created before v1.5). Idempotent, non-fatal.
-    await alignWalletProviderSpine({ userId, financialAccountId: activeFa.id, address: walletAddress.trim(), chain });
+    await alignWalletProviderSpine({ userId, financialAccountId: activeFa.id, address: walletAddress.trim(), chain, descriptorOnly: isXpub });
 
     // walletAddress has no DB-level unique constraint, so an archived row
     // for this same address can exist alongside the active one (e.g. a
@@ -172,7 +180,7 @@ export async function POST(req: NextRequest) {
     // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
     // this user's own archived account — no cross-owner behavior involved.
     // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine.
-    await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletAddress.trim(), chain });
+    await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletAddress.trim(), chain, descriptorOnly: isXpub });
 
     // BTC wallet sync v1 — populate the confirmed balance + USD value on
     // reactivate (best-effort, non-fatal). syncBtcWallet never throws; on
@@ -262,7 +270,7 @@ export async function POST(req: NextRequest) {
   // is an entirely separate row under the D2 Step 1D corrected model.
   // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine for the
   // brand-new wallet (Connection → ProviderAccountIdentity → AccountConnection).
-  await alignWalletProviderSpine({ userId, financialAccountId: fa.id, address: walletAddress.trim(), chain });
+  await alignWalletProviderSpine({ userId, financialAccountId: fa.id, address: walletAddress.trim(), chain, descriptorOnly: isXpub });
   // D3 Step 3 HOME Semantics Correction — no separate HOME backfill call
   // needed here. computeLinkKind() (inside dualWriteSpaceAccountLink above)
   // now assigns HOME to the Space a brand-new account's first link is

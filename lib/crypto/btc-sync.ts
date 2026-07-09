@@ -35,11 +35,16 @@ import {
   ProviderType,
   type Prisma,
 } from "@prisma/client";
-import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import {
-  fetchConfirmedSats,
+  alignWalletProviderSpine,
+  touchWalletConnectionStatus,
+  markWalletAccountConnectionSynced,
+} from "@/lib/accounts/wallet-connection";
+import {
+  fetchConfirmedSatsForAddresses,
   fetchBtcUsdPrice,
   fetchAddressTxsRaw,
+  fetchAddressTxCount,
   normalizeBtcAddressTxs,
   satsToBtc,
   computeUsdBalance,
@@ -48,6 +53,11 @@ import {
   type NormalizedBtcMovement,
   type BtcFlowType,
 } from "@/lib/crypto/btc-explorer";
+import {
+  parseExtendedKey,
+  deriveAddressAt,
+  isExtendedKey,
+} from "@/lib/crypto/btc-address-derivation";
 
 /** The only chain this v1 sync supports. */
 export const BTC_CHAIN = "BTC";
@@ -74,6 +84,10 @@ export interface BtcSyncDeps {
   priceFetcher?: () => Promise<number>;
   /** Override the confirmed-transactions fetch (offline tests). */
   txFetcher?: (address: string) => Promise<RawBtcTx[]>;
+  /** Override the xpub address-usage check (true = address has activity). */
+  usageChecker?: (address: string) => Promise<boolean>;
+  /** xpub discovery: consecutive-unused stop threshold (default 20, BIP44). */
+  gapLimit?: number;
 }
 
 /** Best-effort SyncIssue writer — never throws (mirrors lib/plaid/syncIssues.ts). */
@@ -227,22 +241,30 @@ function buildTransactionRow(
   };
 }
 
+/** Dedupe raw txs by txid — a tx touching several of a wallet's addresses
+ *  appears once per address list. */
+function dedupeRawTxsByTxid(txs: RawBtcTx[]): RawBtcTx[] {
+  const seen = new Set<string>();
+  return txs.filter((t) => (seen.has(t.txid) ? false : (seen.add(t.txid), true)));
+}
+
 /**
- * Import an address's confirmed BTC transactions as ordinary Transaction rows.
- * Idempotent (dedupes on externalTransactionId) and best-effort/non-fatal — a
- * transaction-import failure never fails the balance/holding sync. No BTC-specific
- * table: these are normal Transaction rows, indistinguishable from any provider's.
+ * Import a wallet's confirmed BTC transactions (across ALL its addresses) as
+ * ordinary Transaction rows. Raw txs are deduped by txid before normalization,
+ * so a tx moving coins between two of the wallet's own addresses is ONE row set
+ * with the net computed across the full address set. Idempotent (dedupes on
+ * externalTransactionId) and best-effort/non-fatal. No BTC-specific table.
  */
 async function importBtcTransactions(
-  account: { id: string; ownerUserId: string | null; walletAddress: string },
+  account: { id: string; ownerUserId: string | null; addresses: string[] },
   deps: BtcSyncDeps,
 ): Promise<void> {
   try {
-    const rawTxs = deps.txFetcher
-      ? await deps.txFetcher(account.walletAddress)
-      : await fetchAddressTxsRaw(account.walletAddress, deps.fetchImpl);
+    const fetchTxs = deps.txFetcher ?? ((a: string) => fetchAddressTxsRaw(a, deps.fetchImpl));
+    const lists = await Promise.all(account.addresses.map(fetchTxs));
+    const rawTxs = dedupeRawTxsByTxid(lists.flat());
 
-    const movements = normalizeBtcAddressTxs(rawTxs, account.walletAddress);
+    const movements = normalizeBtcAddressTxs(rawTxs, account.addresses);
     if (movements.length === 0) return;
 
     // Engine-level counterparty resolution → INTERNAL transfers.
@@ -271,10 +293,117 @@ async function importBtcTransactions(
   }
 }
 
+// ── Wallet Provider v4 — xpub / multi-address foundation ─────────────────────
+
+interface WalletConnectionRef { id: string; credential: string | null }
+
+/** The wallet's Connection (credential = single address OR xpub descriptor). */
+async function loadWalletConnection(financialAccountId: string): Promise<WalletConnectionRef | null> {
+  const ac = await db.accountConnection.findFirst({
+    where:  { financialAccountId, connectionId: { not: null }, deletedAt: null },
+    select: { connection: { select: { id: true, credential: true } } },
+  });
+  return ac?.connection ?? null;
+}
+
 /**
- * Sync one BTC wallet account. Never throws. On any external failure the
- * account row is left untouched (visible, still "pending") and a SyncIssue is
- * recorded.
+ * Every REAL address of a wallet, resolved through ProviderAccountIdentity — the
+ * canonical address table (single-address = one row, xpub = many). Defensive:
+ * never returns an extended key even if one were somehow stored.
+ */
+async function getWalletAddresses(financialAccountId: string): Promise<string[]> {
+  const rows = await db.providerAccountIdentity.findMany({
+    where:  { provider: ProviderType.WALLET, financialAccountId },
+    select: { externalAccountId: true },
+  });
+  return rows.map((r) => r.externalAccountId).filter((a) => !isExtendedKey(a));
+}
+
+/**
+ * Idempotent per-address identity upsert — the MULTI-address write path, keyed
+ * on the retained @@unique([provider, externalAccountId, financialAccountId]).
+ * Deliberately NOT dualWriteProviderAccountIdentity (which is single-identity,
+ * find-by-{provider, financialAccountId}, and would clobber sibling addresses).
+ */
+async function upsertDiscoveredAddress(params: {
+  financialAccountId: string;
+  connectionId: string | null;
+  address: string;
+  branch: number;
+  index: number;
+}): Promise<void> {
+  const meta = { branch: params.branch, index: params.index } as Prisma.InputJsonValue;
+  await db.providerAccountIdentity.upsert({
+    where: {
+      provider_externalAccountId_financialAccountId: {
+        provider:           ProviderType.WALLET,
+        externalAccountId:  params.address,
+        financialAccountId: params.financialAccountId,
+      },
+    },
+    create: {
+      provider:           ProviderType.WALLET,
+      externalAccountId:  params.address,
+      financialAccountId: params.financialAccountId,
+      connectionId:       params.connectionId,
+      metadata:           meta,
+    },
+    update: { connectionId: params.connectionId, metadata: meta },
+  });
+}
+
+/**
+ * Discover an xpub wallet's used addresses via BIP44 gap-limit scan and record
+ * each as a ProviderAccountIdentity. Scans the receive (0) and change (1)
+ * branches, stopping after `gapLimit` consecutive UNUSED addresses. Records USED
+ * addresses only (unused ones hold nothing), plus always ensures the first
+ * receive address exists so a brand-new/empty xpub still has one identity.
+ * Idempotent and rerunnable (upsert). Populates identities ONLY — no balances.
+ */
+async function discoverXpubAddresses(params: {
+  financialAccountId: string;
+  connectionId: string | null;
+  xpub: string;
+  deps: BtcSyncDeps;
+}): Promise<void> {
+  const parsed = parseExtendedKey(params.xpub);
+  const gapLimit = params.deps.gapLimit && params.deps.gapLimit > 0 ? params.deps.gapLimit : 20;
+  const MAX_PER_BRANCH = 1000; // hard bound against a runaway scan
+  const isUsed = params.deps.usageChecker
+    ?? ((a: string) => fetchAddressTxCount(a, params.deps.fetchImpl).then((n) => n > 0));
+
+  for (const branch of [0, 1]) {
+    let unused = 0;
+    for (let index = 0; index < MAX_PER_BRANCH && unused < gapLimit; index++) {
+      const address = deriveAddressAt(parsed, branch, index);
+      if (await isUsed(address)) {
+        await upsertDiscoveredAddress({ financialAccountId: params.financialAccountId, connectionId: params.connectionId, address, branch, index });
+        unused = 0;
+      } else {
+        unused++;
+      }
+    }
+  }
+
+  // Empty xpub → still record the first receive address so the account has one
+  // identity (and is syncable).
+  await upsertDiscoveredAddress({
+    financialAccountId: params.financialAccountId,
+    connectionId:       params.connectionId,
+    address:            deriveAddressAt(parsed, 0, 0),
+    branch: 0, index: 0,
+  });
+}
+
+/**
+ * Sync one BTC wallet account — single-address OR xpub. Never throws.
+ *
+ * xpub: discovery runs first to populate ProviderAccountIdentity; the confirmed
+ * balance is SUMMED across every discovered address into ONE Holding, and
+ * transactions from every address are aggregated (deduped by txid) into ONE
+ * history. Single-address wallets behave exactly as before, resolved through the
+ * same identity path. On any external failure the account is left untouched
+ * (visible, "pending") and a SyncIssue is recorded.
  */
 export async function syncBtcWallet(
   accountId: string,
@@ -285,22 +414,44 @@ export async function syncBtcWallet(
     select: { id: true, ownerUserId: true, walletChain: true, walletAddress: true, deletedAt: true },
   });
 
-  // Guard: only an active, addressed BTC wallet is syncable here.
+  // Guard: active BTC wallet (walletAddress holds a single address OR an xpub).
   if (!account || account.deletedAt || account.walletChain !== BTC_CHAIN || !account.walletAddress) {
     return { accountId, ok: false, stage: "load", reason: "not a syncable BTC wallet" };
   }
 
-  const address = account.walletAddress;
-  const balanceFetcher = deps.balanceFetcher ?? ((a: string) => fetchConfirmedSats(a, deps.fetchImpl));
+  const connection = await loadWalletConnection(accountId);
+  const descriptor = connection?.credential ?? account.walletAddress;
+  const isXpub = isExtendedKey(descriptor);
+
+  // xpub: discover addresses first (identities only). Best-effort so a discovery
+  // hiccup doesn't fail a sync that can still use already-known addresses.
+  if (isXpub && connection) {
+    try {
+      await discoverXpubAddresses({ financialAccountId: accountId, connectionId: connection.id, xpub: descriptor, deps });
+    } catch (e) {
+      console.warn(`[btc-sync] xpub discovery failed for ${accountId} (non-fatal):`, e);
+    }
+  }
+
+  // Resolve the address set through ProviderAccountIdentity (canonical). Fall
+  // back to the stored single address for a pre-v1.5 wallet with no identity.
+  let addresses = await getWalletAddresses(accountId);
+  if (addresses.length === 0 && !isXpub) addresses = [account.walletAddress];
+  if (addresses.length === 0) {
+    return { accountId, ok: false, stage: "load", reason: "no addresses to sync" };
+  }
+
   const priceFetcher = deps.priceFetcher ?? (() => fetchBtcUsdPrice(deps.fetchImpl));
 
-  // 1) Confirmed on-chain balance.
+  // 1) Confirmed balance SUMMED across every address.
   let sats: number;
   try {
-    sats = await balanceFetcher(address);
+    sats = deps.balanceFetcher
+      ? (await Promise.all(addresses.map(deps.balanceFetcher))).reduce((s, x) => s + x, 0)
+      : await fetchConfirmedSatsForAddresses(addresses, deps.fetchImpl);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    await recordWalletSyncIssue(accountId, "balance", reason, { address });
+    await recordWalletSyncIssue(accountId, "balance", reason, { addresses: addresses.length });
     return { accountId, ok: false, stage: "balance", reason };
   }
 
@@ -311,50 +462,37 @@ export async function syncBtcWallet(
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     await recordWalletSyncIssue(accountId, "price", reason);
-    // A price fetch only ever fails at the price stage.
     return { accountId, ok: false, stage: "price", reason };
   }
 
-  // 3) Persist. Only balance/native/currency/sync fields — no link, no
-  //    deletedAt, no transaction, no holding, nothing that changes visibility.
+  // 3) Persist the AGGREGATED balance (one account, one balance — no duplicates).
   const nativeBalance = satsToBtc(sats);
   const balanceUsd = computeUsdBalance(nativeBalance, priceUsd);
   await db.financialAccount.update({
     where: { id: accountId },
-    data: {
-      nativeBalance,
-      balance: balanceUsd,
-      currency: "USD",
-      syncStatus: "synced",
-      lastUpdated: new Date(),
-    },
+    data: { nativeBalance, balance: balanceUsd, currency: "USD", syncStatus: "synced", lastUpdated: new Date() },
   });
 
-  // Wallet Provider v2 — represent the balance as a first-class BTC Holding
-  // (the wallet is an account that CONTAINS holdings). Mirrors balanceUsd, so
-  // no double-count; best-effort/non-fatal.
+  // v2 — one BTC Holding (summed). v3 — transactions aggregated across addresses.
   await writeBtcHolding(accountId, { nativeBalance, priceUsd, balanceUsd });
+  await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses }, deps);
 
-  // Wallet Provider v3 — import confirmed BTC transactions as normal Transaction
-  // rows (idempotent, best-effort). The wallet now emits Connection → identity →
-  // account → Holding → Transaction, like every other provider.
-  await importBtcTransactions(
-    { id: accountId, ownerUserId: account.ownerUserId, walletAddress: address },
-    deps,
-  );
-
-  // Wallet Provider v1.5 — record this sync on the wallet's Connection spine
-  // (ensures/links Connection → identity → AccountConnection, and stamps
-  // lastSyncedAt). Best-effort/non-fatal and also serves as the lazy backfill
-  // for wallets created before v1.5. Does not alter the balance write above.
+  // v1.5 spine — record the sync. xpub: Connection + AccountConnection already
+  // exist and identities are per-address, so only stamp the sync (never create a
+  // PAI for the xpub descriptor). Single-address: full align (its one identity).
   if (account.ownerUserId) {
-    await alignWalletProviderSpine({
-      userId:             account.ownerUserId,
-      financialAccountId: accountId,
-      address,
-      chain:              BTC_CHAIN,
-      markSynced:         true,
-    });
+    if (isXpub && connection) {
+      await touchWalletConnectionStatus({ connectionId: connection.id, ok: true });
+      await markWalletAccountConnectionSynced({ financialAccountId: accountId });
+    } else {
+      await alignWalletProviderSpine({
+        userId:             account.ownerUserId,
+        financialAccountId: accountId,
+        address:            addresses[0],
+        chain:              BTC_CHAIN,
+        markSynced:         true,
+      });
+    }
   }
 
   return { accountId, ok: true, syncStatus: "synced", nativeBalance, balanceUsd, priceUsd };

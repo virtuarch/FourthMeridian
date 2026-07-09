@@ -88,6 +88,17 @@ export function parseUsdPrice(json: unknown): number {
   return usd;
 }
 
+/**
+ * Total transaction count for an address (confirmed + mempool) — the "is this
+ * address used?" signal for xpub gap-limit discovery.
+ */
+export function parseTxCount(json: unknown): number {
+  const j = json as { chain_stats?: { tx_count?: unknown }; mempool_stats?: { tx_count?: unknown } } | null;
+  const c = typeof j?.chain_stats?.tx_count === "number" ? (j!.chain_stats!.tx_count as number) : 0;
+  const m = typeof j?.mempool_stats?.tx_count === "number" ? (j!.mempool_stats!.tx_count as number) : 0;
+  return c + m;
+}
+
 /** Satoshis → BTC (native units stored on FinancialAccount.nativeBalance). */
 export function satsToBtc(sats: number): number {
   return sats / SATS_PER_BTC;
@@ -127,6 +138,19 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
 export async function fetchConfirmedSats(address: string, fetchImpl: FetchFn = fetch): Promise<number> {
   const url = `${btcExplorerBaseUrl()}/api/address/${encodeURIComponent(address)}`;
   return parseConfirmedSats(await getJson(url, "balance", fetchImpl));
+}
+
+/** Summed confirmed balance (satoshis) across many addresses (xpub aggregate). */
+export async function fetchConfirmedSatsForAddresses(addresses: string[], fetchImpl: FetchFn = fetch): Promise<number> {
+  let total = 0;
+  for (const a of addresses) total += await fetchConfirmedSats(a, fetchImpl);
+  return total;
+}
+
+/** Total tx count (confirmed + mempool) for an address — xpub usage/gap check. */
+export async function fetchAddressTxCount(address: string, fetchImpl: FetchFn = fetch): Promise<number> {
+  const url = `${btcExplorerBaseUrl()}/api/address/${encodeURIComponent(address)}`;
+  return parseTxCount(await getJson(url, "balance", fetchImpl));
 }
 
 /** Current BTC→USD spot price. */
@@ -193,22 +217,26 @@ function formatBtc(sats: number): string {
  *                       a pure self-consolidation (nothing sent out) is fee-only.
  * Confirmed → POSTED, unconfirmed → PENDING.
  */
-export function normalizeBtcAddressTxs(rawTxs: RawBtcTx[], myAddress: string): NormalizedBtcMovement[] {
+export function normalizeBtcAddressTxs(rawTxs: RawBtcTx[], myAddresses: string[]): NormalizedBtcMovement[] {
   const out: NormalizedBtcMovement[] = [];
+  const mine = new Set(myAddresses);
+  const isMine = (a?: string): boolean => !!a && mine.has(a);
 
   for (const tx of rawTxs) {
     const vin = tx.vin ?? [];
     const vout = tx.vout ?? [];
 
+    // Net across ALL of the wallet's addresses (xpub: change to another of the
+    // wallet's own addresses nets out, exactly like single-address change).
     const myInputs = vin.reduce(
-      (s, i) => s + (i.prevout?.scriptpubkey_address === myAddress ? (i.prevout?.value ?? 0) : 0), 0);
+      (s, i) => s + (isMine(i.prevout?.scriptpubkey_address) ? (i.prevout?.value ?? 0) : 0), 0);
     const myOutputs = vout.reduce(
-      (s, o) => s + (o.scriptpubkey_address === myAddress ? (o.value ?? 0) : 0), 0);
+      (s, o) => s + (isMine(o.scriptpubkey_address) ? (o.value ?? 0) : 0), 0);
     const toOthers = vout.reduce(
-      (s, o) => s + (o.scriptpubkey_address && o.scriptpubkey_address !== myAddress ? (o.value ?? 0) : 0), 0);
+      (s, o) => s + (o.scriptpubkey_address && !isMine(o.scriptpubkey_address) ? (o.value ?? 0) : 0), 0);
 
-    const recipients = uniq(vout.map((o) => o.scriptpubkey_address).filter((a) => a !== myAddress));
-    const senders    = uniq(vin.map((i) => i.prevout?.scriptpubkey_address).filter((a) => a !== myAddress));
+    const recipients = uniq(vout.map((o) => o.scriptpubkey_address).filter((a) => !isMine(a)));
+    const senders    = uniq(vin.map((i) => i.prevout?.scriptpubkey_address).filter((a) => !isMine(a)));
     const fee        = tx.fee ?? 0;
     const settlement = tx.status?.confirmed ? "POSTED" : "PENDING";
     const occurredAt = new Date((tx.status?.block_time ?? 0) * 1000);

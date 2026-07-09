@@ -686,12 +686,18 @@ model ProviderAccountIdentity {
   // own independent @unique, so this relaxation doesn't change PLAID's
   // real-world uniqueness guarantee.
   @@unique([provider, externalAccountId, financialAccountId])
-  // Defense-in-depth: at most one identity row per (provider,
-  // financialAccountId) — formalizes an invariant
-  // dualWriteProviderAccountIdentity() already relies on (find-by-
-  // {financialAccountId, provider}, then create-or-update-in-place; never
-  // creates a second row for the same pair).
-  @@unique([provider, financialAccountId])
+  // Wallet Provider v4 (xpub) — the previous @@unique([provider,
+  // financialAccountId]) was DROPPED here. It allowed at most one identity per
+  // (provider, account), which blocks an xpub wallet's many addresses (one
+  // ProviderAccountIdentity per discovered address, all under one
+  // FinancialAccount). Single-identity providers keep their invariant at the
+  // APPLICATION level: dualWriteProviderAccountIdentity() still find-by-
+  // {provider, financialAccountId}+upsert (Plaid + single-address wallets), and
+  // PLAID's real-world uniqueness is independently guaranteed by
+  // FinancialAccount.plaidAccountId @unique. The retained composite unique above
+  // still prevents the SAME address twice on one account. Blast-radius verified:
+  // no code keys on the dropped compound unique, and no account read path joins
+  // ProviderAccountIdentity (visibility is SpaceAccountLink).
   @@index([financialAccountId])
   @@index([connectionId])
 }

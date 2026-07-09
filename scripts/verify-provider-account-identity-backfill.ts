@@ -196,10 +196,14 @@ async function main() {
   console.log(walletResult.missing.length === 0 ? "  PASS\n" : "  FAIL\n");
   if (walletResult.missing.length > 0) failed = true;
 
-  console.log("CHECK 2 (WALLET) — no FinancialAccount has more than one WALLET ProviderAccountIdentity row");
-  printIds("  Duplicate WALLET identity per account", walletResult.duplicatePerAccount);
-  console.log(walletResult.duplicatePerAccount.length === 0 ? "  PASS\n" : "  FAIL\n");
-  if (walletResult.duplicatePerAccount.length > 0) failed = true;
+  // Wallet Provider v4 — INFORMATIONAL ONLY (no longer a failure). An xpub
+  // wallet legitimately has MANY WALLET identities per account (one per
+  // discovered address), so a count > 1 is expected and correct. The retained
+  // @@unique([provider, externalAccountId, financialAccountId]) still guarantees
+  // no DUPLICATE address per account. (Single-address wallets still have one.)
+  console.log("CHECK 2 (WALLET) — identity count per account (informational; xpub wallets have many)");
+  printIds("  Accounts with >1 WALLET identity (expected for xpub wallets)", walletResult.duplicatePerAccount);
+  console.log("  INFO (not a failure)\n");
 
   console.log("CHECK 3 (WALLET) — provider mismatch (identity.externalAccountId must equal account.walletAddress)");
   printIds("  Mismatched rows", walletResult.mismatch);

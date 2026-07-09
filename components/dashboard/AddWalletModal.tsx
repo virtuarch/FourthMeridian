@@ -28,7 +28,7 @@ import { FormModal } from "@/components/atlas/FormModal";
 import { GlassButton } from "@/components/atlas/GlassButton";
 
 const CHAINS: { value: WalletChain; label: string; placeholder: string }[] = [
-  { value: "BTC",   label: "Bitcoin (BTC)",    placeholder: "bc1q... or 1... or 3..." },
+  { value: "BTC",   label: "Bitcoin (BTC)",    placeholder: "address (bc1…/1…/3…) or xpub/ypub/zpub" },
   { value: "ETH",   label: "Ethereum (ETH)",   placeholder: "0x..." },
   { value: "SOL",   label: "Solana (SOL)",     placeholder: "Base58 address..." },
   { value: "BNB",   label: "BNB Chain (BNB)",  placeholder: "0x..." },
@@ -102,7 +102,7 @@ export function AddWalletModal({ onClose, onAdd, zIndex }: Props) {
     >
       <div className="space-y-4">
         <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-          Enter a public wallet address. Fourth Meridian will query the blockchain for your balance — no private keys needed, ever.
+          Enter a public wallet address — or a Bitcoin xpub/ypub/zpub to track the whole wallet (watch-only). Fourth Meridian queries the blockchain for your balance — no private keys, ever.
         </p>
 
         {/* Wallet name */}

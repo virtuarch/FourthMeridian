@@ -149,6 +149,11 @@ export async function alignWalletProviderSpine(params: {
   chain: string;
   client?: DbClient;
   markSynced?: boolean;
+  // Wallet Provider v4 — when `address` is an xpub/descriptor (not a real
+  // address), skip the single-identity dual-write. The per-address identities
+  // are created by xpub discovery (btc-sync), NOT here — otherwise this would
+  // wrongly create a ProviderAccountIdentity whose externalAccountId is the xpub.
+  descriptorOnly?: boolean;
 }): Promise<string | null> {
   try {
     const connection = await ensureWalletConnection({
@@ -163,13 +168,16 @@ export async function alignWalletProviderSpine(params: {
       client:             params.client,
     });
     // Identity dual-write is itself best-effort; passing connectionId links the
-    // existing (or new) ProviderAccountIdentity row to this Connection.
-    await dualWriteProviderAccountIdentity(
-      params.financialAccountId,
-      ProviderType.WALLET,
-      params.address.trim(),
-      connection.id,
-    );
+    // existing (or new) ProviderAccountIdentity row to this Connection. Skipped
+    // for descriptors (xpub) — discovery owns their per-address identities.
+    if (!params.descriptorOnly) {
+      await dualWriteProviderAccountIdentity(
+        params.financialAccountId,
+        ProviderType.WALLET,
+        params.address.trim(),
+        connection.id,
+      );
+    }
     if (params.markSynced) {
       // Connection = provider-sync truth.
       await touchWalletConnectionStatus({ connectionId: connection.id, ok: true });

@@ -127,8 +127,7 @@ async function main(): Promise<void> {
   check("sync records an issue on both balance and price failure",
     (sync.match(/recordWalletSyncIssue\(/g) || []).length >= 3); // 1 def + 2 call sites
   check("sync guards to BTC only", sync.includes("walletChain !== BTC_CHAIN"));
-  // v3: BTC transactions are now IN scope for sync; xpub remains out.
-  check("sync stays in v3 scope: no xpub", !/xpub/i.test(sync));
+  // (v4: xpub is now IN scope for sync — the former "no xpub" guard is retired.)
 
   const job = code(read("jobs", "sync-crypto.ts"));
   check("job body delegates to syncAllBtcWallets", job.includes("syncAllBtcWallets"));
@@ -213,7 +212,7 @@ async function main(): Promise<void> {
   };
   const pendingReceive: RawBtcTx = { ...receiveTx, txid: "ddd", status: { confirmed: false } };
 
-  const mv = normalizeBtcAddressTxs([receiveTx, sendTx, consolidateTx, pendingReceive], MY);
+  const mv = normalizeBtcAddressTxs([receiveTx, sendTx, consolidateTx, pendingReceive], [MY]);
   const byId = (id: string) => mv.filter((m) => m.externalId === id);
 
   // Receive → INCOME / INFLOW, positive BTC, POSTED, sender as counterparty.
@@ -255,6 +254,59 @@ async function main(): Promise<void> {
     !/db\.(btcTransaction|walletTransaction|cryptoTransaction)/i.test(sync) && /db\.transaction\.createMany/.test(sync));
   check("transaction import is best-effort (never fails the sync)",
     /importBtcTransactions[\s\S]*?catch/.test(sync));
+
+  // ── PART F — Wallet Provider v4: xpub / multi-address ────────────────────────
+
+  // Multi-address normalization: a transfer between two of the wallet's OWN
+  // addresses (A → B, with change) nets out — no phantom send, fee-only.
+  const A = "1AaaMyWalletAddrXXXXXXXXXXXXXXXXX";
+  const B = "1BbbMyWalletAddrXXXXXXXXXXXXXXXXX";
+  const ownToOwn: RawBtcTx = {
+    txid: "eee",
+    vin:  [{ prevout: { scriptpubkey_address: A, value: 200000 } }],
+    vout: [{ scriptpubkey_address: B, value: 150000 }, { scriptpubkey_address: A, value: 49000 }],
+    fee:  1000,
+    status: { confirmed: true, block_time: 1700000300 },
+  };
+  const multi = normalizeBtcAddressTxs([ownToOwn], [A, B]);
+  check("multi-address: own→own transfer nets out (fee-only)",
+    multi.filter((m) => m.externalId === "eee").length === 0 &&
+    multi.filter((m) => m.externalId === "eee:fee").length === 1);
+  // Same tx seen from only ONE address would look like a real send — proving the
+  // full address set matters.
+  const single = normalizeBtcAddressTxs([ownToOwn], [A]);
+  check("single-address view of the same tx IS a send (justifies aggregation)",
+    single.some((m) => m.externalId === "eee" && m.flowType === "SPENDING"));
+
+  // ── Source-scan the v4 engine ───────────────────────────────────────────────
+  check("sync resolves addresses through ProviderAccountIdentity (canonical table)",
+    /getWalletAddresses/.test(sync) && /providerAccountIdentity\.findMany/.test(sync));
+  check("balance is SUMMED across all addresses",
+    sync.includes("fetchConfirmedSatsForAddresses") || /reduce\(\(s, x\) => s \+ x/.test(sync));
+  check("xpub discovery: gap-limit scan of receive+change branches",
+    sync.includes("discoverXpubAddresses") && /unused\s*<\s*gapLimit/.test(sync) &&
+    /parseExtendedKey/.test(sync) && /deriveAddressAt/.test(sync));
+  check("discovery writes per-address identities via the KEPT composite unique (not dualWrite)",
+    /providerAccountIdentity\.upsert/.test(sync) &&
+    /provider_externalAccountId_financialAccountId/.test(sync) &&
+    !sync.includes("dualWriteProviderAccountIdentity"));
+  check("xpub path stamps sync WITHOUT creating a PAI for the descriptor",
+    /isXpub && connection/.test(sync) && sync.includes("touchWalletConnectionStatus"));
+  check("raw txs deduped by txid across addresses before normalization",
+    sync.includes("dedupeRawTxsByTxid"));
+  check("one Holding + one balance write regardless of address count",
+    (sync.match(/holding\.upsert/g) || []).length === 1 &&
+    (sync.match(/financialAccount\.update/g) || []).length === 1);
+
+  // ── Schema + migration: the approved constraint drop ────────────────────────
+  const schema = read("prisma", "schema.prisma");
+  check("schema dropped @@unique([provider, financialAccountId])",
+    !/@@unique\(\[provider, financialAccountId\]\)/.test(schema));
+  check("schema keeps the composite unique that blocks duplicate addresses",
+    /@@unique\(\[provider, externalAccountId, financialAccountId\]\)/.test(schema));
+  const migration = read("prisma", "migrations", "20260709231500_v4_xpub_drop_provider_identity_account_unique", "migration.sql");
+  check("migration drops the exact index",
+    /DROP INDEX "ProviderAccountIdentity_provider_financialAccountId_key"/.test(migration));
 
   // ── Summary ─────────────────────────────────────────────────────────────────
   console.log(`\nbtc-sync: ${passes} passed, ${failures} failed`);
