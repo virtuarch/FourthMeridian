@@ -171,6 +171,15 @@ export interface Transaction {
   classificationConfidence?: number | null;
   classificationReason?: FlowClassificationReason | null;
   classifierVersion?: number | null;
+  /**
+   * Cash Flow liquidity axis — the "other side" of a movement when it is a known
+   * owned account AND visible to the reading Space (KD-15 gated at the data layer
+   * via lib/transactions/counterparty-visibility.ts). Lets the client liquidity
+   * engine resolve the counterparty's tier (asset/liquid/liability) to classify
+   * transfers (asset→liquid = Asset Liquidation). Null when absent or not visible
+   * — the id is never leaked across Spaces, and no name/detail is carried.
+   */
+  counterpartyAccountId?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

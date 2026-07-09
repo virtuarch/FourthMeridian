@@ -58,6 +58,7 @@ import {
   serializeTransactionRow,
   serializeInvestmentTransactionRow,
 } from "@/lib/transactions/serialize";
+import { gatedCounterpartyId } from "@/lib/transactions/counterparty-visibility";
 import { transactionDetailWhere } from "@/lib/transactions/detail-query";
 // TI5-2 — the pure read-time relationship engine. Candidate gathering stays in
 // this data layer; the resolver receives (transaction, candidates) and nothing else.
@@ -69,6 +70,27 @@ const BANKING_CATEGORIES = [
   "Income","Transfer","Groceries","Dining","Shopping","Travel",
   "Subscriptions","Utilities","Interest","Payment","Other",
 ];
+
+/**
+ * KD-15 counterparty-visibility include for the list reads (Cash Flow liquidity
+ * axis). Loads only the counterparty's deletion state + its links FILTERED to
+ * this Space's ACTIVE, transaction-detail-granting (FULL) links — so
+ * gatedCounterpartyId() can decide whether the id is safe to expose. Mirrors the
+ * transaction-detail route's counterparty seam exactly. No name/detail loaded.
+ */
+function counterpartyVisibilityInclude(spaceId: string) {
+  return {
+    counterpartyAccount: {
+      select: {
+        deletedAt: true,
+        spaceAccountLinks: {
+          where: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } },
+          select: { id: true },
+        },
+      },
+    },
+  } as const;
+}
 
 /** Banking transactions only (excludes investment activity), newest first. */
 export async function getTransactions(ctx?: { spaceId: string }): Promise<Transaction[]> {
@@ -92,12 +114,14 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
     },
     orderBy: { date: "desc" },
     // MI M6 read cutover — resolved Merchant presentation (additive join).
-    include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } } },
+    // + KD-15 counterparty visibility for the Cash Flow liquidity axis.
+    include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
   });
 
-  // TI-1: canonical serialization — byte-identical to the previous inline
-  // mapping (pinned by lib/transactions/serialize.golden.test.ts).
-  return rows.map(serializeTransactionRow);
+  // TI-1: canonical serialization. counterpartyAccountId is KD-15-gated here
+  // (nulled unless the counterparty account is visible to this Space) before it
+  // ever reaches the serializer / client.
+  return rows.map((r) => serializeTransactionRow({ ...r, counterpartyAccountId: gatedCounterpartyId(r) }));
 }
 
 /** Transactions for debt accounts only (credit card activity), newest first. */
@@ -117,12 +141,12 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
     },
     orderBy: { date: "desc" },
     // MI M6 read cutover — resolved Merchant presentation (additive join).
-    include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } } },
+    // + KD-15 counterparty visibility for the Cash Flow liquidity axis.
+    include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
   });
 
-  // TI-1: canonical serialization — byte-identical to the previous inline
-  // mapping (pinned by lib/transactions/serialize.golden.test.ts).
-  return rows.map(serializeTransactionRow);
+  // TI-1: canonical serialization. counterpartyAccountId KD-15-gated here.
+  return rows.map((r) => serializeTransactionRow({ ...r, counterpartyAccountId: gatedCounterpartyId(r) }));
 }
 
 /** Investment transactions (Buy/Sell/Dividend/Split/Fee), newest first. */
@@ -332,6 +356,11 @@ export async function getTransactionDetail(
 
   return {
     ...serializeTransactionRow(row),
+    // KD-15: override the serializer's raw value with the gated id (the detail's
+    // counterpartyAccount already carries the same Space-filtered links), so the
+    // detail DTO never exposes a non-visible counterparty's id — consistent with
+    // the resolved `counterparty` block below.
+    counterpartyAccountId: gatedCounterpartyId(row),
     pfcPrimary:         row.pfcPrimary ?? null,
     pfcDetailed:        row.pfcDetailed ?? null,
     pfcConfidenceLevel: row.pfcConfidenceLevel ?? null,

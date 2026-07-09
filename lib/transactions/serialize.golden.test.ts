@@ -66,6 +66,11 @@ function legacyListMapper(r: any) {
     classificationConfidence: r.classificationConfidence ?? null,
     classificationReason:     r.classificationReason ?? null,
     classifierVersion:        r.classifierVersion ?? null,
+    // Cash Flow liquidity axis — CONSCIOUS extension (like MI M6 above and the
+    // `currency` drift fix below): the counterparty's owned-account id, PRE-GATED
+    // by the data layer (KD-15). Same key position + `?? null` fallback as
+    // serializeTransactionRow, so byte-identity holds.
+    counterpartyAccountId:    r.counterpartyAccountId ?? null,
   };
 }
 
@@ -105,6 +110,9 @@ const fixtures: TransactionRowLike[] = [
     classificationConfidence: 0.95,
     classificationReason: 'PLAID_PFC_DETAILED',
     classifierVersion: 1,
+    // Cash Flow liquidity axis — a visible, pre-gated counterparty id (data layer
+    // sets this only when the counterparty account is shared to the Space).
+    counterpartyAccountId: 'fa_cp',
     // MI M6 — a resolved Merchant (raw descriptor above is preserved).
     resolvedMerchant: { displayName: 'Blue Bottle', logoUrl: 'https://logos/bb.png' },
   },
@@ -243,6 +251,15 @@ const sparse = serializeTransactionRow(fixtures[2]);
 check('absent optional fields → null flow metadata (not undefined)',
   sparse.flowType === null && sparse.flowDirection === null &&
     sparse.classificationConfidence === null && sparse.classifierVersion === null);
+
+// Cash Flow liquidity axis — counterpartyAccountId serializes (present value is
+// emitted; absent → null, never undefined). The DATA LAYER is responsible for
+// KD-15 gating (proven in counterparty-visibility.test.ts); the serializer only
+// faithfully emits the pre-gated value.
+check('present counterpartyAccountId is emitted', full.counterpartyAccountId === 'fa_cp');
+check('absent counterpartyAccountId → null (key PRESENT in JSON as null)',
+  sparse.counterpartyAccountId === null &&
+    Object.prototype.hasOwnProperty.call(JSON.parse(JSON.stringify(sparse)), 'counterpartyAccountId'));
 
 const div = serializeInvestmentTransactionRow(investmentFixtures[1]);
 check('investment null description → empty string (not undefined)',

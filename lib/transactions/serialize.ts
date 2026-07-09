@@ -56,6 +56,11 @@ export interface TransactionRowLike {
   classificationConfidence?: number | null;
   classificationReason?:     string | null;
   classifierVersion?:        number | null;
+  // Cash Flow liquidity axis — the counterparty's owned-account id. MUST be
+  // PRE-GATED by the data layer (KD-15: only set when the counterparty is
+  // visible to the reading Space). This pure serializer emits whatever it is
+  // handed; it has no Space context and does NOT enforce visibility.
+  counterpartyAccountId?:    string | null;
   // MI M6 — the resolved Merchant, from `include: { resolvedMerchant: { select:
   // { displayName, logoUrl } } }`. Optional: reads that omit the join fall back
   // to the raw `merchant` and a null logo (icon).
@@ -95,6 +100,9 @@ export function serializeTransactionRow(r: TransactionRowLike): Transaction {
     classificationConfidence: r.classificationConfidence ?? null,
     classificationReason:     (r.classificationReason ?? null) as Transaction["classificationReason"],
     classifierVersion:        r.classifierVersion ?? null,
+    // Cash Flow liquidity axis — pre-gated by the data layer (KD-15). Null when
+    // absent or the counterparty is not visible to the reading Space.
+    counterpartyAccountId:    r.counterpartyAccountId ?? null,
   };
 }
 
