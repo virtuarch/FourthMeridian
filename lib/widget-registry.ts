@@ -296,6 +296,62 @@ const registry: WidgetRegistryEntry[] = [
     },
   },
 
+  // ── Cash Flow Perspective (UX-PER-3) — movement over time. ──────────────────
+  // Rendered as VIRTUAL sections in the Cash Flow workspace; `tab` is metadata
+  // only. Answer "Where does my money move?" from transaction history.
+  {
+    implemented: true,
+    meta: {
+      key:         "cash_flow_summary",
+      label:       "Cash Flow Summary",
+      description: "Income, spending, and net cash flow for the selected period (FlowType-aware).",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      dataTier:    "transactions",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "cash_flow_history",
+      label:       "Cash Flow History",
+      description: "Income vs spending over time, bucketed to fit the selected period.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      dataTier:    "transactions",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "income_vs_spending",
+      label:       "Income vs Spending",
+      description: "Incoming versus outgoing movement for the selected period.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      dataTier:    "transactions",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "cash_flow_by_category",
+      label:       "Spending by Category",
+      description: "Where outflows go — spending grouped by category for the selected period.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      dataTier:    "transactions",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+
   // ── Accounts ────────────────────────────────────────────────────────────────
 
   {

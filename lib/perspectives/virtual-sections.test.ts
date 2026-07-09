@@ -62,6 +62,16 @@ check("liquidity workspace excludes Overview/Wealth widgets",
     k === "net_worth" || k === "net_worth_chart" || k === "allocation" ||
     k === "wealth_by_account" || k === "asset_allocation"));
 
+// ── 2c. Cash Flow workspace uses its movement-over-time widgets. ──
+check("cashFlow workspace = [cash_flow_summary, cash_flow_history, income_vs_spending, cash_flow_by_category]",
+  JSON.stringify(PERSPECTIVE_LIBRARY.cashFlow.widgets) ===
+    JSON.stringify(["cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category"]));
+// Doctrine: Cash Flow must NOT reuse Overview / Wealth / Liquidity widgets.
+check("cashFlow workspace excludes Overview/Wealth/Liquidity widgets",
+  !(PERSPECTIVE_LIBRARY.cashFlow.widgets ?? []).some((k) =>
+    k === "net_worth" || k === "net_worth_chart" || k === "allocation" ||
+    k === "wealth_by_account" || k === "liquidity_ladder"));
+
 // ── 3. toVirtualSections shape + virtual-id safety. ──
 const vs = toVirtualSections("wealth", ["net_worth", "net_worth_chart", "allocation"]);
 check("produces one virtual section per widget", vs.length === 3);

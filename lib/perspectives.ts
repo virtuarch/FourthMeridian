@@ -101,8 +101,13 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     widgets: ["wealth_by_account", "asset_allocation", "institution_allocation", "wealth_concentration"],
   },
   cashFlow: {
-    id: "cashFlow", label: "Cash Flow", icon: "Waves", status: "comingSoon", group: "Financial",
+    id: "cashFlow", label: "Cash Flow", icon: "Waves", status: "available", group: "Financial",
     description: "Income versus spending over time.",
+    // UX-PER-3 Cash Flow workspace. Doctrine: Cash Flow answers "Where does my
+    // money move?" — movement over time from transaction history, FlowType-aware
+    // (no net worth / allocation / debt / goals). Widgets share the workspace
+    // period selector. Rendered through the same SectionCard compositor.
+    widgets: ["cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category"],
   },
   investments: {
     id: "investments", label: "Investments", icon: "TrendingUp", status: "available", group: "Financial",

@@ -59,6 +59,17 @@ import {
   renderEmergencyFundReadiness,
   renderLiquidityConcentration,
 } from "@/components/space/widgets/liquidity-adapters";
+import {
+  renderCashFlowSummary,
+  renderCashFlowHistory,
+  renderIncomeVsSpending,
+  renderCashFlowByCategory,
+} from "@/components/space/widgets/cash-flow-adapters";
+import {
+  CASH_FLOW_PERIODS,
+  DEFAULT_CASH_FLOW_PERIOD,
+  type CashFlowPeriod,
+} from "@/lib/transactions/cash-flow";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import {
@@ -978,6 +989,16 @@ type SectionRenderProps = {
    */
   snapshots?:            Snapshot[] | null;
   snapshotCurrency?:     string;
+  /**
+   * UX-PER-3 Cash Flow — transaction history + the transactions' conversion
+   * context (rehydrated spaceMoneyCtx / "view as" override, which converts each
+   * row at its own date — distinct from the latest-close `ctx`) and the
+   * workspace-selected period. Only the Cash Flow widgets read these; every
+   * other widget ignores them. null transactions = still loading.
+   */
+  transactions?:         Transaction[] | null;
+  txCtx?:                ConversionContext;
+  period?:               CashFlowPeriod;
 };
 
 // ─── ProgressWidget adapter helpers ──────────────────────────────────────────
@@ -1227,6 +1248,11 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
   "accessible_cash":         (p) => renderAccessibleCash(p.accounts, p.ctx),
   "emergency_fund_readiness":(p) => renderEmergencyFundReadiness(p.accounts, p.ctx),
   "liquidity_concentration": (p) => renderLiquidityConcentration(p.accounts, p.ctx),
+  // ── Cash Flow Perspective (UX-PER-3) — movement over time (FlowType-aware) ──
+  "cash_flow_summary":       (p) => renderCashFlowSummary(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
+  "cash_flow_history":       (p) => renderCashFlowHistory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
+  "income_vs_spending":      (p) => renderIncomeVsSpending(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
+  "cash_flow_by_category":   (p) => renderCashFlowByCategory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
   "net_worth_section":      renderNetWorth,       // deprecated alias — seeded pre-v2
   "accounts_overview":      (p) => <AccountsCard accounts={p.accounts} />,
   "business_accounts":      (p) => <AccountsCard accounts={p.accounts} />,
@@ -1491,6 +1517,7 @@ const SOLID_LEDE_KEYS = new Set([
   "net_worth", "net_worth_chart", "allocation",
   "wealth_by_account", "institution_allocation", "asset_allocation", "wealth_concentration",
   "liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration",
+  "cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category",
 ]);
 
 function SectionCard({
@@ -1503,6 +1530,9 @@ function SectionCard({
   ctx,
   snapshots,
   snapshotCurrency,
+  transactions,
+  txCtx,
+  period,
 }: {
   section:     DashboardSection;
   accounts:    SpaceAccount[];
@@ -1515,6 +1545,10 @@ function SectionCard({
   /** Unified Space Widget Layout (slice 1) — see SectionRenderProps.snapshots. */
   snapshots?:        Snapshot[] | null;
   snapshotCurrency?: string;
+  /** UX-PER-3 Cash Flow — see SectionRenderProps.transactions/txCtx/period. */
+  transactions?:     Transaction[] | null;
+  txCtx?:            ConversionContext;
+  period?:           CashFlowPeriod;
 }) {
   const [collapsed,        setCollapsed]        = useState(false);
   const [payoffFullscreen, setPayoffFullscreen] = useState(false);
@@ -1592,7 +1626,7 @@ function SectionCard({
     if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen, ctx);
 
     const render = SectionRegistry[section.key];
-    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency });
+    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period });
     return <ContextualCard sectionKey={section.key} label={section.label} />;
   }
 
@@ -2354,6 +2388,18 @@ export function SpaceDashboard({
     ? perspectiveItems.find((p) => p.id === activePerspectiveId) ?? null
     : null;
 
+  // ── Cash Flow workspace (UX-PER-3) ─────────────────────────────────────────
+  // Workspace-local period state shared by every Cash Flow widget, and the
+  // transactions conversion context (rehydrated F-6 / "view as" override) that
+  // converts each row at its own date. `cashFlowActive` also triggers the
+  // transaction fetch below when the workspace is open in a non-flow Space.
+  const [cashFlowPeriod, setCashFlowPeriod] = useState<CashFlowPeriod>(DEFAULT_CASH_FLOW_PERIOD);
+  const cashFlowActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "cashFlow";
+  const txConversionCtx = useMemo(() => {
+    const serialized = transactionsMoneyCtxOverride ?? spaceMoneyCtx;
+    return serialized ? rehydrateContext(serialized) : undefined;
+  }, [transactionsMoneyCtxOverride, spaceMoneyCtx]);
+
   async function handleLeave() {
     setLeaveBusy(true);
     try {
@@ -2472,7 +2518,10 @@ export function SpaceDashboard({
   // (doorway) is opened.
   const isFlowCategory = FLOW_TX_CATEGORIES.includes(category);
   useEffect(() => {
-    if (!isFlowCategory && activeTab !== "TRANSACTIONS") return;
+    // Fetch for flow categories, the Transactions doorway, OR the Cash Flow
+    // Perspective workspace (which needs transaction history regardless of
+    // category). Guarded by spaceTransactions === null so it runs once.
+    if (!isFlowCategory && activeTab !== "TRANSACTIONS" && !cashFlowActive) return;
     if (spaceTransactions !== null) return;
     let active = true;
     fetch(`/api/spaces/${spaceId}/transactions`)
@@ -2487,7 +2536,7 @@ export function SpaceDashboard({
   // currencyNonce (Q6): re-fetch tx rows + F-6 context after a currency change
   // (the handler also nulls spaceTransactions to release the guard above).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, isFlowCategory, activeTab, spaceTransactions === null, currencyNonce]);
+  }, [spaceId, isFlowCategory, activeTab, cashFlowActive, spaceTransactions === null, currencyNonce]);
 
   useEffect(() => {
     Promise.all([
@@ -2840,6 +2889,17 @@ export function SpaceDashboard({
               activeId={activePerspectiveId}
               onSelect={setSelectedPerspectiveId}
             />
+            {/* Cash Flow workspace period selector (UX-PER-3) — workspace-local
+                state applied to every Cash Flow widget below. */}
+            {cashFlowActive && (
+              <SegmentedControl
+                aria-label="Cash flow period"
+                className="w-full"
+                options={CASH_FLOW_PERIODS}
+                value={cashFlowPeriod}
+                onChange={setCashFlowPeriod}
+              />
+            )}
             <div
               role="tabpanel"
               aria-labelledby={activePerspectiveId ? `ptab-${activePerspectiveId}` : undefined}
@@ -2857,6 +2917,9 @@ export function SpaceDashboard({
                     ctx={widgetCtx}
                     snapshots={snapshots}
                     snapshotCurrency={snapshotCurrency ?? displayCurrency}
+                    transactions={spaceTransactions}
+                    txCtx={txConversionCtx}
+                    period={cashFlowPeriod}
                   />
                 ))
               ) : activePerspective ? (
