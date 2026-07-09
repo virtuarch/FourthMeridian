@@ -17,7 +17,8 @@ import { getSpaceContext } from "@/lib/space";
 import { getAccounts } from "@/lib/data/accounts";
 import { db } from "@/lib/db";
 import { PlaidItemStatus } from "@prisma/client";
-import { buildSyncStatus } from "@/lib/sync/status";
+import { buildSyncStatus, finalizeSyncStatus } from "@/lib/sync/status";
+import { loadWalletSyncConnections } from "@/lib/sync/wallet-connections";
 import { ConnectionsList } from "@/components/connections/ConnectionsList";
 import { ConnectionsActions } from "@/components/connections/ConnectionsActions";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
@@ -42,7 +43,13 @@ export default async function ConnectionsPage() {
     },
     orderBy: { createdAt: "asc" },
   });
-  const initialStatus = buildSyncStatus(items);
+  const plaidStatus = buildSyncStatus(items);
+
+  // Wallet connections (provider=WALLET) ride the same SyncConnection contract.
+  // Merge them so self-custodied wallets appear as cards alongside Plaid, and a
+  // wallet-only user never sees the empty state.
+  const wallet = await loadWalletSyncConnections(userId);
+  const initialStatus = finalizeSyncStatus([...plaidStatus.connections, ...wallet.connections]);
 
   // Discovered accounts grouped by institution name (own Space). NAMES ONLY —
   // Connections is a provider-management surface, not the Accounts page, so no
@@ -74,6 +81,7 @@ export default async function ConnectionsPage() {
         <ConnectionsList
           initialStatus={initialStatus}
           accountsByInstitution={accountsByInstitution}
+          accountsByConnectionId={wallet.accountsByConnectionId}
         />
       ) : (
         <div className="mx-auto max-w-md pt-4">

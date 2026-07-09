@@ -102,7 +102,10 @@ export function AddWalletModal({ onClose, onAdd, zIndex }: Props) {
     >
       <div className="space-y-4">
         <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-          Enter a public wallet address — or a Bitcoin xpub/ypub/zpub to track the whole wallet (watch-only). Fourth Meridian queries the blockchain for your balance — no private keys, ever.
+          Enter a public Bitcoin address or an <span className="font-medium text-[var(--text-secondary)]">xpub / ypub / zpub</span> to track the whole wallet. Watch-only — Fourth Meridian reads your balance from the blockchain and never needs spend access.
+        </p>
+        <p className="text-xs font-semibold text-[var(--brass-400)] leading-relaxed">
+          Never enter a seed phrase or private key.
         </p>
 
         {/* Wallet name */}

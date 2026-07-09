@@ -34,11 +34,14 @@ const LIQUID_CAP = 6;
 
 interface Props {
   initialStatus: SyncStatus;
-  /** FinancialAccounts grouped by institution name (server-rendered). */
+  /** Plaid FinancialAccounts grouped by institution name (server-rendered). */
   accountsByInstitution: Record<string, AccountLite[]>;
+  /** Wallet accounts grouped by Connection id — wallets never group by the
+   *  (colliding) institution string. Default empty for Plaid-only callers. */
+  accountsByConnectionId?: Record<string, AccountLite[]>;
 }
 
-export function ConnectionsList({ initialStatus, accountsByInstitution }: Props) {
+export function ConnectionsList({ initialStatus, accountsByInstitution, accountsByConnectionId = {} }: Props) {
   const router = useRouter();
   const [status, setStatus] = useState<SyncStatus>(initialStatus);
   const [slow, setSlow] = useState(false);
@@ -134,7 +137,13 @@ export function ConnectionsList({ initialStatus, accountsByInstitution }: Props)
         <ConnectionCard
           key={c.id}
           connection={c}
-          accounts={accountsByInstitution[c.institution] ?? []}
+          // Wallets group by connection id (institution strings collide);
+          // Plaid keeps its institution grouping unchanged.
+          accounts={
+            c.provider === "WALLET"
+              ? (accountsByConnectionId[c.id] ?? [])
+              : (accountsByInstitution[c.institution] ?? [])
+          }
           slow={slow}
           allowLiquid={liquidAllowed.has(c.id)}
         />

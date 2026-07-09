@@ -30,6 +30,7 @@ import {
   Loader2,
   Building2,
   AlertTriangle,
+  Info,
   Clock,
   Sparkles,
   Brain,
@@ -38,6 +39,7 @@ import { DataCard } from "@/components/atlas/DataCard";
 import { AtlasLiquidCard } from "@/components/atlas/AtlasLiquidCard";
 import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import { ReconnectAccountButton } from "@/components/dashboard/ReconnectAccountButton";
+import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
 import { providerName, type SyncConnection } from "@/lib/sync/status";
 
 /** Account inventory item — NAMES ONLY on Connections (no balances). */
@@ -184,6 +186,24 @@ function EyebrowHeading({ eyebrow, institution }: { eyebrow: string; institution
   );
 }
 
+/**
+ * Wallet-only refresh affordance. Reuses SyncWalletButton (POST
+ * /api/accounts/[id]/sync). Manual refresh is recovery/freshness — the initial
+ * sync runs automatically on add. Never rendered for Plaid (no reconnect logic).
+ */
+function WalletActions({ connection, accounts }: { connection: SyncConnection; accounts: AccountLite[] }) {
+  if (connection.provider !== "WALLET") return null;
+  const acct = accounts[0];
+  if (!acct) return null;
+  const syncStatus: "synced" | "pending" | "error" =
+    connection.state === "ready" ? "synced" : connection.state === "error" ? "error" : "pending";
+  return (
+    <div className="mt-3">
+      <SyncWalletButton accountId={acct.id} syncStatus={syncStatus} />
+    </div>
+  );
+}
+
 function AccountNames({ accounts }: { accounts: AccountLite[] }) {
   if (accounts.length === 0) return null;
   return (
@@ -208,6 +228,28 @@ function ImportingContent({
   accounts:   AccountLite[];
   slow?:      boolean;
 }) {
+  // Wallets don't have Plaid's "institution/transaction-history" phases; while
+  // pending they're discovering on-chain addresses. A large (behemoth) wallet
+  // discovers across several passes — the Refresh action (rendered on the card)
+  // continues it. Honest, not the Plaid stepper.
+  if (connection.provider === "WALLET") {
+    return (
+      <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+        <EyebrowHeading eyebrow="Discovering addresses" institution={connection.institution} />
+        <p className="mt-1.5 mb-4 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
+          Finding your wallet’s addresses on-chain and importing balances. A large wallet can take several passes — press Refresh to continue discovery.
+        </p>
+        <ul className="space-y-1.5">
+          <DoneStatusRow label="Wallet connected" />
+          <li className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+            <Loader2 size={15} className="animate-spin text-[var(--meridian-400)] shrink-0" />
+            <span>Discovering addresses…{accounts.length > 0 ? ` (${accounts.length} so far)` : ""}</span>
+          </li>
+        </ul>
+        <AccountNames accounts={accounts} />
+      </div>
+    );
+  }
   const stages: Stage[] = [
     { label: "Institution connected", status: "done" },
     { label: "Accounts discovered", value: String(accounts.length), status: "done" },
@@ -306,17 +348,54 @@ function ErrorContent({
   connection: SyncConnection;
   accounts:   AccountLite[];
 }) {
-  const { errorCode } = connection;
+  const { errorCode, provider } = connection;
+  // Wallets have NO automatic background retry today (no scheduled crypto sync);
+  // retry is user-initiated via Refresh. Plaid IS retried daily by sync-banks,
+  // so its "we'll keep retrying" copy stays accurate. Do not promise behavior
+  // that doesn't exist.
+  const isWallet = provider === "WALLET";
+
+  // Valid extended key, but discovery found NO on-chain-used addresses. This is
+  // not a sync failure — most often the wrong address type was exported (e.g. a
+  // native-segwit account pasted as a legacy xpub). Show calm, actionable
+  // guidance rather than the red "Sync error" framing.
+  if (isWallet && errorCode === "NO_USED_ADDRESSES") {
+    return (
+      <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+        <EyebrowHeading eyebrow="No activity found" institution={connection.institution} />
+        <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
+        <div className="mt-1.5 flex items-start gap-2 text-sm text-[var(--text-secondary)]">
+          <Info size={15} className="shrink-0 mt-0.5" />
+          <span>
+            Valid xpub, but no used addresses were found. This may be the wrong address type.
+            Try the Native SegWit zpub/export for this account.
+          </span>
+        </div>
+        <AccountNames accounts={accounts} />
+      </div>
+    );
+  }
+
+  const walletDetail =
+    errorCode === "RATE_LIMITED"       ? "the Bitcoin explorer is rate-limiting requests"
+    : errorCode === "DISCOVERY_FAILED" ? "the explorer was temporarily unavailable or timed out"
+    : errorCode === "INVALID_XPUB"     ? "this doesn’t look like a valid extended public key (xpub/ypub/zpub)"
+    : errorCode;
   return (
     <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
       <EyebrowHeading eyebrow="Sync error" institution={connection.institution} />
       <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
-      <div className="mt-1.5 flex items-center gap-2 text-sm text-[var(--accent-warning,#f59e0b)]">
-        <AlertTriangle size={15} className="shrink-0" />
+      <div className="mt-1.5 flex items-start gap-2 text-sm text-[var(--accent-warning,#f59e0b)]">
+        <AlertTriangle size={15} className="shrink-0 mt-0.5" />
         <span>
-          We hit a problem syncing this connection{errorCode ? ` (${errorCode})` : ""}. We’ll keep retrying.
+          {isWallet
+            ? "We couldn’t complete address discovery for this wallet. Press Refresh to retry discovery."
+            : `We hit a problem syncing this connection${errorCode ? ` (${errorCode})` : ""}. We’ll keep retrying.`}
         </span>
       </div>
+      {isWallet && errorCode && (
+        <p className="mt-1.5 text-xs text-[var(--text-muted)]">Address discovery failed: {walletDetail}.</p>
+      )}
       <AccountNames accounts={accounts} />
     </div>
   );
@@ -350,11 +429,15 @@ export function ConnectionCard({ connection, accounts, slow, allowLiquid = true 
   // fallback. AtlasLiquidCard zeroes its own content padding and uses the
   // default frosted preset + Brief content geometry (relative z-10 +
   // px-6 md:px-8 py-6 md:py-7) so the glass has real area to refract.
+  // Wallet cards get a reuse of SyncWalletButton (recovery/freshness) — rendered
+  // once, in every wallet state; returns null for Plaid so those are unchanged.
+  const walletActions = <WalletActions connection={connection} accounts={accounts} />;
+
   return canLiquid ? (
     <AtlasLiquidCard ariaLabel={`${institution} — ${state}`}>
-      <div className="relative z-10 px-6 md:px-8 py-6 md:py-7">{content}</div>
+      <div className="relative z-10 px-6 md:px-8 py-6 md:py-7">{content}{walletActions}</div>
     </AtlasLiquidCard>
   ) : (
-    <DataCard accent={state === "error" ? "negative" : "none"}>{content}</DataCard>
+    <DataCard accent={state === "error" ? "negative" : "none"}>{content}{walletActions}</DataCard>
   );
 }

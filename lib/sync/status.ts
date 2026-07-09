@@ -25,8 +25,8 @@
 
 export type SyncConnectionState = "importing" | "ready" | "needs_reauth" | "error";
 
-/** Provider-agnostic. PLAID today; WALLET / CSV / COINBASE / SCHWAB / … later. */
-export type SyncProvider = "PLAID";
+/** Provider-agnostic. PLAID + WALLET today; CSV / COINBASE / SCHWAB / … later. */
+export type SyncProvider = "PLAID" | "WALLET";
 
 export interface SyncConnection {
   /** Opaque connection id (PlaidItem.id today). */
@@ -56,7 +56,8 @@ export interface SyncStatus {
  *   (verb "Imported via"), etc.
  */
 export const PROVIDER_LABEL: Record<SyncProvider, string> = {
-  PLAID: "Plaid",
+  PLAID:  "Plaid",
+  WALLET: "Self-custody",
 };
 
 export function providerName(provider: SyncProvider): string {
@@ -126,4 +127,65 @@ export function buildSyncStatus(items: PlaidItemStateInput[]): SyncStatus {
 
   const building = connections.some((c) => c.state === "importing");
   return { building, connections };
+}
+
+// ── Wallet Provider (self-custody) ───────────────────────────────────────────
+//
+// Wallet connections ride the SAME SyncConnection contract as Plaid. State is
+// derived from the v1.5 provider-sync-truth fields on Connection(provider=WALLET)
+// — Connection.status / lastSyncedAt / errorCode — no schema, no cursor:
+//   - REVOKED                          → excluded
+//   - status ERROR                     → "error"
+//   - status NEEDS_REAUTH              → "error"  (wallets never reauth; NEVER
+//                                                  surface Plaid reconnect)
+//   - status ACTIVE & lastSyncedAt set → "ready"
+//   - status ACTIVE & errorCode set    → "error"  (first sync failed)
+//   - status ACTIVE & neither          → "importing" (first sync pending)
+
+/** Structural shape from a Connection(provider=WALLET) row + its display name. */
+export interface WalletConnectionStateInput {
+  id:           string;
+  /** Card title — the wallet account's name (e.g. "My BTC Cold Storage"). */
+  displayName:  string;
+  status:       "ACTIVE" | "NEEDS_REAUTH" | "ERROR" | "REVOKED";
+  lastSyncedAt: Date | null;
+  errorCode:    string | null;
+}
+
+export function deriveWalletConnectionState(
+  input: Pick<WalletConnectionStateInput, "status" | "lastSyncedAt" | "errorCode">,
+): SyncConnectionState | null {
+  switch (input.status) {
+    case "REVOKED":      return null;
+    case "ERROR":        return "error";
+    case "NEEDS_REAUTH": return "error"; // wallets never reauth → error, never Plaid reconnect
+    case "ACTIVE":
+      if (input.lastSyncedAt !== null) return "ready";
+      if (input.errorCode !== null)    return "error";
+      return "importing";
+    default:             return null;
+  }
+}
+
+/** Map Connection(WALLET) rows → provider-agnostic SyncConnection[]. */
+export function buildWalletSyncStatus(inputs: WalletConnectionStateInput[]): SyncConnection[] {
+  const out: SyncConnection[] = [];
+  for (const w of inputs) {
+    const state = deriveWalletConnectionState(w);
+    if (state === null) continue;
+    out.push({
+      id:           w.id,
+      provider:     "WALLET",
+      institution:  w.displayName,
+      state,
+      lastSyncedAt: w.lastSyncedAt ? w.lastSyncedAt.toISOString() : null,
+      errorCode:    w.errorCode ?? null,
+    });
+  }
+  return out;
+}
+
+/** Combine already-built connections (Plaid + Wallet + …) into one SyncStatus. */
+export function finalizeSyncStatus(connections: SyncConnection[]): SyncStatus {
+  return { building: connections.some((c) => c.state === "importing"), connections };
 }

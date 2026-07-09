@@ -52,7 +52,7 @@ export function ConnectionsActions({ centered = false }: Props) {
   const walletContent = (
     <>
       <Wallet size={16} className="shrink-0" />
-      <span className="whitespace-nowrap">Add wallet</span>
+      <span className="whitespace-nowrap">Add wallet (address or xpub)</span>
     </>
   );
 

@@ -21,7 +21,8 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { PlaidItemStatus } from "@prisma/client";
-import { buildSyncStatus } from "@/lib/sync/status";
+import { buildSyncStatus, finalizeSyncStatus } from "@/lib/sync/status";
+import { loadWalletSyncConnections } from "@/lib/sync/wallet-connections";
 
 export const dynamic = "force-dynamic";
 
@@ -42,5 +43,11 @@ export async function GET() {
     orderBy: { createdAt: "asc" },
   });
 
-  return NextResponse.json(buildSyncStatus(items));
+  // Include WALLET connections so polling never drops wallet cards (they carry
+  // the same ids the server-rendered account map is keyed on).
+  const wallet = await loadWalletSyncConnections(user.id);
+
+  return NextResponse.json(
+    finalizeSyncStatus([...buildSyncStatus(items).connections, ...wallet.connections]),
+  );
 }
