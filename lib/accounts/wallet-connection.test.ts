@@ -78,6 +78,29 @@ check("btc-sync selects ownerUserId for spine alignment", /ownerUserId:\s*true/.
 const backfill = code(read("scripts", "backfill-wallet-connections.ts"));
 check("backfill script reuses alignWalletProviderSpine", backfill.includes("alignWalletProviderSpine"));
 
+// ── PART C — v1.5 cleanup: AccountConnection mirror + schema doctrine ───────────
+
+check("markWalletAccountConnectionSynced writes AccountConnection sync fields",
+  /accountConnection\.updateMany/.test(wc) &&
+  /syncStatus:\s*["']synced["']/.test(wc) &&
+  /lastSyncedAt:\s*new Date\(\)/.test(wc));
+check("AccountConnection mirror is wallet-scoped (plaidItemDbId null, never a Plaid row)",
+  /plaidItemDbId:\s*null/.test(wc));
+check("spine mirrors to AccountConnection on markSynced (called from a successful sync)",
+  wc.includes("markWalletAccountConnectionSynced"));
+
+const schema = read("prisma", "schema.prisma");
+check("schema marks wallet columns TRANSITIONAL",
+  /TRANSITIONAL \(v1 \/ v1\.5 wallet columns\)/.test(schema));
+check("schema names PAI + Connection the canonical provider identity path",
+  /CANONICAL provider identity path/.test(schema));
+check("schema notes nativeBalance/balance become derived from Holdings in v2",
+  /DERIVED from Holding rows in/.test(schema));
+check("schema marks Connection as provider-sync TRUTH",
+  /Provider-sync TRUTH/.test(schema));
+check("schema marks AccountConnection sync fields as a compatibility MIRROR",
+  /MIRROR \(compatibility\)/.test(schema));
+
 // ── Summary ─────────────────────────────────────────────────────────────────
 console.log(`\nwallet-connection: ${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

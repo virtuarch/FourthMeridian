@@ -114,6 +114,25 @@ export async function touchWalletConnectionStatus(params: {
 }
 
 /**
+ * Mirror a successful sync onto the wallet's AccountConnection row(s), for
+ * compatibility with the shared AccountConnection sync fields. The AUTHORITATIVE
+ * provider-sync record is `Connection.status/lastSyncedAt` (touched separately) —
+ * this only keeps the mirror fields fresh. Scoped to manual/wallet connections
+ * (`plaidItemDbId: null`) so a Plaid row is never touched. `@updatedAt` bumps
+ * `updatedAt` automatically. Best-effort — the caller wraps it.
+ */
+export async function markWalletAccountConnectionSynced(params: {
+  financialAccountId: string;
+  client?: DbClient;
+}): Promise<void> {
+  const client = params.client ?? db;
+  await client.accountConnection.updateMany({
+    where: { financialAccountId: params.financialAccountId, plaidItemDbId: null, deletedAt: null },
+    data:  { syncStatus: "synced", lastSyncedAt: new Date() },
+  });
+}
+
+/**
  * Ensure the full provider spine for a wallet account: Connection exists, the
  * AccountConnection and ProviderAccountIdentity both point at it. Idempotent
  * and non-fatal — returns the Connection id, or null if alignment failed (which
@@ -152,7 +171,13 @@ export async function alignWalletProviderSpine(params: {
       connection.id,
     );
     if (params.markSynced) {
+      // Connection = provider-sync truth.
       await touchWalletConnectionStatus({ connectionId: connection.id, ok: true });
+      // AccountConnection mirror (compatibility) — kept fresh, not authoritative.
+      await markWalletAccountConnectionSynced({
+        financialAccountId: params.financialAccountId,
+        client:             params.client,
+      });
     }
     return connection.id;
   } catch (e) {

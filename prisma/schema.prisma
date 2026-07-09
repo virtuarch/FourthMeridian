@@ -620,6 +620,9 @@ model Connection {
   provider             ProviderType
   externalConnectionId String? // provider's login/connection id, where one exists
   credential           String? // encrypted; null for MANUAL; xpub/descriptor for WALLET watch-only — NEVER a private key
+  // Provider-sync TRUTH: status / lastSyncedAt / errorCode are the authoritative
+  // record of a connection's sync health (WALLET included, v1.5). The
+  // AccountConnection.syncStatus / lastSyncedAt fields only MIRROR this.
   status               ConnectionStatus @default(ACTIVE)
   cursor               String? // sync cursor, where the provider supports one
   errorCode            String?
@@ -661,6 +664,9 @@ model ProviderAccountIdentity {
   connectionId       String?
   connection         Connection?      @relation(fields: [connectionId], references: [id], onDelete: SetNull)
   provider           ProviderType
+  // v1.5 provider-spine: for WALLET, externalAccountId = the public address and,
+  // with connectionId → Connection, is the CANONICAL provider identity path —
+  // superseding the transitional FinancialAccount.walletAddress column.
   externalAccountId  String
   metadata           Json?
   createdAt          DateTime         @default(now())
@@ -800,7 +806,15 @@ model FinancialAccount {
   officialName String? // Plaid `official_name`, captured once at import — never updated on resync
   displayName  String? // user-editable override; null until the user renames the account
 
-  // Crypto self-custody fields
+  // Crypto self-custody fields — TRANSITIONAL (v1 / v1.5 wallet columns).
+  // Canonical provider identity for a wallet is
+  // ProviderAccountIdentity(provider=WALLET).externalAccountId linked to a
+  // Connection(provider=WALLET) (v1.5 provider-spine alignment). walletAddress /
+  // walletChain are still the de-facto read/write source today, but no NEW
+  // readers should be added — v2+ migrates reads onto the identity/Connection
+  // path. nativeBalance (and, for crypto accounts, the USD `balance` above) are
+  // written by balance sync in v1/v1.5 and become DERIVED from Holding rows in
+  // v2 (Σ Holding.value); the scalar columns remain for non-crypto accounts.
   walletAddress String?
   walletChain   String?
   nativeBalance Float?
@@ -899,6 +913,10 @@ model AccountConnection {
   connectionId String?
   connection   Connection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
 
+  // MIRROR (compatibility): the provider-sync truth is Connection.status /
+  // lastSyncedAt. For WALLET these are refreshed on a successful balance sync
+  // (v1.5: markWalletAccountConnectionSynced); some providers may not maintain
+  // them — do not treat these as authoritative.
   syncStatus   String    @default("pending")
   isCanonical  Boolean   @default(true) // authoritative balance source for this account
   lastSyncedAt DateTime?
