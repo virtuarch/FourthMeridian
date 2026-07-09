@@ -23,6 +23,9 @@ import {
   computeUsdBalance,
   fetchConfirmedSats,
   fetchBtcUsdPrice,
+  fetchAddressTxCount,
+  parseMultiaddrStats,
+  fetchAddressStatsBatch,
   normalizeBtcAddressTxs,
   BtcSyncError,
   SATS_PER_BTC,
@@ -113,7 +116,8 @@ async function main(): Promise<void> {
   check("explorer stays pure (no next/* import)", !/from\s+["']next\//.test(explorer));
 
   const sync = code(read("lib", "crypto", "btc-sync.ts"));
-  check("sync writes syncStatus 'synced' on success", /syncStatus:\s*["']synced["']/.test(sync));
+  check("sync writes syncStatus (synced when complete, pending while discovering)",
+    /syncStatus:\s*discoveryComplete \? "synced" : "pending"/.test(sync));
   check("sync materializes nativeBalance + balance", sync.includes("nativeBalance") && /balance:\s*balanceUsd/.test(sync));
   check("sync never flips to 'error'", !/syncStatus:\s*["']error["']/.test(sync));
   // Inspect the persist step specifically: the update's data must not touch
@@ -285,9 +289,16 @@ async function main(): Promise<void> {
     /getWalletAddresses/.test(sync) && /providerAccountIdentity\.findMany/.test(sync));
   check("balance is SUMMED across all addresses",
     sync.includes("fetchConfirmedSatsForAddresses") || /reduce\(\(s, x\) => s \+ x/.test(sync));
-  check("xpub discovery: gap-limit scan of receive+change branches",
-    sync.includes("discoverXpubAddresses") && /unused\s*<\s*gapLimit/.test(sync) &&
+  check("xpub discovery is bounded + resumable (batch, checkpoint, no one-shot scan)",
+    sync.includes("discoverXpubStep") && sync.includes("fetchAddressStatsBatch") &&
+    /cursor:\s*JSON\.stringify/.test(sync) && /stepPerBranch/.test(sync) &&
     /parseExtendedKey/.test(sync) && /deriveAddressAt/.test(sync));
+  check("partial xpub → pending, complete → synced (honest status)",
+    /discoveryComplete \? "synced" : "pending"/.test(sync));
+  check("tx import is bounded per run (behemoth-safe)",
+    /BTC_TX_ADDR_CAP/.test(sync) && /addresses\.slice\(0, txAddrCap\)/.test(sync));
+  check("xpub balance uses the batch provider (not per-address probing)",
+    /fetchAddressStatsBatch\(addresses/.test(sync) || /batchStatsFetcher\(addresses\)/.test(sync));
   check("discovery writes per-address identities via the KEPT composite unique (not dualWrite)",
     /providerAccountIdentity\.upsert/.test(sync) &&
     /provider_externalAccountId_financialAccountId/.test(sync) &&
@@ -309,6 +320,95 @@ async function main(): Promise<void> {
   const migration = read("prisma", "migrations", "20260709231500_v4_xpub_drop_provider_identity_account_unique", "migration.sql");
   check("migration drops the exact index",
     /DROP INDEX "ProviderAccountIdentity_provider_financialAccountId_key"/.test(migration));
+
+  // ── PART G — xpub onboarding reliability (rate limits + required discovery) ──
+
+  process.env.BTC_RATE_LIMIT_BACKOFF_MS = "1"; // near-instant retries for the test
+
+  const rl429 = (): Response =>
+    ({ ok: false, status: 429, headers: { get: () => null }, json: async () => ({}) }) as unknown as Response;
+
+  // 429 twice, then 200 → fetchAddressTxCount backs off and eventually succeeds.
+  let calls = 0;
+  const flaky: typeof fetch = (async () => {
+    calls += 1;
+    return calls <= 2 ? rl429() : okResponse({ chain_stats: { tx_count: 3 }, mempool_stats: { tx_count: 0 } });
+  }) as unknown as typeof fetch;
+  const txc = await fetchAddressTxCount("addr", flaky);
+  check("429 backoff: retries then succeeds", txc === 3 && calls === 3, `calls=${calls} txc=${txc}`);
+
+  // Persistent 429 → a rate-limited BtcSyncError (callers surface a useful state).
+  const always: typeof fetch = (async () => rl429()) as unknown as typeof fetch;
+  let rlErr: unknown;
+  try { await fetchAddressTxCount("addr", always); } catch (e) { rlErr = e; }
+  check("persistent 429 → rate-limited BtcSyncError",
+    rlErr instanceof BtcSyncError && /rate limit/i.test((rlErr as Error).message));
+
+  // Engine: discovery is REQUIRED — a failure with zero addresses must not
+  // proceed as success; it returns stage "discovery", records a SyncIssue, and
+  // sets the Connection error (→ card shows error, not "importing").
+  check("xpub discovery failure returns stage 'discovery' (not proceeding as success)",
+    /stage:\s*"discovery"/.test(sync) && sync.includes('recordWalletSyncIssue(accountId, "discovery"'));
+  check("discovery failure sets Connection error (RATE_LIMITED) + records issue",
+    /touchWalletConnectionStatus\(\{[\s\S]*?ok:\s*false/.test(sync) && /RATE_LIMITED/.test(sync));
+  check("discovery failure returns a useful, non-generic reason (not 'no addresses')",
+    /rate-limiting requests/.test(sync) && /Address discovery failed/.test(sync));
+  check("manual/no-address xpub reruns discovery BEFORE resolving addresses",
+    sync.indexOf("discoverXpubStep({ financialAccountId: accountId") <
+      sync.indexOf("let addresses = await getWalletAddresses"));
+  check("gap limit + per-run step are configurable (deps + env)",
+    /deps\.gapLimit/.test(sync) && /BTC_XPUB_GAP_LIMIT/.test(sync) &&
+    /deps\.stepPerBranch/.test(sync) && /BTC_XPUB_STEP/.test(sync));
+
+  // ── PART I — partial-progress status fix + failure-mode differentiation ──────
+  // Part A: partial PROGRESS must CLEAR a stale errorCode (card shows discovering,
+  // not the old sync error) while staying pending (not marked ready).
+  check("partial xpub progress clears stale errorCode (discovering, not error)",
+    sync.includes("clearWalletConnectionError(connection.id)"));
+  check("only COMPLETE discovery marks ready + mirrors AccountConnection",
+    sync.includes("touchWalletConnectionStatus({ connectionId: connection.id, ok: true })") &&
+    sync.includes("markWalletAccountConnectionSynced"));
+  check("discovery step reports cumulative used-count (drives zero-used detection)",
+    /usedCount:\s*next\.used/.test(sync) && /usedCount = step\.usedCount/.test(sync));
+  // Part C: four distinct failure modes.
+  check("zero-used valid key → NO_USED_ADDRESSES guidance (not a sync error)",
+    /discoveryComplete && usedCount === 0/.test(sync) && /NO_USED_ADDRESSES/.test(sync));
+  check("malformed key → INVALID_XPUB reject; network/rate → retryable codes",
+    /INVALID_XPUB/.test(sync) && /malformed/.test(sync) &&
+    /DISCOVERY_FAILED/.test(sync) && /RATE_LIMITED/.test(sync));
+  check("malformed reason is distinct from the network/timeout reason",
+    /valid extended public key/.test(sync));
+
+  // Part B: the wallet route normalizes a Ledger JSON / xpub before use so the
+  // user never picks a derivation path.
+  check("wallet route normalizes descriptor input (Ledger JSON / xpub) before use",
+    /normalizeExtendedKeyInput/.test(walletRoute) && /walletValue/.test(walletRoute));
+
+  // Run-on-add: the Connection spine is aligned BEFORE syncBtcWallet, so a fresh
+  // xpub's discovery has a Connection to read the descriptor from.
+  check("run-on-add aligns Connection before syncBtcWallet (xpub discovery has a Connection)",
+    walletRoute.indexOf("alignWalletProviderSpine({ userId, financialAccountId: fa.id") <
+      walletRoute.indexOf("await syncBtcWallet(fa.id)"));
+
+  // ── PART H — batch stats provider (multiaddr) ────────────────────────────────
+  const multiaddrFixture = {
+    addresses: [
+      { address: "A1", n_tx: 3, final_balance: 500000 },
+      { address: "A2", n_tx: 0, final_balance: 0 },
+      // "A3" omitted by the provider (no activity) → must default to zeros.
+    ],
+  };
+  const mstats = parseMultiaddrStats(multiaddrFixture, ["A1", "A2", "A3"]);
+  check("parseMultiaddrStats: used address → txCount + sats",
+    mstats.get("A1")?.txCount === 3 && mstats.get("A1")?.sats === 500000);
+  check("parseMultiaddrStats: omitted/zero address defaults to zero (entry always present)",
+    mstats.has("A3") && mstats.get("A3")?.txCount === 0 && mstats.get("A2")?.sats === 0);
+
+  let batchCalls = 0;
+  const batchFetch: typeof fetch = (async () => { batchCalls += 1; return okResponse(multiaddrFixture); }) as unknown as typeof fetch;
+  const batched = await fetchAddressStatsBatch(["A1", "A2", "A3"], batchFetch);
+  check("fetchAddressStatsBatch: ONE request per chunk (vs one-per-address)",
+    batchCalls === 1 && batched.get("A1")?.sats === 500000);
 
   // ── Summary ─────────────────────────────────────────────────────────────────
   console.log(`\nbtc-sync: ${passes} passed, ${failures} failed`);

@@ -38,13 +38,14 @@ import {
 import {
   alignWalletProviderSpine,
   touchWalletConnectionStatus,
+  clearWalletConnectionError,
   markWalletAccountConnectionSynced,
 } from "@/lib/accounts/wallet-connection";
 import {
   fetchConfirmedSatsForAddresses,
   fetchBtcUsdPrice,
   fetchAddressTxsRaw,
-  fetchAddressTxCount,
+  fetchAddressStatsBatch,
   normalizeBtcAddressTxs,
   satsToBtc,
   computeUsdBalance,
@@ -52,12 +53,19 @@ import {
   type RawBtcTx,
   type NormalizedBtcMovement,
   type BtcFlowType,
+  type AddrStat,
 } from "@/lib/crypto/btc-explorer";
 import {
   parseExtendedKey,
   deriveAddressAt,
   isExtendedKey,
 } from "@/lib/crypto/btc-address-derivation";
+import {
+  readDiscoveryCursor,
+  planXpubStep,
+  applyXpubStep,
+  type AddrRef,
+} from "@/lib/crypto/btc-discovery-core";
 
 /** The only chain this v1 sync supports. */
 export const BTC_CHAIN = "BTC";
@@ -65,13 +73,14 @@ export const BTC_CHAIN = "BTC";
 export interface BtcWalletSyncResult {
   accountId: string;
   ok: boolean;
-  /** Set only on success — the row's new persisted state. */
-  syncStatus?: "synced";
+  /** On success — the row's new persisted state ("pending" while an xpub is still
+   *  discovering across runs; "synced" once discovery completes). */
+  syncStatus?: "synced" | "pending";
   nativeBalance?: number;
   balanceUsd?: number;
   priceUsd?: number;
   /** On failure: which step failed and why (also recorded as a SyncIssue). */
-  stage?: "load" | "balance" | "price";
+  stage?: "load" | "discovery" | "balance" | "price";
   reason?: string;
 }
 
@@ -84,16 +93,19 @@ export interface BtcSyncDeps {
   priceFetcher?: () => Promise<number>;
   /** Override the confirmed-transactions fetch (offline tests). */
   txFetcher?: (address: string) => Promise<RawBtcTx[]>;
-  /** Override the xpub address-usage check (true = address has activity). */
-  usageChecker?: (address: string) => Promise<boolean>;
-  /** xpub discovery: consecutive-unused stop threshold (default 20, BIP44). */
+  /** Override the xpub batch address-stats lookup (offline tests). */
+  batchStatsFetcher?: (addresses: string[]) => Promise<Map<string, AddrStat>>;
+  /** xpub discovery: consecutive-unused gap limit (default env BTC_XPUB_GAP_LIMIT or 20). */
   gapLimit?: number;
+  /** xpub discovery: max NEW indices scanned PER BRANCH PER RUN (behemoth bound;
+   *  default env BTC_XPUB_STEP or 50). Bounds work + request count per sync. */
+  stepPerBranch?: number;
 }
 
 /** Best-effort SyncIssue writer — never throws (mirrors lib/plaid/syncIssues.ts). */
 async function recordWalletSyncIssue(
   financialAccountId: string,
-  stage: "balance" | "price",
+  stage: "discovery" | "balance" | "price",
   message: string,
   extra?: Record<string, unknown>,
 ): Promise<void> {
@@ -297,13 +309,14 @@ async function importBtcTransactions(
 
 // ── Wallet Provider v4 — xpub / multi-address foundation ─────────────────────
 
-interface WalletConnectionRef { id: string; credential: string | null }
+interface WalletConnectionRef { id: string; credential: string | null; cursor: string | null }
 
-/** The wallet's Connection (credential = single address OR xpub descriptor). */
+/** The wallet's Connection (credential = single address OR xpub descriptor;
+ *  cursor = xpub discovery checkpoint JSON, see DiscoveryCursor). */
 async function loadWalletConnection(financialAccountId: string): Promise<WalletConnectionRef | null> {
   const ac = await db.accountConnection.findFirst({
     where:  { financialAccountId, connectionId: { not: null }, deletedAt: null },
-    select: { connection: { select: { id: true, credential: true } } },
+    select: { connection: { select: { id: true, credential: true, cursor: true } } },
   });
   return ac?.connection ?? null;
 }
@@ -354,47 +367,59 @@ async function upsertDiscoveredAddress(params: {
   });
 }
 
+// Discovery checkpoint (DiscoveryCursor) + the PURE plan/apply helpers live in
+// lib/crypto/btc-discovery-core.ts (DB-free, so they're unit-tested offline).
+
+function xpubGapLimit(deps: BtcSyncDeps): number {
+  return deps.gapLimit && deps.gapLimit > 0 ? deps.gapLimit : (Number(process.env.BTC_XPUB_GAP_LIMIT) || 20);
+}
+/** Max NEW indices scanned per branch per run — bounds work for behemoth wallets. */
+function xpubStepPerBranch(deps: BtcSyncDeps): number {
+  return deps.stepPerBranch && deps.stepPerBranch > 0 ? deps.stepPerBranch : (Number(process.env.BTC_XPUB_STEP) || 50);
+}
+
 /**
- * Discover an xpub wallet's used addresses via BIP44 gap-limit scan and record
- * each as a ProviderAccountIdentity. Scans the receive (0) and change (1)
- * branches, stopping after `gapLimit` consecutive UNUSED addresses. Records USED
- * addresses only (unused ones hold nothing), plus always ensures the first
- * receive address exists so a brand-new/empty xpub still has one identity.
- * Idempotent and rerunnable (upsert). Populates identities ONLY — no balances.
+ * Run ONE bounded discovery step for an xpub, resuming from the persisted
+ * checkpoint (Connection.cursor). Composes the PURE plan/apply helpers with the
+ * batch lookup + DB writes: persists the receive/0 anchor BEFORE any network so
+ * a timeout/abort never wipes progress, batch-looks-up usage in one request per
+ * chunk, upserts used addresses (idempotent — never duplicates across runs), and
+ * persists the advanced checkpoint. Never does a one-shot full scan.
  */
-async function discoverXpubAddresses(params: {
+async function discoverXpubStep(params: {
   financialAccountId: string;
-  connectionId: string | null;
+  connectionId: string;
   xpub: string;
+  cursorRaw: string | null;
   deps: BtcSyncDeps;
-}): Promise<void> {
+}): Promise<{ complete: boolean; usedCount: number }> {
   const parsed = parseExtendedKey(params.xpub);
-  const gapLimit = params.deps.gapLimit && params.deps.gapLimit > 0 ? params.deps.gapLimit : 20;
-  const MAX_PER_BRANCH = 1000; // hard bound against a runaway scan
-  const isUsed = params.deps.usageChecker
-    ?? ((a: string) => fetchAddressTxCount(a, params.deps.fetchImpl).then((n) => n > 0));
+  const gap = xpubGapLimit(params.deps);
+  const step = xpubStepPerBranch(params.deps);
+  const cursor = readDiscoveryCursor(params.cursorRaw);
+  if (cursor.rDone && cursor.cDone) return { complete: true, usedCount: cursor.used };
 
-  for (const branch of [0, 1]) {
-    let unused = 0;
-    for (let index = 0; index < MAX_PER_BRANCH && unused < gapLimit; index++) {
-      const address = deriveAddressAt(parsed, branch, index);
-      if (await isUsed(address)) {
-        await upsertDiscoveredAddress({ financialAccountId: params.financialAccountId, connectionId: params.connectionId, address, branch, index });
-        unused = 0;
-      } else {
-        unused++;
-      }
-    }
+  const deriveAt = (branch: number, index: number) => deriveAddressAt(parsed, branch, index);
+  const upsert = (ref: AddrRef) =>
+    upsertDiscoveredAddress({ financialAccountId: params.financialAccountId, connectionId: params.connectionId, address: ref.address, branch: ref.branch, index: ref.index });
+
+  // Resumable anchor — persist receive/0 before any network so a failure keeps it.
+  if (cursor.r === 0 && !cursor.rDone) await upsert({ address: deriveAt(0, 0), branch: 0, index: 0 });
+
+  const plan = planXpubStep(deriveAt, cursor, step);
+  const batch = params.deps.batchStatsFetcher
+    ? await params.deps.batchStatsFetcher(plan.map((p) => p.address))
+    : await fetchAddressStatsBatch(plan.map((p) => p.address), params.deps.fetchImpl);
+
+  const { cursor: next, toPersist, complete } = applyXpubStep(cursor, plan, (a) => (batch.get(a)?.txCount ?? 0) > 0, gap);
+  for (const ref of toPersist) await upsert(ref);
+
+  try {
+    await db.connection.update({ where: { id: params.connectionId }, data: { cursor: JSON.stringify(next) } });
+  } catch (e) {
+    console.warn(`[btc-sync] discovery cursor persist failed for ${params.connectionId} (non-fatal):`, e);
   }
-
-  // Empty xpub → still record the first receive address so the account has one
-  // identity (and is syncable).
-  await upsertDiscoveredAddress({
-    financialAccountId: params.financialAccountId,
-    connectionId:       params.connectionId,
-    address:            deriveAddressAt(parsed, 0, 0),
-    branch: 0, index: 0,
-  });
+  return { complete, usedCount: next.used };
 }
 
 /**
@@ -425,13 +450,36 @@ export async function syncBtcWallet(
   const descriptor = connection?.credential ?? account.walletAddress;
   const isXpub = isExtendedKey(descriptor);
 
-  // xpub: discover addresses first (identities only). Best-effort so a discovery
-  // hiccup doesn't fail a sync that can still use already-known addresses.
+  // xpub: run ONE bounded, resumable discovery step (never a one-shot full scan).
+  // The step persists the receive/0 anchor + used addresses + a checkpoint on
+  // Connection.cursor, so a timeout/abort never wipes progress and the next
+  // sync/Refresh resumes. A large wallet completes over SEVERAL runs.
+  let discoveryComplete = !isXpub; // single-address wallets are trivially complete
+  let usedCount = isXpub ? 0 : 1;  // non-xpub trivially "has" its one address
   if (isXpub && connection) {
     try {
-      await discoverXpubAddresses({ financialAccountId: accountId, connectionId: connection.id, xpub: descriptor, deps });
+      const step = await discoverXpubStep({ financialAccountId: accountId, connectionId: connection.id, xpub: descriptor, cursorRaw: connection.cursor, deps });
+      discoveryComplete = step.complete;
+      usedCount = step.usedCount;
     } catch (e) {
-      console.warn(`[btc-sync] xpub discovery failed for ${accountId} (non-fatal):`, e);
+      // The CURRENT run failed. Classify: a malformed key is permanent (reject),
+      // rate-limit/network is retryable. Either way set the error and stop — we do
+      // NOT silently continue, so the card honestly reflects the failed run. Any
+      // already-discovered addresses + checkpoint are preserved for the retry.
+      const reason = e instanceof Error ? e.message : String(e);
+      const malformed = /extended public key|malformed|watch-only requires/i.test(reason);
+      const rateLimited = /rate limit/i.test(reason);
+      const errorCode = malformed ? "INVALID_XPUB" : rateLimited ? "RATE_LIMITED" : "DISCOVERY_FAILED";
+      await recordWalletSyncIssue(accountId, "discovery", reason, { xpub: true, rateLimited, malformed });
+      await touchWalletConnectionStatus({ connectionId: connection.id, ok: false, errorCode });
+      return {
+        accountId, ok: false, stage: "discovery",
+        reason: malformed
+          ? "This doesn't look like a valid extended public key (xpub/ypub/zpub)."
+          : rateLimited
+            ? "The Bitcoin explorer is rate-limiting requests — press Refresh to try again shortly."
+            : `Address discovery failed: ${reason}`,
+      };
     }
   }
 
@@ -445,12 +493,19 @@ export async function syncBtcWallet(
 
   const priceFetcher = deps.priceFetcher ?? (() => fetchBtcUsdPrice(deps.fetchImpl));
 
-  // 1) Confirmed balance SUMMED across every address.
+  // 1) Confirmed balance across every KNOWN address — batch (one request per 50)
+  //    for xpub, per-address for single-address. For a partially-discovered xpub
+  //    this is a PARTIAL balance (completes as discovery advances).
   let sats: number;
   try {
-    sats = deps.balanceFetcher
-      ? (await Promise.all(addresses.map(deps.balanceFetcher))).reduce((s, x) => s + x, 0)
-      : await fetchConfirmedSatsForAddresses(addresses, deps.fetchImpl);
+    if (deps.balanceFetcher) {
+      sats = (await Promise.all(addresses.map(deps.balanceFetcher))).reduce((s, x) => s + x, 0);
+    } else if (isXpub) {
+      const stats = deps.batchStatsFetcher ? await deps.batchStatsFetcher(addresses) : await fetchAddressStatsBatch(addresses, deps.fetchImpl);
+      sats = addresses.reduce((s, a) => s + (stats.get(a)?.sats ?? 0), 0);
+    } else {
+      sats = await fetchConfirmedSatsForAddresses(addresses, deps.fetchImpl);
+    }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     await recordWalletSyncIssue(accountId, "balance", reason, { addresses: addresses.length });
@@ -467,25 +522,43 @@ export async function syncBtcWallet(
     return { accountId, ok: false, stage: "price", reason };
   }
 
-  // 3) Persist the AGGREGATED balance (one account, one balance — no duplicates).
+  // 3) Persist the aggregated balance (one account, one balance — no duplicates).
+  //    Until an xpub's discovery completes, the account is "pending" (partial),
+  //    not "synced" — honest status while more addresses are still being found.
   const nativeBalance = satsToBtc(sats);
   const balanceUsd = computeUsdBalance(nativeBalance, priceUsd);
   await db.financialAccount.update({
     where: { id: accountId },
-    data: { nativeBalance, balance: balanceUsd, currency: "USD", syncStatus: "synced", lastUpdated: new Date() },
+    data: { nativeBalance, balance: balanceUsd, currency: "USD", syncStatus: discoveryComplete ? "synced" : "pending", lastUpdated: new Date() },
   });
 
-  // v2 — one BTC Holding (summed). v3 — transactions aggregated across addresses.
+  // v2 — one BTC Holding (summed). v3 — transactions aggregated across addresses,
+  //    BOUNDED to the first N addresses per run so a behemoth wallet never issues
+  //    hundreds of tx requests; history fills in across runs (idempotent dedupe).
   await writeBtcHolding(accountId, { nativeBalance, priceUsd, balanceUsd });
-  await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses }, deps);
+  const txAddrCap = Number(process.env.BTC_TX_ADDR_CAP) || 25;
+  await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: addresses.slice(0, txAddrCap) }, deps);
 
-  // v1.5 spine — record the sync. xpub: Connection + AccountConnection already
-  // exist and identities are per-address, so only stamp the sync (never create a
-  // PAI for the xpub descriptor). Single-address: full align (its one identity).
+  // v1.5 spine — record the sync. For an xpub the Connection status reflects the
+  // discovery lifecycle honestly:
+  //   • complete + used addresses found → READY (clears any stale error).
+  //   • complete + ZERO used addresses  → not an error: valid key, but likely the
+  //     wrong address type. Flag NO_USED_ADDRESSES so the card shows guidance.
+  //   • partial PROGRESS (not complete) → clear any stale error and stay
+  //     "discovering"; the next Refresh resumes from the checkpoint. (This is the
+  //     fix: a prior run's errorCode no longer outlives partial success.)
+  // Single-address wallets: full align, as before.
   if (account.ownerUserId) {
     if (isXpub && connection) {
-      await touchWalletConnectionStatus({ connectionId: connection.id, ok: true });
-      await markWalletAccountConnectionSynced({ financialAccountId: accountId });
+      if (discoveryComplete && usedCount === 0) {
+        await recordWalletSyncIssue(accountId, "discovery", "valid extended key, but no used addresses were found", { xpub: true, noUsedAddresses: true });
+        await touchWalletConnectionStatus({ connectionId: connection.id, ok: false, errorCode: "NO_USED_ADDRESSES" });
+      } else if (discoveryComplete) {
+        await touchWalletConnectionStatus({ connectionId: connection.id, ok: true });
+        await markWalletAccountConnectionSynced({ financialAccountId: accountId });
+      } else {
+        await clearWalletConnectionError(connection.id);
+      }
     } else {
       await alignWalletProviderSpine({
         userId:             account.ownerUserId,
@@ -497,7 +570,12 @@ export async function syncBtcWallet(
     }
   }
 
-  return { accountId, ok: true, syncStatus: "synced", nativeBalance, balanceUsd, priceUsd };
+  return {
+    accountId,
+    ok:           true,
+    syncStatus:   discoveryComplete ? "synced" : "pending",
+    nativeBalance, balanceUsd, priceUsd,
+  };
 }
 
 export interface SyncAllBtcWalletsResult {

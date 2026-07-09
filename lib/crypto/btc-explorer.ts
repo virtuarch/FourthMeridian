@@ -25,7 +25,7 @@ const DEFAULT_PRICE_URL = "https://mempool.space/api/v1/prices";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /** Which external call failed — carried on the error and into any SyncIssue. */
-export type BtcSyncStage = "balance" | "price" | "transactions";
+export type BtcSyncStage = "balance" | "price" | "transactions" | "discovery";
 
 /** Typed failure so callers can record an honest, staged sync issue. */
 export class BtcSyncError extends Error {
@@ -113,24 +113,63 @@ export function computeUsdBalance(btc: number, priceUsd: number): number {
 
 export type FetchFn = typeof fetch;
 
+/** Number of retries on HTTP 429/503 before giving up (env, default 4). */
+function rateLimitRetries(): number {
+  const n = Number(process.env.BTC_RATE_LIMIT_RETRIES);
+  return Number.isFinite(n) && n >= 0 ? n : 4;
+}
+/** Base backoff between rate-limited retries, doubled each attempt (env, default 500ms). */
+function rateLimitBackoffMs(): number {
+  const n = Number(process.env.BTC_RATE_LIMIT_BACKOFF_MS);
+  return Number.isFinite(n) && n > 0 ? n : 500;
+}
+const MAX_BACKOFF_MS = 8000;
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Rate-limit-safe JSON GET. On HTTP 429/503 it backs off (exponential, honoring
+ * a `Retry-After` header) and retries up to `rateLimitRetries()`; if still
+ * limited it throws a BtcSyncError whose message contains "rate limited" so
+ * callers can surface a useful state instead of a generic failure. Each attempt
+ * uses its own timeout/abort.
+ */
 async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Promise<unknown> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs());
-  try {
-    const res = await fetchImpl(url, {
-      signal: controller.signal,
-      headers: { accept: "application/json" },
-    });
-    if (!res.ok) {
-      throw new BtcSyncError(stage, `HTTP ${res.status} from ${url}`);
+  const maxRetries = rateLimitRetries();
+
+  for (let attempt = 0; ; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs());
+    let retryAfterMs: number | undefined;
+    try {
+      const res = await fetchImpl(url, {
+        signal: controller.signal,
+        headers: { accept: "application/json" },
+      });
+      if (res.status === 429 || res.status === 503) {
+        const ra = Number(res.headers?.get?.("retry-after"));
+        if (Number.isFinite(ra) && ra > 0) retryAfterMs = ra * 1000;
+        // fall through to backoff/retry below (after finally clears the timer)
+      } else if (!res.ok) {
+        throw new BtcSyncError(stage, `HTTP ${res.status} from ${url}`);
+      } else {
+        return await res.json();
+      }
+    } catch (err) {
+      if (err instanceof BtcSyncError) throw err;
+      throw new BtcSyncError(stage, err instanceof Error ? err.message : String(err));
+    } finally {
+      clearTimeout(timer);
     }
-    return await res.json();
-  } catch (err) {
-    if (err instanceof BtcSyncError) throw err;
-    const message = err instanceof Error ? err.message : String(err);
-    throw new BtcSyncError(stage, message);
-  } finally {
-    clearTimeout(timer);
+
+    // Reached only when the response was 429/503.
+    if (attempt >= maxRetries) {
+      throw new BtcSyncError(stage, `rate limited by explorer (HTTP 429/503) after ${attempt + 1} attempts`);
+    }
+    const delay = Math.min(retryAfterMs ?? rateLimitBackoffMs() * 2 ** attempt, MAX_BACKOFF_MS);
+    await sleep(delay);
   }
 }
 
@@ -151,6 +190,70 @@ export async function fetchConfirmedSatsForAddresses(addresses: string[], fetchI
 export async function fetchAddressTxCount(address: string, fetchImpl: FetchFn = fetch): Promise<number> {
   const url = `${btcExplorerBaseUrl()}/api/address/${encodeURIComponent(address)}`;
   return parseTxCount(await getJson(url, "balance", fetchImpl));
+}
+
+// ── Batch address stats (xpub discovery provider) ────────────────────────────
+//
+// mempool.space/Esplora has NO batch or xpub endpoint, so probing derived
+// addresses one-by-one is the fragility behind the 429/timeout onboarding
+// failures. For xpub discovery we derive locally and look up MANY addresses in a
+// single request via a multiaddr-style provider (blockchain.info by default,
+// keyless), which returns per-address n_tx AND final_balance at once. This is
+// the swappable "batch provider" seam; single-address wallets keep using the
+// per-address mempool path above.
+
+/** Per-address usage + confirmed balance from a batch lookup. */
+export interface AddrStat { txCount: number; sats: number }
+
+/** Base URL of the multiaddr-style batch provider (env-overridable, keyless default). */
+function batchApiUrl(): string {
+  return process.env.BTC_BATCH_API_URL?.trim() || "https://blockchain.info";
+}
+
+/** Max addresses per multiaddr request (provider limit ~50). */
+export const BATCH_CHUNK = 50;
+
+/**
+ * Parse a blockchain.info `/multiaddr` response into per-address stats for
+ * EXACTLY the requested addresses. Addresses the provider omits (no activity)
+ * default to zero, so the result always has an entry per requested address.
+ */
+export function parseMultiaddrStats(json: unknown, requested: string[]): Map<string, AddrStat> {
+  const out = new Map<string, AddrStat>();
+  for (const a of requested) out.set(a, { txCount: 0, sats: 0 });
+  const arr = (json as { addresses?: unknown } | null)?.addresses;
+  if (Array.isArray(arr)) {
+    for (const e of arr) {
+      const addr = (e as { address?: unknown }).address;
+      const nTx  = (e as { n_tx?: unknown }).n_tx;
+      const bal  = (e as { final_balance?: unknown }).final_balance;
+      if (typeof addr === "string" && out.has(addr)) {
+        out.set(addr, {
+          txCount: typeof nTx === "number" ? nTx : 0,
+          sats:    typeof bal === "number" ? bal : 0,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Batch usage+balance for a set of addresses in ONE request per BATCH_CHUNK
+ * (with 429 backoff from getJson). The single-request-per-chunk shape is what
+ * makes xpub discovery robust vs. one-request-per-address tarpitting.
+ */
+export async function fetchAddressStatsBatch(addresses: string[], fetchImpl: FetchFn = fetch): Promise<Map<string, AddrStat>> {
+  const result = new Map<string, AddrStat>();
+  for (let i = 0; i < addresses.length; i += BATCH_CHUNK) {
+    const chunk = addresses.slice(i, i + BATCH_CHUNK);
+    if (chunk.length === 0) continue;
+    const active = encodeURIComponent(chunk.join("|"));
+    const url = `${batchApiUrl()}/multiaddr?active=${active}&n=0`;
+    const stats = parseMultiaddrStats(await getJson(url, "discovery", fetchImpl), chunk);
+    for (const [k, v] of stats) result.set(k, v);
+  }
+  return result;
 }
 
 /** Current BTC→USD spot price. */

@@ -32,7 +32,7 @@ import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
-import { isExtendedKey } from "@/lib/crypto/btc-address-derivation";
+import { isExtendedKey, normalizeExtendedKeyInput } from "@/lib/crypto/btc-address-derivation";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -56,7 +56,14 @@ export async function POST(req: NextRequest) {
   // descriptor, the Connection credential is the descriptor, and per-address
   // ProviderAccountIdentity rows are created by xpub discovery during sync —
   // NOT here (hence descriptorOnly on the spine align below).
-  const isXpub = chain === BTC_CHAIN && isExtendedKey(walletAddress.trim());
+  //
+  // The user never picks a derivation path: normalizeExtendedKeyInput accepts a
+  // bare xpub/ypub/zpub OR a Ledger-style JSON export ({xpub, freshAddressPath}),
+  // and re-encodes to the prefix implied by the path's purpose (84'→zpub) so the
+  // pipeline derives the correct address type. Non-descriptor input passes through
+  // unchanged. Watch-only: only PUBLIC descriptors, never seeds/keys.
+  const walletValue = chain === BTC_CHAIN ? normalizeExtendedKeyInput(walletAddress.trim()) : walletAddress.trim();
+  const isXpub = chain === BTC_CHAIN && isExtendedKey(walletValue);
 
   const { spaceId, userId } = await getSpaceContext();
 
@@ -65,7 +72,7 @@ export async function POST(req: NextRequest) {
   // visible row for a wallet address that already has one, and never show
   // the user a conflict — just reuse/reactivate the existing account.
   const activeFa = await db.financialAccount.findFirst({
-    where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: null },
+    where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: null },
     select: { id: true },
   });
 
@@ -95,7 +102,7 @@ export async function POST(req: NextRequest) {
     // Wallet Provider v1.5 — ensure the real Connection(WALLET) spine and link
     // the AccountConnection + ProviderAccountIdentity to it (also self-heals a
     // wallet created before v1.5). Idempotent, non-fatal.
-    await alignWalletProviderSpine({ userId, financialAccountId: activeFa.id, address: walletAddress.trim(), chain, descriptorOnly: isXpub });
+    await alignWalletProviderSpine({ userId, financialAccountId: activeFa.id, address: walletValue, chain, descriptorOnly: isXpub });
 
     // walletAddress has no DB-level unique constraint, so an archived row
     // for this same address can exist alongside the active one (e.g. a
@@ -104,7 +111,7 @@ export async function POST(req: NextRequest) {
     // or merged it, since this branch returned immediately. Fold it into
     // the active row now, the same way the restore routes do.
     const archivedDup = await db.financialAccount.findFirst({
-      where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: { not: null } },
+      where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: { not: null } },
       select: { id: true },
     });
     if (archivedDup) {
@@ -142,7 +149,7 @@ export async function POST(req: NextRequest) {
   // second row (walletAddress has no DB-level unique constraint). Reactivate
   // it instead of creating a duplicate.
   const archivedFa = await db.financialAccount.findFirst({
-    where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: { not: null } },
+    where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: { not: null } },
     select: { id: true },
   });
 
@@ -180,7 +187,7 @@ export async function POST(req: NextRequest) {
     // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
     // this user's own archived account — no cross-owner behavior involved.
     // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine.
-    await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletAddress.trim(), chain, descriptorOnly: isXpub });
+    await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletValue, chain, descriptorOnly: isXpub });
 
     // BTC wallet sync v1 — populate the confirmed balance + USD value on
     // reactivate (best-effort, non-fatal). syncBtcWallet never throws; on
@@ -205,7 +212,7 @@ export async function POST(req: NextRequest) {
         userId,
         spaceId,
         action:   AuditAction.ACCOUNT_RESTORE,
-        metadata: { name: name.trim(), chain, address: walletAddress.trim() },
+        metadata: { name: name.trim(), chain, address: walletValue },
       },
     });
     return NextResponse.json({ success: true, accountId: archivedFa.id }, { status: 200 });
@@ -225,7 +232,7 @@ export async function POST(req: NextRequest) {
         institution:   "Self-custodied",
         balance:       0,
         currency:      "USD",
-        walletAddress: walletAddress.trim(),
+        walletAddress: walletValue,
         walletChain:   chain,
         nativeBalance: 0,
         syncStatus:    "pending",
@@ -270,7 +277,7 @@ export async function POST(req: NextRequest) {
   // is an entirely separate row under the D2 Step 1D corrected model.
   // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine for the
   // brand-new wallet (Connection → ProviderAccountIdentity → AccountConnection).
-  await alignWalletProviderSpine({ userId, financialAccountId: fa.id, address: walletAddress.trim(), chain, descriptorOnly: isXpub });
+  await alignWalletProviderSpine({ userId, financialAccountId: fa.id, address: walletValue, chain, descriptorOnly: isXpub });
   // D3 Step 3 HOME Semantics Correction — no separate HOME backfill call
   // needed here. computeLinkKind() (inside dualWriteSpaceAccountLink above)
   // now assigns HOME to the Space a brand-new account's first link is
@@ -302,7 +309,7 @@ export async function POST(req: NextRequest) {
       userId,
       spaceId,
       action:   "WALLET_ADD",
-      metadata: { name: fa.name, chain, address: walletAddress.trim() },
+      metadata: { name: fa.name, chain, address: walletValue },
     },
   });
 

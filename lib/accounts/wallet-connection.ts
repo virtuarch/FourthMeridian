@@ -114,6 +114,24 @@ export async function touchWalletConnectionStatus(params: {
 }
 
 /**
+ * Clear a stale error WITHOUT marking the connection fully synced. Used when an
+ * xpub sync makes partial discovery PROGRESS: a prior run's errorCode must not
+ * outlive it (that's what wrongly pinned the card on "Sync Error"), but the
+ * wallet is still discovering — so we leave `lastSyncedAt` untouched, keeping the
+ * card in the importing/"Discovering addresses…" state, not ready. Best-effort.
+ */
+export async function clearWalletConnectionError(connectionId: string): Promise<void> {
+  try {
+    await db.connection.update({
+      where: { id: connectionId },
+      data: { status: ConnectionStatus.ACTIVE, errorCode: null },
+    });
+  } catch (e) {
+    console.warn(`[wallet-connection] error-clear failed for ${connectionId} (non-fatal):`, e);
+  }
+}
+
+/**
  * Mirror a successful sync onto the wallet's AccountConnection row(s), for
  * compatibility with the shared AccountConnection sync fields. The AUTHORITATIVE
  * provider-sync record is `Connection.status/lastSyncedAt` (touched separately) —

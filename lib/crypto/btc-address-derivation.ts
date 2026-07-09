@@ -30,7 +30,14 @@ export type BtcScriptType = "p2pkh" | "p2sh" | "p2wpkh";
 
 const b58c = base58check(sha256);
 const hash160 = (b: Uint8Array): Uint8Array => ripemd160(sha256(b));
-const XPUB_VERSION = Uint8Array.from([0x04, 0x88, 0xb2, 0x1e]);
+
+// SLIP-0132 mainnet public version bytes per script type.
+const VERSION_BYTES: Record<BtcScriptType, Uint8Array> = {
+  p2pkh:  Uint8Array.from([0x04, 0x88, 0xb2, 0x1e]), // xpub
+  p2sh:   Uint8Array.from([0x04, 0x9d, 0x7c, 0xb2]), // ypub
+  p2wpkh: Uint8Array.from([0x04, 0xb2, 0x47, 0x46]), // zpub
+};
+const XPUB_VERSION = VERSION_BYTES.p2pkh;
 
 /** SLIP-0132 human prefix → script type. Null when not an extended public key. */
 export function detectExtendedKeyType(input: string): BtcScriptType | null {
@@ -100,6 +107,71 @@ export interface DerivedAddress {
   branch: number; // 0 = receive (external), 1 = change (internal)
   index: number;
   path: string;   // account-relative, e.g. "0/3"
+}
+
+/**
+ * Re-encode an extended public key with the version bytes of `type` (xpub/ypub/
+ * zpub). Key material is identical — only the SLIP-0132 prefix changes, so the
+ * whole pipeline (which infers script type from the prefix) stays correct.
+ */
+export function reencodeExtendedKey(ext: string, type: BtcScriptType): string {
+  const payload = new Uint8Array(b58c.decode(ext.trim()));
+  if (payload.length !== 78) throw new Error("Malformed extended public key.");
+  payload.set(VERSION_BYTES[type], 0);
+  return b58c.encode(payload);
+}
+
+/** BIP purpose (44/49/84) → script type. Null when the purpose is unrecognized. */
+export function scriptTypeForPurpose(purpose: number): BtcScriptType | null {
+  if (purpose === 84) return "p2wpkh";
+  if (purpose === 49) return "p2sh";
+  if (purpose === 44) return "p2pkh";
+  return null;
+}
+
+/** Extract the BIP purpose from a derivation path like "84'/0'/0'/0/1" or "m/84h/0h/0h". */
+export function purposeFromPath(path: string): number | null {
+  const m = path.trim().replace(/^m\//i, "").match(/^(\d+)/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Normalize a pasted wallet descriptor to a canonical extended key string so the
+ * rest of the pipeline can rely on the SLIP-0132 prefix for script type.
+ *
+ * Handles two shapes without ever asking the user to pick a derivation path:
+ *   1. A bare xpub/ypub/zpub — returned as-is.
+ *   2. A Ledger-style JSON export, e.g.
+ *        {"xpub":"xpub6…","freshAddressPath":"84'/0'/0'/0/1"}
+ *      Ledger exports a NATIVE-SEGWIT account with an `xpub`-PREFIXED string plus
+ *      a path whose purpose (84') reveals the real script type. We read the
+ *      purpose from the path and re-encode the key to the matching prefix
+ *      (84'→zpub) so downstream derivation produces the correct bc1… addresses.
+ *
+ * Anything else (a plain BTC address, unparseable text) is returned trimmed and
+ * unchanged. Never parses or stores seeds/keys — only public descriptors.
+ */
+export function normalizeExtendedKeyInput(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return trimmed;
+  try {
+    const j = JSON.parse(trimmed) as Record<string, unknown>;
+    const xpub = [j.xpub, j.extendedPublicKey, j.extended_public_key, j.key]
+      .find((v): v is string => typeof v === "string" && isExtendedKey(v));
+    if (!xpub) return trimmed;
+    const pathRaw = [j.freshAddressPath, j.derivationPath, j.path]
+      .find((v): v is string => typeof v === "string");
+    const purpose = pathRaw ? purposeFromPath(pathRaw) : null;
+    const type = purpose != null ? scriptTypeForPurpose(purpose) : null;
+    // Only re-encode when the path implies a DIFFERENT script type than the
+    // string's own prefix (e.g. xpub string but 84' path → zpub).
+    if (type && type !== detectExtendedKeyType(xpub)) return reencodeExtendedKey(xpub, type);
+    return xpub;
+  } catch {
+    return trimmed;
+  }
 }
 
 /** Derive `count` consecutive addresses on a branch (receive=0, change=1). */
