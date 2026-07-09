@@ -31,6 +31,7 @@ import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
+import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -159,6 +160,16 @@ export async function POST(req: NextRequest) {
     // this user's own archived account — no cross-owner behavior involved.
     await dualWriteProviderAccountIdentity(archivedFa.id, ProviderType.WALLET, walletAddress.trim());
 
+    // BTC wallet sync v1 — populate the confirmed balance + USD value on
+    // reactivate (best-effort, non-fatal). syncBtcWallet never throws; on
+    // explorer/price failure the account stays visible and "pending" and a
+    // SyncIssue is recorded (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot
+    // regen so the snapshot captures the freshly-synced balance.
+    if (chain === BTC_CHAIN) {
+      try { await syncBtcWallet(archivedFa.id); }
+      catch (syncErr) { console.warn(`[POST /api/accounts/wallet] BTC sync failed for ${archivedFa.id} (non-fatal):`, syncErr); }
+    }
+
     // Regenerate SpaceSnapshot now that the share is active again — see
     // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
     try {
@@ -242,6 +253,16 @@ export async function POST(req: NextRequest) {
   // written at — i.e. spaceId, the actually-active Space — rather than
   // synthesizing an extra HOME link at the creator's personal Space. See
   // docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
+
+  // BTC wallet sync v1 — populate the confirmed balance + USD value on add
+  // (best-effort, non-fatal). syncBtcWallet never throws; on explorer/price
+  // failure the wallet stays visible and "pending" and a SyncIssue is recorded
+  // (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot regen so the snapshot
+  // captures the freshly-synced balance.
+  if (chain === BTC_CHAIN) {
+    try { await syncBtcWallet(fa.id); }
+    catch (syncErr) { console.warn(`[POST /api/accounts/wallet] BTC sync failed for ${fa.id} (non-fatal):`, syncErr); }
+  }
 
   // Regenerate SpaceSnapshot now that this new wallet is shared in —
   // same best-effort/non-fatal pattern as every other account-create/
