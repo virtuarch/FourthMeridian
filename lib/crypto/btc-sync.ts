@@ -82,6 +82,53 @@ async function recordWalletSyncIssue(
   }
 }
 
+/** Canonical asset identity for the wallet's native BTC position. */
+const BTC_SYMBOL = "BTC";
+const BTC_ASSET_NAME = "Bitcoin";
+
+/**
+ * Wallet Provider v2 — persist/refresh the wallet's native BTC Holding.
+ *
+ * Upserts on the existing (financialAccountId, symbol) unique key — no schema
+ * change. `value` mirrors the account's USD balance EXACTLY (same balanceUsd),
+ * so nothing that sums account balances double-counts, and net worth (which
+ * reads FinancialAccount.balance by type, not Holdings, this slice) is
+ * unchanged. Going forward Holding is the authoritative balance source; the
+ * FinancialAccount.balance/nativeBalance columns remain transitional
+ * compatibility fields (see prisma/schema.prisma).
+ *
+ * Best-effort/non-fatal: the balance write is what net worth reads this slice,
+ * so a Holding failure is logged and swallowed rather than failing the sync.
+ */
+async function writeBtcHolding(
+  financialAccountId: string,
+  amounts: { nativeBalance: number; priceUsd: number; balanceUsd: number },
+): Promise<void> {
+  try {
+    await db.holding.upsert({
+      where: { financialAccountId_symbol: { financialAccountId, symbol: BTC_SYMBOL } },
+      create: {
+        financialAccountId,
+        symbol:   BTC_SYMBOL,
+        name:     BTC_ASSET_NAME,
+        quantity: amounts.nativeBalance,
+        price:    amounts.priceUsd,
+        value:    amounts.balanceUsd,
+        currency: "USD",
+        isCash:   false,
+      },
+      update: {
+        quantity: amounts.nativeBalance,
+        price:    amounts.priceUsd,
+        value:    amounts.balanceUsd,
+        currency: "USD",
+      },
+    });
+  } catch (e) {
+    console.warn(`[btc-sync] BTC Holding upsert failed for account ${financialAccountId} (non-fatal):`, e);
+  }
+}
+
 /**
  * Sync one BTC wallet account. Never throws. On any external failure the
  * account row is left untouched (visible, still "pending") and a SyncIssue is
@@ -140,6 +187,11 @@ export async function syncBtcWallet(
       lastUpdated: new Date(),
     },
   });
+
+  // Wallet Provider v2 — represent the balance as a first-class BTC Holding
+  // (the wallet is an account that CONTAINS holdings). Mirrors balanceUsd, so
+  // no double-count; best-effort/non-fatal.
+  await writeBtcHolding(accountId, { nativeBalance, priceUsd, balanceUsd });
 
   // Wallet Provider v1.5 — record this sync on the wallet's Connection spine
   // (ensures/links Connection → identity → AccountConnection, and stamps

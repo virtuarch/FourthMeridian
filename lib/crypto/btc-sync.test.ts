@@ -125,8 +125,9 @@ async function main(): Promise<void> {
   check("sync records an issue on both balance and price failure",
     (sync.match(/recordWalletSyncIssue\(/g) || []).length >= 3); // 1 def + 2 call sites
   check("sync guards to BTC only", sync.includes("walletChain !== BTC_CHAIN"));
-  check("sync does not import transactions / xpub / holdings",
-    !/transaction/i.test(sync) && !/xpub/i.test(sync) && !/holding/i.test(sync));
+  // v2: BTC Holdings are now IN scope for sync; transactions + xpub remain out.
+  check("sync stays in v2 scope: no transactions / no xpub",
+    !/transaction/i.test(sync) && !/xpub/i.test(sync));
 
   const job = code(read("jobs", "sync-crypto.ts"));
   check("job body delegates to syncAllBtcWallets", job.includes("syncAllBtcWallets"));
@@ -172,6 +173,18 @@ async function main(): Promise<void> {
   check("SyncWalletButton shows an inline error on failure", btn.includes("setError"));
   check("SyncWalletButton label: pending -> 'Sync wallet', else 'Refresh'",
     /syncStatus\s*===\s*["']pending["']/.test(btn) && btn.includes("Sync wallet") && btn.includes("Refresh"));
+
+  // ── PART D — Wallet Provider v2: BTC as a Holding ────────────────────────────
+  check("sync upserts a BTC Holding on the (financialAccountId, symbol) key",
+    /holding\.upsert/.test(sync) && /financialAccountId_symbol/.test(sync) && /symbol:\s*BTC_SYMBOL/.test(sync));
+  check("BTC Holding value mirrors the account balance (no double count)",
+    /value:\s*amounts\.balanceUsd/.test(sync));
+  check("BTC Holding carries native-BTC quantity, price, and USD currency",
+    /quantity:\s*amounts\.nativeBalance/.test(sync) && /price:\s*amounts\.priceUsd/.test(sync) && /currency:\s*["']USD["']/.test(sync));
+  check("BTC Holding write is best-effort (never fails the sync)",
+    /writeBtcHolding/.test(sync) && /catch/.test(sync));
+  check("sync still writes transitional FinancialAccount.balance/nativeBalance",
+    /financialAccount\.update/.test(sync) && /balance:\s*balanceUsd/.test(sync) && /nativeBalance/.test(sync));
 
   // ── Summary ─────────────────────────────────────────────────────────────────
   console.log(`\nbtc-sync: ${passes} passed, ${failures} failed`);
