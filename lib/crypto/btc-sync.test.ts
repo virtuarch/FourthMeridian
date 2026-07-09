@@ -23,8 +23,10 @@ import {
   computeUsdBalance,
   fetchConfirmedSats,
   fetchBtcUsdPrice,
+  normalizeBtcAddressTxs,
   BtcSyncError,
   SATS_PER_BTC,
+  type RawBtcTx,
 } from "@/lib/crypto/btc-explorer";
 
 let failures = 0;
@@ -125,9 +127,8 @@ async function main(): Promise<void> {
   check("sync records an issue on both balance and price failure",
     (sync.match(/recordWalletSyncIssue\(/g) || []).length >= 3); // 1 def + 2 call sites
   check("sync guards to BTC only", sync.includes("walletChain !== BTC_CHAIN"));
-  // v2: BTC Holdings are now IN scope for sync; transactions + xpub remain out.
-  check("sync stays in v2 scope: no transactions / no xpub",
-    !/transaction/i.test(sync) && !/xpub/i.test(sync));
+  // v3: BTC transactions are now IN scope for sync; xpub remains out.
+  check("sync stays in v3 scope: no xpub", !/xpub/i.test(sync));
 
   const job = code(read("jobs", "sync-crypto.ts"));
   check("job body delegates to syncAllBtcWallets", job.includes("syncAllBtcWallets"));
@@ -185,6 +186,75 @@ async function main(): Promise<void> {
     /writeBtcHolding/.test(sync) && /catch/.test(sync));
   check("sync still writes transitional FinancialAccount.balance/nativeBalance",
     /financialAccount\.update/.test(sync) && /balance:\s*balanceUsd/.test(sync) && /nativeBalance/.test(sync));
+
+  // ── PART E — Wallet Provider v3: BTC transaction normalization ───────────────
+
+  const MY = "1MyWalletAddrXXXXXXXXXXXXXXXXXXXXX";
+  const receiveTx: RawBtcTx = {
+    txid: "aaa",
+    vin:  [{ prevout: { scriptpubkey_address: "1Sender", value: 100000 } }],
+    vout: [{ scriptpubkey_address: MY, value: 90000 }, { scriptpubkey_address: "1SenderChange", value: 9000 }],
+    fee:  1000,
+    status: { confirmed: true, block_time: 1700000000 },
+  };
+  const sendTx: RawBtcTx = {
+    txid: "bbb",
+    vin:  [{ prevout: { scriptpubkey_address: MY, value: 200000 } }],
+    vout: [{ scriptpubkey_address: "1Recipient", value: 150000 }, { scriptpubkey_address: MY, value: 49000 }],
+    fee:  1000,
+    status: { confirmed: true, block_time: 1700000100 },
+  };
+  const consolidateTx: RawBtcTx = {
+    txid: "ccc",
+    vin:  [{ prevout: { scriptpubkey_address: MY, value: 50000 } }],
+    vout: [{ scriptpubkey_address: MY, value: 49000 }],
+    fee:  1000,
+    status: { confirmed: true, block_time: 1700000200 },
+  };
+  const pendingReceive: RawBtcTx = { ...receiveTx, txid: "ddd", status: { confirmed: false } };
+
+  const mv = normalizeBtcAddressTxs([receiveTx, sendTx, consolidateTx, pendingReceive], MY);
+  const byId = (id: string) => mv.filter((m) => m.externalId === id);
+
+  // Receive → INCOME / INFLOW, positive BTC, POSTED, sender as counterparty.
+  const rcv = byId("aaa")[0];
+  check("receive → INCOME/INFLOW positive amount, POSTED",
+    !!rcv && rcv.flowType === "INCOME" && rcv.flowDirection === "INFLOW" &&
+    Math.abs(rcv.amountBtc - 0.0009) < 1e-12 && rcv.settlement === "POSTED");
+  check("receive counterparty = external sender", !!rcv && rcv.counterpartyAddresses.includes("1Sender"));
+
+  // Send → SPENDING/OUTFLOW (amount = to-others, negative) + a FEE sibling.
+  const spend = byId("bbb")[0];
+  const fee   = byId("bbb:fee")[0];
+  check("send → SPENDING/OUTFLOW negative amount (to-others only, change nets out)",
+    !!spend && spend.flowType === "SPENDING" && spend.flowDirection === "OUTFLOW" &&
+    Math.abs(spend.amountBtc + 0.0015) < 1e-12);
+  check("fee mapping → FEE/OUTFLOW negative, externalId `${txid}:fee`",
+    !!fee && fee.flowType === "FEE" && fee.role === "FEE" && fee.flowDirection === "OUTFLOW" &&
+    Math.abs(fee.amountBtc + 0.00001) < 1e-12);
+
+  // Consolidation (nothing sent out) → fee-only.
+  check("self-consolidation → fee-only movement",
+    byId("ccc").length === 0 && byId("ccc:fee").length === 1);
+
+  // Settlement mapping.
+  check("unconfirmed → settlement PENDING", byId("ddd")[0]?.settlement === "PENDING");
+
+  // ── Source-scan the engine import path ──────────────────────────────────────
+  check("engine imports transactions via the pure normalizer",
+    sync.includes("importBtcTransactions") && sync.includes("normalizeBtcAddressTxs"));
+  check("import is idempotent: dedupes on existing externalTransactionId before createMany",
+    /transaction\.findMany/.test(sync) && /externalTransactionId/.test(sync) &&
+    /new Set\(/.test(sync) && /transaction\.createMany/.test(sync));
+  check("transactions are stored as normal Transaction rows in BTC currency",
+    /currency:\s*["']BTC["']/.test(sync));
+  check("internal-transfer resolution via ProviderAccountIdentity + counterpartyAccountId",
+    /providerAccountIdentity\.findMany/.test(sync) && /counterpartyAccountId/.test(sync) &&
+    /FlowDirection\.INTERNAL/.test(sync));
+  check("no BTC-specific transaction table (writes db.transaction, not a db.*Transaction table)",
+    !/db\.(btcTransaction|walletTransaction|cryptoTransaction)/i.test(sync) && /db\.transaction\.createMany/.test(sync));
+  check("transaction import is best-effort (never fails the sync)",
+    /importBtcTransactions[\s\S]*?catch/.test(sync));
 
   // ── Summary ─────────────────────────────────────────────────────────────────
   console.log(`\nbtc-sync: ${passes} passed, ${failures} failed`);

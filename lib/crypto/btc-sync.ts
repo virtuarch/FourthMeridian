@@ -25,15 +25,28 @@
  */
 
 import { db } from "@/lib/db";
-import { SyncIssueKind, type Prisma } from "@prisma/client";
+import {
+  SyncIssueKind,
+  TransactionCategory,
+  FlowType,
+  FlowDirection,
+  SettlementState,
+  FlowClassificationReason,
+  ProviderType,
+  type Prisma,
+} from "@prisma/client";
 import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import {
   fetchConfirmedSats,
   fetchBtcUsdPrice,
+  fetchAddressTxsRaw,
+  normalizeBtcAddressTxs,
   satsToBtc,
   computeUsdBalance,
-  BtcSyncError,
   type FetchFn,
+  type RawBtcTx,
+  type NormalizedBtcMovement,
+  type BtcFlowType,
 } from "@/lib/crypto/btc-explorer";
 
 /** The only chain this v1 sync supports. */
@@ -59,6 +72,8 @@ export interface BtcSyncDeps {
   balanceFetcher?: (address: string) => Promise<number>;
   /** Override the price fetch — returns BTC→USD. */
   priceFetcher?: () => Promise<number>;
+  /** Override the confirmed-transactions fetch (offline tests). */
+  txFetcher?: (address: string) => Promise<RawBtcTx[]>;
 }
 
 /** Best-effort SyncIssue writer — never throws (mirrors lib/plaid/syncIssues.ts). */
@@ -129,6 +144,133 @@ async function writeBtcHolding(
   }
 }
 
+// ── Wallet Provider v3 — BTC transactions → normal Transaction rows ───────────
+
+const FLOW_TO_CATEGORY: Record<BtcFlowType, TransactionCategory> = {
+  INCOME:   TransactionCategory.Income,
+  SPENDING: TransactionCategory.Other,
+  FEE:      TransactionCategory.Fee,
+  TRANSFER: TransactionCategory.Transfer,
+};
+
+type OwnAddressMap = Map<string, string>; // external address -> the user's own FinancialAccount id
+
+/**
+ * Resolve which of the given counterparty addresses belong to the user's OWN
+ * other wallets, via ProviderAccountIdentity(WALLET). Used to reclassify a
+ * movement as an INTERNAL transfer (engine-level counterparty resolution — the
+ * adapter only knows addresses).
+ */
+async function resolveOwnWalletAddresses(
+  ownerUserId: string,
+  excludeAccountId: string,
+  addresses: string[],
+): Promise<OwnAddressMap> {
+  const unique = [...new Set(addresses)];
+  if (unique.length === 0) return new Map();
+  const rows = await db.providerAccountIdentity.findMany({
+    where: {
+      provider:          ProviderType.WALLET,
+      externalAccountId: { in: unique },
+      financialAccount:  { ownerUserId, deletedAt: null, id: { not: excludeAccountId } },
+    },
+    select: { externalAccountId: true, financialAccountId: true },
+  });
+  return new Map(rows.map((r) => [r.externalAccountId, r.financialAccountId]));
+}
+
+/** Map one normalized movement to a Transaction createMany row (with INTERNAL resolution). */
+function buildTransactionRow(
+  financialAccountId: string,
+  m: NormalizedBtcMovement,
+  ownByAddress: OwnAddressMap,
+): Prisma.TransactionCreateManyInput {
+  let flowType:      FlowType      = m.flowType as FlowType;
+  let flowDirection: FlowDirection = m.flowDirection as FlowDirection;
+  let category                     = FLOW_TO_CATEGORY[m.flowType];
+  let merchant                     = m.merchantLabel;
+  let counterpartyAccountId: string | undefined;
+  let classificationReason: FlowClassificationReason | undefined =
+    m.flowType === "INCOME"   ? FlowClassificationReason.SIGN_DEFAULT_INFLOW   :
+    m.flowType === "SPENDING" ? FlowClassificationReason.SIGN_DEFAULT_SPENDING : undefined;
+
+  // A principal movement whose EVERY external counterparty is one of the user's
+  // own wallets is an INTERNAL transfer (matches the existing internal-transfer
+  // model — never counted as income/spend in Cash Flow).
+  if (m.role === "PRINCIPAL" && m.counterpartyAddresses.length > 0) {
+    const owned = m.counterpartyAddresses.map((a) => ownByAddress.get(a)).filter((x): x is string => !!x);
+    if (owned.length === m.counterpartyAddresses.length) {
+      flowType              = FlowType.TRANSFER;
+      flowDirection         = FlowDirection.INTERNAL;
+      category              = TransactionCategory.Transfer;
+      merchant              = "Wallet transfer";
+      counterpartyAccountId = owned[0];
+      classificationReason  = undefined;
+    }
+  }
+
+  return {
+    financialAccountId,
+    date:                  m.occurredAt,
+    merchant,
+    description:           m.description,
+    category,
+    amount:                m.amountBtc,   // native BTC; inflow +, outflow/fee −
+    currency:              "BTC",
+    pending:               m.settlement === "PENDING",
+    externalTransactionId: m.externalId,
+    flowType,
+    flowDirection,
+    settlementState:       m.settlement === "POSTED" ? SettlementState.POSTED : SettlementState.PENDING,
+    ...(counterpartyAccountId ? { counterpartyAccountId } : {}),
+    ...(classificationReason  ? { classificationReason }  : {}),
+  };
+}
+
+/**
+ * Import an address's confirmed BTC transactions as ordinary Transaction rows.
+ * Idempotent (dedupes on externalTransactionId) and best-effort/non-fatal — a
+ * transaction-import failure never fails the balance/holding sync. No BTC-specific
+ * table: these are normal Transaction rows, indistinguishable from any provider's.
+ */
+async function importBtcTransactions(
+  account: { id: string; ownerUserId: string | null; walletAddress: string },
+  deps: BtcSyncDeps,
+): Promise<void> {
+  try {
+    const rawTxs = deps.txFetcher
+      ? await deps.txFetcher(account.walletAddress)
+      : await fetchAddressTxsRaw(account.walletAddress, deps.fetchImpl);
+
+    const movements = normalizeBtcAddressTxs(rawTxs, account.walletAddress);
+    if (movements.length === 0) return;
+
+    // Engine-level counterparty resolution → INTERNAL transfers.
+    const ownByAddress = account.ownerUserId
+      ? await resolveOwnWalletAddresses(
+          account.ownerUserId, account.id, movements.flatMap((m) => m.counterpartyAddresses))
+      : new Map<string, string>();
+
+    // Idempotency: skip movements already imported for this account. The
+    // externalTransactionId (txid / txid:fee) is the dedupe key — a re-sync is a
+    // no-op. No DB unique needed (see the schema note on externalTransactionId).
+    const ids = movements.map((m) => m.externalId);
+    const existing = await db.transaction.findMany({
+      where:  { financialAccountId: account.id, externalTransactionId: { in: ids }, deletedAt: null },
+      select: { externalTransactionId: true },
+    });
+    const seen = new Set(existing.map((e) => e.externalTransactionId));
+    const fresh = movements.filter((m) => !seen.has(m.externalId));
+    if (fresh.length === 0) return;
+
+    await db.transaction.createMany({
+      data: fresh.map((m) => buildTransactionRow(account.id, m, ownByAddress)),
+    });
+  } catch (e) {
+    console.warn(`[btc-sync] transaction import failed for account ${account.id} (non-fatal):`, e);
+  }
+}
+
 /**
  * Sync one BTC wallet account. Never throws. On any external failure the
  * account row is left untouched (visible, still "pending") and a SyncIssue is
@@ -167,10 +309,10 @@ export async function syncBtcWallet(
   try {
     priceUsd = await priceFetcher();
   } catch (err) {
-    const stage = err instanceof BtcSyncError ? err.stage : "price";
     const reason = err instanceof Error ? err.message : String(err);
     await recordWalletSyncIssue(accountId, "price", reason);
-    return { accountId, ok: false, stage, reason };
+    // A price fetch only ever fails at the price stage.
+    return { accountId, ok: false, stage: "price", reason };
   }
 
   // 3) Persist. Only balance/native/currency/sync fields — no link, no
@@ -192,6 +334,14 @@ export async function syncBtcWallet(
   // (the wallet is an account that CONTAINS holdings). Mirrors balanceUsd, so
   // no double-count; best-effort/non-fatal.
   await writeBtcHolding(accountId, { nativeBalance, priceUsd, balanceUsd });
+
+  // Wallet Provider v3 — import confirmed BTC transactions as normal Transaction
+  // rows (idempotent, best-effort). The wallet now emits Connection → identity →
+  // account → Holding → Transaction, like every other provider.
+  await importBtcTransactions(
+    { id: accountId, ownerUserId: account.ownerUserId, walletAddress: address },
+    deps,
+  );
 
   // Wallet Provider v1.5 — record this sync on the wallet's Connection spine
   // (ensures/links Connection → identity → AccountConnection, and stamps
