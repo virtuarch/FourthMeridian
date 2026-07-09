@@ -149,6 +149,11 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
   goals: {
     id: "goals", label: "Goals", icon: "Target", status: "available", group: "Goals",
     description: "Savings and habit goals tied to this Space.",
+    // UX-PER-3 Goals workspace. Doctrine: Goals answers "Am I on track?" —
+    // trajectory vs target, not current balances (no net worth / allocation /
+    // debt / spending / investment widgets). Rendered through the same
+    // SectionCard compositor.
+    widgets: ["goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap"],
   },
   tax: {
     id: "tax", label: "Tax", icon: "FileText", status: "comingSoon", group: "Tax",

@@ -74,6 +74,12 @@ import {
   renderDebtCompleteInfo,
 } from "@/components/space/widgets/debt-perspective-adapters";
 import {
+  renderGoalProgress,
+  renderGoalOnTrack,
+  renderGoalRequiredPace,
+  renderGoalFundingGap,
+} from "@/components/space/widgets/goals-perspective-adapters";
+import {
   CASH_FLOW_PERIODS,
   DEFAULT_CASH_FLOW_PERIOD,
   type CashFlowPeriod,
@@ -1021,6 +1027,12 @@ type SectionRenderProps = {
    */
   ficoScore?:            number | null;
   ficoUpdatedAt?:        string;
+  /**
+   * UX-PER-3 Goals — the Space's goals for the Goals workspace ("Am I on
+   * track?"). Host-fetched when the workspace opens; null = loading. Only the
+   * Goals widgets read this.
+   */
+  goals?:                SpaceGoal[] | null;
 };
 
 // ─── ProgressWidget adapter helpers ──────────────────────────────────────────
@@ -1283,6 +1295,11 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
   "credit_score":            (p) => renderCreditScore(p.ficoScore, p.ficoUpdatedAt),
   "debt_complete_info":      (p) => renderDebtCompleteInfo(p.accounts),
   // debt_payoff_calculator is already registered above (reused from the Debt tab).
+  // ── Goals Perspective (UX-PER-3) — trajectory vs target ─────────────────────
+  "goal_progress":           (p) => renderGoalProgress(p.goals, p.ctx),
+  "goal_on_track":           (p) => renderGoalOnTrack(p.goals),
+  "goal_required_pace":      (p) => renderGoalRequiredPace(p.goals, p.ctx),
+  "goal_funding_gap":        (p) => renderGoalFundingGap(p.goals, p.ctx),
   "net_worth_section":      renderNetWorth,       // deprecated alias — seeded pre-v2
   "accounts_overview":      (p) => <AccountsCard accounts={p.accounts} />,
   "business_accounts":      (p) => <AccountsCard accounts={p.accounts} />,
@@ -1550,6 +1567,7 @@ const SOLID_LEDE_KEYS = new Set([
   "cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category",
   "debt_by_account", "debt_cost", "credit_utilization", "debt_payoff_snapshot",
   "debt_history", "credit_score", "debt_complete_info", "debt_payoff_calculator",
+  "goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap",
 ]);
 
 function SectionCard({
@@ -1567,6 +1585,7 @@ function SectionCard({
   period,
   ficoScore,
   ficoUpdatedAt,
+  goals,
 }: {
   section:     DashboardSection;
   accounts:    SpaceAccount[];
@@ -1586,6 +1605,8 @@ function SectionCard({
   /** UX-PER-3 Debt — see SectionRenderProps.ficoScore/ficoUpdatedAt. */
   ficoScore?:        number | null;
   ficoUpdatedAt?:    string;
+  /** UX-PER-3 Goals — see SectionRenderProps.goals. */
+  goals?:            SpaceGoal[] | null;
 }) {
   const [collapsed,        setCollapsed]        = useState(false);
   const [payoffFullscreen, setPayoffFullscreen] = useState(false);
@@ -1663,7 +1684,7 @@ function SectionCard({
     if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen, ctx);
 
     const render = SectionRegistry[section.key];
-    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, ficoScore, ficoUpdatedAt });
+    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, ficoScore, ficoUpdatedAt, goals });
     return <ContextualCard sectionKey={section.key} label={section.label} />;
   }
 
@@ -2437,6 +2458,19 @@ export function SpaceDashboard({
   // Debt workspace needs SpaceSnapshot history (the `debt` series) for its
   // Debt History widget — trigger the snapshot fetch when it's open.
   const debtWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "debt";
+  // Goals workspace needs the Space's goals ("Am I on track?"). Fetch once when
+  // it opens (mirrors the transactions/snapshots pattern).
+  const goalsWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "goals";
+  const [spaceGoals, setSpaceGoals] = useState<SpaceGoal[] | null>(null);
+  useEffect(() => {
+    if (!goalsWorkspaceActive || spaceGoals !== null) return;
+    let active = true;
+    fetch(`/api/spaces/${spaceId}/goals`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => { if (active) setSpaceGoals(Array.isArray(data) ? data : []); })
+      .catch(() => { if (active) setSpaceGoals([]); });
+    return () => { active = false; };
+  }, [spaceId, goalsWorkspaceActive, spaceGoals]);
   const txConversionCtx = useMemo(() => {
     const serialized = transactionsMoneyCtxOverride ?? spaceMoneyCtx;
     return serialized ? rehydrateContext(serialized) : undefined;
@@ -2964,6 +2998,7 @@ export function SpaceDashboard({
                     period={cashFlowPeriod}
                     ficoScore={ficoScore}
                     ficoUpdatedAt={ficoUpdatedAt}
+                    goals={spaceGoals}
                   />
                 ))
               ) : activePerspective ? (

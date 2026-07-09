@@ -86,6 +86,16 @@ check("debt workspace excludes asset/overview/cashflow widgets",
     k === "net_worth" || k === "allocation" || k === "wealth_by_account" ||
     k === "asset_allocation" || k === "cash_flow_summary" || k === "cash_flow_by_category"));
 
+// ── 2e. Goals workspace uses its trajectory-vs-target widgets. ──
+check("goals workspace = [goal_progress, goal_on_track, goal_required_pace, goal_funding_gap]",
+  JSON.stringify(PERSPECTIVE_LIBRARY.goals.widgets) ===
+    JSON.stringify(["goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap"]));
+// Doctrine: Goals must NOT reuse net-worth/allocation/debt/spending/investment widgets.
+check("goals workspace excludes balance/debt/spending widgets",
+  !(PERSPECTIVE_LIBRARY.goals.widgets ?? []).some((k) =>
+    k === "net_worth" || k === "allocation" || k === "wealth_by_account" ||
+    k === "debt_by_account" || k === "cash_flow_summary" || k === "asset_allocation"));
+
 // ── 3. toVirtualSections shape + virtual-id safety. ──
 const vs = toVirtualSections("wealth", ["net_worth", "net_worth_chart", "allocation"]);
 check("produces one virtual section per widget", vs.length === 3);

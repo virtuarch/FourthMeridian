@@ -447,6 +447,62 @@ const registry: WidgetRegistryEntry[] = [
     },
   },
 
+  // ── Goals Perspective (UX-PER-3) — trajectory vs target. ────────────────────
+  // Rendered as VIRTUAL sections in the Goals workspace; `tab` is metadata only.
+  // Answer "Am I on track?".
+  {
+    implemented: true,
+    meta: {
+      key:         "goal_progress",
+      label:       "Goal Progress",
+      description: "Each financial goal's progress toward its target.",
+      tab:         SpaceDashboardTab.GOALS,
+      icon:        "Target",
+      dataTier:    "goals",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "goal_on_track",
+      label:       "On Track",
+      description: "How many goals are on track by their deadline, and how many are overdue.",
+      tab:         SpaceDashboardTab.GOALS,
+      icon:        "Target",
+      dataTier:    "goals",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "goal_required_pace",
+      label:       "Required Pace",
+      description: "The monthly contribution needed to hit each dated goal on time.",
+      tab:         SpaceDashboardTab.GOALS,
+      icon:        "Target",
+      dataTier:    "goals",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "goal_funding_gap",
+      label:       "Funding Gap",
+      description: "Goals ranked by how much is still needed to reach target.",
+      tab:         SpaceDashboardTab.GOALS,
+      icon:        "Target",
+      dataTier:    "goals",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+
   // ── Accounts ────────────────────────────────────────────────────────────────
 
   {
