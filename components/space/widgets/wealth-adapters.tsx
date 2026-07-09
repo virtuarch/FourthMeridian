@@ -15,11 +15,14 @@
  *
  * Exports:
  *   renderWealthByAccount        — horizontal ranked bars, assets by account (hero)
+ *   renderWealthAccountCards     — EXPERIMENT (UX): two-column account-card grid
  *   renderInstitutionAllocation  — ranked bars, assets grouped by institution
  *   renderAssetAllocation        — assets-only donut by asset class
+ *   renderWealthAllocationChart  — EXPERIMENT (UX): multi-mode (treemap/donut/strip)
  *   renderWealthConcentration    — concentration readout (top account/institution + HHI)
  */
 
+import { useState } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
 import { classifyAccounts } from "@/lib/account-classifier";
@@ -94,6 +97,109 @@ export function renderWealthByAccount(
   );
 }
 
+// ─── 1b. Wealth by Account — CARD EXPERIMENT (UX) ─────────────────────────────
+//
+// TEMPORARY design experiment. Renders the same assets-only, value-descending
+// data as renderWealthByAccount, but as a responsive two-column grid of compact
+// account cards instead of one long ranked bar list. renderWealthByAccount above
+// is left completely untouched — this is an additive, reversible swap wired only
+// into the Wealth Perspective's `wealth_by_account` render binding.
+//
+// Interaction note: cards are built as self-contained objects (not rows) so
+// future affordances — click-to-open, hover actions, insights, wallet refresh,
+// holdings, transaction drill-down — can attach to the card root without a
+// structural rewrite. None of those are implemented here (out of scope).
+
+/** Canonical per-type asset color identity, reused from the app's allocation /
+ *  banking / account-modal palette so cards match the rest of the product.
+ *  (Liabilities are never rendered here — assets only.) */
+const ACCOUNT_TYPE_COLOR: Record<string, string> = {
+  checking:   "#3b82f6", // blue   — same as AllocationChart "cash"
+  savings:    "#10b981", // emerald
+  investment: "#8b5cf6", // violet — AllocationChart "investments"
+  crypto:     "#f59e0b", // amber  — AllocationChart "crypto"
+  other:      "#14b8a6", // teal   — AllocationChart "real assets"
+};
+const DEFAULT_ACCOUNT_COLOR = "#3b82f6";
+
+function accountColor(type: string): string {
+  return ACCOUNT_TYPE_COLOR[type] ?? DEFAULT_ACCOUNT_COLOR;
+}
+
+/** Two-column account-card grid. Same data + ordering as renderWealthByAccount
+ *  (assets only, value > 0, largest first); different presentation only. */
+export function renderWealthAccountCards(
+  accounts: WealthAdapterAccount[],
+  ctx?:     ConversionContext,
+): React.ReactElement {
+  const cards = assetAccounts(accounts)
+    .map((a) => ({
+      id:          a.id,
+      name:        a.name,
+      institution: a.institution || "",
+      value:       inDisp(a.balance, a.currency, ctx),
+      color:       accountColor(a.type),
+    }))
+    .filter((c) => c.value > 0)
+    .sort((x, y) => y.value - x.value);
+
+  const total = cards.reduce((s, c) => s + c.value, 0);
+
+  if (cards.length === 0 || total <= 0) {
+    return (
+      <div className="text-center py-5 space-y-1">
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{EMPTY_HEADLINE}</p>
+        <p className="text-xs leading-relaxed max-w-xs mx-auto" style={{ color: "var(--text-faint)" }}>{EMPTY_SUBLINE}</p>
+      </div>
+    );
+  }
+
+  const fmt = ctx
+    ? (v: number) => formatCurrency(v, ctx.target)
+    : (v: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+
+  // Grid collapses to a single column on narrow widths; two columns otherwise.
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {cards.map((c) => {
+        const pct    = (c.value / total) * 100;
+        const barPct = Math.max(2, pct); // keep a sliver visible for tiny holdings
+        return (
+          // Card root: the future interaction surface (click / hover / menu).
+          <div
+            key={c.id}
+            data-account-id={c.id}
+            className="rounded-xl p-3 flex flex-col gap-2 border"
+            style={{
+              background:  "var(--surface-inset)",
+              borderColor: "var(--border-subtle, rgba(255,255,255,0.06))",
+            }}
+          >
+            <div className="flex items-start gap-2 min-w-0">
+              <span className="mt-1 h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: c.color }} />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium truncate" style={{ color: "var(--text-primary)" }}>{c.name}</p>
+                {c.institution && (
+                  <p className="text-[11px] truncate" style={{ color: "var(--text-muted)" }}>{c.institution}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-base font-semibold tabular-nums" style={{ color: "var(--text-primary)" }}>{fmt(c.value)}</span>
+              <span className="text-[11px] tabular-nums shrink-0" style={{ color: "var(--text-faint)" }}>{pct.toFixed(1)}%</span>
+            </div>
+
+            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-base, rgba(255,255,255,0.04))" }}>
+              <div className="h-full rounded-full" style={{ width: `${barPct}%`, backgroundColor: c.color }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── 2. Institution Allocation ────────────────────────────────────────────────
 
 /** Ranked bars: assets grouped by institution — institution-level concentration. */
@@ -127,23 +233,33 @@ export function renderInstitutionAllocation(
 
 // ─── 3. Asset Allocation (assets-only class mix) ──────────────────────────────
 
+/** Assets-only class breakdown items (Cash / Investments / Crypto / Real assets),
+ *  filtered to positive values. Single source of truth shared by the donut
+ *  renderer and the multi-mode allocation experiment below, so every mode reports
+ *  identical totals, percentages, and classes. Colors are deliberately omitted so
+ *  the donut keeps BreakdownWidget's DEFAULT_PALETTE assignment untouched. */
+function assetClassItems(
+  accounts: WealthAdapterAccount[],
+  ctx?:     ConversionContext,
+): BreakdownItem[] {
+  const c = classifyAccounts(accounts, ctx);
+  return [
+    { id: "cash",        label: "Cash",        value: c.totalLiquid },
+    { id: "investments", label: "Investments", value: c.totalInvestments },
+    { id: "crypto",      label: "Crypto",      value: c.totalDigitalAssets },
+    { id: "real",        label: "Real assets", value: c.totalRealAssets },
+  ].filter((i) => i.value > 0);
+}
+
 /** Donut by asset class — assets only (Cash / Investments / Crypto / Real
  *  assets). Deliberately NOT the Overview allocation (which includes debt). */
 export function renderAssetAllocation(
   accounts: WealthAdapterAccount[],
   ctx?:     ConversionContext,
 ): React.ReactElement {
-  const c = classifyAccounts(accounts, ctx);
-  const items: BreakdownItem[] = [
-    { id: "cash",        label: "Cash",        value: c.totalLiquid },
-    { id: "investments", label: "Investments", value: c.totalInvestments },
-    { id: "crypto",      label: "Crypto",      value: c.totalDigitalAssets },
-    { id: "real",        label: "Real assets", value: c.totalRealAssets },
-  ].filter((i) => i.value > 0);
-
   return (
     <BreakdownWidget
-      items={items}
+      items={assetClassItems(accounts, ctx)}
       viewMode="donut"
       itemNoun="asset class"
       emptyHeadline={EMPTY_HEADLINE}
@@ -151,6 +267,226 @@ export function renderAssetAllocation(
       {...valueFormatterProps(ctx)}
     />
   );
+}
+
+// ─── 3b. Wealth Allocation — MULTI-MODE CHART EXPERIMENT (UX) ──────────────────
+//
+// TEMPORARY design experiment. One draggable, section-backed widget that shows
+// the SAME assets-only class breakdown as renderAssetAllocation in three modes:
+// Treemap (default), Donut, and Allocation strip. renderAssetAllocation is left
+// intact and is REUSED verbatim for Donut mode (no duplicated donut logic).
+//
+// Drag/drop safety: chart-mode is LOCAL useState only — never persisted. Section
+// drag (when active) is handle-based (the SortableSectionCard grip owns the dnd
+// listeners), and the Wealth Perspective workspace renders these as virtual,
+// render-only sections with no drag at all — so internal state cannot interfere
+// with reorder. The toggle also stops pointerdown propagation defensively.
+
+type AllocationMode = "treemap" | "donut" | "strip";
+
+/** Colors matching what the Donut mode actually renders (BreakdownWidget's
+ *  DEFAULT_PALETTE, assigned by item index cash→investments→crypto→real), so all
+ *  three modes are visually consistent and Donut still matches the old widget. */
+const ASSET_CLASS_COLOR: Record<string, string> = {
+  cash:        "#3b82f6", // blue-500    (DEFAULT_PALETTE[0])
+  investments: "#10b981", // emerald-500 (DEFAULT_PALETTE[1])
+  crypto:      "#f59e0b", // amber-500   (DEFAULT_PALETTE[2])
+  real:        "#8b5cf6", // violet-500  (DEFAULT_PALETTE[3])
+};
+const DEFAULT_CLASS_COLOR = "#3b82f6";
+
+/** Binary-partition treemap layout. Splits the item set into two value-balanced
+ *  halves and slices the rectangle along its longer axis in proportion, recursing
+ *  until one item per rect. Always tiles the box exactly and handles 2–8 classes.
+ *  Limitation: not aspect-ratio-optimized like a squarified treemap, so with very
+ *  lopsided values some rects are elongated — acceptable for a 2–8 class mix.
+ *  Coordinates are percentages (0–100) of the container. */
+interface TreemapRect { item: BreakdownItem & { color: string }; x: number; y: number; w: number; h: number }
+function treemapRects(
+  items: Array<BreakdownItem & { color: string }>,
+  x: number, y: number, w: number, h: number,
+): TreemapRect[] {
+  if (items.length === 1) return [{ item: items[0], x, y, w, h }];
+  const total = items.reduce((s, i) => s + i.value, 0);
+  // Greedy: grow group A (largest-first) until it reaches ~half the total.
+  let running = 0, k = 0;
+  while (k < items.length - 1 && running + items[k].value < total / 2) { running += items[k].value; k++; }
+  const splitAt = Math.min(Math.max(k + 1, 1), items.length - 1);
+  const a = items.slice(0, splitAt);
+  const b = items.slice(splitAt);
+  const frac = a.reduce((s, i) => s + i.value, 0) / total;
+  if (w >= h) {
+    const wa = w * frac;
+    return [...treemapRects(a, x, y, wa, h), ...treemapRects(b, x + wa, y, w - wa, h)];
+  }
+  const ha = h * frac;
+  return [...treemapRects(a, x, y, w, ha), ...treemapRects(b, x, y + ha, w, h - ha)];
+}
+
+function AllocationModeToggle({ mode, onChange }: { mode: AllocationMode; onChange: (m: AllocationMode) => void }) {
+  const MODES: Array<{ id: AllocationMode; label: string }> = [
+    { id: "treemap", label: "Treemap" },
+    { id: "donut",   label: "Donut" },
+    { id: "strip",   label: "Strip" },
+  ];
+  return (
+    // Defensive: keep pointerdown from reaching any section drag source. Drag is
+    // handle-based today, so this only matters if a future wrapper makes the body
+    // a drag source — the control stays interactive either way.
+    <div
+      className="inline-flex rounded-lg p-0.5 gap-0.5"
+      style={{ background: "var(--surface-inset)" }}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      {MODES.map((m) => {
+        const active = m.id === mode;
+        return (
+          <button
+            key={m.id}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(m.id)}
+            className="text-[11px] leading-none px-2 py-1 rounded-md transition-colors"
+            style={
+              active
+                ? { background: "var(--surface-base, rgba(255,255,255,0.06))", color: "var(--text-primary)" }
+                : { color: "var(--text-muted)" }
+            }
+          >
+            {m.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Quiet total-assets header for Treemap/Strip. Donut shows its own centre total,
+ *  so it is deliberately NOT given this header (no duplicate). Uses the same
+ *  `total` + `fmt` the whole widget shares, so it matches the allocation math. */
+function AllocationTotalHeader({ total, fmt }: { total: number; fmt: (v: number) => string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="text-[11px] uppercase tracking-wide" style={{ color: "var(--text-faint)" }}>Total assets</span>
+      <span className="text-sm font-semibold tabular-nums" style={{ color: "var(--text-primary)" }}>{fmt(total)}</span>
+    </div>
+  );
+}
+
+function TreemapView({ items, total, fmt }: { items: Array<BreakdownItem & { color: string }>; total: number; fmt: (v: number) => string }) {
+  const rects = treemapRects(items, 0, 0, 100, 100);
+  return (
+    <div className="space-y-2">
+      <AllocationTotalHeader total={total} fmt={fmt} />
+      <div className="relative w-full overflow-hidden rounded-lg" style={{ height: 208 }}>
+      {rects.map(({ item, x, y, w, h }) => {
+        const pct = (item.value / total) * 100;
+        // Only label blocks large enough to hold text without clipping.
+        const showName  = w > 16 && h > 14;
+        const showValue = w > 24 && h > 26;
+        return (
+          <div
+            key={item.id}
+            data-class-id={item.id}
+            title={`${item.label} · ${fmt(item.value)} · ${pct.toFixed(1)}%`}
+            className="absolute p-1.5 flex flex-col justify-between overflow-hidden"
+            style={{
+              left: `${x}%`, top: `${y}%`, width: `${w}%`, height: `${h}%`,
+              backgroundColor: item.color,
+              outline: "1px solid var(--surface-base, rgba(0,0,0,0.25))",
+            }}
+          >
+            {showName && (
+              <span className="text-[11px] font-medium leading-tight truncate" style={{ color: "#fff" }}>{item.label}</span>
+            )}
+            {showValue && (
+              <span className="text-[11px] leading-tight tabular-nums" style={{ color: "rgba(255,255,255,0.85)" }}>
+                {fmt(item.value)} · {pct.toFixed(0)}%
+              </span>
+            )}
+          </div>
+        );
+      })}
+      </div>
+    </div>
+  );
+}
+
+function StripView({ items, total, fmt }: { items: Array<BreakdownItem & { color: string }>; total: number; fmt: (v: number) => string }) {
+  return (
+    <div className="space-y-3">
+      <AllocationTotalHeader total={total} fmt={fmt} />
+      {/* One 100%-of-assets stacked bar. */}
+      <div className="flex h-4 w-full overflow-hidden rounded-full" style={{ background: "var(--surface-inset)" }}>
+        {items.map((item) => (
+          <div
+            key={item.id}
+            title={`${item.label} · ${fmt(item.value)}`}
+            style={{ width: `${(item.value / total) * 100}%`, backgroundColor: item.color }}
+          />
+        ))}
+      </div>
+      {/* Legend with value + percent. */}
+      <div className="space-y-1.5">
+        {items.map((item) => {
+          const pct = (item.value / total) * 100;
+          return (
+            <div key={item.id} className="flex items-center gap-2 text-xs">
+              <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+              <span className="flex-1 min-w-0 truncate" style={{ color: "var(--text-secondary)" }}>{item.label}</span>
+              <span className="tabular-nums shrink-0" style={{ color: "var(--text-primary)" }}>{fmt(item.value)}</span>
+              <span className="tabular-nums shrink-0 w-12 text-right" style={{ color: "var(--text-faint)" }}>{pct.toFixed(1)}%</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Multi-mode assets-only allocation widget (Treemap default / Donut / Strip).
+ *  Same data + totals as renderAssetAllocation. Local chart-mode state only. */
+function WealthAllocationChart({ accounts, ctx }: { accounts: WealthAdapterAccount[]; ctx?: ConversionContext }) {
+  const [mode, setMode] = useState<AllocationMode>("treemap");
+
+  const base  = assetClassItems(accounts, ctx);
+  const total = base.reduce((s, i) => s + i.value, 0);
+
+  if (base.length === 0 || total <= 0) {
+    return (
+      <div className="text-center py-5 space-y-1">
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{EMPTY_HEADLINE}</p>
+        <p className="text-xs leading-relaxed max-w-xs mx-auto" style={{ color: "var(--text-faint)" }}>{EMPTY_SUBLINE}</p>
+      </div>
+    );
+  }
+
+  const colored = base.map((i) => ({ ...i, color: ASSET_CLASS_COLOR[i.id] ?? DEFAULT_CLASS_COLOR }));
+  const fmt = ctx
+    ? (v: number) => formatCurrency(v, ctx.target)
+    : (v: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <AllocationModeToggle mode={mode} onChange={setMode} />
+      </div>
+      {mode === "donut"
+        // Reuse the existing donut renderer verbatim — identical visual + data.
+        ? renderAssetAllocation(accounts, ctx)
+        : mode === "strip"
+          ? <StripView   items={colored} total={total} fmt={fmt} />
+          : <TreemapView items={colored} total={total} fmt={fmt} />}
+    </div>
+  );
+}
+
+/** SectionRegistry adapter for the multi-mode allocation experiment. */
+export function renderWealthAllocationChart(
+  accounts: WealthAdapterAccount[],
+  ctx?:     ConversionContext,
+): React.ReactElement {
+  return <WealthAllocationChart accounts={accounts} ctx={ctx} />;
 }
 
 // ─── 4. Wealth Concentration ──────────────────────────────────────────────────

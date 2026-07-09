@@ -49,8 +49,10 @@ import { simulatePayoff } from "@/components/space/sections/DebtPayoffSection";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
 import {
   renderWealthByAccount,
+  renderWealthAccountCards,
   renderInstitutionAllocation,
   renderAssetAllocation,
+  renderWealthAllocationChart,
   renderWealthConcentration,
 } from "@/components/space/widgets/wealth-adapters";
 import {
@@ -1311,9 +1313,16 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
   "net_worth_chart":        (p) => <NetWorthChartSection snapshots={p.snapshots} ctx={p.ctx} snapshotCurrency={p.snapshotCurrency} />,
   "allocation":             (p) => <AllocationSection accounts={p.accounts} ctx={p.ctx} />,
   // ── Wealth Perspective (UX-PER-3) — assets-only analytical widgets ──────────
-  "wealth_by_account":       (p) => renderWealthByAccount(p.accounts, p.ctx),
+  // EXPERIMENT (UX): temporarily render "Wealth by Account" as a two-column
+  // account-card grid instead of ranked bars. Reversible — restore
+  // renderWealthByAccount to end the experiment. renderWealthByAccount and its
+  // widget key/registry entry are intentionally left untouched.
+  "wealth_by_account":       (p) => renderWealthAccountCards(p.accounts, p.ctx),
   "institution_allocation":  (p) => renderInstitutionAllocation(p.accounts, p.ctx),
-  "asset_allocation":        (p) => renderAssetAllocation(p.accounts, p.ctx),
+  // EXPERIMENT (UX): temporarily render "Asset Allocation" as a multi-mode chart
+  // (treemap default / donut / strip). Donut mode reuses renderAssetAllocation
+  // verbatim. Reversible — restore renderAssetAllocation to end the experiment.
+  "asset_allocation":        (p) => renderWealthAllocationChart(p.accounts, p.ctx),
   "wealth_concentration":    (p) => renderWealthConcentration(p.accounts, p.ctx),
   // ── Liquidity Perspective (UX-PER-3) — access/readiness widgets ─────────────
   "liquidity_ladder":        (p) => renderLiquidityLadder(p.accounts, p.ctx),

@@ -98,7 +98,9 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // (net_worth / net_worth_chart / allocation-incl-debt) — those answer
     // "What?" on the executive dashboard. These are purpose-built, assets-only
     // analytical widgets rendered through the same SectionCard compositor.
-    widgets: ["wealth_by_account", "asset_allocation", "institution_allocation", "wealth_concentration"],
+    // EXPERIMENT (UX): asset_allocation is placed first so the richer multi-mode
+    // allocation chart sits ABOVE the Wealth by Account cards. Reversible.
+    widgets: ["asset_allocation", "wealth_by_account", "institution_allocation", "wealth_concentration"],
   },
   cashFlow: {
     id: "cashFlow", label: "Cash Flow", icon: "Waves", status: "available", group: "Financial",

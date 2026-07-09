@@ -44,9 +44,11 @@ for (const p of withWidgets) {
 }
 
 // ── 2. Wealth workspace uses its purpose-built, assets-only widgets. ──
-check("wealth workspace = [wealth_by_account, asset_allocation, institution_allocation, wealth_concentration]",
+// UX experiment: asset_allocation is ordered first so the multi-mode allocation
+// chart sits above the Wealth by Account cards. Set unchanged, order swapped.
+check("wealth workspace = [asset_allocation, wealth_by_account, institution_allocation, wealth_concentration]",
   JSON.stringify(PERSPECTIVE_LIBRARY.wealth.widgets) ===
-    JSON.stringify(["wealth_by_account", "asset_allocation", "institution_allocation", "wealth_concentration"]));
+    JSON.stringify(["asset_allocation", "wealth_by_account", "institution_allocation", "wealth_concentration"]));
 // Doctrine: Wealth must NOT reuse the Overview widgets.
 check("wealth workspace excludes Overview widgets (net_worth / net_worth_chart / allocation)",
   !(PERSPECTIVE_LIBRARY.wealth.widgets ?? []).some((k) =>
