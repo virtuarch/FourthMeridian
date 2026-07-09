@@ -15,6 +15,7 @@ import {
   outflowByCategory,
   incomeBySource,
   incomeSourceLabel,
+  transactionsInBucket,
   availableHistoricalPeriods,
   periodKey,
   periodLabel,
@@ -30,6 +31,7 @@ import {
   DEFAULT_CASH_FLOW_PERIOD,
 } from "@/lib/transactions/cash-flow";
 import type { Transaction, FlowType, TransactionCategory } from "@/types";
+import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -312,6 +314,47 @@ check("INVESTMENT (BTC sale) is neither spend nor income nor refund in aggregate
            return a.spend === 0 && a.income === 0 && a.refunds === 0 && a.net === 0; })());
 check("INVESTMENT (BTC sale) never appears in Spending by Category",
   outflowByCategory([tx("2026-07-02", -8888, "INVESTMENT", "Sell")]).length === 0);
+
+// ── Drill-down slices (Part A) ────────────────────────────────────────────────────
+// Calendar day slice = exact-date rows; its aggregate must match the cell.
+const drillRows: Transaction[] = [
+  tx("2026-07-02", 5000, "INCOME",   "Income"),
+  tx("2026-07-02", -200, "SPENDING", "Groceries"),
+  tx("2026-07-03", -80,  "SPENDING", "Dining"),
+  tx("2026-07-03", -1000,"TRANSFER", "Transfer"),   // excluded from cash flow
+];
+const day02 = drillRows.filter((t) => t.date === "2026-07-02");
+check("calendar day slice = that date's rows", day02.length === 2);
+check("day slice aggregate matches the day net (5000−200=4800)",
+  aggregateCashFlow(day02).net === 4800);
+
+// History bucket slice (MTD → daily granularity): key is the date itself.
+check("transactionsInBucket returns that day's rows for a daily period",
+  transactionsInBucket(drillRows, "MTD", "2026-07-03").length === 2 &&
+  transactionsInBucket(drillRows, "MTD", "2026-07-03").every((t) => t.date === "2026-07-03"));
+// Year period → monthly buckets: key is YYYY-MM.
+check("transactionsInBucket groups by month for a yearly period",
+  transactionsInBucket(
+    [tx("2026-01-10", 10, "INCOME"), tx("2026-01-20", 20, "INCOME"), tx("2026-03-01", 30, "INCOME")],
+    { kind: "year", year: 2026 }, "2026-01").length === 2);
+
+// Spending-by-category slice = cost + refund rows for that category (matches card).
+const catRows: Transaction[] = [
+  tx("2026-07-02", -200, "SPENDING", "Groceries"),
+  tx("2026-07-04", 40,   "REFUND",   "Groceries"),
+  tx("2026-07-03", -80,  "SPENDING", "Dining"),
+  tx("2026-07-02", 5000, "INCOME",   "Income"),
+];
+const grocerySlice = catRows.filter((t) => t.category === "Groceries" && (isCostFlow(t.flowType) || isRefund(t.flowType)));
+check("category slice = cost + refund rows of that category",
+  grocerySlice.length === 2);
+check("category slice aggregate spend matches card (200−40=160)",
+  aggregateCashFlow(grocerySlice).spend === 160);
+
+// Income-by-source slice = INCOME rows whose source label matches.
+const acmeSlice = srcRows.filter((t) => isIncome(t.flowType) && incomeSourceLabel(t) === "Acme Payroll");
+check("income source slice = INCOME rows for that source",
+  acmeSlice.length === 1 && aggregateCashFlow(acmeSlice).income === 5000);
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log(`\n${passes} passed, ${failures} failed (${passes + failures} checks).`);

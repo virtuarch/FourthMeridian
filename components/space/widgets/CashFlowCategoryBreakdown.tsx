@@ -16,10 +16,13 @@
  * their category, descending). Presentation only — no new calculation.
  */
 
+import { useState } from "react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { CashFlowContribution } from "@/lib/transactions/cash-flow";
+import type { Transaction } from "@/types";
+import { TransactionSliceDrawer, type TransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 
 // Matches BreakdownWidget's DEFAULT_PALETTE so spend colors stay consistent
 // with the rest of the product; cycles for >8 categories.
@@ -35,6 +38,10 @@ interface Props {
   totalLabel?:    string;
   emptyHeadline?: string;
   emptySubline?:  string;
+  /** Drill-down: resolve the transactions behind one item (category / source).
+   *  When provided, cards + strip segments open a TransactionSliceDrawer. */
+  sliceFor?:      (item: CashFlowContribution) => Transaction[];
+  sliceSubtitle?: string;
 }
 
 export function CashFlowCategoryBreakdown({
@@ -43,7 +50,13 @@ export function CashFlowCategoryBreakdown({
   totalLabel    = "Total spending",
   emptyHeadline = "No spending in this period",
   emptySubline  = "Spending by category appears once you have outflows.",
+  sliceFor,
+  sliceSubtitle,
 }: Props) {
+  const [slice, setSlice] = useState<TransactionSlice | null>(null);
+  const openSlice = sliceFor
+    ? (item: CashFlowContribution) => setSlice({ title: item.label, subtitle: sliceSubtitle, rows: sliceFor(item) })
+    : undefined;
   const fmt = ctx
     ? (v: number) => formatCurrency(v, ctx.target)
     : (v: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
@@ -67,35 +80,64 @@ export function CashFlowCategoryBreakdown({
         <span className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">{fmt(total)}</span>
       </div>
 
-      {/* 1. Allocation strip — full-width composition at a glance. */}
+      {/* 1. Allocation strip — full-width composition at a glance. Segments are
+             clickable when drill-down is enabled. */}
       <div className="flex h-2.5 w-full overflow-hidden rounded-full" style={{ background: "var(--surface-inset)" }}>
         {colored.map((c) => (
-          <div key={c.id} title={`${c.label} · ${fmt(c.value)} · ${c.pct.toFixed(1)}%`} style={{ width: `${c.pct}%`, backgroundColor: c.color }} />
+          <button
+            key={c.id}
+            type="button"
+            aria-label={`${c.label}: ${fmt(c.value)}`}
+            title={`${c.label} · ${fmt(c.value)} · ${c.pct.toFixed(1)}%`}
+            onPointerDown={openSlice ? (e) => e.stopPropagation() : undefined}
+            onClick={openSlice ? () => openSlice(c) : undefined}
+            disabled={!openSlice}
+            className={openSlice ? "cursor-pointer transition-opacity hover:opacity-80" : "cursor-default"}
+            style={{ width: `${c.pct}%`, backgroundColor: c.color, border: "none", padding: 0 }}
+          />
         ))}
       </div>
 
-      {/* 2. Category cards — dense, ranked, name · value · share. */}
+      {/* 2. Category cards — dense, ranked, name · value · share. Cards open the
+             slice drawer when drill-down is enabled. */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        {colored.map((c) => (
-          <div
-            key={c.id}
-            className="rounded-xl p-2.5 flex flex-col gap-1.5 border"
-            style={{ background: "var(--surface-inset)", borderColor: "var(--border-subtle, rgba(255,255,255,0.06))" }}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: c.color }} />
-              <span className="text-xs font-medium truncate text-[var(--text-primary)]">{c.label}</span>
-              <span className="ml-auto text-[10px] tabular-nums text-[var(--text-faint)] shrink-0">{c.pct.toFixed(1)}%</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="h-1.5 flex-1 rounded-full overflow-hidden" style={{ background: "var(--surface-base, rgba(255,255,255,0.04))" }}>
-                <div className="h-full rounded-full" style={{ width: `${Math.max(3, c.pct)}%`, backgroundColor: c.color }} />
+        {colored.map((c) => {
+          const inner = (
+            <>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: c.color }} />
+                <span className="text-xs font-medium truncate text-[var(--text-primary)]">{c.label}</span>
+                <span className="ml-auto text-[10px] tabular-nums text-[var(--text-faint)] shrink-0">{c.pct.toFixed(1)}%</span>
               </div>
-              <span className="text-xs font-semibold tabular-nums text-[var(--text-primary)] shrink-0">{fmt(c.value)}</span>
+              <div className="flex items-center gap-2">
+                <div className="h-1.5 flex-1 rounded-full overflow-hidden" style={{ background: "var(--surface-base, rgba(255,255,255,0.04))" }}>
+                  <div className="h-full rounded-full" style={{ width: `${Math.max(3, c.pct)}%`, backgroundColor: c.color }} />
+                </div>
+                <span className="text-xs font-semibold tabular-nums text-[var(--text-primary)] shrink-0">{fmt(c.value)}</span>
+              </div>
+            </>
+          );
+          const cardStyle = { background: "var(--surface-inset)", borderColor: "var(--border-subtle, rgba(255,255,255,0.06))" };
+          return openSlice ? (
+            <button
+              key={c.id}
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => openSlice(c)}
+              className="text-left rounded-xl p-2.5 flex flex-col gap-1.5 border transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)]"
+              style={cardStyle}
+            >
+              {inner}
+            </button>
+          ) : (
+            <div key={c.id} className="rounded-xl p-2.5 flex flex-col gap-1.5 border" style={cardStyle}>
+              {inner}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
+
+      {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}
     </div>
   );
 }

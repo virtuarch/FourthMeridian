@@ -60,6 +60,31 @@ export interface ClassifiableAccount {
   syncStatus?: string;
 }
 
+// ─── Liquidity tier (Cash Flow liquidity axis) ────────────────────────────────
+//
+// Coarse tier used by the derived Cash Flow LIQUIDITY axis
+// (lib/transactions/liquidity.ts). Single source of truth for "which side of the
+// spendable/asset/liability boundary an account sits on", collapsing the finer
+// classifyAccounts buckets:
+//   liquid    ← checking, savings            (spendable cash)
+//   asset     ← investment, crypto, other    (investments / digital / real assets)
+//   liability ← debt
+//   unknown   ← unrecognized / absent type   (drives UNRESOLVED, never guessed)
+export type AccountTier = "liquid" | "asset" | "liability" | "unknown";
+
+/** Pure account-type → liquidity tier, consistent with classifyAccounts. */
+export function accountTier(type: string | null | undefined): AccountTier {
+  switch (type) {
+    case "checking":
+    case "savings":    return "liquid";
+    case "investment":
+    case "crypto":
+    case "other":      return "asset";
+    case "debt":       return "liability";
+    default:           return "unknown";
+  }
+}
+
 // ─── Classification result ────────────────────────────────────────────────────
 
 /**

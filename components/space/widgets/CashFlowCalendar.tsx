@@ -75,9 +75,10 @@ interface DayCellProps {
   row:    number;   // 0-based week row (for tooltip placement)
   size:   "full" | "mini";
   fmt:    (n: number) => string;
+  onSelect?: (iso: string, label: string) => void;
 }
 
-function DayCell({ iso, day, data, bg, text, col, row, size, fmt }: DayCellProps) {
+function DayCell({ iso, day, data, bg, text, col, row, size, fmt, onSelect }: DayCellProps) {
   const net = data?.net ?? 0;
   const dateLabel = new Date(`${iso}T00:00:00`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
   const netColor = net > 0 ? "var(--accent-positive)" : net < 0 ? "var(--accent-negative)" : "var(--text-muted)";
@@ -86,8 +87,10 @@ function DayCell({ iso, day, data, bg, text, col, row, size, fmt }: DayCellProps
     <div className={`group relative ${size === "full" ? "h-7" : "h-4"}`}>
       <button
         type="button"
-        aria-label={`${dateLabel}: net ${net >= 0 ? "+" : "−"}${fmt(Math.abs(net))}`}
-        className="w-full h-full rounded flex items-center justify-center focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)]"
+        aria-label={`${dateLabel}: net ${net >= 0 ? "+" : "−"}${fmt(Math.abs(net))}. Open transactions.`}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={onSelect ? () => onSelect(iso, dateLabel) : undefined}
+        className={`w-full h-full rounded flex items-center justify-center focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)] ${onSelect ? "cursor-pointer" : ""}`}
         style={{ background: bg }}
       >
         <span className={`${size === "full" ? "text-[10px]" : "text-[8px]"} leading-none font-medium`} style={{ color: text }}>{day}</span>
@@ -143,9 +146,10 @@ interface MonthGridProps {
   range:  { start: string; end: string };
   size:   "full" | "mini";
   fmt:    (n: number) => string;
+  onSelectDay?: (iso: string, label: string) => void;
 }
 
-function MonthGrid({ year, month, daily, max, range, size, fmt }: MonthGridProps) {
+function MonthGrid({ year, month, daily, max, range, size, fmt, onSelectDay }: MonthGridProps) {
   const firstWeekday = new Date(year, month - 1, 1).getDay();
   const daysInMonth  = new Date(year, month, 0).getDate();
   const monthLabel = new Date(year, month - 1, 1).toLocaleDateString("en-US", {
@@ -191,6 +195,7 @@ function MonthGrid({ year, month, daily, max, range, size, fmt }: MonthGridProps
               key={i} iso={iso} day={d} data={data}
               bg={cellBg(net, max)} text={cellText(net, max)}
               col={col} row={gridRow} size={size} fmt={fmt}
+              onSelect={onSelectDay}
             />
           );
         })}
@@ -205,9 +210,11 @@ interface Props {
   transactions: Transaction[];
   period:       CashFlowPeriod;
   ctx?:         ConversionContext;
+  /** Click a day cell → open its transactions. Hover tooltip stays summary-only. */
+  onSelectDay?: (iso: string, label: string) => void;
 }
 
-export function CashFlowCalendar({ transactions, period, ctx }: Props) {
+export function CashFlowCalendar({ transactions, period, ctx, onSelectDay }: Props) {
   const range  = useMemo(() => periodRange(period), [period]);
   const daily  = useMemo(() => dailyCashFlow(transactions, ctx), [transactions, ctx]);
   const months = useMemo(() => monthsInRange(range.start, range.end), [range]);
@@ -237,6 +244,7 @@ export function CashFlowCalendar({ transactions, period, ctx }: Props) {
             key={`${year}-${month}`}
             year={year} month={month}
             daily={daily} max={max} range={range} size={size} fmt={fmt}
+            onSelectDay={onSelectDay}
           />
         ))}
       </div>

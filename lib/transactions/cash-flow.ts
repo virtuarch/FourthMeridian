@@ -322,6 +322,20 @@ export function bucketCashFlow(
     });
 }
 
+/** Member transactions of one history bucket (same key scheme as bucketCashFlow
+ *  at the period's granularity) — drives Cash Flow History card drill-down.
+ *  Returns rows chronologically; the caller decides how to present them. */
+export function transactionsInBucket(
+  transactions: Transaction[],
+  period: CashFlowPeriod,
+  bucketKeyValue: string,
+): Transaction[] {
+  const g = granularityFor(period);
+  return transactions
+    .filter((t) => bucketKey(t.date, g) === bucketKeyValue)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
 // ─── Calendar (daily net) ─────────────────────────────────────────────────────
 
 export interface DayCashFlow {

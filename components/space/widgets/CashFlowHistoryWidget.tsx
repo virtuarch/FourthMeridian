@@ -30,9 +30,11 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { CashFlowCalendar } from "@/components/space/widgets/CashFlowCalendar";
+import { TransactionSliceDrawer, type TransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 import {
   filterByPeriod,
   bucketCashFlow,
+  transactionsInBucket,
   availableHistoricalPeriods,
   periodKey,
   isExplicitPeriod,
@@ -154,7 +156,12 @@ function labelFor(p: ExplicitCashFlowPeriod): string {
 /** Dense, object-like grid replacing the old bars. One card per active period
  *  bucket (day for month/week, week for quarter, month for year — granularity
  *  from bucketCashFlow), showing net + income + spending. */
-function CardsView({ rows, period, ctx }: { rows: Transaction[]; period: CashFlowPeriod; ctx?: ConversionContext }) {
+function CardsView({
+  rows, period, ctx, onOpenBucket,
+}: {
+  rows: Transaction[]; period: CashFlowPeriod; ctx?: ConversionContext;
+  onOpenBucket: (label: string, key: string) => void;
+}) {
   const buckets = bucketCashFlow(rows, period, ctx);
   if (buckets.length === 0) return <EmptyCard sub="Cash-flow history appears as transactions accumulate." />;
 
@@ -164,9 +171,12 @@ function CardsView({ rows, period, ctx }: { rows: Transaction[]; period: CashFlo
         const positive = b.net >= 0;
         const rgb = positive ? "34,197,94" : "239,68,68";
         return (
-          <div
+          <button
             key={b.key}
-            className="rounded-xl p-2.5 flex flex-col gap-1.5 border"
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onOpenBucket(b.label, b.key)}
+            className="text-left rounded-xl p-2.5 flex flex-col gap-1.5 border transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)]"
             style={{ background: "var(--surface-inset)", borderColor: `rgba(${rgb},.22)` }}
           >
             <div className="flex items-center justify-between gap-1">
@@ -183,7 +193,7 @@ function CardsView({ rows, period, ctx }: { rows: Transaction[]; period: CashFlo
               <span className="text-[var(--accent-positive)]">+{fmtMoney(b.income, ctx)}</span>
               <span className="text-[var(--accent-negative)]">−{fmtMoney(b.spend, ctx)}</span>
             </div>
-          </div>
+          </button>
         );
       })}
     </div>
@@ -216,6 +226,9 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, onSelectPerio
   }
   const effectiveMode = modes.includes(mode) ? mode : defaultMode;
 
+  // Drill-down slice drawer (local, in-place — never navigates away).
+  const [slice, setSlice] = useState<TransactionSlice | null>(null);
+
   const historical = availableHistoricalPeriods(transactions ?? []);
   const activeKey  = isExplicitPeriod(period) ? key : "";
   const valFor = (group: ExplicitCashFlowPeriod[]) =>
@@ -244,14 +257,21 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, onSelectPerio
   }
   const rows = filterByPeriod(transactions, period);
 
+  const openDay = (iso: string, label: string) =>
+    setSlice({ title: label, subtitle: "Cash flow for this day", rows: rows.filter((t) => t.date === iso) });
+  const openBucket = (label: string, bucketKeyValue: string) =>
+    setSlice({ title: label, subtitle: "Cash flow for this period", rows: transactionsInBucket(rows, period, bucketKeyValue) });
+
   return (
     <div className="space-y-3">
       {controls}
       {rows.length === 0
         ? <EmptyCard sub="Cash-flow history appears as transactions accumulate." />
         : effectiveMode === "calendar"
-          ? <CashFlowCalendar transactions={rows} period={period} ctx={ctx} />
-          : <CardsView rows={rows} period={period} ctx={ctx} />}
+          ? <CashFlowCalendar transactions={rows} period={period} ctx={ctx} onSelectDay={openDay} />
+          : <CardsView rows={rows} period={period} ctx={ctx} onOpenBucket={openBucket} />}
+
+      {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}
     </div>
   );
 }

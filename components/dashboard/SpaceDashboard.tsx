@@ -1335,7 +1335,7 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
   "emergency_fund_readiness":(p) => renderEmergencyFundReadiness(p.accounts, p.ctx),
   "liquidity_concentration": (p) => renderLiquidityConcentration(p.accounts, p.ctx),
   // ── Cash Flow Perspective (UX-PER-3) — movement over time (FlowType-aware) ──
-  "cash_flow_summary":       (p) => renderCashFlowSummary(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
+  "cash_flow_summary":       (p) => renderCashFlowSummary(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts),
   "cash_flow_history":       (p) => renderCashFlowHistory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.onSelectPeriod),
   "income_vs_spending":      (p) => renderIncomeVsSpending(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
   "cash_flow_by_category":   (p) => renderCashFlowByCategory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),

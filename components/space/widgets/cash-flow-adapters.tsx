@@ -20,8 +20,7 @@
  */
 
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
-import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { CashFlowSummaryWidget } from "@/components/space/widgets/CashFlowSummaryWidget";
 import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
@@ -31,18 +30,15 @@ import {
   aggregateCashFlow,
   outflowByCategory,
   incomeBySource,
+  incomeSourceLabel,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
+import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";
 import { CashFlowCategoryBreakdown } from "@/components/space/widgets/CashFlowCategoryBreakdown";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmtMoney(v: number, ctx?: ConversionContext): string {
-  return ctx
-    ? formatCurrency(v, ctx.target)
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0 }).format(v);
-}
 function valueFormatterProps(ctx?: ConversionContext) {
   return ctx ? { formatValue: (v: number) => formatCurrency(v, ctx.target) } : {};
 }
@@ -67,33 +63,18 @@ function EmptyCard({ sub }: { sub: string }) {
   );
 }
 
-// ─── 1. Cash Flow Summary ─────────────────────────────────────────────────────
+// ─── 1. Cash Flow Summary (LIQUIDITY axis — primary) ──────────────────────────
 
-/** Income / spending / net for the selected period (FlowType-aware). */
+/** Cash In / Cash Out / Net Cash for the selected period, from the derived
+ *  liquidity axis (deriveCashFlowAxes). The economic axis is preserved behind a
+ *  disclosure in the widget. Needs `accounts` to resolve account tiers. */
 export function renderCashFlowSummary(
   transactions: Transaction[] | null | undefined,
   period: CashFlowPeriod,
   ctx?: ConversionContext,
+  accounts: { id: string; type: string }[] = [],
 ): React.ReactElement {
-  const { state, rows } = scoped(transactions, period);
-  if (state === "loading") return <LoadingCard />;
-  const t = aggregateCashFlow(rows, ctx);
-  if (state === "empty") return <EmptyCard sub="No income or spending recorded here yet." />;
-
-  return (
-    <SummaryWidget
-      primary={{
-        value: `${t.net >= 0 ? "+" : "−"}${fmtMoney(Math.abs(t.net), ctx)}`,
-        label: "net cash flow this period",
-        color: t.net >= 0 ? "green" : "red",
-        size:  "3xl",
-      }}
-      stats={[
-        { label: "Income",   value: `+${fmtMoney(t.income, ctx)}`, accent: "green" },
-        { label: "Spending", value: `−${fmtMoney(t.spend, ctx)}`,  accent: "red" },
-      ]}
-    />
-  );
+  return <CashFlowSummaryWidget transactions={transactions} period={period} ctx={ctx} accounts={accounts} />;
 }
 
 // ─── 2. Cash Flow History ─────────────────────────────────────────────────────
@@ -154,7 +135,16 @@ export function renderCashFlowByCategory(
 
   // Same FlowType-aware data + ordering as before — allocation-strip + category
   // cards presentation (CashFlowCategoryBreakdown) instead of a ranked bar list.
-  return <CashFlowCategoryBreakdown items={outflowByCategory(rows, ctx)} ctx={ctx} />;
+  // Drill-down: a category slice is its cost-flow rows (plus refunds, which net
+  // the card's value — so the drawer's clamped spend total matches).
+  return (
+    <CashFlowCategoryBreakdown
+      items={outflowByCategory(rows, ctx)}
+      ctx={ctx}
+      sliceSubtitle="Spending in this category"
+      sliceFor={(item) => rows.filter((t) => t.category === item.id && (isCostFlow(t.flowType) || isRefund(t.flowType)))}
+    />
+  );
 }
 
 // ─── 5. Income by Source ──────────────────────────────────────────────────────
@@ -180,6 +170,8 @@ export function renderIncomeBySource(
       totalLabel="Total income"
       emptyHeadline="No income in this period"
       emptySubline="Income by source appears once you have inflows."
+      sliceSubtitle="Income from this source"
+      sliceFor={(item) => rows.filter((t) => isIncome(t.flowType) && incomeSourceLabel(t) === item.id)}
     />
   );
 }
