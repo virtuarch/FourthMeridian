@@ -351,6 +351,19 @@ const registry: WidgetRegistryEntry[] = [
       collapsible: false,
     },
   },
+  {
+    implemented: true,
+    meta: {
+      key:         "income_by_source",
+      label:       "Income by Source",
+      description: "Where income comes from — inflows grouped by source for the selected period.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      dataTier:    "transactions",
+      requires:    [],
+      collapsible: false,
+    },
+  },
 
   // ── Debt Perspective (UX-PER-3) — liabilities-only (shape / cost / risk). ────
   // Rendered as VIRTUAL sections in the Debt workspace; `tab` is metadata only.

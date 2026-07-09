@@ -29,10 +29,12 @@ import { Waves } from "lucide-react";
 import {
   filterByPeriod,
   aggregateCashFlow,
-  bucketCashFlow,
   outflowByCategory,
+  incomeBySource,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
+import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";
+import { CashFlowCategoryBreakdown } from "@/components/space/widgets/CashFlowCategoryBreakdown";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -96,45 +98,16 @@ export function renderCashFlowSummary(
 
 // ─── 2. Cash Flow History ─────────────────────────────────────────────────────
 
-/** Income (green) vs spending (red) per time bucket, with net — the shape of
- *  cash flow over the period. Bucketing (day/week/month) follows the period. */
+/** Cash flow over the period as a multi-mode time lens (Bars · Calendar). The
+ *  mode logic + calendar live in CashFlowHistoryWidget; this stays a thin
+ *  adapter so the SectionRegistry contract is unchanged. */
 export function renderCashFlowHistory(
   transactions: Transaction[] | null | undefined,
   period: CashFlowPeriod,
   ctx?: ConversionContext,
+  onSelectPeriod?: (period: CashFlowPeriod) => void,
 ): React.ReactElement {
-  const { state, rows } = scoped(transactions, period);
-  if (state === "loading") return <LoadingCard />;
-  if (state === "empty") return <EmptyCard sub="Cash-flow history appears as transactions accumulate." />;
-
-  const buckets = bucketCashFlow(rows, period, ctx);
-  if (buckets.length === 0) return <EmptyCard sub="Cash-flow history appears as transactions accumulate." />;
-  const max = Math.max(1, ...buckets.map((b) => Math.max(b.income, b.spend)));
-
-  return (
-    <div className="space-y-3">
-      {buckets.map((b) => (
-        <div key={b.key} className="space-y-1">
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="text-[var(--text-secondary)]">{b.label}</span>
-            <span className={b.net >= 0 ? "text-[var(--accent-positive)]" : "text-[var(--accent-negative)]"}>
-              {b.net >= 0 ? "+" : "−"}{fmtMoney(Math.abs(b.net), ctx)}
-            </span>
-          </div>
-          <div className="h-1.5 rounded-full bg-[var(--surface-inset)] overflow-hidden">
-            <div className="h-full rounded-full" style={{ width: `${(b.income / max) * 100}%`, backgroundColor: "var(--accent-positive)" }} />
-          </div>
-          <div className="h-1.5 rounded-full bg-[var(--surface-inset)] overflow-hidden">
-            <div className="h-full rounded-full" style={{ width: `${(b.spend / max) * 100}%`, backgroundColor: "var(--accent-negative)" }} />
-          </div>
-        </div>
-      ))}
-      <div className="flex items-center gap-4 pt-1 text-[10px] text-[var(--text-faint)]">
-        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{ backgroundColor: "var(--accent-positive)" }} /> Income</span>
-        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{ backgroundColor: "var(--accent-negative)" }} /> Spending</span>
-      </div>
-    </div>
-  );
+  return <CashFlowHistoryWidget transactions={transactions} period={period} ctx={ctx} onSelectPeriod={onSelectPeriod} />;
 }
 
 // ─── 3. Income vs Spending ────────────────────────────────────────────────────
@@ -179,16 +152,34 @@ export function renderCashFlowByCategory(
   if (state === "loading") return <LoadingCard />;
   if (state === "empty") return <EmptyCard sub="Spending by category appears once you have outflows." />;
 
-  const items: BreakdownItem[] = outflowByCategory(rows, ctx);
+  // Same FlowType-aware data + ordering as before — allocation-strip + category
+  // cards presentation (CashFlowCategoryBreakdown) instead of a ranked bar list.
+  return <CashFlowCategoryBreakdown items={outflowByCategory(rows, ctx)} ctx={ctx} />;
+}
+
+// ─── 5. Income by Source ──────────────────────────────────────────────────────
+
+/** Where income comes from — INCOME flows grouped by best-available source
+ *  (employer / exchange / brokerage / interest or dividend payer / client / …),
+ *  largest first. Twin of Spending by Category; same allocation-strip + cards
+ *  visual language, income-oriented. INCOME-only per Cash Flow doctrine, so
+ *  transfers / investment conversions / refunds never appear here. */
+export function renderIncomeBySource(
+  transactions: Transaction[] | null | undefined,
+  period: CashFlowPeriod,
+  ctx?: ConversionContext,
+): React.ReactElement {
+  const { state, rows } = scoped(transactions, period);
+  if (state === "loading") return <LoadingCard />;
+  if (state === "empty") return <EmptyCard sub="Income by source appears once you have inflows." />;
 
   return (
-    <BreakdownWidget
-      items={items}
-      viewMode="bar"
-      itemNoun="category"
-      emptyHeadline="No spending in this period"
-      emptySubline="Nothing went out during the selected window."
-      {...valueFormatterProps(ctx)}
+    <CashFlowCategoryBreakdown
+      items={incomeBySource(rows, ctx)}
+      ctx={ctx}
+      totalLabel="Total income"
+      emptyHeadline="No income in this period"
+      emptySubline="Income by source appears once you have inflows."
     />
   );
 }

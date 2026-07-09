@@ -175,7 +175,7 @@ export interface RawBtcTx {
 }
 
 export type BtcMovementRole = "PRINCIPAL" | "FEE";
-export type BtcFlowType = "INCOME" | "SPENDING" | "FEE" | "TRANSFER";
+export type BtcFlowType = "INCOME" | "INVESTMENT" | "SPENDING" | "FEE" | "TRANSFER";
 export type BtcFlowDirection = "INFLOW" | "OUTFLOW" | "INTERNAL";
 
 /**
@@ -212,9 +212,15 @@ function formatBtc(sats: number): string {
  * unit of the v3 test). For each tx it computes the wallet's NET effect across
  * its own inputs/outputs (change nets out; UTXOs never surface):
  *   - myInputs == 0  → pure receive → INCOME / INFLOW (amount = net received)
- *   - myInputs  > 0  → spend → SPENDING / OUTFLOW (amount sent to others) plus a
- *                       FEE / OUTFLOW movement (the miner fee the spender paid);
- *                       a pure self-consolidation (nothing sent out) is fee-only.
+ *   - myInputs  > 0  → outbound principal → INVESTMENT / INTERNAL (amount sent to
+ *                       others). Per FM FlowType doctrine (flow-classifier.ts: a
+ *                       Sell is INVESTMENT/INTERNAL) moving BTC out of the wallet
+ *                       is an asset conversion, NOT spending — so it never counts
+ *                       as Cash Flow spend or income. The miner fee is a separate
+ *                       FEE / OUTFLOW movement (a real cost, unchanged); a pure
+ *                       self-consolidation (nothing sent out) is fee-only. The
+ *                       engine may still reclassify an all-own-wallet send to a
+ *                       TRANSFER / INTERNAL (see btc-sync.buildTransactionRow).
  * Confirmed → POSTED, unconfirmed → PENDING.
  */
 export function normalizeBtcAddressTxs(rawTxs: RawBtcTx[], myAddresses: string[]): NormalizedBtcMovement[] {
@@ -257,12 +263,14 @@ export function normalizeBtcAddressTxs(rawTxs: RawBtcTx[], myAddresses: string[]
       continue;
     }
 
-    // I am a spender — the fee is mine. Change back to myself nets out.
+    // I moved coins out — the fee is mine. Change back to myself nets out.
+    // Doctrine: an outbound principal BTC movement is an asset conversion
+    // (INVESTMENT / INTERNAL), not spending — it must not touch Cash Flow.
     if (toOthers > 0) {
       out.push({
         txid: tx.txid, externalId: tx.txid, occurredAt,
         amountBtc: -satsToBtc(toOthers), role: "PRINCIPAL",
-        flowType: "SPENDING", flowDirection: "OUTFLOW", settlement,
+        flowType: "INVESTMENT", flowDirection: "INTERNAL", settlement,
         counterpartyAddresses: recipients,
         merchantLabel: "Bitcoin sent",
         description: `Sent ${formatBtc(toOthers)} BTC`,

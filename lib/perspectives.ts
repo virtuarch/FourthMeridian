@@ -109,7 +109,10 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // money move?" — movement over time from transaction history, FlowType-aware
     // (no net worth / allocation / debt / goals). Widgets share the workspace
     // period selector. Rendered through the same SectionCard compositor.
-    widgets: ["cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category"],
+    // (income_vs_spending retired from the active list — Cash Flow History's
+    //  bucket cards now surface income/spending/net; renderer kept for reuse.)
+    //  Order: History → Spending by Category → Income by Source (twin widgets).
+    widgets: ["cash_flow_summary", "cash_flow_history", "cash_flow_by_category", "income_by_source"],
   },
   investments: {
     id: "investments", label: "Investments", icon: "TrendingUp", status: "comingSoon", group: "Financial",

@@ -161,10 +161,11 @@ async function writeBtcHolding(
 // ── Wallet Provider v3 — BTC transactions → normal Transaction rows ───────────
 
 const FLOW_TO_CATEGORY: Record<BtcFlowType, TransactionCategory> = {
-  INCOME:   TransactionCategory.Income,
-  SPENDING: TransactionCategory.Other,
-  FEE:      TransactionCategory.Fee,
-  TRANSFER: TransactionCategory.Transfer,
+  INCOME:     TransactionCategory.Income,
+  INVESTMENT: TransactionCategory.Sell,   // outbound BTC = asset disposal / conversion
+  SPENDING:   TransactionCategory.Other,
+  FEE:        TransactionCategory.Fee,
+  TRANSFER:   TransactionCategory.Transfer,
 };
 
 type OwnAddressMap = Map<string, string>; // external address -> the user's own FinancialAccount id
@@ -205,8 +206,9 @@ function buildTransactionRow(
   let merchant                     = m.merchantLabel;
   let counterpartyAccountId: string | undefined;
   let classificationReason: FlowClassificationReason | undefined =
-    m.flowType === "INCOME"   ? FlowClassificationReason.SIGN_DEFAULT_INFLOW   :
-    m.flowType === "SPENDING" ? FlowClassificationReason.SIGN_DEFAULT_SPENDING : undefined;
+    m.flowType === "INCOME"     ? FlowClassificationReason.SIGN_DEFAULT_INFLOW       :
+    m.flowType === "INVESTMENT" ? FlowClassificationReason.CATEGORY_INVESTMENT_VALUE :
+    m.flowType === "SPENDING"   ? FlowClassificationReason.SIGN_DEFAULT_SPENDING     : undefined;
 
   // A principal movement whose EVERY external counterparty is one of the user's
   // own wallets is an INTERNAL transfer (matches the existing internal-transfer

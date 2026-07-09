@@ -222,13 +222,15 @@ async function main(): Promise<void> {
     Math.abs(rcv.amountBtc - 0.0009) < 1e-12 && rcv.settlement === "POSTED");
   check("receive counterparty = external sender", !!rcv && rcv.counterpartyAddresses.includes("1Sender"));
 
-  // Send → SPENDING/OUTFLOW (amount = to-others, negative) + a FEE sibling.
-  const spend = byId("bbb")[0];
-  const fee   = byId("bbb:fee")[0];
-  check("send → SPENDING/OUTFLOW negative amount (to-others only, change nets out)",
-    !!spend && spend.flowType === "SPENDING" && spend.flowDirection === "OUTFLOW" &&
-    Math.abs(spend.amountBtc + 0.0015) < 1e-12);
-  check("fee mapping → FEE/OUTFLOW negative, externalId `${txid}:fee`",
+  // Outbound principal → INVESTMENT/INTERNAL (asset conversion, NOT spending) + FEE sibling.
+  const send = byId("bbb")[0];
+  const fee  = byId("bbb:fee")[0];
+  check("outbound principal → INVESTMENT/INTERNAL negative amount (to-others only, change nets out)",
+    !!send && send.flowType === "INVESTMENT" && send.flowDirection === "INTERNAL" &&
+    Math.abs(send.amountBtc + 0.0015) < 1e-12);
+  check("outbound principal is never SPENDING or INCOME (doctrine)",
+    !!send && send.flowType !== "SPENDING" && send.flowType !== "INCOME");
+  check("fee mapping unchanged → FEE/OUTFLOW negative, externalId `${txid}:fee`",
     !!fee && fee.flowType === "FEE" && fee.role === "FEE" && fee.flowDirection === "OUTFLOW" &&
     Math.abs(fee.amountBtc + 0.00001) < 1e-12);
 
@@ -275,8 +277,8 @@ async function main(): Promise<void> {
   // Same tx seen from only ONE address would look like a real send — proving the
   // full address set matters.
   const single = normalizeBtcAddressTxs([ownToOwn], [A]);
-  check("single-address view of the same tx IS a send (justifies aggregation)",
-    single.some((m) => m.externalId === "eee" && m.flowType === "SPENDING"));
+  check("single-address view of the same tx IS an outbound principal (justifies aggregation)",
+    single.some((m) => m.externalId === "eee" && m.flowType === "INVESTMENT"));
 
   // ── Source-scan the v4 engine ───────────────────────────────────────────────
   check("sync resolves addresses through ProviderAccountIdentity (canonical table)",
