@@ -110,8 +110,10 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     widgets: ["cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category"],
   },
   investments: {
-    id: "investments", label: "Investments", icon: "TrendingUp", status: "available", group: "Financial",
+    id: "investments", label: "Investments", icon: "TrendingUp", status: "comingSoon", group: "Financial",
     description: "Holdings, allocation, and performance.",
+    // No workspace yet — the only Perspective still coming soon. Its Overview
+    // doorway card shows "Soon" and isn't a destination until it has widgets.
   },
   debt: {
     id: "debt", label: "Debt", icon: "CreditCard", status: "available", group: "Financial",

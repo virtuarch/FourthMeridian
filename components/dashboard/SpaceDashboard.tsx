@@ -2486,6 +2486,21 @@ export function SpaceDashboard({
     ? perspectiveItems.find((p) => p.id === activePerspectiveId) ?? null
     : null;
 
+  // Overview Perspectives doorway — each workspace-backed card deep-links into
+  // its Perspective workspace (tab=PERSPECTIVES + that perspective selected; the
+  // URL sync then writes ?tab=perspectives&perspective=<slug>). Perspectives
+  // without a workspace (e.g. Investments — coming soon) stay non-clickable
+  // "Soon" placeholders. This replaces the old modal-tab routing on the doorway.
+  const perspectiveDoorwayItems = useMemo(
+    () =>
+      perspectiveItems.map((p) =>
+        p.widgets && p.widgets.length > 0
+          ? { ...p, onSelect: () => { setSelectedPerspectiveId(p.id); setActiveTab("PERSPECTIVES"); } }
+          : { ...p, onSelect: undefined },
+      ),
+    [perspectiveItems],
+  );
+
   // ── URL-backed tab state (write) ────────────────────────────────────────────
   // Mirror activeTab (+ selected Perspective) into ?tab=…&perspective=… via
   // window.history — no server re-run, no reload. First sync canonicalizes with
@@ -2896,7 +2911,7 @@ export function SpaceDashboard({
             See all
           </button>
         </div>
-        <PerspectivesWidget items={perspectiveItems} variant="row" />
+        <PerspectivesWidget items={perspectiveDoorwayItems} variant="row" />
       </div>
     ) : null;
 

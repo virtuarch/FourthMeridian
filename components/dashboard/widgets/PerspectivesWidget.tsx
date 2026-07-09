@@ -42,7 +42,7 @@
 
 import {
   Gem, Waves, TrendingUp, CreditCard, PiggyBank, Target, FileText, Home,
-  Briefcase, Compass, Droplets, ArrowRight, Sparkles,
+  Briefcase, Compass, Droplets, Sparkles,
 } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { TONE_VALUE } from "@/components/atlas/tones";
@@ -153,9 +153,9 @@ function PerspectiveCard({ item, compact }: { item: PerspectiveCardItem; compact
         <div className="w-9 h-9 rounded-[var(--radius-sm)] bg-[var(--surface-muted)] border border-[var(--border-hairline)] flex items-center justify-center shrink-0">
           <Icon size={16} className="text-[var(--meridian-400)]" />
         </div>
-        {clickable ? (
-          <ArrowRight size={14} className="text-[var(--text-muted)] mt-1.5" />
-        ) : showSoonChip ? (
+        {/* No arrow on clickable cards (cleaner) — the whole card is the
+            affordance. Coming-soon placeholders keep their "Soon" chip. */}
+        {showSoonChip ? (
           <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-full px-2 py-1 mt-0.5">
             Soon
           </span>
