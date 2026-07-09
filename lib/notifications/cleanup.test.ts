@@ -187,7 +187,9 @@ async function run(): Promise<void> {
   // ── Source-scan: scheduling discipline ──────────────────────────────────────
   {
     // Since OPS-4 S2 the schedule is the single dispatcher cron; cleanup
-    // still consumes NO cron slot of its own (the F7 intent, unchanged).
+    // still consumes NO cron slot of its own (the F7 intent, unchanged). On the
+    // current Vercel Hobby (free) tier that single entry runs once per day
+    // ("0 6 * * *"); the count-of-one invariant below is unchanged either way.
     const vercel = readFileSync("vercel.json", "utf8");
     const crons = (vercel.match(/"path"/g) ?? []).length;
     check(

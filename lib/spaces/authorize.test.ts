@@ -170,9 +170,14 @@ check("D perspectives dropped inline spaceMember.findUnique",
 check("D perspectives keeps missing-spaceId 400 BEFORE the door",
   perspectives.indexOf("Missing space id") !== -1 &&
   perspectives.indexOf("Missing space id") < perspectives.indexOf("requireSpaceAction(spaceId"));
+// The real invariant: the engine scope's userId is ALWAYS the authenticated
+// requester (never a stored/elevated identity). Pin userId = auth.user.id and
+// that { spaceId, userId } is the scope passed to computePerspectives — WITHOUT
+// nailing the exact arity, so additive options (e.g. the "view as"
+// { targetCurrency } second argument) can't trip this tripwire.
 check("D perspectives still computes as the requesting viewer (userId from auth)",
   /const\s+userId\s*=\s*auth\.user\.id/.test(perspectives) &&
-  /computePerspectives\(\s*\{\s*spaceId\s*,\s*userId\s*\}\s*\)/.test(perspectives));
+  /computePerspectives\(\s*\{\s*spaceId\s*,\s*userId\s*\}/.test(perspectives));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PART E — GET /api/spaces/[id] documented public-read exception (Batch 3).

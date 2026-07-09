@@ -2,11 +2,16 @@
  * GET /api/jobs/dispatch  (OPS-4 S2)
  *
  * THE single Vercel Cron entrypoint. vercel.json carries exactly one cron —
- * this path, fired at every registered half-hour slot ("0,30 6-7 * * *",
- * covering the pre-S2 06:00 / 06:30 / 07:00 schedules; the 07:30 tick is a
- * logged no-op). The dispatcher (lib/jobs/dispatch.ts) selects the jobs due
+ * this path. On the current Vercel Hobby (free) tier, sub-daily cron is
+ * rejected at deploy time, so the active schedule is once per day ("0 6 * * *",
+ * the 06:00 slot). The richer paid-tier schedule ("0,30 6-7 * * *", one tick
+ * per registered half-hour slot — 06:00 / 06:30 / 07:00 / 07:30) is restored
+ * when off Hobby. The dispatcher (lib/jobs/dispatch.ts) selects the jobs due
  * at the invocation's slot from the registry (lib/jobs/registry.ts) and runs
- * each through runJob() — individually ledgered, individually isolated.
+ * each through runJob() — individually ledgered, individually isolated. Slots
+ * the daily tick does not reach stay reachable via the per-job fallback routes
+ * (CRON_SECRET-guarded); FX freshness is additionally kept current by the
+ * opportunistic stale-while-revalidate refresh (lib/money/fx-freshness.ts).
  *
  * Auth: identical to the pre-S2 cron routes — Vercel sends
  * `Authorization: Bearer ${CRON_SECRET}` on cron-triggered requests when

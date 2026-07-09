@@ -21,9 +21,11 @@
 
 import { db } from "@/lib/db";
 import { fxArchive } from "@/lib/fx/archive";
+import { FX_BASE } from "@/lib/fx/config";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { buildConversionContext } from "./context";
 import { identityContext, serializeContext, type SerializedConversionContext } from "./convert";
+import { revalidateFxIfStale, shouldTrigger, type FxFreshnessGate } from "./fx-freshness";
 import type { ConversionContext } from "./types";
 
 export interface SpaceConversionOptions {
@@ -31,6 +33,72 @@ export interface SpaceConversionOptions {
   currencies: readonly (string | null)[];
   /** Valuation dates the caller will use (live = yesterday UTC; rollups = per-row dates; plan D-6 of Phase 2). */
   dates:      readonly string[];
+}
+
+// ── Opportunistic FX stale-while-revalidate (free-tier cron compensation) ────
+// The scheduled fetch-fx-rates job stays authoritative for cron-capable
+// environments (lib/jobs/registry.ts). On the Vercel Hobby tier the single
+// daily cron may not reach the 06:30 FX slot, so we additionally kick a
+// best-effort background refresh when a conversion is requested against a stale
+// archive. See lib/money/fx-freshness.ts for the (pure, injectable) policy.
+
+/** At most one background refresh per window, no matter the request volume. */
+const FX_REFRESH_MIN_INTERVAL_MS = 30 * 60 * 1000;
+let fxLastRefreshAtMs = 0;
+let fxRefreshInFlight = false;
+
+/**
+ * Throttled, non-blocking background refresh. Never awaited by any request;
+ * never throws into the caller. The job body is dynamic-imported so its
+ * provider-env validation stays off this module's load path (mirrors the
+ * dynamic imports in lib/jobs/registry.ts).
+ */
+function triggerBackgroundFxRefresh(): void {
+  if (fxRefreshInFlight) return;
+  const { fire, lastAtMs } = shouldTrigger(fxLastRefreshAtMs, Date.now(), FX_REFRESH_MIN_INTERVAL_MS);
+  if (!fire) return;
+  fxLastRefreshAtMs = lastAtMs;
+  fxRefreshInFlight = true;
+  void (async () => {
+    try {
+      const { fetchFxRates } = await import("@/jobs/fetch-fx-rates");
+      await fetchFxRates();
+    } catch (err) {
+      console.warn("[fx-swr] opportunistic refresh failed (best-effort):", err);
+    } finally {
+      fxRefreshInFlight = false;
+    }
+  })();
+}
+
+/** Prisma-backed freshness probes + the throttled trigger. */
+const dbFxFreshnessGate: FxFreshnessGate = {
+  async hasFreshDay(freshISO) {
+    const row = await db.fxRate.findFirst({
+      where:  { base: FX_BASE, date: new Date(`${freshISO}T00:00:00Z`) },
+      select: { quote: true },
+    });
+    return row !== null;
+  },
+  async hasAnyCached() {
+    const row = await db.fxRate.findFirst({ select: { quote: true } });
+    return row !== null;
+  },
+  triggerRefresh: triggerBackgroundFxRefresh,
+};
+
+/**
+ * Fire-and-forget freshness check for a conversion request. Only runs when the
+ * request actually needs cross-currency conversion (a native leg other than the
+ * target). Never awaited and fully self-contained on error, so it cannot slow
+ * or break the conversion it accompanies.
+ */
+function maybeRevalidateFx(target: string, currencies: readonly (string | null)[]): void {
+  const needsConversion = currencies.some((c) => c != null && c !== target);
+  if (!needsConversion) return;
+  void revalidateFxIfStale(dbFxFreshnessGate).catch((err) => {
+    console.warn("[fx-swr] staleness check skipped (best-effort):", err);
+  });
 }
 
 /**
@@ -43,6 +111,9 @@ export async function buildSpaceConversionContext(
   space: { reportingCurrency: string },
   opts: SpaceConversionOptions,
 ): Promise<ConversionContext> {
+  // Serve-stale: build from the archive as it is NOW; the freshness check
+  // (background, best-effort) never blocks or alters this result.
+  maybeRevalidateFx(space.reportingCurrency, opts.currencies);
   return buildConversionContext(
     { target: space.reportingCurrency, currencies: opts.currencies, dates: opts.dates },
     fxArchive,

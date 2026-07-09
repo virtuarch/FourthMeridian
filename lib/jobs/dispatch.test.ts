@@ -151,12 +151,26 @@ async function main(): Promise<void> {
 
   // ── 6. Source scans — S2 structure ────────────────────────────────────────
   {
+    // FREE-TIER CRON DOCTRINE (add7c5e): the deployment target is the Vercel
+    // Hobby (free) plan, which REJECTS any sub-daily cron at deploy time. The
+    // dispatcher therefore runs on a SINGLE once-per-day entry. The richer
+    // paid-tier schedule — "0,30 6-7 * * *", one tick per registered half-hour
+    // slot — is preserved as documentation only (below) and must NOT be the
+    // active vercel.json invariant while on Hobby. The per-slot jobs that this
+    // daily tick does not reach stay callable through the per-job fallback
+    // routes (CRON_SECRET-guarded) and, for FX, the opportunistic
+    // stale-while-revalidate refresh (lib/money/fx-freshness.ts).
+    const FREE_TIER_SCHEDULE = "0 6 * * *";       // active: once/day (Hobby-legal)
+    const PAID_TIER_SCHEDULE = "0,30 6-7 * * *";  // documentation: restore off Hobby
     const vercel = readFileSync("vercel.json", "utf8");
     const cronPaths = [...vercel.matchAll(/"path":\s*"([^"]+)"/g)].map((m) => m[1]);
+    const schedules = [...vercel.matchAll(/"schedule":\s*"([^"]+)"/g)].map((m) => m[1]);
     check("vercel.json has exactly ONE cron — the dispatcher",
       cronPaths.length === 1 && cronPaths[0] === "/api/jobs/dispatch");
-    check("the single cron's expression already covers every registered slot (S3 added none)",
-      vercel.includes("0,30 6-7 * * *"));
+    check("the single cron runs at most once per day (Vercel Hobby free-tier limit)",
+      schedules.length === 1 && schedules[0] === FREE_TIER_SCHEDULE);
+    check("the sub-daily paid-tier schedule is retired from the active config",
+      !vercel.includes(PAID_TIER_SCHEDULE));
 
     const dispatchRoute = readFileSync("app/api/jobs/dispatch/route.ts", "utf8");
     check("dispatcher route keeps CRON_SECRET protection",

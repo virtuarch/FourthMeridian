@@ -65,9 +65,12 @@ check("liquidity workspace excludes Overview/Wealth widgets",
     k === "wealth_by_account" || k === "asset_allocation"));
 
 // ── 2c. Cash Flow workspace uses its movement-over-time widgets. ──
-check("cashFlow workspace = [cash_flow_summary, cash_flow_history, income_vs_spending, cash_flow_by_category]",
+// "Refine Cash Flow experience": income_vs_spending retired from the active
+// list (Cash Flow History carries that read), and income_by_source added
+// beneath Spending by Category (cash_flow_by_category).
+check("cashFlow workspace = [cash_flow_summary, cash_flow_history, cash_flow_by_category, income_by_source]",
   JSON.stringify(PERSPECTIVE_LIBRARY.cashFlow.widgets) ===
-    JSON.stringify(["cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category"]));
+    JSON.stringify(["cash_flow_summary", "cash_flow_history", "cash_flow_by_category", "income_by_source"]));
 // Doctrine: Cash Flow must NOT reuse Overview / Wealth / Liquidity widgets.
 check("cashFlow workspace excludes Overview/Wealth/Liquidity widgets",
   !(PERSPECTIVE_LIBRARY.cashFlow.widgets ?? []).some((k) =>
