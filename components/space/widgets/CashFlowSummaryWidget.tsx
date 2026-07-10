@@ -103,6 +103,16 @@ function AxisTile({
   );
 }
 
+/** A single muted context line (not part of Cash In/Out totals). */
+function ContextRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-xs text-[var(--text-secondary)]">{label}</span>
+      <span className="text-sm font-semibold tabular-nums text-[var(--text-secondary)]">{value}</span>
+    </div>
+  );
+}
+
 export function CashFlowSummaryWidget({ transactions, period, ctx, accounts }: Props) {
   const [showEconomic, setShowEconomic] = useState(false);
 
@@ -144,28 +154,27 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts }: P
         <AxisTile label="Cash Out" total={axes.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} />
       </div>
 
-      {/* Context: credit-card purchases — what you bought on credit. Shown to
-          reconcile card spending vs. debt payments; NOT part of Cash Out (the
-          cash leaves when the card is paid, counted under Debt payments). */}
-      {breakdown.creditCardPurchases > 0 && (
-        <div className="rounded-xl px-3 py-2" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs text-[var(--text-secondary)]">
-              Credit card purchases <span className="text-[var(--text-faint)]">(context)</span>
-            </span>
-            <span className="text-sm font-semibold tabular-nums text-[var(--text-secondary)]">{fmt(breakdown.creditCardPurchases, ctx)}</span>
-          </div>
-          <p className="text-[10px] text-[var(--text-faint)] mt-1">
-            Shown for context — not part of Cash Out. Cash leaves when the card is paid (see Debt payments).
-          </p>
+      {/* Context — NOT part of Cash Out. Shown so the composition reconciles:
+          credit-card purchases (cash leaves later as Debt payments), liquidity-
+          neutral internal transfers, and movement we can't yet resolve. */}
+      {(breakdown.creditCardPurchases > 0 || breakdown.internalTransfers > 0 || breakdown.unresolved > 0) && (
+        <div className="rounded-xl px-3 py-2 space-y-1.5" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
+          <p className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">For context · not in Cash Out</p>
+          {breakdown.creditCardPurchases > 0 && (
+            <ContextRow label="Credit card purchases" value={fmt(breakdown.creditCardPurchases, ctx)} />
+          )}
+          {breakdown.internalTransfers > 0 && (
+            <ContextRow label="Internal transfers (neutral)" value={fmt(breakdown.internalTransfers, ctx)} />
+          )}
+          {breakdown.unresolved > 0 && (
+            <ContextRow label="Unresolved movement" value={fmt(breakdown.unresolved, ctx)} />
+          )}
+          {breakdown.creditCardPurchases > 0 && (
+            <p className="text-[10px] text-[var(--text-faint)] pt-0.5">
+              Credit-card purchases are shown for context; cash leaves when the card is paid (see Debt payments).
+            </p>
+          )}
         </div>
-      )}
-
-      {/* Honest disclosure of movement we can't yet resolve (unknown counterparty). */}
-      {axes.unresolved > 0 && (
-        <p className="text-[11px] text-[var(--text-faint)] px-1">
-          {fmt(axes.unresolved, ctx)} of movement is unclassified (counterparty not linked yet).
-        </p>
       )}
 
       {/* Economic axis preserved — quiet disclosure (earned income vs real cost). */}

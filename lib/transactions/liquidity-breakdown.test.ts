@@ -19,6 +19,7 @@ function check(name: string, ok: boolean, detail?: string): void {
 
 const ACCOUNTS = [
   { id: "chk",  type: "checking" },  // liquid
+  { id: "sav",  type: "savings" },   // liquid
   { id: "cb",   type: "crypto" },    // asset (Coinbase)
   { id: "card", type: "debt" },      // liability (credit card)
 ];
@@ -127,6 +128,29 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
     bd.cashOutTotal === 30902 && bd.cashOutTotal !== bd.cashOutTotal + bd.creditCardPurchases);
   check("Cash Out breakdown lines sum to displayed Cash Out (no context leakage)",
     bd.cashOut.reduce((s, l) => s + l.amount, 0) === axes.cashOut);
+}
+
+// ── Context rows composition: none enter Cash Out ──────────────────────────────
+{
+  const rows: LiquidityTx[] = [
+    tx({ ownAccount: "chk",  amount: -73,    flowType: "SPENDING" }),                                  // Cash Out: direct cash
+    tx({ ownAccount: "chk",  amount: -30829, flowType: "DEBT_PAYMENT" }),                              // Cash Out: debt payment
+    tx({ ownAccount: "card", amount: -23047, flowType: "SPENDING" }),                                  // context: credit card
+    tx({ ownAccount: "chk",  amount: -500,   flowType: "TRANSFER", counterpartyAccountId: "sav" }),    // context: internal (liquid→liquid)
+    tx({ ownAccount: "chk",  amount: 800,    flowType: "TRANSFER" }),                                  // context: unresolved (unknown cp)
+  ];
+  const axes = deriveCashFlowAxes(rows, ctx);
+  const bd = groupLiquidityByReason(rows, ctx);
+
+  check("Cash Out = direct cash + debt payments only (30902)", axes.cashOut === 30902 && bd.cashOutTotal === 30902);
+  check("credit card purchases context = 23047", bd.creditCardPurchases === 23047);
+  check("internal transfers context = 500 (liquid↔liquid)", bd.internalTransfers === 500);
+  check("unresolved context = 800 (unknown counterparty)", bd.unresolved === 800);
+  check("no context figure is inside Cash Out total",
+    bd.cashOutTotal === 30902 &&
+    !bd.cashOut.some((l) => l.amount === 23047 || l.amount === 500 || l.amount === 800));
+  check("Cash Out lines still only Direct cash spending + Debt payments",
+    bd.cashOut.map((l) => l.reason).sort().join(",") === "DEBT_PAYMENT,REAL_COST");
 }
 
 // credit-card purchases figure ignores liquid-account cost flows (those are Cash Out)

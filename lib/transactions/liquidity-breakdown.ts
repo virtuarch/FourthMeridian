@@ -62,6 +62,12 @@ export interface LiquidityBreakdown {
    * payments. Reconciles with "Spending by Category" (both count cost flows).
    */
   creditCardPurchases: number;
+  /**
+   * CONTEXT ONLY — liquidity-NEUTRAL internal transfers (liquid↔liquid, or the
+   * non-liquid leg of a transfer). Money that stayed within your own tiers and
+   * moved no spendable cash net, so DELIBERATELY NOT part of cashOut.
+   */
+  internalTransfers: number;
 }
 
 function rowMagnitude(t: LiquidityTx, ctx?: ConversionContext): number {
@@ -86,7 +92,7 @@ export function groupLiquidityByReason(
 ): LiquidityBreakdown {
   const inMap = new Map<LiquidityReason, number>();
   const outMap = new Map<LiquidityReason, number>();
-  let cashInTotal = 0, cashOutTotal = 0, unresolved = 0, creditCardPurchases = 0;
+  let cashInTotal = 0, cashOutTotal = 0, unresolved = 0, creditCardPurchases = 0, internalTransfers = 0;
 
   for (const t of transactions) {
     const { effect, reason } = classifyLiquidity(t, liquidityCtx);
@@ -100,10 +106,14 @@ export function groupLiquidityByReason(
     } else if (effect === "UNRESOLVED") {
       unresolved += amt;
     }
-    // Context: cost flow charged to a liability account = a credit purchase.
-    // (Liquidity-NEUTRAL, so it never entered cashOut above — no double count.)
+    // Context (never in cashOut — all liquidity-NEUTRAL / non-cash-out):
+    // Cost flow charged to a liability account = a credit purchase.
     if (reason === "REAL_COST" && liquidityCtx.tierOf(t.financialAccountId ?? t.accountId ?? null) === "liability") {
       creditCardPurchases += amt;
+    }
+    // Liquidity-neutral internal transfer (money stayed within your tiers).
+    if (reason === "INTERNAL_TRANSFER") {
+      internalTransfers += amt;
     }
   }
 
@@ -115,5 +125,6 @@ export function groupLiquidityByReason(
     netCash: cashInTotal - cashOutTotal,
     unresolved,
     creditCardPurchases,
+    internalTransfers,
   };
 }
