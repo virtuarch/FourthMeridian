@@ -68,6 +68,22 @@ function summary(d: TransactionDetail): DetailSection {
   return { title: "Summary", rows };
 }
 
+/**
+ * TE-2B — a single, non-technical disclosure when Fourth Meridian can see the
+ * money moved but cannot yet say what it was. Honest and user-facing: no
+ * confidence numbers, reason codes, provider strings, or ontology terms. Rendered
+ * only when the server-derived `needsClassification` is true. Disclosure only —
+ * no action/correction workflow in this slice.
+ */
+function needsClassification(d: TransactionDetail): DetailSection | null {
+  if (!d.needsClassification) return null;
+  const note =
+    d.needsClassificationReason === "UNKNOWN_INFLOW_SOURCE"
+      ? "Fourth Meridian can see that money came in, but it can’t yet identify the source."
+      : "Fourth Meridian can see that this money moved, but it can’t yet determine why.";
+  return { title: "Needs classification", notes: [note] };
+}
+
 function account(d: TransactionDetail): DetailSection {
   const a = d.account;
   const rows: DetailRow[] = [];
@@ -151,6 +167,7 @@ function reporting(d: TransactionDetail): DetailSection | null {
 export function buildTransactionDetailSections(d: TransactionDetail): DetailSection[] {
   const sections: (DetailSection | null)[] = [
     summary(d),
+    needsClassification(d),
     account(d),
     transactionIntelligence(d),
     relationshipIntelligence(d),

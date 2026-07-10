@@ -50,8 +50,11 @@ import { isSpendLedgerFlow } from './flow-predicates';
  * without disturbing higher-confidence ones. Bump this whenever the
  * classification rules change. Additive constant — no logic depends on it here.
  *   1 = P1 / P3 Phase B ruleset.
+ *   2 = CF-4: a liability-account TRANSFER_OUT_ACCOUNT_TRANSFER outflow is a
+ *       purchase (SPENDING), not a transfer — a credit card has no owned cash to
+ *       transfer out. Re-run over classifierVersion < 2 to correct stale rows.
  */
-export const FLOW_CLASSIFIER_VERSION = 1;
+export const FLOW_CLASSIFIER_VERSION = 2;
 
 export type FlowType =
   | 'SPENDING'      // discretionary/non-discretionary consumption (a real cost)
@@ -160,6 +163,16 @@ function classifyFromPfc(input: FlowClassificationInput): FlowClassification | n
     case 'TRANSFER_IN':
       return { flowType: 'TRANSFER', flowDirection: 'INFLOW', confidence: 0.8, reason: 'PLAID_PFC_PRIMARY' };
     case 'TRANSFER_OUT':
+      // CF-4 — a credit-card / liability account holds no owned cash to "transfer
+      // out": an OUTFLOW Plaid filed as a generic ACCOUNT_TRANSFER is a purchase,
+      // not a movement of your funds. Plaid routinely mislabels retail POS on
+      // cards as TRANSFER_OUT_ACCOUNT_TRANSFER (observed: a Harvey Nichols charge).
+      // Account context outranks the provider transfer tag for this exact case.
+      // Cash advances are tagged TRANSFER_OUT_WITHDRAWAL (form=CASH), NOT
+      // ACCOUNT_TRANSFER, so they stay TRANSFER — this never reclassifies them.
+      if (isDebtAccount(input) && input.amount < 0 && detailed.includes('ACCOUNT_TRANSFER')) {
+        return { flowType: 'SPENDING', flowDirection: 'OUTFLOW', confidence: 0.7, reason: 'ACCOUNT_TYPE_CONTEXT' };
+      }
       return { flowType: 'TRANSFER', flowDirection: 'OUTFLOW', confidence: 0.8, reason: 'PLAID_PFC_PRIMARY' };
     case 'LOAN_PAYMENTS':
       return { flowType: 'DEBT_PAYMENT', flowDirection: input.amount < 0 ? 'INTERNAL' : 'INFLOW', confidence: 0.8, reason: 'PLAID_PFC_PRIMARY' };

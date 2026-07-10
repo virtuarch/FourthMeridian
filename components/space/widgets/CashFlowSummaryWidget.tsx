@@ -33,13 +33,17 @@ import {
 } from "@/lib/transactions/cash-flow";
 import {
   deriveCashFlowAxes,
+  classifyLiquidity,
   tierResolver,
   type LiquidityTx,
+  type LiquidityEffect,
 } from "@/lib/transactions/liquidity";
-import {
-  groupLiquidityByReason,
-  type LiquiditySliceLine,
-} from "@/lib/transactions/liquidity-breakdown";
+import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
+import { groupCashFlowContext } from "@/lib/transactions/cash-flow-context";
+import { aggregateDayFacts, economicSpend, type CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
+import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
+import { CashFlowFilterControls, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
+import { TransactionSliceDrawer, type TransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 
 function fmt(v: number, ctx?: ConversionContext): string {
   return ctx
@@ -49,23 +53,33 @@ function fmt(v: number, ctx?: ConversionContext): string {
 
 interface TierAccount { id: string; type: string }
 
+/** A breakdown line — widened from LiquiditySliceLine so the same tile renders
+ *  economic lines too (reason is just a stable key/handler discriminator here). */
+type TileLine = { reason: string; label: string; amount: number };
+
 interface Props {
   transactions: Transaction[] | null | undefined;
   period:       CashFlowPeriod;
   ctx?:         ConversionContext;
   accounts:     TierAccount[];
+  /** CF-3 — the workspace-shared perspective. When provided the widget is
+   *  controlled (mirrors the History selector); otherwise it self-manages. */
+  perspective?:         CashFlowPerspective;
+  onPerspectiveChange?: (perspective: CashFlowPerspective, filterId: string) => void;
 }
 
-/** One expandable side (Cash In or Cash Out) with its reason breakdown. */
+/** One expandable side (Cash In or Cash Out) with its reason breakdown. Each
+ *  reason line drills into its exact transactions when `onOpenLine` is provided. */
 function AxisTile({
-  label, total, accent, lines, ctx, sign,
+  label, total, accent, lines, ctx, sign, onOpenLine,
 }: {
   label:  string;
   total:  number;
   accent: "green" | "red";
-  lines:  LiquiditySliceLine[];
+  lines:  TileLine[];
   ctx?:   ConversionContext;
   sign:   "+" | "−";
+  onOpenLine?: (line: TileLine) => void;
 }) {
   const [open, setOpen] = useState(false);
   const color = accent === "green" ? "var(--accent-positive)" : "var(--accent-negative)";
@@ -92,10 +106,23 @@ function AxisTile({
       {open && canExpand && (
         <div className="mt-2 space-y-1 border-t border-[var(--border-hairline)] pt-2">
           {lines.map((l) => (
-            <div key={l.reason} className="flex items-center justify-between text-[11px]">
-              <span className="text-[var(--text-secondary)]">{l.label}</span>
-              <span className="tabular-nums text-[var(--text-primary)]">{fmt(l.amount, ctx)}</span>
-            </div>
+            onOpenLine ? (
+              <button
+                key={l.reason}
+                type="button"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => onOpenLine(l)}
+                className="w-full flex items-center justify-between text-[11px] rounded -mx-1 px-1 py-0.5 hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)]"
+              >
+                <span className="text-[var(--text-secondary)]">{l.label}</span>
+                <span className="tabular-nums text-[var(--text-primary)]">{fmt(l.amount, ctx)}</span>
+              </button>
+            ) : (
+              <div key={l.reason} className="flex items-center justify-between text-[11px]">
+                <span className="text-[var(--text-secondary)]">{l.label}</span>
+                <span className="tabular-nums text-[var(--text-primary)]">{fmt(l.amount, ctx)}</span>
+              </div>
+            )
           ))}
         </div>
       )}
@@ -103,18 +130,30 @@ function AxisTile({
   );
 }
 
-/** A single muted context line (not part of Cash In/Out totals). */
-function ContextRow({ label, value }: { label: string; value: string }) {
+/** A drillable context line (not part of Cash In/Out totals). Opens the shared
+ *  TransactionSliceDrawer with the exact rows behind it. */
+function ContextRow({ label, value, onOpen }: { label: string; value: string; onOpen: () => void }) {
   return (
-    <div className="flex items-center justify-between gap-2">
+    <button
+      type="button"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={onOpen}
+      className="w-full flex items-center justify-between gap-2 text-left rounded-lg -mx-1 px-1 py-0.5 hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)]"
+    >
       <span className="text-xs text-[var(--text-secondary)]">{label}</span>
       <span className="text-sm font-semibold tabular-nums text-[var(--text-secondary)]">{value}</span>
-    </div>
+    </button>
   );
 }
 
-export function CashFlowSummaryWidget({ transactions, period, ctx, accounts }: Props) {
-  const [showEconomic, setShowEconomic] = useState(false);
+export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, perspective: controlledPerspective, onPerspectiveChange }: Props) {
+  // CF-3 — perspective toggle (Cash Flow ⇄ Spending). Controlled by the shared
+  // workspace perspective when provided; otherwise self-managed for standalone use.
+  const [localPerspective, setLocalPerspective] = useState<CashFlowPerspective>("liquidity");
+  const perspective = controlledPerspective ?? localPerspective;
+  const changePerspective = (p: CashFlowPerspective, id: string) =>
+    onPerspectiveChange ? onPerspectiveChange(p, id) : setLocalPerspective(p);
+  const [slice, setSlice] = useState<TransactionSlice | null>(null);
 
   if (transactions == null) {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;
@@ -134,80 +173,143 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts }: P
   const axes = deriveCashFlowAxes(rows, liqCtx, ctx);
   // Reason breakdown (effect-split) — its per-side totals equal axes.cashIn/out.
   const breakdown = groupLiquidityByReason(rows, liqCtx, ctx);
+  // CF-3 — economic axis + cross-cutting subsets (credit-card spending) from the
+  // shared projection: ONE pass, both axes, no re-classification.
+  const facts = aggregateDayFacts(rows, liqCtx, ctx);
+  const econSpendTotal = economicSpend(facts);
+  const econCard = Math.min(facts.creditCardSpending, econSpendTotal);
+  const econOther = Math.max(0, econSpendTotal - econCard);
+  const econNet = facts.income - econSpendTotal;
+  // CF-1 — human context projection (presentation only; never feeds Cash In/Out/Net).
+  const context = groupCashFlowContext(rows, liqCtx, ctx);
+  // CF-1A — is any context bucket populated? Drives the populated rows vs the
+  // discoverability empty state. Consumes the grouped output; computes nothing new.
+  const hasContext = context.movedNotSpent.length > 0 || context.needsClassification.length > 0;
 
-  const net = axes.netCash;
-  const eco = axes.economic;
+  const economic = perspective === "economic";
+  const net = economic ? econNet : axes.netCash;
+
+  // Drill-down for a Cash In / Cash Out breakdown line — its exact contributing rows
+  // (matched by effect + reason), opened in the shared slice drawer. Reuses the same
+  // classifier the totals use, so the slice reconciles with the line amount.
+  const openReasonSlice = (effect: LiquidityEffect, line: TileLine) =>
+    setSlice({
+      title: line.label,
+      subtitle: effect === "CASH_IN" ? "Cash in this period" : "Cash out this period",
+      rows: rows.filter((r) => {
+        const c = classifyLiquidity(r, liqCtx);
+        return c.effect === effect && c.reason === line.reason;
+      }),
+    });
+
+  // Economic drill-downs — reconcile with Spending by Category / Income by Source
+  // (same flow-predicates). Card spending = cost flows charged to a liability tier.
+  const isLiabilityRow = (r: LiquidityTx) => liqCtx.tierOf(r.financialAccountId ?? r.accountId ?? null) === "liability";
+  const openEconSlice = (line: TileLine) => {
+    if (line.reason === "INCOME") {
+      setSlice({ title: "Income", subtitle: "Earned income this period", rows: rows.filter((r) => isIncome(r.flowType)) });
+    } else if (line.reason === "CARD_SPEND") {
+      setSlice({ title: "Credit-card spending", subtitle: "Bought on credit this period", rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) });
+    } else {
+      setSlice({ title: "Direct & other spending", subtitle: "Spending & refunds this period", rows: rows.filter((r) => (isCostFlow(r.flowType) || isRefund(r.flowType)) && !isLiabilityRow(r)) });
+    }
+  };
+
+  const econInLines:  TileLine[] = [{ reason: "INCOME", label: "Income", amount: facts.income }].filter((l) => l.amount > 0);
+  const econOutLines: TileLine[] = [
+    { reason: "CARD_SPEND",   label: "Credit-card spending",   amount: econCard },
+    { reason: "DIRECT_SPEND", label: "Direct & other spending", amount: econOther },
+  ].filter((l) => l.amount > 0);
 
   return (
     <div className="space-y-3">
-      {/* Primary: Net Cash (liquidity) */}
+      {/* CF-3 — perspective toggle (the small reused control; no measure dropdown here). */}
+      <div className="flex items-center justify-end">
+        <CashFlowFilterControls perspective={perspective} filterId={DEFAULT_FILTER_ID} onChange={(p, id) => changePerspective(p, id)} compact />
+      </div>
+
+      {/* Primary: Net (perspective-dependent) */}
       <div>
         <p className="text-3xl font-bold" style={{ color: net >= 0 ? "var(--accent-positive)" : "var(--accent-negative)" }}>
           {net >= 0 ? "+" : "−"}{fmt(Math.abs(net), ctx)}
         </p>
-        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>net cash this period</p>
+        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+          {economic ? "net spending this period (incl. credit-card purchases)" : "net cash this period"}
+        </p>
       </div>
 
-      {/* Cash In / Cash Out — expandable into reason breakdown */}
-      <div className="grid grid-cols-2 gap-3">
-        <AxisTile label="Cash In"  total={axes.cashIn}  accent="green" sign="+" lines={breakdown.cashIn}  ctx={ctx} />
-        <AxisTile label="Cash Out" total={axes.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} />
-      </div>
-
-      {/* Context — NOT part of Cash Out. Shown so the composition reconciles:
-          credit-card purchases (cash leaves later as Debt payments), liquidity-
-          neutral internal transfers, and movement we can't yet resolve. */}
-      {(breakdown.creditCardPurchases > 0 || breakdown.internalTransfers > 0 || breakdown.unresolved > 0) && (
-        <div className="rounded-xl px-3 py-2 space-y-1.5" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
-          <p className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">For context · not in Cash Out</p>
-          {breakdown.creditCardPurchases > 0 && (
-            <ContextRow label="Credit card purchases" value={fmt(breakdown.creditCardPurchases, ctx)} />
-          )}
-          {breakdown.internalTransfers > 0 && (
-            <ContextRow label="Internal transfers (neutral)" value={fmt(breakdown.internalTransfers, ctx)} />
-          )}
-          {breakdown.unresolved > 0 && (
-            <ContextRow label="Unresolved movement" value={fmt(breakdown.unresolved, ctx)} />
-          )}
-          {breakdown.creditCardPurchases > 0 && (
-            <p className="text-[10px] text-[var(--text-faint)] pt-0.5">
-              Credit-card purchases are shown for context; cash leaves when the card is paid (see Debt payments).
-            </p>
-          )}
+      {economic ? (
+        /* Economic: Income vs All spending — includes credit-card purchases. */
+        <div className="grid grid-cols-2 gap-3">
+          <AxisTile label="Income"       total={facts.income}    accent="green" sign="+" lines={econInLines}  ctx={ctx} onOpenLine={openEconSlice} />
+          <AxisTile label="All spending" total={econSpendTotal}  accent="red"   sign="−" lines={econOutLines} ctx={ctx} onOpenLine={openEconSlice} />
+        </div>
+      ) : (
+        /* Liquidity: Cash In / Cash Out — expandable into reason breakdown. */
+        <div className="grid grid-cols-2 gap-3">
+          <AxisTile label="Cash In"  total={axes.cashIn}  accent="green" sign="+" lines={breakdown.cashIn}  ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_IN", l)} />
+          <AxisTile label="Cash Out" total={axes.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_OUT", l)} />
         </div>
       )}
 
-      {/* Economic axis preserved — quiet disclosure (earned income vs real cost). */}
-      <div className="pt-1 border-t border-[var(--border-hairline)]">
-        <button
-          type="button"
-          onClick={() => setShowEconomic((v) => !v)}
-          onPointerDown={(e) => e.stopPropagation()}
-          className="flex items-center gap-1 text-[11px] text-[var(--text-faint)] hover:text-[var(--text-muted)] transition-colors"
-        >
-          {showEconomic ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          Economic view
-        </button>
-        {showEconomic && (
-          <div className="mt-1.5 space-y-1 text-[11px]">
-            <p className="text-[var(--text-faint)]">Earned income and real costs — net worth effect, not spendable cash.</p>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--text-secondary)]">Earned income</span>
-              <span className="tabular-nums text-[var(--accent-positive)]">+{fmt(eco.income, ctx)}</span>
+      {/* Credit-card spending is honestly visible in BOTH perspectives: on the
+          liquidity axis it is NOT Cash Out (the cash leaves later as a Debt
+          payment), so it surfaces here as a context figure that drills into the
+          card cost-flow rows — reconciles with Spending by Category. */}
+      {!economic && facts.creditCardSpending > 0 && (
+        <div className="pt-1 border-t border-[var(--border-hairline)]">
+          <ContextRow
+            label="Spent on credit (not yet paid as cash)"
+            value={fmt(facts.creditCardSpending, ctx)}
+            onOpen={() => setSlice({ title: "Credit-card spending", subtitle: "Bought on credit this period", rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) })}
+          />
+        </div>
+      )}
+
+      {/* CF-1A — Cash Flow context projection, kept BELOW the Economic View so the
+          populated rows and the empty state share one consistent location.
+          Populated rows when movements exist; a small explanatory empty state
+          (never fake $0 rows) otherwise. Consumes the existing grouped context —
+          no projection logic is duplicated here, drill-down preserved. */}
+      {hasContext ? (
+        <div className="space-y-2">
+          {context.movedNotSpent.length > 0 && (
+            <div className="rounded-xl px-3 py-2 space-y-1.5" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
+              <p className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Moved, not spent</p>
+              {context.movedNotSpent.map((r) => (
+                <ContextRow
+                  key={r.key}
+                  label={r.label}
+                  value={fmt(r.amount, ctx)}
+                  onOpen={() => setSlice({ title: r.label, subtitle: "Money that moved, not spent", rows: r.rows })}
+                />
+              ))}
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--text-secondary)]">Spending</span>
-              <span className="tabular-nums text-[var(--accent-negative)]">−{fmt(eco.spend, ctx)}</span>
+          )}
+          {context.needsClassification.length > 0 && (
+            <div className="rounded-xl px-3 py-2 space-y-1.5" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
+              <p className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Needs classification</p>
+              {context.needsClassification.map((r) => (
+                <ContextRow
+                  key={r.key}
+                  label={r.label}
+                  value={`${r.count} ${r.count === 1 ? "transaction" : "transactions"}`}
+                  onOpen={() => setSlice({ title: r.label, subtitle: "We can see this moved, but not yet why", rows: r.rows })}
+                />
+              ))}
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--text-secondary)]">Economic net</span>
-              <span className="tabular-nums" style={{ color: eco.net >= 0 ? "var(--accent-positive)" : "var(--accent-negative)" }}>
-                {eco.net >= 0 ? "+" : "−"}{fmt(Math.abs(eco.net), ctx)}
-              </span>
-            </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      ) : (
+        <div className="rounded-xl px-3 py-2 space-y-1" style={{ background: "var(--surface-inset)", border: "1px dashed var(--border-hairline)" }}>
+          <p className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">Moved, not spent</p>
+          <p className="text-xs text-[var(--text-secondary)]">
+            No account transfers, cash movements, investment funding, or payment-app movements were found for this period.
+          </p>
+        </div>
+      )}
+
+      {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}
     </div>
   );
 }

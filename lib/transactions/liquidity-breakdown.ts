@@ -34,6 +34,12 @@ export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
   REAL_COST:         "Direct cash spending",
   DEBT_PAYMENT:      "Debt payments",
   ASSET_DEPLOYMENT:  "Asset deployment",
+  // CF-2 — evidence-based investment venue movements (no proven sale).
+  INVESTMENT_INFLOW:  "From investments",
+  INVESTMENT_OUTFLOW: "Money invested",
+  // CF-2B — payment-app rail on a liquid account (HOW, not why); purpose unknown.
+  PAYMENT_APP_INFLOW:  "From payment apps",
+  PAYMENT_APP_OUTFLOW: "Payments through apps",
   ASSET_CONVERSION:  "Asset conversion",
   INTERNAL_TRANSFER: "Internal transfer",
   NON_CASH:          "Adjustments",

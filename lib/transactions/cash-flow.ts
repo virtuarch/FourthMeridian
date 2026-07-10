@@ -267,7 +267,7 @@ export function granularityFor(period: CashFlowPeriod): CashFlowGranularity {
   }
 }
 
-function bucketKey(dateStr: string, g: CashFlowGranularity): string {
+export function bucketKey(dateStr: string, g: CashFlowGranularity): string {
   if (g === "month") return dateStr.slice(0, 7);           // YYYY-MM
   if (g === "day")   return dateStr;                        // YYYY-MM-DD
   // week → Sunday-start date of that week
@@ -276,7 +276,7 @@ function bucketKey(dateStr: string, g: CashFlowGranularity): string {
   return toISODate(d);
 }
 
-function bucketLabel(key: string, g: CashFlowGranularity): string {
+export function bucketLabel(key: string, g: CashFlowGranularity): string {
   if (g === "month") {
     const [y, m] = key.split("-");
     return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString("en-US", { month: "short", year: "2-digit" });

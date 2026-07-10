@@ -31,9 +31,14 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { CashFlowCalendar } from "@/components/space/widgets/CashFlowCalendar";
 import { TransactionSliceDrawer, type TransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
+import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import {
+  bucketDayFacts, netOfMeasures, rowsForMeasures,
+  type CalendarMeasureId, type CashFlowPerspective,
+} from "@/lib/transactions/cash-flow-projection";
+import { CashFlowFilterControls, CALENDAR_FILTERS, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import {
   filterByPeriod,
-  bucketCashFlow,
   transactionsInBucket,
   availableHistoricalPeriods,
   periodKey,
@@ -157,12 +162,17 @@ function labelFor(p: ExplicitCashFlowPeriod): string {
  *  bucket (day for month/week, week for quarter, month for year — granularity
  *  from bucketCashFlow), showing net + income + spending. */
 function CardsView({
-  rows, period, ctx, onOpenBucket,
+  rows, period, ctx, accounts, measures, onOpenBucket,
 }: {
   rows: Transaction[]; period: CashFlowPeriod; ctx?: ConversionContext;
+  accounts: { id: string; type: string }[];
+  measures: CalendarMeasureId[];
   onOpenBucket: (label: string, key: string) => void;
 }) {
-  const buckets = bucketCashFlow(rows, period, ctx);
+  // CF-3 convergence — the SAME shared projection the Summary/Calendar use (per
+  // bucket), collapsed to the selected measures' in/out/net.
+  const buckets = bucketDayFacts(rows as LiquidityTx[], tierResolver(accounts), period, ctx)
+    .map((b) => ({ key: b.key, label: b.label, ...netOfMeasures(b, measures) }));
   if (buckets.length === 0) return <EmptyCard sub="Cash-flow history appears as transactions accumulate." />;
 
   return (
@@ -190,8 +200,8 @@ function CardsView({
               {positive ? "+" : "−"}{fmtMoney(Math.abs(b.net), ctx)}
             </span>
             <div className="flex items-center justify-between text-[10px] tabular-nums text-[var(--text-faint)]">
-              <span className="text-[var(--accent-positive)]">+{fmtMoney(b.income, ctx)}</span>
-              <span className="text-[var(--accent-negative)]">−{fmtMoney(b.spend, ctx)}</span>
+              {b.in > 0 && <span className="text-[var(--accent-positive)]">+{fmtMoney(b.in, ctx)}</span>}
+              {b.out > 0 && <span className="text-[var(--accent-negative)]">−{fmtMoney(b.out, ctx)}</span>}
             </div>
           </button>
         );
@@ -206,12 +216,19 @@ interface Props {
   transactions:   Transaction[] | null | undefined;
   period:         CashFlowPeriod;
   ctx?:           ConversionContext;
+  /** Account tiers — CF-2B: History/Calendar consume the liquidity projection. */
+  accounts:       { id: string; type: string }[];
   /** Move the whole Cash Flow Perspective to an explicit historical period. */
   onSelectPeriod?: (period: CashFlowPeriod) => void;
+  /** CF-3 — the workspace-shared perspective + measure filter. Controlled when
+   *  provided (this widget hosts the selector that drives them); else self-managed. */
+  perspective?:         CashFlowPerspective;
+  filterId?:            string;
+  onPerspectiveChange?: (perspective: CashFlowPerspective, filterId: string) => void;
 }
 
 /** Multi-mode Cash Flow History (Calendar · Cards) with in-widget history. */
-export function CashFlowHistoryWidget({ transactions, period, ctx, onSelectPeriod }: Props) {
+export function CashFlowHistoryWidget({ transactions, period, ctx, accounts, onSelectPeriod, perspective: controlledPerspective, filterId: controlledFilterId, onPerspectiveChange }: Props) {
   const modes       = getCashFlowHistoryModes(period);
   const defaultMode = getDefaultCashFlowHistoryMode(period);
 
@@ -226,6 +243,19 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, onSelectPerio
   }
   const effectiveMode = modes.includes(mode) ? mode : defaultMode;
 
+  // CF-3 — perspective + measure filter (Cash Flow ⇄ Spending). Controlled by the
+  // shared workspace state when provided; else self-managed (standalone use).
+  const [localPerspective, setLocalPerspective] = useState<CashFlowPerspective>("liquidity");
+  const [localFilterId, setLocalFilterId] = useState<string>(DEFAULT_FILTER_ID);
+  const perspective = controlledPerspective ?? localPerspective;
+  const filterId = controlledFilterId ?? localFilterId;
+  const changePerspective = (p: CashFlowPerspective, id: string) => {
+    if (onPerspectiveChange) onPerspectiveChange(p, id);
+    else { setLocalPerspective(p); setLocalFilterId(id); }
+  };
+  const activeFilter = CALENDAR_FILTERS.find((f) => f.id === filterId) ?? CALENDAR_FILTERS[0];
+  const measures = activeFilter.measures;
+
   // Drill-down slice drawer (local, in-place — never navigates away).
   const [slice, setSlice] = useState<TransactionSlice | null>(null);
 
@@ -236,14 +266,21 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, onSelectPerio
 
   const controls = (
     <div className="flex flex-wrap items-center justify-between gap-2">
-      {onSelectPeriod ? (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <HistorySelect label="Month"   options={historical.months}   value={valFor(historical.months)}   onPick={onSelectPeriod} />
-          <HistorySelect label="Quarter" options={historical.quarters} value={valFor(historical.quarters)} onPick={onSelectPeriod} />
-          <HistorySelect label="Year"    options={historical.years}    value={valFor(historical.years)}    onPick={onSelectPeriod} />
-        </div>
-      ) : <span />}
-      {modes.length > 1 && <ModeToggle modes={modes} value={effectiveMode} onChange={setMode} />}
+      <CashFlowFilterControls
+        perspective={perspective}
+        filterId={filterId}
+        onChange={changePerspective}
+      />
+      <div className="flex flex-wrap items-center gap-1.5">
+        {onSelectPeriod && (
+          <>
+            <HistorySelect label="Month"   options={historical.months}   value={valFor(historical.months)}   onPick={onSelectPeriod} />
+            <HistorySelect label="Quarter" options={historical.quarters} value={valFor(historical.quarters)} onPick={onSelectPeriod} />
+            <HistorySelect label="Year"    options={historical.years}    value={valFor(historical.years)}    onPick={onSelectPeriod} />
+          </>
+        )}
+        {modes.length > 1 && <ModeToggle modes={modes} value={effectiveMode} onChange={setMode} />}
+      </div>
     </div>
   );
 
@@ -257,10 +294,21 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, onSelectPerio
   }
   const rows = filterByPeriod(transactions, period);
 
-  const openDay = (iso: string, label: string) =>
-    setSlice({ title: label, subtitle: "Cash flow for this day", rows: rows.filter((t) => t.date === iso) });
-  const openBucket = (label: string, bucketKeyValue: string) =>
-    setSlice({ title: label, subtitle: "Cash flow for this period", rows: transactionsInBucket(rows, period, bucketKeyValue) });
+  // CF-3B — the drill-down surfaces ONLY the rows behind the selected measures, so
+  // the drawer reconciles with the heat-map cell and never mixes, e.g., debt
+  // payments into a "Credit-card spending" day. Same classifier as the totals.
+  const liqCtx = tierResolver(accounts);
+  const sliceSubtitle = `${activeFilter.label} · this ${effectiveMode === "calendar" ? "day" : "period"}`;
+  const openDay = (iso: string, label: string) => {
+    const dayRows = rows.filter((t) => t.date === iso);
+    setSlice({ title: label, subtitle: sliceSubtitle, measureLabel: activeFilter.label,
+      rows: rowsForMeasures(dayRows as LiquidityTx[], measures, liqCtx), allRows: dayRows });
+  };
+  const openBucket = (label: string, bucketKeyValue: string) => {
+    const bucketRows = transactionsInBucket(rows, period, bucketKeyValue);
+    setSlice({ title: label, subtitle: sliceSubtitle, measureLabel: activeFilter.label,
+      rows: rowsForMeasures(bucketRows as LiquidityTx[], measures, liqCtx), allRows: bucketRows });
+  };
 
   return (
     <div className="space-y-3">
@@ -268,8 +316,8 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, onSelectPerio
       {rows.length === 0
         ? <EmptyCard sub="Cash-flow history appears as transactions accumulate." />
         : effectiveMode === "calendar"
-          ? <CashFlowCalendar transactions={rows} period={period} ctx={ctx} onSelectDay={openDay} />
-          : <CardsView rows={rows} period={period} ctx={ctx} onOpenBucket={openBucket} />}
+          ? <CashFlowCalendar transactions={rows} period={period} ctx={ctx} accounts={accounts} measures={measures} onSelectDay={openDay} />
+          : <CardsView rows={rows} period={period} ctx={ctx} accounts={accounts} measures={measures} onOpenBucket={openBucket} />}
 
       {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}
     </div>

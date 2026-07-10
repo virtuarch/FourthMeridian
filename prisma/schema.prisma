@@ -299,23 +299,23 @@ enum GoalType {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model User {
-  id                   String            @id @default(cuid())
-  email                String            @unique
-  username             String?           @unique
-  name                 String?
-  firstName            String?
-  lastName             String?
-  dateOfBirthEncrypted String? // AES-256-GCM encrypted ISO date string
-  employmentStatus     EmploymentStatus?
-  useCase              UseCase?
-  passwordHash         String? // bcrypt hash, cost 12
-  totpSecret           String? // TOTP seed, stored encrypted (used in M3)
-  totpEnabled          Boolean           @default(false)
-  role                 UserRole          @default(USER)
-  preferredSpaceId     String?           // soft ref — Space the user lands on after login
-  passwordResetToken   String?           @unique
-  passwordResetExpiry  DateTime?
-  forcePasswordReset   Boolean           @default(false) // set true by admin; user must change on next login
+  id                      String            @id @default(cuid())
+  email                   String            @unique
+  username                String?           @unique
+  name                    String?
+  firstName               String?
+  lastName                String?
+  dateOfBirthEncrypted    String? // AES-256-GCM encrypted ISO date string
+  employmentStatus        EmploymentStatus?
+  useCase                 UseCase?
+  passwordHash            String? // bcrypt hash, cost 12
+  totpSecret              String? // TOTP seed, stored encrypted (used in M3)
+  totpEnabled             Boolean           @default(false)
+  role                    UserRole          @default(USER)
+  preferredSpaceId        String? // soft ref — Space the user lands on after login
+  passwordResetToken      String?           @unique
+  passwordResetExpiry     DateTime?
+  forcePasswordReset      Boolean           @default(false) // set true by admin; user must change on next login
   // OPS-1 S2b — email verification seam. `emailVerifiedAt` is the verification
   // state (null = unverified; timestamp = when verified). Token columns mirror
   // the password-reset pattern (hashed at rest, single outstanding token, 1h
@@ -324,7 +324,7 @@ model User {
   // users are backfilled to verified by the S2b migration so they are never
   // treated as unverified.
   emailVerifiedAt         DateTime?
-  emailVerificationToken  String?        @unique
+  emailVerificationToken  String?           @unique
   emailVerificationExpiry DateTime?
   // OPS-2 S3a — authenticated email-change seam. `pendingEmail` holds the
   // requested new address (not yet active); the token columns mirror the
@@ -333,7 +333,7 @@ model User {
   // intentionally NOT @unique — final uniqueness is enforced at swap against
   // the live `email @unique`.
   pendingEmail            String?
-  emailChangeToken        String?        @unique
+  emailChangeToken        String?           @unique
   emailChangeExpiry       DateTime?
   // OPS-2 S4 — account deactivation. Null = active; timestamp = when the user
   // deactivated. Deactivated ≠ deleted: all data, Space memberships, and
@@ -353,20 +353,20 @@ model User {
   // S7a — those are S7b/S7c. See OPS2_S7_ACCOUNT_DELETION_INVESTIGATION.md.
   deletionRequestedAt     DateTime?
   deletionScheduledAt     DateTime?
-  lastBriefViewedAt    DateTime? // set when user views the Daily Brief page
+  lastBriefViewedAt       DateTime? // set when user views the Daily Brief page
   // OPS-3 S3 — the user's IANA timezone (e.g. "America/New_York"). A general
   // preference (Settings → Preferences), not notification-specific: consumed
   // by future digests (S6), quiet hours (OPS-4), and Brief greetings. Null =
   // never set; consumers fall back to UTC.
-  timezone             String?
+  timezone                String?
   // MC1 Phase 3 (D-1/D-2) — the user's DEFAULT reporting currency. A default
   // ONLY: it seeds reportingCurrency for Spaces this user creates (copy-once
   // at POST /api/spaces) and denominates nothing by itself. NO retroactive
   // inheritance — editing this never re-denominates existing Spaces; the
   // Space's own value is the only one consulted for Space-scoped totals.
-  reportingCurrency    String            @default("USD")
-  createdAt            DateTime          @default(now())
-  updatedAt            DateTime          @updatedAt
+  reportingCurrency       String            @default("USD")
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
 
   spaces                SpaceMember[]
   sentInvites           SpaceInvite[]          @relation("SentInvites")
@@ -404,7 +404,7 @@ model User {
 
   // Notifications (OPS-3 S1) — the user's inbox; Cascade (unlike AuditLog's
   // SetNull) because notifications are per-user awareness, not forensics.
-  notifications Notification[]
+  notifications           Notification[]
   // Notification preference overrides (OPS-3 S3) — rows exist ONLY when the
   // user deviates from the registry default (default-by-absence).
   notificationPreferences NotificationPreference[]
@@ -421,12 +421,12 @@ model User {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Space {
-  id          String        @id @default(cuid())
-  name        String
-  description String?
-  type        SpaceType     @default(PERSONAL)
-  category    SpaceCategory @default(PERSONAL)
-  isPublic    Boolean       @default(false) // SHARED Spaces can be listed publicly
+  id                String        @id @default(cuid())
+  name              String
+  description       String?
+  type              SpaceType     @default(PERSONAL)
+  category          SpaceCategory @default(PERSONAL)
+  isPublic          Boolean       @default(false) // SHARED Spaces can be listed publicly
   // MC1 Phase 3 (D-1/D-2/D-4) — the AUTHORITATIVE reporting currency for every
   // aggregate, snapshot stamp, chart, and AI total computed within this Space.
   // Seeded copy-once from the creator's User.reportingCurrency at creation;
@@ -436,7 +436,7 @@ model Space {
   // keep their stamps — history is never rewritten. Allowed values: FX_BASE +
   // SUPPORTED_QUOTES (lib/fx/config.ts), enforced at the API boundary.
   // Nothing reads this until the Phase 3 flip slices (3–6).
-  reportingCurrency String @default("USD")
+  reportingCurrency String        @default("USD")
 
   // ── Lifecycle (mirrors SpaceGoal's archive/trash pattern) ─────────────────
   // archivedAt: hidden from normal nav, fully intact, restorable any time.
@@ -1321,6 +1321,32 @@ enum CounterpartyType {
   UNKNOWN
 }
 
+// ── Transfer evidence (TE1 — provider-neutral, persisted) ─────────────────────
+// Orthogonal axes normalized from provider evidence (e.g. Plaid PFC) by a stage-1
+// adapter (lib/transactions/plaid-transfer-evidence.ts) into the canonical contract
+// (lib/transactions/transfer-evidence.ts). A single provider signal typically sets
+// exactly ONE axis. Provider category strings are NEVER stored in these fields —
+// they remain in pfcPrimary/pfcDetailed. Nothing in liquidity/Cash Flow reads these
+// yet; TransferDisposition is derived downstream, not persisted.
+
+/// The intermediary RAIL a transfer used — HOW it moved, never why.
+enum TransferRail {
+  PAYMENT_APP
+}
+
+/// The physical/monetary FORM the money took. Only CASH is currently attestable.
+enum TransferMovementForm {
+  CASH
+}
+
+/// The VENUE class associated with the movement (a destination for OUT, an origin
+/// for IN — never assumed "reached").
+enum TransferVenueClass {
+  DEPOSITORY
+  BROKERAGE
+  EXCHANGE
+}
+
 /// Scope at which a MerchantRule applies. USER is the live scope (author's own
 /// corrections, M5). SPACE is schema'd but its writer/reader is deferred to its
 /// own slice — a shared row cannot hold two Spaces' truths (SpaceAccountLink makes
@@ -1467,11 +1493,34 @@ model Transaction {
   paymentChannel        PaymentChannel?
   paymentMethod         PaymentMethod?
   settlementState       SettlementState?
-  authorizedAt          DateTime?        @db.Date
+  authorizedAt          DateTime?         @db.Date
   counterpartyType      CounterpartyType?
   fxApplied             Boolean?
   pendingTransactionRef String?
   tiFactsVersion        Int?
+
+  // ── Transfer evidence (TE1 — provider-neutral, persisted; additive, nullable) ─
+  // Normalized from provider evidence by a stage-1 adapter into orthogonal axes.
+  // Provider category strings (Plaid PFC) are NEVER stored here — they stay in
+  // pfcPrimary/pfcDetailed. All nullable with NO default: null = no adapter signal
+  // (e.g. a CSV/manual row), never a fabricated axis. Ownership is NOT stored here
+  // (it is a relational fact). Liquidity/Cash Flow do not read these; the derived
+  // TransferDisposition is computed at read time, never persisted.
+  //   transferRail               — the rail used, when attested (payment app).
+  //   transferMovementForm       — the money's form, when attested (cash).
+  //   transferVenueClass         — the venue class associated with the movement.
+  //   transferEvidenceConfidence — confidence in the provider→neutral MAPPING (0..1),
+  //                                NOT in transaction purpose / economic meaning.
+  //   transferEvidenceReason     — deterministic machine reason for the mapping.
+  //   transferEvidenceSource     — emitting adapter id (e.g. "plaid").
+  //   transferEvidenceVersion    — adapter/mapping version, for replay detection.
+  transferRail               TransferRail?
+  transferMovementForm       TransferMovementForm?
+  transferVenueClass         TransferVenueClass?
+  transferEvidenceConfidence Float?
+  transferEvidenceReason     String?
+  transferEvidenceSource     String?
+  transferEvidenceVersion    String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1523,22 +1572,22 @@ model Transaction {
 /// dispatcher exists; do not fetch logos externally, cache binaries, or add blob
 /// storage / Brandfetch / Clearbit here.
 model Merchant {
-  id           String              @id @default(cuid())
-  canonicalKey String              @unique
-  displayName  String
-  plaidEntityId String?            @unique
+  id              String               @id @default(cuid())
+  canonicalKey    String               @unique
+  displayName     String
+  plaidEntityId   String?              @unique
   defaultCategory TransactionCategory?
 
   // ── Enrichment (nullable; storage shape only in M1 — no capture wiring) ──────
-  website             String?
-  logoUrl             String?
-  enrichmentSource    MerchantEnrichmentSource?
+  website              String?
+  logoUrl              String?
+  enrichmentSource     MerchantEnrichmentSource?
   enrichmentConfidence Float?
-  enrichedAt          DateTime?
+  enrichedAt           DateTime?
 
   aliases      MerchantAlias[]
   rules        MerchantRule[]
-  transactions Transaction[]       @relation("MerchantTransactions")
+  transactions Transaction[]   @relation("MerchantTransactions")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1569,15 +1618,15 @@ model MerchantAlias {
 /// seams populated by the scope's own slice; no FK relation is wired in M1 (no
 /// reader/writer exists to justify a cascade posture yet).
 model MerchantRule {
-  id          String            @id @default(cuid())
+  id          String              @id @default(cuid())
   merchantId  String
-  merchant    Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant    Merchant            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   category    TransactionCategory
   scope       MerchantRuleScope
   ownerUserId String?
   spaceId     String?
 
-  transactions Transaction[]    @relation("MerchantRuleTransactions")
+  transactions Transaction[] @relation("MerchantRuleTransactions")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1954,10 +2003,10 @@ enum SyncIssueKind {
 model FxRate {
   id        String   @id @default(cuid())
   date      DateTime @db.Date // valuation date, daily close granularity (plan D4)
-  base      String            // canonical base — always "USD" (lib/fx/config.ts, Slice 2)
-  quote     String            // ISO 4217
-  rate      Float             // 1 base = rate quote (Float confirmed — plan D3)
-  source    String            // adapter that supplied the batch — provenance
+  base      String // canonical base — always "USD" (lib/fx/config.ts, Slice 2)
+  quote     String // ISO 4217
+  rate      Float // 1 base = rate quote (Float confirmed — plan D3)
+  source    String // adapter that supplied the batch — provenance
   fetchedAt DateTime @default(now())
 
   // Determinism anchor: ONE canonical rate per (date, pair) — deliberately not
@@ -2000,9 +2049,9 @@ enum NotificationPriority {
 }
 
 model Notification {
-  id      String @id @default(cuid())
+  id      String  @id @default(cuid())
   userId  String // recipient — always a single user; the inbox dies with the account
-  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   spaceId String? // optional Space context
   space   Space?  @relation(fields: [spaceId], references: [id], onDelete: SetNull)
 
@@ -2147,26 +2196,26 @@ enum MerchantMergeVerdict {
 }
 
 model MerchantMergeDecision {
-  id       String               @id @default(cuid())
+  id              String               @id @default(cuid())
   // Order-independent pair key: the two canonicalKeys sorted + joined. THE
   // dedupe/suppress key — makes "is this pair already decided?" an indexed
   // lookup and blocks duplicate decisions. A dismissal is symmetric.
-  pairKey  String               @unique
-  verdict  MerchantMergeVerdict
+  pairKey         String               @unique
+  verdict         MerchantMergeVerdict
   // The surviving merchant's canonicalKey (meaningful for MERGED; for DISMISSED
   // it is simply one of the two, informational). Durable — the survivor persists.
-  survivorKey String
+  survivorKey     String
   // The absorbed merchant's canonicalKey — durable record of WHAT was merged
   // even after that Merchant row is deleted (no FK possible).
-  absorbedKey String
+  absorbedKey     String
   // Evidence snapshot — WHY the decision was made. Regenerated evidence is
   // unavailable post-merge; this is the audit reason + future promotion signal.
-  evidenceTier   String
-  evidenceSignal String?
+  evidenceTier    String
+  evidenceSignal  String?
   // The operator who decided. Soft ref (no FK), mirrors MerchantRule.ownerUserId;
   // survives user deletion without a cascade posture. Accountability only.
   decidedByUserId String?
-  createdAt       DateTime      @default(now())
+  createdAt       DateTime             @default(now())
 
   @@index([verdict, createdAt])
 }

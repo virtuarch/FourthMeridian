@@ -31,7 +31,11 @@ import {
   isTransfer,
 } from "@/lib/transactions/flow-predicates";
 import { accountTier, type AccountTier } from "@/lib/account-classifier";
-import { aggregateCashFlow, type CashFlowTotals } from "@/lib/transactions/cash-flow";
+import {
+  aggregateCashFlow,
+  granularityFor, bucketKey, bucketLabel,
+  type CashFlowTotals, type CashFlowPeriod,
+} from "@/lib/transactions/cash-flow";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
@@ -59,6 +63,12 @@ export type LiquidityReason =
   | "REFUND"             // reversal of prior spend, cash back
   | "ASSET_LIQUIDATION"  // asset tier → liquid (crypto/stock sale proceeds to bank)
   | "ASSET_DEPLOYMENT"   // liquid → asset tier (brokerage/crypto contribution)
+  | "INVESTMENT_INFLOW"  // CF-2: liquid ← investment venue, resolved by transfer EVIDENCE
+                         // (brokerage/exchange) when no owned account matched. Cash in,
+                         // but NOT a proven sale — labeled "From investments", not liquidation.
+  | "INVESTMENT_OUTFLOW" // CF-2: liquid → investment venue via evidence — "Money invested".
+  | "PAYMENT_APP_INFLOW" // CF-2B: liquid ← payment-app rail (evidence), purpose unknown — "From payment apps".
+  | "PAYMENT_APP_OUTFLOW"// CF-2B: liquid → payment-app rail (evidence), purpose unknown — "Payments through apps".
   | "ASSET_CONVERSION"   // INVESTMENT activity within the asset tier (sale kept on platform)
   | "DEBT_PROCEEDS"      // liability tier → liquid (loan/advance funded to cash)
   | "DEBT_PAYMENT"       // liquid → liability tier (card/loan payment)
@@ -171,6 +181,21 @@ function classifyTransfer(
   // Money INTO the own account? amount sign is primary; flowDirection breaks a 0 tie.
   const into = tx.amount > 0 || (tx.amount === 0 && tx.flowDirection === "INFLOW");
 
+  // CF-2 — evidence-aware venue resolution. When the counterparty ACCOUNT is unknown
+  // (no owned match) but canonical transfer evidence identifies an investment venue
+  // (TransferDisposition = ASSET_VENUE_TRANSFER, derived from brokerage/exchange
+  // evidence), the counterparty tier IS known — it is an asset venue — so the
+  // spendable-cash crossing is recognized instead of left UNRESOLVED. Provider-neutral
+  // (reads the derived disposition, never a provider string). Conservative labels:
+  // "From investments" / "Money invested" — never a claimed sale (see doctrine).
+  const disposition = (tx as { transferDisposition?: string | null }).transferDisposition ?? null;
+  const venueEvidence = cpTier === "unknown" && disposition === "ASSET_VENUE_TRANSFER";
+  // CF-2B — payment-app rail is HOW money moved, not its purpose. On a LIQUID account
+  // the spendable cash genuinely moved (directional Cash In/Out); purpose stays unknown.
+  // On a non-liquid (liability) account this branch never runs — a card charge is the
+  // neutral leg, so Customg6w5n-style rows never enter Cash In/Out. Provider-neutral.
+  const appEvidence = cpTier === "unknown" && disposition === "PAYMENT_APP_MOVEMENT";
+
   // Anchor to the liquid leg — only when the OWN account is liquid does this row
   // represent a spendable-cash movement. Otherwise the spendable effect (if any)
   // belongs to the other leg → neutral here.
@@ -180,14 +205,20 @@ function classifyTransfer(
         case "asset":     return make(ft, "CASH_IN", "ASSET_LIQUIDATION", 1);
         case "liability": return make(ft, "CASH_IN", "DEBT_PROCEEDS", 1);
         case "liquid":    return make(ft, "NEUTRAL", "INTERNAL_TRANSFER", 1);
-        default:          return make(ft, "UNRESOLVED", "UNRESOLVED", 0.3);
+        default:
+          if (venueEvidence) return make(ft, "CASH_IN", "INVESTMENT_INFLOW", 0.9);
+          if (appEvidence)   return make(ft, "CASH_IN", "PAYMENT_APP_INFLOW", 0.9);
+          return make(ft, "UNRESOLVED", "UNRESOLVED", 0.3);
       }
     }
     switch (cpTier) {
       case "asset":     return make(ft, "CASH_OUT", "ASSET_DEPLOYMENT", 1);
       case "liability": return make(ft, "CASH_OUT", "DEBT_PAYMENT", 1);
       case "liquid":    return make(ft, "NEUTRAL", "INTERNAL_TRANSFER", 1);
-      default:          return make(ft, "UNRESOLVED", "UNRESOLVED", 0.3);
+      default:
+        if (venueEvidence) return make(ft, "CASH_OUT", "INVESTMENT_OUTFLOW", 0.9);
+        if (appEvidence)   return make(ft, "CASH_OUT", "PAYMENT_APP_OUTFLOW", 0.9);
+        return make(ft, "UNRESOLVED", "UNRESOLVED", 0.3);
     }
   }
 
@@ -204,6 +235,7 @@ function classifyTransfer(
 
 const REASON_KEYS: LiquidityReason[] = [
   "EARNED_INCOME", "REAL_COST", "REFUND", "ASSET_LIQUIDATION", "ASSET_DEPLOYMENT",
+  "INVESTMENT_INFLOW", "INVESTMENT_OUTFLOW", "PAYMENT_APP_INFLOW", "PAYMENT_APP_OUTFLOW",
   "ASSET_CONVERSION", "DEBT_PROCEEDS", "DEBT_PAYMENT", "INTERNAL_TRANSFER",
   "NON_CASH", "UNRESOLVED",
 ];
@@ -258,4 +290,76 @@ export function deriveCashFlowAxes(
     byReason,
     economic: aggregateCashFlow(transactions, moneyCtx),
   };
+}
+
+// ─── Shared time-bucketed liquidity projection (CF-2B convergence) ───────────────
+//
+// ONE projection over classifyLiquidity that Summary, History, and Calendar all
+// reconcile on. Summary uses deriveCashFlowAxes (a single bucket); History uses
+// bucketLiquidity (per period bucket); Calendar uses dailyLiquidity (per day).
+// Only CASH_IN / CASH_OUT rows contribute — NEUTRAL/UNRESOLVED movements are
+// context, never spendable-cash totals. `byReason` is retained so future filters
+// (Income only, Cash In, Spending, Debt payments, Money invested, From investments,
+// From payment apps, combined) become a reason selection with no new classifier.
+
+export interface LiquidityBucketTotals {
+  cashIn:   number;
+  cashOut:  number;
+  net:      number;   // cashIn − cashOut
+  byReason: Partial<Record<LiquidityReason, number>>;
+}
+
+/** Fold one row's liquidity effect into a bucket accumulator. */
+function foldLiquidity(acc: LiquidityBucketTotals, t: LiquidityTx, liqCtx: LiquidityContext, moneyCtx?: ConversionContext): void {
+  const c = classifyLiquidity(t, liqCtx);
+  if (c.effect !== "CASH_IN" && c.effect !== "CASH_OUT") return; // context, not a cash-flow total
+  const amt = rowMagnitude(t, moneyCtx);
+  if (c.effect === "CASH_IN") acc.cashIn += amt; else acc.cashOut += amt;
+  acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt;
+  acc.net = acc.cashIn - acc.cashOut;
+}
+
+export interface LiquidityBucket extends LiquidityBucketTotals {
+  key:   string;
+  label: string;
+}
+
+/** Cash In/Out/Net per time bucket for the period (History). Same classifier and
+ *  bucket-key scheme as the economic bucketCashFlow, so it reconciles with the
+ *  Summary total for the same rows/period. */
+export function bucketLiquidity(
+  transactions: LiquidityTx[],
+  liquidityCtx: LiquidityContext,
+  period: CashFlowPeriod,
+  moneyCtx?: ConversionContext,
+): LiquidityBucket[] {
+  const g = granularityFor(period);
+  const acc = new Map<string, LiquidityBucketTotals>();
+  for (const t of transactions) {
+    const key = bucketKey(t.date, g);
+    const b = acc.get(key) ?? { cashIn: 0, cashOut: 0, net: 0, byReason: {} };
+    foldLiquidity(b, t, liquidityCtx, moneyCtx);
+    acc.set(key, b);
+  }
+  return [...acc.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([key, v]) => ({ key, label: bucketLabel(key, g), ...v }));
+}
+
+/** Cash In/Out/Net per calendar day (Calendar), keyed by YYYY-MM-DD. Same
+ *  classifier as Summary/History — days with no spendable movement are absent. */
+export function dailyLiquidity(
+  transactions: LiquidityTx[],
+  liquidityCtx: LiquidityContext,
+  moneyCtx?: ConversionContext,
+): Map<string, LiquidityBucketTotals> {
+  const acc = new Map<string, LiquidityBucketTotals>();
+  for (const t of transactions) {
+    const b = acc.get(t.date) ?? { cashIn: 0, cashOut: 0, net: 0, byReason: {} };
+    foldLiquidity(b, t, liquidityCtx, moneyCtx);
+    acc.set(t.date, b);
+  }
+  // Drop days that ended with no cash-flow (only context movements).
+  for (const [k, v] of acc) if (v.cashIn === 0 && v.cashOut === 0) acc.delete(k);
+  return acc;
 }

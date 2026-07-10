@@ -111,8 +111,8 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // period selector. Rendered through the same SectionCard compositor.
     // (income_vs_spending retired from the active list — Cash Flow History's
     //  bucket cards now surface income/spending/net; renderer kept for reuse.)
-    //  Order: History → Spending by Category → Income by Source (twin widgets).
-    widgets: ["cash_flow_summary", "cash_flow_history", "cash_flow_by_category", "income_by_source"],
+    //  Order: History → Spending by Category → Income/Cash In by Source → Debt Payments.
+    widgets: ["cash_flow_summary", "cash_flow_history", "cash_flow_by_category", "income_by_source", "debt_payments"],
   },
   investments: {
     id: "investments", label: "Investments", icon: "TrendingUp", status: "comingSoon", group: "Financial",

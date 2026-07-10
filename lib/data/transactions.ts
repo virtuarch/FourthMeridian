@@ -70,6 +70,12 @@ import {
   resolveOwnedTransferCounterparties,
   filterVisibleCounterpartyAccounts,
 } from "@/lib/transactions/transfer-resolution";
+// TE-2B — semantic "needs classification" disclosure, derived server-side from
+// canonical fields (never exposes the raw inputs). Read-only; no calculations change.
+import { shouldSurfaceAsNeedsClassification } from "@/lib/transactions/needs-classification";
+// CF-1 — per-row canonical context (transferDisposition + needsClassification) for
+// the Cash Flow context section. Read-only projection; no calculation reads it.
+import { deriveTransactionContext } from "@/lib/transactions/transaction-context";
 import { convertMoney } from "@/lib/money/convert";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 
@@ -131,12 +137,42 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
   // (nulled unless the counterparty account is visible to this Space) before it
   // ever reaches the serializer / client. Persisted (provider-confirmed) links win;
   // a read-time transfer match fills in only where no persisted link exists.
-  return rows.map((r) =>
-    serializeTransactionRow({
+  // CF-1 (additive): read-time context facts spread onto the DTO — no calc change.
+  return rows.map((r) => ({
+    ...serializeTransactionRow({
       ...r,
       counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
     }),
-  );
+    ...contextFields(r, resolvedCp),
+  }));
+}
+
+/** CF-1 — derive the read-time context fields (transferDisposition + needsClassification)
+ *  for a list row. Provider-neutral, read-only; no calculation consumes these. */
+function contextFields(
+  r: {
+    id: string; flowType: string | null; classificationReason: string | null;
+    transferRail: string | null; transferMovementForm: string | null; transferVenueClass: string | null;
+    transferEvidenceConfidence: number | null; transferEvidenceReason: string | null;
+    transferEvidenceSource: string | null; transferEvidenceVersion: string | null;
+    merchantId: string | null; counterpartyAccountId: string | null;
+  },
+  resolvedCp: Map<string, string>,
+) {
+  const c = deriveTransactionContext({
+    flowType:                   r.flowType,
+    classificationReason:       r.classificationReason,
+    transferRail:               r.transferRail,
+    transferMovementForm:       r.transferMovementForm,
+    transferVenueClass:         r.transferVenueClass,
+    transferEvidenceConfidence: r.transferEvidenceConfidence,
+    transferEvidenceReason:     r.transferEvidenceReason,
+    transferEvidenceSource:     r.transferEvidenceSource,
+    transferEvidenceVersion:    r.transferEvidenceVersion,
+    hasResolvedMerchant:        r.merchantId != null,
+    isOwnedCounterparty:        r.counterpartyAccountId != null || resolvedCp.has(r.id),
+  });
+  return { transferDisposition: c.transferDisposition, needsClassification: c.needsClassification };
 }
 
 /** Transactions for debt accounts only (credit card activity), newest first. */
@@ -164,12 +200,14 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
   // persisted (provider-confirmed) links take precedence via chooseCounterpartyId.
   const resolvedCp = await resolveOwnedTransferCounterparties(rows, { spaceId });
   // TI-1: canonical serialization. counterpartyAccountId KD-15-gated here.
-  return rows.map((r) =>
-    serializeTransactionRow({
+  // CF-1 (additive): read-time context facts spread onto the DTO — no calc change.
+  return rows.map((r) => ({
+    ...serializeTransactionRow({
       ...r,
       counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
     }),
-  );
+    ...contextFields(r, resolvedCp),
+  }));
 }
 
 /** Investment transactions (Buy/Sell/Dividend/Split/Fee), newest first. */
@@ -407,6 +445,18 @@ export async function getTransactionDetail(
     }
   }
 
+  // TE-2B — derive the needs-classification disclosure from canonical fields. The
+  // raw inputs (transferRail, merchantId, classificationReason) stay server-side;
+  // only the boolean + a provider-neutral reason reach the DTO. A resolved owned
+  // counterparty (persisted OR read-time matched) counts as a stronger known meaning.
+  const needs = shouldSurfaceAsNeedsClassification({
+    flowType:                row.flowType ?? null,
+    classificationReason:    row.classificationReason ?? null,
+    transferRail:            row.transferRail ?? null,
+    hasResolvedMerchant:     row.merchantId != null,
+    hasResolvedCounterparty: row.counterpartyAccountId != null || resolvedTransferCpId != null,
+  });
+
   return {
     ...serializeTransactionRow(row),
     // KD-15: override the serializer's raw value with the gated id (the detail's
@@ -435,5 +485,8 @@ export async function getTransactionDetail(
     counterparty,
     reporting,
     relationships,
+    // TE-2B — disclosure only; no calculation consumes these.
+    needsClassification:       needs.needsClassification,
+    needsClassificationReason: needs.reason,
   };
 }

@@ -86,6 +86,13 @@ import {
   accumulateShadow,
   summarizeShadow,
 } from "@/lib/transactions/plaid-flow-input";
+// TE1 — provider-neutral transfer evidence: stage-1 Plaid adapter + persistence
+// mapper. Wired beside flowFields/factFields; liquidity/Cash Flow never see Plaid.
+import { plaidTransferEvidence } from "@/lib/transactions/plaid-transfer-evidence";
+import {
+  transferEvidenceWriteFields,
+  NULL_TRANSFER_EVIDENCE_FIELDS,
+} from "@/lib/transactions/transfer-evidence-write";
 // TI2-4 — durable Transaction Intelligence facts, stamped beside FlowType on the
 // Plaid write path. Additive: TI columns only, disjoint from flow/MI columns.
 // Computed once per payload from the already-derived classification + captured
@@ -257,6 +264,10 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       // TI2-4 — durable TI facts; degrade to all-null on any failure, mirroring
       // flowFields. Computed once below from the same classification + captured.
       let factFields = NULL_TRANSACTION_FACTS;
+      // TE1 — provider-neutral transfer evidence; degrade to all-null on failure,
+      // and stay all-null for non-transfer rows. Computed once below (gated on the
+      // classifier's TRANSFER kind) from the same stored Plaid PFC + amount.
+      let transferFields = NULL_TRANSFER_EVIDENCE_FIELDS;
       // MI M4 — identity-safe Plaid counterparty enrichment, captured from the
       // same `captured` sidecar buildPlaidFlowInput already produces. Best-effort;
       // null on any classification failure.
@@ -299,6 +310,20 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
           flowDirection:   classification.flowDirection,
         });
         enrichment = plaidCounterpartyEnrichment(captured);
+        // TE1 — for transfer-like rows only, normalize the stored Plaid PFC signal
+        // into provider-neutral evidence and map to the persisted axes. Non-transfer
+        // rows keep the all-null default (no stamp). Follows the flowFields
+        // convention: provider re-sync recomputes and refreshes provider-derived
+        // facts (a manual/user override, when that source lands, would be preserved
+        // via reconcileTransferEvidence — no such source writes today).
+        if (classification.flowType === "TRANSFER") {
+          const ev = plaidTransferEvidence({ pfcDetailed: input.pfcDetailed, amount, name: merchant ?? description ?? null });
+          // Persist ONLY when a descriptive axis was recognized — a no-signal /
+          // unrecognized transfer stays unclassified (no fabricated default).
+          if (ev.railType || ev.movementForm || ev.venueClass) {
+            transferFields = transferEvidenceWriteFields(ev);
+          }
+        }
         if (shadowEnabled) accumulateShadow(shadowStats, classification, category, amount);
       } catch (e) {
         console.warn(`[flowtype] classification skipped for ${txn.transaction_id} — writing null flow columns:`, e);
@@ -311,7 +336,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       // TI2-4 — factFields ride baseFields so they are stamped identically on all
       // three write sites (create, modified-update, fingerprint-update), disjoint
       // from category/flow (which ride `mi`) and independent of MI resolution.
-      const baseFields = { financialAccountId, date, merchant, description, amount, pending: txn.pending, currency, ...factFields };
+      const baseFields = { financialAccountId, date, merchant, description, amount, pending: txn.pending, currency, ...factFields, ...transferFields };
       const defaultCategoryFlow = { category, ...flowFields };
 
       // MI M4/M5 — resolve merchant identity + category provenance, mint/reuse the

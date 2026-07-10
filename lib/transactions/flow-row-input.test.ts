@@ -139,7 +139,7 @@ for (const over of [
   const w = buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
   check("composed flowType", w.flowType === "DEBT_PAYMENT");
   check("composed counterparty NULL (no inference)", w.counterpartyAccountId === null);
-  check("composed classifierVersion set", w.classifierVersion === FLOW_CLASSIFIER_VERSION && w.classifierVersion === 1);
+  check("composed classifierVersion set", w.classifierVersion === FLOW_CLASSIFIER_VERSION && w.classifierVersion === 2);
   check("composed 10 columns", Object.keys(w).length === 10);
 }
 

@@ -67,6 +67,7 @@ import {
   renderIncomeVsSpending,
   renderCashFlowByCategory,
   renderIncomeBySource,
+  renderDebtPayments,
 } from "@/components/space/widgets/cash-flow-adapters";
 import {
   renderDebtByAccount,
@@ -86,6 +87,8 @@ import {
   DEFAULT_CASH_FLOW_PERIOD,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
+import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
+import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
@@ -1065,6 +1068,13 @@ type SectionRenderProps = {
    *  period from inside a widget (Cash Flow History's Month/Quarter/Year
    *  selectors). Only the Cash Flow History widget uses it. */
   onSelectPeriod?:       (period: CashFlowPeriod) => void;
+  /** CF-3 — the workspace-shared Cash Flow / Spending perspective + measure filter.
+   *  Every Cash Flow widget (Summary, History, Calendar, Income/Cash In by Source)
+   *  reads the SAME perspective so they never disagree. Set from the History
+   *  widget's mounted selector. */
+  perspective?:          CashFlowPerspective;
+  filterId?:             string;
+  onPerspectiveChange?:  (perspective: CashFlowPerspective, filterId: string) => void;
   /**
    * UX-PER-3 Debt — the user's manual credit score for the Debt workspace's
    * credit-health companion (FicoCard). User-level, threaded from the Personal
@@ -1335,11 +1345,12 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
   "emergency_fund_readiness":(p) => renderEmergencyFundReadiness(p.accounts, p.ctx),
   "liquidity_concentration": (p) => renderLiquidityConcentration(p.accounts, p.ctx),
   // ── Cash Flow Perspective (UX-PER-3) — movement over time (FlowType-aware) ──
-  "cash_flow_summary":       (p) => renderCashFlowSummary(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts),
-  "cash_flow_history":       (p) => renderCashFlowHistory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.onSelectPeriod),
+  "cash_flow_summary":       (p) => renderCashFlowSummary(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts, p.perspective, p.onPerspectiveChange),
+  "cash_flow_history":       (p) => renderCashFlowHistory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.onSelectPeriod, p.accounts, p.perspective, p.filterId, p.onPerspectiveChange),
   "income_vs_spending":      (p) => renderIncomeVsSpending(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
   "cash_flow_by_category":   (p) => renderCashFlowByCategory(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
-  "income_by_source":        (p) => renderIncomeBySource(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx),
+  "income_by_source":        (p) => renderIncomeBySource(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts, p.perspective),
+  "debt_payments":           (p) => renderDebtPayments(p.transactions, p.period ?? DEFAULT_CASH_FLOW_PERIOD, p.txCtx, p.accounts),
   // ── Debt Perspective (UX-PER-3) — liabilities-only (shape/cost/risk) ────────
   "debt_by_account":         (p) => renderDebtByAccount(p.accounts, p.ctx),
   "debt_cost":               (p) => renderDebtCost(p.accounts, p.ctx),
@@ -1631,6 +1642,9 @@ function SectionCard({
   canManage,
   onAddGoal,
   ctx,
+  perspective,
+  filterId,
+  onPerspectiveChange,
   snapshots,
   snapshotCurrency,
   transactions,
@@ -1657,6 +1671,10 @@ function SectionCard({
   txCtx?:            ConversionContext;
   period?:           CashFlowPeriod;
   onSelectPeriod?:   (period: CashFlowPeriod) => void;
+  perspective?:          CashFlowPerspective;
+  filterId?:             string;
+  onPerspectiveChange?:  (perspective: CashFlowPerspective, filterId: string) => void;
+  // (SectionRenderProps mirror — perspective threaded to Cash Flow widgets)
   /** UX-PER-3 Debt — see SectionRenderProps.ficoScore/ficoUpdatedAt. */
   ficoScore?:        number | null;
   ficoUpdatedAt?:    string;
@@ -1739,7 +1757,7 @@ function SectionCard({
     if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen, ctx);
 
     const render = SectionRegistry[section.key];
-    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, onSelectPeriod, ficoScore, ficoUpdatedAt, goals });
+    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, onSelectPeriod, perspective, filterId, onPerspectiveChange, ficoScore, ficoUpdatedAt, goals });
     return <ContextualCard sectionKey={section.key} label={section.label} />;
   }
 
@@ -2562,6 +2580,15 @@ export function SpaceDashboard({
   // converts each row at its own date. `cashFlowActive` also triggers the
   // transaction fetch below when the workspace is open in a non-flow Space.
   const [cashFlowPeriod, setCashFlowPeriod] = useState<CashFlowPeriod>(DEFAULT_CASH_FLOW_PERIOD);
+  // CF-3 — the workspace-shared Cash Flow / Spending perspective + measure filter,
+  // driven by the Cash Flow History widget's selector and consumed by every Cash
+  // Flow widget so they never disagree.
+  const [cashFlowPerspective, setCashFlowPerspective] = useState<CashFlowPerspective>("liquidity");
+  const [cashFlowFilterId, setCashFlowFilterId] = useState<string>(DEFAULT_FILTER_ID);
+  const onCashFlowPerspectiveChange = (p: CashFlowPerspective, id: string) => {
+    setCashFlowPerspective(p);
+    setCashFlowFilterId(id);
+  };
   const cashFlowActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "cashFlow";
   // Debt workspace needs SpaceSnapshot history (the `debt` series) for its
   // Debt History widget — trigger the snapshot fetch when it's open.
@@ -3106,6 +3133,9 @@ export function SpaceDashboard({
                     txCtx={txConversionCtx}
                     period={cashFlowPeriod}
                     onSelectPeriod={setCashFlowPeriod}
+                    perspective={cashFlowPerspective}
+                    filterId={cashFlowFilterId}
+                    onPerspectiveChange={onCashFlowPerspectiveChange}
                     ficoScore={ficoScore}
                     ficoUpdatedAt={ficoUpdatedAt}
                     goals={spaceGoals}

@@ -34,8 +34,12 @@ import {
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
+import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
+import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";
 import { CashFlowCategoryBreakdown } from "@/components/space/widgets/CashFlowCategoryBreakdown";
+import { DebtPaymentsWidget } from "@/components/space/widgets/DebtPaymentsWidget";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,8 +77,10 @@ export function renderCashFlowSummary(
   period: CashFlowPeriod,
   ctx?: ConversionContext,
   accounts: { id: string; type: string }[] = [],
+  perspective?: CashFlowPerspective,
+  onPerspectiveChange?: (perspective: CashFlowPerspective, filterId: string) => void,
 ): React.ReactElement {
-  return <CashFlowSummaryWidget transactions={transactions} period={period} ctx={ctx} accounts={accounts} />;
+  return <CashFlowSummaryWidget transactions={transactions} period={period} ctx={ctx} accounts={accounts} perspective={perspective} onPerspectiveChange={onPerspectiveChange} />;
 }
 
 // ─── 2. Cash Flow History ─────────────────────────────────────────────────────
@@ -87,8 +93,12 @@ export function renderCashFlowHistory(
   period: CashFlowPeriod,
   ctx?: ConversionContext,
   onSelectPeriod?: (period: CashFlowPeriod) => void,
+  accounts: { id: string; type: string }[] = [],
+  perspective?: CashFlowPerspective,
+  filterId?: string,
+  onPerspectiveChange?: (perspective: CashFlowPerspective, filterId: string) => void,
 ): React.ReactElement {
-  return <CashFlowHistoryWidget transactions={transactions} period={period} ctx={ctx} onSelectPeriod={onSelectPeriod} />;
+  return <CashFlowHistoryWidget transactions={transactions} period={period} ctx={ctx} accounts={accounts} onSelectPeriod={onSelectPeriod} perspective={perspective} filterId={filterId} onPerspectiveChange={onPerspectiveChange} />;
 }
 
 // ─── 3. Income vs Spending ────────────────────────────────────────────────────
@@ -158,20 +168,66 @@ export function renderIncomeBySource(
   transactions: Transaction[] | null | undefined,
   period: CashFlowPeriod,
   ctx?: ConversionContext,
+  accounts: { id: string; type: string }[] = [],
+  perspective: CashFlowPerspective = "economic",
 ): React.ReactElement {
   const { state, rows } = scoped(transactions, period);
   if (state === "loading") return <LoadingCard />;
-  if (state === "empty") return <EmptyCard sub="Income by source appears once you have inflows." />;
 
+  // CF-3 — perspective-aware. Cash Flow → "Cash In by Source" groups the canonical
+  // liquidity CASH_IN reasons (Earned income, From investments, From payment apps,
+  // Refunds, …) — reusing groupLiquidityByReason, NEVER relabeling every inflow as
+  // income. Spending → the existing economic "Income by Source" (INCOME merchants).
+  if (perspective === "liquidity") {
+    if (state === "empty") return <EmptyCard sub="Cash in by source appears once cash arrives." />;
+    const liqCtx = tierResolver(accounts);
+    const cashIn = groupLiquidityByReason(rows as LiquidityTx[], liqCtx, ctx).cashIn;
+    return (
+      <div className="space-y-2">
+        <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Cash in by source</p>
+        <CashFlowCategoryBreakdown
+          items={cashIn.map((l) => ({ id: l.reason, label: l.label, value: l.amount }))}
+          ctx={ctx}
+          totalLabel="Total cash in"
+          emptyHeadline="No cash arrived in this period"
+          emptySubline="Cash in by source appears once cash arrives."
+          sliceSubtitle="Cash in from this source"
+          sliceFor={(item) => (rows as LiquidityTx[]).filter((t) => {
+            const c = classifyLiquidity(t, liqCtx);
+            return c.effect === "CASH_IN" && c.reason === item.id;
+          })}
+        />
+      </div>
+    );
+  }
+
+  if (state === "empty") return <EmptyCard sub="Income by source appears once you have inflows." />;
   return (
-    <CashFlowCategoryBreakdown
-      items={incomeBySource(rows, ctx)}
-      ctx={ctx}
-      totalLabel="Total income"
-      emptyHeadline="No income in this period"
-      emptySubline="Income by source appears once you have inflows."
-      sliceSubtitle="Income from this source"
-      sliceFor={(item) => rows.filter((t) => isIncome(t.flowType) && incomeSourceLabel(t) === item.id)}
-    />
+    <div className="space-y-2">
+      <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Income by source</p>
+      <CashFlowCategoryBreakdown
+        items={incomeBySource(rows, ctx)}
+        ctx={ctx}
+        totalLabel="Total income"
+        emptyHeadline="No income in this period"
+        emptySubline="Income by source appears once you have inflows."
+        sliceSubtitle="Income from this source"
+        sliceFor={(item) => rows.filter((t) => isIncome(t.flowType) && incomeSourceLabel(t) === item.id)}
+      />
+    </div>
   );
+}
+
+// ─── 6. Debt Payments (Cash Flow) ─────────────────────────────────────────────
+
+/** Canonical DEBT_PAYMENT rows grouped by creditor (liability account) — the twin
+ *  of Spending by Category, on the liquidity axis. Reuses the shared projection
+ *  (classifyLiquidity DEBT_PAYMENT reason); no new classifier. */
+export function renderDebtPayments(
+  transactions: Transaction[] | null | undefined,
+  period: CashFlowPeriod,
+  ctx?: ConversionContext,
+  accounts: { id: string; type: string }[] = [],
+): React.ReactElement {
+  return <DebtPaymentsWidget transactions={transactions} period={period} ctx={ctx} accounts={accounts} />;
 }

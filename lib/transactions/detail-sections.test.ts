@@ -27,6 +27,7 @@ function detail(over: Partial<TransactionDetail> = {}): TransactionDetail {
     counterparty: null,
     reporting: null,
     relationships: { pendingPosted: null, duplicate: null, refundCandidate: null, transferCandidate: null },
+    needsClassification: false, needsClassificationReason: null,
   };
   return { ...base, ...over } as unknown as TransactionDetail;
 }
@@ -114,6 +115,29 @@ test('Reporting section omitted when null; present when set', () => {
   const rep = detail({ reporting: { amount: 11.2, currency: 'EUR', estimated: true, rate: 0.9, effectiveDateISO: '2026-06-01' } });
   const rows = find(buildTransactionDetailSections(rep), 'Reporting')!.rows!;
   assert.match(rows.find((r) => r.label === 'Reporting amount')!.value, /€11\.20.*est/);
+});
+
+test('Needs classification: hidden by default; shown with case-appropriate wording; no jargon', () => {
+  // Default (ordinary purchase) — no disclosure section.
+  assert.equal(find(buildTransactionDetailSections(detail()), 'Needs classification'), undefined);
+
+  // Payment-app unknown purpose.
+  const p2p = detail({ needsClassification: true, needsClassificationReason: 'UNKNOWN_PAYMENT_APP_PURPOSE' });
+  const pSec = find(buildTransactionDetailSections(p2p), 'Needs classification')!;
+  assert.match(pSec.notes![0], /this money moved, but it can’t yet determine why/);
+
+  // Unidentified inflow.
+  const inflow = detail({ needsClassification: true, needsClassificationReason: 'UNKNOWN_INFLOW_SOURCE' });
+  const iSec = find(buildTransactionDetailSections(inflow), 'Needs classification')!;
+  assert.match(iSec.notes![0], /money came in, but it can’t yet identify the source/);
+
+  // The disclosure itself carries no confidence numbers, reason codes, provider
+  // strings, or ontology terms (scoped to the Needs-classification section — the
+  // unrelated Provenance "Source: Plaid" row is an existing, intended field).
+  for (const sec of [pSec, iSec]) {
+    const text = [sec.title, ...(sec.notes ?? [])].join(' ');
+    assert.ok(!/0\.5|confidence|SIGN_DEFAULT|PAYMENT_APP|plaid|pfc|transferRail|UNKNOWN_/i.test(text), `jargon leaked: ${text}`);
+  }
 });
 
 test('no section is ever empty', () => {

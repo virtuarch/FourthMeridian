@@ -10,9 +10,13 @@
  * widget stays legible without internal scrolling. Day amounts live in a
  * hover/focus tooltip rather than inside the cell, keeping height down.
  *
- * It computes nothing new: `dailyCashFlow` supplies FlowType-aware per-day
- * income / spend / refunds / net (same doctrine as the summary). Presentation
- * only.
+ * CF-3 — the Calendar consumes the SHARED two-perspective projection
+ * (cash-flow-projection.ts, `projectDailyFacts`): one pass over BOTH canonical
+ * axes, from which the caller's `perspective` + `measures` select what each day
+ * shows. It classifies NOTHING itself and reconciles exactly with the Summary
+ * for the same rows/perspective. A credit-card-heavy user switches to the
+ * Economic perspective (or the "All spending" / "Credit-card spending" measures)
+ * to see real daily spending that the liquidity axis correctly excludes.
  */
 
 import { useMemo } from "react";
@@ -21,12 +25,15 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
 import type { Transaction } from "@/types";
 import {
-  dailyCashFlow,
   monthsInRange,
   periodRange,
   type CashFlowPeriod,
-  type DayCashFlow,
 } from "@/lib/transactions/cash-flow";
+import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import {
+  projectDailyFacts, netOfMeasures, CALENDAR_MEASURES,
+  type DayFacts, type CalendarMeasureId,
+} from "@/lib/transactions/cash-flow-projection";
 
 const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
 const POS = "34,197,94";   // green-500
@@ -68,7 +75,9 @@ function tooltipPlacement(col: number, row: number): string {
 interface DayCellProps {
   iso:    string;
   day:    number;
-  data?:  DayCashFlow;
+  data?:  DayFacts;
+  net:    number;
+  measures: CalendarMeasureId[];
   bg:     string;
   text:   string;
   col:    number;   // 0–6 within the week row (for tooltip placement)
@@ -78,10 +87,15 @@ interface DayCellProps {
   onSelect?: (iso: string, label: string) => void;
 }
 
-function DayCell({ iso, day, data, bg, text, col, row, size, fmt, onSelect }: DayCellProps) {
-  const net = data?.net ?? 0;
+function DayCell({ iso, day, data, net, measures, bg, text, col, row, size, fmt, onSelect }: DayCellProps) {
   const dateLabel = new Date(`${iso}T00:00:00`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
   const netColor = net > 0 ? "var(--accent-positive)" : net < 0 ? "var(--accent-negative)" : "var(--text-muted)";
+  // Per-measure lines for the selected filter — only non-zero measures shown.
+  const lines = data
+    ? measures
+        .map((id) => ({ m: CALENDAR_MEASURES[id], v: CALENDAR_MEASURES[id].value(data) }))
+        .filter((l) => l.v > 0)
+    : [];
 
   return (
     <div className={`group relative ${size === "full" ? "h-7" : "h-4"}`}>
@@ -116,9 +130,16 @@ function DayCell({ iso, day, data, bg, text, col, row, size, fmt, onSelect }: Da
         >
           <p className="text-[10px] font-semibold text-[var(--text-primary)] mb-1">{dateLabel}</p>
           <div className="space-y-0.5 text-[10px] tabular-nums">
-            <Row label="Income"   value={`+${fmt(data?.income ?? 0)}`} color="var(--accent-positive)" />
-            <Row label="Spending" value={`−${fmt(data?.spend ?? 0)}`}  color="var(--accent-negative)" />
-            {(data?.refunds ?? 0) > 0 && <Row label="Refunds" value={fmt(data?.refunds ?? 0)} color="var(--text-secondary)" />}
+            {lines.length > 0
+              ? lines.map((l) => (
+                  <Row
+                    key={l.m.id}
+                    label={l.m.label}
+                    value={`${l.m.direction === "in" ? "+" : "−"}${fmt(l.v)}`}
+                    color={l.m.direction === "in" ? "var(--accent-positive)" : "var(--accent-negative)"}
+                  />
+                ))
+              : <Row label="No activity" value="" color="var(--text-muted)" />}
             <Row label="Net" value={`${net >= 0 ? "+" : "−"}${fmt(Math.abs(net))}`} color={netColor} strong />
           </div>
         </div>
@@ -141,7 +162,9 @@ function Row({ label, value, color, strong }: { label: string; value: string; co
 interface MonthGridProps {
   year:   number;
   month:  number;                  // 1–12
-  daily:  Map<string, DayCashFlow>;
+  daily:  Map<string, DayFacts>;
+  netOf:  (f: DayFacts) => number;
+  measures: CalendarMeasureId[];
   max:    number;
   range:  { start: string; end: string };
   size:   "full" | "mini";
@@ -149,7 +172,7 @@ interface MonthGridProps {
   onSelectDay?: (iso: string, label: string) => void;
 }
 
-function MonthGrid({ year, month, daily, max, range, size, fmt, onSelectDay }: MonthGridProps) {
+function MonthGrid({ year, month, daily, netOf, measures, max, range, size, fmt, onSelectDay }: MonthGridProps) {
   const firstWeekday = new Date(year, month - 1, 1).getDay();
   const daysInMonth  = new Date(year, month, 0).getDate();
   const monthLabel = new Date(year, month - 1, 1).toLocaleDateString("en-US", {
@@ -189,10 +212,10 @@ function MonthGrid({ year, month, daily, max, range, size, fmt, onSelectDay }: M
             );
           }
           const data = daily.get(iso);
-          const net = data?.net ?? 0;
+          const net = data ? netOf(data) : 0;
           return (
             <DayCell
-              key={i} iso={iso} day={d} data={data}
+              key={i} iso={iso} day={d} data={data} net={net} measures={measures}
               bg={cellBg(net, max)} text={cellText(net, max)}
               col={col} row={gridRow} size={size} fmt={fmt}
               onSelect={onSelectDay}
@@ -210,17 +233,23 @@ interface Props {
   transactions: Transaction[];
   period:       CashFlowPeriod;
   ctx?:         ConversionContext;
+  /** Account tiers — the Calendar resolves the liquidity axis via these. */
+  accounts:     { id: string; type: string }[];
+  /** CF-3 — which measures each day sums into its net (see CALENDAR_MEASURES). */
+  measures:     CalendarMeasureId[];
   /** Click a day cell → open its transactions. Hover tooltip stays summary-only. */
   onSelectDay?: (iso: string, label: string) => void;
 }
 
-export function CashFlowCalendar({ transactions, period, ctx, onSelectDay }: Props) {
+export function CashFlowCalendar({ transactions, period, ctx, accounts, measures, onSelectDay }: Props) {
   const range  = useMemo(() => periodRange(period), [period]);
-  const daily  = useMemo(() => dailyCashFlow(transactions, ctx), [transactions, ctx]);
+  const daily  = useMemo(() => projectDailyFacts(transactions as LiquidityTx[], tierResolver(accounts), ctx), [transactions, accounts, ctx]);
   const months = useMemo(() => monthsInRange(range.start, range.end), [range]);
+  // Net of the selected measures for one day (Σ in − Σ out).
+  const netOf  = useMemo(() => (f: DayFacts) => netOfMeasures(f, measures).net, [measures]);
   const max    = useMemo(
-    () => Math.max(0, ...[...daily.values()].map((v) => Math.abs(v.net))),
-    [daily],
+    () => Math.max(0, ...[...daily.values()].map((v) => Math.abs(netOf(v)))),
+    [daily, netOf],
   );
 
   const currency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
@@ -243,7 +272,7 @@ export function CashFlowCalendar({ transactions, period, ctx, onSelectDay }: Pro
           <MonthGrid
             key={`${year}-${month}`}
             year={year} month={month}
-            daily={daily} max={max} range={range} size={size} fmt={fmt}
+            daily={daily} netOf={netOf} measures={measures} max={max} range={range} size={size} fmt={fmt}
             onSelectDay={onSelectDay}
           />
         ))}

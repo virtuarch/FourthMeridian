@@ -2,6 +2,12 @@
 // detail DTO. Type-only import (erased at runtime); RelationshipResolver is a
 // zero-import pure module, so this adds no runtime dependency and no cycle.
 import type { TransactionRelationships } from '@/lib/transactions/RelationshipResolver';
+// TE-2B — the "needs classification" reason enum surfaces on the detail DTO.
+// Type-only import (erased at runtime); the predicate module is pure/Prisma-free.
+import type { NeedsClassificationReason } from '@/lib/transactions/needs-classification';
+// CF-1 — the canonical TransferDisposition surfaces on the list DTO for the Cash
+// Flow context projection. Type-only; the source module is pure/Prisma-free.
+import type { TransferDisposition } from '@/lib/transactions/transfer-evidence';
 
 export type AccountType = 'checking' | 'savings' | 'investment' | 'crypto' | 'debt' | 'other';
 
@@ -180,6 +186,14 @@ export interface Transaction {
    * — the id is never leaked across Spaces, and no name/detail is carried.
    */
   counterpartyAccountId?: string | null;
+
+  // CF-1 — read-time canonical projection for the Cash Flow context section.
+  // Additive/optional (existing callers untouched): derived server-side from
+  // persisted transfer evidence + owned-counterparty resolution + the TE-2B
+  // predicate. Presentation only — no calculation reads these. transferDisposition
+  // is set only for TRANSFER rows; null otherwise.
+  transferDisposition?: TransferDisposition | null;
+  needsClassification?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -289,6 +303,15 @@ export interface TransactionDetail extends Transaction {
   // Computed on read from a tiny candidate set; never persisted. Deterministic
   // only (pendingPosted, duplicate); refundCandidate/transferCandidate are null.
   relationships: TransactionRelationships;
+
+  // ── TE-2B — needs-classification disclosure (derived server-side) ──────────
+  // Semantic ambiguity only ("unknown purpose / unknown source"), NOT low
+  // confidence. Computed by shouldSurfaceAsNeedsClassification() from canonical
+  // fields; the raw inputs (transferRail, merchantId, classificationReason) are
+  // NOT exposed — only this boolean + a provider-neutral reason. Drawer renders a
+  // non-technical disclosure when true. Ordinary low-confidence purchases are false.
+  needsClassification:       boolean;
+  needsClassificationReason: NeedsClassificationReason | null;
 }
 
 export interface AiAdvice {
