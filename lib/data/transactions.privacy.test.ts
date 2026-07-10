@@ -107,19 +107,22 @@ check(
     'a SAL query was added without the KD-15 visibility constraint',
 );
 
-// The exported read functions own exactly four SAL queries today: one each in
-// getTransactions / getDebtTransactions / getInvestmentTransactions, plus the
-// counterparty name-exposure gate inside getTransactionDetail (TI-1 — the
-// count was consciously reviewed and raised from 3 when that read landed; the
-// detail read's own row-visibility SAL query lives in
-// lib/transactions/detail-query.ts and is covered by
-// lib/data/transaction-detail.privacy.test.ts). If this count drifts, a read
-// path was added or removed — force a conscious review.
+// The exported read functions own exactly five SAL queries today: the
+// counterpartyVisibilityInclude() list gate (shared by getTransactions /
+// getDebtTransactions for the Cash Flow liquidity axis), the main row-visibility
+// query in each of getTransactions / getDebtTransactions / getInvestmentTransactions,
+// and the counterparty name-exposure gate inside getTransactionDetail. (The count
+// was raised 3→4 when the detail read landed, and 4→5 when the list counterparty
+// gate landed.) TI4 Slice 1's read-time transfer-match visibility gate lives in
+// lib/transactions/transfer-resolution.ts — deliberately OUTSIDE this file — so the
+// count here is unchanged. If it drifts, a read path was added or removed — force a
+// conscious review.
 check(
-  'lib/data/transactions.ts has the expected four SAL read queries',
-  salQueryCount === 4,
-  `expected 4 spaceAccountLinks queries (getTransactions / getDebtTransactions / ` +
-    `getInvestmentTransactions / getTransactionDetail counterparty gate), found ${salQueryCount}`,
+  'lib/data/transactions.ts has the expected five SAL read queries',
+  salQueryCount === 5,
+  `expected 5 spaceAccountLinks queries (counterpartyVisibilityInclude list gate / ` +
+    `getTransactions / getDebtTransactions / getInvestmentTransactions / ` +
+    `getTransactionDetail counterparty gate), found ${salQueryCount}`,
 );
 
 check(

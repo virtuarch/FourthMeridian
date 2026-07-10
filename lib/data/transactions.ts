@@ -49,7 +49,7 @@ import {
   TransactionDetailProvenance,
   TransactionDetailReporting,
 } from "@/types";
-import { ShareStatus } from "@prisma/client";
+import { ShareStatus, FlowType } from "@prisma/client";
 
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 // TI-1: canonical row → DTO serialization (single derivation site — replaces
@@ -58,11 +58,18 @@ import {
   serializeTransactionRow,
   serializeInvestmentTransactionRow,
 } from "@/lib/transactions/serialize";
-import { gatedCounterpartyId } from "@/lib/transactions/counterparty-visibility";
+import { gatedCounterpartyId, chooseCounterpartyId } from "@/lib/transactions/counterparty-visibility";
 import { transactionDetailWhere } from "@/lib/transactions/detail-query";
 // TI5-2 — the pure read-time relationship engine. Candidate gathering stays in
 // this data layer; the resolver receives (transaction, candidates) and nothing else.
 import { resolveTransactionRelationships } from "@/lib/transactions/RelationshipResolver";
+// TI4 Slice 1 — read-time owned-account transfer matching (Cash Flow liquidity axis).
+// Projects a deterministically-matched counterparty id into the list DTO through
+// the SAME KD-15 gate; never persists Transaction.counterpartyAccountId.
+import {
+  resolveOwnedTransferCounterparties,
+  filterVisibleCounterpartyAccounts,
+} from "@/lib/transactions/transfer-resolution";
 import { convertMoney } from "@/lib/money/convert";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 
@@ -118,10 +125,18 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
   });
 
+  // TI4 Slice 1 — read-time owned-account transfer matches, already KD-15-gated.
+  const resolvedCp = await resolveOwnedTransferCounterparties(rows, { spaceId });
   // TI-1: canonical serialization. counterpartyAccountId is KD-15-gated here
   // (nulled unless the counterparty account is visible to this Space) before it
-  // ever reaches the serializer / client.
-  return rows.map((r) => serializeTransactionRow({ ...r, counterpartyAccountId: gatedCounterpartyId(r) }));
+  // ever reaches the serializer / client. Persisted (provider-confirmed) links win;
+  // a read-time transfer match fills in only where no persisted link exists.
+  return rows.map((r) =>
+    serializeTransactionRow({
+      ...r,
+      counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
+    }),
+  );
 }
 
 /** Transactions for debt accounts only (credit card activity), newest first. */
@@ -145,8 +160,16 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
   });
 
+  // TI4 Slice 1 — read-time owned-account transfer matches, already KD-15-gated;
+  // persisted (provider-confirmed) links take precedence via chooseCounterpartyId.
+  const resolvedCp = await resolveOwnedTransferCounterparties(rows, { spaceId });
   // TI-1: canonical serialization. counterpartyAccountId KD-15-gated here.
-  return rows.map((r) => serializeTransactionRow({ ...r, counterpartyAccountId: gatedCounterpartyId(r) }));
+  return rows.map((r) =>
+    serializeTransactionRow({
+      ...r,
+      counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
+    }),
+  );
 }
 
 /** Investment transactions (Buy/Sell/Dividend/Split/Fee), newest first. */
@@ -229,6 +252,8 @@ export async function getTransactionDetail(
         select: {
           id: true, name: true, displayName: true, officialName: true,
           plaidName: true, institution: true, mask: true, type: true,
+          // TI4 Slice 1 — owner anchor for cross-account transfer candidate gathering.
+          ownerUserId: true,
         },
       },
       importBatch: {
@@ -324,20 +349,32 @@ export async function getTransactionDetail(
           effectiveDateISO: conv.conversion?.effectiveDateISO ?? null,
         };
 
-  // ── TI5-2 — read-time relationship resolution ──────────────────────────────
-  // Smallest honest candidate set: rows in the SAME account within a bounded
-  // window around this row's date — enough for the pending→posted authorization
-  // gap and same-day duplicates. deletedAt is NOT filtered (the pending row is
-  // tombstoned once it posts and must still resolve; the resolver excludes
-  // tombstoned rows from DUPLICATE matching itself). Candidates inherit the
-  // target account's visibility — that account already passed the detail gate
-  // above, so no new exposure. The resolver is pure; gathering stays here.
+  // ── TI5-2 / TI4 Slice 1 — read-time relationship resolution ────────────────
+  // Same-account rows within a bounded window resolve pending→posted + duplicate.
+  // TI4 Slice 1 additionally gathers the owner's OTHER owned accounts' TRANSFER
+  // legs so transferCandidate (deterministic owned-account matching) can resolve.
+  // deletedAt is NOT filtered (a tombstoned pending row must still resolve; the
+  // resolvers exclude tombstoned rows from duplicate/transfer matching themselves).
   const RELATIONSHIP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+  const ownerUserId = row.financialAccount?.ownerUserId ?? null;
+  const ownedAccountIds = ownerUserId
+    ? (await db.financialAccount.findMany({
+        where: { ownerUserId, deletedAt: null },
+        select: { id: true },
+      })).map((a) => a.id)
+    : [];
   const candidates = await db.transaction.findMany({
     where: {
-      ...(row.financialAccountId
-        ? { financialAccountId: row.financialAccountId }
-        : { accountId: row.accountId }),
+      OR: [
+        // Same-account candidates — pending→posted + duplicate (unchanged behavior).
+        row.financialAccountId
+          ? { financialAccountId: row.financialAccountId }
+          : { accountId: row.accountId },
+        // Owned cross-account TRANSFER legs — the transferCandidate population.
+        ...(ownedAccountIds.length
+          ? [{ financialAccountId: { in: ownedAccountIds }, flowType: FlowType.TRANSFER }]
+          : []),
+      ],
       id:   { not: row.id },
       date: {
         gte: new Date(row.date.getTime() - RELATIONSHIP_WINDOW_MS),
@@ -348,19 +385,36 @@ export async function getTransactionDetail(
       id: true, accountId: true, financialAccountId: true,
       plaidTransactionId: true, pendingTransactionRef: true,
       date: true, amount: true, merchant: true, pending: true,
-      deletedAt: true, flowType: true,
+      deletedAt: true, flowType: true, currency: true,
     },
-    take: 100, // safety cap; same-account ±window sets are tiny
+    take: 300, // safety cap; same-account sets are tiny, owned ±window sets are small
   });
-  const relationships = resolveTransactionRelationships(row, candidates);
+  let relationships = resolveTransactionRelationships(row, candidates);
+
+  // KD-15 — transferCandidate names an owned account id; expose it only when that
+  // account is visible to this Space (same gate as counterpartyAccountId). Fails
+  // closed: an unresolvable/invisible counterparty leaves the row unmatched.
+  let resolvedTransferCpId: string | null = null;
+  if (relationships.transferCandidate?.counterpartyAccountId) {
+    const visible = await filterVisibleCounterpartyAccounts(
+      [relationships.transferCandidate.counterpartyAccountId],
+      spaceId,
+    );
+    if (visible.has(relationships.transferCandidate.counterpartyAccountId)) {
+      resolvedTransferCpId = relationships.transferCandidate.counterpartyAccountId;
+    } else {
+      relationships = { ...relationships, transferCandidate: null };
+    }
+  }
 
   return {
     ...serializeTransactionRow(row),
     // KD-15: override the serializer's raw value with the gated id (the detail's
     // counterpartyAccount already carries the same Space-filtered links), so the
     // detail DTO never exposes a non-visible counterparty's id — consistent with
-    // the resolved `counterparty` block below.
-    counterpartyAccountId: gatedCounterpartyId(row),
+    // the resolved `counterparty` block below. TI4 Slice 1: a persisted (provider-
+    // confirmed) link wins; otherwise a KD-15-gated read-time transfer match fills in.
+    counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(row), resolvedTransferCpId),
     pfcPrimary:         row.pfcPrimary ?? null,
     pfcDetailed:        row.pfcDetailed ?? null,
     pfcConfidenceLevel: row.pfcConfidenceLevel ?? null,

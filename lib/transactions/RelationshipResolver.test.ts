@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   resolveTransactionRelationships,
+  matchTransferCandidate,
   type RelationshipTransaction,
 } from './RelationshipResolver';
 
@@ -26,6 +27,11 @@ function tx(over: Partial<RelationshipTransaction> = {}): RelationshipTransactio
     deletedAt: null,
     ...over,
   };
+}
+
+/** A transfer leg: flowType TRANSFER + a currency, on a named account. */
+function leg(over: Partial<RelationshipTransaction> = {}): RelationshipTransaction {
+  return tx({ flowType: 'TRANSFER', currency: 'USD', plaidTransactionId: null, ...over });
 }
 
 // ── pending → posted ──────────────────────────────────────────────────────────
@@ -82,11 +88,105 @@ test('a pending row and its posted successor are NOT flagged as duplicates', () 
   assert.equal(resolveTransactionRelationships(posted, [pending]).duplicate, null);
 });
 
-// ── reserved (unratified heuristics) ──────────────────────────────────────────
-test('refundCandidate and transferCandidate are always null in this slice', () => {
+// ── reserved (refundCandidate still unratified); a non-transfer row never matches ─
+test('refundCandidate stays null; a REFUND row is not transfer-like so no transferCandidate', () => {
   const r = resolveTransactionRelationships(tx({ flowType: 'REFUND', amount: 12.5 }), [tx({ id: 'purchase', amount: -12.5 })]);
   assert.equal(r.refundCandidate, null);
   assert.equal(r.transferCandidate, null);
+});
+
+// ── TI4 Slice 1 — deterministic owned-account transfer matching ────────────────
+test('checking → savings: unique opposite leg resolves to the counterparty account', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
+  const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
+  const m = matchTransferCandidate(chk, [sav]);
+  assert.equal(m.status, 'RESOLVED');
+  assert.equal(m.counterpartyAccountId, 'fa_sav');
+  assert.equal(m.transactionId, 'sav');
+  assert.equal(m.confidence, 1);
+  assert.equal(m.reason, 'DETERMINISTIC_UNIQUE');
+});
+
+test('savings → checking: matching is symmetric (opposite direction resolves too)', () => {
+  const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
+  const m = matchTransferCandidate(sav, [chk]);
+  assert.equal(m.status, 'RESOLVED');
+  assert.equal(m.counterpartyAccountId, 'fa_chk');
+});
+
+test('within window (±2 days) resolves; a cent-level amount difference still matches', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500.00, date: new Date('2026-06-01') });
+  const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500.004, date: new Date('2026-06-03') });
+  const m = matchTransferCandidate(chk, [sav]);
+  assert.equal(m.status, 'RESOLVED');
+  assert.equal(m.counterpartyAccountId, 'fa_sav');
+});
+
+test('same absolute amount but SAME direction does not match', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
+  const other = leg({ id: 'other', financialAccountId: 'fa_sav', amount: -500 }); // same sign
+  assert.equal(matchTransferCandidate(chk, [other]).status, 'NONE');
+});
+
+test('different currencies do not match', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500, currency: 'USD' });
+  const eur = leg({ id: 'eur', financialAccountId: 'fa_sav', amount: 500, currency: 'EUR' });
+  assert.equal(matchTransferCandidate(chk, [eur]).status, 'NONE');
+});
+
+test('a candidate outside the date window does not match', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500, date: new Date('2026-06-01') });
+  const far = leg({ id: 'far', financialAccountId: 'fa_sav', amount: 500, date: new Date('2026-06-05') }); // +4d
+  assert.equal(matchTransferCandidate(chk, [far]).status, 'NONE');
+});
+
+test('same account is never its own counterparty', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
+  const sameAcct = leg({ id: 'x', financialAccountId: 'fa_chk', amount: 500 });
+  assert.equal(matchTransferCandidate(chk, [sameAcct]).status, 'NONE');
+});
+
+test('multiple equal candidates across DIFFERENT accounts → AMBIGUOUS (refused, not guessed)', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
+  const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
+  const brk = leg({ id: 'brk', financialAccountId: 'fa_brk', amount: 500 });
+  const m = matchTransferCandidate(chk, [sav, brk]);
+  assert.equal(m.status, 'AMBIGUOUS');
+  assert.equal(m.counterpartyAccountId, null);
+  assert.equal(m.reason, 'AMBIGUOUS_MULTIPLE_ACCOUNTS');
+});
+
+test('multiple equal candidates within ONE account → account is certain (leg id null)', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
+  const savA = leg({ id: 'savA', financialAccountId: 'fa_sav', amount: 500 });
+  const savB = leg({ id: 'savB', financialAccountId: 'fa_sav', amount: 500 });
+  const m = matchTransferCandidate(chk, [savA, savB]);
+  assert.equal(m.status, 'RESOLVED');
+  assert.equal(m.counterpartyAccountId, 'fa_sav');
+  assert.equal(m.transactionId, null); // account certain, exact leg is not
+});
+
+test('a tombstoned candidate leg is never paired', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
+  const dead = leg({ id: 'dead', financialAccountId: 'fa_sav', amount: 500, deletedAt: new Date('2026-06-02') });
+  assert.equal(matchTransferCandidate(chk, [dead]).status, 'NONE');
+});
+
+test('a non-transfer target is NOT transfer-like', () => {
+  const spend = leg({ id: 's', flowType: 'SPENDING', financialAccountId: 'fa_chk', amount: -500 });
+  const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
+  const m = matchTransferCandidate(spend, [sav]);
+  assert.equal(m.status, 'NONE');
+  assert.equal(m.reason, 'NOT_TRANSFER_LIKE');
+});
+
+test('resolveTransactionRelationships surfaces a RESOLVED match but hides AMBIGUOUS as null', () => {
+  const chk = leg({ id: 'chk', financialAccountId: 'fa_chk', amount: -500 });
+  const sav = leg({ id: 'sav', financialAccountId: 'fa_sav', amount: 500 });
+  const brk = leg({ id: 'brk', financialAccountId: 'fa_brk', amount: 500 });
+  assert.equal(resolveTransactionRelationships(chk, [sav]).transferCandidate?.counterpartyAccountId, 'fa_sav');
+  assert.equal(resolveTransactionRelationships(chk, [sav, brk]).transferCandidate, null); // ambiguous → null
 });
 
 // ── contract & determinism ────────────────────────────────────────────────────

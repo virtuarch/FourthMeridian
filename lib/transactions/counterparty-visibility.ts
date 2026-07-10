@@ -42,3 +42,26 @@ export function gatedCounterpartyId(row: CounterpartyVisibilityRow): string | nu
   if (!cp || cp.deletedAt !== null) return null;
   return cp.spaceAccountLinks.length > 0 ? row.counterpartyAccountId : null;
 }
+
+/**
+ * TI4 Slice 1 — resolve which counterparty id a serialized row should carry when
+ * BOTH a persisted (provider-confirmed) link and a read-time deterministic match
+ * may exist. Precedence, pure and total:
+ *
+ *   1. `persistedGatedId` — the persisted Transaction.counterpartyAccountId AFTER
+ *      gatedCounterpartyId() (e.g. a BTC wallet internal transfer). Provider-
+ *      confirmed links are HIGHER AUTHORITY and always win when present.
+ *   2. `resolvedGatedId`  — a read-time owned-account transfer match, ALREADY
+ *      KD-15-gated by the data layer (null if the matched account is not visible
+ *      to the reading Space). Read-time resolution never overrides a persisted link.
+ *
+ * Both inputs are expected to be pre-gated, so this only encodes precedence — it
+ * performs no visibility logic of its own. Returns null when neither applies
+ * (the row stays honestly Unresolved on the liquidity axis).
+ */
+export function chooseCounterpartyId(
+  persistedGatedId: string | null,
+  resolvedGatedId: string | null,
+): string | null {
+  return persistedGatedId ?? resolvedGatedId ?? null;
+}
