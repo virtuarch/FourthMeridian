@@ -42,7 +42,7 @@ export const CALENDAR_FILTERS: CalendarFilter[] = [
   { id: "liq-cash",       label: "Cash withdrawals",      perspective: "liquidity", measures: ["cashWithdrawals"] },
   // ── Spending (economic) ──
   { id: "eco-net",        label: "Income & spending",     perspective: "economic",  measures: ["income", "allSpending"] },
-  { id: "eco-spend",      label: "All spending",          perspective: "economic",  measures: ["allSpending"] },
+  { id: "eco-spend",      label: "Spending",              perspective: "economic",  measures: ["allSpending"] },
   { id: "eco-card",       label: "Credit-card spending",  perspective: "economic",  measures: ["creditCardSpending"] },
   { id: "eco-direct",     label: "Direct/debit spending", perspective: "economic",  measures: ["directDebitSpending"] },
   { id: "eco-income",     label: "Income",                perspective: "economic",  measures: ["income"] },

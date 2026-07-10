@@ -57,7 +57,11 @@ export function SegmentedControl<T extends string>({
   const measure = () => {
     const track = trackRef.current;
     const el = itemRefs.current.get(value);
-    if (!track || !el) return;
+    // When `value` matches no option (e.g. this group is inactive because the
+    // active period lives in a SIBLING control), clear the highlight instead of
+    // leaving a stale one lit — otherwise two groups can look selected at once.
+    if (!track) return;
+    if (!el) { setHighlight(null); return; }
     const trackRect = track.getBoundingClientRect();
     const elRect = el.getBoundingClientRect();
     setHighlight({

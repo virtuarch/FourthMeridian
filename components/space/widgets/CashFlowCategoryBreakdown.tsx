@@ -17,6 +17,7 @@
  */
 
 import { useState } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
@@ -42,6 +43,9 @@ interface Props {
    *  When provided, cards + strip segments open a TransactionSliceDrawer. */
   sliceFor?:      (item: CashFlowContribution) => Transaction[];
   sliceSubtitle?: string;
+  /** Phase 2 — how many cards show on narrow/mobile widths before "Show more".
+   *  Wide (≥sm) always shows all; this only truncates the stacked mobile grid. */
+  mobileTopN?:    number;
 }
 
 export function CashFlowCategoryBreakdown({
@@ -52,10 +56,22 @@ export function CashFlowCategoryBreakdown({
   emptySubline  = "Spending by category appears once you have outflows.",
   sliceFor,
   sliceSubtitle,
+  mobileTopN = 4,
 }: Props) {
   const [slice, setSlice] = useState<TransactionSlice | null>(null);
+  // Phase 2 — narrow/mobile truncation. Collapsed by default; wide screens (≥sm)
+  // ignore this entirely (CSS below always shows every card at ≥sm). Ordering,
+  // totals and drill-down are untouched — this only hides overflow cards on
+  // mobile until "Show more". No recomputation / reclassification.
+  const [mobileExpanded, setMobileExpanded] = useState(false);
   const openSlice = sliceFor
-    ? (item: CashFlowContribution) => setSlice({ title: item.label, subtitle: sliceSubtitle, rows: sliceFor(item) })
+    ? (item: CashFlowContribution) => setSlice({
+        title: item.label, subtitle: sliceSubtitle, rows: sliceFor(item),
+        // The clicked value, so the drawer visibly reconciles even for slices
+        // whose rows are neither income nor spending (debt payments, cash-in
+        // reasons) — the drawer shows it only when the flow totals are both 0.
+        total: item.value, totalLabel: "Total",
+      })
     : undefined;
   const fmt = ctx
     ? (v: number) => formatCurrency(v, ctx.target)
@@ -99,9 +115,14 @@ export function CashFlowCategoryBreakdown({
       </div>
 
       {/* 2. Category cards — dense, ranked, name · value · share. Cards open the
-             slice drawer when drill-down is enabled. */}
+             slice drawer when drill-down is enabled. Beyond mobileTopN, cards are
+             hidden on mobile (until "Show more") but ALWAYS shown at ≥sm. */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        {colored.map((c) => {
+        {colored.map((c, idx) => {
+          const overflow = idx >= mobileTopN;
+          // Overflow cards: hidden on mobile when collapsed; every card is shown
+          // at ≥sm regardless. `flex` restores the card's own flex layout at ≥sm.
+          const visibility = overflow && !mobileExpanded ? "hidden sm:flex" : "flex";
           const inner = (
             <>
               <div className="flex items-center gap-2 min-w-0">
@@ -124,18 +145,36 @@ export function CashFlowCategoryBreakdown({
               type="button"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => openSlice(c)}
-              className="text-left rounded-xl p-2.5 flex flex-col gap-1.5 border transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)]"
+              className={`text-left rounded-xl p-2.5 ${visibility} flex-col gap-1.5 border transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)]`}
               style={cardStyle}
             >
               {inner}
             </button>
           ) : (
-            <div key={c.id} className="rounded-xl p-2.5 flex flex-col gap-1.5 border" style={cardStyle}>
+            <div key={c.id} className={`rounded-xl p-2.5 ${visibility} flex-col gap-1.5 border`} style={cardStyle}>
               {inner}
             </div>
           );
         })}
       </div>
+
+      {/* Phase 2 — Show more / less, mobile-only (hidden at ≥sm where every card
+          is already visible). Only when there are overflow categories. Full-width
+          tap target ≥44px; toggles the mobile list, never opens a drawer. */}
+      {colored.length > mobileTopN && (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => setMobileExpanded((v) => !v)}
+          className="sm:hidden w-full flex items-center justify-center gap-1 min-h-[44px] rounded-xl text-xs font-semibold text-[var(--meridian-400)] border transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)]"
+          style={{ borderColor: "var(--border-subtle, rgba(255,255,255,0.06))" }}
+          aria-expanded={mobileExpanded}
+        >
+          {mobileExpanded
+            ? <>Show less <ChevronUp size={14} /></>
+            : <>Show {colored.length - mobileTopN} more <ChevronDown size={14} /></>}
+        </button>
+      )}
 
       {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}
     </div>

@@ -31,7 +31,8 @@ import type { Transaction } from "@/types";
  */
 export type RelativeCashFlowPeriod =
   | "WTD" | "MTD" | "QTD" | "YTD"
-  | "PAST_WEEK" | "PAST_MONTH" | "PAST_QUARTER" | "PAST_YEAR";
+  | "PAST_WEEK" | "PAST_MONTH" | "PAST_QUARTER" | "PAST_YEAR"
+  | "ALL";
 
 /**
  * Explicit calendar periods, selected from available transaction history.
@@ -58,12 +59,14 @@ export const TO_DATE_PERIODS: { id: RelativeCashFlowPeriod; label: string }[] = 
   { id: "YTD", label: "YTD" },
 ];
 
-/** Solid trailing group (far right in the selector). */
+/** Solid trailing group (far right in the selector). "All" is the widest window
+ *  — every live transaction, no historical cutoff (see periodRange). */
 export const ROLLING_PERIODS: { id: RelativeCashFlowPeriod; label: string }[] = [
   { id: "PAST_WEEK",    label: "1W" },
   { id: "PAST_MONTH",   label: "1M" },
   { id: "PAST_QUARTER", label: "1Q" },
   { id: "PAST_YEAR",    label: "1Y" },
+  { id: "ALL",          label: "All" },
 ];
 
 /** All relative periods (back-compat: original order/labels preserved). */
@@ -88,6 +91,7 @@ export function periodKey(p: CashFlowPeriod): string {
  *  quarters "Q2 2026", years "2025". Relative periods use their short chip. */
 export function periodLabel(p: CashFlowPeriod): string {
   if (!isExplicitPeriod(p)) {
+    if (p === "ALL") return "All Time";
     return CASH_FLOW_PERIODS.find((x) => x.id === p)?.label ?? p;
   }
   switch (p.kind) {
@@ -130,6 +134,11 @@ function explicitPeriodRange(p: ExplicitCashFlowPeriod): { start: string; end: s
  *  computed against `now`; explicit periods cover their full calendar span. */
 export function periodRange(period: CashFlowPeriod, now: Date = new Date()): { start: string; end: string } {
   if (isExplicitPeriod(period)) return explicitPeriodRange(period);
+
+  // All Time — every live transaction, no historical cutoff. A sentinel range
+  // that lexicographically bounds any real YYYY-MM-DD date on both sides, so
+  // filterByPeriod keeps the full visible history (imported/provider/wallet).
+  if (period === "ALL") return { start: "0000-01-01", end: "9999-12-31" };
 
   const end = toISODate(now);
   const d = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // strip time
@@ -264,6 +273,7 @@ export function granularityFor(period: CashFlowPeriod): CashFlowGranularity {
     case "WTD": case "MTD": case "PAST_WEEK": case "PAST_MONTH": return "day";
     case "QTD": case "PAST_QUARTER":                            return "week";
     case "YTD": case "PAST_YEAR":                               return "month";
+    case "ALL":                                                 return "month";  // monthly history buckets across all years
   }
 }
 
@@ -400,6 +410,7 @@ export function periodScale(period: CashFlowPeriod): PeriodScale {
     case "MTD": case "PAST_MONTH":               return "month";
     case "QTD": case "PAST_QUARTER":             return "quarter";
     case "YTD": case "PAST_YEAR":                return "year";
+    case "ALL":                                  return "year";
   }
 }
 
@@ -409,11 +420,17 @@ export type CashFlowHistoryMode = "calendar" | "cards";
  *  too cramped for a calendar, so they're cards-only; everything else offers
  *  both (calendar preferred — see getDefaultCashFlowHistoryMode). */
 export function getCashFlowHistoryModes(period: CashFlowPeriod): CashFlowHistoryMode[] {
+  // All Time spans an unbounded number of years — a single calendar grid can't
+  // honestly render that (monthsInRange caps at 24), so the history is the
+  // aggregated monthly cards. The analytical totals stay All Time regardless.
+  if (period === "ALL") return ["cards"];
   return periodScale(period) === "week" ? ["cards"] : ["calendar", "cards"];
 }
 
-/** Preferred default mode: calendar for month-like periods, cards for week. */
+/** Preferred default mode: calendar for month-like periods, cards for week and
+ *  All Time (see getCashFlowHistoryModes). */
 export function getDefaultCashFlowHistoryMode(period: CashFlowPeriod): CashFlowHistoryMode {
+  if (period === "ALL") return "cards";
   return periodScale(period) === "week" ? "cards" : "calendar";
 }
 

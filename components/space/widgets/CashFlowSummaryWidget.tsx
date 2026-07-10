@@ -196,6 +196,10 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
     setSlice({
       title: line.label,
       subtitle: effect === "CASH_IN" ? "Cash in this period" : "Cash out this period",
+      // Explicit reconciling total — many liquidity reasons (Debt payments, From
+      // investments, Money invested, Payment apps) are TRANSFER/DEBT rows, neither
+      // income nor spending, so the drawer would otherwise show only a count.
+      total: line.amount, totalLabel: "Total",
       rows: rows.filter((r) => {
         const c = classifyLiquidity(r, liqCtx);
         return c.effect === effect && c.reason === line.reason;
@@ -241,8 +245,8 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
       {economic ? (
         /* Economic: Income vs All spending — includes credit-card purchases. */
         <div className="grid grid-cols-2 gap-3">
-          <AxisTile label="Income"       total={facts.income}    accent="green" sign="+" lines={econInLines}  ctx={ctx} onOpenLine={openEconSlice} />
-          <AxisTile label="All spending" total={econSpendTotal}  accent="red"   sign="−" lines={econOutLines} ctx={ctx} onOpenLine={openEconSlice} />
+          <AxisTile label="Income"   total={facts.income}    accent="green" sign="+" lines={econInLines}  ctx={ctx} onOpenLine={openEconSlice} />
+          <AxisTile label="Spending" total={econSpendTotal}  accent="red"   sign="−" lines={econOutLines} ctx={ctx} onOpenLine={openEconSlice} />
         </div>
       ) : (
         /* Liquidity: Cash In / Cash Out — expandable into reason breakdown. */
@@ -281,7 +285,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
                   key={r.key}
                   label={r.label}
                   value={fmt(r.amount, ctx)}
-                  onOpen={() => setSlice({ title: r.label, subtitle: "Money that moved, not spent", rows: r.rows })}
+                  onOpen={() => setSlice({ title: r.label, subtitle: "Money that moved, not spent", rows: r.rows, total: r.amount, totalLabel: "Total" })}
                 />
               ))}
             </div>

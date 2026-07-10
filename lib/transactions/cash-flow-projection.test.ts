@@ -226,3 +226,26 @@ test("INVARIANT: no row is in both a purchase measure and a payment measure (no 
   const pay   = rowsForMeasures(mixedDay, ["debtPayments"], liqCtx).map((r) => r.id);
   assert.ok(pay.every((id) => !spend.has(id)), "purchase and payment measures are disjoint");
 });
+
+// ── Phase 1 — the user-facing "Spending" measure/label ──────────────────────────
+test("Phase 1: the all-spending economic measure is labelled 'Spending'", () => {
+  assert.equal(CALENDAR_MEASURES.allSpending.label, "Spending");
+});
+
+test("Phase 1: 'Spending' nets refunds and excludes debt payments / income / withdrawals", () => {
+  // Uses the top-of-file `rows` fixture (card + direct purchases, a card refund,
+  // a debt payment, an ATM withdrawal, salary, an investment, app transfers).
+  const drill = rowsForMeasures(rows, ["allSpending"], liqCtx);
+  const ids = new Set(drill.map((r) => r.flowType));
+  assert.ok(!ids.has("DEBT_PAYMENT"), "debt payments excluded from Spending");
+  assert.ok(!ids.has("INCOME"),       "income excluded from Spending");
+  assert.ok(!ids.has("TRANSFER"),     "transfers / investment funding / withdrawals excluded from Spending");
+  // Spending includes BOTH credit-card and direct/debit cost flows, plus refunds.
+  const f = aggregateDayFacts(rows, liqCtx);
+  assert.ok(f.creditCardSpending > 0 && f.directSpending > 0, "both card and direct spending present");
+  // The measure value == credit-card + direct spend, netted by refunds (clamped).
+  assert.equal(
+    Math.round(CALENDAR_MEASURES.allSpending.value(f) * 100),
+    Math.round(economicSpend(f) * 100),
+  );
+});

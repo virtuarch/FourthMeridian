@@ -242,7 +242,7 @@ export const CALENDAR_MEASURES: Record<CalendarMeasureId, CalendarMeasure> = {
   income:              { id: "income",              label: "Income",               direction: "in",  perspective: "economic",  value: (f) => f.income,      rowMatches: (t) => isIncome(t.flowType ?? null) },
   // All spending includes REFUNDs (they net the total) — same doctrine as Spending
   // by Category, so the drawer's clamped spend reconciles.
-  allSpending:         { id: "allSpending",         label: "All spending",         direction: "out", perspective: "economic",  value: economicSpend,        rowMatches: (t) => isCostFlow(t.flowType ?? null) || isRefund(t.flowType ?? null) },
+  allSpending:         { id: "allSpending",         label: "Spending",             direction: "out", perspective: "economic",  value: economicSpend,        rowMatches: (t) => isCostFlow(t.flowType ?? null) || isRefund(t.flowType ?? null) },
   creditCardSpending:  { id: "creditCardSpending",  label: "Credit-card spending", direction: "out", perspective: "economic",  subsetOf: "allSpending", value: (f) => f.creditCardSpending, rowMatches: (t, c) => isCostFlow(t.flowType ?? null) && tierOfRow(t, c) === "liability" },
   directDebitSpending: { id: "directDebitSpending", label: "Direct/debit spending", direction: "out", perspective: "economic", subsetOf: "allSpending", value: (f) => f.directSpending,     rowMatches: (t, c) => isCostFlow(t.flowType ?? null) && tierOfRow(t, c) !== "liability" },
   // Physical cash — its own honest line, subset of neither axis (Part 5).

@@ -47,10 +47,29 @@ function tx(date: string, amount: number, flowType: FlowType, category: Transact
 }
 
 // ── Period model ──────────────────────────────────────────────────────────────
-check("8 periods with the required set",
+check("9 periods with the required set (incl. All Time)",
   CASH_FLOW_PERIODS.map((p) => p.id).join(",") ===
-    "WTD,MTD,QTD,YTD,PAST_WEEK,PAST_MONTH,PAST_QUARTER,PAST_YEAR");
+    "WTD,MTD,QTD,YTD,PAST_WEEK,PAST_MONTH,PAST_QUARTER,PAST_YEAR,ALL");
 check("default period is MTD", DEFAULT_CASH_FLOW_PERIOD === "MTD");
+
+// ── All Time (Phase 8) — now-independent (constant sentinel range) ───────────────
+{
+  const r = periodRange("ALL");
+  check("ALL range bounds any real date on both sides",
+    r.start === "0000-01-01" && r.end === "9999-12-31");
+  const spanning: Transaction[] = [
+    tx("2019-01-15", -50, "SPENDING"),
+    tx("2026-07-08", -75, "SPENDING"),
+    tx("2011-12-31", 100, "INCOME"),
+  ];
+  check("ALL keeps every live transaction (no historical cutoff)",
+    filterByPeriod(spanning, "ALL").length === 3);
+  check("ALL label is human-readable 'All Time'", periodLabel("ALL") === "All Time");
+  check("ALL history is cards-only (no mega-calendar)",
+    getCashFlowHistoryModes("ALL").join(",") === "cards" &&
+    getDefaultCashFlowHistoryMode("ALL") === "cards");
+  check("ALL buckets monthly", granularityFor("ALL") === "month");
+}
 
 // Fixed reference date: 2026-07-09 (a Thursday).
 const now = new Date(2026, 6, 9);
@@ -69,8 +88,8 @@ check("filterByPeriod keeps in-range, drops out-of-range",
 // ── Grouped period constants ────────────────────────────────────────────────────
 check("to-date group is WTD..YTD",
   TO_DATE_PERIODS.map((p) => p.id).join(",") === "WTD,MTD,QTD,YTD");
-check("rolling group is PAST_*",
-  ROLLING_PERIODS.map((p) => p.id).join(",") === "PAST_WEEK,PAST_MONTH,PAST_QUARTER,PAST_YEAR");
+check("rolling group is PAST_* + All Time",
+  ROLLING_PERIODS.map((p) => p.id).join(",") === "PAST_WEEK,PAST_MONTH,PAST_QUARTER,PAST_YEAR,ALL");
 check("CASH_FLOW_PERIODS = to-date ++ rolling",
   CASH_FLOW_PERIODS.length === TO_DATE_PERIODS.length + ROLLING_PERIODS.length);
 

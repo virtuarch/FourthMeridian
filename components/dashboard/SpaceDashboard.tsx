@@ -85,6 +85,7 @@ import {
 } from "@/components/space/widgets/goals-perspective-adapters";
 import {
   DEFAULT_CASH_FLOW_PERIOD,
+  periodLabel,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
@@ -1628,7 +1629,7 @@ const SOLID_LEDE_KEYS = new Set([
   "net_worth", "net_worth_chart", "allocation",
   "wealth_by_account", "institution_allocation", "asset_allocation", "wealth_concentration",
   "liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration",
-  "cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category", "income_by_source",
+  "cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category", "income_by_source", "debt_payments",
   "debt_by_account", "debt_cost", "credit_utilization", "debt_payoff_snapshot",
   "debt_history", "credit_score", "debt_complete_info", "debt_payoff_calculator",
   "goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap",
@@ -1767,9 +1768,15 @@ function SectionCard({
   //    and keeps the drag handle legible. Left padding leaves room for the
   //    Edit-Layout grip that overlays the card's top-left corner. */
   if (isSolidLede) {
+    // Phase 7 — the Cash Flow Summary header names the active analytical time
+    // slice, read from the SAME authoritative `period` every widget consumes
+    // (no separate period logic here). Other lede widgets keep their bare label.
+    const headerLabel = section.key === "cash_flow_summary" && period
+      ? `${displayLabel} · ${periodLabel(period)}`
+      : displayLabel;
     return (
       <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4">
-        <p className="text-sm font-semibold text-[var(--text-primary)] px-1 mb-2">{displayLabel}</p>
+        <p className="text-sm font-semibold text-[var(--text-primary)] px-1 mb-2">{headerLabel}</p>
         {renderBody()}
       </GlassPanel>
     );

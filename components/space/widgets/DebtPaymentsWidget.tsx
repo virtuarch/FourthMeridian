@@ -20,6 +20,7 @@ import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { CashFlowCategoryBreakdown } from "@/components/space/widgets/CashFlowCategoryBreakdown";
+import { groupDebtPaymentsByCreditor, normalizeCreditor, rawCreditorLabel } from "@/lib/transactions/debt-payments";
 
 interface Props {
   transactions: Transaction[] | null | undefined;
@@ -28,14 +29,7 @@ interface Props {
   accounts:     { id: string; type: string }[];
 }
 
-/** Best creditor label for a debt-payment row — the counterparty/merchant the
- *  payment was made to (a card issuer, lender…). Never a "merchant" in the spend
- *  sense; pure presentation over existing fields. */
-function creditorLabel(t: Transaction): string {
-  return (t.merchantDisplayName?.trim() || t.merchant?.trim() || t.description?.trim() || "Debt payment");
-}
-
-function magnitude(t: LiquidityTx, ctx?: ConversionContext): number {
+function magnitude(t: Transaction, ctx?: ConversionContext): number {
   const amt = ctx ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount : t.amount;
   return Math.abs(amt);
 }
@@ -51,17 +45,11 @@ export function DebtPaymentsWidget({ transactions, period, ctx, accounts }: Prop
   }
   const rows = filterByPeriod(transactions, period) as LiquidityTx[];
   const liqCtx = tierResolver(accounts);
+  // Canonical DEBT_PAYMENT liquidity rows (CASH_OUT/DEBT_PAYMENT) — the spendable-
+  // cash leg that pays down a liability; the liability-side leg is NEUTRAL, so a
+  // payment is counted once. Aggregated by normalized creditor (Phase 3).
   const payments = rows.filter((t) => isDebtPaymentRow(t, liqCtx));
-
-  const byCreditor = new Map<string, number>();
-  for (const t of payments) {
-    const label = creditorLabel(t);
-    byCreditor.set(label, (byCreditor.get(label) ?? 0) + magnitude(t, ctx));
-  }
-  const items = [...byCreditor.entries()]
-    .map(([label, value]) => ({ id: label, label, value }))
-    .filter((i) => i.value > 0)
-    .sort((a, b) => b.value - a.value);
+  const items = groupDebtPaymentsByCreditor(payments, (t) => magnitude(t, ctx));
 
   return (
     <CashFlowCategoryBreakdown
@@ -71,7 +59,7 @@ export function DebtPaymentsWidget({ transactions, period, ctx, accounts }: Prop
       emptyHeadline="No debt payments in this period"
       emptySubline="Card and loan payments appear here once you make them."
       sliceSubtitle="Debt payments to this creditor"
-      sliceFor={(item) => payments.filter((t) => creditorLabel(t) === item.id)}
+      sliceFor={(item) => payments.filter((t) => normalizeCreditor(rawCreditorLabel(t)) === item.id)}
     />
   );
 }

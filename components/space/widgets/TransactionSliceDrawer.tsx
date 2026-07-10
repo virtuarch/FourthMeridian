@@ -37,6 +37,14 @@ export interface TransactionSlice {
   allRows?:      Transaction[];
   /** What the filtered `rows` represent (the active measure), for the toggle label. */
   measureLabel?: string;
+  /** An explicit reconciling total for slices whose rows are neither INCOME nor
+   *  SPENDING (debt payments, cash-in-by-reason transfers, …), where the
+   *  FlowType-based income/spend totals are both zero and would otherwise leave
+   *  the drawer showing only a transaction count. Presentation only — it is the
+   *  clicked value the caller already computed, so the drawer visibly reconciles
+   *  with the row/segment that opened it. Shown only when income and spend are 0. */
+  total?:        number;
+  totalLabel?:   string;
 }
 
 /** Friendly, canonical FlowType group labels (the persisted `flowType` fact). */
@@ -112,6 +120,14 @@ export function TransactionSliceDrawer({
     <GlassModal title={slice.title} subtitle={slice.subtitle} icon={Waves} onClose={onClose} size="md">
       {/* Totals — reuse the exact Cash Flow doctrine so they match the source. */}
       <div className="flex items-center gap-4 flex-wrap px-1 pb-2 text-sm">
+        {/* Explicit reconciling total for neutral-flow slices (debt payments,
+            cash-in-by-reason) where income/spend are both 0. Matches the clicked
+            value, so the drawer visibly reconciles with what opened it. */}
+        {income <= 0 && spend <= 0 && slice.total != null && !viewingAll && (
+          <span className="text-[var(--text-secondary)]">
+            {slice.totalLabel ?? "Total"} <span className="font-semibold text-[var(--text-primary)]">{money(slice.total, ctx)}</span>
+          </span>
+        )}
         {income > 0 && (
           <span className="text-[var(--text-secondary)]">
             Income <span className="font-semibold text-[var(--accent-positive)]">+{money(income, ctx)}</span>
