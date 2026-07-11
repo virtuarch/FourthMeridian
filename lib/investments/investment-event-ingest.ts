@@ -27,6 +27,10 @@ import {
   mapPlaidInvestmentTransactionToEvent,
   type MappedInvestmentEvent,
 } from "@/lib/investments/plaid-investment-events";
+import {
+  investmentReconstructionEnabled,
+  repairReconstructionForAccount,
+} from "@/lib/investments/reconstruction-runner";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -164,6 +168,10 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
 
   // ── Persist (stable order) ───────────────────────────────────────────────
   const accountCache = new Map<string, string | null>();
+  // A4 bounded-repair inputs: (account → instruments touched by new/corrected
+  // events) + whether a cash-only event was touched. Only inserted/corrected
+  // rows change a walk; unchanged rows never trigger a repair.
+  const affected = new Map<string, { instrumentIds: Set<string>; cash: boolean }>();
   for (const txn of sortInvestmentTransactions(all)) {
     metrics.fetched++;
     try {
@@ -183,13 +191,55 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
       if (outcome === "inserted") metrics.inserted++;
       else if (outcome === "unchanged") metrics.unchanged++;
       else metrics.corrected++;
+
+      if (outcome === "inserted" || outcome === "corrected") {
+        const a = affected.get(faId) ?? { instrumentIds: new Set<string>(), cash: false };
+        if (instrumentId) a.instrumentIds.add(instrumentId);
+        else a.cash = true;
+        affected.set(faId, a);
+      }
     } catch (rowErr) {
       metrics.failed++;
       console.warn(`[investment-events] row ${txn.investment_transaction_id} failed (non-fatal): ${rowErr instanceof Error ? rowErr.message : rowErr}`);
     }
   }
 
+  // ── A4 bounded-repair hook ────────────────────────────────────────────────
+  // Late/corrected events that land on an already-reconstructed position rerun
+  // that position's walk (bounded to the affected instruments). Flag-gated and
+  // best-effort — a repair failure never fails ingestion.
+  await maybeRepairReconstructions(client, affected, params.now, params.plaidItemId);
+
   return metrics;
+}
+
+/**
+ * Fire bounded reconstruction repair for every account touched by new/corrected
+ * events. No-op unless INVESTMENT_RECONSTRUCTION_ENABLED; each account is wrapped
+ * non-fatal so a repair failure is logged and swallowed, never surfaced to the
+ * refresh/ingestion caller.
+ */
+async function maybeRepairReconstructions(
+  client: Client,
+  affected: Map<string, { instrumentIds: Set<string>; cash: boolean }>,
+  now: Date,
+  plaidItemId?: string,
+): Promise<void> {
+  if (!investmentReconstructionEnabled() || affected.size === 0) return;
+  for (const [financialAccountId, a] of affected) {
+    try {
+      await repairReconstructionForAccount({
+        financialAccountId,
+        affectedInstrumentIds: [...a.instrumentIds],
+        affectedCash: a.cash,
+        now,
+        client,
+      });
+    } catch (err) {
+      console.warn(`[investment-events] reconstruction repair for account ${financialAccountId} failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+      await recordSyncIssue({ kind: "UPSERT_ERROR", plaidItemId: plaidItemId ?? null, detail: { stage: "reconstruction-repair", financialAccountId } });
+    }
+  }
 }
 
 async function resolveFinancialAccountId(client: Client, plaidAccountId: string, cache: Map<string, string | null>): Promise<string | null> {

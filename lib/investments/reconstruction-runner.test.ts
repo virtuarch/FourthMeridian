@@ -14,6 +14,7 @@
 import { InvestmentEventType } from "@prisma/client";
 import {
   reconstructAccount,
+  repairReconstructionForAccount,
   assertCanonicalCompleteness,
   RECONSTRUCTION_SOURCE,
 } from "./reconstruction-runner";
@@ -28,7 +29,8 @@ const D = (s: string) => new Date(`${s}T00:00:00.000Z`);
 
 // ── Minimal in-memory fake Prisma client ─────────────────────────────────────
 interface Row { [k: string]: unknown }
-function makeFake(observed: Row[], events: Row[]) {
+interface FakeOpts { existingSummaries?: Row[]; cashInstruments?: Row[] }
+function makeFake(observed: Row[], events: Row[], opts: FakeOpts = {}) {
   const derivedCreated: Row[] = [];
   const summaries: Row[] = [];
   const calls = { deleteMany: 0, createMany: 0, upsert: 0 };
@@ -39,7 +41,9 @@ function makeFake(observed: Row[], events: Row[]) {
       createMany: async ({ data }: { data: Row[] }) => { calls.createMany++; derivedCreated.push(...data); return { count: data.length }; },
     },
     investmentEvent: { findMany: async () => events },
+    instrument: { findMany: async () => opts.cashInstruments ?? [] },
     positionReconstruction: {
+      findMany: async () => opts.existingSummaries ?? [],
       upsert: async ({ create }: { create: Row }) => { calls.upsert++; summaries.push(create); return create; },
     },
     $transaction: async (cb: (tx: unknown) => Promise<unknown>) => cb(client),
@@ -116,6 +120,71 @@ async function main(): Promise<void> {
     const m = await reconstructAccount({ financialAccountId: "fa1", now: D("2026-07-11"), client: f.client as never, instrumentIds: ["VTI"] });
     check("only one instrument reconstructed", m.instruments === 1 && f.summaries.length === 1);
     check("it is the requested instrument", f.summaries[0].instrumentId === "VTI");
+  }
+
+  // ── Bounded repair (A4-3 incremental replay) ─────────────────────────────
+  console.log("bounded repair — reruns only reconstructed positions touched by new events");
+  {
+    // TQQQ already reconstructed; a late buy arrives. Repair reruns TQQQ only.
+    const f = makeFake(
+      [anchor("TQQQ", 50)],
+      [
+        event("TQQQ", InvestmentEventType.BUY, "2026-05-01", { quantity: 20 }),
+        event("TQQQ", InvestmentEventType.BUY, "2026-06-01", { quantity: 30 }), // the newly ingested event
+      ],
+      { existingSummaries: [{ instrumentId: "TQQQ" }] },
+    );
+    const m = await repairReconstructionForAccount({
+      financialAccountId: "fa1", affectedInstrumentIds: ["TQQQ"], affectedCash: false, now: D("2026-07-11"), client: f.client as never,
+    });
+    check("repaired the affected reconstructed instrument", m.repairedInstrumentIds.includes("TQQQ") && m.instruments === 1);
+    check("late event now fully explains it → COMPLETE (residual shrank to 0)", f.summaries[0].reconciliation === "COMPLETE");
+  }
+
+  console.log("bounded repair — never reconstructs a position that was never reconstructed");
+  {
+    const f = makeFake([anchor("NEW", 10)], [event("NEW", InvestmentEventType.BUY, "2026-06-01", { quantity: 10 })], { existingSummaries: [] });
+    const m = await repairReconstructionForAccount({
+      financialAccountId: "fa1", affectedInstrumentIds: ["NEW"], affectedCash: false, now: D("2026-07-11"), client: f.client as never,
+    });
+    check("no existing summary ⇒ repair is a no-op", m.instruments === 0 && f.summaries.length === 0 && f.calls.upsert === 0);
+  }
+
+  console.log("bounded repair — an affected instrument outside the reconstructed set is skipped");
+  {
+    const f = makeFake(
+      [anchor("TQQQ", 10), anchor("OTHER", 5)],
+      [event("TQQQ", InvestmentEventType.BUY, "2026-06-01", { quantity: 10 }), event("OTHER", InvestmentEventType.BUY, "2026-06-01", { quantity: 5 })],
+      { existingSummaries: [{ instrumentId: "TQQQ" }] }, // only TQQQ was reconstructed
+    );
+    const m = await repairReconstructionForAccount({
+      financialAccountId: "fa1", affectedInstrumentIds: ["OTHER"], affectedCash: false, now: D("2026-07-11"), client: f.client as never,
+    });
+    check("affected-but-unreconstructed instrument is not repaired", m.instruments === 0 && f.summaries.length === 0);
+  }
+
+  console.log("bounded repair — a touched cash-only event repairs reconstructed cash instruments");
+  {
+    const f = makeFake(
+      [anchor("CASH_USD", 500, { isCash: true })],
+      [event(null, InvestmentEventType.CONTRIBUTION, "2026-06-01", { amount: 100 })],
+      { existingSummaries: [{ instrumentId: "CASH_USD" }], cashInstruments: [{ id: "CASH_USD" }] },
+    );
+    const m = await repairReconstructionForAccount({
+      financialAccountId: "fa1", affectedInstrumentIds: [], affectedCash: true, now: D("2026-07-11"), client: f.client as never,
+    });
+    check("cash instrument repaired via AssetClass resolution", m.repairedInstrumentIds.includes("CASH_USD") && m.instruments === 1);
+  }
+
+  console.log("bounded repair — flag off writes nothing");
+  {
+    delete process.env.INVESTMENT_RECONSTRUCTION_ENABLED;
+    const f = makeFake([anchor("TQQQ", 10)], [event("TQQQ", InvestmentEventType.BUY, "2026-06-01", { quantity: 10 })], { existingSummaries: [{ instrumentId: "TQQQ" }] });
+    const m = await repairReconstructionForAccount({
+      financialAccountId: "fa1", affectedInstrumentIds: ["TQQQ"], affectedCash: false, now: D("2026-07-11"), client: f.client as never,
+    });
+    check("repair disabled with the flag off", m.status === "disabled" && f.summaries.length === 0);
+    process.env.INVESTMENT_RECONSTRUCTION_ENABLED = "true";
   }
 
   // ── Canonical write guard ────────────────────────────────────────────────

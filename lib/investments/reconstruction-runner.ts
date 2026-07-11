@@ -20,7 +20,7 @@
  * Reads/writes only A4-owned data. No reader/UI changes, no valuation, no prices.
  */
 
-import { PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
+import { AssetClass, PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
 import { COMPLETENESS_TIERS, isCompletenessTier } from "@/lib/perspective-engine/completeness";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
@@ -252,4 +252,67 @@ export async function reconstructAccount(params: ReconstructAccountParams): Prom
   else await persistAll(client);
 
   return metrics;
+}
+
+// ── Bounded repair (A4-3) ─────────────────────────────────────────────────────
+
+export interface RepairParams {
+  financialAccountId: string;
+  /** Non-null instrument ids touched by newly ingested/corrected events. */
+  affectedInstrumentIds: string[];
+  /** A cash-only event (instrumentId null) was ingested/corrected. */
+  affectedCash: boolean;
+  now: Date;
+  client?: Client;
+}
+
+export interface RepairMetrics extends ReconstructionMetrics {
+  repairedInstrumentIds: string[];
+}
+
+/**
+ * Bounded, incremental repair: rerun reconstruction only for the positions that
+ * (a) already have a reconstruction summary — i.e. sit inside an already-
+ * reconstructed window — AND (b) were touched by newly ingested or corrected
+ * events. Positions never reconstructed (no summary) are left to the one-time
+ * run, not repaired here. A touched cash-only event repairs the account's
+ * reconstructed cash instruments (resolved by AssetClass). No summaries / no
+ * matching targets ⇒ a no-op. Flag-off ⇒ no reads and no writes.
+ *
+ * The walk itself is always full (anchored at the latest OBSERVED quantity), so
+ * a late event dated before the window correctly re-widens or shrinks the
+ * unexplained opening — the "min(affected dates) → next OBSERVED anchor" bound is
+ * satisfied by scoping to the affected instruments, never the whole account.
+ */
+export async function repairReconstructionForAccount(params: RepairParams): Promise<RepairMetrics> {
+  const empty: RepairMetrics = {
+    status: "disabled", instruments: 0, complete: 0, partial: 0, failed: 0, conflicted: 0, derivedRows: 0, repairedInstrumentIds: [],
+  };
+  if (!investmentReconstructionEnabled()) return empty;
+  const client = params.client ?? db;
+
+  const summaries = await client.positionReconstruction.findMany({
+    where:  { financialAccountId: params.financialAccountId },
+    select: { instrumentId: true },
+  });
+  if (summaries.length === 0) return { ...empty, status: "ok" }; // nothing reconstructed yet
+  const reconstructed = new Set(summaries.map((s) => s.instrumentId));
+
+  const target = new Set(params.affectedInstrumentIds.filter((id) => reconstructed.has(id)));
+  if (params.affectedCash) {
+    const cashInstruments = await client.instrument.findMany({
+      where:  { id: { in: [...reconstructed] }, assetClass: AssetClass.CASH },
+      select: { id: true },
+    });
+    for (const c of cashInstruments) target.add(c.id);
+  }
+  if (target.size === 0) return { ...empty, status: "ok" };
+
+  const m = await reconstructAccount({
+    financialAccountId: params.financialAccountId,
+    now: params.now,
+    client,
+    instrumentIds: [...target],
+  });
+  return { ...m, repairedInstrumentIds: [...target] };
 }
