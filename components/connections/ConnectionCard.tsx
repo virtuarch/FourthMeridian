@@ -39,6 +39,7 @@ import { DataCard } from "@/components/atlas/DataCard";
 import { AtlasLiquidCard } from "@/components/atlas/AtlasLiquidCard";
 import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import { ReconnectAccountButton } from "@/components/dashboard/ReconnectAccountButton";
+import { EnableInvestmentsButton } from "@/components/dashboard/EnableInvestmentsButton";
 import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
 import { providerName, type SyncConnection } from "@/lib/sync/status";
 
@@ -140,6 +141,39 @@ function DoneStatusRow({ label }: { label: string }) {
       <span>{label}</span>
     </li>
   );
+}
+
+/**
+ * Investments capability affordance for a Plaid connection.
+ *   "enabled"   → honest "Investments synced" done-row (holdings active).
+ *   "available" → "Enable Investments" action (update-mode consent) for THIS
+ *                 Item. Only shown where the connection plausibly supports
+ *                 investment data (CONSENT_REQUIRED) — never for unsupported /
+ *                 unknown connections, so it can't mislead.
+ *   null        → nothing.
+ * Plaid-only: wallets always carry investments=null.
+ */
+function InvestmentsCapability({ connection }: { connection: SyncConnection }) {
+  if (connection.provider !== "PLAID") return null;
+
+  if (connection.investments === "enabled") {
+    return (
+      <ul className="mt-3 space-y-1.5">
+        <DoneStatusRow label="Investments synced" />
+      </ul>
+    );
+  }
+
+  if (connection.investments === "available") {
+    return (
+      <div className="mt-3 flex flex-col gap-1.5">
+        <span className="text-sm text-[var(--text-muted)]">Investment holdings available for this connection.</span>
+        <EnableInvestmentsButton plaidItemId={connection.id} />
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // ── Shared content fragments (identical across Liquid + Glass) ─────────────────
@@ -313,6 +347,9 @@ function ReadyContent({
       <ul className="space-y-1.5">
         <DoneStatusRow label="Transaction history imported" />
       </ul>
+
+      {/* Connection-specific Investments capability (Plaid only). */}
+      <InvestmentsCapability connection={connection} />
 
       <AccountNames accounts={accounts} />
     </div>

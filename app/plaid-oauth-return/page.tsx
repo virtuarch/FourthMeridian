@@ -33,6 +33,10 @@ export default function PlaidOAuthReturn() {
   const [receivedUri,     setReceivedUri]      = useState<string>("");
   const [status,          setStatus]           = useState<"loading" | "ready" | "importing" | "error">("loading");
   const [errorMessage,    setErrorMessage]     = useState("");
+  // True when this OAuth round-trip completes a connection-specific Investments
+  // consent (update mode) rather than a normal connect. Set from sessionStorage
+  // on mount (written by PlaidContext.openInvestmentsConsent before redirect).
+  const [isInvestments,   setIsInvestments]    = useState(false);
   const hasOpened = useRef(false);
 
   // Read the link token and current URL on mount.
@@ -41,6 +45,7 @@ export default function PlaidOAuthReturn() {
   useEffect(() => {
     const token = sessionStorage.getItem("plaid_link_token");
     const uri   = window.location.href;
+    const mode  = sessionStorage.getItem("plaid_link_mode");
 
     startTransition(() => {
       if (!token) {
@@ -48,6 +53,7 @@ export default function PlaidOAuthReturn() {
         setErrorMessage("Link session expired. Please close this tab and try connecting your account again.");
         return;
       }
+      setIsInvestments(mode === "investments");
       setLinkToken(token);
       setReceivedUri(uri);
       setStatus("ready");
@@ -56,6 +62,33 @@ export default function PlaidOAuthReturn() {
 
   const onSuccess = async (public_token: Parameters<PlaidLinkOnSuccess>[0], metadata: Parameters<PlaidLinkOnSuccess>[1]) => {
     setStatus("importing");
+
+    // ── Investments-consent completion (update mode) ──────────────────────────
+    // Same access_token — no exchange. Run the existing holdings refresh via the
+    // dedicated enable route, then return to Connections. No duplicate Item.
+    if (sessionStorage.getItem("plaid_link_mode") === "investments") {
+      const plaidItemId = sessionStorage.getItem("plaid_investments_item_id") ?? "";
+      sessionStorage.removeItem("plaid_link_token");
+      sessionStorage.removeItem("plaid_link_mode");
+      sessionStorage.removeItem("plaid_investments_item_id");
+      try {
+        const res = await fetch("/api/plaid/investments/enable", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ plaidItemId }),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error ?? "Could not enable Investments.");
+        }
+        router.replace("/dashboard/connections");
+      } catch (err) {
+        setStatus("error");
+        setErrorMessage(err instanceof Error ? err.message : "Failed to enable Investments.");
+      }
+      return;
+    }
+
     sessionStorage.removeItem("plaid_link_token");
 
     try {
@@ -93,11 +126,17 @@ export default function PlaidOAuthReturn() {
     console.log("link_session_id:", metadata?.link_session_id ?? null);
     console.groupEnd();
 
+    const investmentsMode = sessionStorage.getItem("plaid_link_mode") === "investments";
     sessionStorage.removeItem("plaid_link_token");
+    sessionStorage.removeItem("plaid_link_mode");
+    sessionStorage.removeItem("plaid_investments_item_id");
 
     if (err) {
       setStatus("error");
       setErrorMessage(err.display_message ?? "Connection failed. Please try again from the dashboard.");
+    } else if (investmentsMode) {
+      // Cancelled Investments consent — non-destructive; back to Connections.
+      router.replace("/dashboard/connections");
     } else {
       // User cancelled — send them home
       router.replace("/");
@@ -139,8 +178,12 @@ export default function PlaidOAuthReturn() {
         {status === "importing" && (
           <>
             <Loader2 className="mx-auto h-8 w-8 animate-spin text-green-400" />
-            <p className="text-gray-300 text-sm font-medium">Importing accounts…</p>
-            <p className="text-gray-500 text-xs">This only takes a moment.</p>
+            <p className="text-gray-300 text-sm font-medium">
+              {isInvestments ? "Enabling investments…" : "Importing accounts…"}
+            </p>
+            <p className="text-gray-500 text-xs">
+              {isInvestments ? "Syncing your holdings." : "This only takes a moment."}
+            </p>
           </>
         )}
 

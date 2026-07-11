@@ -47,6 +47,14 @@ export async function GET(req: NextRequest) {
     const reconnectItemId = req.nextUrl.searchParams.get("plaidItemId");
     // D2 Slice A — institution-level auto-detection (Add Account flow).
     const institutionId   = req.nextUrl.searchParams.get("institutionId");
+    // Connection-specific Investments consent (update mode only). When
+    // "investments", the update-mode token additionally collects DTM consent
+    // for Investments on THIS Item via `additional_consented_products` — the
+    // ONLY correct mechanism (products is omitted in update mode except for
+    // credit products; Investments is not one). Never affects a fresh-link
+    // session, so the global Transactions-only path (AmEx-compatible) is
+    // untouched. See docs/investigations/PLAID_INVESTMENTS_CONSENT_INVESTIGATION.md.
+    const consentParam    = req.nextUrl.searchParams.get("consent");
     let accessToken: string | undefined;
 
     if (reconnectItemId) {
@@ -114,12 +122,25 @@ export async function GET(req: NextRequest) {
     const products      = [Products.Transactions];
     const country_codes = [CountryCode.Us];
 
+    // Investments consent is added ONLY in update mode (accessToken present)
+    // and ONLY when explicitly requested for this specific Item. It is never
+    // added to a fresh-link session, so `products` stays Transactions-only for
+    // every normal Add Connection — AmEx and other credit-only institutions
+    // are unaffected. Placed in `additional_consented_products` (not
+    // `products`): this collects consent without gating the institution and is
+    // not billed until investmentsHoldingsGet is called on the Item.
+    const wantsInvestmentsConsent = Boolean(accessToken) && consentParam === "investments";
+    const additionalConsentedProducts = wantsInvestmentsConsent
+      ? [Products.Investments]
+      : undefined;
+
     // ── Server-side config log (safe fields only) ─────────────────────────────
     console.log("[plaid] link-token config:", {
       env:           PLAID_ENV,
       client_name:   "Fourth Meridian",
       mode:          accessToken ? "update" : "new",
       products:      products.map(String),
+      additional_consented_products: additionalConsentedProducts?.map(String) ?? null,
       country_codes: country_codes.map(String),
       redirect_uri:  redirectUri ? "set" : "NOT SET (OAuth institutions will fail)",
     });
@@ -132,6 +153,10 @@ export async function GET(req: NextRequest) {
       // Update mode: pass access_token, omit products (Plaid requires this —
       // see LinkTokenCreateRequest docs). Default mode: unchanged from before.
       ...(accessToken ? { access_token: accessToken } : { products }),
+      // Only present in update mode when this Item's Investments consent was
+      // explicitly requested (see wantsInvestmentsConsent). Undefined otherwise,
+      // so it is a no-op for every normal/reconnect session.
+      ...(additionalConsentedProducts && { additional_consented_products: additionalConsentedProducts }),
       ...(redirectUri && { redirect_uri: redirectUri }),
       // D4 — Request maximum available transaction history (up to 730 days /
       // ~2 years) for every new Item. Plaid's default is 90 days when this

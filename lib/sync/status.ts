@@ -28,6 +28,18 @@ export type SyncConnectionState = "importing" | "ready" | "needs_reauth" | "erro
 /** Provider-agnostic. PLAID + WALLET today; CSV / COINBASE / SCHWAB / … later. */
 export type SyncProvider = "PLAID" | "WALLET";
 
+/**
+ * Client-safe Investments capability for a connection, derived from
+ * PlaidItem.investmentsConsent. Deliberately narrower than the DB enum:
+ *   ENABLED          → "enabled"   (holdings sync active)
+ *   CONSENT_REQUIRED → "available" (supported; user can enable via update mode)
+ *   UNSUPPORTED      → null        (never surface an action — see invariant)
+ *   null (unknown)   → null        (not yet probed; don't mislead)
+ * Only "available" renders an "Enable Investments" action; "enabled" renders a
+ * connected/synced indicator; null renders nothing.
+ */
+export type InvestmentsCapability = "enabled" | "available";
+
 export interface SyncConnection {
   /** Opaque connection id (PlaidItem.id today). */
   id:           string;
@@ -38,6 +50,12 @@ export interface SyncConnection {
   lastSyncedAt: string | null;
   /** Provider error code — only meaningful for needs_reauth / error. */
   errorCode:    string | null;
+  /**
+   * Investments capability for this connection, or null when not applicable
+   * (unsupported, unknown, or non-Plaid). Never carries the raw access token
+   * or any credential — a pure display-capability enum.
+   */
+  investments:  InvestmentsCapability | null;
 }
 
 export interface SyncStatus {
@@ -77,6 +95,27 @@ export interface PlaidItemStateInput {
   cursor:          string | null;
   lastSyncedAt:    Date | null;
   errorCode:       string | null;
+  /**
+   * Raw PlaidItem.investmentsConsent (string union of the DB enum), or null
+   * when unknown/never derived. Consumed only to compute the client-safe
+   * `investments` capability — never forwarded verbatim.
+   */
+  investmentsConsent?: "ENABLED" | "CONSENT_REQUIRED" | "UNSUPPORTED" | null;
+}
+
+/**
+ * Maps the raw PlaidItem.investmentsConsent enum to the client-safe
+ * capability. UNSUPPORTED and unknown both collapse to null so no misleading
+ * "Enable Investments" action is ever surfaced (see task invariant).
+ */
+export function deriveInvestmentsCapability(
+  consent: PlaidItemStateInput["investmentsConsent"],
+): InvestmentsCapability | null {
+  switch (consent) {
+    case "ENABLED":          return "enabled";
+    case "CONSENT_REQUIRED": return "available";
+    default:                 return null; // UNSUPPORTED | null | undefined
+  }
 }
 
 /**
@@ -122,6 +161,7 @@ export function buildSyncStatus(items: PlaidItemStateInput[]): SyncStatus {
       state,
       lastSyncedAt: item.lastSyncedAt ? item.lastSyncedAt.toISOString() : null,
       errorCode:    item.errorCode ?? null,
+      investments:  deriveInvestmentsCapability(item.investmentsConsent),
     });
   }
 
@@ -180,6 +220,9 @@ export function buildWalletSyncStatus(inputs: WalletConnectionStateInput[]): Syn
       state,
       lastSyncedAt: w.lastSyncedAt ? w.lastSyncedAt.toISOString() : null,
       errorCode:    w.errorCode ?? null,
+      // Investments (Plaid Holdings) is a Plaid-only capability — self-custody
+      // wallets never surface it.
+      investments:  null,
     });
   }
   return out;

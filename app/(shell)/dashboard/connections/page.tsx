@@ -34,12 +34,13 @@ export default async function ConnectionsPage() {
   const items = await db.plaidItem.findMany({
     where:  { userId, status: { not: PlaidItemStatus.REVOKED } },
     select: {
-      id:              true,
-      institutionName: true,
-      status:          true,
-      cursor:          true, // derivation only — never sent to client
-      lastSyncedAt:    true,
-      errorCode:       true,
+      id:                 true,
+      institutionName:    true,
+      status:             true,
+      cursor:             true, // derivation only — never sent to client
+      lastSyncedAt:       true,
+      errorCode:          true,
+      investmentsConsent: true, // → client-safe `investments` capability only
     },
     orderBy: { createdAt: "asc" },
   });

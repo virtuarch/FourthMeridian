@@ -33,12 +33,13 @@ export async function GET() {
   const items = await db.plaidItem.findMany({
     where:  { userId: user.id, status: { not: PlaidItemStatus.REVOKED } },
     select: {
-      id:              true,
-      institutionName: true,
-      status:          true,
-      cursor:          true, // used for derivation only — never returned
-      lastSyncedAt:    true,
-      errorCode:       true,
+      id:                 true,
+      institutionName:    true,
+      status:             true,
+      cursor:             true, // used for derivation only — never returned
+      lastSyncedAt:       true,
+      errorCode:          true,
+      investmentsConsent: true, // → client-safe `investments` capability only
     },
     orderBy: { createdAt: "asc" },
   });

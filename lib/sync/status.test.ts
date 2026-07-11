@@ -14,6 +14,7 @@
 import {
   deriveConnectionState,
   buildSyncStatus,
+  deriveInvestmentsCapability,
   type PlaidItemStateInput,
 } from "./status";
 
@@ -35,6 +36,7 @@ function item(partial: Partial<PlaidItemStateInput>): PlaidItemStateInput {
     cursor:          partial.cursor ?? null,
     lastSyncedAt:    partial.lastSyncedAt ?? null,
     errorCode:       partial.errorCode ?? null,
+    investmentsConsent: partial.investmentsConsent,
   };
 }
 
@@ -74,6 +76,34 @@ const settled = buildSyncStatus([
   item({ id: "c", status: "ERROR", cursor: null }),
 ]);
 check("building false when no importing", settled.building === false);
+
+console.log("deriveInvestmentsCapability — DB enum → client capability");
+check("ENABLED → enabled",
+  deriveInvestmentsCapability("ENABLED") === "enabled");
+check("CONSENT_REQUIRED → available",
+  deriveInvestmentsCapability("CONSENT_REQUIRED") === "available");
+check("UNSUPPORTED → null (never a misleading action)",
+  deriveInvestmentsCapability("UNSUPPORTED") === null);
+check("null (unknown) → null",
+  deriveInvestmentsCapability(null) === null);
+check("undefined → null",
+  deriveInvestmentsCapability(undefined) === null);
+
+console.log("buildSyncStatus — investments capability wired onto SyncConnection");
+const invStatus = buildSyncStatus([
+  item({ id: "enabled",  status: "ACTIVE", cursor: "cur", investmentsConsent: "ENABLED" }),
+  item({ id: "consent",  status: "ACTIVE", cursor: "cur", investmentsConsent: "CONSENT_REQUIRED" }),
+  item({ id: "unsupp",   status: "ACTIVE", cursor: "cur", investmentsConsent: "UNSUPPORTED" }),
+  item({ id: "unknown",  status: "ACTIVE", cursor: "cur" }), // no consent field → null
+]);
+check("ENABLED item → investments 'enabled'",
+  invStatus.connections.find((c) => c.id === "id_enabled")?.investments === "enabled");
+check("CONSENT_REQUIRED item → investments 'available'",
+  invStatus.connections.find((c) => c.id === "id_consent")?.investments === "available");
+check("UNSUPPORTED item → investments null",
+  invStatus.connections.find((c) => c.id === "id_unsupp")?.investments === null);
+check("unknown item → investments null",
+  invStatus.connections.find((c) => c.id === "id_unknown")?.investments === null);
 
 console.log("invariant — cursor never leaks onto SyncConnection");
 const allConns = [...status.connections, ...settled.connections];
