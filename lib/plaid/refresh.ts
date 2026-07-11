@@ -47,6 +47,7 @@ import { classifyPlaidErrorForHealth, getPlaidErrorCode, plaidErrorSummary } fro
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
+import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
 
 // Mirrors app/api/plaid/exchange-token/route.ts's mapAccountType — kept as a
 // private copy here (not exported/shared) since refresh only needs it to
@@ -313,6 +314,33 @@ export async function refreshPlaidItem(
           fa = legacyFa;
         }
         if (!fa) continue; // never create — refresh only updates known accounts
+
+        // A1 — dark-write append-only observation capture from the RAW payload
+        // (incl. cash / no-ticker securities the Holding writer skips below).
+        // Runs BEFORE the destructive Holding delete+recreate, gated behind the
+        // kill switch, best-effort/non-fatal (writeBtcHolding precedent): a
+        // capture failure must never affect balances/holdings/transactions.
+        if (investmentObservationsEnabled()) {
+          try {
+            await capturePositionObservations({
+              financialAccountId: fa.id,
+              plaidHoldings:      acctHoldings,
+              securitiesById:     secById,
+              date:               new Date(),
+              // Derived brokerage-cash reconciliation from the SAME refresh
+              // payload (contemporaneous balance + holdings). Balance from the
+              // investment account's own accountsGet balances.
+              accountBalance:     plaidAcct.balances.current ?? null,
+              accountCurrency:    plaidAcct.balances.iso_currency_code ?? null,
+              balanceAsOf:        plaidAcct.balances.last_updated_datetime ? new Date(plaidAcct.balances.last_updated_datetime) : null,
+              payloadComplete:    holdingsRes.data.is_investments_fallback_item !== true,
+            });
+          } catch (obsErr) {
+            console.warn(
+              `[refreshPlaidItem] position observation capture failed for account ${fa.id} (non-fatal): ${obsErr instanceof Error ? obsErr.message : obsErr}`
+            );
+          }
+        }
 
         await db.holding.deleteMany({ where: { financialAccountId: fa.id } });
 

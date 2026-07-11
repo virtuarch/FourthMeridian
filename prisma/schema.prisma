@@ -850,6 +850,9 @@ model FinancialAccount {
   debtProfile              DebtProfile?
   transactions             Transaction[]               @relation("FinancialAccountTransactions")
   holdings                 Holding[]
+  // A1 — append-only investment position history (dark-write; Holding stays the
+  // current-state read model). Additive back-relation only.
+  positionObservations     PositionObservation[]
   // ProviderAccountIdentity (D2) — populated (Step 1C backfill + Step 2 dual-write).
   providerIdentities       ProviderAccountIdentity[]
   // ImportBatch (D2 Step 4D) — populated by the import pipeline.
@@ -1216,6 +1219,121 @@ model Holding {
   @@index([accountId, isCash])
   @@index([financialAccountId])
   @@index([financialAccountId, isCash])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Investment Observation Foundation (Slice A1)
+//
+// Canonical investment instrument identity + append-only position history.
+// Purely additive and dark-write (gated behind INVESTMENT_OBSERVATIONS_ENABLED):
+// `Holding` remains the current-state read model, untouched. Instruments are
+// deployment-global public facts (like Merchant/FxRate) — visibility gating
+// stays on positions via financialAccountId. See
+// FOURTH_MERIDIAN_INVESTMENT_HISTORY_PROGRESSIVE_EVIDENCE_IMPLEMENTATION_PLAN_2026-07-11.md
+// §4.3 / §6.2. FIGI intentionally absent — plaid@42.2.0 Security does not expose it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum AssetClass {
+  EQUITY
+  ETF
+  MUTUAL_FUND
+  FIXED_INCOME
+  OPTION
+  CRYPTO
+  CASH
+  OTHER
+  UNKNOWN
+}
+
+model Instrument {
+  id            String   @id @default(cuid())
+  // Strong identifiers — nullable; null = never provided (MC1 doctrine).
+  cusip         String?  @unique
+  isin          String?  @unique
+  sedol         String?
+  // Display / weak identity — never the canonical primary key.
+  tickerSymbol  String?
+  name          String?
+  assetClass    AssetClass @default(UNKNOWN)
+  // Provider-reported metadata, preserved not interpreted.
+  securityType         String?
+  securitySubtype      String?
+  marketIdentifierCode String?
+  currency      String?
+  sector        String?
+  industry      String?
+  cfiCode       String?
+  isCashEquivalent Boolean?
+  isHoldable    Boolean  @default(true)
+  status        String   @default("ACTIVE") // ACTIVE | DELISTED
+  optionMeta      Json?   // raw Plaid option_contract
+  fixedIncomeMeta Json?   // raw Plaid fixed_income
+  underlyingInstrumentId String?
+  supersededById  String? // symbol-change / merge pointer — never delete
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  aliases   InstrumentAlias[]
+  positions PositionObservation[]
+
+  @@index([tickerSymbol])
+  @@index([assetClass])
+}
+
+// Provider identity mapping — the ProviderAccountIdentity/MerchantAlias twin.
+model InstrumentAlias {
+  id           String   @id @default(cuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  provider     String   // "plaid" | "coinbase" | "schwab" | "csv" | "wallet" | "manual"
+  externalId   String   // e.g. Plaid security_id; CSV symbol key; wallet asset id
+  metadata     Json?    // e.g. institution_security_id, proxy_security_id, bootstrap flag
+  createdAt    DateTime @default(now())
+
+  @@unique([provider, externalId]) // refuse the second mapping (MerchantAlias doctrine)
+  @@index([instrumentId])
+}
+
+enum PositionOrigin {
+  OBSERVED
+  IMPORTED
+  DERIVED
+  USER_ASSERTED
+}
+
+model PositionObservation {
+  id                 String   @id @default(cuid())
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  instrumentId       String
+  instrument         Instrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+
+  date       DateTime @db.Date
+  quantity   Float
+  origin     PositionOrigin
+  source     String // "plaid" | "csv:schwab" | "user" | "reconstruction"
+
+  // Observed-only valuation facts (never on DERIVED rows).
+  institutionPrice     Float?
+  institutionValue     Float?
+  institutionPriceAsOf DateTime? @db.Date
+  costBasis            Float?    // Plaid holding-level aggregate cost basis
+  vestedQuantity       Float?
+  currency             String?
+  isCash               Boolean  @default(false)
+
+  // Derived-only reconstruction provenance — left null this slice (MC1 doctrine).
+  reconstructionVersion Int?
+  completeness          String?
+  unexplainedQuantity   Float?
+  evidenceRefs          Json?
+
+  supersededById String?
+  createdAt      DateTime @default(now())
+
+  @@unique([financialAccountId, instrumentId, date, origin, source])
+  @@index([financialAccountId, instrumentId, date])
+  @@index([financialAccountId, date])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1989,6 +2107,7 @@ enum SyncIssueKind {
   REPLAY_ATTEMPTED // reserved for v2.5 auto-recovery
   REPLAY_RECOVERED
   REPLAY_FAILED
+  INSTRUMENT_IDENTITY_CONFLICT // A1 — refused Instrument merge (conflicting strong ids / alias)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

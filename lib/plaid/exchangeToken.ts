@@ -48,6 +48,7 @@ import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
 import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
 import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
+import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -438,6 +439,32 @@ export async function performPlaidTokenExchange(
           }
         }
         if (!fa) continue;
+
+        // A1 — dark-write append-only observation capture from the RAW payload
+        // (incl. cash / no-ticker securities the Holding writer skips below), so
+        // an initial connection's day-one positions are observed. Runs BEFORE
+        // the Holding write, gated behind the kill switch, best-effort/non-fatal:
+        // a capture failure must never fail account import.
+        if (investmentObservationsEnabled()) {
+          try {
+            await capturePositionObservations({
+              financialAccountId: fa.id,
+              plaidHoldings:      acctHoldings,
+              securitiesById:     secById,
+              date:               new Date(),
+              // Derived brokerage-cash reconciliation from the SAME import
+              // payload (contemporaneous balance + holdings).
+              accountBalance:     plaidAcct.balances.current ?? null,
+              accountCurrency:    plaidAcct.balances.iso_currency_code ?? null,
+              balanceAsOf:        plaidAcct.balances.last_updated_datetime ? new Date(plaidAcct.balances.last_updated_datetime) : null,
+              payloadComplete:    holdingsRes.data.is_investments_fallback_item !== true,
+            });
+          } catch (obsErr) {
+            console.warn(
+              `[plaid] position observation capture failed for account ${fa.id} (non-fatal): ${obsErr instanceof Error ? obsErr.message : obsErr}`,
+            );
+          }
+        }
 
         await db.holding.deleteMany({ where: { financialAccountId: fa.id } });
 
