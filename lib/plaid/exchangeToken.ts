@@ -49,6 +49,7 @@ import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identi
 import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
 import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
 import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
+import { syncCurrentHoldings } from "@/lib/investments/sync-current-holdings";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -466,35 +467,18 @@ export async function performPlaidTokenExchange(
           }
         }
 
-        await db.holding.deleteMany({ where: { financialAccountId: fa.id } });
-
-        for (const h of acctHoldings) {
-          const sec = secById[h.security_id];
-          if (!sec || sec.type === "cash" || !sec.ticker_symbol) continue;
-
-          const currentPrice = h.institution_price ?? 0;
-          const prevClose    = sec.close_price ?? currentPrice;
-          const change24h    = prevClose > 0
-            ? parseFloat((((currentPrice - prevClose) / prevClose) * 100).toFixed(2))
-            : 0;
-
-          await db.holding.create({
-            data: {
-              financialAccountId: fa.id,
-              symbol:   sec.ticker_symbol,
-              name:     sec.name ?? sec.ticker_symbol,
-              quantity: h.quantity,
-              price:    currentPrice,
-              value:    h.institution_value ?? h.quantity * currentPrice,
-              change24h,
-              // MC1 Phase 0 Slice 2 — valuation currency of price/value:
-              // Plaid holding code, else its security's code, else the
-              // account currency. Null only if all three are absent.
-              currency: h.iso_currency_code ?? sec.iso_currency_code ?? fa.currency ?? null,
-            },
-          });
-          holdingsImported++;
-        }
+        // A2 — stable per-holding sync (update-in-place / insert / remove-stale)
+        // replaces the prior deleteMany+create, via the shared writer used by
+        // refresh.ts. Runs AFTER observation capture; cash/no-ticker stay
+        // filtered from the Holding projection.
+        const syncCounts = await syncCurrentHoldings({
+          financialAccountId: fa.id,
+          plaidHoldings:      acctHoldings,
+          securitiesById:     secById,
+          accountCurrency:    fa.currency,
+          payloadComplete:    holdingsRes.data.is_investments_fallback_item !== true,
+        });
+        holdingsImported += syncCounts.inserted + syncCounts.updated + syncCounts.unchanged;
       }
 
       // Unknown (pre-DTM) probe succeeded — remember it.
