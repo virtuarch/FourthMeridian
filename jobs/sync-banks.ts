@@ -23,15 +23,19 @@
  */
 
 import { db } from "@/lib/db";
-import { PlaidItemStatus } from "@prisma/client";
+import { PlaidInvestmentsConsent, PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
+import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
 
 export interface SyncBanksResult {
   succeeded: number;
   failed:    number;
   total:     number;
+  /** A3-4 — items whose scheduled investment-event ingestion ran (flag on + consent ENABLED). */
+  eventItems: number;
 }
 
 export async function syncBanks(): Promise<SyncBanksResult> {
@@ -41,13 +45,18 @@ export async function syncBanks(): Promise<SyncBanksResult> {
   // reactivation (deactivatedAt back to null).
   const items = await db.plaidItem.findMany({
     where:  { status: PlaidItemStatus.ACTIVE, user: { deactivatedAt: null } },
-    select: { id: true, institutionName: true },
+    // A3-4 — investmentsConsent + encryptedToken added for scheduled event
+    // ingestion below. The token is decrypted only when actually ingesting
+    // (flag on + consent ENABLED) and never leaves this server context.
+    select: { id: true, institutionName: true, investmentsConsent: true, encryptedToken: true },
   });
 
-  if (items.length === 0) return { succeeded: 0, failed: 0, total: 0 };
+  if (items.length === 0) return { succeeded: 0, failed: 0, total: 0, eventItems: 0 };
 
   let succeeded = 0;
   let failed = 0;
+  let eventItems = 0;
+  const eventsOn = investmentEventsEnabled();
 
   for (const item of items) {
     try {
@@ -71,9 +80,25 @@ export async function syncBanks(): Promise<SyncBanksResult> {
         await notifyItemSyncFailed(item.id);
       }
     }
+
+    // A3-4 — scheduled canonical investment-event ingestion. Reuses the SAME
+    // shared ingest as the refresh/exchange paths (no second implementation),
+    // gated behind INVESTMENT_EVENTS_ENABLED and limited to Items with
+    // Investments consent (avoids a doomed call on every non-investment Item).
+    // Fully isolated best-effort: never affects the transaction-sync counts
+    // above, never fails the job, never touches Holding/PositionObservation.
+    if (eventsOn && item.investmentsConsent === PlaidInvestmentsConsent.ENABLED) {
+      try {
+        const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
+        await ingestInvestmentEvents({ accessToken, plaidItemId: item.id, now: new Date() });
+        eventItems++;
+      } catch (evErr) {
+        console.warn(`[sync-banks] investment event ingestion failed for "${item.institutionName}" (PlaidItem ${item.id}) (non-fatal):`, evErr);
+      }
+    }
   }
 
-  console.log(`[sync-banks] complete — ${succeeded} succeeded, ${failed} failed, ${items.length} total`);
+  console.log(`[sync-banks] complete — ${succeeded} succeeded, ${failed} failed, ${items.length} total, ${eventItems} event-ingest`);
 
-  return { succeeded, failed, total: items.length };
+  return { succeeded, failed, total: items.length, eventItems };
 }
