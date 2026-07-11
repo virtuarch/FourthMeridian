@@ -92,6 +92,7 @@ import {
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
+import { SharedHistoricalContext } from "@/components/space/SharedHistoricalContext";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import {
@@ -2593,6 +2594,16 @@ export function SpaceDashboard({
   // converts each row at its own date. `cashFlowActive` also triggers the
   // transaction fetch below when the workspace is open in a non-flow Space.
   const [cashFlowPeriod, setCashFlowPeriod] = useState<CashFlowPeriod>(DEFAULT_CASH_FLOW_PERIOD);
+
+  // Shared Perspective shell context (Row 1) — the as-of valuation date + an
+  // optional comparison date every Perspective inherits (the A5-S1
+  // FinancialContext.asOf contract). Presentation state today: it lives ABOVE
+  // the Perspective tabs so Time is shared context, not a per-Perspective
+  // control. Perspectives consume it as their historical engines land; changing
+  // it never fabricates data. Defaults: as-of today, no comparison.
+  const shellToday = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const [asOf, setAsOf]         = useState<string>(shellToday);
+  const [compareTo, setCompareTo] = useState<string | null>(null);
   // CF-3 — the workspace-shared Cash Flow / Spending perspective + measure filter,
   // driven by the Cash Flow History widget's selector and consumed by every Cash
   // Flow widget so they never disagree.
@@ -3105,7 +3116,36 @@ export function SpaceDashboard({
             an honest "coming soon" placeholder. No card grid, no enclosing
             container. Overview's Perspectives doorway is unchanged. */}
         {activeTab === "PERSPECTIVES" && (
-          <div className="space-y-5">
+          <div className="space-y-4">
+            {/* ── Shared Perspective shell ─────────────────────────────────────
+                Time is shared context ABOVE every Perspective. The rows below
+                the tabs inherit one FinancialContext; changing it here changes
+                it for every Perspective (as each Perspective's historical engine
+                comes online). Presentation only — no computation lives here. */}
+
+            {/* Row 1 — Shared Historical Context: as-of / compare-to / the
+                shell-level Completeness + Evidence surfaces. */}
+            <SharedHistoricalContext
+              asOf={asOf}
+              onAsOfChange={setAsOf}
+              compareTo={compareTo}
+              onCompareToChange={setCompareTo}
+              today={shellToday}
+            />
+
+            {/* Row 2 — Shared Time Controls (relative periods: to-date group +
+                rolling group). These belong to the shell, not to any one
+                Perspective: Cash Flow consumes them immediately; the others
+                ignore them until their historical engines are complete.
+                Explicit historical selection still lives inside the Cash Flow
+                History widget's own Month/Quarter/Year dropdowns. */}
+            <CashFlowPeriodSelector
+              value={cashFlowPeriod}
+              onChange={setCashFlowPeriod}
+            />
+
+            {/* Row 3 — Perspective tabs. Every Perspective inherits the shared
+                context above; selecting one swaps the workspace below. */}
             <PerspectiveTabSelector
               items={perspectiveItems.map((p) => ({
                 id:           p.id,
@@ -3115,16 +3155,12 @@ export function SpaceDashboard({
               activeId={activePerspectiveId}
               onSelect={setSelectedPerspectiveId}
             />
-            {/* Cash Flow workspace period selector (UX-PER-3) — relative time
-                controls only: to-date group (left) + rolling group (right).
-                Explicit historical selection lives inside the Cash Flow History
-                widget's own Month/Quarter/Year dropdowns. */}
-            {cashFlowActive && (
-              <CashFlowPeriodSelector
-                value={cashFlowPeriod}
-                onChange={setCashFlowPeriod}
-              />
-            )}
+
+            {/* Row 4 — Perspective-specific controls slot. These stay
+                Perspective-specific (never shared): Cash Flow's perspective /
+                measure controls currently live in their own widgets below;
+                future Perspectives surface their controls in this slot. Below it
+                begins the existing widget/card stack. */}
             <div
               role="tabpanel"
               aria-labelledby={activePerspectiveId ? `ptab-${activePerspectiveId}` : undefined}
