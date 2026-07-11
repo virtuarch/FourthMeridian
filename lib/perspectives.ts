@@ -115,10 +115,15 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     widgets: ["cash_flow_summary", "cash_flow_history", "cash_flow_by_category", "income_by_source", "debt_payments"],
   },
   investments: {
-    id: "investments", label: "Investments", icon: "TrendingUp", status: "comingSoon", group: "Financial",
-    description: "Holdings, allocation, and performance.",
-    // No workspace yet — the only Perspective still coming soon. Its Overview
-    // doorway card shows "Soon" and isn't a destination until it has widgets.
+    id: "investments", label: "Investments", icon: "TrendingUp", status: "available", group: "Financial",
+    description: "Holdings by account — what you hold, how much, and what it's worth.",
+    // Slice B Investments workspace. Doctrine: current-state read model —
+    // "What do I actually hold?" grouped by investment account (Schwab,
+    // Robinhood, Coinbase, …). Renders through the same SectionCard compositor
+    // as the other Perspective workspaces. Deliberately NOT historical: no
+    // positions-over-time, prices-over-time, cost basis, returns, or
+    // simulations (that is the future Investment Time Machine, out of scope).
+    widgets: ["investment_accounts"],
   },
   debt: {
     id: "debt", label: "Debt", icon: "CreditCard", status: "available", group: "Financial",

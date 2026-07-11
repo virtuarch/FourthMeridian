@@ -36,6 +36,7 @@ import { AssetValueWidget, type AssetValueConfig } from "@/components/space/widg
 import { ProgressWidget, type ProgressStat } from "@/components/space/widgets/ProgressWidget";
 import { type BreakdownViewMode } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
+import { InvestmentAccountsWidget } from "@/components/space/widgets/InvestmentAccountsWidget";
 // Unified Space Widget Layout (slice 1) — Personal Overview lede widgets, now
 // section-backed (net_worth_chart + allocation).
 import { NetWorthChart, type Interval } from "@/components/charts/NetWorthChart";
@@ -1384,6 +1385,11 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
   "debt_payoff_calculator": (p) => renderDebtPayoffCalculator(p.accounts, p.payoffFullscreen, p.closePayoffFullscreen, p.ctx),
   "investment_summary":     renderInvestmentSummary,
   "investment_allocation":  renderInvestmentSummary, // TODO: replace with BreakdownWidget when adapter is ready
+  // ── Investments Perspective (Slice B) — current holdings grouped by account ──
+  // Self-fetching (owns its data via GET /api/spaces/[id]/investments), so it
+  // needs only spaceId — no host lazy-fetch/prop threading, same pattern as
+  // recent_activity (ActivityCard) and goals_progress (GoalsCard).
+  "investment_accounts":    (p) => <InvestmentAccountsWidget spaceId={p.spaceId} />,
   "retirement_accounts":    renderInvestmentSummary,
   // retirement_progress — moved to ProgressWidget family below
   "goals_progress":         (p) => <GoalsCard spaceId={p.spaceId} canManage={p.canManage} onAddGoal={p.onAddGoal} />,

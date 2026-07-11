@@ -1151,6 +1151,24 @@ const registry: WidgetRegistryEntry[] = [
       collapsible: true,
     },
   },
+
+  // ── Investments Perspective (Slice B) — current holdings grouped by account. ─
+  // Self-fetching, read-only. Renders one card per investment/crypto account
+  // (Schwab, Robinhood, Coinbase, …) with honest per-account states. No
+  // historical positions/prices/returns — current holdings only.
+  {
+    implemented: true,
+    meta: {
+      key:         "investment_accounts",
+      label:       "Investment Accounts",
+      description: "Current holdings grouped by investment account — quantity, price, and market value per position.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "TrendingUp",
+      dataTier:    "accounts",
+      requires:    [],
+      collapsible: false,
+    },
+  },
 ];
 
 // ─── Lookup helpers ───────────────────────────────────────────────────────────
