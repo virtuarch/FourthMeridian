@@ -855,6 +855,8 @@ model FinancialAccount {
   positionObservations     PositionObservation[]
   // A3 — canonical inside-the-investment-account activity log (dark-write).
   investmentEvents         InvestmentEvent[]
+  // A4 — one-time position-reconstruction summaries (dark-write). Additive.
+  positionReconstructions  PositionReconstruction[]
   // ProviderAccountIdentity (D2) — populated (Step 1C backfill + Step 2 dual-write).
   providerIdentities       ProviderAccountIdentity[]
   // ImportBatch (D2 Step 4D) — populated by the import pipeline.
@@ -1275,9 +1277,10 @@ model Instrument {
   createdAt              DateTime   @default(now())
   updatedAt              DateTime   @updatedAt
 
-  aliases   InstrumentAlias[]
-  positions PositionObservation[]
-  events    InvestmentEvent[]
+  aliases         InstrumentAlias[]
+  positions       PositionObservation[]
+  events          InvestmentEvent[]
+  reconstructions PositionReconstruction[]
 
   @@index([tickerSymbol])
   @@index([assetClass])
@@ -1425,6 +1428,56 @@ model InvestmentEvent {
   @@index([financialAccountId, instrumentId, date])
   @@index([instrumentId, date])
   @@index([importBatchId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Position Reconstruction summary (Slice A4-2)
+//
+// One row per (account, instrument): the outcome of the one-time backward walk
+// (lib/investments/reconstruction-core.ts) over OBSERVED anchors + canonical
+// InvestmentEvents. Additive + dark-write (gated behind
+// INVESTMENT_RECONSTRUCTION_ENABLED); the DERIVED position rows themselves are
+// PositionObservation(origin: DERIVED, source: "reconstruction") — this table is
+// the queryable per-position reconciliation summary the read model and Wealth
+// regeneration consume. `reconciliation` is a JOB outcome (COMPLETE|PARTIAL|
+// FAILED + failureReason); `completeness` is the separate canonical A5-S1 trust
+// tier for consumers (never conflated — parallelization investigation §4). The
+// unexplained opening residual is a first-class number, NEVER forced to zero.
+// See FOURTH_MERIDIAN_INVESTMENT_HISTORY_PROGRESSIVE_EVIDENCE_IMPLEMENTATION_PLAN
+// §7.3 / §7.4.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ReconstructionStatus {
+  COMPLETE // opening residual ≈ 0, no stops
+  PARTIAL // nonzero residual or unmatched cancel — an unexplained opening remains
+  FAILED // reconstruction stopped at an uninvertible corporate action / unknown
+}
+
+model PositionReconstruction {
+  id                 String           @id @default(cuid())
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  instrumentId       String
+  instrument         Instrument       @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+
+  earliestDefensibleDate     DateTime @db.Date
+  observedCurrentQuantity    Float
+  openingQuantity            Float
+  unexplainedOpeningQuantity Float // persisted, NEVER forced to 0
+
+  reconciliation ReconstructionStatus
+  failureReason  String? // e.g. UNSUPPORTED_CORPORATE_ACTION — null unless FAILED/degraded
+  completeness   String // canonical A5-S1 tier ("derived" | "incomplete") — write-time guarded
+  conflicted     Boolean @default(false) // unmatched CANCEL on the walk
+
+  reconstructionVersion Int
+  eventCount            Int
+  evidenceRefs          Json? // anchor observation id + contributing InvestmentEvent ids
+  runAt                 DateTime @default(now())
+
+  @@unique([financialAccountId, instrumentId]) // one live summary per position (upserted on rerun)
+  @@index([financialAccountId])
+  @@index([instrumentId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
