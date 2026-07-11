@@ -17,33 +17,62 @@
  * The data layer has already resolved effective values (DebtProfile
  * user-entered > provider flat fields > lib/debt.ts estimate) — this
  * adapter adds no math of its own.
+ *
+ * A5-P3 (Debt Time Machine) — when options.asOf is set, the rows come from the
+ * A5-S2 resolver (getAccountsAsOf) with each balance resolved to the historical
+ * date and stamped { method, tier }: revolving cards walk back (derived),
+ * installment loans hold flat (estimated), before the account's floor is
+ * incomplete. The pure core is UNTOUCHED; this binding reduces those per-row
+ * tiers to the result's `completeness` envelope. Principal-vs-interest
+ * decomposition is REFUSED as-of exactly as it is today — no amortization
+ * engine exists and none is built here. Absent asOf ⇒ byte-identical (kill
+ * switch): no getAccountsAsOf call, no completeness field.
  */
 
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
+import { getAccountsAsOf } from "@/lib/data/accounts-asof";
 import { buildSpaceConversionContext, buildSpaceConversionContextById } from "@/lib/money/server-context";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import { registerLens } from "../registry";
-import type { ComputeOptions, LensResult, PerspectiveScope } from "../types";
+import type { CompletenessTier, ComputeOptions, LensResult, PerspectiveScope } from "../types";
 import { computeDebt, type DebtAccountRow } from "./debt.core";
+import { buildDebtCompleteness, debtComponent } from "./asof-completeness";
 
 async function debtLens(
   scope:   PerspectiveScope,
   options: ComputeOptions,
 ): Promise<LensResult> {
-  const rows = await getAccountsWithVisibility({
-    spaceId: scope.spaceId,
-    // Always the viewing member — never a stored/elevated identity (§5.9).
-    userId:  scope.userId,
-  });
+  // A5-P3 — per-account trust stamps, populated only on the as-of path so the
+  // asOf-absent branch stays byte-identical. accountId → { tier, method }.
+  const stamps = new Map<string, { tier: CompletenessTier; method: string }>();
 
-  const lensRows: DebtAccountRow[] = rows.map(({ account, visibilityLevel }) => ({
+  const visRows = options.asOf
+    ? (await getAccountsAsOf({
+        spaceId: scope.spaceId,
+        userId:  scope.userId,
+        asOf:    options.asOf,
+        now:     options.now,
+      })).map((r) => {
+        stamps.set(r.account.id, { tier: r.tier, method: r.method });
+        return { account: r.account, visibilityLevel: r.visibilityLevel as string };
+      })
+    : (await getAccountsWithVisibility({
+        spaceId: scope.spaceId,
+        // Always the viewing member — never a stored/elevated identity (§5.9).
+        userId:  scope.userId,
+      })).map(({ account, visibilityLevel }) => ({
+        account,
+        visibilityLevel: visibilityLevel as string,
+      }));
+
+  const lensRows: DebtAccountRow[] = visRows.map(({ account, visibilityLevel }) => ({
     id:              account.id,
     type:            account.type,
     balance:         account.balance,
     // MC1 QA Q2 — conversion input (non-identifying).
     currency:        account.currency ?? null,
     lastUpdated:     account.lastUpdated,
-    visibilityLevel: visibilityLevel as string,
+    visibilityLevel,
     interestRate:              account.interestRate ?? undefined,
     minimumPayment:            account.minimumPayment ?? undefined,
     minimumPaymentIsEstimated: account.minimumPaymentIsEstimated ?? undefined,
@@ -63,7 +92,22 @@ async function debtLens(
     ? await buildSpaceConversionContext({ reportingCurrency: options.targetCurrency }, convOpts)
     : await buildSpaceConversionContextById(scope.spaceId, convOpts);
 
-  return computeDebt(scope, options, lensRows, ctx);
+  const result = computeDebt(scope, options, lensRows, ctx);
+
+  // A5-P3 — stamp the result only on the as-of path, over the debt accounts the
+  // core actually counted (provenance.accountIds is the FULL + BALANCE_ONLY debt
+  // set; summary-only and non-debt rows are excluded, so their tiers never leak
+  // in). A "no debt accounts" answer (empty provenance) needs no trust envelope
+  // and is returned untouched, as is every asOf-absent call — byte-identical.
+  if (options.asOf && result.provenance.accountIds.length > 0) {
+    const contributingStamps = result.provenance.accountIds
+      .map((id) => stamps.get(id))
+      .filter((s): s is { tier: CompletenessTier; method: string } => s != null)
+      .map((s) => ({ tier: s.tier, component: debtComponent(s.method) }));
+    return { ...result, completeness: buildDebtCompleteness(options.asOf, contributingStamps) };
+  }
+
+  return result;
 }
 
 registerLens("debt", debtLens);

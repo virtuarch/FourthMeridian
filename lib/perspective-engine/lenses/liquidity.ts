@@ -12,30 +12,57 @@
  *      and institutions are dropped here, at the boundary, so the core
  *      can never leak what it never receives.
  *
+ * A5-P2 (Liquidity Time Machine) — when options.asOf is set, step 1 reads the
+ * SAME visibility-redacted rows from the A5-S2 resolver (getAccountsAsOf), which
+ * resolves each balance to the historical date and stamps it with { method,
+ * tier }. The pure core is UNTOUCHED (it takes rows); this binding then reduces
+ * those per-row tiers to the result's `completeness` envelope via the S1
+ * propagation helpers. Absent asOf ⇒ the live read, byte-identical (kill switch):
+ * no getAccountsAsOf call, no completeness field.
+ *
  * Registered at module top level (house pattern: lib/ai/assemblers/*).
  * Import this module for its side effect; consumers then call
  * computePerspective("liquidity", scope).
  */
 
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
+import { getAccountsAsOf } from "@/lib/data/accounts-asof";
 import { buildSpaceConversionContext, buildSpaceConversionContextById } from "@/lib/money/server-context";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import { registerLens } from "../registry";
-import type { ComputeOptions, LensResult, PerspectiveScope } from "../types";
+import type { CompletenessTier, ComputeOptions, LensResult, PerspectiveScope } from "../types";
 import { computeLiquidity, type LiquidityAccountRow } from "./liquidity.core";
+import { buildLiquidityCompleteness, liquidityComponent } from "./asof-completeness";
 
 async function liquidityLens(
   scope:   PerspectiveScope,
   options: ComputeOptions,
 ): Promise<LensResult> {
-  const rows = await getAccountsWithVisibility({
-    spaceId: scope.spaceId,
-    // Always the viewing member — visibility is computed for the requester,
-    // never a stored or elevated identity (investigation §5.9).
-    userId:  scope.userId,
-  });
+  // A5-P2 — per-account trust stamps, populated only on the as-of path so the
+  // asOf-absent branch stays byte-identical. accountId → { tier, type }.
+  const stamps = new Map<string, { tier: CompletenessTier; type: string }>();
 
-  const lensRows: LiquidityAccountRow[] = rows.map(({ account, visibilityLevel }) => ({
+  const visRows = options.asOf
+    ? (await getAccountsAsOf({
+        spaceId: scope.spaceId,
+        userId:  scope.userId,
+        asOf:    options.asOf,
+        now:     options.now,
+      })).map((r) => {
+        stamps.set(r.account.id, { tier: r.tier, type: r.account.type });
+        return { account: r.account, visibilityLevel: r.visibilityLevel as string };
+      })
+    : (await getAccountsWithVisibility({
+        spaceId: scope.spaceId,
+        // Always the viewing member — visibility is computed for the requester,
+        // never a stored or elevated identity (investigation §5.9).
+        userId:  scope.userId,
+      })).map(({ account, visibilityLevel }) => ({
+        account,
+        visibilityLevel: visibilityLevel as string,
+      }));
+
+  const lensRows: LiquidityAccountRow[] = visRows.map(({ account, visibilityLevel }) => ({
     id:              account.id,
     type:            account.type,
     balance:         account.balance,
@@ -44,7 +71,7 @@ async function liquidityLens(
     currency:        account.currency ?? null,
     creditLimit:     account.creditLimit ?? undefined,
     lastUpdated:     account.lastUpdated,
-    visibilityLevel: visibilityLevel as string,
+    visibilityLevel,
   }));
 
   // MC1 Phase 3 Slice 5 — THE LENS FLIP (F-3). Real space context, valued at
@@ -65,7 +92,22 @@ async function liquidityLens(
     ? await buildSpaceConversionContext({ reportingCurrency: options.targetCurrency }, convOpts)
     : await buildSpaceConversionContextById(scope.spaceId, convOpts);
 
-  return computeLiquidity(scope, options, lensRows, ctx);
+  const result = computeLiquidity(scope, options, lensRows, ctx);
+
+  // A5-P2 — stamp the result with a trust envelope only on the as-of path, and
+  // only over the accounts the core actually counted (provenance.accountIds
+  // excludes summary-only rows, so a withheld account's tier never leaks in).
+  // Absent asOf, or a shaped empty/withheld-only result with no contributors,
+  // returns the core result untouched — byte-identical to today.
+  if (options.asOf && result.provenance.accountIds.length > 0) {
+    const contributingStamps = result.provenance.accountIds
+      .map((id) => stamps.get(id))
+      .filter((s): s is { tier: CompletenessTier; type: string } => s != null)
+      .map((s) => ({ tier: s.tier, component: liquidityComponent(s.type) }));
+    return { ...result, completeness: buildLiquidityCompleteness(options.asOf, contributingStamps) };
+  }
+
+  return result;
 }
 
 registerLens("liquidity", liquidityLens);
