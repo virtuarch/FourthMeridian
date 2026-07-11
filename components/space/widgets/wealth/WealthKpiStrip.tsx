@@ -55,10 +55,8 @@ export function WealthKpiStrip({
                 <span className="text-xl sm:text-2xl font-semibold tabular-nums text-[var(--text-primary)] leading-tight">
                   {formatCurrency(value, currency)}
                 </span>
-                {d ? (
+                {d && (
                   <DeltaBadge abs={d.abs} pct={d.pct} currency={currency} goodDirection={good} compareLabel={compareLabel} />
-                ) : (
-                  <span className="text-[11px] text-[var(--text-faint)]">&nbsp;</span>
                 )}
               </>
             ) : (

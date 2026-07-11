@@ -46,6 +46,40 @@ export interface WealthComposition {
   liabilities: number;
 }
 
+/** Sub-dollar noise floor — a value at/below this never renders as a category. */
+export const WEALTH_EPSILON = 0.5;
+
+/**
+ * User-facing category labels — the single source of copy for composition slices,
+ * legend rows, driver rows, and story text. Presentation only (never persisted);
+ * backend enums/columns are unchanged.
+ */
+export const WEALTH_CATEGORY_LABELS: Record<keyof WealthComposition, string> = {
+  cash:        "Cash",
+  investments: "Investments",
+  crypto:      "Crypto",
+  real:        "Real World Assets",
+  liabilities: "Liabilities",
+};
+
+export interface WealthCompositionItem {
+  id:    keyof WealthComposition;
+  label: string;
+  value: number;
+}
+
+/**
+ * Asset-class composition items for the doughnut/legend — Cash, Investments,
+ * Crypto, Real World Assets — with every category whose value is at/below the
+ * monetary epsilon omitted (no zero slices, no zero legend rows, no reserved
+ * colors). Liabilities are intentionally excluded here (assets-only doughnut).
+ */
+export function wealthCompositionItems(c: WealthComposition): WealthCompositionItem[] {
+  return (["cash", "investments", "crypto", "real"] as const)
+    .map((id) => ({ id, label: WEALTH_CATEGORY_LABELS[id], value: c[id] }))
+    .filter((i) => i.value > WEALTH_EPSILON);
+}
+
 export interface WealthState extends WealthMetrics {
   /** True when a snapshot on or before the requested date exists. */
   found:       boolean;
@@ -113,7 +147,7 @@ export interface WealthTimeMachineInput {
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-const EPS = 0.5; // sub-dollar noise floor for driver/story inclusion
+const EPS = WEALTH_EPSILON; // sub-dollar noise floor for driver/story inclusion
 
 /** A snapshot's Wealth metrics + composition (all fields already on the row). */
 function toState(s: Snapshot): Omit<WealthState, "found"> {
@@ -199,11 +233,8 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
         liabilities: asOfState.composition.liabilities - c.composition.liabilities,
       },
     };
-    const labels: Record<keyof WealthComposition, string> = {
-      cash: "Cash", investments: "Investments", crypto: "Crypto", real: "Real assets", liabilities: "Liabilities",
-    };
-    drivers = (Object.keys(labels) as (keyof WealthComposition)[])
-      .map((id) => ({ id, label: labels[id], delta: deltas!.composition[id] }))
+    drivers = (Object.keys(WEALTH_CATEGORY_LABELS) as (keyof WealthComposition)[])
+      .map((id) => ({ id, label: WEALTH_CATEGORY_LABELS[id], delta: deltas!.composition[id] }))
       .filter((d) => Math.abs(d.delta) > EPS)
       .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
   }

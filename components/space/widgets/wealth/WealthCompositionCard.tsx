@@ -14,7 +14,7 @@
 import { formatCurrency } from "@/lib/format";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
-import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
+import { formatWealthDate, wealthCompositionItems } from "@/lib/wealth/wealth-time-machine";
 import { WealthCard, WealthUnavailable } from "./wealth-ui";
 
 export function WealthCompositionCard({
@@ -52,12 +52,9 @@ export function WealthCompositionCard({
   }
 
   const c = asOfState.composition;
-  const items: BreakdownItem[] = [
-    { id: "cash",        label: "Cash",        value: c.cash },
-    { id: "investments", label: "Investments", value: c.investments },
-    { id: "crypto",      label: "Crypto",      value: c.crypto },
-    { id: "real",        label: "Real assets", value: c.real },
-  ].filter((i) => i.value > 0);
+  // Epsilon-filtered, correctly-labeled asset classes (Cash / Investments /
+  // Crypto / Real World Assets) — zero-value categories never render.
+  const items: BreakdownItem[] = wealthCompositionItems(c);
 
   return (
     <WealthCard title="What is my wealth composed of?" subtitle={subtitle} right={badge}>

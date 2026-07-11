@@ -6,25 +6,25 @@
  * The Wealth Perspective workspace (A6) — a coherent historical financial
  * perspective driven entirely by the shared shell context (As Of / Compare To /
  * shared range), which SpaceDashboard threads in as a computed WealthResult.
- * This component owns NO time/comparison state; it only composes the presentation:
+ * This component owns NO time/comparison state; it only composes the presentation.
  *
+ * Layout (fewer, stronger surfaces — no redundant net-worth restatement):
  *   Section A — KPI strip (Net Worth · Assets · Liabilities · Liquid NW)
- *   Section B — editorial grid:
- *       "How wealthy am I?"  ·  "How has my net worth changed?" (dominant chart)
- *       "What is my wealth composed of?"  ·  "What caused the biggest impact?"
- *   Full width — "What's the story behind the change?"
+ *   Row      — dominant net-worth chart (2/3) + composition (1/3)
+ *   Full     — "What changed?" (Then vs Now: headline delta, story, drivers)
  *
- * Responsive: 1 column (mobile) → chart-full + 2-col analytical (tablet) →
- * 3-column editorial with the chart as the dominant central surface (desktop).
+ * Responsive: 1 column (mobile) → chart-full + composition (tablet) → chart /
+ * composition side-by-side with the chart dominant (desktop). No horizontal
+ * overflow (every column is min-w-0).
  */
 
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
-import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import { WealthKpiStrip } from "./WealthKpiStrip";
 import { WealthNetWorthChart } from "./WealthNetWorthChart";
 import { WealthCompositionCard } from "./WealthCompositionCard";
-import { WealthChangeCard, WealthDriversCard, WealthStoryCard } from "./WealthChangeCards";
+import { WealthChangeSummary } from "./WealthChangeSummary";
 import { WealthUnavailable } from "./wealth-ui";
+import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 
 export function WealthPerspective({
   result,
@@ -55,24 +55,18 @@ export function WealthPerspective({
       {/* Section A — compact KPI strip. */}
       <WealthKpiStrip result={result} currency={currency} compareLabel={compareLabel} />
 
-      {/* Section B — editorial grid; chart is the dominant central surface. */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
-        <div className="min-w-0">
-          <WealthChangeCard result={result} currency={currency} compareLabel={compareLabel} />
-        </div>
-        <div className="min-w-0 md:col-span-2 md:order-first lg:order-none lg:col-span-2">
+      {/* Dominant chart (2/3) alongside the composition (1/3). */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+        <div className="min-w-0 lg:col-span-2">
           <WealthNetWorthChart result={result} currency={currency} onSelectAsOf={onSelectAsOf} />
         </div>
         <div className="min-w-0">
           <WealthCompositionCard result={result} currency={currency} />
         </div>
-        <div className="min-w-0 md:col-span-2 lg:col-span-2">
-          <WealthDriversCard result={result} currency={currency} />
-        </div>
       </div>
 
-      {/* Full-width story. */}
-      <WealthStoryCard result={result} />
+      {/* Full-width Then-vs-Now explanation. */}
+      <WealthChangeSummary result={result} currency={currency} />
     </div>
   );
 }

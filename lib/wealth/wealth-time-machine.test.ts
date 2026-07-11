@@ -11,7 +11,13 @@
  * deterministic change story.
  */
 
-import { computeWealthTimeMachine, type WealthTimeMachineInput } from "./wealth-time-machine";
+import {
+  computeWealthTimeMachine,
+  wealthCompositionItems,
+  WEALTH_EPSILON,
+  type WealthTimeMachineInput,
+  type WealthComposition,
+} from "./wealth-time-machine";
 import type { Snapshot } from "@/types";
 
 let failures = 0;
@@ -149,6 +155,36 @@ console.log("Story is deterministic, template-driven, supported facts only");
   check("story states assets up and liabilities down", /Assets increased by \$32,000 and liabilities decreased by \$5,000/.test(r.story!));
   const noCmp = computeWealthTimeMachine(base({ compareTo: null }));
   check("no comparison ⇒ no story", noCmp.story === null);
+}
+
+console.log("Composition — crypto included, zero categories filtered, Real World Assets label");
+{
+  const comp = (o: Partial<WealthComposition>): WealthComposition =>
+    ({ cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0, ...o });
+
+  const withCrypto = wealthCompositionItems(comp({ cash: 1000, investments: 500, crypto: 250 }));
+  check("crypto is included as its own category (not Investments)",
+    withCrypto.some((i) => i.id === "crypto" && i.label === "Crypto" && approx(i.value, 250)));
+  check("investments stays separate from crypto",
+    withCrypto.some((i) => i.id === "investments") && withCrypto.find((i) => i.id === "investments")!.value !== 250);
+
+  const zeroReal = wealthCompositionItems(comp({ cash: 1000, investments: 500, real: 0 }));
+  check("Real assets at $0 does not render as a slice", !zeroReal.some((i) => i.id === "real"));
+  check("no zero legend rows (only non-empty categories)", zeroReal.every((i) => i.value > WEALTH_EPSILON) && zeroReal.length === 2);
+
+  const tinyResidual = wealthCompositionItems(comp({ cash: 1000, real: 0.3 }));
+  check("sub-epsilon residual is filtered (no $0 slice)", !tinyResidual.some((i) => i.id === "real"));
+
+  const realNamed = wealthCompositionItems(comp({ cash: 1000, real: 4200 }));
+  check("real assets render as 'Real World Assets'", realNamed.find((i) => i.id === "real")?.label === "Real World Assets");
+
+  // The story/driver copy also uses the renamed label.
+  const s = [
+    snap("2026-01-01", { totalCash: 1000, totalAssets: 3000 }), // real residual = 2000
+    snap("2026-06-01", { totalCash: 1000, totalAssets: 6000 }), // real residual = 5000
+  ];
+  const r = computeWealthTimeMachine(base({ snapshots: s, asOf: "2026-06-02", compareTo: "2026-01-02" }));
+  check("driver rows use 'Real World Assets'", r.drivers?.some((d) => d.id === "real" && d.label === "Real World Assets") === true);
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
