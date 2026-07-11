@@ -51,6 +51,18 @@ export function ConnectionsList({ initialStatus, accountsByInstitution, accounts
   const pollCountRef = useRef(0);
   const prevBuildingRef = useRef(initialStatus.building);
 
+  // Re-seed from a fresh server render. useState(initialStatus) only reads the
+  // prop on first mount, so a router.refresh() (e.g. after an in-app
+  // "Enable Investments" success updates a connection's capability) would
+  // otherwise leave the card showing stale state. initialStatus's reference
+  // only changes on a real server re-render (navigation/refresh), never during
+  // client-side polling, so this never clobbers live poll updates.
+  useEffect(() => {
+    // Intentional prop→state sync on a fresh server render — see comment above.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setStatus(initialStatus);
+  }, [initialStatus]);
+
   const stop = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -129,25 +141,33 @@ export function ConnectionsList({ initialStatus, accountsByInstitution, accounts
   const liquidAllowed = new Set(liquidOrder.slice(0, LIQUID_CAP).map((c) => c.id));
 
   return (
-    // Brief-style flagship column: same section rhythm (space-y-4) and centered
-    // max-width column as the Daily Brief content area (max-w-[1400px] mx-auto),
-    // so every card belongs to the same design language.
-    <div className="space-y-4 max-w-[1400px] mx-auto">
-      {status.connections.map((c) => (
-        <ConnectionCard
-          key={c.id}
-          connection={c}
-          // Wallets group by connection id (institution strings collide);
-          // Plaid keeps its institution grouping unchanged.
-          accounts={
-            c.provider === "WALLET"
-              ? (accountsByConnectionId[c.id] ?? [])
-              : (accountsByInstitution[c.institution] ?? [])
-          }
-          slow={slow}
-          allowLiquid={liquidAllowed.has(c.id)}
-        />
-      ))}
+    // Centered flagship column (max-w-[1400px] mx-auto) — same design language
+    // as the Daily Brief content area. Presentation-only change: the cards now
+    // flow in a responsive grid instead of a single full-width vertical stack.
+    <div className="max-w-[1400px] mx-auto space-y-4">
+      {/* Responsive card grid: 1-up on mobile (full width, comfortable touch
+          targets), 2-up from md, 3-up on xl where the card content stays
+          readable. `items-stretch` (grid default) keeps cards in a row visually
+          aligned; card internals already use a min-height + flex-col so a short
+          state never collapses next to a tall one. No fixed heights (long
+          syncing/error states still grow), no clipped content. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {status.connections.map((c) => (
+          <ConnectionCard
+            key={c.id}
+            connection={c}
+            // Wallets group by connection id (institution strings collide);
+            // Plaid keeps its institution grouping unchanged.
+            accounts={
+              c.provider === "WALLET"
+                ? (accountsByConnectionId[c.id] ?? [])
+                : (accountsByInstitution[c.institution] ?? [])
+            }
+            slow={slow}
+            allowLiquid={liquidAllowed.has(c.id)}
+          />
+        ))}
+      </div>
 
       {!status.building && anyReady && (
         <div className="pt-1">
