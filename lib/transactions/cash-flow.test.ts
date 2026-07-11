@@ -17,6 +17,7 @@ import {
   incomeSourceLabel,
   transactionsInBucket,
   availableHistoricalPeriods,
+  dataBearingYears,
   periodKey,
   periodLabel,
   isExplicitPeriod,
@@ -65,10 +66,39 @@ check("default period is MTD", DEFAULT_CASH_FLOW_PERIOD === "MTD");
   check("ALL keeps every live transaction (no historical cutoff)",
     filterByPeriod(spanning, "ALL").length === 3);
   check("ALL label is human-readable 'All Time'", periodLabel("ALL") === "All Time");
-  check("ALL history is cards-only (no mega-calendar)",
-    getCashFlowHistoryModes("ALL").join(",") === "cards" &&
+  // The calendar is now OFFERED under All Time but BOUNDED to one navigable
+  // data-bearing year at a time (viewYear cursor); the default mode stays cards
+  // so the mega-calendar is never rendered by default.
+  check("ALL offers calendar + cards; default stays cards (bounded single-year calendar)",
+    getCashFlowHistoryModes("ALL").join(",") === "calendar,cards" &&
     getDefaultCashFlowHistoryMode("ALL") === "cards");
   check("ALL buckets monthly", granularityFor("ALL") === "month");
+}
+
+// ── All Time calendar — data-bearing year navigation (bounded single year) ──────
+{
+  const multiYear: Transaction[] = [
+    tx("2019-01-15", -50, "SPENDING"),
+    tx("2026-07-08", -75, "SPENDING"),
+    tx("2011-12-31", 100, "INCOME"),
+    tx("2019-06-01", -20, "SPENDING"),   // same year → not duplicated
+  ];
+  const years = dataBearingYears(multiYear);
+  check("dataBearingYears: distinct calendar years, newest first",
+    years.join(",") === "2026,2019,2011", JSON.stringify(years));
+  check("dataBearingYears: only years that hold data (no empty in-between years)",
+    !years.includes(2020) && !years.includes(2015) && !years.includes(2012));
+  check("dataBearingYears empty for no rows", dataBearingYears([]).length === 0);
+  // A bounded single-year calendar view enumerates exactly that year's 12 months —
+  // never the ALL sentinel's 0000–9999 span (which monthsInRange would cap at 24
+  // garbage grids). This is what CashFlowCalendar's viewYear prop bounds to.
+  const oneYear = monthsInRange("2019-01-01", "2019-12-31");
+  check("single navigable year = exactly 12 month grids",
+    oneYear.length === 12 && oneYear[0].month === 1 && oneYear[11].month === 12);
+  // Year-stepping is bounded: the newest data year has no newer neighbor and the
+  // oldest none older (the widget disables the ◀/▶ arrows at those ends).
+  check("year-nav stays within the data-bearing range (newest…oldest)",
+    years[0] === 2026 && years[years.length - 1] === 2011);
 }
 
 // Fixed reference date: 2026-07-09 (a Thursday).

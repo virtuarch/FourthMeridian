@@ -24,7 +24,7 @@
  */
 
 import { useState } from "react";
-import { CalendarDays, LayoutGrid } from "lucide-react";
+import { CalendarDays, LayoutGrid, ChevronLeft, ChevronRight } from "lucide-react";
 import { formatCurrency } from "@/lib/format";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
@@ -41,6 +41,7 @@ import {
   filterByPeriod,
   transactionsInBucket,
   availableHistoricalPeriods,
+  dataBearingYears,
   periodKey,
   isExplicitPeriod,
   getCashFlowHistoryModes,
@@ -105,6 +106,34 @@ function ModeToggle({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// ─── All Time year navigation (bounded single-year calendar) ──────────────────
+
+/** ◀ / ▶ across the data-bearing years (newest-first) for the All Time calendar.
+ *  Ends are disabled at the oldest/newest data year — no empty years, no cutoff. */
+function AllTimeYearNav({
+  year, years, onChange,
+}: { year: number; years: number[]; onChange: (y: number) => void }) {
+  const idx   = years.indexOf(year);
+  const older = years[idx + 1];   // newest-first ⇒ the next index is the older year
+  const newer = years[idx - 1];
+  const btn = "flex items-center justify-center h-6 w-6 rounded-[var(--radius-full)] text-[var(--text-muted)] enabled:hover:text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-default transition-colors";
+  return (
+    <div className="flex items-center justify-center gap-2" onPointerDown={(e) => e.stopPropagation()}>
+      <button type="button" aria-label="Older year" disabled={older == null}
+        onClick={() => older != null && onChange(older)} className={btn}
+        style={{ background: "var(--glass-ultrathin)", border: "1px solid var(--border-hairline)" }}>
+        <ChevronLeft size={14} />
+      </button>
+      <span className="text-xs font-semibold tabular-nums text-[var(--text-secondary)] min-w-[3ch] text-center">{year}</span>
+      <button type="button" aria-label="Newer year" disabled={newer == null}
+        onClick={() => newer != null && onChange(newer)} className={btn}
+        style={{ background: "var(--glass-ultrathin)", border: "1px solid var(--border-hairline)" }}>
+        <ChevronRight size={14} />
+      </button>
     </div>
   );
 }
@@ -243,6 +272,14 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, accounts, onS
   }
   const effectiveMode = modes.includes(mode) ? mode : defaultMode;
 
+  // All Time calendar — a bounded, navigable single year. The viewYear cursor
+  // visits only data-bearing years (newest first); the analytical totals stay
+  // All Time, only the painted calendar span is bounded to one year. Inert for
+  // every non-ALL period (the prop is never passed to the calendar).
+  const dataYears = dataBearingYears(transactions ?? []);
+  const [viewYear, setViewYear] = useState<number | null>(null);
+  const effectiveViewYear = viewYear != null && dataYears.includes(viewYear) ? viewYear : (dataYears[0] ?? null);
+
   // CF-3 — perspective + measure filter (Cash Flow ⇄ Spending). Controlled by the
   // shared workspace state when provided; else self-managed (standalone use).
   const [localPerspective, setLocalPerspective] = useState<CashFlowPerspective>("liquidity");
@@ -316,7 +353,18 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, accounts, onS
       {rows.length === 0
         ? <EmptyCard sub="Cash-flow history appears as transactions accumulate." />
         : effectiveMode === "calendar"
-          ? <CashFlowCalendar transactions={rows} period={period} ctx={ctx} accounts={accounts} measures={measures} onSelectDay={openDay} />
+          ? (
+            <div className="space-y-2.5">
+              {period === "ALL" && effectiveViewYear != null && (
+                <AllTimeYearNav year={effectiveViewYear} years={dataYears} onChange={setViewYear} />
+              )}
+              <CashFlowCalendar
+                transactions={rows} period={period} ctx={ctx} accounts={accounts}
+                measures={measures} onSelectDay={openDay}
+                viewYear={period === "ALL" ? effectiveViewYear ?? undefined : undefined}
+              />
+            </div>
+          )
           : <CardsView rows={rows} period={period} ctx={ctx} accounts={accounts} measures={measures} onOpenBucket={openBucket} />}
 
       {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}

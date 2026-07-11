@@ -239,18 +239,35 @@ interface Props {
   measures:     CalendarMeasureId[];
   /** Click a day cell → open its transactions. Hover tooltip stays summary-only. */
   onSelectDay?: (iso: string, label: string) => void;
+  /** All Time — bound the visible span to this single calendar year instead of
+   *  the period's range (whose sentinel 0000–9999 would emit garbage grids). The
+   *  daily projection still runs over ALL passed rows; only this year is painted. */
+  viewYear?:    number;
 }
 
-export function CashFlowCalendar({ transactions, period, ctx, accounts, measures, onSelectDay }: Props) {
-  const range  = useMemo(() => periodRange(period), [period]);
+export function CashFlowCalendar({ transactions, period, ctx, accounts, measures, onSelectDay, viewYear }: Props) {
+  // When viewYear is set (All Time), the visible span is exactly that one year;
+  // otherwise it is the period's own range. The sentinel All-Time range is never
+  // fed to monthsInRange — that is the whole reason for this prop.
+  const range  = useMemo(
+    () => (viewYear != null ? { start: `${viewYear}-01-01`, end: `${viewYear}-12-31` } : periodRange(period)),
+    [period, viewYear],
+  );
   const daily  = useMemo(() => projectDailyFacts(transactions as LiquidityTx[], tierResolver(accounts), ctx), [transactions, accounts, ctx]);
   const months = useMemo(() => monthsInRange(range.start, range.end), [range]);
   // Net of the selected measures for one day (Σ in − Σ out).
   const netOf  = useMemo(() => (f: DayFacts) => netOfMeasures(f, measures).net, [measures]);
-  const max    = useMemo(
-    () => Math.max(0, ...[...daily.values()].map((v) => Math.abs(netOf(v)))),
-    [daily, netOf],
-  );
+  // Tint scale is the max magnitude among the VISIBLE (in-range) days only, so a
+  // bounded single year under All Time gets meaningful contrast instead of being
+  // washed out by a huge day in some other year. For non-ALL periods the passed
+  // rows are already period-filtered, so this is identical to the old behavior.
+  const max    = useMemo(() => {
+    let m = 0;
+    for (const [iso, v] of daily) {
+      if (iso >= range.start && iso <= range.end) m = Math.max(m, Math.abs(netOf(v)));
+    }
+    return m;
+  }, [daily, netOf, range]);
 
   const currency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
   const fmt = useMemo(() => {

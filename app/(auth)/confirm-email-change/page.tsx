@@ -117,7 +117,7 @@ function ConfirmEmailChangeInner() {
 
 export default function ConfirmEmailChangePage() {
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
+    <div className="min-h-[100svh] bg-gray-950 flex items-center justify-center px-4 py-8">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <div className="flex items-center justify-center mb-4">

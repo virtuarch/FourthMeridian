@@ -60,9 +60,13 @@ export function filterById(id: string): CalendarFilter {
   return CALENDAR_FILTERS.find((f) => f.id === id) ?? CALENDAR_FILTERS[0];
 }
 
-/** The default (net) filter for a perspective. */
+/** The default filter for a perspective. Switching to Spending (economic) lands
+ *  directly on the "Spending" measure — the one-tap top-level economic filter —
+ *  rather than the combined "Income & spending" net, so the visible, highlighted
+ *  control matches the perspective's name. Cash Flow (liquidity) keeps its honest
+ *  "Cash in & out" net default. */
 export function defaultFilterFor(perspective: CashFlowPerspective): CalendarFilter {
-  return perspective === "economic" ? filterById("eco-net") : filterById("liq-net");
+  return perspective === "economic" ? filterById("eco-spend") : filterById("liq-net");
 }
 
 // ─── Control ──────────────────────────────────────────────────────────────────
@@ -109,7 +113,13 @@ export function CashFlowFilterControls({ perspective, filterId, onChange, compac
         })}
       </div>
 
-      {/* Measure filter — scoped to the active perspective (non-overlapping sets). */}
+      {/* Measure filter — one compact dropdown scoped to the active perspective's
+          (non-overlapping) measures. A single-tap native <select> instead of a row
+          of chips keeps the control uncluttered on mobile: the perspective toggle
+          stays visible, the specific slice lives here. The active option shows as
+          the collapsed value; switching perspective resets this to that
+          perspective's default measure (defaultFilterFor), so it never carries an
+          invalid cross-perspective measure. */}
       {!compact && (
         <select
           aria-label="Cash flow measure filter"
@@ -118,9 +128,9 @@ export function CashFlowFilterControls({ perspective, filterId, onChange, compac
           className={[
             "appearance-none cursor-pointer rounded-[var(--radius-full)] px-3 py-1 text-[11px] font-semibold",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] transition-colors",
-            "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
+            "text-[var(--meridian-400)]",
           ].join(" ")}
-          style={{ background: "var(--glass-ultrathin)", border: "1px solid var(--border-hairline)" }}
+          style={{ background: "var(--glass-ultrathin)", border: "1px solid rgba(125,168,255,.32)" }}
         >
           {options.map((f) => (
             <option key={f.id} value={f.id}>{f.label}</option>

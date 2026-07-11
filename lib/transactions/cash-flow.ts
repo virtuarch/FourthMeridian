@@ -214,6 +214,16 @@ export function availableHistoricalPeriods(transactions: Transaction[]): Availab
   return { months: monthPeriods, quarters: quarterPeriods, years: yearPeriods };
 }
 
+/** Distinct calendar years that contain at least one transaction, newest first.
+ *  Drives All-Time calendar year navigation: year-stepping only visits years
+ *  that actually hold data (no empty years, no arbitrary cutoff), and the
+ *  bounded single-year calendar view never enumerates the 0000–9999 sentinel. */
+export function dataBearingYears(transactions: Transaction[]): number[] {
+  return availableHistoricalPeriods(transactions).years.map(
+    (p) => (p as { year: number }).year,
+  );
+}
+
 export function filterByPeriod(
   transactions: Transaction[],
   period: CashFlowPeriod,
@@ -421,9 +431,11 @@ export type CashFlowHistoryMode = "calendar" | "cards";
  *  both (calendar preferred — see getDefaultCashFlowHistoryMode). */
 export function getCashFlowHistoryModes(period: CashFlowPeriod): CashFlowHistoryMode[] {
   // All Time spans an unbounded number of years — a single calendar grid can't
-  // honestly render that (monthsInRange caps at 24), so the history is the
-  // aggregated monthly cards. The analytical totals stay All Time regardless.
-  if (period === "ALL") return ["cards"];
+  // honestly render that (monthsInRange caps at 24). The analytical totals stay
+  // All Time regardless; the Calendar mode is offered but BOUNDED to one
+  // navigable data-bearing year at a time (CashFlowHistoryWidget's viewYear
+  // cursor + CashFlowCalendar's viewYear prop), never the 0000–9999 sentinel.
+  if (period === "ALL") return ["calendar", "cards"];
   return periodScale(period) === "week" ? ["cards"] : ["calendar", "cards"];
 }
 
