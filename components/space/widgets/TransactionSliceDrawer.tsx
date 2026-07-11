@@ -24,6 +24,7 @@ import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { aggregateCashFlow } from "@/lib/transactions/cash-flow";
+import { TransactionDate } from "@/components/ui/TransactionDate";
 import { Waves, Layers, ListFilter } from "lucide-react";
 
 export interface TransactionSlice {
@@ -67,13 +68,9 @@ function rowMoney(t: Transaction): string {
 
 function TxRow({ t }: { t: Transaction }) {
   const credit = t.amount > 0;
-  const d = new Date(`${t.date}T12:00:00`);
   return (
     <div className="flex items-center gap-3 px-4 py-3">
-      <div className="w-9 shrink-0 text-center">
-        <p className="text-xs font-semibold leading-none text-[var(--text-secondary)]">{d.toLocaleDateString("en-US", { day: "numeric" })}</p>
-        <p className="text-xs mt-0.5 text-[var(--text-faint)]">{d.toLocaleDateString("en-US", { month: "short" })}</p>
-      </div>
+      <TransactionDate date={t.date} />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold truncate text-[var(--text-primary)]">{t.merchantDisplayName ?? t.merchant}</p>
         <div className="flex items-center gap-2 mt-0.5">

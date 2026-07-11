@@ -14,6 +14,7 @@ import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { EstimatedChip } from "@/components/ui/EstimatedChip";
+import { TransactionDate } from "@/components/ui/TransactionDate";
 import { formatDate as formatDateUTC } from "@/lib/format";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
 import {
@@ -1209,7 +1210,6 @@ function TxRow({ tx, cards, selectedCardId, onOpen }: {
   onOpen: () => void;
 }) {
   const isCredit = tx.amount > 0;
-  const dateObj  = new Date(tx.date + "T12:00:00");
   const acctName = cards.find((c) => c.id === tx.accountId)?.name ?? "";
   return (
     <div
@@ -1219,10 +1219,7 @@ function TxRow({ tx, cards, selectedCardId, onOpen }: {
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
       className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
     >
-      <div className="w-9 shrink-0 text-center">
-        <p className="text-xs font-semibold leading-none" style={{ color: "var(--text-secondary)" }}>{dateObj.toLocaleDateString("en-US", { day: "numeric" })}</p>
-        <p className="text-xs mt-0.5" style={{ color: "var(--text-faint)" }}>{dateObj.toLocaleDateString("en-US", { month: "short" })}</p>
-      </div>
+      <TransactionDate date={tx.date} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{tx.merchantDisplayName ?? tx.merchant}{/* MI M6 — resolved name, raw fallback */}</p>

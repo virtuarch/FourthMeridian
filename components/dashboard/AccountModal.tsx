@@ -13,6 +13,7 @@ import { exchangeSymbol } from "@/lib/exchangeSymbol";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { GlassButton } from "@/components/atlas/GlassButton";
+import { TransactionDate } from "@/components/ui/TransactionDate";
 import { useTheme } from "@/components/theme/ThemeProvider";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in
 // DashboardChrome). Opening sets ?transaction=, so the drawer stacks over this modal.
@@ -719,7 +720,6 @@ function TxRow({ tx, isDebt, onOpen }: { tx: Transaction; isDebt: boolean; onOpe
   const isInvestmentTx = ["Buy","Sell","Dividend","Split","Fee"].includes(tx.category);
   const isCredit = isDebt ? tx.amount > 0 : tx.amount > 0;
   const catCls   = CAT_COLORS[tx.category] ?? "bg-[var(--surface-inset)] text-[var(--text-muted)]";
-  const dateObj  = new Date(tx.date + "T12:00:00");
 
   // Investment transactions use merchant as ticker. MI M6 — banking rows show the
   // resolved Merchant display name; investment/unresolved rows fall back to the
@@ -736,14 +736,7 @@ function TxRow({ tx, isDebt, onOpen }: { tx: Transaction; isDebt: boolean; onOpe
       className="flex items-center gap-3 py-3 hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
     >
       {/* Date */}
-      <div className="w-9 shrink-0 text-center">
-        <p className="text-xs font-semibold text-[var(--text-secondary)] leading-none">
-          {dateObj.toLocaleDateString("en-US", { day: "numeric" })}
-        </p>
-        <p className="text-xs text-[var(--text-muted)] mt-0.5">
-          {dateObj.toLocaleDateString("en-US", { month: "short" })}
-        </p>
-      </div>
+      <TransactionDate date={tx.date} />
 
       {/* Description */}
       <div className="flex-1 min-w-0">

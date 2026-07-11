@@ -44,6 +44,7 @@ import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { EstimatedChip } from "@/components/ui/EstimatedChip";
+import { TransactionDate } from "@/components/ui/TransactionDate";
 
 // MC1 QA Q3 — itemized rows pass the ROW's own currency; default preserved.
 const fmt = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
@@ -96,7 +97,6 @@ const PAGE_ROWS    = 10;
 function TxRow({ tx, acct }: { tx: InvestmentTransaction; acct?: Account }) {
   const cat     = ACTIVITY_CAT[tx.category];
   const isBuy   = tx.category === "Buy";
-  const dateObj = new Date(tx.date + "T12:00:00");
   const fmtAmt  = (n: number) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
 
@@ -107,14 +107,7 @@ function TxRow({ tx, acct }: { tx: InvestmentTransaction; acct?: Account }) {
 
   return (
     <div className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors">
-      <div className="w-9 shrink-0 text-center">
-        <p className="text-xs font-semibold leading-none" style={{ color: "var(--text-secondary)" }}>
-          {dateObj.toLocaleDateString("en-US", { day: "numeric" })}
-        </p>
-        <p className="text-xs mt-0.5" style={{ color: "var(--text-faint)" }}>
-          {dateObj.toLocaleDateString("en-US", { month: "short" })}
-        </p>
-      </div>
+      <TransactionDate date={tx.date} />
       <CoinIcon symbol={tx.ticker} size={32} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">

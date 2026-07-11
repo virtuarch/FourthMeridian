@@ -23,6 +23,7 @@ import { convertMoney, rehydrateContext, type SerializedConversionContext } from
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
+import { TransactionDate } from "@/components/ui/TransactionDate";
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
 // MC1 QA Q3 — itemized transaction rows pass the ROW's own currency.
@@ -405,7 +406,6 @@ function TxRow({
   onOpen:   () => void;
 }) {
   const isCredit = tx.amount > 0;
-  const dateObj  = new Date(tx.date + "T12:00:00");
 
   return (
     <div
@@ -416,14 +416,7 @@ function TxRow({
       className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
     >
       {/* Date column */}
-      <div className="w-9 shrink-0 text-center">
-        <p className="text-xs font-semibold leading-none" style={{ color: "var(--text-secondary)" }}>
-          {dateObj.toLocaleDateString("en-US", { day: "numeric" })}
-        </p>
-        <p className="text-xs mt-0.5" style={{ color: "var(--text-faint)" }}>
-          {dateObj.toLocaleDateString("en-US", { month: "short" })}
-        </p>
-      </div>
+      <TransactionDate date={tx.date} />
 
       {/* Merchant + meta */}
       <div className="flex-1 min-w-0">

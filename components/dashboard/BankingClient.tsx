@@ -14,6 +14,7 @@ import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { EstimatedChip } from "@/components/ui/EstimatedChip";
+import { TransactionDate } from "@/components/ui/TransactionDate";
 import { formatDate } from "@/lib/format";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 
@@ -542,8 +543,6 @@ function TxRow({
   const fmt = (n: number) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: tx.currency ?? DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 2 }).format(Math.abs(n));
 
-  const dateObj = new Date(tx.date + "T12:00:00");
-
   return (
     <div
       role="button"
@@ -553,14 +552,7 @@ function TxRow({
       className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
     >
       {/* Date column */}
-      <div className="w-9 shrink-0 text-center">
-        <p className="text-xs font-semibold leading-none" style={{ color: "var(--text-secondary)" }}>
-          {dateObj.toLocaleDateString("en-US", { day: "numeric" })}
-        </p>
-        <p className="text-xs mt-0.5" style={{ color: "var(--text-faint)" }}>
-          {dateObj.toLocaleDateString("en-US", { month: "short" })}
-        </p>
-      </div>
+      <TransactionDate date={tx.date} />
 
       {/* Merchant + meta */}
       <div className="flex-1 min-w-0">
