@@ -93,6 +93,8 @@ import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projectio
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
 import { SharedHistoricalContext } from "@/components/space/SharedHistoricalContext";
+import { WealthPerspective } from "@/components/space/widgets/wealth/WealthPerspective";
+import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import {
@@ -2604,6 +2606,24 @@ export function SpaceDashboard({
   const shellToday = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const [asOf, setAsOf]         = useState<string>(shellToday);
   const [compareTo, setCompareTo] = useState<string | null>(null);
+
+  // Wealth Time Machine read model (A6). Pure derivation over the already-fetched
+  // SpaceSnapshot series + the shared shell context — no new fetch, no historical
+  // computation in this component. Drives the Wealth workspace AND the shell's
+  // completeness/evidence surfaces when Wealth is the active Perspective. Cheap
+  // to keep memoized regardless of the active tab.
+  const wealthCurrency = snapshotCurrency ?? displayCurrency;
+  const wealthResult = useMemo(
+    () => computeWealthTimeMachine({
+      snapshots: snapshots ?? [],
+      asOf,
+      compareTo,
+      period: cashFlowPeriod,
+      today: shellToday,
+      currency: wealthCurrency,
+    }),
+    [snapshots, asOf, compareTo, cashFlowPeriod, shellToday, wealthCurrency],
+  );
   // CF-3 — the workspace-shared Cash Flow / Spending perspective + measure filter,
   // driven by the Cash Flow History widget's selector and consumed by every Cash
   // Flow widget so they never disagree.
@@ -2620,6 +2640,9 @@ export function SpaceDashboard({
   // Goals workspace needs the Space's goals ("Am I on track?"). Fetch once when
   // it opens (mirrors the transactions/snapshots pattern).
   const goalsWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "goals";
+  // Wealth workspace needs SpaceSnapshot history for its Time Machine — trigger
+  // the snapshot fetch when it's open (mirrors debtWorkspaceActive).
+  const wealthWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "wealth";
   const [spaceGoals, setSpaceGoals] = useState<SpaceGoal[] | null>(null);
   useEffect(() => {
     if (!goalsWorkspaceActive || spaceGoals !== null) return;
@@ -2736,7 +2759,7 @@ export function SpaceDashboard({
     // Overview now includes the snapshot-backed `net_worth_chart` section, so
     // it still needs the snapshot fetch. Shared non-chartable categories skip
     // it as before. (Future: fetch when any snapshot-tier section is present.)
-    if (!heroDef && spaceType !== "PERSONAL" && !debtWorkspaceActive) return;
+    if (!heroDef && spaceType !== "PERSONAL" && !debtWorkspaceActive && !wealthWorkspaceActive) return;
     let active = true;
     fetch(`/api/spaces/${spaceId}/snapshots`)
       .then((r) => (r.ok ? r.json() : { snapshots: [] }))
@@ -2745,7 +2768,7 @@ export function SpaceDashboard({
     return () => { active = false; };
   // currencyNonce (Q6): re-fetch the stamp-aware hero series after a currency change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, category, debtWorkspaceActive, currencyNonce]);
+  }, [spaceId, category, debtWorkspaceActive, wealthWorkspaceActive, currencyNonce]);
 
   // ── Space transactions (KD-15-filtered on the server) ────────────────────
   // Flow-identified templates show an Overview preview, so they fetch up
@@ -3131,6 +3154,15 @@ export function SpaceDashboard({
               compareTo={compareTo}
               onCompareToChange={setCompareTo}
               today={shellToday}
+              // Wealth populates the shared Completeness + Evidence surfaces from
+              // its active result; other Perspectives leave them as-is (neutral
+              // placeholders) until their engines drive them.
+              completeness={wealthWorkspaceActive
+                ? { label: wealthResult.completeness.label, tone: wealthResult.completeness.tone }
+                : undefined}
+              evidence={wealthWorkspaceActive && wealthResult.evidence
+                ? { label: wealthResult.evidence.label }
+                : undefined}
             />
 
             {/* Row 2 — Shared Time Controls (relative periods: to-date group +
@@ -3166,7 +3198,18 @@ export function SpaceDashboard({
               aria-labelledby={activePerspectiveId ? `ptab-${activePerspectiveId}` : undefined}
               className="space-y-3"
             >
-              {activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
+              {activePerspectiveId === "wealth" ? (
+                // Wealth Time Machine (A6) — the redesigned historical Wealth
+                // workspace, driven by the shared shell context via the
+                // wealthResult read model. Replaces the old current-state widget
+                // stack for this Perspective only; the pure logic lives in the
+                // read model, not here.
+                <WealthPerspective
+                  result={wealthResult}
+                  currency={wealthCurrency}
+                  onSelectAsOf={setAsOf}
+                />
+              ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
                   <SectionCard
                     key={vs.id}

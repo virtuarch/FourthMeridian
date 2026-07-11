@@ -72,8 +72,8 @@ check(
   /accounts\.length === 0 \?/.test(dashSrc) && !/accounts\.length === 0 && !renderHero/.test(dashSrc)
 );
 check(
-  "snapshots are fetched for PERSONAL (net_worth_chart) or a heroDef (plus the Debt workspace)",
-  /if \(!heroDef && spaceType !== "PERSONAL"[\s\S]{0,40}\) return;/.test(dashSrc)
+  "snapshots are fetched for PERSONAL (net_worth_chart) or a heroDef (plus the Debt + Wealth workspaces)",
+  /if \(!heroDef && spaceType !== "PERSONAL"[\s\S]{0,90}\) return;/.test(dashSrc)
 );
 check(
   "initial tab is applied once — from the URL (?tab=), then the initialTab fallback",
