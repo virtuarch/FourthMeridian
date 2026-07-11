@@ -60,6 +60,58 @@ export interface PerspectiveScope {
   userId:  string;
 }
 
+// ── Completeness (A5-S1 — the single shared trust vocabulary) ─────────────────
+
+/**
+ * The canonical trust tiers, ordered best → worst (this ordering IS the trust
+ * ranking used by worstTier() in ./completeness.ts):
+ *   observed   — a provider or the user stated it for that date (live balance,
+ *                posted transaction, same-day non-estimated SpaceSnapshot,
+ *                PositionObservation.origin=OBSERVED).
+ *   derived    — FM computed it deterministically from observed anchors
+ *                (cash/card walk-backs, snapshot carry-forward, A4 reconstruction).
+ *   estimated  — heuristic or flat-hold (non-cash held flat, FX walk-back miss,
+ *                balance×APR/12, isEstimated=true snapshots).
+ *   incomplete — the data cannot answer (before transaction depth, before first
+ *                observation): a GAP statement, never a number presented as whole.
+ *   unknown    — the method itself cannot be determined (SUMMARY_ONLY accounts,
+ *                unrecognized types).
+ *
+ * This enum is THE trust vocabulary for the whole platform going forward.
+ * `PositionObservation.completeness` (a reserved-null String column since A1)
+ * MUST adopt these exact string values when A4 writes DERIVED rows — A4 imports
+ * COMPLETENESS_TIERS from ./completeness and refuses any non-member value at
+ * write time. Do not mint a parallel vocabulary (the drift A5 exists to prevent).
+ */
+export type CompletenessTier =
+  | "observed"
+  | "derived"
+  | "estimated"
+  | "incomplete"
+  | "unknown";
+
+/**
+ * The trust envelope a Perspective result carries when it answers as-of a date.
+ * Runtime-only — never a table (the ratified anti-`FinancialState` ruling).
+ */
+export interface Completeness {
+  /** Worst tier among the contributing components (worstTier, ./completeness). */
+  tier: CompletenessTier;
+  /**
+   * Orthogonal flag: two same-tier sources disagree (provider vs import,
+   * residual beyond tolerance). A conflicted value may still have a tier; the
+   * flag blocks aggregation and forces a drill-down surface. ORs upward through
+   * propagation (propagateCompleteness, ./completeness).
+   */
+  conflict: boolean;
+  /** One deterministic, name-free sentence explaining the tier. */
+  reason: string;
+  /** Earliest date this Perspective can answer for (YYYY-MM-DD), when bounded. */
+  coverageFrom?: string;
+  /** Per-metric / per-account tier detail, never collapsed away. */
+  byComponent?: Record<string, CompletenessTier>;
+}
+
 // ── Result building blocks ────────────────────────────────────────────────────
 
 export type LensStatus = "ok" | "empty" | "error";
@@ -171,6 +223,13 @@ export interface LensResult {
    * stay byte-identical — the kill switch). Data-only until Phase 4.
    */
   estimated?: boolean;
+  /**
+   * A5-S1 — the trust envelope. Present whenever `asOf` was supplied (may be
+   * present otherwise); absent on every current context-less call, so existing
+   * results stay byte-identical (the kill switch). Downstream Perspectives build
+   * it with the propagation helpers in ./completeness.ts, never by hand.
+   */
+  completeness?: Completeness;
   metrics:     LensMetric[];
   assumptions: LensAssumption[];
   provenance:  LensProvenance;
@@ -205,6 +264,16 @@ export interface ComputeOptions {
    * byte-identical to today for every existing caller.
    */
   targetCurrency?: string;
+  /**
+   * A5-S1 — optional as-of valuation date (YYYY-MM-DD). When set, as-of-aware
+   * lenses resolve balances to this historical date via the A5-S2 resolvers
+   * (getSnapshotAsOf / getAccountsAsOf) and stamp the result with a
+   * `completeness` envelope. Omitted ⇒ "now": byte-identical to today for every
+   * existing caller (the kill switch). No lens consumes `asOf` in the S1/S2
+   * slices — the field is the frozen contract the parallel A4/P1/P2/P3 streams
+   * build against; the engine threads it to lenses unchanged (index.ts).
+   */
+  asOf?: string;
 }
 
 /**

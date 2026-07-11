@@ -41,7 +41,13 @@ import {
   registerLens,
   validateLensResult,
 } from "./index";
-import type { ComputeOptions, LensResult, PerspectiveScope } from "./types";
+import type { Completeness, ComputeOptions, LensResult, PerspectiveScope } from "./types";
+import {
+  COMPLETENESS_TIERS,
+  isCompletenessTier,
+  propagateCompleteness,
+  worstTier,
+} from "./completeness";
 
 // ── Tiny harness (house pattern) ─────────────────────────────────────────────
 
@@ -161,6 +167,60 @@ async function main(): Promise<void> {
     batch.length === 2 && batch[0].lensId === "liquidity" && batch[1].lensId === "debt");
   check("batch degrades per-lens (bad lens shaped, good lens intact)",
     batch[0].status === "ok" && batch[1].status === "error");
+
+  // ── 3b. A5-S1 kill switch — asOf is additive and optional ────────────────
+  // The load-bearing regression guard: a lens that does not consume asOf yields
+  // byte-identical JSON whether or not asOf is supplied, and never emits a
+  // completeness field. (No lens consumes asOf in the S1/S2 slices — the fake
+  // liquidity lens above ignores it, exactly like every existing lens today.)
+  console.log("3b. A5-S1 kill switch (asOf-absent byte-identity)");
+
+  const noAsOf   = await computePerspective("liquidity", SCOPE, { now: FIXED_NOW });
+  const withAsOf = await computePerspective("liquidity", SCOPE, { now: FIXED_NOW, asOf: "2026-01-01" });
+  check("asOf-absent result carries no completeness field",
+    noAsOf.completeness === undefined && !JSON.stringify(noAsOf).includes("completeness"));
+  check("asOf is additive/optional — an asOf-ignoring lens is byte-identical",
+    JSON.stringify(noAsOf) === JSON.stringify(withAsOf));
+
+  // ── 3c. A5-S1 completeness vocabulary + propagation helpers ──────────────
+  console.log("3c. A5-S1 completeness vocabulary");
+
+  check("COMPLETENESS_TIERS is the frozen canonical order",
+    JSON.stringify([...COMPLETENESS_TIERS]) ===
+      '["observed","derived","estimated","incomplete","unknown"]');
+  check("COMPLETENESS_TIERS is frozen", Object.isFrozen(COMPLETENESS_TIERS));
+
+  check("isCompletenessTier accepts every canonical tier",
+    COMPLETENESS_TIERS.every((t) => isCompletenessTier(t)));
+  check("isCompletenessTier rejects a non-member value", !isCompletenessTier("partial"));
+  check("isCompletenessTier rejects non-strings", !isCompletenessTier(undefined) && !isCompletenessTier(3));
+
+  check("worstTier picks the least-trustworthy tier",
+    worstTier(["observed", "estimated"]) === "estimated" &&
+    worstTier(["derived", "incomplete", "observed"]) === "incomplete");
+  check("worstTier of a single tier is that tier", worstTier(["observed"]) === "observed");
+  check("worstTier of an empty set fails closed to unknown", worstTier([]) === "unknown");
+
+  check("propagateCompleteness takes worst tier and ORs conflict upward",
+    JSON.stringify(propagateCompleteness([{ tier: "observed" }, { tier: "estimated", conflict: true }])) ===
+      JSON.stringify({ tier: "estimated", conflict: true }));
+  check("propagateCompleteness with no conflicts reports conflict false",
+    JSON.stringify(propagateCompleteness([{ tier: "observed" }, { tier: "derived" }])) ===
+      JSON.stringify({ tier: "derived", conflict: false }));
+  check("propagateCompleteness of an empty set is unknown/false",
+    JSON.stringify(propagateCompleteness([])) === JSON.stringify({ tier: "unknown", conflict: false }));
+
+  // Completeness values are plain serialisable objects (contract rule: no Date,
+  // no functions), so they round-trip through JSON byte-identically.
+  const stamp: Completeness = {
+    tier: "derived",
+    conflict: false,
+    reason: "Reconstructed from transaction history.",
+    coverageFrom: "2026-01-01",
+    byComponent: { cash: "derived", marketable: "estimated" },
+  };
+  check("Completeness round-trips through JSON unchanged",
+    JSON.stringify(JSON.parse(JSON.stringify(stamp))) === JSON.stringify(stamp));
 
   // ── 4. Source tripwires ─────────────────────────────────────────────────
   console.log("4. Import-graph guards (lib/perspective-engine/**)");

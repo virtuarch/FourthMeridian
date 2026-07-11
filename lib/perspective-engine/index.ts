@@ -158,9 +158,17 @@ export function validateLensResult(result: LensResult): string[] {
 const UNREGISTERED_LENS_VERSION = 0;
 
 function defaultOptions(options?: Partial<ComputeOptions>): ComputeOptions {
-  // Preserve targetCurrency (MC1 view-as override) alongside the injected
-  // clock; undefined by default ⇒ lenses target the Space's reporting currency.
-  return { now: options?.now ?? (() => new Date()), targetCurrency: options?.targetCurrency };
+  // Preserve targetCurrency (MC1 view-as override) and asOf (A5-S1 as-of date)
+  // alongside the injected clock. Both default to undefined: undefined
+  // targetCurrency ⇒ lenses target the Space's reporting currency; undefined
+  // asOf ⇒ "now" (the kill switch — byte-identical to today). Threading asOf
+  // here is what makes the contract real: without it the engine would silently
+  // drop the field before any as-of-aware lens (S3, P2/P3) could read it.
+  return {
+    now: options?.now ?? (() => new Date()),
+    targetCurrency: options?.targetCurrency,
+    asOf: options?.asOf,
+  };
 }
 
 /**
