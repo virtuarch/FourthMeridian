@@ -87,8 +87,15 @@ import {
 import {
   DEFAULT_CASH_FLOW_PERIOD,
   periodLabel,
+  isExplicitPeriod,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
+import {
+  resolvePerspectiveTimeRange,
+  inferPerspectiveTimePreset,
+  defaultPerspectiveTimeState,
+  type TimePreset,
+} from "@/lib/perspectives/time-range";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
@@ -2597,15 +2604,56 @@ export function SpaceDashboard({
   // transaction fetch below when the workspace is open in a non-flow Space.
   const [cashFlowPeriod, setCashFlowPeriod] = useState<CashFlowPeriod>(DEFAULT_CASH_FLOW_PERIOD);
 
-  // Shared Perspective shell context (Row 1) — the as-of valuation date + an
-  // optional comparison date every Perspective inherits (the A5-S1
-  // FinancialContext.asOf contract). Presentation state today: it lives ABOVE
-  // the Perspective tabs so Time is shared context, not a per-Perspective
-  // control. Perspectives consume it as their historical engines land; changing
-  // it never fabricates data. Defaults: as-of today, no comparison.
-  const shellToday = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  const [asOf, setAsOf]         = useState<string>(shellToday);
-  const [compareTo, setCompareTo] = useState<string | null>(null);
+  // Shared Perspective shell TIME state (Row 1 + Row 2) — ONE coherent triple:
+  // the active slice (`timePreset`: a relative period, or "CUSTOM" for a manual
+  // pair that matches no preset), the point-in-time `asOf`, and the
+  // comparison/range-start `compareTo`. Defaults to MTD (As Of today, Compare To
+  // the first of this month) via the pure resolver. All date arithmetic lives in
+  // lib/perspectives/time-range.ts; this component only owns the state + wiring.
+  // `cashFlowPeriod` (above) stays Cash Flow's own period — it follows the shell
+  // slice on selection, while the Cash Flow history widget can still drill to
+  // explicit calendar periods without disturbing the shell.
+  const shellToday   = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const shellDefault = useMemo(() => defaultPerspectiveTimeState(shellToday), [shellToday]);
+  const [timePreset, setTimePreset] = useState<TimePreset>(shellDefault.preset);
+  const [asOf, setAsOf]             = useState<string>(shellDefault.asOf);
+  const [compareTo, setCompareTo]   = useState<string | null>(shellDefault.compareTo);
+
+  // Earliest defensible date at the shell level (the Space's oldest snapshot) —
+  // powers the ALL slice's Compare To and preset inference. Null until snapshots
+  // load / when none exist; ALL then keeps Compare To unset (never fabricated).
+  const coverageFrom = useMemo(
+    () => (snapshots && snapshots.length > 0 ? snapshots[0].date : null),
+    [snapshots],
+  );
+
+  // A slice was selected (Row 2): set the preset, derive Compare To from it, and
+  // let Cash Flow follow the same relative period. As Of stays the endpoint.
+  const handleSelectSlice = (slice: CashFlowPeriod) => {
+    if (isExplicitPeriod(slice)) { setCashFlowPeriod(slice); return; } // defensive; Row 2 emits relative ids
+    const next = resolvePerspectiveTimeRange({ preset: slice, asOf, coverageFrom });
+    setTimePreset(next.preset);
+    setCompareTo(next.compareTo);
+    setCashFlowPeriod(slice);
+  };
+
+  // As Of changed: keep the active preset and re-derive Compare To from the new
+  // endpoint (a preset moves the whole range). Under CUSTOM, leave Compare To.
+  const handleAsOfChange = (next: string) => {
+    setAsOf(next);
+    if (timePreset !== "CUSTOM") {
+      setCompareTo(resolvePerspectiveTimeRange({ preset: timePreset, asOf: next, coverageFrom }).compareTo);
+    }
+  };
+
+  // Compare To changed manually: activate the matching preset if the pair maps to
+  // one exactly (Cash Flow follows), else fall to CUSTOM. As Of never moves.
+  const handleCompareToChange = (next: string | null) => {
+    setCompareTo(next);
+    const inferred = inferPerspectiveTimePreset({ asOf, compareTo: next, coverageFrom });
+    setTimePreset(inferred);
+    if (inferred !== "CUSTOM") setCashFlowPeriod(inferred);
+  };
 
   // Wealth Time Machine read model (A6). Pure derivation over the already-fetched
   // SpaceSnapshot series + the shared shell context — no new fetch, no historical
@@ -2618,11 +2666,9 @@ export function SpaceDashboard({
       snapshots: snapshots ?? [],
       asOf,
       compareTo,
-      period: cashFlowPeriod,
-      today: shellToday,
       currency: wealthCurrency,
     }),
-    [snapshots, asOf, compareTo, cashFlowPeriod, shellToday, wealthCurrency],
+    [snapshots, asOf, compareTo, wealthCurrency],
   );
   // CF-3 — the workspace-shared Cash Flow / Spending perspective + measure filter,
   // driven by the Cash Flow History widget's selector and consumed by every Cash
@@ -3150,9 +3196,9 @@ export function SpaceDashboard({
                 shell-level Completeness + Evidence surfaces. */}
             <SharedHistoricalContext
               asOf={asOf}
-              onAsOfChange={setAsOf}
+              onAsOfChange={handleAsOfChange}
               compareTo={compareTo}
-              onCompareToChange={setCompareTo}
+              onCompareToChange={handleCompareToChange}
               today={shellToday}
               // Wealth populates the shared Completeness + Evidence surfaces from
               // its active result; other Perspectives leave them as-is (neutral
@@ -3172,8 +3218,8 @@ export function SpaceDashboard({
                 Explicit historical selection still lives inside the Cash Flow
                 History widget's own Month/Quarter/Year dropdowns. */}
             <CashFlowPeriodSelector
-              value={cashFlowPeriod}
-              onChange={setCashFlowPeriod}
+              value={timePreset === "CUSTOM" ? null : timePreset}
+              onChange={handleSelectSlice}
             />
 
             {/* Row 3 — Perspective tabs. Every Perspective inherits the shared

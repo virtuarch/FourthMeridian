@@ -25,7 +25,6 @@
  *  - drivers are real snapshot component deltas — never invented attribution.
  */
 
-import { periodRange, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { formatCurrency } from "@/lib/format";
 import type { Snapshot } from "@/types";
 
@@ -138,10 +137,8 @@ export interface WealthResult {
 
 export interface WealthTimeMachineInput {
   snapshots: Snapshot[];
-  asOf:      string;                 // YYYY-MM-DD
-  compareTo: string | null;         // YYYY-MM-DD or null
-  period:    CashFlowPeriod;        // the shared range (chart window only)
-  today:     string;                 // YYYY-MM-DD (for range computation)
+  asOf:      string;                 // YYYY-MM-DD — the point-in-time state date
+  compareTo: string | null;         // YYYY-MM-DD — the comparison / chart range start
   currency:  string;                 // display currency for composed copy
 }
 
@@ -199,7 +196,7 @@ export function formatWealthDate(iso: string): string {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthResult {
-  const { asOf, compareTo, period, today, currency } = input;
+  const { asOf, compareTo, currency } = input;
   const fmt = (n: number) => formatCurrency(n, currency);
 
   // Drop mixed-unit fx-miss points (the hero/chart reads drop these too), then
@@ -239,10 +236,12 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
       .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
   }
 
-  // Chart series windowed to the shared range (point-in-time cards ignore this).
-  const { start, end } = periodRange(period, new Date(`${today}T00:00:00.000Z`));
+  // Chart series is the Compare To → As Of window (shell §8). With no comparison
+  // (or ALL without a coverage date) it falls back to full history up to As Of.
+  // Point-in-time cards ignore this window — they always use As Of.
+  const startBound = compareTo ?? coverageFrom ?? "0000-01-01";
   const points: WealthChartPoint[] = series
-    .filter((s) => s.date >= start && s.date <= end)
+    .filter((s) => s.date >= startBound && s.date <= asOf)
     .map((s) => {
       const st = toState(s);
       return {

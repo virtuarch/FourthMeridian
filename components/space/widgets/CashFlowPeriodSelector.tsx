@@ -28,7 +28,8 @@ import {
 } from "@/lib/transactions/cash-flow";
 
 interface Props {
-  value:      CashFlowPeriod;
+  /** null ⇒ no segment highlighted (a Custom / unmatched shell range). */
+  value:      CashFlowPeriod | null;
   onChange:   (period: CashFlowPeriod) => void;
   className?: string;
 }
@@ -40,7 +41,7 @@ export function CashFlowPeriodSelector({ value, onChange, className = "" }: Prop
   // One group holds the active segment at a time; an empty value matches no
   // option, so the other group (and an explicit historical period) shows no
   // highlight — exactly what we want.
-  const relValue     = isExplicitPeriod(value) ? undefined : value;
+  const relValue     = value === null || isExplicitPeriod(value) ? undefined : value;
   const toDateValue  = (relValue && TO_DATE_IDS.has(relValue) ? relValue : "") as RelativeCashFlowPeriod;
   const rollingValue = (relValue && ROLLING_IDS.has(relValue) ? relValue : "") as RelativeCashFlowPeriod;
 

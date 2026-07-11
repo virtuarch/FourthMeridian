@@ -51,7 +51,7 @@ const SERIES: Snapshot[] = [
   snap("2026-07-14", { totalCash: 8000, totalSavings: 13000, totalInvestments: 66000, totalDebt: 15000 }),   // NW 72000
 ];
 const base = (o: Partial<WealthTimeMachineInput>): WealthTimeMachineInput => ({
-  snapshots: SERIES, asOf: "2026-07-15", compareTo: null, period: "ALL", today: "2026-07-15", currency: "USD", ...o,
+  snapshots: SERIES, asOf: "2026-07-15", compareTo: null, currency: "USD", ...o,
 });
 
 console.log("As Of resolves to the nearest snapshot ≤ the date");
@@ -91,18 +91,21 @@ console.log("Present-day / no-As-Of behavior preserves present results");
   check("as-of today = present-day latest snapshot", approx(r.asOfState.netWorth, 72000) && approx(r.asOfState.totalAssets, 87000));
 }
 
-console.log("Range: ALL uses all history; a shorter range filters only the chart");
+console.log("Chart range = Compare To → As Of; the shell range never touches the cards");
 {
-  const all = computeWealthTimeMachine(base({ period: "ALL", asOf: "2026-07-15" }));
-  check("ALL chart uses the full series", all.chart.points.length === 4);
-  const m1 = computeWealthTimeMachine(base({ period: "PAST_MONTH", asOf: "2026-07-15", today: "2026-07-15" }));
-  check("1M (PAST_MONTH) chart is a strict subset (Jan/Jun dropped, Jul kept)", m1.chart.points.length < all.chart.points.length && m1.chart.points.every((p) => p.date >= "2026-07-01"));
-  check("the shorter range does NOT change the As Of cards", JSON.stringify(m1.asOfState) === JSON.stringify(all.asOfState));
+  // No comparison ⇒ full history up to As Of.
+  const all = computeWealthTimeMachine(base({ compareTo: null, asOf: "2026-07-15" }));
+  check("no comparison ⇒ chart uses the full series", all.chart.points.length === 4);
+  // A Compare To of Jul 1 windows the chart to [Jul 1, Jul 15] (Jan/Jun dropped).
+  const windowed = computeWealthTimeMachine(base({ compareTo: "2026-07-01", asOf: "2026-07-15" }));
+  check("Compare To windows the chart (Jan/Jun dropped, Jul kept)",
+    windowed.chart.points.length < all.chart.points.length && windowed.chart.points.every((p) => p.date >= "2026-07-01"));
+  check("the chart window does NOT change the As Of cards", JSON.stringify(windowed.asOfState) === JSON.stringify(all.asOfState));
 }
 
 console.log("Missing dates remain gaps — no interpolation/fabrication");
 {
-  const r = computeWealthTimeMachine(base({ period: "ALL" }));
+  const r = computeWealthTimeMachine(base({}));
   check("chart points exist only at real snapshot dates", JSON.stringify(r.chart.points.map((p) => p.date)) === JSON.stringify(SERIES.map((s) => s.date)));
 }
 
@@ -127,7 +130,7 @@ console.log("isEstimated snapshots surface as Reconstructed, never Observed");
 console.log("fx-missed points are dropped (mixed-unit honesty)");
 {
   const withMiss = [...SERIES, snap("2026-07-20", { totalCash: 999999, fxMiss: true })];
-  const r = computeWealthTimeMachine(base({ snapshots: withMiss, asOf: "2026-07-25", period: "ALL" }));
+  const r = computeWealthTimeMachine(base({ snapshots: withMiss, asOf: "2026-07-25" }));
   check("fx-miss point excluded from the series and chart", r.chart.points.every((p) => p.date !== "2026-07-20") && approx(r.asOfState.netWorth, 72000));
 }
 
