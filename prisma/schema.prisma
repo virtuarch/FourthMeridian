@@ -853,6 +853,8 @@ model FinancialAccount {
   // A1 — append-only investment position history (dark-write; Holding stays the
   // current-state read model). Additive back-relation only.
   positionObservations     PositionObservation[]
+  // A3 — canonical inside-the-investment-account activity log (dark-write).
+  investmentEvents         InvestmentEvent[]
   // ProviderAccountIdentity (D2) — populated (Step 1C backfill + Step 2 dual-write).
   providerIdentities       ProviderAccountIdentity[]
   // ImportBatch (D2 Step 4D) — populated by the import pipeline.
@@ -1246,35 +1248,36 @@ enum AssetClass {
 }
 
 model Instrument {
-  id            String   @id @default(cuid())
+  id                     String     @id @default(cuid())
   // Strong identifiers — nullable; null = never provided (MC1 doctrine).
-  cusip         String?  @unique
-  isin          String?  @unique
-  sedol         String?
+  cusip                  String?    @unique
+  isin                   String?    @unique
+  sedol                  String?
   // Display / weak identity — never the canonical primary key.
-  tickerSymbol  String?
-  name          String?
-  assetClass    AssetClass @default(UNKNOWN)
+  tickerSymbol           String?
+  name                   String?
+  assetClass             AssetClass @default(UNKNOWN)
   // Provider-reported metadata, preserved not interpreted.
-  securityType         String?
-  securitySubtype      String?
-  marketIdentifierCode String?
-  currency      String?
-  sector        String?
-  industry      String?
-  cfiCode       String?
-  isCashEquivalent Boolean?
-  isHoldable    Boolean  @default(true)
-  status        String   @default("ACTIVE") // ACTIVE | DELISTED
-  optionMeta      Json?   // raw Plaid option_contract
-  fixedIncomeMeta Json?   // raw Plaid fixed_income
+  securityType           String?
+  securitySubtype        String?
+  marketIdentifierCode   String?
+  currency               String?
+  sector                 String?
+  industry               String?
+  cfiCode                String?
+  isCashEquivalent       Boolean?
+  isHoldable             Boolean    @default(true)
+  status                 String     @default("ACTIVE") // ACTIVE | DELISTED
+  optionMeta             Json? // raw Plaid option_contract
+  fixedIncomeMeta        Json? // raw Plaid fixed_income
   underlyingInstrumentId String?
-  supersededById  String? // symbol-change / merge pointer — never delete
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  supersededById         String? // symbol-change / merge pointer — never delete
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
 
   aliases   InstrumentAlias[]
   positions PositionObservation[]
+  events    InvestmentEvent[]
 
   @@index([tickerSymbol])
   @@index([assetClass])
@@ -1282,13 +1285,13 @@ model Instrument {
 
 // Provider identity mapping — the ProviderAccountIdentity/MerchantAlias twin.
 model InstrumentAlias {
-  id           String   @id @default(cuid())
+  id           String     @id @default(cuid())
   instrumentId String
   instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
-  provider     String   // "plaid" | "coinbase" | "schwab" | "csv" | "wallet" | "manual"
-  externalId   String   // e.g. Plaid security_id; CSV symbol key; wallet asset id
-  metadata     Json?    // e.g. institution_security_id, proxy_security_id, bootstrap flag
-  createdAt    DateTime @default(now())
+  provider     String // "plaid" | "coinbase" | "schwab" | "csv" | "wallet" | "manual"
+  externalId   String // e.g. Plaid security_id; CSV symbol key; wallet asset id
+  metadata     Json? // e.g. institution_security_id, proxy_security_id, bootstrap flag
+  createdAt    DateTime   @default(now())
 
   @@unique([provider, externalId]) // refuse the second mapping (MerchantAlias doctrine)
   @@index([instrumentId])
@@ -1302,25 +1305,25 @@ enum PositionOrigin {
 }
 
 model PositionObservation {
-  id                 String   @id @default(cuid())
+  id                 String           @id @default(cuid())
   financialAccountId String
   financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
   instrumentId       String
-  instrument         Instrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+  instrument         Instrument       @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
 
-  date       DateTime @db.Date
-  quantity   Float
-  origin     PositionOrigin
-  source     String // "plaid" | "csv:schwab" | "user" | "reconstruction"
+  date     DateTime       @db.Date
+  quantity Float
+  origin   PositionOrigin
+  source   String // "plaid" | "csv:schwab" | "user" | "reconstruction"
 
   // Observed-only valuation facts (never on DERIVED rows).
   institutionPrice     Float?
   institutionValue     Float?
   institutionPriceAsOf DateTime? @db.Date
-  costBasis            Float?    // Plaid holding-level aggregate cost basis
+  costBasis            Float? // Plaid holding-level aggregate cost basis
   vestedQuantity       Float?
   currency             String?
-  isCash               Boolean  @default(false)
+  isCash               Boolean   @default(false)
 
   // Derived-only reconstruction provenance — left null this slice (MC1 doctrine).
   reconstructionVersion Int?
@@ -1334,6 +1337,94 @@ model PositionObservation {
   @@unique([financialAccountId, instrumentId, date, origin, source])
   @@index([financialAccountId, instrumentId, date])
   @@index([financialAccountId, date])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Investment Event Foundation (Slice A3)
+//
+// The canonical inside-the-investment-account activity log. One additive table
+// that is simultaneously the provider provenance record AND the canonical
+// projection (the Transaction.pfc* pattern) — raw provider strings live on-row
+// beside normalized canonical fields. Additive + dark-write (gated behind
+// INVESTMENT_EVENTS_ENABLED); nothing reads it yet. Holding stays the
+// current-state read model; PositionObservation stays the position-evidence
+// store; InvestmentEvent is the activity log consumed later by A4 reconstruction.
+// Provider strings enter only through the pure stage-1 mapper
+// (lib/investments/plaid-investment-events.ts). See
+// FOURTH_MERIDIAN_A3_INVESTMENT_EVENT_FOUNDATION_INVESTIGATION_2026-07-11.md §4/§5.
+// FIGI intentionally absent (plaid@42.2.0 does not provide it).
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum InvestmentEventType {
+  BUY
+  SELL
+  CONTRIBUTION
+  WITHDRAWAL
+  TRANSFER_IN
+  TRANSFER_OUT
+  DIVIDEND
+  INTEREST
+  CAPITAL_GAIN
+  REINVESTMENT
+  FEE
+  TAX
+  SPLIT
+  MERGER
+  SPIN_OFF
+  SYMBOL_CHANGE // imports / corporate-action data only — never from Plaid
+  OPENING_BALANCE // user-asserted / imported opening anchor
+  CANCEL
+  ADJUSTMENT
+  OTHER
+  UNKNOWN
+}
+
+model InvestmentEvent {
+  id                 String           @id @default(cuid())
+  financialAccountId String
+  financialAccount   FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  instrumentId       String?
+  instrument         Instrument?      @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+
+  type     InvestmentEventType
+  date     DateTime            @db.Date // posting / settlement date (Plaid `date`)
+  datetime DateTime? // Plaid transaction_datetime when provided
+  quantity Float? // security units, signed: + units in / − units out
+  price    Float?
+  amount   Float? // cash leg, FM sign: + cash into account / − cash out
+  fees     Float? // stored >= 0 (a cost), or null = not provided
+  currency String? // ISO 4217 / unofficial code; null = never provided
+
+  // Provenance — raw provider facts on-row (Transaction.pfc* pattern).
+  source             String // "plaid" | "csv:<profile>" | "user" | "coinbase" | …
+  externalEventId    String? // Plaid investment_transaction_id / file row id
+  providerType       String? // raw Plaid type — verbatim
+  providerSubtype    String? // raw Plaid subtype — verbatim
+  providerSecurityId String? // raw Plaid security_id — survives resolver failure
+  description        String? // raw institution `name` — verbatim
+  mapperVersion      Int? // stage-1 adapter version (classifierVersion pattern)
+
+  // Corporate-action shape (nullable; Plaid supplies neither — imports/manual do).
+  relatedInstrumentId String?
+  ratio               Float?
+
+  // Import / assertion provenance.
+  importBatchId   String?
+  importBatch     ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  createdByUserId String?
+
+  // Correction / supersession — append-only doctrine.
+  supersededById String?
+  deletedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([source, externalEventId]) // provider dedupe; nulls exempt (manual rows)
+  @@index([financialAccountId, date])
+  @@index([financialAccountId, instrumentId, date])
+  @@index([instrumentId, date])
+  @@index([importBatchId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1831,7 +1922,9 @@ model ImportBatch {
   updatedAt   DateTime  @updatedAt
   completedAt DateTime?
 
-  transactions Transaction[]
+  transactions     Transaction[]
+  // A3 — investment events imported in this batch (rollback soft-deletes them).
+  investmentEvents InvestmentEvent[]
 
   @@index([financialAccountId])
   @@index([createdByUserId])
