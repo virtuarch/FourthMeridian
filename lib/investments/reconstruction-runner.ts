@@ -90,7 +90,9 @@ export async function gatherReconstructionInputs(
   // Latest OBSERVED observation per instrument = the anchor (plan §7, "anchored
   // at OBSERVED rows"). Newest-first, keep the first seen per instrument.
   const observed = await client.positionObservation.findMany({
-    where:   { financialAccountId, origin: PositionOrigin.OBSERVED },
+    // A7-1 — exclude rolled-back imported anchors (deletedAt set); existing rows
+    // have deletedAt null, so this is a no-op until an import is rolled back.
+    where:   { financialAccountId, origin: PositionOrigin.OBSERVED, deletedAt: null },
     orderBy: { date: "desc" },
     select:  { instrumentId: true, date: true, quantity: true, isCash: true, currency: true, id: true },
   });

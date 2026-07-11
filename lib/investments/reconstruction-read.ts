@@ -206,7 +206,10 @@ export async function getPositionQuantityAsOf(
   client: Client = db,
 ): Promise<PositionAsOf> {
   const rows = await client.positionObservation.findMany({
-    where:   { financialAccountId, instrumentId, supersededById: null, date: { lte: new Date(`${asOf}T00:00:00.000Z`) } },
+    // A7-1 — exclude rolled-back imported rows (deletedAt set) from as-of
+    // resolution; existing rows have deletedAt null, so behavior is unchanged
+    // until an import is rolled back.
+    where:   { financialAccountId, instrumentId, supersededById: null, deletedAt: null, date: { lte: new Date(`${asOf}T00:00:00.000Z`) } },
     select:  { date: true, quantity: true, origin: true, completeness: true },
   });
   return resolvePositionAsOf(

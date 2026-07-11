@@ -1334,12 +1334,24 @@ model PositionObservation {
   unexplainedQuantity   Float?
   evidenceRefs          Json?
 
+  // A7-1 — historical-import provenance (additive, nullable; MC1: null = never
+  // provided, never inferred). Imported/asserted rows (origin IMPORTED /
+  // USER_ASSERTED) join their ImportBatch; batch rollback soft-deletes them via
+  // deletedAt, and every observation read path filters `deletedAt: null`
+  // (reconstruction-runner, reconstruction-read, position-capture). SetNull so a
+  // deleted batch never deletes the observation history it recorded. No writer
+  // exists yet — A7-2 (manual assertion) / A7-4 (import commit) land those.
+  importBatchId String?
+  importBatch   ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  deletedAt     DateTime?
+
   supersededById String?
   createdAt      DateTime @default(now())
 
   @@unique([financialAccountId, instrumentId, date, origin, source])
   @@index([financialAccountId, instrumentId, date])
   @@index([financialAccountId, date])
+  @@index([importBatchId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1415,6 +1427,11 @@ model InvestmentEvent {
   importBatchId   String?
   importBatch     ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   createdByUserId String?
+  // A7-1 — the complete original imported row (header→cell strings, untyped),
+  // including lot detail we deliberately refuse to interpret. Null = not an
+  // import (MC1; Plaid rows keep their raws in the provider columns above). No
+  // writer exists yet — A7-4 (import commit) lands it.
+  importedRaw     Json?
 
   // Correction / supersession — append-only doctrine.
   supersededById String?
@@ -1929,6 +1946,16 @@ enum ImportBatchStatus {
   FAILED
 }
 
+// A7-1 — what an ImportBatch imported. Existing batches are all banking
+// transaction imports, kept honestly classified by the TRANSACTIONS default
+// (zero backfill). INVESTMENT_HISTORY batches carry imported InvestmentEvent
+// rows and/or IMPORTED PositionObservation anchors (A7-4). A batch-level
+// discriminator, never per-row. See A7 investigation §3.1/§4.
+enum ImportBatchKind {
+  TRANSACTIONS
+  INVESTMENT_HISTORY
+}
+
 model ImportBatch {
   id String @id @default(cuid())
 
@@ -1950,6 +1977,10 @@ model ImportBatch {
   mappingProfile   ImportMappingProfile? @relation(fields: [mappingProfileId], references: [id], onDelete: SetNull)
 
   source                ImportSource
+  // A7-1 — batch classification. Default TRANSACTIONS keeps every existing
+  // (banking) batch honestly classified with zero backfill; INVESTMENT_HISTORY
+  // is set only by the investment import path (A7-4). See A7 investigation §4.
+  kind                  ImportBatchKind   @default(TRANSACTIONS)
   originalFilename      String?
   status                ImportBatchStatus @default(PENDING)
   rowCount              Int               @default(0)
@@ -1970,14 +2001,21 @@ model ImportBatch {
   // edited never retroactively changes what a historical batch is recorded
   // as having used — see D2_ARCHITECTURE_REVIEW_PRE_4D5B.md §2.
   resolvedColumnMapping Json?
+  // A7-1 — per-row overrides the user made at preview (force-create, exclude,
+  // type remap), keyed by row identity: the batch's audit of human intervention
+  // applied at commit. Null = no overrides. No writer yet (A7-4). See §4/§5.5.
+  userDecisions         Json?
 
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   completedAt DateTime?
 
-  transactions     Transaction[]
+  transactions                 Transaction[]
   // A3 — investment events imported in this batch (rollback soft-deletes them).
-  investmentEvents InvestmentEvent[]
+  investmentEvents             InvestmentEvent[]
+  // A7-1 — IMPORTED / USER_ASSERTED position anchors written by this batch
+  // (rollback soft-deletes them). Back-relation for PositionObservation.importBatch.
+  importedPositionObservations PositionObservation[]
 
   @@index([financialAccountId])
   @@index([createdByUserId])

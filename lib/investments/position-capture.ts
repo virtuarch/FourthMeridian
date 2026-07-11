@@ -149,7 +149,10 @@ export async function capturePositionObservations(params: CaptureParams): Promis
   // but absent from today's complete payload → explicit zero. Never touches
   // prior-day rows; appends/updates only today's observation.
   const priorObserved = await client.positionObservation.findMany({
-    where: { financialAccountId: params.financialAccountId, origin: PositionOrigin.OBSERVED, source: PLAID_PROVIDER },
+    // A7-1 — a rolled-back imported anchor must not keep an instrument "alive"
+    // for disappearance detection; existing rows have deletedAt null, so this is
+    // a no-op until an import is rolled back.
+    where: { financialAccountId: params.financialAccountId, origin: PositionOrigin.OBSERVED, source: PLAID_PROVIDER, deletedAt: null },
     select: { instrumentId: true },
     distinct: ["instrumentId"],
   });
