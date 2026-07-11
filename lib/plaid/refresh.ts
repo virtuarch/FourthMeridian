@@ -49,6 +49,7 @@ import { withPlaidRetry } from "@/lib/plaid/retry";
 import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
 import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
 import { syncCurrentHoldings } from "@/lib/investments/sync-current-holdings";
+import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
 
 // Mirrors app/api/plaid/exchange-token/route.ts's mapAccountType — kept as a
 // private copy here (not exported/shared) since refresh only needs it to
@@ -355,6 +356,21 @@ export async function refreshPlaidItem(
           payloadComplete:    holdingsRes.data.is_investments_fallback_item !== true,
         });
         holdingsUpdated += syncCounts.inserted + syncCounts.updated + syncCounts.unchanged;
+      }
+
+      // A3 — canonical investment event ingestion (once per Item; separate
+      // investmentsTransactionsGet call). Runs AFTER holdings capture / cash
+      // reconciliation / Holding sync, gated behind INVESTMENT_EVENTS_ENABLED,
+      // isolated best-effort: a failure here never affects the holdings refresh
+      // just completed. Consent is known good (holdings succeeded above).
+      if (investmentEventsEnabled()) {
+        try {
+          await ingestInvestmentEvents({ accessToken, plaidItemId: plaidItemDbId, now: new Date() });
+        } catch (evErr) {
+          console.warn(
+            `[refreshPlaidItem] investment event ingestion failed for item ${plaidItemDbId} (non-fatal): ${evErr instanceof Error ? evErr.message : evErr}`
+          );
+        }
       }
 
       // Unknown (pre-DTM) probe succeeded — remember it so the derivation

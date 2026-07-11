@@ -50,6 +50,7 @@ import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
 import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
 import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
 import { syncCurrentHoldings } from "@/lib/investments/sync-current-holdings";
+import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -479,6 +480,20 @@ export async function performPlaidTokenExchange(
           payloadComplete:    holdingsRes.data.is_investments_fallback_item !== true,
         });
         holdingsImported += syncCounts.inserted + syncCounts.updated + syncCounts.unchanged;
+      }
+
+      // A3 — canonical investment event ingestion at initial link (once per
+      // Item; separate investmentsTransactionsGet call). Gated behind
+      // INVESTMENT_EVENTS_ENABLED, isolated best-effort: a failure never fails
+      // account import. Uses the shared ingestion — no duplicated mapping.
+      if (investmentEventsEnabled()) {
+        try {
+          await ingestInvestmentEvents({ accessToken: access_token, plaidItemId: plaidItem.id, now: new Date() });
+        } catch (evErr) {
+          console.warn(
+            `[plaid] investment event ingestion failed for item ${plaidItem.id} (non-fatal): ${evErr instanceof Error ? evErr.message : evErr}`,
+          );
+        }
       }
 
       // Unknown (pre-DTM) probe succeeded — remember it.
