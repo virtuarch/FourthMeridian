@@ -182,8 +182,14 @@ async function main(): Promise<void> {
         const full = path.join(dir, e.name);
         if (e.isDirectory()) { if (e.name !== "node_modules" && e.name !== ".next") walk(full); continue; }
         if (!e.name.endsWith(".ts") || e.name.endsWith(".test.ts")) continue;
-        const src = readFileSync(full, "utf8");
-        for (const t of tokens) if (src.includes(t)) offenders.push(`${path.relative(process.cwd(), full)}:${t}`);
+        // Strip comments so a doc mention of a field name isn't mistaken for a
+        // writer — the guard flags actual CODE references (a Prisma create/update
+        // setting the field), not prose. A7-2 leaves all three null and only
+        // names importedRaw in comments; A7-4 is the first real writer.
+        const code = readFileSync(full, "utf8")
+          .replace(/\/\*[\s\S]*?\*\//g, "")
+          .replace(/\/\/[^\n]*/g, "");
+        for (const t of tokens) if (code.includes(t)) offenders.push(`${path.relative(process.cwd(), full)}:${t}`);
       }
     };
     walk(path.join(process.cwd(), "lib"));
