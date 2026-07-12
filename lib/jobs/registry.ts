@@ -85,6 +85,17 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     minuteUTC: 30,
     run: async () => (await import("@/jobs/fetch-fx-rates")).fetchFxRates(),
   },
+  // A8-3A — daily historical security-price fetch, grouped with fetch-fx-rates
+  // as the other external daily-value-series fetch. VENDOR-GATED: no-op (returns
+  // "no-provider" before any DB work) until a licensed price vendor is wired into
+  // lib/prices/registry.ts (A8-3B, externally blocked). Idempotent and safe to
+  // re-run — a day already covered (incl. by A8-2 same-day capture) is skipped.
+  {
+    name: "fetch-security-prices",
+    hourUTC: 6,
+    minuteUTC: 30,
+    run: async () => (await import("@/jobs/fetch-security-prices")).fetchSecurityPrices(),
+  },
   // Pre-S2 slot: vercel.json "0 7 * * *". Single-purpose since S3 — the
   // OPS-3 notification-cleanup tail moved to its own 07:30 registration.
   {

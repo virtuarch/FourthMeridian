@@ -80,13 +80,15 @@ async function main(): Promise<void> {
   // ── 2. Registry integrity — pre-S2 jobs at their slots + S3 maintenance ───
   {
     const byName = new Map(SCHEDULED_JOBS.map((j) => [j.name, j]));
-    check("registry holds exactly the seven S2+S3+S4 jobs (S5 not started)",
-      SCHEDULED_JOBS.length === 7, `got ${SCHEDULED_JOBS.length}`);
+    check("registry holds exactly the eight S2+S3+S4 jobs plus A8-3 price fetch (S5 not started)",
+      SCHEDULED_JOBS.length === 8, `got ${SCHEDULED_JOBS.length}`);
     check("names unique", byName.size === SCHEDULED_JOBS.length);
     check("sync-banks keeps its 06:00 UTC slot",
       byName.get("sync-banks")?.hourUTC === 6 && byName.get("sync-banks")?.minuteUTC === 0);
     check("fetch-fx-rates keeps its 06:30 UTC slot",
       byName.get("fetch-fx-rates")?.hourUTC === 6 && byName.get("fetch-fx-rates")?.minuteUTC === 30);
+    check("fetch-security-prices (A8-3) shares the 06:30 external-fetch slot",
+      byName.get("fetch-security-prices")?.hourUTC === 6 && byName.get("fetch-security-prices")?.minuteUTC === 30);
     check("process-deletions keeps its 07:00 UTC slot",
       byName.get("process-deletions")?.hourUTC === 7 && byName.get("process-deletions")?.minuteUTC === 0);
     check("S3/S4 maintenance jobs occupy the 07:30 slot (no new cron entry needed)",
