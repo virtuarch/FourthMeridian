@@ -110,6 +110,7 @@ import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTr
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
+import { FloatingNavWrapper, RAIL_PILL_TOP } from "@/components/atlas/FloatingNavWrapper";
 import {
   railVisibleTabs,
   SPACE_TAB_LABELS,
@@ -3129,14 +3130,16 @@ export function SpaceDashboard({
 
         {/* Tab navigation — fixed Spaces rail (lib/space-nav.ts), shared
             order across every Space type. Atlas SegmentedControl, not the
-            old hand-rolled gray pill row. */}
-        <SegmentedControl
-          aria-label="Space section"
-          className="w-full mb-5"
-          options={railOptions}
-          value={activeTab}
-          onChange={setActiveTab}
-        />
+            old hand-rolled gray pill row. SHELL_NAV §2.4: a centered floating
+            pill (sticky below the app header) rather than a full-width bar. */}
+        <FloatingNavWrapper top={RAIL_PILL_TOP} className="mb-5">
+          <SegmentedControl
+            aria-label="Space section"
+            options={railOptions}
+            value={activeTab}
+            onChange={setActiveTab}
+          />
+        </FloatingNavWrapper>
 
         {/* Settings is no longer an in-space tab (UX-CUST-1A correction):
             section show/hide and layout controls moved to ManageSpaceModal →

@@ -25,6 +25,7 @@
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
+import { FloatingNavWrapper, PERSPECTIVE_PILL_TOP } from "@/components/atlas/FloatingNavWrapper";
 import { ShellContextRow } from "./ShellContextRow";
 import { PerspectiveTabs, type PerspectiveTabItem } from "./PerspectiveTabs";
 
@@ -50,14 +51,13 @@ interface Props {
 export function PerspectiveShell(props: Props) {
   return (
     <div className="space-y-3">
-      {/* Container 2 — the lens (a lighter selector frame). Now rendered FIRST
-          (SHELL_NAV §2.2): pick the lens above, read/adjust time below. */}
-      <div
-        className="rounded-2xl border p-1.5 sm:p-2"
-        style={{ borderColor: "var(--border-hairline)" }}
-      >
+      {/* Container 2 — the lens. Now rendered FIRST (SHELL_NAV §2.2: pick the
+          lens above, read/adjust time below) and as a centered FLOATING pill
+          (§2.4) rather than a bordered selector frame — the SegmentedControl
+          supplies its own glass material, so the old border box is dropped. */}
+      <FloatingNavWrapper top={PERSPECTIVE_PILL_TOP}>
         <PerspectiveTabs items={props.tabs} activeId={props.activeTabId} onSelect={props.onSelectTab} />
-      </div>
+      </FloatingNavWrapper>
 
       {/* Container 1 — time & trust (the permanent instrument panel). */}
       <div
