@@ -6,34 +6,49 @@
  * The Wealth Perspective workspace (A6) — a coherent historical financial
  * perspective driven entirely by the shared shell context (As Of / Compare To /
  * shared range), which SpaceDashboard threads in as a computed WealthResult.
- * This component owns NO time/comparison state; it only composes the presentation.
+ * This component owns NO time/comparison state; it only composes the five
+ * surfaces in their fixed narrative order.
  *
- * Layout (fewer, stronger surfaces — no redundant net-worth restatement):
- *   Section A — KPI strip (Net Worth · Assets · Liabilities · Liquid NW)
- *   Row      — dominant net-worth chart (2/3) + composition (1/3)
- *   Full     — "What changed?" (Then vs Now: headline delta, story, drivers)
+ * Layout (plan §5) — desktop is a 12-column grid, mobile/tablet stacks ①→⑤:
+ *   ① WealthHero (4)        ② WealthTrendChart (8)     ← net worth + the chart
+ *   ③ WealthChangeLedger (6) ④ WealthCompositionCard (6) ← what changed + mix
+ *   ⑤ WealthExplanationCard (12)                        ← the plain-language read
  *
- * Responsive: 1 column (mobile) → chart-full + composition (tablet) → chart /
- * composition side-by-side with the chart dominant (desktop). No horizontal
- * overflow (every column is min-w-0).
+ * Net worth is a headline exactly once (the hero); there are zero sparklines on
+ * the page; the ledger owns the single attribution note. No horizontal overflow
+ * (every column is min-w-0).
  */
 
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
-import { WealthKpiStrip } from "./WealthKpiStrip";
-import { WealthNetWorthChart } from "./WealthNetWorthChart";
+import type { ConversionContext } from "@/lib/money/types";
+import type { WealthAdapterAccount } from "@/components/space/widgets/wealth-adapters";
+import { WealthHero } from "./WealthHero";
+import { WealthTrendChart, type WealthMetricKey } from "./WealthTrendChart";
+import { WealthChangeLedger } from "./WealthChangeLedger";
 import { WealthCompositionCard } from "./WealthCompositionCard";
-import { WealthChangeSummary } from "./WealthChangeSummary";
+import { WealthExplanationCard } from "./WealthExplanationCard";
 import { WealthUnavailable } from "./wealth-ui";
-import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 
 export function WealthPerspective({
   result,
   currency,
   onSelectAsOf,
+  onSwitchLens,
+  onViewEvidence,
+  metric,
+  onMetricChange,
+  accounts,
+  ctx,
 }: {
-  result:        WealthResult;
-  currency:      string;
-  onSelectAsOf?: (date: string) => void;
+  result:         WealthResult;
+  currency:       string;
+  onSelectAsOf?:  (date: string) => void;
+  onSwitchLens?:  (lensId: string) => void;
+  onViewEvidence?: () => void;
+  metric?:        WealthMetricKey;
+  onMetricChange?: (m: WealthMetricKey) => void;
+  accounts?:      WealthAdapterAccount[];
+  ctx?:           ConversionContext;
 }) {
   if (!result.hasHistory) {
     return (
@@ -46,27 +61,34 @@ export function WealthPerspective({
     );
   }
 
-  const compareLabel = result.compareState?.found && result.compareState.date
-    ? formatWealthDate(result.compareState.date)
-    : undefined;
-
   return (
-    <div className="space-y-4 min-w-0">
-      {/* Section A — compact KPI strip. */}
-      <WealthKpiStrip result={result} currency={currency} compareLabel={compareLabel} />
-
-      {/* Dominant chart (2/3) alongside the composition (1/3). */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
-        <div className="min-w-0 lg:col-span-2">
-          <WealthNetWorthChart result={result} currency={currency} onSelectAsOf={onSelectAsOf} />
-        </div>
-        <div className="min-w-0">
-          <WealthCompositionCard result={result} currency={currency} />
-        </div>
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start min-w-0">
+      {/* ① Hero + ② Trend chart. */}
+      <div className="min-w-0 lg:col-span-4">
+        <WealthHero result={result} currency={currency} onSwitchLens={onSwitchLens} />
+      </div>
+      <div className="min-w-0 lg:col-span-8">
+        <WealthTrendChart
+          result={result}
+          currency={currency}
+          onSelectAsOf={onSelectAsOf}
+          metric={metric}
+          onMetricChange={onMetricChange}
+        />
       </div>
 
-      {/* Full-width Then-vs-Now explanation. */}
-      <WealthChangeSummary result={result} currency={currency} />
+      {/* ③ Change ledger + ④ Composition. */}
+      <div className="min-w-0 lg:col-span-6">
+        <WealthChangeLedger result={result} currency={currency} />
+      </div>
+      <div className="min-w-0 lg:col-span-6">
+        <WealthCompositionCard result={result} currency={currency} accounts={accounts} ctx={ctx} />
+      </div>
+
+      {/* ⑤ Explanation. */}
+      <div className="min-w-0 lg:col-span-12">
+        <WealthExplanationCard result={result} currency={currency} onViewEvidence={onViewEvidence} />
+      </div>
     </div>
   );
 }

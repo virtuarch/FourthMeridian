@@ -96,7 +96,9 @@ import { resolvePerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
+import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { WealthPerspective } from "@/components/space/widgets/wealth/WealthPerspective";
+import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
@@ -2557,6 +2559,47 @@ export function SpaceDashboard({
     }),
     [snapshots, asOf, compareTo, wealthCurrency],
   );
+
+  // Wealth chart metric (Net Worth default) — a wealth-only view toggle kept OUT
+  // of the canonical time model. URL-synced with the same replaceState mechanism
+  // the shell hook uses (?metric=), so a copied Perspectives URL restores it.
+  // SSR-safe: default on server + first client render, hydrated post-mount.
+  const WEALTH_METRICS: WealthMetricKey[] = ["netWorth", "totalAssets", "totalLiabilities", "liquidNetWorth"];
+  const [chartMetric, setChartMetric] = useState<WealthMetricKey>("netWorth");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // Read on mount and re-read on back/forward — a subscription to the URL as an
+    // external system (mirrors the shell hook's popstate hydration).
+    const syncFromUrl = () => {
+      const m = new URLSearchParams(window.location.search).get("metric");
+      setChartMetric(m && (WEALTH_METRICS as string[]).includes(m) ? (m as WealthMetricKey) : "netWorth");
+    };
+    syncFromUrl();
+    window.addEventListener("popstate", syncFromUrl);
+    return () => window.removeEventListener("popstate", syncFromUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const handleMetricChange = (m: WealthMetricKey) => {
+    setChartMetric(m);
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (m === "netWorth") params.delete("metric"); else params.set("metric", m);
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}?${params.toString()}`);
+  };
+
+  // Switching lens from within a workspace (e.g. Wealth's Liquid Net Worth →
+  // Liquidity) changes only the active perspective — the shell's time context
+  // (As Of / Compare To / preset) stays fixed (P1).
+  const handleSwitchLens = (lensId: string) => setSelectedPerspectiveId(lensId);
+
+  // The Wealth Explanation card's "View explanation and evidence" opens the same
+  // Evidence drawer the shell chip does, built from the Wealth envelope's real
+  // snapshot rows. Host-owned so the perspective needs no drawer of its own.
+  const wealthEnvelope = useMemo(
+    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult, currency: wealthCurrency }),
+    [wealthResult, wealthCurrency],
+  );
+  const [wealthEvidenceOpen, setWealthEvidenceOpen] = useState(false);
   // CF-3 — the workspace-shared Cash Flow / Spending perspective + measure filter,
   // driven by the Cash Flow History widget's selector and consumed by every Cash
   // Flow widget so they never disagree.
@@ -3120,11 +3163,26 @@ export function SpaceDashboard({
                 // wealthResult read model. Replaces the old current-state widget
                 // stack for this Perspective only; the pure logic lives in the
                 // read model, not here.
-                <WealthPerspective
-                  result={wealthResult}
-                  currency={wealthCurrency}
-                  onSelectAsOf={shell.actions.setAsOf}
-                />
+                <>
+                  <WealthPerspective
+                    result={wealthResult}
+                    currency={wealthCurrency}
+                    onSelectAsOf={shell.actions.setAsOf}
+                    onSwitchLens={handleSwitchLens}
+                    onViewEvidence={wealthEnvelope.evidence?.rows?.length ? () => setWealthEvidenceOpen(true) : undefined}
+                    metric={chartMetric}
+                    onMetricChange={handleMetricChange}
+                    accounts={accounts}
+                    ctx={widgetCtx}
+                  />
+                  {wealthEnvelope.evidence && (
+                    <EvidenceDrawer
+                      open={wealthEvidenceOpen}
+                      onClose={() => setWealthEvidenceOpen(false)}
+                      evidence={wealthEnvelope.evidence}
+                    />
+                  )}
+                </>
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
                   <SectionCard
