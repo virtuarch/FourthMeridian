@@ -15,6 +15,7 @@
  */
 
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
+import { PERSPECTIVE_ICON_MAP, PERSPECTIVE_ICON_FALLBACK } from "@/lib/perspective-icons";
 
 export interface PerspectiveTabItem {
   id:           string;
@@ -23,6 +24,17 @@ export interface PerspectiveTabItem {
   /** Lucide icon NAME (from PerspectiveDef.icon), resolved to a node here via
    *  lib/perspective-icons. Optional so callers that don't want icons omit it. */
   icon?:        string;
+}
+
+/**
+ * Resolve a PerspectiveDef.icon NAME to its Lucide component and render it at
+ * the tab scale — same shape as TimelineWidget's EventIcon (a static top-level
+ * component, so the icon type is never "created during render"). Decorative:
+ * the tab's visible label is its accessible name, so the glyph is aria-hidden.
+ */
+function TabIcon({ name }: { name: string }) {
+  const Icon = PERSPECTIVE_ICON_MAP[name] ?? PERSPECTIVE_ICON_FALLBACK;
+  return <Icon size={14} aria-hidden />;
 }
 
 export function PerspectiveTabs({
@@ -39,6 +51,7 @@ export function PerspectiveTabs({
   const options = items.map((i) => ({
     id:    i.id,
     label: i.hasWorkspace ? i.label : `${i.label} · soon`,
+    icon:  i.icon ? <TabIcon name={i.icon} /> : undefined,
   }));
 
   return (
