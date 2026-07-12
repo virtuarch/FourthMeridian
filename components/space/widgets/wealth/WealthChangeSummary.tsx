@@ -29,7 +29,7 @@ export function WealthChangeSummary({
   result:   WealthResult;
   currency: string;
 }) {
-  const { deltas, drivers, story, compareState } = result;
+  const { deltas, drivers, explanation, compareState } = result;
   const compareLabel = compareState?.date ? formatWealthDate(compareState.date) : undefined;
 
   if (!deltas) {
@@ -55,8 +55,8 @@ export function WealthChangeSummary({
             goodDirection="up"
             className="!text-sm"
           />
-          {story && (
-            <p className="text-sm text-[var(--text-secondary)] leading-relaxed">{story}</p>
+          {explanation && (
+            <p className="text-sm text-[var(--text-secondary)] leading-relaxed">{explanation}</p>
           )}
           <p className="text-[11px] text-[var(--text-faint)] leading-relaxed">{ATTRIBUTION_NOTE}</p>
         </div>

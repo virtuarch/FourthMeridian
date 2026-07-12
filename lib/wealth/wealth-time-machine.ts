@@ -127,12 +127,21 @@ export interface WealthResult {
   drivers:      WealthDriver[] | null;
   chart: {
     points:      WealthChartPoint[];
+    /**
+     * The comparison overlay: the equal-length window ENDING at compareTo
+     * ([compareTo − (asOf − compareTo), compareTo]), so the chart can superimpose
+     * the prior period's shape onto the primary window. Empty when there is no
+     * comparison, no points in the window, or the window precedes coverage — never
+     * padded or interpolated.
+     */
+    compareSeries: WealthChartPoint[];
     asOfDate:    string | null;
     compareDate: string | null;
   };
   completeness: { tier: WealthTier; label: string; tone: "neutral" | "positive" | "warning" };
   evidence:     { label: string } | null;
-  story:        string | null;
+  /** Deterministic, template-based Wealth Explanation (Amendment 10). No LLM. */
+  explanation:  string | null;
 }
 
 export interface WealthTimeMachineInput {
@@ -169,6 +178,24 @@ const EMPTY_STATE: WealthState = {
   netWorth: 0, totalAssets: 0, totalLiabilities: 0, liquidNetWorth: 0,
   composition: { cash: 0, investments: 0, crypto: 0, real: 0, liabilities: 0 },
 };
+
+/** A snapshot → chart point (all four metric series + the estimated flag). */
+function toChartPoint(s: Snapshot): WealthChartPoint {
+  const st = toState(s);
+  return {
+    date: s.date, isEstimated: st.isEstimated,
+    netWorth: st.netWorth, totalAssets: st.totalAssets,
+    totalLiabilities: st.totalLiabilities, liquidNetWorth: st.liquidNetWorth,
+  };
+}
+
+const MS_PER_DAY = 86_400_000;
+function daysBetweenIso(a: string, b: string): number {
+  return Math.round((Date.parse(`${b}T00:00:00.000Z`) - Date.parse(`${a}T00:00:00.000Z`)) / MS_PER_DAY);
+}
+function addDaysIso(iso: string, n: number): string {
+  return new Date(Date.parse(`${iso}T00:00:00.000Z`) + n * MS_PER_DAY).toISOString().slice(0, 10);
+}
 
 /** Nearest snapshot on or before `date` (getSnapshotAsOf semantics, client-side). */
 function resolveState(sorted: Snapshot[], date: string): WealthState {
@@ -242,14 +269,19 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
   const startBound = compareTo ?? coverageFrom ?? "0000-01-01";
   const points: WealthChartPoint[] = series
     .filter((s) => s.date >= startBound && s.date <= asOf)
-    .map((s) => {
-      const st = toState(s);
-      return {
-        date: s.date, isEstimated: st.isEstimated,
-        netWorth: st.netWorth, totalAssets: st.totalAssets,
-        totalLiabilities: st.totalLiabilities, liquidNetWorth: st.liquidNetWorth,
-      };
-    });
+    .map(toChartPoint);
+
+  // Compare overlay: the equal-length window ending at Compare To, so the two
+  // period shapes superimpose. Empty unless the full window is real + within
+  // coverage — never a truncated or padded overlay (S5 honesty rule).
+  let compareSeries: WealthChartPoint[] = [];
+  if (compareTo) {
+    const windowDays = daysBetweenIso(compareTo, asOf);
+    const compareStart = addDaysIso(compareTo, -windowDays);
+    if (!coverageFrom || compareStart >= coverageFrom) {
+      compareSeries = series.filter((s) => s.date >= compareStart && s.date <= compareTo).map(toChartPoint);
+    }
+  }
 
   // Completeness — canonical tier + friendly, shell-ready copy.
   const completeness: WealthResult["completeness"] = !asOfState.found
@@ -263,8 +295,8 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
     ? { label: `${series.length} snapshot${series.length === 1 ? "" : "s"}` }
     : null;
 
-  // Story — deterministic, template-driven, only supported facts.
-  let story: string | null = null;
+  // Explanation — deterministic, template-driven, only supported facts (§4.5).
+  let explanation: string | null = null;
   if (deltas && compareState?.date) {
     const nw = deltas.netWorth.abs;
     const nwDir = nw >= 0 ? "increased" : "decreased";
@@ -276,13 +308,13 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
       const lClause = `liabilities ${lAbs <= 0 ? "decreased" : "increased"} by ${fmt(Math.abs(lAbs))}`;
       parts.push(`${aClause} and ${lClause}.`);
     }
-    story = parts.join(" ");
+    explanation = parts.join(" ");
   }
 
   return {
     asOf, compareTo, hasHistory, coverageFrom,
     asOfState, compareState, deltas, drivers,
-    chart: { points, asOfDate: asOfState.date, compareDate: compareState?.date ?? null },
-    completeness, evidence, story,
+    chart: { points, compareSeries, asOfDate: asOfState.date, compareDate: compareState?.date ?? null },
+    completeness, evidence, explanation,
   };
 }

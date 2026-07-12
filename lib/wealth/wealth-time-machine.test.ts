@@ -81,7 +81,7 @@ console.log("Removing Compare To removes comparison copy but not the selected st
 {
   const withCmp = computeWealthTimeMachine(base({ asOf: "2026-07-15", compareTo: "2026-01-01" }));
   const noCmp   = computeWealthTimeMachine(base({ asOf: "2026-07-15", compareTo: null }));
-  check("no compare ⇒ compareState/deltas/drivers/story all null", noCmp.compareState === null && noCmp.deltas === null && noCmp.drivers === null && noCmp.story === null);
+  check("no compare ⇒ compareState/deltas/drivers/story all null", noCmp.compareState === null && noCmp.deltas === null && noCmp.drivers === null && noCmp.explanation === null);
   check("selected As Of state is identical with or without a comparison", JSON.stringify(noCmp.asOfState) === JSON.stringify(withCmp.asOfState));
 }
 
@@ -107,6 +107,36 @@ console.log("Missing dates remain gaps — no interpolation/fabrication");
 {
   const r = computeWealthTimeMachine(base({}));
   check("chart points exist only at real snapshot dates", JSON.stringify(r.chart.points.map((p) => p.date)) === JSON.stringify(SERIES.map((s) => s.date)));
+}
+
+console.log("Compare overlay series (S5) — equal-length window ending at Compare To");
+{
+  // A dense daily series so the equal-length window resolves to real points.
+  const daily: Snapshot[] = [];
+  for (let d = 1; d <= 20; d++) daily.push(snap(`2026-06-${String(d).padStart(2, "0")}`, { totalCash: 1000 * d }));
+  // As Of Jun 20, Compare To Jun 15 ⇒ primary window 5 days; overlay = [Jun 10, Jun 15].
+  const r = computeWealthTimeMachine({ snapshots: daily, asOf: "2026-06-20", compareTo: "2026-06-15", currency: "USD" });
+  check("overlay is the equal-length window ending at Compare To",
+    r.chart.compareSeries.length > 0 &&
+    r.chart.compareSeries[0].date === "2026-06-10" &&
+    r.chart.compareSeries[r.chart.compareSeries.length - 1].date === "2026-06-15");
+  check("overlay carries only real snapshot dates (no padding/interpolation)",
+    r.chart.compareSeries.every((p) => daily.some((s) => s.date === p.date)));
+  check("no comparison ⇒ empty overlay", computeWealthTimeMachine({ snapshots: daily, asOf: "2026-06-20", compareTo: null, currency: "USD" }).chart.compareSeries.length === 0);
+  check("overlay window preceding coverage ⇒ empty (never truncated)",
+    computeWealthTimeMachine({ snapshots: daily, asOf: "2026-06-20", compareTo: "2026-06-05", currency: "USD" }).chart.compareSeries.length === 0);
+  check("overlay carries isEstimated exactly like the primary series",
+    computeWealthTimeMachine({ snapshots: [snap("2026-06-08", { totalCash: 1, isEstimated: true }), ...daily.slice(9)], asOf: "2026-06-20", compareTo: "2026-06-14", currency: "USD" }).chart.compareSeries.every((p) => typeof p.isEstimated === "boolean"));
+}
+
+console.log("S5 regression lock — pre-existing fields byte-identical (only the field name changed)");
+{
+  const r = computeWealthTimeMachine(base({ asOf: "2026-07-15", compareTo: "2026-01-01" }));
+  // explanation holds the exact former `story` content (rename only).
+  check("explanation carries the deterministic sentence (former story content)",
+    /^Your net worth increased by \$37,000 since Jan 1, 2026\. Assets increased by \$32,000 and liabilities decreased by \$5,000\.$/.test(r.explanation ?? ""));
+  check("chart.points unchanged by the compareSeries addition",
+    JSON.stringify(r.chart.points.map((p) => p.date)) === JSON.stringify(["2026-01-01", "2026-06-01", "2026-07-01", "2026-07-14"]));
 }
 
 console.log("Before-coverage As Of returns a shaped incomplete state");
@@ -154,10 +184,10 @@ console.log("Story is deterministic, template-driven, supported facts only");
 {
   const r = computeWealthTimeMachine(base({ asOf: "2026-07-15", compareTo: "2026-01-01" }));
   check("story states the net-worth change since the comparison date",
-    r.story != null && /net worth increased by \$37,000 since Jan 1, 2026/.test(r.story!));
-  check("story states assets up and liabilities down", /Assets increased by \$32,000 and liabilities decreased by \$5,000/.test(r.story!));
+    r.explanation != null && /net worth increased by \$37,000 since Jan 1, 2026/.test(r.explanation!));
+  check("story states assets up and liabilities down", /Assets increased by \$32,000 and liabilities decreased by \$5,000/.test(r.explanation!));
   const noCmp = computeWealthTimeMachine(base({ compareTo: null }));
-  check("no comparison ⇒ no story", noCmp.story === null);
+  check("no comparison ⇒ no story", noCmp.explanation === null);
 }
 
 console.log("Composition — crypto included, zero categories filtered, Real World Assets label");
