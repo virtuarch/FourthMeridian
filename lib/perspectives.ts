@@ -116,13 +116,16 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
   },
   investments: {
     id: "investments", label: "Investments", icon: "TrendingUp", status: "available", group: "Financial",
-    description: "Holdings by account — what you hold, how much, and what it's worth.",
-    // Slice B Investments workspace. Doctrine: current-state read model —
-    // "What do I actually hold?" grouped by investment account (Schwab,
-    // Robinhood, Coinbase, …). Renders through the same SectionCard compositor
-    // as the other Perspective workspaces. Deliberately NOT historical: no
-    // positions-over-time, prices-over-time, cost basis, returns, or
-    // simulations (that is the future Investment Time Machine, out of scope).
+    description: "What you own and what happened to it — holdings, weights, and the period's activity, valued as of any date.",
+    // A10 Investments workspace. Doctrine: "What do I own, and what happened to
+    // it?" — a real shell-driven time machine over the A10 Investments Time
+    // Machine backend (holdings + weights, period activity, and the change
+    // bridge), valued at the shell's resolved As Of / Compare To via REAL
+    // historical pricing (the A8 price foundation). Wealth owns "how much am I
+    // worth"; Investments never restates that hero. Per-holding gain/loss and
+    // cost basis stay out — the data does not carry them, and unknown is
+    // preferable to incorrect. widgets[] is retained for the shell's workspace
+    // affordance (the composition mounts via SpaceDashboard's investments branch).
     widgets: ["investment_accounts"],
   },
   debt: {

@@ -102,6 +102,8 @@ import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { WealthPerspective } from "@/components/space/widgets/wealth/WealthPerspective";
 import { CashFlowPerspective as CashFlowPerspectiveWorkspace } from "@/components/space/widgets/cashflow/CashFlowPerspective";
 import { LiquidityPerspective } from "@/components/space/widgets/liquidity/LiquidityPerspective";
+import { InvestmentsPerspective } from "@/components/space/widgets/investments/InvestmentsPerspective";
+import { useInvestmentsTimeMachine } from "@/components/space/widgets/investments/useInvestmentsTimeMachine";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
@@ -2627,6 +2629,16 @@ export function SpaceDashboard({
   // Wealth workspace needs SpaceSnapshot history for its Time Machine — trigger
   // the snapshot fetch when it's open (mirrors debtWorkspaceActive).
   const wealthWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "wealth";
+  // Investments Time Machine (A10). Unlike Wealth (a pure host memo over the
+  // already-fetched snapshots), Investments' read model is server-side, so it is
+  // FETCHED — keyed on the shell's resolved (asOf, compareTo), gated on the tab
+  // being open (mirrors wealthWorkspaceActive / liquidityWorkspaceActive).
+  // compareTo is sent only when it defines a valid strictly-earlier window (the
+  // route 400s on compareTo >= asOf); the same guarded value drives the header's
+  // "vs" label so it always matches the data actually fetched.
+  const investmentsActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "investments";
+  const investmentsCompareTo = compareTo && compareTo < asOf ? compareTo : null;
+  const investments = useInvestmentsTimeMachine(spaceId, asOf, investmentsCompareTo, investmentsActive);
   const [spaceGoals, setSpaceGoals] = useState<SpaceGoal[] | null>(null);
   useEffect(() => {
     if (!goalsWorkspaceActive || spaceGoals !== null) return;
@@ -3158,6 +3170,7 @@ export function SpaceDashboard({
                 lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
                 currency: wealthCurrency,
                 cashFlowStamp: cashFlowStampValue,
+                investmentsResult: investments.result,
               })}
               presetValue={timePreset === "CUSTOM" ? null : timePreset}
               onSelectPreset={handleSelectSlice}
@@ -3239,6 +3252,22 @@ export function SpaceDashboard({
                   txCtx={txConversionCtx}
                   period={cashFlowPeriod}
                   onOpenCashFlow={() => setSelectedPerspectiveId("cashFlow")}
+                />
+              ) : activePerspectiveId === "investments" ? (
+                // Investments Perspective (A10) — the redesigned composition over
+                // the Investments Time Machine. UNLIKE Liquidity (current-state
+                // only), this perspective consumes the shell's As Of / Compare To:
+                // its valuation is REAL historical pricing, so date changes
+                // visibly change the numbers. The host fetch (above) is keyed on
+                // the resolved dates; this branch is props-in, render-out.
+                <InvestmentsPerspective
+                  result={investments.result}
+                  loading={investments.loading}
+                  error={investments.error}
+                  onRetry={investments.reload}
+                  accounts={accounts}
+                  spaceId={spaceId}
+                  compareTo={investmentsCompareTo}
                 />
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (

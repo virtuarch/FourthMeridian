@@ -8,8 +8,9 @@
 import { resolvePerspectiveEnvelope } from "./envelope";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import type { Snapshot } from "@/types";
-import type { LensResult } from "@/lib/perspective-engine/types";
+import type { LensResult, CompletenessTier } from "@/lib/perspective-engine/types";
 import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
+import type { InvestmentsTimeMachineResult } from "@/lib/investments/investments-time-machine-core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -43,8 +44,48 @@ console.log("Static lens envelopes");
 {
   const cf = resolvePerspectiveEnvelope({ perspectiveId: "cashFlow" });
   check("Cash Flow: observed within transaction depth, no fake evidence", cf.completeness?.tier === "observed" && cf.evidence === undefined);
+  // Investments: absent result ⇒ empty envelope (A10 — the old static
+  // "Current holdings only" text is DELIBERATELY removed; the case is now
+  // driven by the InvestmentsTimeMachineResult).
   const inv = resolvePerspectiveEnvelope({ perspectiveId: "investments" });
-  check("Investments: incomplete 'Current holdings only'", inv.completeness?.tier === "incomplete" && /current holdings only/i.test(inv.completeness!.label));
+  check("Investments: absent result ⇒ empty envelope (inert chips)", inv.completeness === undefined && inv.evidence === undefined);
+  check("Investments: no stale 'Current holdings only' text", !/current holdings only/i.test(JSON.stringify(inv)));
+}
+
+console.log("Investments dynamic envelope (A10 — from the InvestmentsTimeMachineResult)");
+{
+  const invResult = (o: { tier: CompletenessTier; conflict?: boolean; reason?: string; valuedCount?: number; unvaluedCount?: number }): InvestmentsTimeMachineResult => ({
+    asOf: "2026-07-01", compareTo: null, reportingCurrency: "USD",
+    holdings: [],
+    portfolio: {
+      reportingCurrency: "USD", valuedSubtotal: 0,
+      valuedCount: o.valuedCount ?? 3, unvaluedCount: o.unvaluedCount ?? 1, unvalued: [],
+      completeness: { tier: o.tier, conflict: o.conflict ?? false, reason: o.reason ?? "", byInstrument: {} },
+    },
+    flows: null, reconciliation: null,
+    completeness: { tier: o.tier, conflict: o.conflict ?? false, reason: o.reason ?? "All 3 holdings valued for 2026-07-01." },
+  });
+
+  const observed = resolvePerspectiveEnvelope({ perspectiveId: "investments", investmentsResult: invResult({ tier: "observed", reason: "All 3 holdings valued for 2026-07-01." }) });
+  check("observed ⇒ Fully valued / positive tone", observed.completeness?.tier === "observed" && observed.completeness?.label === "Fully valued" && observed.completeness?.tone === "positive");
+  check("detail = result.completeness.reason", observed.completeness?.detail === "All 3 holdings valued for 2026-07-01.");
+  check("evidence = real valued/total counts", observed.evidence?.label === "3 of 4 positions valued");
+
+  const conflicted = resolvePerspectiveEnvelope({ perspectiveId: "investments", investmentsResult: invResult({ tier: "observed", conflict: true }) });
+  check("conflict ⇒ warning tone even at a good tier", conflicted.completeness?.tone === "warning" && conflicted.completeness?.tier === "observed");
+
+  const incomplete = resolvePerspectiveEnvelope({ perspectiveId: "investments", investmentsResult: invResult({ tier: "incomplete", valuedCount: 2, unvaluedCount: 3 }) });
+  check("incomplete ⇒ Partially valued / warning", incomplete.completeness?.tier === "incomplete" && incomplete.completeness?.label === "Partially valued" && incomplete.completeness?.tone === "warning");
+  check("incomplete ⇒ evidence counts reflect the partial", incomplete.evidence?.label === "2 of 5 positions valued");
+
+  const unknown = resolvePerspectiveEnvelope({ perspectiveId: "investments", investmentsResult: invResult({ tier: "unknown" }) });
+  check("unknown tier ⇒ maps to incomplete / Partially valued", unknown.completeness?.tier === "incomplete" && unknown.completeness?.label === "Partially valued");
+
+  const derived = resolvePerspectiveEnvelope({ perspectiveId: "investments", investmentsResult: invResult({ tier: "derived" }) });
+  check("derived ⇒ Reconstructed / neutral tone", derived.completeness?.tier === "derived" && derived.completeness?.label === "Reconstructed" && derived.completeness?.tone === "neutral");
+
+  const noPositions = resolvePerspectiveEnvelope({ perspectiveId: "investments", investmentsResult: invResult({ tier: "observed", valuedCount: 0, unvaluedCount: 0 }) });
+  check("zero positions ⇒ no fabricated evidence chip", noPositions.evidence === undefined);
 }
 
 console.log("Cash Flow dynamic envelope (S4 — from cashFlowStamp)");

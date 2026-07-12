@@ -7,10 +7,11 @@
  * vocabulary, no fabricated counts, no percentages (§4.6): an absent envelope
  * yields an inert "—" placeholder, never invented detail.
  *
- * Today: Wealth ← the WealthResult; Cash Flow ← a static honest boundary
- * statement; Investments ← "Current holdings only"; Liquidity/Debt ← their
- * perspective-engine LensResult provenance when available; Goals ← none. As A7/
- * A8/A10 land, each lens swaps its source here without touching the shell (P6).
+ * Today: Wealth ← the WealthResult; Cash Flow ← a host-computed stamp (static
+ * fallback); Investments ← the A10 InvestmentsTimeMachineResult's own completeness
+ * + portfolio counts; Liquidity/Debt ← their perspective-engine LensResult
+ * provenance when available; Goals ← none. Each lens swaps its source here without
+ * touching the shell (P6).
  */
 
 import type { LensResult, CompletenessTier } from "@/lib/perspective-engine/types";
@@ -18,6 +19,7 @@ import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import { formatCurrency } from "@/lib/format";
 import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
+import type { InvestmentsTimeMachineResult } from "@/lib/investments/investments-time-machine-core";
 
 export type EnvelopeTier = "observed" | "derived" | "estimated" | "incomplete";
 export type EnvelopeTone = "neutral" | "positive" | "warning";
@@ -122,6 +124,44 @@ function cashFlowEnvelope(stamp: CashFlowStamp): PerspectiveEnvelope {
   };
 }
 
+/** Fixed user-facing label per tier for the Investments Time Machine (A10). */
+const INVESTMENTS_LABEL: Record<EnvelopeTier, string> = {
+  observed:   "Fully valued",
+  derived:    "Reconstructed",
+  estimated:  "Estimated",
+  incomplete: "Partially valued",
+};
+
+/**
+ * Map the A10 InvestmentsTimeMachineResult's own completeness envelope + portfolio
+ * counts into the shell envelope, so the Completeness chip is dynamic for
+ * Investments (A8/A10 landed — no more static "current holdings only" text). Tier
+ * comes from the DTO's overall envelope; a conflict forces a warning tone and is
+ * never averaged away. Evidence is the real valued/total position count — never a
+ * fabricated row list.
+ */
+function investmentsEnvelope(r: InvestmentsTimeMachineResult): PerspectiveEnvelope {
+  const tierMap: Record<CompletenessTier, EnvelopeTier> = {
+    observed: "observed", derived: "derived", estimated: "estimated", incomplete: "incomplete", unknown: "incomplete",
+  };
+  const tier = tierMap[r.completeness.tier];
+  const toneByTier: Record<EnvelopeTier, EnvelopeTone> = {
+    observed: "positive", derived: "neutral", estimated: "warning", incomplete: "warning",
+  };
+  const valued = r.portfolio.valuedCount;
+  const total = valued + r.portfolio.unvaluedCount;
+  return {
+    completeness: {
+      tier,
+      label: INVESTMENTS_LABEL[tier],
+      // A same-tier conflict must surface as a warning even when the tier is good.
+      tone:  r.completeness.conflict ? "warning" : toneByTier[tier],
+      detail: r.completeness.reason,
+    },
+    evidence: total > 0 ? { label: `${valued} of ${total} positions valued` } : undefined,
+  };
+}
+
 /** Map a perspective-engine LensResult's provenance into an envelope (Liquidity/Debt). */
 function lensEnvelope(lens: LensResult): PerspectiveEnvelope {
   const p = lens.provenance;
@@ -152,6 +192,8 @@ export function resolvePerspectiveEnvelope(args: {
   currency?:      string;
   /** S4 — the host-computed Cash Flow completeness stamp. Absent ⇒ static text. */
   cashFlowStamp?: CashFlowStamp | null;
+  /** A10 — the host-fetched Investments Time Machine result. Absent ⇒ empty envelope. */
+  investmentsResult?: InvestmentsTimeMachineResult | null;
 }): PerspectiveEnvelope {
   switch (args.perspectiveId) {
     case "wealth":
@@ -159,14 +201,7 @@ export function resolvePerspectiveEnvelope(args: {
     case "cashFlow":
       return args.cashFlowStamp ? cashFlowEnvelope(args.cashFlowStamp) : { completeness: CASH_FLOW_STATIC };
     case "investments":
-      return {
-        completeness: {
-          tier: "incomplete",
-          label: "Current holdings only",
-          tone: "warning",
-          detail: "Investments shows current holdings; historical valuation arrives with the price foundation.",
-        },
-      };
+      return args.investmentsResult ? investmentsEnvelope(args.investmentsResult) : {};
     case "liquidity":
     case "debt":
       return args.lensResult ? lensEnvelope(args.lensResult) : {};
