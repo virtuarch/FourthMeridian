@@ -3180,6 +3180,7 @@ export function SpaceDashboard({
                 id:           p.id,
                 label:        p.label,
                 hasWorkspace: !!(p.widgets && p.widgets.length > 0),
+                icon:         p.icon,
               }))}
               activeTabId={activePerspectiveId}
               onSelectTab={setSelectedPerspectiveId}

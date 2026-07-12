@@ -40,25 +40,13 @@
  * Cards without a lensId keep the exact pre-existing behavior.
  */
 
-import {
-  Gem, Waves, TrendingUp, CreditCard, PiggyBank, Target, FileText, Home,
-  Briefcase, Compass, Droplets, Sparkles,
-} from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { TONE_VALUE } from "@/components/atlas/tones";
 import { formatCurrency, formatDate, formatPercent } from "@/lib/format";
 import { useDisplayCurrency } from "@/lib/currency-context";
+import { PERSPECTIVE_ICON_MAP, PERSPECTIVE_ICON_FALLBACK } from "@/lib/perspective-icons";
 import type { PerspectiveDef } from "@/lib/perspectives";
 import type { LensMetric, LensResult } from "@/lib/perspective-engine/types";
-
-// Compass (the "overview"/Atlas lens) is included for completeness, even
-// though in practice items passed here should already have "overview"
-// filtered out — see lib/perspectives.ts's doc comment on that id never
-// being rendered as a card. Keeping it mapped avoids a silent Sparkles
-// fallback if a host ever forgets that filter.
-const ICON_MAP: Record<string, React.ElementType> = {
-  Gem, Waves, TrendingUp, CreditCard, PiggyBank, Target, FileText, Home, Briefcase, Compass, Droplets,
-};
 
 export interface PerspectiveCardItem extends PerspectiveDef {
   /** Present only when this lens routes to a real, already-working tab. */
@@ -110,7 +98,7 @@ export function PerspectivesWidget({
 function PerspectiveCard({ item, compact }: { item: PerspectiveCardItem; compact: boolean }) {
   // MC1 QA Q1 — lens currency values are converted (Phase 3 Slice 5); labels follow.
   const displayCurrency = useDisplayCurrency();
-  const Icon = ICON_MAP[item.icon] ?? Sparkles;
+  const Icon = PERSPECTIVE_ICON_MAP[item.icon] ?? PERSPECTIVE_ICON_FALLBACK;
   const clickable = !!item.onSelect;
   const lensBacked = !!item.lensId;
 

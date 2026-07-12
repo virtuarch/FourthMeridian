@@ -20,6 +20,9 @@ export interface PerspectiveTabItem {
   id:           string;
   label:        string;
   hasWorkspace: boolean;
+  /** Lucide icon NAME (from PerspectiveDef.icon), resolved to a node here via
+   *  lib/perspective-icons. Optional so callers that don't want icons omit it. */
+  icon?:        string;
 }
 
 export function PerspectiveTabs({
