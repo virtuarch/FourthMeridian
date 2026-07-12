@@ -28,11 +28,20 @@
  * in globals.css, which overrides this component's inline transition.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 export interface SegmentedControlOption<T extends string> {
   id: T;
   label: string;
+  /**
+   * Optional pre-resolved icon node rendered before the label (SHELL_NAV §2.3).
+   * A NODE, not an icon-name string, so this primitive stays icon-library-
+   * agnostic — callers resolve their own name→component (e.g. via
+   * lib/perspective-icons) and pass the element. Additive and optional: when
+   * absent, the segment renders exactly its bare label as before, so the five
+   * consumers that pass no icon are byte-identical.
+   */
+  icon?: ReactNode;
 }
 
 interface SegmentedControlProps<T extends string> {
@@ -155,7 +164,18 @@ export function SegmentedControl<T extends string>({
                   : "1px solid transparent",
             }}
           >
-            {opt.label}
+            {opt.icon != null ? (
+              // Icon + label share the segment; the inner flex owns the gap so
+              // the button's own padding/box is unchanged from the label-only
+              // path. The icon is decorative — the visible label is the
+              // accessible name (role=tab), so it carries aria-hidden.
+              <span className="inline-flex items-center gap-1.5">
+                <span aria-hidden className="inline-flex shrink-0">{opt.icon}</span>
+                {opt.label}
+              </span>
+            ) : (
+              opt.label
+            )}
           </button>
         );
       })}
