@@ -2614,6 +2614,10 @@ export function SpaceDashboard({
     setCashFlowFilterId(id);
   };
   const cashFlowActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "cashFlow";
+  // The Liquidity workspace's What Changed panel needs the same transaction
+  // history Cash Flow uses (windowed by cashFlowPeriod). Trigger the same lazy
+  // fetch when Liquidity opens first (below), and thread the rows into its branch.
+  const liquidityWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "liquidity";
   // Debt workspace needs SpaceSnapshot history (the `debt` series) for its
   // Debt History widget — trigger the snapshot fetch when it's open.
   const debtWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "debt";
@@ -2769,10 +2773,11 @@ export function SpaceDashboard({
   // (doorway) is opened.
   const isFlowCategory = FLOW_TX_CATEGORIES.includes(category);
   useEffect(() => {
-    // Fetch for flow categories, the Transactions doorway, OR the Cash Flow
-    // Perspective workspace (which needs transaction history regardless of
-    // category). Guarded by spaceTransactions === null so it runs once.
-    if (!isFlowCategory && activeTab !== "TRANSACTIONS" && !cashFlowActive) return;
+    // Fetch for flow categories, the Transactions doorway, OR the Cash Flow /
+    // Liquidity Perspective workspaces (both need transaction history regardless
+    // of category — Liquidity for its What Changed panel). Guarded by
+    // spaceTransactions === null so it runs once.
+    if (!isFlowCategory && activeTab !== "TRANSACTIONS" && !cashFlowActive && !liquidityWorkspaceActive) return;
     if (spaceTransactions !== null) return;
     let active = true;
     fetch(`/api/spaces/${spaceId}/transactions`)
@@ -2787,7 +2792,7 @@ export function SpaceDashboard({
   // currencyNonce (Q6): re-fetch tx rows + F-6 context after a currency change
   // (the handler also nulls spaceTransactions to release the guard above).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, isFlowCategory, activeTab, cashFlowActive, spaceTransactions === null, currencyNonce]);
+  }, [spaceId, isFlowCategory, activeTab, cashFlowActive, liquidityWorkspaceActive, spaceTransactions === null, currencyNonce]);
 
   useEffect(() => {
     Promise.all([
@@ -3230,6 +3235,10 @@ export function SpaceDashboard({
                   accounts={accounts}
                   ctx={widgetCtx}
                   lensResult={lensResults?.["liquidity"] ?? null}
+                  transactions={spaceTransactions}
+                  txCtx={txConversionCtx}
+                  period={cashFlowPeriod}
+                  onOpenCashFlow={() => setSelectedPerspectiveId("cashFlow")}
                 />
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (

@@ -45,6 +45,7 @@ console.log("1. All four mounted widgets/presenters appear exactly once");
     ["Emergency Fund Readiness", "renderEmergencyFundReadiness("],
     ["Liquidity Ladder (tier presenter)", "<LiquidityLadderTiers"],
     ["Liquidity Concentration", "renderLiquidityConcentration("],
+    ["What Changed (S4)", "<LiquidityWhatChangedCard"],
   ];
   for (const [label, needle] of mounts) {
     check(`${label} mounted exactly once`, count(SRC, needle) === 1, `${count(SRC, needle)} occurrence(s) of ${needle}`);
@@ -76,7 +77,7 @@ console.log("3. Source order = mobile stacking order (Lede → Accessible Cash �
   // are defined above the return, so anchor on their call sites in the return.
   const gridIdx = SRC.indexOf('grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch');
   const RET = gridIdx >= 0 ? SRC.slice(gridIdx) : "";
-  const order = ["renderLede(", "renderAccessibleCash(", "renderEmergencyFundReadiness(", "<LiquidityLadderTiers", "renderReachability(", "renderLiquidityConcentration("];
+  const order = ["renderLede(", "renderAccessibleCash(", "renderEmergencyFundReadiness(", "<LiquidityLadderTiers", "renderReachability(", "renderLiquidityConcentration(", "<LiquidityWhatChangedCard"];
   const positions = order.map((n) => RET.indexOf(n));
   check("all order anchors present in the return block", positions.every((p) => p >= 0), positions.join(","));
   const ascending = positions.every((p, i) => i === 0 || positions[i - 1] < p);
@@ -97,20 +98,22 @@ console.log("4. CURRENT-STATE lock — no historical/asOf machinery, no cross-wo
   check("no import from the Cash Flow workspace", !SRC.includes("components/space/widgets/cashflow/"));
 }
 
-console.log("5. SpaceDashboard liquidity branch threads accounts / ctx / lensResult, precedes generic branch");
+console.log("5. SpaceDashboard liquidity branch threads accounts / ctx / lensResult (+ S4), precedes generic branch");
 {
   const branchIdx = DASH.indexOf('activePerspectiveId === "liquidity"');
   check("liquidity branch exists", branchIdx >= 0);
   const jsxStart = DASH.indexOf("<LiquidityPerspective", branchIdx);
   const jsxEnd = DASH.indexOf("/>", jsxStart);
   const jsx = jsxStart >= 0 && jsxEnd >= 0 ? DASH.slice(jsxStart, jsxEnd) : "";
-  for (const prop of ["accounts=", "ctx=", "lensResult="]) {
+  for (const prop of ["accounts=", "ctx=", "lensResult=", "transactions=", "txCtx=", "period=", "onOpenCashFlow="]) {
     check(`branch passes ${prop.replace("=", "")}`, jsx.includes(prop));
   }
   const genericIdx = DASH.indexOf("toVirtualSections(activePerspective.id");
   check("liquidity branch precedes the generic virtual-sections branch", branchIdx >= 0 && genericIdx > branchIdx);
   // The current-state constraint reaches the host branch too: no asOf threaded in.
   check("host branch threads no asOf into Liquidity", !jsx.includes("asOf"));
+  // The fetch-trigger extension (§3.2): Liquidity opening first must load tx rows.
+  check("transactions fetch guard includes liquidityWorkspaceActive", DASH.includes("!liquidityWorkspaceActive"));
 }
 
 if (failures > 0) { console.error(`\n${failures} LiquidityPerspective check(s) failed`); process.exit(1); }

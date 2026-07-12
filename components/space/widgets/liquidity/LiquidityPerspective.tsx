@@ -21,10 +21,14 @@
  * This component owns NO state — everything is pass-through from the host.
  *
  * Layout (plan §3.3) — desktop is a 12-column grid; mobile/tablet stacks in
- * source order Lede → Accessible Cash → EFR → Ladder → Reachability → Concentration:
- *   xl (≥1280): ⓪ Lede 12 · ① KPI 4 · ② Ladder 8 · ③ Reachability 5 · ④ Concentration 7
- *   lg (1024):  ⓪ Lede 12 · ① KPI 5 · ② Ladder 7 · ③ Reachability 6 · ④ Concentration 6
- * (⑤ What Changed — S4; renders nothing here, the grid stays valid without it.)
+ * source order Lede → Accessible Cash → EFR → Ladder → Reachability →
+ * Concentration → What Changed:
+ *   xl (≥1280): ⓪ Lede 12 · ① KPI 4 · ② Ladder 8 · ③ Reachability 5 · ④ Concentration 7 · ⑤ What Changed 12
+ *   lg (1024):  ⓪ Lede 12 · ① KPI 5 · ② Ladder 7 · ③ Reachability 6 · ④ Concentration 6 · ⑤ What Changed 12
+ *
+ * The What Changed panel filters a transaction WINDOW relative to today (the
+ * shell-bridged cashFlowPeriod) — NOT a point-in-time balance read; the
+ * current-state invariant holds.
  */
 
 import type { ReactNode } from "react";
@@ -33,9 +37,12 @@ import { classifyAccounts } from "@/lib/account-classifier";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
+import type { Transaction } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
+import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { LiquidityLadderTiers } from "./LiquidityLadderTiers";
+import { LiquidityWhatChangedCard } from "./LiquidityWhatChangedCard";
 import {
   renderAccessibleCash,
   renderEmergencyFundReadiness,
@@ -66,6 +73,10 @@ export function LiquidityPerspective({
   accounts,
   ctx,
   lensResult,
+  transactions,
+  txCtx,
+  period,
+  onOpenCashFlow,
 }: {
   accounts:   LiquidityAdapterAccount[];
   ctx?:       ConversionContext;
@@ -73,6 +84,13 @@ export function LiquidityPerspective({
    *  Absent / empty / error ⇒ the lede strip is omitted entirely. NO new fetch,
    *  NO point-in-time read — the same result the shell envelope already consumes. */
   lensResult?: LensResult | null;
+  /** S4 — the shell-bridged transaction window for the What Changed panel. This
+   *  is transaction-window filtering relative to today (via cashFlowPeriod), NOT
+   *  a balance-as-of read; the current-state invariant is untouched. */
+  transactions?:   Transaction[] | null;
+  txCtx?:          ConversionContext;
+  period?:         CashFlowPeriod;
+  onOpenCashFlow?: () => void;
 }) {
   // ⓪ Lens lede — the verdict SENTENCE only, never a second cashNow KPI (the lens
   // headline is the same figure Accessible Cash leads with — the duplicate-KPI
@@ -170,6 +188,22 @@ export function LiquidityPerspective({
           {renderLiquidityConcentration(accounts, ctx)}
         </Panel>
       </div>
+
+      {/* ⑤ What Changed — top liquidity drivers for the shell-bridged window,
+           with a doorway to the Cash Flow workspace for full detail. */}
+      {period && (
+        <div className="min-w-0 lg:col-span-12">
+          <Panel title={`What Changed · ${periodLabel(period)}`}>
+            <LiquidityWhatChangedCard
+              transactions={transactions}
+              accounts={accounts}
+              period={period}
+              ctx={txCtx}
+              onOpenCashFlow={onOpenCashFlow}
+            />
+          </Panel>
+        </div>
+      )}
     </div>
   );
 }
