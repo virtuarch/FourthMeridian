@@ -98,6 +98,7 @@ import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterCont
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { WealthPerspective } from "@/components/space/widgets/wealth/WealthPerspective";
+import { CashFlowPerspective as CashFlowPerspectiveWorkspace } from "@/components/space/widgets/cashflow/CashFlowPerspective";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
@@ -3183,6 +3184,22 @@ export function SpaceDashboard({
                     />
                   )}
                 </>
+              ) : activePerspectiveId === "cashFlow" ? (
+                // Cash Flow Perspective — the redesigned multi-panel composition
+                // (mirrors the Wealth grid pattern), replacing the generic
+                // single-column SectionCard stack for this Perspective only. Time
+                // stays host-owned via the existing period bridge; the exact same
+                // props the SectionCard path passed reach the same five widgets.
+                <CashFlowPerspectiveWorkspace
+                  transactions={spaceTransactions}
+                  txCtx={txConversionCtx}
+                  accounts={accounts}
+                  period={cashFlowPeriod}
+                  onSelectPeriod={setCashFlowPeriod}
+                  perspective={cashFlowPerspective}
+                  filterId={cashFlowFilterId}
+                  onPerspectiveChange={onCashFlowPerspectiveChange}
+                />
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
                   <SectionCard

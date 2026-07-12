@@ -46,6 +46,11 @@ interface Props {
   /** Phase 2 — how many cards show on narrow/mobile widths before "Show more".
    *  Wide (≥sm) always shows all; this only truncates the stacked mobile grid. */
   mobileTopN?:    number;
+  /** Presentation-only override for the category-card grid classes. Defaults to
+   *  the two-column grid; the Cash Flow Perspective passes a narrow-column
+   *  variant (single column at xl) for the right-rail Spending panel. No data,
+   *  ordering, or drill-down change. */
+  cardGridClassName?: string;
 }
 
 export function CashFlowCategoryBreakdown({
@@ -57,6 +62,7 @@ export function CashFlowCategoryBreakdown({
   sliceFor,
   sliceSubtitle,
   mobileTopN = 4,
+  cardGridClassName = "grid grid-cols-1 sm:grid-cols-2 gap-2",
 }: Props) {
   const [slice, setSlice] = useState<TransactionSlice | null>(null);
   // Phase 2 — narrow/mobile truncation. Collapsed by default; wide screens (≥sm)
@@ -117,7 +123,7 @@ export function CashFlowCategoryBreakdown({
       {/* 2. Category cards — dense, ranked, name · value · share. Cards open the
              slice drawer when drill-down is enabled. Beyond mobileTopN, cards are
              hidden on mobile (until "Show more") but ALWAYS shown at ≥sm. */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      <div className={cardGridClassName}>
         {colored.map((c, idx) => {
           const overflow = idx >= mobileTopN;
           // Overflow cards: hidden on mobile when collapsed; every card is shown
