@@ -3,26 +3,20 @@
 /**
  * components/space/shell/ShellContextRow.tsx
  *
- * Perspective shell — Container 1, Row A ("time & trust"). Absorbs the former
- * SharedHistoricalContext: the As Of date, a ⇄ swap affordance, the Compare To
- * date (with clear), and the shell-level Completeness / Evidence chips. The chips
- * are read-only this slice; S4 makes them interactive. Presentation only — every
- * mutation flows up through the canonical shell reducer.
+ * Perspective shell — Container 1, Row A ("time & trust"). As Of, a ⇄ swap
+ * affordance, Compare To (with clear), and the shell-level Completeness /
+ * Evidence chips. The chips are interactive (S4): when the active perspective's
+ * envelope carries a reason/records, Completeness opens a popover and Evidence
+ * opens a drawer; an absent envelope stays an inert "—" placeholder — no fake
+ * counts, no percentages. Presentation only; every mutation flows up through the
+ * canonical shell reducer.
  */
 
+import { useState } from "react";
 import { CalendarDays, ArrowLeftRight, ShieldCheck, FileSearch, X } from "lucide-react";
-
-/** A completeness/trust summary for the shell — supplied only when it exists. */
-export interface CompletenessSummary {
-  /** User-facing label, e.g. "Reconstructed", "Observed". Never a tier name. */
-  label: string;
-  tone?: "neutral" | "positive" | "warning";
-}
-
-/** An evidence/provenance summary for the shell — supplied only when it exists. */
-export interface EvidenceSummary {
-  label: string;
-}
+import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { CompletenessPopover } from "./CompletenessPopover";
+import { EvidenceDrawer } from "./EvidenceDrawer";
 
 interface Props {
   asOf: string;
@@ -33,8 +27,8 @@ interface Props {
   onSwap: () => void;
   /** Today (YYYY-MM-DD) — the max selectable date; no future As Of. */
   today: string;
-  completeness?: CompletenessSummary;
-  evidence?: EvidenceSummary;
+  /** The active perspective's trust envelope (empty ⇒ inert "—" chips). */
+  envelope: PerspectiveEnvelope;
   className?: string;
 }
 
@@ -43,17 +37,19 @@ const FIELD_CLASS =
   "text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-info)] " +
   "[color-scheme:dark]";
 
-/** A read-only shell chip: an icon + label + value, or a muted placeholder. */
+/** A shell chip; a button when `onClick` is provided, otherwise a static chip. */
 function ShellChip({
   icon,
   label,
   value,
   tone = "neutral",
+  onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   value?: string;
   tone?: "neutral" | "positive" | "warning";
+  onClick?: () => void;
 }) {
   const toneColor =
     value === undefined
@@ -63,16 +59,31 @@ function ShellChip({
         : tone === "warning"
           ? "var(--accent-warning)"
           : "var(--text-secondary)";
-  return (
-    <div
-      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-[var(--surface-inset)] border border-[var(--border-hairline)]"
-      title={value === undefined ? `${label} — not yet available` : `${label}: ${value}`}
-    >
+  const inner = (
+    <>
       <span className="text-[var(--text-faint)]" aria-hidden>{icon}</span>
       <span className="text-[11px] font-medium text-[var(--text-muted)]">{label}</span>
       <span className="text-[11px] font-semibold tabular-nums" style={{ color: toneColor }}>
         {value ?? "—"}
       </span>
+    </>
+  );
+  const base = "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-[var(--surface-inset)] border border-[var(--border-hairline)]";
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={`${label}: ${value ?? "—"}`}
+        className={`${base} hover:border-[var(--border-hairline-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] transition-colors cursor-pointer`}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return (
+    <div className={base} title={value === undefined ? `${label} — not yet available` : `${label}: ${value}`}>
+      {inner}
     </div>
   );
 }
@@ -84,10 +95,17 @@ export function ShellContextRow({
   onCompareToChange,
   onSwap,
   today,
-  completeness,
-  evidence,
+  envelope,
   className = "",
 }: Props) {
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const completeness = envelope.completeness;
+  const evidence = envelope.evidence;
+  const canPopover = !!completeness?.detail;
+  const canDrawer = !!(evidence?.rows && evidence.rows.length > 0);
+
   return (
     <div
       className={["flex flex-wrap items-center gap-2", className].join(" ")}
@@ -109,7 +127,7 @@ export function ShellContextRow({
         />
       </label>
 
-      {/* Swap — exchange As Of ↔ Compare To (concept's ⇄ affordance). */}
+      {/* Swap — exchange As Of ↔ Compare To. */}
       <button
         type="button"
         onClick={onSwap}
@@ -148,12 +166,29 @@ export function ShellContextRow({
         </span>
       </label>
 
-      {/* Shell-level trust surfaces — real envelope/provenance when present,
-          neutral placeholder otherwise (never fabricated). */}
+      {/* Shell-level trust surfaces — interactive when the envelope has detail. */}
       <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
-        <ShellChip icon={<ShieldCheck size={13} />} label="Completeness" value={completeness?.label} tone={completeness?.tone} />
-        <ShellChip icon={<FileSearch size={13} />} label="Evidence" value={evidence?.label} />
+        <ShellChip
+          icon={<ShieldCheck size={13} />}
+          label="Completeness"
+          value={completeness?.label}
+          tone={completeness?.tone}
+          onClick={canPopover ? () => setPopoverOpen(true) : undefined}
+        />
+        <ShellChip
+          icon={<FileSearch size={13} />}
+          label="Evidence"
+          value={evidence?.label}
+          onClick={canDrawer ? () => setDrawerOpen(true) : undefined}
+        />
       </div>
+
+      {completeness && (
+        <CompletenessPopover open={popoverOpen} onClose={() => setPopoverOpen(false)} completeness={completeness} />
+      )}
+      {evidence && (
+        <EvidenceDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} evidence={evidence} />
+      )}
     </div>
   );
 }

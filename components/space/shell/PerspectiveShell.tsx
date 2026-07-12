@@ -18,8 +18,9 @@
  */
 
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
-import { ShellContextRow, type CompletenessSummary, type EvidenceSummary } from "./ShellContextRow";
+import { ShellContextRow } from "./ShellContextRow";
 import { PerspectiveTabs, type PerspectiveTabItem } from "./PerspectiveTabs";
 
 interface Props {
@@ -30,8 +31,8 @@ interface Props {
   onAsOfChange:      (v: string) => void;
   onCompareToChange: (v: string | null) => void;
   onSwap:            () => void;
-  completeness?:     CompletenessSummary;
-  evidence?:         EvidenceSummary;
+  /** The active perspective's trust envelope (from the S3 registry). */
+  envelope:          PerspectiveEnvelope;
   // Row B — presets (value is null under CUSTOM: no segment highlighted).
   presetValue:    CashFlowPeriod | null;
   onSelectPreset: (p: CashFlowPeriod) => void;
@@ -61,8 +62,7 @@ export function PerspectiveShell(props: Props) {
           onCompareToChange={props.onCompareToChange}
           onSwap={props.onSwap}
           today={props.today}
-          completeness={props.completeness}
-          evidence={props.evidence}
+          envelope={props.envelope}
         />
         <div className="border-t" style={{ borderColor: "var(--border-hairline)" }} aria-hidden />
         <CashFlowPeriodSelector value={props.presetValue} onChange={props.onSelectPreset} />

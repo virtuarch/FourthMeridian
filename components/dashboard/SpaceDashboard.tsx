@@ -92,6 +92,7 @@ import {
 } from "@/lib/transactions/cash-flow";
 import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiveShellState";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
+import { resolvePerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
@@ -3086,12 +3087,12 @@ export function SpaceDashboard({
               onAsOfChange={handleAsOfChange}
               onCompareToChange={handleCompareToChange}
               onSwap={shell.actions.swap}
-              completeness={wealthWorkspaceActive
-                ? { label: wealthResult.completeness.label, tone: wealthResult.completeness.tone }
-                : undefined}
-              evidence={wealthWorkspaceActive && wealthResult.evidence
-                ? { label: wealthResult.evidence.label }
-                : undefined}
+              envelope={resolvePerspectiveEnvelope({
+                perspectiveId: activePerspectiveId ?? "",
+                wealthResult,
+                lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
+                currency: wealthCurrency,
+              })}
               presetValue={timePreset === "CUSTOM" ? null : timePreset}
               onSelectPreset={handleSelectSlice}
               tabs={perspectiveItems.map((p) => ({
