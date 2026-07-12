@@ -31,6 +31,7 @@ import {
   investmentReconstructionEnabled,
   repairReconstructionForAccount,
 } from "@/lib/investments/reconstruction-runner";
+import { captureSecurityPrices, securityPriceCapturesEnabled } from "@/lib/prices/capture";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -172,6 +173,9 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
   // events) + whether a cash-only event was touched. Only inserted/corrected
   // rows change a walk; unchanged rows never trigger a repair.
   const affected = new Map<string, { instrumentIds: Set<string>; cash: boolean }>();
+  // A8-2 — resolved instrumentId → its Security, for same-day close-price capture
+  // from the investment-transactions securities payload (the second capture flow).
+  const priceSecurityByInstrument = new Map<string, Security>();
   for (const txn of sortInvestmentTransactions(all)) {
     metrics.fetched++;
     try {
@@ -184,6 +188,10 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
       }
 
       const instrumentId = await resolveInstrument(client, txn, securitiesById, faId, metrics, params.plaidItemId);
+      if (instrumentId && txn.security_id) {
+        const sec = securitiesById[txn.security_id];
+        if (sec) priceSecurityByInstrument.set(instrumentId, sec);
+      }
       const mapped = mapPlaidInvestmentTransactionToEvent(txn);
       if (mapped.type === "UNKNOWN") metrics.unknown++;
 
@@ -209,6 +217,21 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
   // that position's walk (bounded to the affected instruments). Flag-gated and
   // best-effort — a repair failure never fails ingestion.
   await maybeRepairReconstructions(client, affected, params.now, params.plaidItemId);
+
+  // ── A8-2 same-day price capture hook ──────────────────────────────────────
+  // Persist any defensibly dated close prices carried on this window's securities
+  // payload (basis RAW_CLOSE, source "plaid"). Flag-gated (SECURITY_PRICES_ENABLED)
+  // and best-effort/non-fatal — a price-archive failure never fails ingestion.
+  if (securityPriceCapturesEnabled() && priceSecurityByInstrument.size > 0) {
+    try {
+      await captureSecurityPrices({
+        securities: [...priceSecurityByInstrument].map(([instrumentId, security]) => ({ instrumentId, security })),
+        now: params.now,
+      });
+    } catch (priceErr) {
+      console.warn(`[investment-events] security price capture failed (non-fatal): ${priceErr instanceof Error ? priceErr.message : priceErr}`);
+    }
+  }
 
   return metrics;
 }

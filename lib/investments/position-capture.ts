@@ -25,6 +25,7 @@ import { PositionOrigin, type Prisma, type PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
 import { resolveInstrumentForPlaidSecurity, PLAID_PROVIDER } from "@/lib/investments/instrument-resolver";
 import { captureBrokerageCash, type ReconHolding, type ReconciliationStatus } from "@/lib/investments/brokerage-cash";
+import { captureSecurityPrices, securityPriceCapturesEnabled } from "@/lib/prices/capture";
 
 /** Kill switch — absent/false ⇒ no Instrument/PositionObservation writes at all. */
 export function investmentObservationsEnabled(): boolean {
@@ -94,6 +95,8 @@ export interface CaptureResult {
   conflicts:      number;
   /** Derived brokerage-cash reconciliation outcome, when balance context is supplied. */
   brokerageCash?: { status: ReconciliationStatus; written: boolean; residual: number | null; derivedCash: number };
+  /** A8-2 — same-day close-price capture outcome (present only when SECURITY_PRICES_ENABLED). */
+  securityPrices?: { attempted: number; inserted: number; skipped: number };
 }
 
 export interface CaptureParams {
@@ -127,6 +130,9 @@ export async function capturePositionObservations(params: CaptureParams): Promis
   const date = normalizeDate(params.date);
   const result: CaptureResult = { observed: 0, disappeared: 0, instrumentsNew: 0, conflicts: 0 };
   const currentInstrumentIds = new Set<string>();
+  // A8-2 — resolved instrumentId → its Security, for same-day close-price capture
+  // after the loop. Populated regardless of the flag (cheap); the write is gated.
+  const securityByInstrument = new Map<string, Security>();
 
   for (const holding of params.plaidHoldings) {
     const sec = params.securitiesById[holding.security_id];
@@ -139,6 +145,7 @@ export async function capturePositionObservations(params: CaptureParams): Promis
     if (resolved.created) result.instrumentsNew++;
     if (resolved.conflict) result.conflicts++;
     currentInstrumentIds.add(resolved.instrumentId);
+    securityByInstrument.set(resolved.instrumentId, sec);
 
     const facts = mapHoldingToObservedFacts(holding, sec);
     await upsertObservation(client, params.financialAccountId, resolved.instrumentId, date, facts);
@@ -196,6 +203,22 @@ export async function capturePositionObservations(params: CaptureParams): Promis
       },
     });
     result.brokerageCash = { status: cash.status, written: cash.written, residual: cash.residual, derivedCash: cash.derivedCash };
+  }
+
+  // A8-2 — same-day security close-price capture from THIS payload's securities
+  // (basis RAW_CLOSE, source "plaid", dated by close_price_as_of). Flag-gated
+  // (SECURITY_PRICES_ENABLED) and best-effort/non-fatal: a price-archive failure
+  // never fails observation capture. Writes go through the price archive (its
+  // own global-db path), independent of the observation write above.
+  if (securityPriceCapturesEnabled() && securityByInstrument.size > 0) {
+    try {
+      result.securityPrices = await captureSecurityPrices({
+        securities: [...securityByInstrument].map(([instrumentId, security]) => ({ instrumentId, security })),
+        now: params.date,
+      });
+    } catch (priceErr) {
+      console.warn(`[position-capture] security price capture failed (non-fatal): ${priceErr instanceof Error ? priceErr.message : priceErr}`);
+    }
   }
 
   return result;
