@@ -25,30 +25,39 @@
 
 import { useState, useEffect } from "react";
 import {
-  Activity, Archive, CheckCircle2, Clock, Landmark, LayoutDashboard,
-  LogOut, PackageCheck, PackageMinus, PackagePlus, RotateCcw, Settings,
-  Shield, Target, UserCheck, UserMinus, UserPlus, Loader2,
+  Activity, AlertTriangle, Archive, CheckCircle2, Clock, FileDown, Landmark,
+  LayoutDashboard, Link2, LogOut, PackageCheck, PackageMinus, PackagePlus,
+  RefreshCw, RotateCcw, Settings, Shield, Target, Undo2, Unlink, UserCheck,
+  UserMinus, UserPlus, Loader2,
 } from "lucide-react";
-import type { TimelineEvent, TimelineTone } from "@/lib/timeline-types";
+import type { TimelineEvent, TimelineTone, ActivityCategory } from "@/lib/timeline-types";
+import { ACTIVITY_FILTER_GROUPS } from "@/lib/timeline-types";
+import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import Link from "next/link";
 
 // ─── Icon map ─────────────────────────────────────────────────────────────────
 
 const ICON_MAP: Record<string, React.ElementType> = {
   Activity,
+  AlertTriangle,   // sync issue
   Archive,
   CheckCircle2,
   Clock,
+  FileDown,        // import completed
   Landmark,
   LayoutDashboard,
+  Link2,           // account connected
   LogOut,
   PackageCheck,
   PackageMinus,
   PackagePlus,
+  RefreshCw,       // account / wallet synced
   RotateCcw,
   Settings,
   Shield,
   Target,
+  Undo2,           // import rolled back
+  Unlink,          // account disconnected
   UserCheck,
   UserMinus,
   UserPlus,
@@ -160,6 +169,23 @@ function EmptyState() {
   );
 }
 
+// Shown when the Space HAS activity, but the active filter matches none of it.
+// Distinct from EmptyState so an empty *filtered* view never reads as "nothing
+// ever happened here."
+function FilteredEmptyState({ label }: { label: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-10 text-center">
+      <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: "var(--surface-inset)" }}>
+        <Clock size={18} style={{ color: "var(--text-faint)" }} />
+      </div>
+      <p className="text-sm font-medium" style={{ color: "var(--text-muted)" }}>No {label.toLowerCase()} activity yet</p>
+      <p className="text-xs mt-1 max-w-[220px]" style={{ color: "var(--text-faint)" }}>
+        Try a different filter to see other events in this space.
+      </p>
+    </div>
+  );
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -187,6 +213,7 @@ export function TimelineWidget({ events: propEvents, spaceId, pageSize = 10 }: P
   const [error,         setError]         = useState<string | null>(null);
   const [retryCount,    setRetryCount]    = useState(0);
   const [page,          setPage]          = useState(0);
+  const [filter,        setFilter]        = useState<ActivityCategory | "all">("all");
 
   useEffect(() => {
     // Pure presenter mode — no fetch needed
@@ -220,9 +247,12 @@ export function TimelineWidget({ events: propEvents, spaceId, pageSize = 10 }: P
   // In pure presenter mode, derive directly from props (no state sync effect needed)
   // Events are already sorted newest-first by the API (orderBy: createdAt desc)
   const allEvents  = propEvents ?? fetchedEvents;
-  const totalPages = Math.max(1, Math.ceil(allEvents.length / pageSize));
+  // Filter by member-facing category before paginating. Events with no category
+  // (preview rows) only ever appear under "All".
+  const filtered   = filter === "all" ? allEvents : allEvents.filter((e) => e.category === filter);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage   = Math.min(page, totalPages - 1);
-  const visible    = allEvents.slice(safePage * pageSize, (safePage + 1) * pageSize);
+  const visible    = filtered.slice(safePage * pageSize, (safePage + 1) * pageSize);
 
   if (loading) {
     return (
@@ -252,37 +282,57 @@ export function TimelineWidget({ events: propEvents, spaceId, pageSize = 10 }: P
 
   if (allEvents.length === 0) return <EmptyState />;
 
+  const activeLabel = ACTIVITY_FILTER_GROUPS.find((g) => g.id === filter)?.label ?? "";
+
   return (
     <div>
-      <div className="divide-y divide-[var(--border-hairline)]">
-        {visible.map((event) => (
-          <EventRow key={event.id} event={event} />
-        ))}
+      {/* Category filter — reuses the Atlas SegmentedControl (the same control
+          Liquidity / Cash Flow / Investments use). Changing filter resets to
+          the first page so the member never lands on an out-of-range page. */}
+      <div className="mb-3">
+        <SegmentedControl
+          options={ACTIVITY_FILTER_GROUPS}
+          value={filter}
+          onChange={(id) => { setFilter(id); setPage(0); }}
+          aria-label="Filter activity by category"
+        />
       </div>
 
-      {/* Pagination footer — only shown when there is more than one page */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between pt-3 mt-1 border-t" style={{ borderColor: "var(--border-hairline)" }}>
-          <button
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-            disabled={safePage === 0}
-            className="text-xs hover:text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
-            style={{ color: "var(--text-muted)" }}
-          >
-            ← Newer
-          </button>
-          <span className="text-[11px] tabular-nums" style={{ color: "var(--text-faint)" }}>
-            {safePage + 1} / {totalPages}
-          </span>
-          <button
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-            disabled={safePage === totalPages - 1}
-            className="text-xs hover:text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
-            style={{ color: "var(--text-muted)" }}
-          >
-            Older →
-          </button>
-        </div>
+      {filtered.length === 0 ? (
+        <FilteredEmptyState label={activeLabel} />
+      ) : (
+        <>
+          <div className="divide-y divide-[var(--border-hairline)]">
+            {visible.map((event) => (
+              <EventRow key={event.id} event={event} />
+            ))}
+          </div>
+
+          {/* Pagination footer — only shown when there is more than one page */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between pt-3 mt-1 border-t" style={{ borderColor: "var(--border-hairline)" }}>
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={safePage === 0}
+                className="text-xs hover:text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
+                style={{ color: "var(--text-muted)" }}
+              >
+                ← Newer
+              </button>
+              <span className="text-[11px] tabular-nums" style={{ color: "var(--text-faint)" }}>
+                {safePage + 1} / {totalPages}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={safePage === totalPages - 1}
+                className="text-xs hover:text-[var(--text-secondary)] disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-lg hover:bg-[var(--surface-hover)] transition-colors"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Older →
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
