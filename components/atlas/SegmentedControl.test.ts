@@ -42,6 +42,17 @@ function main(): void {
   check("does not consume the scroll-shrink hook", !/useScrollShrink/.test(src));
   check("does not read scrollY / attach scroll listeners", !/scrollY|addEventListener\(\s*["']scroll/.test(src));
 
+  console.log("Phase 2 — labelVisibility icon-only inactive tabs + accessible name");
+  check("labelVisibility prop typed \"always\" | \"activeOnly\"", /labelVisibility\?\s*:\s*"always"\s*\|\s*"activeOnly"/.test(src));
+  check("defaults to \"always\" so untouched consumers are byte-identical", /labelVisibility\s*=\s*"always"/.test(src));
+  check("collapse = activeOnly AND not the active segment", /const collapse\s*=\s*labelVisibility === "activeOnly"\s*&&\s*!isActive/.test(src));
+  check("collapsed label is sr-only (stays in the DOM, not display:none)", /collapse\s*\?\s*<span className="sr-only">\{opt\.label\}<\/span>/.test(src));
+  check("isActiveOnly derives from labelVisibility", /const isActiveOnly\s*=\s*labelVisibility === "activeOnly"/.test(src));
+  // Stop condition #1: EVERY activeOnly segment (active + inactive) carries an
+  // explicit aria-label — the active tab's nested text is not surfaced as an
+  // accessible name by Chrome — and "always" surfaces get none (byte-identical).
+  check("aria-label on every activeOnly segment, never on \"always\"", /aria-label=\{isActiveOnly\s*\?\s*opt\.label\s*:\s*undefined\}/.test(src));
+
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nAll SegmentedControl checks passed");
 }
