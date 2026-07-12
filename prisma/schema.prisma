@@ -1281,6 +1281,7 @@ model Instrument {
   positions       PositionObservation[]
   events          InvestmentEvent[]
   reconstructions PositionReconstruction[]
+  prices          PriceObservation[]
 
   @@index([tickerSymbol])
   @@index([assetClass])
@@ -1495,6 +1496,51 @@ model PositionReconstruction {
   @@unique([financialAccountId, instrumentId]) // one live summary per position (upserted on rerun)
   @@index([financialAccountId])
   @@index([instrumentId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Historical Price Foundation (Slice A8-1)
+//
+// Append-only historical-price facts, keyed by Instrument identity — never a
+// ticker (symbol changes/delistings/reuse are solved by Instrument/
+// InstrumentAlias; the price series inherits that solution). Structural twin of
+// FxRate: one canonical row per (instrument, date, basis); `source` is
+// provenance, not identity; closed dates only; immutable. `basis` isolates
+// distinct series (RAW_CLOSE for valuation; ADJUSTED_CLOSE for charts; NAV for
+// funds; CRYPTO_DAILY; INTRADAY reserved) — reads never mix bases. `currency` is
+// the QUOTE currency; NO converted or valuation fields live here (that is A8-4,
+// derived at read time). No ticker, no provider identity key, no confidence, no
+// interpolated rows. Consumed by A8-2 capture, A8-3 backfill, A8-4 valuation,
+// A9 regeneration, A10. See FOURTH_MERIDIAN_A6_A7_A8_P5_PARALLELIZATION §3 and
+// FOURTH_MERIDIAN_INVESTMENT_HISTORY_PROGRESSIVE_EVIDENCE_IMPLEMENTATION_PLAN §9.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PriceBasis {
+  RAW_CLOSE // unadjusted market close — THE canonical valuation series
+  ADJUSTED_CLOSE // split/dividend-adjusted — charting only, never mixed into valuation
+  NAV // mutual-fund net asset value
+  INTRADAY // within-session price (reserved)
+  CRYPTO_DAILY // stated UTC daily close for crypto assets
+}
+
+model PriceObservation {
+  id           String     @id @default(cuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+
+  date      DateTime   @db.Date // market close date, daily granularity
+  price     Float // quote-currency close (positive-finite; never adjusted-mixed)
+  currency  String // ISO 4217 quote currency of `price`
+  basis     PriceBasis
+  source    String // provider that supplied the batch — provenance, not identity
+  fetchedAt DateTime   @default(now())
+  createdAt DateTime   @default(now())
+
+  // Determinism anchor: ONE canonical row per (instrument, date, basis) —
+  // deliberately not per source; which provider supplied it is provenance.
+  @@unique([instrumentId, date, basis])
+  // Walk-back / as-of reads: latest date ≤ asked, per (instrument, basis).
+  @@index([instrumentId, basis, date])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
