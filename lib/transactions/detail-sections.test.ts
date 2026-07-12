@@ -101,6 +101,49 @@ test('refundCandidate / transferCandidate (null) never render a section', () => 
   assert.equal(find(buildTransactionDetailSections(detail()), 'Relationship Intelligence'), undefined);
 });
 
+test('transferCandidate renders a hedged, account-name-free note when resolved', () => {
+  const t = detail({
+    relationships: {
+      pendingPosted: null,
+      duplicate: null,
+      refundCandidate: null,
+      transferCandidate: {
+        status: 'RESOLVED',
+        transactionId: 'leg2',
+        counterpartyAccountId: 'acct-2',
+        confidence: 1,
+        reason: 'DETERMINISTIC_UNIQUE',
+      },
+    },
+  });
+  const notes = find(buildTransactionDetailSections(t), 'Relationship Intelligence')!.notes!;
+  assert.equal(notes[0], 'Appears to match a transfer between your own accounts.');
+  // Hedged — never an unqualified "is a transfer" claim.
+  assert.match(notes[0], /Appears to match/);
+  // Account-name-free and id-free: the DTO's counterpartyAccountId/transactionId
+  // must never leak into the rendered note.
+  assert.ok(!/acct-2|leg2/.test(notes.join(' ')));
+});
+
+test('refundCandidate stays reserved-null even when transferCandidate resolves', () => {
+  // A resolved transferCandidate renders; refundCandidate (null by contract) does
+  // not add any note — no refund/return wording ever appears.
+  const t = detail({
+    relationships: {
+      pendingPosted: null,
+      duplicate: null,
+      refundCandidate: null,
+      transferCandidate: {
+        status: 'RESOLVED', transactionId: null, counterpartyAccountId: 'acct-2',
+        confidence: 1, reason: 'DETERMINISTIC_UNIQUE',
+      },
+    },
+  });
+  const notes = find(buildTransactionDetailSections(t), 'Relationship Intelligence')!.notes!;
+  assert.equal(notes.length, 1);
+  assert.ok(!/refund|return/i.test(notes.join(' ')));
+});
+
 test('Provenance: source always; import fields when import', () => {
   assert.equal(find(buildTransactionDetailSections(detail()), 'Provenance')!.rows!.find((r) => r.label === 'Source')!.value, 'Plaid');
   const imp = detail({ provenance: { source: 'import', importSource: 'CSV', importFilename: 'jan.csv', importedAt: '2026-06-02T00:00:00.000Z' } });

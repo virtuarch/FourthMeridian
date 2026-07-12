@@ -8,9 +8,11 @@
  * Rules (enforced here so the UI stays dumb):
  *  - Never emit a null/empty fact row, and never emit an empty section.
  *  - Relationship wording never overclaims: pendingPosted makes no amount claim
- *    (the DTO carries only the counterpart id), and duplicate is always hedged
- *    ("possible" / "appears to match").
- *  - refundCandidate / transferCandidate are reserved-null and never rendered.
+ *    (the DTO carries only the counterpart id), and duplicate / transferCandidate
+ *    are always hedged ("possible" / "appears to match").
+ *  - transferCandidate (TI4 Slice 1) renders a hedged, account-name-free note when
+ *    a deterministic owned-account transfer match resolves (KD-15-gated upstream).
+ *    refundCandidate remains reserved-null and is never rendered.
  *  - tiFactsVersion and raw provider ids are omitted from the UI.
  */
 
@@ -131,7 +133,14 @@ function relationshipIntelligence(d: TransactionDetail): DetailSection {
     const n = dup.transactionIds.length;
     notes.push(`Possible duplicate — appears to match ${n} other transaction${n > 1 ? "s" : ""} on ${d.date}.`);
   }
-  // refundCandidate / transferCandidate are reserved-null: never rendered.
+  // transferCandidate (TI4 Slice 1) is non-null only when a deterministic
+  // owned-account transfer match RESOLVED and passed the KD-15 visibility gate
+  // upstream. Hedged and account-name-free — the DTO carries only an id, never a
+  // name, and the match is a candidate, not an unqualified claim.
+  if (d.relationships.transferCandidate) {
+    notes.push("Appears to match a transfer between your own accounts.");
+  }
+  // refundCandidate is reserved-null: never rendered.
   return { title: "Relationship Intelligence", notes };
 }
 
