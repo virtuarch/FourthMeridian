@@ -41,6 +41,7 @@ import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import { ReconnectAccountButton } from "@/components/dashboard/ReconnectAccountButton";
 import { EnableInvestmentsButton } from "@/components/dashboard/EnableInvestmentsButton";
 import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
+import { ImportHistoryButton } from "@/components/connections/import/ImportHistoryButton";
 import { providerName, type SyncConnection } from "@/lib/sync/status";
 
 /** Account inventory item — NAMES ONLY on Connections (no balances). */
@@ -469,12 +470,16 @@ export function ConnectionCard({ connection, accounts, slow, allowLiquid = true 
   // Wallet cards get a reuse of SyncWalletButton (recovery/freshness) — rendered
   // once, in every wallet state; returns null for Plaid so those are unchanged.
   const walletActions = <WalletActions connection={connection} accounts={accounts} />;
+  // A7-6 — capability-aware historical-import affordance. Renders nothing unless
+  // this is a Plaid connection (past first import) with an investment account, so
+  // banking-only and wallet cards are unchanged.
+  const importAction = <ImportHistoryButton connection={connection} accounts={accounts} />;
 
   return canLiquid ? (
     <AtlasLiquidCard ariaLabel={`${institution} — ${state}`}>
-      <div className="relative z-10 px-6 md:px-8 py-6 md:py-7">{content}{walletActions}</div>
+      <div className="relative z-10 px-6 md:px-8 py-6 md:py-7">{content}{walletActions}{importAction}</div>
     </AtlasLiquidCard>
   ) : (
-    <DataCard accent={state === "error" ? "negative" : "none"}>{content}{walletActions}</DataCard>
+    <DataCard accent={state === "error" ? "negative" : "none"}>{content}{walletActions}{importAction}</DataCard>
   );
 }
