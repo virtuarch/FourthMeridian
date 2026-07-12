@@ -104,6 +104,7 @@ import { CashFlowPerspective as CashFlowPerspectiveWorkspace } from "@/component
 import { LiquidityPerspective } from "@/components/space/widgets/liquidity/LiquidityPerspective";
 import { InvestmentsPerspective } from "@/components/space/widgets/investments/InvestmentsPerspective";
 import { useInvestmentsTimeMachine } from "@/components/space/widgets/investments/useInvestmentsTimeMachine";
+import { DebtPerspective } from "@/components/space/widgets/debt/DebtPerspective";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
@@ -3268,6 +3269,24 @@ export function SpaceDashboard({
                   accounts={accounts}
                   spaceId={spaceId}
                   compareTo={investmentsCompareTo}
+                />
+              ) : activePerspectiveId === "debt" ? (
+                // Debt Perspective — the redesigned CURRENT-STATE-ONLY multi-panel
+                // composition (mirrors the Liquidity/Cash Flow grid pattern),
+                // replacing the generic SectionCard stack for this Perspective
+                // only. LIABILITIES ONLY. No as-of / history ACCOUNT read: the
+                // shell's As Of / Compare To have zero effect here. Balance Over
+                // Time reads the same `snapshots` array the old stack read (a
+                // snapshot read, not an account as-of read). The lens lede consumes
+                // the already-fetched lensResults["debt"] — no new fetch, no
+                // envelope change.
+                <DebtPerspective
+                  accounts={accounts}
+                  ctx={widgetCtx}
+                  snapshots={snapshots}
+                  ficoScore={ficoScore}
+                  ficoUpdatedAt={ficoUpdatedAt}
+                  lensResult={lensResults?.["debt"] ?? null}
                 />
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (

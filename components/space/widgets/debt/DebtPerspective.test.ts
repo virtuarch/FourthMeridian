@@ -15,13 +15,10 @@
  *      or liquidity/ component folders.
  *   5. Planner parity: the composition passes false/undefined for fullscreen (no
  *      new fullscreen trigger — plan §3.6).
- *
- * DEFERRED — §7 check 6 (the SpaceDashboard `debt` branch scan): host wiring is
- * intentionally NOT landed in this worktree (the single shared SpaceDashboard.tsx
- * touch waits until Liquidity AND Investments land theirs on primary — plan §1.8,
- * §3.2 "Modify"). The composition is built to accept its props exactly as
- * specified and is verified in shape here without being mounted yet. That check
- * is added when the branch lands.
+ *   6. SpaceDashboard `debt` branch: exists once, passes accounts / ctx /
+ *      snapshots / ficoScore / ficoUpdatedAt / lensResult, threads no asOf,
+ *      and precedes the generic virtual-sections fallback (plan §7 check 6 —
+ *      added now that the host branch has landed on primary, §3.2 "Modify").
  *
  *   npx tsx components/space/widgets/debt/DebtPerspective.test.ts
  */
@@ -31,6 +28,7 @@ import path from "node:path";
 
 const ROOT = process.cwd();
 const SRC = readFileSync(path.join(ROOT, "components/space/widgets/debt/DebtPerspective.tsx"), "utf8");
+const DASH = readFileSync(path.join(ROOT, "components/dashboard/SpaceDashboard.tsx"), "utf8");
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -128,5 +126,23 @@ console.log("5. Planner parity — embedded only, no new fullscreen trigger (pla
   check("planner is called embedded (false, undefined for fullscreen)", call.includes("false") && call.includes("undefined"), call);
 }
 
+console.log("6. SpaceDashboard debt branch threads accounts / ctx / snapshots / fico / lensResult, precedes generic branch");
+{
+  // The condition string itself appears twice (the debtWorkspaceActive fetch
+  // guard + the render branch), so uniqueness is asserted on the JSX MOUNT.
+  check("debt render branch condition exists", DASH.includes('activePerspectiveId === "debt"'));
+  check("DebtPerspective mounted exactly once in the host", count(DASH, "<DebtPerspective") === 1, `${count(DASH, "<DebtPerspective")}`);
+  const jsxStart = DASH.indexOf("<DebtPerspective");
+  const jsxEnd = DASH.indexOf("/>", jsxStart);
+  const jsx = jsxStart >= 0 && jsxEnd >= 0 ? DASH.slice(jsxStart, jsxEnd) : "";
+  for (const prop of ["accounts=", "ctx=", "snapshots=", "ficoScore=", "ficoUpdatedAt=", "lensResult="]) {
+    check(`branch passes ${prop.replace("=", "")}`, jsx.includes(prop));
+  }
+  const genericIdx = DASH.indexOf("toVirtualSections(activePerspective.id");
+  check("debt branch precedes the generic virtual-sections branch", jsxStart >= 0 && genericIdx > jsxStart);
+  // The current-state constraint reaches the host branch too: no asOf threaded in.
+  check("host branch threads no asOf into Debt", !jsx.includes("asOf"));
+}
+
 if (failures > 0) { console.error(`\n${failures} DebtPerspective check(s) failed`); process.exit(1); }
-console.log("\nAll DebtPerspective checks passed (host-wiring scan deferred — see header)");
+console.log("\nAll DebtPerspective checks passed");
