@@ -13,10 +13,11 @@
  * A8/A10 land, each lens swaps its source here without touching the shell (P6).
  */
 
-import type { LensResult } from "@/lib/perspective-engine/types";
+import type { LensResult, CompletenessTier } from "@/lib/perspective-engine/types";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import { formatCurrency } from "@/lib/format";
+import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 
 export type EnvelopeTier = "observed" | "derived" | "estimated" | "incomplete";
 export type EnvelopeTone = "neutral" | "positive" | "warning";
@@ -78,6 +79,49 @@ function wealthEnvelope(r: WealthResult, currency: string): PerspectiveEnvelope 
   return { completeness, evidence };
 }
 
+/** The static honest boundary the Cash Flow chip shows when no stamp is supplied
+ *  (backward-compatible fallback — unchanged wording). */
+const CASH_FLOW_STATIC: EnvelopeCompleteness = {
+  tier: "observed",
+  label: "Complete within transaction depth",
+  tone: "neutral",
+  detail: "Cash Flow reflects every transaction on file; history is bounded by your accounts' transaction depth.",
+};
+
+/**
+ * Map a host-computed CashFlowStamp (cash-flow-compare.ts) into the shell
+ * envelope, so the Completeness chip is dynamic for Cash Flow — the calendar and
+ * every Cash Flow panel now sit under the SAME shell trust envelope the other
+ * perspectives use. `observed` keeps the honest static wording; `incomplete`
+ * (the period reaches before coverage) surfaces the stamp's own reason as a
+ * warning. Only these two tiers are emitted by cashFlowStamp today; the rest map
+ * conservatively. No fabricated counts — evidence stays with the shell.
+ */
+function cashFlowEnvelope(stamp: CashFlowStamp): PerspectiveEnvelope {
+  const t = stamp.completeness.tier;
+  if (t === "observed") {
+    return {
+      completeness: {
+        ...CASH_FLOW_STATIC,
+        detail: stamp.dataAsOf
+          ? `${CASH_FLOW_STATIC.detail} Latest transaction on file: ${stamp.dataAsOf}.`
+          : CASH_FLOW_STATIC.detail,
+      },
+    };
+  }
+  const tierMap: Record<CompletenessTier, EnvelopeTier> = {
+    observed: "observed", derived: "derived", estimated: "estimated", incomplete: "incomplete", unknown: "incomplete",
+  };
+  return {
+    completeness: {
+      tier: tierMap[t],
+      label: "History-limited",
+      tone: "warning",
+      detail: stamp.completeness.reason,
+    },
+  };
+}
+
 /** Map a perspective-engine LensResult's provenance into an envelope (Liquidity/Debt). */
 function lensEnvelope(lens: LensResult): PerspectiveEnvelope {
   const p = lens.provenance;
@@ -102,23 +146,18 @@ function lensEnvelope(lens: LensResult): PerspectiveEnvelope {
  * ternaries.
  */
 export function resolvePerspectiveEnvelope(args: {
-  perspectiveId: string;
-  wealthResult?: WealthResult | null;
-  lensResult?:   LensResult | null;
-  currency?:     string;
+  perspectiveId:  string;
+  wealthResult?:  WealthResult | null;
+  lensResult?:    LensResult | null;
+  currency?:      string;
+  /** S4 — the host-computed Cash Flow completeness stamp. Absent ⇒ static text. */
+  cashFlowStamp?: CashFlowStamp | null;
 }): PerspectiveEnvelope {
   switch (args.perspectiveId) {
     case "wealth":
       return args.wealthResult ? wealthEnvelope(args.wealthResult, args.currency ?? "USD") : {};
     case "cashFlow":
-      return {
-        completeness: {
-          tier: "observed",
-          label: "Complete within transaction depth",
-          tone: "neutral",
-          detail: "Cash Flow reflects every transaction on file; history is bounded by your accounts' transaction depth.",
-        },
-      };
+      return args.cashFlowStamp ? cashFlowEnvelope(args.cashFlowStamp) : { completeness: CASH_FLOW_STATIC };
     case "investments":
       return {
         completeness: {

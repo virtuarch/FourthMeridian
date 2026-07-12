@@ -94,6 +94,8 @@ import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiv
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import { resolvePerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
+import { cashFlowStamp } from "@/lib/transactions/cash-flow-compare";
+import type { LiquidityTx } from "@/lib/transactions/liquidity";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
@@ -2635,6 +2637,19 @@ export function SpaceDashboard({
     return serialized ? rehydrateContext(serialized) : undefined;
   }, [transactionsMoneyCtxOverride, spaceMoneyCtx]);
 
+  // S4 — the Cash Flow completeness stamp (cash-flow-compare.ts), computed once
+  // and shared: it drives the shell's Completeness chip (via
+  // resolvePerspectiveEnvelope) AND the Key Insights caveat, so the calendar and
+  // every Cash Flow panel sit under the SAME shell trust envelope. Only computed
+  // when the perspective is open with data (coverage is a property of the data,
+  // so the FULL history is passed, not a period slice).
+  const cashFlowStampValue = useMemo(
+    () => (cashFlowActive && spaceTransactions
+      ? cashFlowStamp({ transactions: spaceTransactions as unknown as LiquidityTx[], period: cashFlowPeriod, now: () => new Date() })
+      : null),
+    [cashFlowActive, spaceTransactions, cashFlowPeriod],
+  );
+
   async function handleLeave() {
     setLeaveBusy(true);
     try {
@@ -3136,6 +3151,7 @@ export function SpaceDashboard({
                 wealthResult,
                 lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
                 currency: wealthCurrency,
+                cashFlowStamp: cashFlowStampValue,
               })}
               presetValue={timePreset === "CUSTOM" ? null : timePreset}
               onSelectPreset={handleSelectSlice}
@@ -3199,6 +3215,7 @@ export function SpaceDashboard({
                   perspective={cashFlowPerspective}
                   filterId={cashFlowFilterId}
                   onPerspectiveChange={onCashFlowPerspectiveChange}
+                  stamp={cashFlowStampValue}
                 />
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (

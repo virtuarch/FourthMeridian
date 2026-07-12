@@ -47,6 +47,7 @@ console.log("1. All five widgets mounted exactly once");
     ["Spending by Category", "<CashFlowCategoryBreakdown"],
     ["Income by Source", "renderIncomeBySource("],
     ["Debt Payments", "renderDebtPayments("],
+    ["Key Insights", "<CashFlowInsightsCard"],
   ];
   for (const [label, needle] of mounts) {
     check(`${label} mounted exactly once`, count(SRC, needle) === 1, `${count(SRC, needle)} occurrence(s) of ${needle}`);
@@ -59,7 +60,7 @@ console.log("2. Grid + span + overflow contract");
 {
   check("root uses the 12-col grid", SRC.includes("lg:grid-cols-12"));
   check("items-stretch balances rows", SRC.includes("items-stretch"));
-  const spans = ["lg:col-span-5 xl:col-span-4", "lg:col-span-7 xl:col-span-5", "lg:col-span-6 xl:col-span-3", "lg:col-span-6 xl:col-span-12"];
+  const spans = ["lg:col-span-5 xl:col-span-4", "lg:col-span-7 xl:col-span-5", "lg:col-span-6 xl:col-span-3", "lg:col-span-6 xl:col-span-7", "lg:col-span-12 xl:col-span-5"];
   for (const s of spans) check(`span "${s}" present`, SRC.includes(s));
   // Every grid child + the panel carries min-w-0.
   check("min-w-0 appears on every column + the panel (≥5)", count(SRC, "min-w-0") >= 5, `${count(SRC, "min-w-0")}`);
@@ -69,14 +70,14 @@ console.log("2. Grid + span + overflow contract");
   check("narrow-column card grid override present", SRC.includes("sm:grid-cols-2 xl:grid-cols-1"));
 }
 
-console.log("3. Source order = mobile stacking order (Summary → History → Spending → Debt → Income)");
+console.log("3. Source order = mobile stacking order (Summary → History → Spending → Debt → Income → Insights)");
 {
   // Scan the grid return block only — the Spending panel mounts via {renderSpending()}
   // in the return; its <CashFlowCategoryBreakdown> lives in the helper defined above,
   // so anchor Spending on the call site to reflect true stacking order.
   const gridIdx = SRC.indexOf('grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch');
   const RET = gridIdx >= 0 ? SRC.slice(gridIdx) : "";
-  const order = ["renderCashFlowSummary(", "renderCashFlowHistory(", "renderSpending()", "renderDebtPayments(", "renderIncomeBySource("];
+  const order = ["renderCashFlowSummary(", "renderCashFlowHistory(", "renderSpending()", "renderDebtPayments(", "renderIncomeBySource(", "<CashFlowInsightsCard"];
   const positions = order.map((n) => RET.indexOf(n));
   check("all order anchors present in the return block", positions.every((p) => p >= 0), positions.join(","));
   const ascending = positions.every((p, i) => i === 0 || positions[i - 1] < p);

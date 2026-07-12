@@ -9,6 +9,7 @@ import { resolvePerspectiveEnvelope } from "./envelope";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import type { Snapshot } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
+import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -44,6 +45,23 @@ console.log("Static lens envelopes");
   check("Cash Flow: observed within transaction depth, no fake evidence", cf.completeness?.tier === "observed" && cf.evidence === undefined);
   const inv = resolvePerspectiveEnvelope({ perspectiveId: "investments" });
   check("Investments: incomplete 'Current holdings only'", inv.completeness?.tier === "incomplete" && /current holdings only/i.test(inv.completeness!.label));
+}
+
+console.log("Cash Flow dynamic envelope (S4 — from cashFlowStamp)");
+{
+  const observedStamp: CashFlowStamp = { completeness: { tier: "observed", conflict: false, reason: "Computed from posted transactions within cash-flow history.", coverageFrom: "2026-04-03" }, dataAsOf: "2026-06-10" };
+  const obs = resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", cashFlowStamp: observedStamp });
+  check("observed stamp ⇒ observed tier, static-toned label", obs.completeness?.tier === "observed" && obs.completeness?.tone === "neutral");
+  check("observed stamp ⇒ detail names the latest transaction on file", /2026-06-10/.test(obs.completeness?.detail ?? ""));
+
+  const incompleteStamp: CashFlowStamp = { completeness: { tier: "incomplete", conflict: false, reason: "Requested period reaches before cash-flow history begins on 2026-04-03.", coverageFrom: "2026-04-03" }, dataAsOf: "2026-06-10" };
+  const inc = resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", cashFlowStamp: incompleteStamp });
+  check("incomplete stamp ⇒ incomplete tier, History-limited/warning", inc.completeness?.tier === "incomplete" && inc.completeness?.label === "History-limited" && inc.completeness?.tone === "warning");
+  check("incomplete stamp ⇒ detail carries the stamp reason (coverage floor)", /2026-04-03/.test(inc.completeness?.detail ?? ""));
+
+  // Backward-compatible: absent stamp ⇒ the static observed boundary, unchanged.
+  const fallback = resolvePerspectiveEnvelope({ perspectiveId: "cashFlow" });
+  check("absent stamp ⇒ static observed fallback (unchanged wording)", fallback.completeness?.tier === "observed" && /within transaction depth/i.test(fallback.completeness!.label));
 }
 
 console.log("Lens-provenance envelopes (Liquidity/Debt)");

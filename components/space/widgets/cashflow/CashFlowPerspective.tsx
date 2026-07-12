@@ -18,11 +18,12 @@
  * so it can pass the narrow-column card grid; behavior is otherwise identical.
  *
  * Layout (plan §3.3) — desktop is a 12-column grid; mobile/tablet stacks in
- * source order Summary → History → Spending → Debt → Income:
+ * source order Summary → History → Spending → Debt → Income → Insights:
  *   xl (≥1280): ① Summary 4 · ② History 5 · ③ Spending+Debt 3   (row 1)
- *               ④ Income 12                                       (row 2, until S4 Insights)
+ *               ④ Income 7 · ⑤ Key Insights 5                     (row 2)
  *   lg (1024):  ① Summary 5 · ② History 7                        (row 1)
  *               ③ Spending+Debt 6 · ④ Income 6                    (row 2)
+ *               ⑤ Key Insights 12                                 (row 3)
  *
  * The calendar and every in-widget control (perspective/measure chips,
  * Calendar/Cards toggle, M/Q/Y selects, the Summary toggle, all drill-downs)
@@ -42,7 +43,9 @@ import {
 } from "@/lib/transactions/cash-flow";
 import { isCostFlow, isRefund } from "@/lib/transactions/flow-predicates";
 import type { CashFlowPerspective as CashFlowPerspectiveMode } from "@/lib/transactions/cash-flow-projection";
+import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import { CashFlowCategoryBreakdown } from "@/components/space/widgets/CashFlowCategoryBreakdown";
+import { CashFlowInsightsCard } from "./CashFlowInsightsCard";
 import {
   renderCashFlowSummary,
   renderCashFlowHistory,
@@ -75,6 +78,7 @@ export function CashFlowPerspective({
   perspective,
   filterId,
   onPerspectiveChange,
+  stamp,
 }: {
   transactions?:        Transaction[] | null;
   txCtx?:               ConversionContext;
@@ -84,6 +88,9 @@ export function CashFlowPerspective({
   perspective?:         CashFlowPerspectiveMode;
   filterId?:            string;
   onPerspectiveChange?: (perspective: CashFlowPerspectiveMode, filterId: string) => void;
+  /** S4 — host-computed completeness stamp (also drives the shell chip). Absent ⇒
+   *  the Insights caveat is simply omitted; the panel never fabricates one. */
+  stamp?:               CashFlowStamp | null;
 }) {
   // Spending by Category — identical data + drill-down to renderCashFlowByCategory,
   // rendered directly so the narrow right-rail column gets single-column cards at
@@ -145,10 +152,25 @@ export function CashFlowPerspective({
       </div>
 
       {/* ④ Income by Source — perspective-aware (cash-in by reason / income by
-           source). Spans the remaining row width until S4 adds Key Insights. */}
-      <div className="min-w-0 lg:col-span-6 xl:col-span-12">
+           source). */}
+      <div className="min-w-0 lg:col-span-6 xl:col-span-7">
         <Panel title="Income by Source">
           {renderIncomeBySource(transactions, period, txCtx, accounts, perspective)}
+        </Panel>
+      </div>
+
+      {/* ⑤ Key Insights — deterministic observations over the landed
+           cash-flow-compare models; references (never restates) the Summary net. */}
+      <div className="min-w-0 lg:col-span-12 xl:col-span-5">
+        <Panel title="Key Insights">
+          <CashFlowInsightsCard
+            transactions={transactions}
+            accounts={accounts}
+            period={period}
+            perspective={perspective ?? "economic"}
+            txCtx={txCtx}
+            stamp={stamp}
+          />
         </Panel>
       </div>
     </div>
