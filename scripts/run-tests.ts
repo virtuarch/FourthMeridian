@@ -45,14 +45,17 @@ function collectTests(dir: string): string[] {
   return found;
 }
 
-// Deterministic, predictable order.
+// Deterministic, predictable order. `components` carries colocated presentational
+// tests (pure, DB-free — same house pattern); they need no live services, so the
+// keep-it-unit rule still holds.
 const files = [
   ...collectTests(path.join(ROOT, "lib")),
   ...collectTests(path.join(ROOT, "app")),
+  ...collectTests(path.join(ROOT, "components")),
 ].sort();
 
 if (files.length === 0) {
-  console.error("run-tests: no *.test.ts files found under lib/ or app/.");
+  console.error("run-tests: no *.test.ts files found under lib/, app/, or components/.");
   process.exit(1);
 }
 
