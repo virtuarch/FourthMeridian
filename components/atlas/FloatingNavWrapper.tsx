@@ -11,10 +11,9 @@
  * a second background, so the primitive stays a plain, reusable control (stop
  * condition #5: the floating/scroll behavior lives here, not in SegmentedControl).
  *
- * Deliberately positioning-only. The scroll-driven SHRINK (useScrollShrink, S5)
- * layers on top via the `scale`/`shrink` props; with those absent this renders a
- * static centered pill — the S4 checkpoint ("does the centered pill look right?"
- * before any motion).
+ * The scroll-driven SHRINK (useScrollShrink, S5) is consumed here: the pill
+ * scales down modestly on scroll-down and returns to full size on scroll-up /
+ * near the top. Disable per-surface with `shrinkOnScroll={false}`.
  *
  * Applied at exactly two call sites (the Space rail tabs and the Perspective tab
  * track). The other four SegmentedControl consumers keep their in-flow render and
@@ -31,6 +30,7 @@
  */
 
 import type { CSSProperties, ReactNode } from "react";
+import { useScrollShrink } from "./useScrollShrink";
 
 /** Height of the app header (DashboardChrome's `sticky top-0 z-40` h-14 bar). */
 export const APP_HEADER_H = 56;
@@ -54,12 +54,8 @@ interface FloatingNavWrapperProps {
    * header, and below any pill already pinned above it (see Stacking above).
    */
   top?: number;
-  /**
-   * Scroll-shrink scale (S5), 1 = full size. Applied as a CSS transform so it
-   * automatically inherits the global prefers-reduced-motion transition-duration
-   * override (no bespoke JS animation). Absent/1 ⇒ no visual change (S4).
-   */
-  scale?: number;
+  /** Set false to keep the pill full-size regardless of scroll (opt out of S5). */
+  shrinkOnScroll?: boolean;
   /** Extra classes on the sticky centering row (e.g. bottom margin). */
   className?: string;
 }
@@ -67,9 +63,12 @@ interface FloatingNavWrapperProps {
 export function FloatingNavWrapper({
   children,
   top = 0,
-  scale = 1,
+  shrinkOnScroll = true,
   className = "",
 }: FloatingNavWrapperProps) {
+  // Scroll-driven scale (1 = full). The animated tween lives in the CSS
+  // transition below, so it inherits the global prefers-reduced-motion override.
+  const scale = useScrollShrink({ enabled: shrinkOnScroll });
   // The pill scales toward its TOP edge so it shrinks "upward" toward the header
   // rather than drifting away from it; the transform transition rides the global
   // CSS duration (near-zero under prefers-reduced-motion) — no JS animation loop.
