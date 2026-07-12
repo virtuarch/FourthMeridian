@@ -3144,16 +3144,33 @@ export function SpaceDashboard({
         {/* Tab navigation — fixed Spaces rail (lib/space-nav.ts), shared
             order across every Space type. Atlas SegmentedControl, not the
             old hand-rolled gray pill row. SHELL_NAV §2.4: a centered floating
-            pill (sticky below the app header) rather than a full-width bar. */}
-        <FloatingNavWrapper top={RAIL_PILL_TOP} className="mb-5">
-          <SegmentedControl
-            aria-label="Space section"
-            options={railOptions}
-            value={activeTab}
-            onChange={setActiveTab}
-            labelVisibility="activeOnly"
-          />
-        </FloatingNavWrapper>
+            pill (sticky below the app header) rather than a full-width bar.
+
+            Phase 2 §2.3 — scroll-follow swap: on the Perspectives tab the rail
+            goes FULLY STATIC (rendered bare, no FloatingNavWrapper at all — not
+            shrinkOnScroll={false}, which would still float/position it) so the
+            Perspective track below becomes the one surface that floats + shrinks.
+            Every other tab keeps the floating/shrinking rail unchanged. */}
+        {(() => {
+          const railControl = (
+            <SegmentedControl
+              aria-label="Space section"
+              options={railOptions}
+              value={activeTab}
+              onChange={setActiveTab}
+              labelVisibility="activeOnly"
+            />
+          );
+          return activeTab === "PERSPECTIVES" ? (
+            // Static + in-flow; the plain div only carries the bottom spacing the
+            // floating wrapper otherwise provides — no positioning/scroll of its own.
+            <div className="mb-5">{railControl}</div>
+          ) : (
+            <FloatingNavWrapper top={RAIL_PILL_TOP} className="mb-5">
+              {railControl}
+            </FloatingNavWrapper>
+          );
+        })()}
 
         {/* Settings is no longer an in-space tab (UX-CUST-1A correction):
             section show/hide and layout controls moved to ManageSpaceModal →

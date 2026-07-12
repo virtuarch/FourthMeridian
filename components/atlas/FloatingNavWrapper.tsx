@@ -36,16 +36,21 @@ import { useScrollShrink } from "./useScrollShrink";
 export const APP_HEADER_H = 56;
 
 /** Approx pinned height of one SegmentedControl pill (p-1.5 track + py-2 text-xs
- *  button + hairline borders). Used only to stack the two coexisting pills. */
+ *  button + hairline borders). */
 export const PILL_H = 46;
 
 /** Rail-tab pill pins just below the app header. */
 export const RAIL_PILL_TOP = APP_HEADER_H;
 
-/** Perspective pill pins below the (always-present) pinned rail on the
- *  Perspectives tab, with a small gap so the two never touch. These offsets are
- *  the one bit of pixel math worth eyeballing at review — see STATUS.md. */
-export const PERSPECTIVE_PILL_TOP = APP_HEADER_H + PILL_H + 6;
+/**
+ * Perspective pill pins just below the app header — the SAME offset as the rail.
+ * Phase 2 §2.3 made the rail STATIC on the Perspectives tab (it no longer floats
+ * above this pill there), so the pill no longer has to clear a floating rail and
+ * pins at the header line instead of the old rail+gap offset. On the Perspectives
+ * tab the rail and this pill are never both floating, so sharing the offset can't
+ * collide.
+ */
+export const PERSPECTIVE_PILL_TOP = APP_HEADER_H;
 
 interface FloatingNavWrapperProps {
   children: ReactNode;
