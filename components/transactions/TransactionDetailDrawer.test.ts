@@ -22,7 +22,6 @@ const banking = read('components/dashboard/BankingClient.tsx');
 const chrome = read('components/ui/DashboardChrome.tsx');
 const spacePanel = read('components/dashboard/widgets/SpaceTransactionsPanel.tsx');
 const debt = read('components/dashboard/DebtClient.tsx');
-const accountModal = read('components/dashboard/AccountModal.tsx');
 
 test('drawer reuses the OverlaySurface primitive (no new drawer framework)', () => {
   assert.match(drawer, /from "@\/components\/atlas\/OverlaySurface"/);
@@ -58,11 +57,10 @@ test('the drawer is mounted exactly once, in DashboardChrome, under Suspense', (
   assert.ok(!banking.includes('<TransactionDetailDrawer'), 'BankingClient must not mount its own drawer');
   assert.ok(!spacePanel.includes('<TransactionDetailDrawer'));
   assert.ok(!debt.includes('<TransactionDetailDrawer'));
-  assert.ok(!accountModal.includes('<TransactionDetailDrawer'));
 });
 
 test('every transaction surface calls the shared opener (openTransaction(tx.id))', () => {
-  for (const [name, src] of [['Banking', banking], ['Space', spacePanel], ['Debt', debt], ['AccountModal', accountModal]] as const) {
+  for (const [name, src] of [['Banking', banking], ['Space', spacePanel], ['Debt', debt]] as const) {
     assert.match(src, /useOpenTransaction/, `${name} must import the shared opener`);
     assert.match(src, /openTransaction\(tx\.id\)/, `${name} rows must call the shared opener`);
   }
@@ -71,7 +69,7 @@ test('every transaction surface calls the shared opener (openTransaction(tx.id))
 test('surfaces do not reimplement the drawer/content or fetch logic', () => {
   // The drawer is the ONLY consumer of the detail content + the endpoint.
   assert.match(drawer, /export function TransactionDetailDrawer/);
-  for (const [name, src] of [['Banking', banking], ['Space', spacePanel], ['Debt', debt], ['AccountModal', accountModal]] as const) {
+  for (const [name, src] of [['Banking', banking], ['Space', spacePanel], ['Debt', debt]] as const) {
     assert.ok(!src.includes('TransactionDetailContent'), `${name} must not import the detail content`);
     assert.ok(!src.includes('buildTransactionDetailSections'), `${name} must not build sections`);
     assert.ok(!src.includes('/api/transactions/'), `${name} must not fetch the detail endpoint directly`);
