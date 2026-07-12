@@ -20,7 +20,7 @@ import { Search, X } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
-import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
+import { isCostFlow, isRefund, isIncome, FLOW_TYPE_LABEL } from "@/lib/transactions/flow-predicates";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 import { TransactionDate } from "@/components/ui/TransactionDate";
@@ -121,6 +121,9 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
   const [dateRange,     setDateRange]     = useState<DateRange>("all");
   const [pendingFilter, setPendingFilter] = useState<PendingFilter>("all");
+  // Transactions Tab Phase 1 — pivot the existing ledger by the FlowType already
+  // on every row (no new query). null = all flow types.
+  const [flowFilter,    setFlowFilter]    = useState<string | null>(null);
 
   // ── Account lookup helpers ───────────────────────────────────────────────
   const accountMap = useMemo(() => {
@@ -164,6 +167,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     const q = search.toLowerCase();
     return transactions.filter((tx) => {
       if (catFilter     && tx.category   !== catFilter)     return false;
+      if (flowFilter    && tx.flowType   !== flowFilter)    return false;
       if (accountFilter && tx.accountId  !== accountFilter) return false;
       if (cutoff        && tx.date        < cutoff)         return false;
       if (pendingFilter === "cleared" &&  tx.pending)       return false;
@@ -173,7 +177,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       }
       return true;
     });
-  }, [transactions, catFilter, accountFilter, cutoff, pendingFilter, search]);
+  }, [transactions, catFilter, flowFilter, accountFilter, cutoff, pendingFilter, search]);
 
   // ── Summary totals ────────────────────────────────────────────────────────
   // FlowType P5 Slice 2 — from flowType (no category/sign). Spend = SPENDING +
@@ -196,13 +200,14 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   const clearAll = useCallback(() => {
     setSearch("");
     setCatFilter(null);
+    setFlowFilter(null);
     setAccountFilter(null);
     setDateRange("all");
     setPendingFilter("all");
   }, []);
 
   const hasActiveFilters =
-    search || catFilter || accountFilter || dateRange !== "all" || pendingFilter !== "all";
+    search || catFilter || flowFilter || accountFilter || dateRange !== "all" || pendingFilter !== "all";
 
   return (
     <div className="space-y-4">
@@ -229,6 +234,14 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
               {catFilter}
               <button onClick={() => setCatFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
+                <X size={10} />
+              </button>
+            </span>
+          )}
+          {flowFilter && (
+            <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
+              {FLOW_TYPE_LABEL[flowFilter] ?? flowFilter}
+              <button onClick={() => setFlowFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
                 <X size={10} />
               </button>
             </span>
@@ -307,6 +320,20 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
           <option value="">All categories</option>
           {BANKING_CATEGORIES.map((c) => (
             <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
+
+        {/* Flow type — pivots the ledger by Fourth Meridian's own FlowType
+            (already on every row), not the provider category. */}
+        <select
+          value={flowFilter ?? ""}
+          onChange={(e) => setFlowFilter(e.target.value || null)}
+          className={`px-3 py-2.5 ${INPUT_BASE}`}
+          style={inputStyle}
+        >
+          <option value="">All flow types</option>
+          {Object.entries(FLOW_TYPE_LABEL).map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
           ))}
         </select>
 

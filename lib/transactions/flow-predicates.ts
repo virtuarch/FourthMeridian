@@ -111,3 +111,28 @@ export function isDebtPayment(flowType: Flow): boolean {
 export function isInvestmentFlow(flowType: Flow): boolean {
   return flowType === 'INVESTMENT';
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Presentation — humanized FlowType labels (Transactions Tab Phase 1).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Humanized labels for the persisted `FlowType` values — the single label map
+ * the Transactions Tab flow-type filter renders. Additive presentation only: no
+ * predicate or membership set above reads this. One entry per FlowType enum value
+ * (pinned by flow-predicates.test.ts against @prisma/client's FlowType, so a new
+ * flow kind can't ship without a label). Keys stay the raw enum VALUE as a plain
+ * string, matching this module's ZERO-IMPORTS contract.
+ */
+export const FLOW_TYPE_LABEL: Record<string, string> = {
+  SPENDING:     'Spending',
+  INCOME:       'Income',
+  REFUND:       'Refund',
+  DEBT_PAYMENT: 'Debt payment',
+  TRANSFER:     'Transfer',
+  INVESTMENT:   'Investment',
+  FEE:          'Fee',
+  INTEREST:     'Interest',
+  ADJUSTMENT:   'Adjustment',
+  UNKNOWN:      'Unknown',
+};

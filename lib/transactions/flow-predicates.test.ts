@@ -11,9 +11,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { FlowType } from '@prisma/client';
 import {
   COST_FLOWS,
   SERIALIZED_SPENDING_FLOWS,
+  FLOW_TYPE_LABEL,
   isCostFlow,
   isSerializedSpendingFlow,
   isSpendLedgerFlow,
@@ -63,6 +65,22 @@ test('single-value predicates match strict equality', () => {
     assert.equal(isTransfer(ft), ft === 'TRANSFER');
     assert.equal(isDebtPayment(ft), ft === 'DEBT_PAYMENT');
     assert.equal(isInvestmentFlow(ft), ft === 'INVESTMENT');
+  }
+});
+
+test('FLOW_TYPE_LABEL has exactly one non-empty label per FlowType enum value', () => {
+  // Source-scan against the Prisma enum: a new flow kind cannot ship without a
+  // humanized label (the filter would otherwise render a blank/undefined option).
+  const enumValues = Object.values(FlowType) as string[];
+  assert.deepEqual(Object.keys(FLOW_TYPE_LABEL).sort(), [...enumValues].sort());
+  for (const ft of enumValues) {
+    const label = FLOW_TYPE_LABEL[ft];
+    assert.equal(typeof label, 'string');
+    assert.ok(label.length > 0, `empty label for ${ft}`);
+  }
+  // No extra keys beyond the enum (the map is not a dumping ground).
+  for (const key of Object.keys(FLOW_TYPE_LABEL)) {
+    assert.ok(enumValues.includes(key), `unknown FlowType key: ${key}`);
   }
 });
 
