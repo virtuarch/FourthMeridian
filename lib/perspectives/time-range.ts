@@ -9,10 +9,18 @@
  * this module owns the arithmetic (tested).
  *
  * Presets reuse the existing relative CashFlowPeriod ids (so Cash Flow and the
- * shell speak the same vocabulary), plus a shell-only "CUSTOM" for a manual date
- * pair that matches no preset. Note the repo's rolling set is 1W/1M/1Q/1Y
- * (PAST_WEEK/PAST_MONTH/PAST_QUARTER/PAST_YEAR) — there is no separate 3M/6M
- * slice; PAST_QUARTER is the 3-month rolling window.
+ * shell speak ONE vocabulary — this is the canonical time model of the amended
+ * plan §3; we deliberately keep the CashFlowPeriod ids rather than a parallel
+ * "P1W…P6M" set so `mapPresetToCashFlowPeriod` is an identity), plus a shell-only
+ * "CUSTOM" for a manual date pair that matches no preset. Rolling group labels
+ * are 1W · 1M · 3M · 6M · 1Y · ALL (ids PAST_WEEK/PAST_MONTH/PAST_QUARTER/
+ * PAST_6_MONTHS/PAST_YEAR/ALL) — see lib/transactions/cash-flow.ts.
+ *
+ * This module also owns the shell time REDUCER (shellTimeReducer) implementing
+ * the §3.3 transition table (select preset, set As Of, set/clear Compare To,
+ * swap) with the invariant `preset ≠ CUSTOM ⟺ compareTo === deriveCompareTo`,
+ * plus URL serialize/hydrate. The React binding lives in
+ * components/space/shell/usePerspectiveShellState.ts.
  *
  * Semantics:
  *   To-date presets — Compare To = start of the week/month/quarter/year that
@@ -28,7 +36,7 @@
  * are compared elsewhere as plain YYYY-MM-DD strings.
  */
 
-import type { RelativeCashFlowPeriod } from "@/lib/transactions/cash-flow";
+import type { CashFlowPeriod, RelativeCashFlowPeriod } from "@/lib/transactions/cash-flow";
 
 /** The shell's active slice: a relative period, or a manual/unmatched pair. */
 export type TimePreset = RelativeCashFlowPeriod | "CUSTOM";
@@ -36,7 +44,7 @@ export type TimePreset = RelativeCashFlowPeriod | "CUSTOM";
 /** Presets checked (in this order) when inferring a preset from a date pair. */
 const INFERENCE_ORDER: RelativeCashFlowPeriod[] = [
   "WTD", "MTD", "QTD", "YTD",
-  "PAST_WEEK", "PAST_MONTH", "PAST_QUARTER", "PAST_YEAR",
+  "PAST_WEEK", "PAST_MONTH", "PAST_QUARTER", "PAST_6_MONTHS", "PAST_YEAR",
 ];
 
 // ── Calendar helpers (pure, UTC-naive) ────────────────────────────────────────
@@ -107,10 +115,11 @@ export function compareToForPreset(
     case "MTD": return startOfMonth(asOf);
     case "QTD": return startOfQuarter(asOf);
     case "YTD": return startOfYear(asOf);
-    case "PAST_WEEK":    return addDays(asOf, -7);
-    case "PAST_MONTH":   return subMonths(asOf, 1);
-    case "PAST_QUARTER": return subMonths(asOf, 3);
-    case "PAST_YEAR":    return subYears(asOf, 1);
+    case "PAST_WEEK":     return addDays(asOf, -7);
+    case "PAST_MONTH":    return subMonths(asOf, 1);
+    case "PAST_QUARTER":  return subMonths(asOf, 3);
+    case "PAST_6_MONTHS": return subMonths(asOf, 6);
+    case "PAST_YEAR":     return subYears(asOf, 1);
     case "ALL":    return coverageFrom ?? null; // never fabricate a start
     case "CUSTOM": return null;                 // caller keeps the manual pair
   }
@@ -144,12 +153,20 @@ export function resolvePerspectiveTimeRange(args: {
  * when the pair matches no preset (or there is no comparison).
  */
 export function inferPerspectiveTimePreset(args: {
-  asOf:         string;
-  compareTo:    string | null;
-  coverageFrom: string | null;
+  asOf:          string;
+  compareTo:     string | null;
+  coverageFrom:  string | null;
+  /** Amended §3.3 ambiguity rule: when several presets match, prefer this one if it still matches. */
+  currentPreset?: TimePreset;
 }): TimePreset {
-  const { asOf, compareTo, coverageFrom } = args;
+  const { asOf, compareTo, coverageFrom, currentPreset } = args;
   if (compareTo == null) return "CUSTOM";
+  // Prefer the currently-active preset when it still explains the pair (e.g. on
+  // Mar 31 both MTD and QTD give Mar 1 — keep whichever the user had selected).
+  if (
+    currentPreset && currentPreset !== "CUSTOM" &&
+    compareToForPreset(currentPreset, asOf, coverageFrom) === compareTo
+  ) return currentPreset;
   for (const p of INFERENCE_ORDER) {
     if (compareToForPreset(p, asOf, coverageFrom) === compareTo) return p;
   }
@@ -160,4 +177,122 @@ export function inferPerspectiveTimePreset(args: {
 /** The shell's initial state: MTD, As Of = today, Compare To = first of the month. */
 export function defaultPerspectiveTimeState(today: string): PerspectiveTimeState {
   return resolvePerspectiveTimeRange({ preset: "MTD", asOf: today, coverageFrom: null });
+}
+
+// ── Validation + derived values ────────────────────────────────────────────────
+
+/** Strict YYYY-MM-DD calendar-validity check (rejects e.g. 2026-02-30). */
+export function isValidYmd(s: string | null | undefined): s is string {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const { y, m, d } = parse(s);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/** Clamp As Of to a valid date ≤ today (invalid ⇒ today). */
+export function clampAsOf(asOf: string, today: string): string {
+  if (!isValidYmd(asOf)) return today;
+  return asOf > today ? today : asOf;
+}
+
+const DERIVABLE_PRESETS: readonly TimePreset[] = [...INFERENCE_ORDER, "ALL"];
+
+/** Every non-CUSTOM preset carries a real CashFlowPeriod id; CUSTOM has none, so
+ *  Cash Flow holds its last preset-derived period (documented §3.5 limitation). */
+export function mapPresetToCashFlowPeriod(preset: TimePreset, lastPeriod: CashFlowPeriod): CashFlowPeriod {
+  return preset === "CUSTOM" ? lastPeriod : preset;
+}
+
+// ── Reducer (the §3.3 transition table — one source of truth) ──────────────────
+
+export type ShellTimeAction =
+  | { type: "selectPreset"; preset: Exclude<TimePreset, "CUSTOM"> }
+  | { type: "setAsOf"; asOf: string }
+  | { type: "setCompareTo"; compareTo: string | null }
+  | { type: "clearCompareTo" }
+  | { type: "swap" };
+
+export interface ShellTimeContext {
+  today:        string;
+  coverageFrom: string | null;
+}
+
+/**
+ * Apply a shell time action, always preserving the invariant
+ * `preset ≠ CUSTOM ⟺ compareTo === deriveCompareTo(preset, asOf)`. Pure and
+ * fully tested; the React hook is a thin wrapper over this.
+ */
+export function shellTimeReducer(
+  state: PerspectiveTimeState,
+  action: ShellTimeAction,
+  ctx: ShellTimeContext,
+): PerspectiveTimeState {
+  const { today, coverageFrom } = ctx;
+  switch (action.type) {
+    case "selectPreset": {
+      const asOf = clampAsOf(state.asOf, today);
+      return { preset: action.preset, asOf, compareTo: compareToForPreset(action.preset, asOf, coverageFrom) };
+    }
+    case "setAsOf": {
+      const asOf = clampAsOf(action.asOf, today);
+      if (state.preset !== "CUSTOM") {
+        // A preset moves the whole range: recompute Compare To from the new As Of.
+        return { preset: state.preset, asOf, compareTo: compareToForPreset(state.preset, asOf, coverageFrom) };
+      }
+      // Custom: keep Compare To, but the new pair may now snap onto a preset.
+      const preset = inferPerspectiveTimePreset({ asOf, compareTo: state.compareTo, coverageFrom, currentPreset: state.preset });
+      return { preset, asOf, compareTo: state.compareTo };
+    }
+    case "setCompareTo": {
+      const preset = inferPerspectiveTimePreset({ asOf: state.asOf, compareTo: action.compareTo, coverageFrom, currentPreset: state.preset });
+      return { preset, asOf: state.asOf, compareTo: action.compareTo };
+    }
+    case "clearCompareTo":
+      return { preset: "CUSTOM", asOf: state.asOf, compareTo: null };
+    case "swap": {
+      if (state.compareTo == null) return state; // nothing to swap
+      const asOf = clampAsOf(state.compareTo, today);
+      const compareTo = state.asOf;
+      const preset = inferPerspectiveTimePreset({ asOf, compareTo, coverageFrom, currentPreset: state.preset });
+      return { preset, asOf, compareTo };
+    }
+  }
+}
+
+// ── URL serialization ──────────────────────────────────────────────────────────
+
+export interface SerializedShellTime {
+  asOf:      string;
+  compareTo: string | null;
+  preset:    string; // preset id, or "custom"
+}
+
+export function serializeShellTimeState(state: PerspectiveTimeState): SerializedShellTime {
+  return { asOf: state.asOf, compareTo: state.compareTo, preset: state.preset === "CUSTOM" ? "custom" : state.preset };
+}
+
+/**
+ * Rebuild shell state from URL params. A concrete preset id re-derives the pair
+ * (canonical + self-consistent); "custom"/missing keeps the manual Compare To and
+ * re-infers; anything invalid or future falls back to the default MTD state. The
+ * round-trip serialize → hydrate is identity (tested).
+ */
+export function hydrateShellTimeState(
+  raw: { asOf?: string | null; preset?: string | null; compareTo?: string | null },
+  ctx: ShellTimeContext,
+): PerspectiveTimeState {
+  const { today, coverageFrom } = ctx;
+  const asOf = isValidYmd(raw.asOf) && raw.asOf <= today ? raw.asOf : today;
+  const compareTo = isValidYmd(raw.compareTo) ? raw.compareTo : null;
+  const presetRaw = raw.preset ?? "";
+
+  if (presetRaw && presetRaw !== "custom" && (DERIVABLE_PRESETS as string[]).includes(presetRaw)) {
+    const preset = presetRaw as Exclude<TimePreset, "CUSTOM">;
+    return { preset, asOf, compareTo: compareToForPreset(preset, asOf, coverageFrom) };
+  }
+  if (compareTo != null || presetRaw === "custom") {
+    const preset = inferPerspectiveTimePreset({ asOf, compareTo, coverageFrom });
+    return { preset, asOf, compareTo };
+  }
+  return resolvePerspectiveTimeRange({ preset: "MTD", asOf, coverageFrom });
 }

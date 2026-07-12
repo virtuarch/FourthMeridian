@@ -48,9 +48,9 @@ function tx(date: string, amount: number, flowType: FlowType, category: Transact
 }
 
 // ── Period model ──────────────────────────────────────────────────────────────
-check("9 periods with the required set (incl. All Time)",
+check("10 periods with the required set (incl. rolling 6M + All Time)",
   CASH_FLOW_PERIODS.map((p) => p.id).join(",") ===
-    "WTD,MTD,QTD,YTD,PAST_WEEK,PAST_MONTH,PAST_QUARTER,PAST_YEAR,ALL");
+    "WTD,MTD,QTD,YTD,PAST_WEEK,PAST_MONTH,PAST_QUARTER,PAST_6_MONTHS,PAST_YEAR,ALL");
 check("default period is MTD", DEFAULT_CASH_FLOW_PERIOD === "MTD");
 
 // ── All Time (Phase 8) — now-independent (constant sentinel range) ───────────────
@@ -118,8 +118,8 @@ check("filterByPeriod keeps in-range, drops out-of-range",
 // ── Grouped period constants ────────────────────────────────────────────────────
 check("to-date group is WTD..YTD",
   TO_DATE_PERIODS.map((p) => p.id).join(",") === "WTD,MTD,QTD,YTD");
-check("rolling group is PAST_* + All Time",
-  ROLLING_PERIODS.map((p) => p.id).join(",") === "PAST_WEEK,PAST_MONTH,PAST_QUARTER,PAST_YEAR,ALL");
+check("rolling group is PAST_* (incl. 6M) + All Time",
+  ROLLING_PERIODS.map((p) => p.id).join(",") === "PAST_WEEK,PAST_MONTH,PAST_QUARTER,PAST_6_MONTHS,PAST_YEAR,ALL");
 check("CASH_FLOW_PERIODS = to-date ++ rolling",
   CASH_FLOW_PERIODS.length === TO_DATE_PERIODS.length + ROLLING_PERIODS.length);
 

@@ -31,7 +31,7 @@ import type { Transaction } from "@/types";
  */
 export type RelativeCashFlowPeriod =
   | "WTD" | "MTD" | "QTD" | "YTD"
-  | "PAST_WEEK" | "PAST_MONTH" | "PAST_QUARTER" | "PAST_YEAR"
+  | "PAST_WEEK" | "PAST_MONTH" | "PAST_QUARTER" | "PAST_6_MONTHS" | "PAST_YEAR"
   | "ALL";
 
 /**
@@ -62,11 +62,12 @@ export const TO_DATE_PERIODS: { id: RelativeCashFlowPeriod; label: string }[] = 
 /** Solid trailing group (far right in the selector). "All" is the widest window
  *  — every live transaction, no historical cutoff (see periodRange). */
 export const ROLLING_PERIODS: { id: RelativeCashFlowPeriod; label: string }[] = [
-  { id: "PAST_WEEK",    label: "1W" },
-  { id: "PAST_MONTH",   label: "1M" },
-  { id: "PAST_QUARTER", label: "1Q" },
-  { id: "PAST_YEAR",    label: "1Y" },
-  { id: "ALL",          label: "All" },
+  { id: "PAST_WEEK",     label: "1W" },
+  { id: "PAST_MONTH",    label: "1M" },
+  { id: "PAST_QUARTER",  label: "3M" }, // relabel 1Q → 3M (identical rolling 3-calendar-month semantics)
+  { id: "PAST_6_MONTHS", label: "6M" }, // new rolling 6-calendar-month window
+  { id: "PAST_YEAR",     label: "1Y" },
+  { id: "ALL",           label: "ALL" }, // uppercase to match the to-date group grammar
 ];
 
 /** All relative periods (back-compat: original order/labels preserved). */
@@ -165,6 +166,8 @@ export function periodRange(period: CashFlowPeriod, now: Date = new Date()): { s
       start = new Date(d); start.setMonth(d.getMonth() - 1); break;
     case "PAST_QUARTER":
       start = new Date(d); start.setMonth(d.getMonth() - 3); break;
+    case "PAST_6_MONTHS":
+      start = new Date(d); start.setMonth(d.getMonth() - 6); break;
     case "PAST_YEAR":
       start = new Date(d); start.setFullYear(d.getFullYear() - 1); break;
   }
@@ -282,7 +285,7 @@ export function granularityFor(period: CashFlowPeriod): CashFlowGranularity {
   switch (period) {
     case "WTD": case "MTD": case "PAST_WEEK": case "PAST_MONTH": return "day";
     case "QTD": case "PAST_QUARTER":                            return "week";
-    case "YTD": case "PAST_YEAR":                               return "month";
+    case "YTD": case "PAST_YEAR": case "PAST_6_MONTHS":         return "month";
     case "ALL":                                                 return "month";  // monthly history buckets across all years
   }
 }
@@ -418,7 +421,7 @@ export function periodScale(period: CashFlowPeriod): PeriodScale {
   switch (period) {
     case "WTD": case "PAST_WEEK":                return "week";
     case "MTD": case "PAST_MONTH":               return "month";
-    case "QTD": case "PAST_QUARTER":             return "quarter";
+    case "QTD": case "PAST_QUARTER": case "PAST_6_MONTHS": return "quarter";
     case "YTD": case "PAST_YEAR":                return "year";
     case "ALL":                                  return "year";
   }

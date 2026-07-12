@@ -18,6 +18,14 @@ import {
   startOfWeek,
   subMonths,
   subYears,
+  clampAsOf,
+  isValidYmd,
+  mapPresetToCashFlowPeriod,
+  shellTimeReducer,
+  serializeShellTimeState,
+  hydrateShellTimeState,
+  type PerspectiveTimeState,
+  type TimePreset,
 } from "./time-range";
 
 let failures = 0;
@@ -107,6 +115,94 @@ console.log("Round-trip: resolve then infer yields a consistent preset (same dat
   // And the genuinely-coincident case resolves deterministically (MTD over QTD).
   check("MTD/QTD coincidence in a quarter's first month picks MTD deterministically",
     inferPerspectiveTimePreset({ asOf: "2026-07-12", compareTo: "2026-07-01", coverageFrom: null }) === "MTD");
+}
+
+console.log("Rolling 6M (PAST_6_MONTHS) preset");
+{
+  check("6M subtracts six calendar months", compareToForPreset("PAST_6_MONTHS", TODAY, null) === "2026-01-12");
+  check("6M clamps end-of-month (Aug 31 − 6M → Feb 28)", compareToForPreset("PAST_6_MONTHS", "2026-08-31", null) === "2026-02-28");
+  check("6M round-trips through inference", inferPerspectiveTimePreset({ asOf: TODAY, compareTo: "2026-01-12", coverageFrom: null }) === "PAST_6_MONTHS");
+}
+
+console.log("clampAsOf + isValidYmd");
+{
+  check("valid past date passes through", clampAsOf("2026-06-01", TODAY) === "2026-06-01");
+  check("future date clamps to today", clampAsOf("2027-01-01", TODAY) === TODAY);
+  check("invalid date falls back to today", clampAsOf("2026-02-30", TODAY) === TODAY);
+  check("isValidYmd rejects impossible calendar days", !isValidYmd("2026-02-30") && !isValidYmd("nope") && isValidYmd("2028-02-29"));
+}
+
+console.log("mapPresetToCashFlowPeriod (identity + CUSTOM→last)");
+{
+  check("relative presets map to themselves", mapPresetToCashFlowPeriod("MTD", "ALL") === "MTD" && mapPresetToCashFlowPeriod("PAST_6_MONTHS", "MTD") === "PAST_6_MONTHS");
+  check("CUSTOM holds the last period", mapPresetToCashFlowPeriod("CUSTOM", "PAST_QUARTER") === "PAST_QUARTER");
+}
+
+console.log("shellTimeReducer — the §3.3 transition table");
+{
+  const ctx = { today: TODAY, coverageFrom: "2025-03-04" };
+  const start: PerspectiveTimeState = defaultPerspectiveTimeState(TODAY); // MTD / today / Jul 1
+  const invariantHolds = (s: PerspectiveTimeState) =>
+    s.preset === "CUSTOM" || s.compareTo === compareToForPreset(s.preset, s.asOf, ctx.coverageFrom);
+
+  const ytd = shellTimeReducer(start, { type: "selectPreset", preset: "YTD" }, ctx);
+  check("selectPreset YTD → Compare To Jan 1, As Of unchanged", ytd.preset === "YTD" && ytd.compareTo === "2026-01-01" && ytd.asOf === TODAY && invariantHolds(ytd));
+
+  const movedAsOf = shellTimeReducer(ytd, { type: "setAsOf", asOf: "2025-05-20" }, ctx);
+  check("setAsOf under YTD recomputes to Jan 1 of the new year", movedAsOf.compareTo === "2025-01-01" && movedAsOf.preset === "YTD" && invariantHolds(movedAsOf));
+
+  const clampedAsOf = shellTimeReducer(start, { type: "setAsOf", asOf: "2030-01-01" }, ctx);
+  check("setAsOf future clamps to today", clampedAsOf.asOf === TODAY);
+
+  const custom = shellTimeReducer(start, { type: "setCompareTo", compareTo: "2026-06-30" }, ctx);
+  check("setCompareTo to a non-preset date → CUSTOM (no highlight)", custom.preset === "CUSTOM" && custom.compareTo === "2026-06-30");
+
+  const snapped = shellTimeReducer(custom, { type: "setCompareTo", compareTo: "2026-01-01" }, ctx);
+  check("setCompareTo to Jan 1 snaps to YTD", snapped.preset === "YTD" && invariantHolds(snapped));
+
+  const cleared = shellTimeReducer(ytd, { type: "clearCompareTo" }, ctx);
+  check("clearCompareTo → CUSTOM, compareTo null", cleared.preset === "CUSTOM" && cleared.compareTo === null);
+
+  const swapNoop = shellTimeReducer(cleared, { type: "swap" }, ctx);
+  check("swap with null Compare To is a no-op", swapNoop === cleared);
+
+  const swapped = shellTimeReducer(ytd, { type: "swap" }, ctx);
+  check("swap exchanges the dates and re-infers", swapped.asOf === "2026-01-01" && swapped.compareTo === TODAY && invariantHolds(swapped));
+
+  const all = shellTimeReducer(start, { type: "selectPreset", preset: "ALL" }, ctx);
+  check("ALL uses the real coverageFrom", all.preset === "ALL" && all.compareTo === "2025-03-04" && invariantHolds(all));
+  const allNoCoverage = shellTimeReducer(start, { type: "selectPreset", preset: "ALL" }, { today: TODAY, coverageFrom: null });
+  check("ALL with no coverage keeps Compare To null (no fabrication)", allNoCoverage.compareTo === null);
+
+  // Ambiguity: on Mar 31, Q1 start (Jan 1) coincides with the year start, so the
+  // pair (Mar 31, Jan 1) matches both QTD and YTD — the ACTIVE preset wins.
+  const mar31Ctx = { today: "2026-03-31", coverageFrom: null };
+  const mar31Q = shellTimeReducer(defaultPerspectiveTimeState("2026-03-31"), { type: "selectPreset", preset: "QTD" }, mar31Ctx);
+  const stillQ = shellTimeReducer(mar31Q, { type: "setCompareTo", compareTo: "2026-01-01" }, mar31Ctx);
+  check("active QTD is preferred over YTD on the coincident boundary", mar31Q.preset === "QTD" && mar31Q.compareTo === "2026-01-01" && stillQ.preset === "QTD");
+  // From YTD, the same pair infers YTD first (display order), confirming both are valid.
+  const fromYtd = shellTimeReducer({ preset: "YTD", asOf: "2026-03-31", compareTo: "2026-01-01" }, { type: "setCompareTo", compareTo: "2026-01-01" }, mar31Ctx);
+  check("active YTD is preferred over QTD on the same boundary", fromYtd.preset === "YTD");
+}
+
+console.log("URL serialize/hydrate round-trip + invalid fallback");
+{
+  const ctx = { today: TODAY, coverageFrom: "2025-03-04" };
+  const roundtrip = (s: PerspectiveTimeState) => hydrateShellTimeState(serializeShellTimeState(s), ctx);
+  const cases: PerspectiveTimeState[] = [
+    defaultPerspectiveTimeState(TODAY),
+    resolvePerspectiveTimeRange({ preset: "YTD", asOf: TODAY, coverageFrom: ctx.coverageFrom }),
+    resolvePerspectiveTimeRange({ preset: "ALL", asOf: TODAY, coverageFrom: ctx.coverageFrom }),
+    { preset: "CUSTOM", asOf: TODAY, compareTo: "2026-06-30" },
+    { preset: "CUSTOM", asOf: TODAY, compareTo: null },
+  ];
+  check("serialize → hydrate is identity for every canonical state",
+    cases.every((s) => JSON.stringify(roundtrip(s)) === JSON.stringify(s)));
+  const fallback = hydrateShellTimeState({ asOf: "2030-13-40", preset: "bogus", compareTo: "x" }, ctx);
+  check("invalid/future params fall back to the default MTD state",
+    JSON.stringify(fallback) === JSON.stringify(defaultPerspectiveTimeState(TODAY)));
+  const futureAsOf = hydrateShellTimeState({ asOf: "2099-01-01", preset: "MTD" }, ctx);
+  check("a future As Of clamps to today on hydrate", futureAsOf.asOf === TODAY);
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

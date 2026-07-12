@@ -90,12 +90,8 @@ import {
   isExplicitPeriod,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
-import {
-  resolvePerspectiveTimeRange,
-  inferPerspectiveTimePreset,
-  defaultPerspectiveTimeState,
-  type TimePreset,
-} from "@/lib/perspectives/time-range";
+import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiveShellState";
+import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
@@ -2604,55 +2600,37 @@ export function SpaceDashboard({
   // transaction fetch below when the workspace is open in a non-flow Space.
   const [cashFlowPeriod, setCashFlowPeriod] = useState<CashFlowPeriod>(DEFAULT_CASH_FLOW_PERIOD);
 
-  // Shared Perspective shell TIME state (Row 1 + Row 2) — ONE coherent triple:
-  // the active slice (`timePreset`: a relative period, or "CUSTOM" for a manual
-  // pair that matches no preset), the point-in-time `asOf`, and the
-  // comparison/range-start `compareTo`. Defaults to MTD (As Of today, Compare To
-  // the first of this month) via the pure resolver. All date arithmetic lives in
-  // lib/perspectives/time-range.ts; this component only owns the state + wiring.
-  // `cashFlowPeriod` (above) stays Cash Flow's own period — it follows the shell
-  // slice on selection, while the Cash Flow history widget can still drill to
-  // explicit calendar periods without disturbing the shell.
-  const shellToday   = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  const shellDefault = useMemo(() => defaultPerspectiveTimeState(shellToday), [shellToday]);
-  const [timePreset, setTimePreset] = useState<TimePreset>(shellDefault.preset);
-  const [asOf, setAsOf]             = useState<string>(shellDefault.asOf);
-  const [compareTo, setCompareTo]   = useState<string | null>(shellDefault.compareTo);
-
-  // Earliest defensible date at the shell level (the Space's oldest snapshot) —
-  // powers the ALL slice's Compare To and preset inference. Null until snapshots
-  // load / when none exist; ALL then keeps Compare To unset (never fabricated).
-  const coverageFrom = useMemo(
-    () => (snapshots && snapshots.length > 0 ? snapshots[0].date : null),
+  // Shared Perspective shell TIME state — the ONE canonical {preset, asOf,
+  // compareTo} triple, owned by usePerspectiveShellState (the lib/perspectives/
+  // time-range.ts reducer + URL sync). Defaults to MTD (As Of today, Compare To
+  // the first of this month). `cashFlowPeriod` (above) follows the shell slice
+  // via the sync effect below, while the Cash Flow history widget can still drill
+  // to explicit calendar periods through onSelectPeriod without disturbing the
+  // shell. earliestDefensibleDate = the oldest non-fxMiss snapshot (Space-level,
+  // lens-independent) → powers the ALL slice's Compare To; null ⇒ never fabricated.
+  const shellToday = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const earliestDefensibleDate = useMemo(
+    () => snapshots?.find((s) => !s.fxMiss)?.date ?? null,
     [snapshots],
   );
+  const shell = usePerspectiveShellState({ spaceId, today: shellToday, earliestDefensibleDate });
+  const { asOf, compareTo, preset: timePreset } = shell.state;
 
-  // A slice was selected (Row 2): set the preset, derive Compare To from it, and
-  // let Cash Flow follow the same relative period. As Of stays the endpoint.
+  // Cash Flow follows the shell slice — synced event-driven (not via a render
+  // effect): selecting a slice, or a manual Compare To that infers a preset, maps
+  // to Cash Flow's relative period. The Cash Flow history widget's own explicit-
+  // period drill sets cashFlowPeriod directly; under CUSTOM nothing overrides it,
+  // so Cash Flow HOLDS its last period (§3.5).
+  const handleAsOfChange      = (next: string)        => shell.actions.setAsOf(next);
+  const handleCompareToChange = (next: string | null) => {
+    shell.actions.setCompareTo(next);
+    const inferred = inferPerspectiveTimePreset({ asOf, compareTo: next, coverageFrom: earliestDefensibleDate, currentPreset: timePreset });
+    if (inferred !== "CUSTOM") setCashFlowPeriod(inferred);
+  };
   const handleSelectSlice = (slice: CashFlowPeriod) => {
     if (isExplicitPeriod(slice)) { setCashFlowPeriod(slice); return; } // defensive; Row 2 emits relative ids
-    const next = resolvePerspectiveTimeRange({ preset: slice, asOf, coverageFrom });
-    setTimePreset(next.preset);
-    setCompareTo(next.compareTo);
+    shell.actions.selectPreset(slice);
     setCashFlowPeriod(slice);
-  };
-
-  // As Of changed: keep the active preset and re-derive Compare To from the new
-  // endpoint (a preset moves the whole range). Under CUSTOM, leave Compare To.
-  const handleAsOfChange = (next: string) => {
-    setAsOf(next);
-    if (timePreset !== "CUSTOM") {
-      setCompareTo(resolvePerspectiveTimeRange({ preset: timePreset, asOf: next, coverageFrom }).compareTo);
-    }
-  };
-
-  // Compare To changed manually: activate the matching preset if the pair maps to
-  // one exactly (Cash Flow follows), else fall to CUSTOM. As Of never moves.
-  const handleCompareToChange = (next: string | null) => {
-    setCompareTo(next);
-    const inferred = inferPerspectiveTimePreset({ asOf, compareTo: next, coverageFrom });
-    setTimePreset(inferred);
-    if (inferred !== "CUSTOM") setCashFlowPeriod(inferred);
   };
 
   // Wealth Time Machine read model (A6). Pure derivation over the already-fetched
@@ -3253,7 +3231,7 @@ export function SpaceDashboard({
                 <WealthPerspective
                   result={wealthResult}
                   currency={wealthCurrency}
-                  onSelectAsOf={setAsOf}
+                  onSelectAsOf={shell.actions.setAsOf}
                 />
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
