@@ -111,6 +111,7 @@ import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import { FloatingNavWrapper, RAIL_PILL_TOP } from "@/components/atlas/FloatingNavWrapper";
+import { SPACE_TAB_ICON_MAP, SPACE_TAB_ICON_FALLBACK } from "@/lib/space-nav-icons";
 import {
   railVisibleTabs,
   SPACE_TAB_LABELS,
@@ -300,6 +301,18 @@ const TAB_ORDER = ["OVERVIEW", "GOALS", "ACCOUNTS", "DEBT", "INVESTMENTS", "RETI
 // SETTINGS keep direct buttons; everything else routes through Perspectives
 // or the new Timeline tab) vs. which become reachable only as a Perspective
 // card, so nothing real is lost, just re-entered through one calm front door.
+
+/**
+ * Resolve a rail tab id to its Lucide glyph at the tab scale — same static-
+ * component shape as PerspectiveTabs' TabIcon (so the icon type is never
+ * "created during render"). Decorative: the tab's label (visible, or its
+ * aria-label when collapsed under labelVisibility="activeOnly") is the
+ * accessible name, so the glyph is aria-hidden.
+ */
+function RailTabIcon({ id }: { id: string }) {
+  const Icon = SPACE_TAB_ICON_MAP[id] ?? SPACE_TAB_ICON_FALLBACK;
+  return <Icon size={14} aria-hidden />;
+}
 
 /** Perspective id -> the existing, unmodified data-tab it routes to. */
 const PERSPECTIVE_TARGET_TAB: Partial<Record<string, string>> = {
@@ -2409,13 +2422,13 @@ export function SpaceDashboard({
   // lists today (SHARED_ONLY_PLACEHOLDER_TABS is empty), so shared Spaces —
   // and any future Personal mount — inherit the same fixed rail order.
   const railHost = spaceType === "PERSONAL" ? ("personal" as const) : ("shared" as const);
-  const railOptions: { id: string; label: string }[] = railVisibleTabs(railHost)
+  const railOptions: { id: string; label: string; icon: React.ReactNode }[] = railVisibleTabs(railHost)
     // UX-CUST-1A correction: Settings is no longer an in-space rail tab.
     // Space-level settings (incl. section show/hide and layout controls) live
     // in ManageSpaceModal → Overview. "SETTINGS" stays a valid tab id in
     // lib/space-nav for types/back-compat, but it renders no rail button here.
     .filter((id) => id !== "SETTINGS")
-    .map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
+    .map((id) => ({ id, label: SPACE_TAB_LABELS[id], icon: <RailTabIcon id={id} /> }));
 
   // "overview" is filtered out here, not in lib/perspectives.ts: it's never
   // a clickable Perspective *card* (see that file's doc comment on the
