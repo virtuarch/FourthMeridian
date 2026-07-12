@@ -16,6 +16,8 @@ import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { investmentImportsEnabled } from "@/lib/investments/opening-position";
 import { commitInvestmentImport, type UserDecisions } from "@/lib/investments/investment-import-commit";
 import { runInvestmentImportPipelineFromCsv } from "@/lib/imports/investments/pipeline";
+import { buildImportPreview } from "@/lib/investments/investment-import-preview";
+import { guardImportUpload } from "@/lib/investments/import-upload-guard";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -35,8 +37,11 @@ export const POST = withApiHandler(async (
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
   if (!(file instanceof File)) return NextResponse.json({ error: "Missing file." }, { status: 400 });
+  const guard = guardImportUpload(file);
+  if (!guard.ok) return NextResponse.json({ error: guard.error }, { status: guard.status });
   const profileKey = (form?.get("profileKey") as string) || "csv:generic";
   const rowKindOverride = (form?.get("rowKind") as string) === "positions" ? "POSITION" as const : undefined;
+  const acknowledged = (form?.get("acknowledged") as string) === "true";
   let userDecisions: UserDecisions = {};
   const decisionsRaw = form?.get("userDecisions");
   if (typeof decisionsRaw === "string" && decisionsRaw) {
@@ -44,8 +49,25 @@ export const POST = withApiHandler(async (
   }
 
   const text = await file.text();
+
+  // A7-6 — defense-in-depth: re-run the same safety gate the preview showed, so a
+  // wrong-provider / non-investment / wrong-account / multi-account file can NEVER
+  // be committed even if a client bypasses the preview. Blocking ⇒ 422; an
+  // unproven-but-plausible file (generic/unverified) requires the explicit
+  // `acknowledged` flag the UI's confirm step sends ⇒ else 409.
+  const acct = await db.financialAccount.findUnique({ where: { id }, select: { institution: true, mask: true } });
+  const preview = await buildImportPreview({
+    csvText: text, profileKey, rowKindOverride,
+    financialAccountId: id, connectionInstitution: acct?.institution ?? "", targetMask: acct?.mask ?? null, client: db,
+  });
+  if (!preview.canCommit) {
+    return NextResponse.json({ error: "This file can't be imported into this account.", blockingReasons: preview.blockingReasons, preview }, { status: 422 });
+  }
+  if (preview.requiresConfirmation && !acknowledged) {
+    return NextResponse.json({ error: "Confirm the target before importing.", requiresConfirmation: true, preview }, { status: 409 });
+  }
+
   const pipeline = runInvestmentImportPipelineFromCsv(text, { profileKey, rowKindOverride });
-  if (pipeline.error) return NextResponse.json({ error: pipeline.error, rawHeaders: pipeline.rawHeaders ?? null }, { status: 400 });
 
   const result = await commitInvestmentImport({
     financialAccountId: id, userId: user.id,

@@ -32,6 +32,8 @@ export interface InvestmentPipelineResult {
   };
   error?: string;
   rawHeaders?: string[];
+  /** Required columns that could not be resolved (present on the error path). */
+  missing?: string[];
 }
 
 /** Run the pure pipeline over CSV text. */
@@ -64,6 +66,7 @@ export function runInvestmentImportPipelineFromCsv(
       resolvedColumnMapping: mapping,
       error: `Could not resolve required column(s): ${missing.join(", ")}. Map them explicitly or pick a matching broker profile.`,
       rawHeaders: parsed.headers,
+      missing,
     };
   }
 

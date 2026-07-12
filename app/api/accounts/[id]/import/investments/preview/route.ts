@@ -1,9 +1,12 @@
 /**
  * app/api/accounts/[id]/import/investments/preview/route.ts
  *
- * A7-4 — investment import PREVIEW (zero writes). Mirrors the banking preview
- * route's authz (shared resolveImportableFinancialAccount) but over the pure
- * investment pipeline + read-only classification. Behind INVESTMENT_IMPORTS_ENABLED.
+ * A7-4/A7-6 — investment import PREVIEW (zero writes). Authz mirrors the banking
+ * preview route (resolveImportableFinancialAccount + FULL visibility). A7-6 runs
+ * the shared safety gate (buildImportPreview): source detection, connection
+ * compatibility, file assessment, and dedupe classification, returning a
+ * structured verdict (canCommit + reasons) — a wrong file yields an EXPLAINED
+ * preview, never a bare error. Behind INVESTMENT_IMPORTS_ENABLED.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -14,8 +17,9 @@ import { ShareStatus, VisibilityLevel } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { investmentImportsEnabled } from "@/lib/investments/opening-position";
-import { previewInvestmentImport } from "@/lib/investments/investment-import-commit";
-import { runInvestmentImportPipelineFromCsv } from "@/lib/imports/investments/pipeline";
+import { buildImportPreview } from "@/lib/investments/investment-import-preview";
+import { guardImportUpload } from "@/lib/investments/import-upload-guard";
+import { maskAccountLabel } from "@/lib/imports/investments/import-validation";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -35,17 +39,21 @@ export const POST = withApiHandler(async (
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
   if (!(file instanceof File)) return NextResponse.json({ error: "Missing file." }, { status: 400 });
+  const guard = guardImportUpload(file);
+  if (!guard.ok) return NextResponse.json({ error: guard.error }, { status: guard.status });
+
   const profileKey = (form?.get("profileKey") as string) || "csv:generic";
   const rowKindOverride = (form?.get("rowKind") as string) === "positions" ? "POSITION" as const : undefined;
 
+  const acct = await db.financialAccount.findUnique({ where: { id }, select: { institution: true, mask: true } });
   const text = await file.text();
-  const pipeline = runInvestmentImportPipelineFromCsv(text, { profileKey, rowKindOverride });
-  if (pipeline.error) return NextResponse.json({ error: pipeline.error, rawHeaders: pipeline.rawHeaders ?? null }, { status: 400 });
+  const preview = await buildImportPreview({
+    csvText: text, profileKey, rowKindOverride,
+    financialAccountId: id, connectionInstitution: acct?.institution ?? "", targetMask: acct?.mask ?? null,
+  });
 
-  const preview = await previewInvestmentImport({ financialAccountId: id, profileKey, rows: pipeline.rows });
   return NextResponse.json({
-    resolvedColumnMapping: pipeline.resolvedColumnMapping,
-    counts: preview.counts,
-    rows: preview.rows,
+    target: { id, label: maskAccountLabel(acct?.mask ?? null), institution: acct?.institution ?? null },
+    ...preview,
   });
 }, "POST /api/accounts/[id]/import/investments/preview");
