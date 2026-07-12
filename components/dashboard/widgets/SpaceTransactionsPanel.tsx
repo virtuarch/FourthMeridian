@@ -84,6 +84,21 @@ const SOURCE_LABELS: Record<SourceFilter, string> = {
   manual: "Manual",
 };
 
+// ── Group By / perspective ─────────────────────────────────────────────────────
+// One control does both jobs: the vision's "Perspective toggle" (List vs. a
+// pivoted view) IS Group By with "none" as the flat/List perspective — shipping
+// a second toggle would be redundant (plan §2.3 / stop condition #4). Pure
+// client-side reduce over the already-fetched, already-filtered list — no refetch.
+type GroupBy = "none" | "flow" | "merchant" | "account" | "category";
+
+const GROUP_BY_LABELS: Record<GroupBy, string> = {
+  none:     "No grouping",
+  flow:     "Flow type",
+  merchant: "Merchant",
+  account:  "Account",
+  category: "Category",
+};
+
 // ── Transfer disposition (CF-1) ────────────────────────────────────────────────
 // Humanized labels for the canonical TransferDisposition already computed for
 // every TRANSFER row by getTransactions(). These present the existing canonical
@@ -156,6 +171,11 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   const [dispositionFilter, setDispositionFilter] = useState<string | null>(null);
   // Provenance source — backed by the list-level `source` field.
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
+  // Merchant filter — distinct resolved-merchant names present in the fetched
+  // list (client-side; no new query). null = all merchants.
+  const [merchantFilter, setMerchantFilter] = useState<string | null>(null);
+  // Group By / perspective (see GroupBy above). "none" = the flat List view.
+  const [groupBy, setGroupBy] = useState<GroupBy>("none");
 
   // ── Account lookup helpers ───────────────────────────────────────────────
   const accountMap = useMemo(() => {
@@ -192,6 +212,15 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     return groups;
   }, [accounts, txAccountIds]);
 
+  // ── Distinct merchants for the merchant filter dropdown ───────────────────
+  // Resolved display name (MI M6) with raw fallback; only merchants that appear
+  // in the fetched list, sorted for a stable dropdown. No new query.
+  const merchantOptions = useMemo(() => {
+    const names = new Set<string>();
+    transactions.forEach((t) => names.add(t.merchantDisplayName ?? t.merchant));
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [transactions]);
+
   // ── Filtering ────────────────────────────────────────────────────────────
   const cutoff = cutoffForRange(dateRange);
 
@@ -202,6 +231,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       if (flowFilter    && tx.flowType   !== flowFilter)    return false;
       if (dispositionFilter && tx.transferDisposition !== dispositionFilter) return false;
       if (sourceFilter !== "all" && tx.source !== sourceFilter) return false;
+      if (merchantFilter && (tx.merchantDisplayName ?? tx.merchant) !== merchantFilter) return false;
       if (needsReviewOnly && !tx.needsClassification)       return false;
       if (accountFilter && tx.accountId  !== accountFilter) return false;
       if (cutoff        && tx.date        < cutoff)         return false;
@@ -212,7 +242,41 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       }
       return true;
     });
-  }, [transactions, catFilter, flowFilter, dispositionFilter, sourceFilter, needsReviewOnly, accountFilter, cutoff, pendingFilter, search]);
+  }, [transactions, catFilter, flowFilter, dispositionFilter, sourceFilter, merchantFilter, needsReviewOnly, accountFilter, cutoff, pendingFilter, search]);
+
+  // ── Group By (client-side pivot over the filtered list) ────────────────────
+  // First-appearance order (filtered is date-desc) — no re-sort, no refetch.
+  const groups = useMemo(() => {
+    if (groupBy === "none") return null;
+    const map = new Map<string, { label: string; rows: Transaction[] }>();
+    for (const tx of filtered) {
+      let key: string;
+      let label: string;
+      switch (groupBy) {
+        case "flow":
+          key = tx.flowType ?? "__unclassified__";
+          label = tx.flowType ? (FLOW_TYPE_LABEL[tx.flowType] ?? tx.flowType) : "Unclassified";
+          break;
+        case "merchant":
+          label = tx.merchantDisplayName ?? tx.merchant;
+          key = label;
+          break;
+        case "account":
+          key = tx.accountId;
+          label = [acctInst(tx.accountId), acctName(tx.accountId)].filter(Boolean).join(" · ") || "Unknown Account";
+          break;
+        case "category":
+        default:
+          key = tx.category;
+          label = tx.category;
+          break;
+      }
+      const bucket = map.get(key) ?? { label, rows: [] };
+      bucket.rows.push(tx);
+      map.set(key, bucket);
+    }
+    return [...map.entries()].map(([key, g]) => ({ key, ...g }));
+  }, [filtered, groupBy, acctInst, acctName]);
 
   // ── Summary totals ────────────────────────────────────────────────────────
   // FlowType P5 Slice 2 — from flowType (no category/sign). Spend = SPENDING +
@@ -238,6 +302,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     setFlowFilter(null);
     setDispositionFilter(null);
     setSourceFilter("all");
+    setMerchantFilter(null);
     setNeedsReviewOnly(false);
     setAccountFilter(null);
     setDateRange("all");
@@ -246,7 +311,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
 
   const hasActiveFilters =
     search || catFilter || flowFilter || dispositionFilter || sourceFilter !== "all" ||
-    needsReviewOnly || accountFilter || dateRange !== "all" || pendingFilter !== "all";
+    merchantFilter || needsReviewOnly || accountFilter || dateRange !== "all" || pendingFilter !== "all";
 
   return (
     <div className="space-y-4">
@@ -297,6 +362,14 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
               {SOURCE_LABELS[sourceFilter]}
               <button onClick={() => setSourceFilter("all")} className="hover:text-[var(--text-primary)] ml-0.5">
+                <X size={10} />
+              </button>
+            </span>
+          )}
+          {merchantFilter && (
+            <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
+              {merchantFilter}
+              <button onClick={() => setMerchantFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
                 <X size={10} />
               </button>
             </span>
@@ -455,6 +528,32 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
           ))}
         </select>
 
+        {/* Merchant — distinct resolved-merchant names in the fetched list. */}
+        <select
+          value={merchantFilter ?? ""}
+          onChange={(e) => setMerchantFilter(e.target.value || null)}
+          className={`px-3 py-2.5 ${INPUT_BASE}`}
+          style={inputStyle}
+        >
+          <option value="">All merchants</option>
+          {merchantOptions.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+
+        {/* Group by / perspective — one control; "none" is the flat List view. */}
+        <select
+          value={groupBy}
+          onChange={(e) => setGroupBy(e.target.value as GroupBy)}
+          className={`px-3 py-2.5 ${INPUT_BASE}`}
+          style={inputStyle}
+          aria-label="Group by"
+        >
+          {(["none", "flow", "merchant", "account", "category"] as GroupBy[]).map((g) => (
+            <option key={g} value={g}>{g === "none" ? "No grouping" : `Group: ${GROUP_BY_LABELS[g]}`}</option>
+          ))}
+        </select>
+
         {/* Needs review — reuses the TE-2B needsClassification boolean as-is. */}
         <button
           type="button"
@@ -503,6 +602,34 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>
               No transactions match your filters.
             </p>
+          ) : groups ? (
+            // Grouped (pivoted) view — a header per bucket, then its rows.
+            <div className="divide-y divide-[var(--border-hairline)]">
+              {groups.map((g) => (
+                <div key={g.key}>
+                  <div
+                    className="flex items-center justify-between gap-2 px-4 py-2 sticky top-0 z-10"
+                    style={{ background: "var(--surface-muted)", color: "var(--text-secondary)" }}
+                  >
+                    <span className="text-xs font-semibold uppercase tracking-wide truncate">{g.label}</span>
+                    <span className="text-xs shrink-0" style={{ color: "var(--text-muted)" }}>
+                      {g.rows.length}
+                    </span>
+                  </div>
+                  <div className="divide-y divide-[var(--border-hairline)]">
+                    {g.rows.map((tx) => (
+                      <TxRow
+                        key={tx.id}
+                        tx={tx}
+                        acctName={acctName(tx.accountId)}
+                        acctInst={acctInst(tx.accountId)}
+                        onOpen={() => openTransaction(tx.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : (
             <div className="divide-y divide-[var(--border-hairline)]">
               {filtered.map((tx) => (
