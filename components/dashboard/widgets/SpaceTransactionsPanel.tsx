@@ -73,6 +73,19 @@ const PENDING_LABELS: Record<PendingFilter, string> = {
   pending: "Pending",
 };
 
+// ── Transfer disposition (CF-1) ────────────────────────────────────────────────
+// Humanized labels for the canonical TransferDisposition already computed for
+// every TRANSFER row by getTransactions(). These present the existing canonical
+// concept (lib/transactions/transfer-evidence.ts) — no new terminology is coined.
+const TRANSFER_DISPOSITION_LABEL: Record<string, string> = {
+  INTERNAL_TRANSFER:      "Internal transfer",
+  EXTERNAL_BANK_TRANSFER: "External bank transfer",
+  ASSET_VENUE_TRANSFER:   "Asset venue transfer",
+  CASH_MOVEMENT:          "Cash movement",
+  PAYMENT_APP_MOVEMENT:   "Payment app movement",
+  UNKNOWN_MOVEMENT:       "Unknown movement",
+};
+
 // ── Shared input styling (Atlas tokens) ──────────────────────────────────────
 const INPUT_BASE = "border rounded-xl text-sm placeholder:text-[var(--text-faint)] focus:outline-none focus:border-[var(--accent-info)] transition-colors";
 const inputStyle: React.CSSProperties = { background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-primary)" };
@@ -124,6 +137,12 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   // Transactions Tab Phase 1 — pivot the existing ledger by the FlowType already
   // on every row (no new query). null = all flow types.
   const [flowFilter,    setFlowFilter]    = useState<string | null>(null);
+  // TE-2B needs-review: reuse the existing per-row needsClassification boolean
+  // as-is (no confidence tiers, no new copy). false = show all rows.
+  const [needsReviewOnly, setNeedsReviewOnly] = useState(false);
+  // CF-1 transfer disposition — filter TRANSFER rows by their canonical
+  // disposition (already on every row). null = all dispositions.
+  const [dispositionFilter, setDispositionFilter] = useState<string | null>(null);
 
   // ── Account lookup helpers ───────────────────────────────────────────────
   const accountMap = useMemo(() => {
@@ -168,6 +187,8 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     return transactions.filter((tx) => {
       if (catFilter     && tx.category   !== catFilter)     return false;
       if (flowFilter    && tx.flowType   !== flowFilter)    return false;
+      if (dispositionFilter && tx.transferDisposition !== dispositionFilter) return false;
+      if (needsReviewOnly && !tx.needsClassification)       return false;
       if (accountFilter && tx.accountId  !== accountFilter) return false;
       if (cutoff        && tx.date        < cutoff)         return false;
       if (pendingFilter === "cleared" &&  tx.pending)       return false;
@@ -177,7 +198,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       }
       return true;
     });
-  }, [transactions, catFilter, flowFilter, accountFilter, cutoff, pendingFilter, search]);
+  }, [transactions, catFilter, flowFilter, dispositionFilter, needsReviewOnly, accountFilter, cutoff, pendingFilter, search]);
 
   // ── Summary totals ────────────────────────────────────────────────────────
   // FlowType P5 Slice 2 — from flowType (no category/sign). Spend = SPENDING +
@@ -201,13 +222,16 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     setSearch("");
     setCatFilter(null);
     setFlowFilter(null);
+    setDispositionFilter(null);
+    setNeedsReviewOnly(false);
     setAccountFilter(null);
     setDateRange("all");
     setPendingFilter("all");
   }, []);
 
   const hasActiveFilters =
-    search || catFilter || flowFilter || accountFilter || dateRange !== "all" || pendingFilter !== "all";
+    search || catFilter || flowFilter || dispositionFilter || needsReviewOnly ||
+    accountFilter || dateRange !== "all" || pendingFilter !== "all";
 
   return (
     <div className="space-y-4">
@@ -242,6 +266,22 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
               {FLOW_TYPE_LABEL[flowFilter] ?? flowFilter}
               <button onClick={() => setFlowFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
+                <X size={10} />
+              </button>
+            </span>
+          )}
+          {dispositionFilter && (
+            <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
+              {TRANSFER_DISPOSITION_LABEL[dispositionFilter] ?? dispositionFilter}
+              <button onClick={() => setDispositionFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
+                <X size={10} />
+              </button>
+            </span>
+          )}
+          {needsReviewOnly && (
+            <span className="text-xs border px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: "var(--surface-inset)", color: "var(--accent-warning)", borderColor: "var(--border-hairline)" }}>
+              Needs review
+              <button onClick={() => setNeedsReviewOnly(false)} className="hover:text-[var(--text-primary)] ml-0.5">
                 <X size={10} />
               </button>
             </span>
@@ -354,6 +394,20 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
           ))}
         </select>
 
+        {/* Movement (transfer disposition) — only meaningful for TRANSFER rows;
+            the canonical disposition is already on every row (CF-1). */}
+        <select
+          value={dispositionFilter ?? ""}
+          onChange={(e) => setDispositionFilter(e.target.value || null)}
+          className={`px-3 py-2.5 ${INPUT_BASE}`}
+          style={inputStyle}
+        >
+          <option value="">All movements</option>
+          {Object.entries(TRANSFER_DISPOSITION_LABEL).map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
+
         {/* Pending / cleared */}
         <select
           value={pendingFilter}
@@ -365,6 +419,19 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             <option key={p} value={p}>{PENDING_LABELS[p]}</option>
           ))}
         </select>
+
+        {/* Needs review — reuses the TE-2B needsClassification boolean as-is. */}
+        <button
+          type="button"
+          onClick={() => setNeedsReviewOnly((v) => !v)}
+          aria-pressed={needsReviewOnly}
+          className={`px-3 py-2.5 rounded-xl text-sm border transition-colors touch-manipulation ${INPUT_BASE}`}
+          style={needsReviewOnly
+            ? { background: "var(--surface-inset)", borderColor: "var(--accent-warning)", color: "var(--accent-warning)" }
+            : inputStyle}
+        >
+          Needs review
+        </button>
       </div>
 
       {/* ── Summary strip ───────────────────────────────────────────────────── */}
@@ -459,6 +526,12 @@ function TxRow({
           <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
             {tx.category}
           </span>
+          {/* CF-1 transfer disposition — canonical concept, already on the row. */}
+          {tx.transferDisposition && (
+            <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
+              {TRANSFER_DISPOSITION_LABEL[tx.transferDisposition] ?? tx.transferDisposition}
+            </span>
+          )}
           <span className="text-xs truncate" style={{ color: "var(--text-faint)" }}>
             {acctInst}{acctInst && acctName ? " · " : ""}{acctName}
           </span>
