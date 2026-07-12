@@ -49,6 +49,53 @@ export interface ResolvedImportInstrument {
   conflict:     boolean;
 }
 
+/** Read-only resolution outcome for preview (zero writes). */
+export interface MatchedImportInstrument {
+  /** Existing instrument id when one safely matches; null when it would be created. */
+  instrumentId: string | null;
+  wouldCreate:  boolean;
+  conflict:     boolean;
+}
+
+/**
+ * READ-ONLY identity resolution for preview — never writes. Same precedence as
+ * resolveInstrumentForImport but returns "would create" instead of creating and
+ * "conflict" instead of recording an issue, so preview is truly zero-write.
+ */
+export async function matchInstrumentForImport(
+  identity: ImportInstrumentIdentity,
+  opts?: { client?: Client },
+): Promise<MatchedImportInstrument> {
+  const client = opts?.client ?? db;
+
+  const alias = identity.aliasProvider && identity.aliasExternalId
+    ? await client.instrumentAlias.findUnique({
+        where:  { provider_externalId: { provider: identity.aliasProvider, externalId: identity.aliasExternalId } },
+        select: { instrumentId: true },
+      })
+    : null;
+  if (alias) return { instrumentId: alias.instrumentId, wouldCreate: false, conflict: false };
+
+  const strongWhere: Prisma.InstrumentWhereInput[] = [];
+  if (identity.cusip) strongWhere.push({ cusip: identity.cusip });
+  if (identity.isin)  strongWhere.push({ isin: identity.isin });
+  const strongMatches = strongWhere.length === 0
+    ? []
+    : await client.instrument.findMany({ where: { OR: strongWhere }, select: { id: true, cusip: true, isin: true } });
+  if (strongMatches.length > 1) return { instrumentId: null, wouldCreate: false, conflict: true };
+  if (strongMatches.length === 1) {
+    if (strongImportConflict(identity, strongMatches[0])) return { instrumentId: null, wouldCreate: false, conflict: true };
+    return { instrumentId: strongMatches[0].id, wouldCreate: false, conflict: false };
+  }
+
+  if (identity.symbol) {
+    const weak = await client.instrument.findMany({ where: { tickerSymbol: identity.symbol, currency: identity.currency ?? null }, select: { id: true }, take: 2 });
+    if (weak.length > 1) return { instrumentId: null, wouldCreate: false, conflict: true };
+    if (weak.length === 1) return { instrumentId: weak[0].id, wouldCreate: false, conflict: false };
+  }
+  return { instrumentId: null, wouldCreate: true, conflict: false };
+}
+
 /** Strong ids present on both that disagree ⇒ a genuine identity conflict. */
 function strongImportConflict(
   id:   Pick<ImportInstrumentIdentity, "cusip" | "isin">,

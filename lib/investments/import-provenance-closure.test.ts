@@ -21,8 +21,6 @@
  *   npx tsx lib/investments/import-provenance-closure.test.ts
  */
 
-import { readdirSync, readFileSync } from "node:fs";
-import path from "node:path";
 import { PositionOrigin } from "@prisma/client";
 import { gatherReconstructionInputs } from "./reconstruction-runner";
 import { getPositionQuantityAsOf, resolvePositionAsOf, type PositionRow } from "./reconstruction-read";
@@ -172,34 +170,11 @@ async function main(): Promise<void> {
     check("DERIVED beats USER_ASSERTED", resolvePositionAsOf([sameDate(PositionOrigin.USER_ASSERTED, 4), sameDate(PositionOrigin.DERIVED, 3)], "2026-07-05").origin === PositionOrigin.DERIVED);
   }
 
-  // ── 8 & 9. No writer for the new import fields; banking ImportBatch unchanged ─
-  console.log("no writer for the new import-provenance fields exists yet");
-  {
-    const tokens = ["importedRaw", "userDecisions", "INVESTMENT_HISTORY"];
-    const offenders: string[] = [];
-    const walk = (dir: string): void => {
-      for (const e of readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        // lib/imports/investments is the PURE import pipeline (A7-3): it carries an
-        // in-memory `importedRaw` on its normalized-row type and is proven DB-free
-        // by its own test — not a DB writer. The real writer of the new columns is
-        // A7-4's commit module under lib/investments, which this guard still covers.
-        if (e.isDirectory()) { if (e.name !== "node_modules" && e.name !== ".next" && full !== path.join(process.cwd(), "lib/imports/investments")) walk(full); continue; }
-        if (!e.name.endsWith(".ts") || e.name.endsWith(".test.ts")) continue;
-        // Strip comments so a doc mention of a field name isn't mistaken for a
-        // writer — the guard flags actual CODE references (a Prisma create/update
-        // setting the field), not prose. A7-2 leaves all three null and only
-        // names importedRaw in comments; A7-4 is the first real writer.
-        const code = readFileSync(full, "utf8")
-          .replace(/\/\*[\s\S]*?\*\//g, "")
-          .replace(/\/\/[^\n]*/g, "");
-        for (const t of tokens) if (code.includes(t)) offenders.push(`${path.relative(process.cwd(), full)}:${t}`);
-      }
-    };
-    walk(path.join(process.cwd(), "lib"));
-    walk(path.join(process.cwd(), "app"));
-    check("no non-test source writes importedRaw / userDecisions / INVESTMENT_HISTORY", offenders.length === 0, offenders.join(", "));
-  }
+  // NOTE — the A7-1 "no writer for the new import fields exists yet" guard has
+  // been retired: A7-4's commit module (lib/investments/investment-import-commit.ts)
+  // is the sanctioned first writer of importedRaw / userDecisions / kind
+  // INVESTMENT_HISTORY, exactly as A7-1 anticipated ("that is A7-2/A7-4"). The
+  // read-path closure guards above remain the load-bearing A7-1 guarantee.
 
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");
