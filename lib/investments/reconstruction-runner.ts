@@ -26,10 +26,13 @@ import { COMPLETENESS_TIERS, isCompletenessTier } from "@/lib/perspective-engine
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import {
   reconstructPositions,
+  detectCheckpointConflicts,
+  applyCheckpointConflicts,
   RECONSTRUCTION_VERSION,
   type ReconAnchorInput,
   type ReconEventInput,
   type InstrumentReconstruction,
+  type ImportedCheckpoint,
 } from "./reconstruction-core";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -117,6 +120,7 @@ export async function gatherReconstructionInputs(
     select: {
       id: true, source: true, externalEventId: true, date: true, type: true,
       instrumentId: true, quantity: true, amount: true, currency: true, ratio: true,
+      relatedInstrumentId: true,
     },
   });
   const events: ReconEventInput[] = eventRows.map((e) => ({
@@ -130,6 +134,7 @@ export async function gatherReconstructionInputs(
     amount: e.amount,
     currency: e.currency,
     ratio: e.ratio,
+    relatedInstrumentId: e.relatedInstrumentId,
   }));
 
   return { anchors: [...anchorById.values()], events, cashInstrumentByCurrency, runDate: ymd(now) };
@@ -232,6 +237,18 @@ export async function reconstructAccount(params: ReconstructAccountParams): Prom
   if (params.instrumentIds && params.instrumentIds.length > 0) {
     const wanted = new Set(params.instrumentIds);
     results = results.filter((r) => wanted.has(r.instrumentId));
+  }
+
+  // A7-7 — reconcile live IMPORTED statement anchors against the walk. A stated
+  // holding that disagrees with the reconstructed quantity beyond epsilon flags
+  // the position `conflicted` (surfaced, never averaged, never re-anchored).
+  const importedAnchors = await client.positionObservation.findMany({
+    where:  { financialAccountId: params.financialAccountId, origin: PositionOrigin.IMPORTED, deletedAt: null, supersededById: null },
+    select: { instrumentId: true, date: true, quantity: true, id: true },
+  });
+  if (importedAnchors.length > 0) {
+    const checkpoints: ImportedCheckpoint[] = importedAnchors.map((o) => ({ instrumentId: o.instrumentId, date: ymd(o.date), quantity: o.quantity, observationId: o.id }));
+    results = applyCheckpointConflicts(results, detectCheckpointConflicts(results, checkpoints));
   }
 
   const metrics: ReconstructionMetrics = {

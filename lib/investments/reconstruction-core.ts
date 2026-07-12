@@ -67,6 +67,8 @@ export interface ReconEventInput {
   currency:        string | null;
   /** Split ratio when known (imports/manual); Plaid never supplies it. */
   ratio:           number | null;
+  /** Corporate-action counterparty (acquirer/child) when the import states it. */
+  relatedInstrumentId?: string | null;
 }
 
 /** Observed current quantity for one (account, instrument) — the walk anchor. */
@@ -115,7 +117,26 @@ export interface InstrumentReconstruction {
   conflicted:                 boolean;
   eventCount:                 number;
   derivedRows:                DerivedQuantityPoint[];
-  evidenceRefs:               { anchorObservationId: string | null; eventIds: string[] };
+  evidenceRefs:               { anchorObservationId: string | null; eventIds: string[]; checkpointConflicts?: CheckpointConflict[] };
+}
+
+// ── Statement checkpoints (A7-7) ────────────────────────────────────────────────
+
+/** A live IMPORTED PositionObservation anchor to reconcile against the walk. */
+export interface ImportedCheckpoint {
+  instrumentId:  string;
+  date:          string;   // YYYY-MM-DD
+  quantity:      number;   // the statement's stated held quantity
+  observationId: string;
+}
+
+/** A checkpoint whose stated quantity disagrees with the reconstructed walk. */
+export interface CheckpointConflict {
+  instrumentId:    string;
+  date:            string;
+  observationId:   string;
+  walkQuantity:    number;
+  anchorQuantity:  number;
 }
 
 // ── Routing ───────────────────────────────────────────────────────────────────
@@ -168,11 +189,34 @@ export function routeEvents(
 
 // ── Walk ──────────────────────────────────────────────────────────────────────
 
+/** Does an event state a material share effect on THIS instrument's leg? */
+function hasMaterialQuantity(e: ReconEventInput): boolean {
+  return e.quantity != null && Math.abs(e.quantity) > QUANTITY_EPSILON;
+}
+
+/**
+ * A7-7 — is an imported MERGER / SPIN_OFF invertible? Only when its TERMS are
+ * known (investigation §7), never guessed:
+ *   - stock action: ratio AND relatedInstrumentId stated (the counterparty leg),
+ *   - cash merger:  a material cash amount (ratio-less by nature; position → 0),
+ * AND the row states the share effect (a material quantity) so the walk can apply
+ * it as a signed delta on this leg. Brokers list each leg separately, so no
+ * cross-instrument coupling is needed. Anything less ⇒ stop (never guess terms).
+ */
+function corporateActionInvertible(e: ReconEventInput): boolean {
+  if (!hasMaterialQuantity(e)) return false;
+  const stockTermsKnown = e.ratio != null && e.relatedInstrumentId != null;
+  const cashMerger = e.type === InvestmentEventType.MERGER && e.amount != null && Math.abs(e.amount) > QUANTITY_EPSILON;
+  return stockTermsKnown || cashMerger;
+}
+
 function stopReasonFor(e: ReconEventInput): string | null {
   const T = InvestmentEventType;
   if (e.type === T.SPLIT && e.ratio == null) return RECON_FAILURE.UNSUPPORTED_CORPORATE_ACTION;
-  if (e.type === T.MERGER || e.type === T.SPIN_OFF) return RECON_FAILURE.UNSUPPORTED_CORPORATE_ACTION;
-  if (e.type === T.UNKNOWN && e.quantity != null && Math.abs(e.quantity) > QUANTITY_EPSILON) {
+  if ((e.type === T.MERGER || e.type === T.SPIN_OFF) && !corporateActionInvertible(e)) {
+    return RECON_FAILURE.UNSUPPORTED_CORPORATE_ACTION;
+  }
+  if (e.type === T.UNKNOWN && hasMaterialQuantity(e)) {
     return RECON_FAILURE.UNKNOWN_EVENT;
   }
   return null;
@@ -355,4 +399,69 @@ export function reconstructPositions(params: ReconstructParams): InstrumentRecon
 
   results.sort((a, b) => a.instrumentId.localeCompare(b.instrumentId));
   return results;
+}
+
+// ── Statement-checkpoint reconciliation (A7-7) ──────────────────────────────────
+
+/** The reconstructed quantity as-of a date from a walk's derived rows, or null
+ *  when the date is beyond the walk's defensible coverage. */
+function walkQuantityAsOf(r: InstrumentReconstruction, date: string): number | null {
+  if (date < r.earliestDefensibleDate) return null; // beyond coverage — cannot answer
+  let best: DerivedQuantityPoint | null = null;
+  for (const row of r.derivedRows) {
+    if (row.date <= date && (best === null || row.date > best.date)) best = row;
+  }
+  // No event on/before the date within coverage ⇒ the quantity held flat at the
+  // anchor back to the earliest defensible date.
+  return best ? best.quantity : r.observedCurrentQuantity;
+}
+
+/**
+ * Reconcile each imported statement anchor inside a walk's window against the
+ * reconstructed quantity at that date. Disagreement beyond QUANTITY_EPSILON is a
+ * conflict — surfaced, NEVER averaged and NEVER used to re-anchor the walk
+ * (multi-anchor segmented walks are a core rewrite the data hasn't earned).
+ * Pure and deterministic.
+ */
+export function detectCheckpointConflicts(
+  reconstructions: InstrumentReconstruction[],
+  checkpoints: ImportedCheckpoint[],
+): CheckpointConflict[] {
+  const byId = new Map(reconstructions.map((r) => [r.instrumentId, r]));
+  const conflicts: CheckpointConflict[] = [];
+  for (const cp of checkpoints) {
+    const r = byId.get(cp.instrumentId);
+    if (!r) continue;
+    const wq = walkQuantityAsOf(r, cp.date);
+    if (wq === null) continue; // outside coverage — no claim, no conflict
+    if (Math.abs(wq - cp.quantity) > QUANTITY_EPSILON) {
+      conflicts.push({ instrumentId: cp.instrumentId, date: cp.date, observationId: cp.observationId, walkQuantity: wq, anchorQuantity: cp.quantity });
+    }
+  }
+  conflicts.sort((a, b) => a.instrumentId.localeCompare(b.instrumentId) || a.date.localeCompare(b.date));
+  return conflicts;
+}
+
+/**
+ * Mark every reconstruction with a checkpoint conflict as `conflicted` and record
+ * the conflicting checkpoints in its evidenceRefs. Returns new objects (pure);
+ * quantities/status are untouched — a conflict blocks trust, it never rewrites the
+ * number.
+ */
+export function applyCheckpointConflicts(
+  reconstructions: InstrumentReconstruction[],
+  conflicts: CheckpointConflict[],
+): InstrumentReconstruction[] {
+  if (conflicts.length === 0) return reconstructions;
+  const byInstrument = new Map<string, CheckpointConflict[]>();
+  for (const c of conflicts) {
+    const list = byInstrument.get(c.instrumentId) ?? [];
+    list.push(c);
+    byInstrument.set(c.instrumentId, list);
+  }
+  return reconstructions.map((r) => {
+    const cs = byInstrument.get(r.instrumentId);
+    if (!cs) return r;
+    return { ...r, conflicted: true, evidenceRefs: { ...r.evidenceRefs, checkpointConflicts: cs } };
+  });
 }
