@@ -97,33 +97,35 @@ export function WealthHero({
         )}
       </div>
 
-      {/* Secondary rows — label · value · delta (no cards, no sparklines). */}
+      {/* Secondary rows — label (+ Liquidity link) left, value over delta right.
+          Stacking the value/delta keeps every row legible even in the hero's
+          narrow 4-column desktop slot (no truncated labels, no overlap). */}
       <div className="mt-4 divide-y" style={{ borderColor: "var(--border-hairline)" }}>
         {SECONDARY.map(({ key, label, good }) => {
           const value = asOfState[key];
           const d = deltas ? deltas[key] : null;
           const isLiquid = key === "liquidNetWorth";
           return (
-            <div key={key} className="flex items-center justify-between gap-3 py-2">
-              <span className="inline-flex items-center gap-2 text-xs text-[var(--text-secondary)] min-w-0">
-                <span className="truncate">{label}</span>
+            <div key={key} className="flex items-start justify-between gap-3 py-2">
+              <div className="min-w-0">
+                <div className="text-xs text-[var(--text-secondary)] truncate">{label}</div>
                 {isLiquid && onSwitchLens && (
                   <button
                     type="button"
                     onClick={() => onSwitchLens("liquidity")}
-                    className="inline-flex items-center gap-0.5 text-[11px] text-[var(--accent-info)] hover:underline shrink-0"
+                    className="mt-0.5 inline-flex items-center gap-0.5 text-[11px] text-[var(--accent-info)] hover:underline"
                     title="Open the Liquidity perspective (keeps this date)"
                   >
                     Liquidity <ArrowUpRight size={11} aria-hidden />
                   </button>
                 )}
-              </span>
-              <span className="flex items-baseline gap-2 shrink-0">
+              </div>
+              <div className="flex flex-col items-end shrink-0">
                 <span className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">
                   {formatCurrency(value, currency)}
                 </span>
                 {d && <DeltaBadge abs={d.abs} pct={d.pct} currency={currency} goodDirection={good} />}
-              </span>
+              </div>
             </div>
           );
         })}
