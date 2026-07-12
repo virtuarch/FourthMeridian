@@ -32,7 +32,7 @@ function main(): void {
 
   console.log("label-only path is byte-identical (icon absent → bare label)");
   check("renders icon only when present (opt.icon != null ?)", /opt\.icon\s*!=\s*null\s*\?/.test(src));
-  check("falls back to the bare opt.label", /\)\s*:\s*\(\s*[\r\n]\s*opt\.label/.test(src));
+  check("non-collapsed label resolves to the bare opt.label", /:\s*opt\.label;/.test(src));
 
   console.log("decorative glyph is hidden from assistive tech");
   check("icon wrapper is aria-hidden", /aria-hidden[^>]*>\{opt\.icon\}/.test(src));

@@ -49,6 +49,16 @@ interface SegmentedControlProps<T extends string> {
   value: T;
   onChange: (id: T) => void;
   className?: string;
+  /**
+   * "always" (default) — every segment shows its label, exactly as before, so
+   * the consumers that don't pass this are byte-identical (SHELL_NAV Phase 2 §2.1).
+   * "activeOnly" — only the active segment shows its label; inactive segments
+   * render icon-only (the label is visually collapsed via sr-only, so the button
+   * narrows to the icon while the label stays in the DOM). Pair with per-option
+   * `icon` for a legible icon-only rail. Accessible name is preserved either way
+   * (see the per-button aria-label below).
+   */
+  labelVisibility?: "always" | "activeOnly";
   "aria-label"?: string;
 }
 
@@ -57,6 +67,7 @@ export function SegmentedControl<T extends string>({
   value,
   onChange,
   className = "",
+  labelVisibility = "always",
   ...rest
 }: SegmentedControlProps<T>) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -138,6 +149,15 @@ export function SegmentedControl<T extends string>({
       {options.map((opt, i) => {
         const isActive = opt.id === value;
         const prevIsActive = i > 0 && options[i - 1].id === value;
+        // Under "activeOnly", an inactive segment collapses its label to
+        // icon-only. The label stays in the DOM (sr-only, not display:none) so
+        // the button still carries an accessible name from its text content;
+        // an explicit aria-label is added ONLY here, where the visible text is
+        // hidden — never alongside a VISIBLE label, which is the pattern that
+        // makes some screen readers double-announce. Active segments and every
+        // "always" consumer name themselves from their visible text, as before.
+        const collapse = labelVisibility === "activeOnly" && !isActive;
+        const label = collapse ? <span className="sr-only">{opt.label}</span> : opt.label;
         return (
           <button
             key={opt.id}
@@ -148,6 +168,7 @@ export function SegmentedControl<T extends string>({
             role="tab"
             type="button"
             aria-selected={isActive}
+            aria-label={collapse ? opt.label : undefined}
             onClick={() => onChange(opt.id)}
             className={[
               "relative z-10 shrink-0 whitespace-nowrap rounded-[var(--radius-full)] px-4 py-2 text-xs font-semibold",
@@ -167,14 +188,15 @@ export function SegmentedControl<T extends string>({
             {opt.icon != null ? (
               // Icon + label share the segment; the inner flex owns the gap so
               // the button's own padding/box is unchanged from the label-only
-              // path. The icon is decorative — the visible label is the
-              // accessible name (role=tab), so it carries aria-hidden.
+              // path. The icon is decorative — the visible label (or, when
+              // collapsed, the aria-label) is the accessible name (role=tab), so
+              // the glyph carries aria-hidden.
               <span className="inline-flex items-center gap-1.5">
                 <span aria-hidden className="inline-flex shrink-0">{opt.icon}</span>
-                {opt.label}
+                {label}
               </span>
             ) : (
-              opt.label
+              label
             )}
           </button>
         );
