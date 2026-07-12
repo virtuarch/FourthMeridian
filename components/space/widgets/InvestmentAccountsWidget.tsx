@@ -45,7 +45,10 @@ function fmtSyncedAt(iso: string | null): string | null {
 }
 
 // ── Per-account Refresh (reuses the existing holdings refresh path) ───────────
-function AccountRefreshButton({ plaidItemId, onDone }: { plaidItemId: string; onDone: () => void }) {
+// Exported additively so the Investments Perspective's Connections card reuses
+// this exact button (same /api/plaid/refresh path, cooldown handling, copy)
+// instead of forking it — no behavior change to this widget.
+export function AccountRefreshButton({ plaidItemId, onDone }: { plaidItemId: string; onDone: () => void }) {
   const [phase, setPhase] = useState<"idle" | "loading">("idle");
   const [note, setNote] = useState("");
 
