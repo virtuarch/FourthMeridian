@@ -101,6 +101,7 @@ import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { WealthPerspective } from "@/components/space/widgets/wealth/WealthPerspective";
 import { CashFlowPerspective as CashFlowPerspectiveWorkspace } from "@/components/space/widgets/cashflow/CashFlowPerspective";
+import { LiquidityPerspective } from "@/components/space/widgets/liquidity/LiquidityPerspective";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
@@ -3216,6 +3217,19 @@ export function SpaceDashboard({
                   filterId={cashFlowFilterId}
                   onPerspectiveChange={onCashFlowPerspectiveChange}
                   stamp={cashFlowStampValue}
+                />
+              ) : activePerspectiveId === "liquidity" ? (
+                // Liquidity Perspective — the redesigned CURRENT-STATE-ONLY
+                // multi-panel composition (mirrors the Cash Flow grid pattern),
+                // replacing the generic SectionCard stack for this Perspective
+                // only. No as-of / history read: the shell's As Of / Compare To
+                // have zero effect here, exactly as the old stack. The lens lede
+                // consumes the already-fetched lensResults["liquidity"] — no new
+                // fetch, no envelope change.
+                <LiquidityPerspective
+                  accounts={accounts}
+                  ctx={widgetCtx}
+                  lensResult={lensResults?.["liquidity"] ?? null}
                 />
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
