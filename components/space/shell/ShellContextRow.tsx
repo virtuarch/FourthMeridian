@@ -1,31 +1,20 @@
 "use client";
 
 /**
- * components/space/SharedHistoricalContext.tsx
+ * components/space/shell/ShellContextRow.tsx
  *
- * Perspective shell — Row 1 (Shared Historical Context). These controls sit
- * ABOVE the Perspective tabs and define the shared context every Perspective
- * inherits: the as-of valuation date, an optional comparison date, and the
- * shell-level Completeness and Evidence surfaces. Time is a property of the
- * shell, not of any single Perspective (the permanent Perspective Engine
- * hierarchy).
- *
- * Presentation only — this component holds no business logic and computes
- * nothing:
- *  - As of / Compare to carry the shared FinancialContext state (the A5-S1
- *    ComputeOptions.asOf contract). Perspectives whose historical engines are
- *    complete consume it; others ignore it for now.
- *  - Completeness / Evidence render an existing envelope / provenance summary
- *    when one is supplied, and a neutral, non-fabricated placeholder otherwise —
- *    a slot that cleanly accommodates the real DTOs when they arrive, never
- *    invented data.
+ * Perspective shell — Container 1, Row A ("time & trust"). Absorbs the former
+ * SharedHistoricalContext: the As Of date, a ⇄ swap affordance, the Compare To
+ * date (with clear), and the shell-level Completeness / Evidence chips. The chips
+ * are read-only this slice; S4 makes them interactive. Presentation only — every
+ * mutation flows up through the canonical shell reducer.
  */
 
 import { CalendarDays, ArrowLeftRight, ShieldCheck, FileSearch, X } from "lucide-react";
 
 /** A completeness/trust summary for the shell — supplied only when it exists. */
 export interface CompletenessSummary {
-  /** User-facing label, e.g. "Reconstructed", "Complete". Never a tier name. */
+  /** User-facing label, e.g. "Reconstructed", "Observed". Never a tier name. */
   label: string;
   tone?: "neutral" | "positive" | "warning";
 }
@@ -36,17 +25,15 @@ export interface EvidenceSummary {
 }
 
 interface Props {
-  /** As-of date (YYYY-MM-DD). Defaults to today upstream. */
   asOf: string;
   onAsOfChange: (value: string) => void;
-  /** Optional comparison date (YYYY-MM-DD) or null for none. */
   compareTo: string | null;
   onCompareToChange: (value: string | null) => void;
-  /** Today (YYYY-MM-DD) — the max selectable date; no future as-of. */
+  /** Exchange As Of ↔ Compare To (disabled when there is no comparison). */
+  onSwap: () => void;
+  /** Today (YYYY-MM-DD) — the max selectable date; no future As Of. */
   today: string;
-  /** Surfaced when the completeness envelope exists; placeholder otherwise. */
   completeness?: CompletenessSummary;
-  /** Surfaced when an evidence/provenance summary exists; placeholder otherwise. */
   evidence?: EvidenceSummary;
   className?: string;
 }
@@ -90,11 +77,12 @@ function ShellChip({
   );
 }
 
-export function SharedHistoricalContext({
+export function ShellContextRow({
   asOf,
   onAsOfChange,
   compareTo,
   onCompareToChange,
+  onSwap,
   today,
   completeness,
   evidence,
@@ -103,7 +91,7 @@ export function SharedHistoricalContext({
   return (
     <div
       className={["flex flex-wrap items-center gap-2", className].join(" ")}
-      aria-label="Shared historical context"
+      aria-label="Time and trust context"
     >
       {/* As of — the shared valuation date (defaults to today). */}
       <label className="inline-flex items-center gap-1.5">
@@ -121,12 +109,21 @@ export function SharedHistoricalContext({
         />
       </label>
 
+      {/* Swap — exchange As Of ↔ Compare To (concept's ⇄ affordance). */}
+      <button
+        type="button"
+        onClick={onSwap}
+        disabled={compareTo === null}
+        aria-label="Swap As of and Compare to dates"
+        title="Swap As of and Compare to"
+        className="inline-flex items-center justify-center h-7 w-7 rounded-lg border border-[var(--border-hairline)] bg-[var(--surface-inset)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--border-hairline-strong)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+      >
+        <ArrowLeftRight size={13} aria-hidden />
+      </button>
+
       {/* Compare to — optional comparison date; none by default. */}
       <label className="inline-flex items-center gap-1.5">
-        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]">
-          <ArrowLeftRight size={13} className="text-[var(--text-faint)]" aria-hidden />
-          Compare to
-        </span>
+        <span className="text-[11px] font-medium text-[var(--text-muted)]">Compare to</span>
         <span className="inline-flex items-center">
           <input
             type="date"
@@ -154,17 +151,8 @@ export function SharedHistoricalContext({
       {/* Shell-level trust surfaces — real envelope/provenance when present,
           neutral placeholder otherwise (never fabricated). */}
       <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
-        <ShellChip
-          icon={<ShieldCheck size={13} />}
-          label="Completeness"
-          value={completeness?.label}
-          tone={completeness?.tone}
-        />
-        <ShellChip
-          icon={<FileSearch size={13} />}
-          label="Evidence"
-          value={evidence?.label}
-        />
+        <ShellChip icon={<ShieldCheck size={13} />} label="Completeness" value={completeness?.label} tone={completeness?.tone} />
+        <ShellChip icon={<FileSearch size={13} />} label="Evidence" value={evidence?.label} />
       </div>
     </div>
   );

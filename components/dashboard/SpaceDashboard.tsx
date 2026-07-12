@@ -94,8 +94,7 @@ import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiv
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
-import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
-import { SharedHistoricalContext } from "@/components/space/SharedHistoricalContext";
+import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { WealthPerspective } from "@/components/space/widgets/wealth/WealthPerspective";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
@@ -1909,97 +1908,6 @@ function SortableSectionCard({
   );
 }
 
-// ─── Perspective tab selector (UX-PER-3) ────────────────────────────────────────
-//
-// Free-form tab/pill selector for the Perspectives tab — NOT cards, and NOT
-// wrapped in any grouped container/track (so no enclosing card background).
-//   - Wide (md+): a 2-row / 3-column grid of lightweight pills (row-major, so a
-//     6-item category reads Wealth|Cash Flow|Liquidity / Investments|Debt|Goals).
-//   - Narrow: a compact <select>.
-// Accessible: role=tablist/tab, aria-selected, roving tabindex, arrow/Home/End
-// keyboard nav. Active pill is filled; inactive pills are subtle.
-function PerspectiveTabSelector({
-  items,
-  activeId,
-  onSelect,
-}: {
-  items:    { id: string; label: string; hasWorkspace: boolean }[];
-  activeId: string | null;
-  onSelect: (id: string) => void;
-}) {
-  const btnRefs = useRef<(HTMLButtonElement | null)[]>([]);
-
-  function move(toIdx: number) {
-    const n = items.length;
-    if (n === 0) return;
-    const i = ((toIdx % n) + n) % n;
-    onSelect(items[i].id);
-    btnRefs.current[i]?.focus();
-  }
-
-  function onKeyDown(e: React.KeyboardEvent, idx: number) {
-    switch (e.key) {
-      case "ArrowRight": e.preventDefault(); move(idx + 1); break;
-      case "ArrowLeft":  e.preventDefault(); move(idx - 1); break;
-      case "ArrowDown":  e.preventDefault(); move(idx + 3); break;
-      case "ArrowUp":    e.preventDefault(); move(idx - 3); break;
-      case "Home":       e.preventDefault(); move(0); break;
-      case "End":        e.preventDefault(); move(items.length - 1); break;
-    }
-  }
-
-  return (
-    <div>
-      {/* Narrow — compact dropdown */}
-      <div className="md:hidden">
-        <label htmlFor="perspective-select" className="sr-only">Perspective</label>
-        <select
-          id="perspective-select"
-          value={activeId ?? ""}
-          onChange={(e) => onSelect(e.target.value)}
-          className="w-full bg-[var(--surface-inset)] border border-[var(--border-hairline-strong)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-info)]"
-        >
-          {items.map((i) => (
-            <option key={i.id} value={i.id}>
-              {i.label}{i.hasWorkspace ? "" : " · soon"}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Wide — free-form 2×3 pill tabs, no enclosing container/background */}
-      <div role="tablist" aria-label="Perspectives" className="hidden md:grid grid-cols-3 gap-2">
-        {items.map((i, idx) => {
-          const active = i.id === activeId;
-          return (
-            <button
-              key={i.id}
-              ref={(el) => { btnRefs.current[idx] = el; }}
-              id={`ptab-${i.id}`}
-              role="tab"
-              type="button"
-              aria-selected={active}
-              tabIndex={active ? 0 : -1}
-              onClick={() => onSelect(i.id)}
-              onKeyDown={(e) => onKeyDown(e, idx)}
-              className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                active
-                  ? "bg-[var(--accent-info)] text-white"
-                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]"
-              }`}
-            >
-              <span className="truncate">{i.label}</span>
-              {!i.hasWorkspace && (
-                <span className={`text-[10px] ${active ? "text-white/70" : "text-[var(--text-faint)]"}`}>soon</span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 // ─── Settings tab (REMOVED — UX-CUST-1A correction) ─────────────────────────────
 //
 // Settings is no longer an in-space tab. Section show/hide already lives in
@@ -3164,52 +3072,35 @@ export function SpaceDashboard({
             container. Overview's Perspectives doorway is unchanged. */}
         {activeTab === "PERSPECTIVES" && (
           <div className="space-y-4">
-            {/* ── Shared Perspective shell ─────────────────────────────────────
-                Time is shared context ABOVE every Perspective. The rows below
-                the tabs inherit one FinancialContext; changing it here changes
-                it for every Perspective (as each Perspective's historical engine
-                comes online). Presentation only — no computation lives here. */}
-
-            {/* Row 1 — Shared Historical Context: as-of / compare-to / the
-                shell-level Completeness + Evidence surfaces. */}
-            <SharedHistoricalContext
+            {/* ── Perspective shell — two framed containers (§2) ────────────────
+                Container 1 (time & trust): As of / Compare to / Completeness /
+                Evidence over the preset row. Container 2 (the lens): the tabs.
+                Time is shared context above every Perspective; the shell writes
+                shell state only through its own controls. Wealth supplies the
+                Completeness/Evidence envelope; other Perspectives leave them as
+                neutral placeholders until their engines drive them. */}
+            <PerspectiveShell
               asOf={asOf}
-              onAsOfChange={handleAsOfChange}
               compareTo={compareTo}
-              onCompareToChange={handleCompareToChange}
               today={shellToday}
-              // Wealth populates the shared Completeness + Evidence surfaces from
-              // its active result; other Perspectives leave them as-is (neutral
-              // placeholders) until their engines drive them.
+              onAsOfChange={handleAsOfChange}
+              onCompareToChange={handleCompareToChange}
+              onSwap={shell.actions.swap}
               completeness={wealthWorkspaceActive
                 ? { label: wealthResult.completeness.label, tone: wealthResult.completeness.tone }
                 : undefined}
               evidence={wealthWorkspaceActive && wealthResult.evidence
                 ? { label: wealthResult.evidence.label }
                 : undefined}
-            />
-
-            {/* Row 2 — Shared Time Controls (relative periods: to-date group +
-                rolling group). These belong to the shell, not to any one
-                Perspective: Cash Flow consumes them immediately; the others
-                ignore them until their historical engines are complete.
-                Explicit historical selection still lives inside the Cash Flow
-                History widget's own Month/Quarter/Year dropdowns. */}
-            <CashFlowPeriodSelector
-              value={timePreset === "CUSTOM" ? null : timePreset}
-              onChange={handleSelectSlice}
-            />
-
-            {/* Row 3 — Perspective tabs. Every Perspective inherits the shared
-                context above; selecting one swaps the workspace below. */}
-            <PerspectiveTabSelector
-              items={perspectiveItems.map((p) => ({
+              presetValue={timePreset === "CUSTOM" ? null : timePreset}
+              onSelectPreset={handleSelectSlice}
+              tabs={perspectiveItems.map((p) => ({
                 id:           p.id,
                 label:        p.label,
                 hasWorkspace: !!(p.widgets && p.widgets.length > 0),
               }))}
-              activeId={activePerspectiveId}
-              onSelect={setSelectedPerspectiveId}
+              activeTabId={activePerspectiveId}
+              onSelectTab={setSelectedPerspectiveId}
             />
 
             {/* Row 4 — Perspective-specific controls slot. These stay
