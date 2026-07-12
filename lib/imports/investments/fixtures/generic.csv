@@ -1,0 +1,4 @@
+Trade Date,Action,Symbol,Description,Quantity,Price,Amount,Currency,Reference
+2026-05-01,Buy,SPY,SPDR S&P 500,3,400.00,-1200.00,USD,REF-1
+2026-05-05,Dividend,SPY,SPDR S&P 500,,,15.00,USD,REF-2
+2026-05-10,Transfer In,BND,VANGUARD BND,25,,,USD,REF-3
