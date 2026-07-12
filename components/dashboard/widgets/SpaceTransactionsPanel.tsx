@@ -21,6 +21,7 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { FLOW_TYPE_LABEL, UNCLASSIFIED_FLOW_KEY, sumByFlowType } from "@/lib/transactions/flow-predicates";
+import { TransactionsCalendarHeatmap } from "@/components/dashboard/widgets/transactions/TransactionsCalendarHeatmap";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 import { TransactionDate } from "@/components/ui/TransactionDate";
@@ -176,6 +177,10 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   const [merchantFilter, setMerchantFilter] = useState<string | null>(null);
   // Group By / perspective (see GroupBy above). "none" = the flat List view.
   const [groupBy, setGroupBy] = useState<GroupBy>("none");
+  // §2.4 — top-level view switch. "table" = the list/grouped view (Group By
+  // applies); "calendar" = the day heat-map over the same filtered set. One
+  // control, not two — Group By is a table-only sub-mode, Calendar is a peer view.
+  const [viewMode, setViewMode] = useState<"table" | "calendar">("table");
 
   // ── Account lookup helpers ───────────────────────────────────────────────
   const accountMap = useMemo(() => {
@@ -416,20 +421,38 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
           )}
         </div>
 
-        {/* Date-range pill strip */}
-        <div className="flex items-center gap-1 border rounded-xl p-1 shrink-0" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
-          {(["all", "90d", "30d", "7d"] as DateRange[]).map((r) => (
-            <button
-              key={r}
-              onClick={() => setDateRange(r)}
-              className="text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors touch-manipulation"
-              style={dateRange === r
-                ? { background: "var(--accent-info)", color: "#fff" }
-                : { color: "var(--text-secondary)" }}
-            >
-              {DATE_RANGE_LABELS[r]}
-            </button>
-          ))}
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Table / Calendar view switch (§2.4) */}
+          <div className="flex items-center gap-1 border rounded-xl p-1" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
+            {(["table", "calendar"] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setViewMode(v)}
+                className="text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors touch-manipulation capitalize"
+                style={viewMode === v
+                  ? { background: "var(--accent-info)", color: "#fff" }
+                  : { color: "var(--text-secondary)" }}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+
+          {/* Date-range pill strip */}
+          <div className="flex items-center gap-1 border rounded-xl p-1" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
+            {(["all", "90d", "30d", "7d"] as DateRange[]).map((r) => (
+              <button
+                key={r}
+                onClick={() => setDateRange(r)}
+                className="text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors touch-manipulation"
+                style={dateRange === r
+                  ? { background: "var(--accent-info)", color: "#fff" }
+                  : { color: "var(--text-secondary)" }}
+              >
+                {DATE_RANGE_LABELS[r]}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -556,18 +579,21 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
           ))}
         </select>
 
-        {/* Group by / perspective — one control; "none" is the flat List view. */}
-        <select
-          value={groupBy}
-          onChange={(e) => setGroupBy(e.target.value as GroupBy)}
-          className={`px-3 py-2.5 ${INPUT_BASE}`}
-          style={inputStyle}
-          aria-label="Group by"
-        >
-          {(["none", "flow", "merchant", "account", "category"] as GroupBy[]).map((g) => (
-            <option key={g} value={g}>{g === "none" ? "No grouping" : `Group: ${GROUP_BY_LABELS[g]}`}</option>
-          ))}
-        </select>
+        {/* Group by / perspective — one control; "none" is the flat List view.
+            Table-only: grouping doesn't apply to the calendar view (§2.4). */}
+        {viewMode === "table" && (
+          <select
+            value={groupBy}
+            onChange={(e) => setGroupBy(e.target.value as GroupBy)}
+            className={`px-3 py-2.5 ${INPUT_BASE}`}
+            style={inputStyle}
+            aria-label="Group by"
+          >
+            {(["none", "flow", "merchant", "account", "category"] as GroupBy[]).map((g) => (
+              <option key={g} value={g}>{g === "none" ? "No grouping" : `Group: ${GROUP_BY_LABELS[g]}`}</option>
+            ))}
+          </select>
+        )}
 
         {/* Needs review — reuses the TE-2B needsClassification boolean as-is. */}
         <button
@@ -647,6 +673,10 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>
               No transactions match your filters.
             </p>
+          ) : viewMode === "calendar" ? (
+            // §2.4 — day heat-map over the same filtered set (net in − out), the
+            // amount accessor + formatter shared with the summary chips.
+            <TransactionsCalendarHeatmap transactions={filtered} amountOf={rowAmount} fmt={fmtAgg} />
           ) : groups ? (
             // Grouped (pivoted) view — a header per bucket, then its rows.
             <div className="divide-y divide-[var(--border-hairline)]">
