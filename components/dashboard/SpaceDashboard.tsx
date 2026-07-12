@@ -105,6 +105,7 @@ import { LiquidityPerspective } from "@/components/space/widgets/liquidity/Liqui
 import { InvestmentsPerspective } from "@/components/space/widgets/investments/InvestmentsPerspective";
 import { useInvestmentsTimeMachine } from "@/components/space/widgets/investments/useInvestmentsTimeMachine";
 import { DebtPerspective } from "@/components/space/widgets/debt/DebtPerspective";
+import { AccountsPerspective } from "@/components/space/widgets/accounts/AccountsPerspective";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
@@ -1382,7 +1383,7 @@ const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElem
   "goal_required_pace":      (p) => renderGoalRequiredPace(p.goals, p.ctx),
   "goal_funding_gap":        (p) => renderGoalFundingGap(p.goals, p.ctx),
   "net_worth_section":      renderNetWorth,       // deprecated alias — seeded pre-v2
-  "accounts_overview":      (p) => <AccountsCard accounts={p.accounts} />,
+  "accounts_overview":      (p) => <AccountsPerspective spaceId={p.spaceId} accounts={p.accounts} />,
   "business_accounts":      (p) => <AccountsCard accounts={p.accounts} />,
   "debt_summary":           renderDebtSummary,
   "debt_payoff_tracker":    renderDebtSummary,    // TODO: Progress/Timeline hybrid when payoff simulation is ready
