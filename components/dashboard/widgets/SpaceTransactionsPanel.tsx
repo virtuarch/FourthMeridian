@@ -20,7 +20,7 @@ import { Search, X } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
-import { isCostFlow, isRefund, isIncome, FLOW_TYPE_LABEL } from "@/lib/transactions/flow-predicates";
+import { FLOW_TYPE_LABEL, UNCLASSIFIED_FLOW_KEY, sumByFlowType } from "@/lib/transactions/flow-predicates";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 import { TransactionDate } from "@/components/ui/TransactionDate";
@@ -244,6 +244,16 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     });
   }, [transactions, catFilter, flowFilter, dispositionFilter, sourceFilter, merchantFilter, needsReviewOnly, accountFilter, cutoff, pendingFilter, search]);
 
+  // ── Shared per-FlowType aggregation (§2.3.1) ───────────────────────────────
+  // ONE sumByFlowType map drives BOTH the summary chips and the "By Flow Type"
+  // Group By bucket totals — they can never drift (§9.8). Amount accessor = the
+  // row's own converted magnitude, identical to the pre-existing summary math.
+  const flowSums = useMemo(
+    () => sumByFlowType(filtered, (t) => Math.abs(rowAmount(t))),
+    [filtered, rowAmount],
+  );
+  const sumOf = useCallback((k: string) => flowSums.get(k) ?? 0, [flowSums]);
+
   // ── Group By (client-side pivot over the filtered list) ────────────────────
   // First-appearance order (filtered is date-desc) — no re-sort, no refetch.
   const groups = useMemo(() => {
@@ -254,7 +264,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       let label: string;
       switch (groupBy) {
         case "flow":
-          key = tx.flowType ?? "__unclassified__";
+          key = tx.flowType ?? UNCLASSIFIED_FLOW_KEY;
           label = tx.flowType ? (FLOW_TYPE_LABEL[tx.flowType] ?? tx.flowType) : "Unclassified";
           break;
         case "merchant":
@@ -275,23 +285,28 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       bucket.rows.push(tx);
       map.set(key, bucket);
     }
-    return [...map.entries()].map(([key, g]) => ({ key, ...g }));
-  }, [filtered, groupBy, acctInst, acctName]);
+    // Per-bucket total. "By Flow Type" reads the SHARED sumByFlowType map (never a
+    // second reduce — §9.8); other axes sum their own rows with the same accessor.
+    return [...map.entries()].map(([key, g]) => ({
+      key,
+      ...g,
+      sum: groupBy === "flow"
+        ? (flowSums.get(key) ?? 0)
+        : g.rows.reduce((s, t) => s + Math.abs(rowAmount(t)), 0),
+    }));
+  }, [filtered, groupBy, acctInst, acctName, flowSums, rowAmount]);
 
-  // ── Summary totals ────────────────────────────────────────────────────────
-  // FlowType P5 Slice 2 — from flowType (no category/sign). Spend = SPENDING +
-  // FEE + INTEREST outflows minus REFUND (clamped ≥ 0); In = INCOME only.
-  // Transfers/debt payments/investments/adjustments/unknowns excluded from both.
-  const grossSpend = filtered
-    .filter((t) => isCostFlow(t.flowType))
-    .reduce((s, t) => s + Math.abs(rowAmount(t)), 0);
-  const spendRefunds = filtered
-    .filter((t) => isRefund(t.flowType))
-    .reduce((s, t) => s + Math.abs(rowAmount(t)), 0);
-  const totalSpend = Math.max(0, grossSpend - spendRefunds);
-  const totalIn = filtered
-    .filter((t) => isIncome(t.flowType))
-    .reduce((s, t) => s + Math.abs(rowAmount(t)), 0);
+  // ── Summary totals (§2.3.1) ────────────────────────────────────────────────
+  // Composed from the shared flowSums map above (same source as Group By).
+  // Spend = SPENDING + FEE + INTEREST (cost flows) minus REFUND, clamped ≥ 0 —
+  // reproduces the pre-existing figure exactly, now composed from the shared map.
+  const grossSpend  = sumOf("SPENDING") + sumOf("FEE") + sumOf("INTEREST");
+  const totalRefund = sumOf("REFUND");
+  const totalSpend  = Math.max(0, grossSpend - totalRefund);
+  const totalIn     = sumOf("INCOME");
+  const totalTransfer   = sumOf("TRANSFER");
+  const totalDebtPmt    = sumOf("DEBT_PAYMENT");
+  const totalInvestment = sumOf("INVESTMENT");
 
   // ── Active filter chip helpers ─────────────────────────────────────────
   const selectedAccount = accountFilter ? accountMap.get(accountFilter) : null;
@@ -586,6 +601,36 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             <span className="font-semibold" style={{ color: "var(--accent-positive)" }}>+{fmtAgg(totalIn)}</span>
           </span>
         )}
+        {/* §2.3.1 — the rest of the FlowType ontology, one figure per kind.
+            Zero-count discipline (§9.7): a kind absent from the filtered list
+            renders NO chip (never a fabricated "$0.00"). Refund is disclosed as
+            its own figure while Spend stays net of refunds, so no dollar is
+            counted twice (§2.3.1's "do not double-count"). Transfers / debt
+            payments / investments are movements, not P&L — shown in neutral ink. */}
+        {totalTransfer > 0 && (
+          <span style={{ color: "var(--text-secondary)" }}>
+            Transfers:{" "}
+            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{fmtAgg(totalTransfer)}</span>
+          </span>
+        )}
+        {totalDebtPmt > 0 && (
+          <span style={{ color: "var(--text-secondary)" }}>
+            Debt payments:{" "}
+            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{fmtAgg(totalDebtPmt)}</span>
+          </span>
+        )}
+        {totalInvestment > 0 && (
+          <span style={{ color: "var(--text-secondary)" }}>
+            Investments:{" "}
+            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{fmtAgg(totalInvestment)}</span>
+          </span>
+        )}
+        {totalRefund > 0 && (
+          <span style={{ color: "var(--text-secondary)" }}>
+            Refunds:{" "}
+            <span className="font-semibold" style={{ color: "var(--accent-positive)" }}>+{fmtAgg(totalRefund)}</span>
+          </span>
+        )}
       </div>
 
       {/* ── Transaction list ─────────────────────────────────────────────────── */}
@@ -612,8 +657,11 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
                     style={{ background: "var(--surface-muted)", color: "var(--text-secondary)" }}
                   >
                     <span className="text-xs font-semibold uppercase tracking-wide truncate">{g.label}</span>
-                    <span className="text-xs shrink-0" style={{ color: "var(--text-muted)" }}>
-                      {g.rows.length}
+                    <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
+                      {/* By-Flow-Type sum comes from the shared sumByFlowType map (§9.8). */}
+                      <span className="tabular-nums" style={{ color: "var(--text-secondary)" }}>{fmtAgg(g.sum)}</span>
+                      <span>·</span>
+                      <span>{g.rows.length}</span>
                     </span>
                   </div>
                   <div className="divide-y divide-[var(--border-hairline)]">

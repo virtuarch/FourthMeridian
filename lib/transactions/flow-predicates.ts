@@ -136,3 +136,36 @@ export const FLOW_TYPE_LABEL: Record<string, string> = {
   ADJUSTMENT:   'Adjustment',
   UNKNOWN:      'Unknown',
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Aggregation — the single per-FlowType sum both the Transactions summary bar
+// and its "By Flow Type" Group By consume (Transactions Tab §2.3.1).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Sentinel bucket key for rows with no `flowType` (unclassified). Keeps
+ * `sumByFlowType` and the "By Flow Type" Group By bucketing on ONE shared key so
+ * the summary bar and the grouped view cannot diverge on where a null-flow row
+ * lands (stop condition §9.8).
+ */
+export const UNCLASSIFIED_FLOW_KEY = '__unclassified__';
+
+/**
+ * Sum a caller-supplied amount accessor over rows, bucketed by `flowType` value
+ * (null → `UNCLASSIFIED_FLOW_KEY`). This is the SINGLE aggregation the
+ * Transactions summary chips and the "By Flow Type" Group By bucket totals both
+ * consume — a per-kind total can never be computed two different ways. Pure and
+ * import-free: currency conversion / abs / sign all live in the caller's `amount`
+ * accessor, keeping this module's zero-imports contract intact.
+ */
+export function sumByFlowType<T extends { flowType?: string | null }>(
+  rows: readonly T[],
+  amount: (row: T) => number,
+): Map<string, number> {
+  const sums = new Map<string, number>();
+  for (const r of rows) {
+    const key = r.flowType ?? UNCLASSIFIED_FLOW_KEY;
+    sums.set(key, (sums.get(key) ?? 0) + amount(r));
+  }
+  return sums;
+}
