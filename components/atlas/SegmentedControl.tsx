@@ -150,13 +150,20 @@ export function SegmentedControl<T extends string>({
         const isActive = opt.id === value;
         const prevIsActive = i > 0 && options[i - 1].id === value;
         // Under "activeOnly", an inactive segment collapses its label to
-        // icon-only. The label stays in the DOM (sr-only, not display:none) so
-        // the button still carries an accessible name from its text content;
-        // an explicit aria-label is added ONLY here, where the visible text is
-        // hidden — never alongside a VISIBLE label, which is the pattern that
-        // makes some screen readers double-announce. Active segments and every
-        // "always" consumer name themselves from their visible text, as before.
+        // icon-only (the label stays in the DOM via sr-only, not display:none).
+        //
+        // Accessible name (stop condition #1): EVERY segment on an "activeOnly"
+        // surface gets an explicit aria-label — not just the collapsed ones.
+        // Empirically verified against Chrome's accessibility tree: the ACTIVE
+        // segment renders its label as text nested inside a child <span>, and
+        // Chrome does NOT surface a name-from-contents for that nesting (the
+        // node reads as nameless to assistive tech). An explicit aria-label is
+        // the only reliable name. aria-label equals the visible text, so per the
+        // ARIA name computation it supersedes the contents and is announced once
+        // (no double-announce). "always" surfaces get no aria-label at all, so
+        // the four untouched consumers are byte-identical.
         const collapse = labelVisibility === "activeOnly" && !isActive;
+        const isActiveOnly = labelVisibility === "activeOnly";
         const label = collapse ? <span className="sr-only">{opt.label}</span> : opt.label;
         return (
           <button
@@ -168,7 +175,7 @@ export function SegmentedControl<T extends string>({
             role="tab"
             type="button"
             aria-selected={isActive}
-            aria-label={collapse ? opt.label : undefined}
+            aria-label={isActiveOnly ? opt.label : undefined}
             onClick={() => onChange(opt.id)}
             className={[
               "relative z-10 shrink-0 whitespace-nowrap rounded-[var(--radius-full)] px-4 py-2 text-xs font-semibold",

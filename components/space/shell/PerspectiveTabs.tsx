@@ -61,6 +61,7 @@ export function PerspectiveTabs({
       options={options}
       value={activeId ?? ""}
       onChange={onSelect}
+      labelVisibility="activeOnly"
     />
   );
 }

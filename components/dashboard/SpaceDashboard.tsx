@@ -3151,6 +3151,7 @@ export function SpaceDashboard({
             options={railOptions}
             value={activeTab}
             onChange={setActiveTab}
+            labelVisibility="activeOnly"
           />
         </FloatingNavWrapper>
 
