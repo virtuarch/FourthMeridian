@@ -73,6 +73,17 @@ const PENDING_LABELS: Record<PendingFilter, string> = {
   pending: "Pending",
 };
 
+// ── Source filter (provenance) ─────────────────────────────────────────────────
+// Backed by the list-level `source` field (getTransactions() → deriveSource).
+type SourceFilter = "all" | "plaid" | "import" | "manual";
+
+const SOURCE_LABELS: Record<SourceFilter, string> = {
+  all:    "All sources",
+  plaid:  "Plaid",
+  import: "Import",
+  manual: "Manual",
+};
+
 // ── Transfer disposition (CF-1) ────────────────────────────────────────────────
 // Humanized labels for the canonical TransferDisposition already computed for
 // every TRANSFER row by getTransactions(). These present the existing canonical
@@ -143,6 +154,8 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   // CF-1 transfer disposition — filter TRANSFER rows by their canonical
   // disposition (already on every row). null = all dispositions.
   const [dispositionFilter, setDispositionFilter] = useState<string | null>(null);
+  // Provenance source — backed by the list-level `source` field.
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
 
   // ── Account lookup helpers ───────────────────────────────────────────────
   const accountMap = useMemo(() => {
@@ -188,6 +201,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       if (catFilter     && tx.category   !== catFilter)     return false;
       if (flowFilter    && tx.flowType   !== flowFilter)    return false;
       if (dispositionFilter && tx.transferDisposition !== dispositionFilter) return false;
+      if (sourceFilter !== "all" && tx.source !== sourceFilter) return false;
       if (needsReviewOnly && !tx.needsClassification)       return false;
       if (accountFilter && tx.accountId  !== accountFilter) return false;
       if (cutoff        && tx.date        < cutoff)         return false;
@@ -198,7 +212,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       }
       return true;
     });
-  }, [transactions, catFilter, flowFilter, dispositionFilter, needsReviewOnly, accountFilter, cutoff, pendingFilter, search]);
+  }, [transactions, catFilter, flowFilter, dispositionFilter, sourceFilter, needsReviewOnly, accountFilter, cutoff, pendingFilter, search]);
 
   // ── Summary totals ────────────────────────────────────────────────────────
   // FlowType P5 Slice 2 — from flowType (no category/sign). Spend = SPENDING +
@@ -223,6 +237,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     setCatFilter(null);
     setFlowFilter(null);
     setDispositionFilter(null);
+    setSourceFilter("all");
     setNeedsReviewOnly(false);
     setAccountFilter(null);
     setDateRange("all");
@@ -230,8 +245,8 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   }, []);
 
   const hasActiveFilters =
-    search || catFilter || flowFilter || dispositionFilter || needsReviewOnly ||
-    accountFilter || dateRange !== "all" || pendingFilter !== "all";
+    search || catFilter || flowFilter || dispositionFilter || sourceFilter !== "all" ||
+    needsReviewOnly || accountFilter || dateRange !== "all" || pendingFilter !== "all";
 
   return (
     <div className="space-y-4">
@@ -274,6 +289,14 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
               {TRANSFER_DISPOSITION_LABEL[dispositionFilter] ?? dispositionFilter}
               <button onClick={() => setDispositionFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
+                <X size={10} />
+              </button>
+            </span>
+          )}
+          {sourceFilter !== "all" && (
+            <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
+              {SOURCE_LABELS[sourceFilter]}
+              <button onClick={() => setSourceFilter("all")} className="hover:text-[var(--text-primary)] ml-0.5">
                 <X size={10} />
               </button>
             </span>
@@ -405,6 +428,18 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
           <option value="">All movements</option>
           {Object.entries(TRANSFER_DISPOSITION_LABEL).map(([value, label]) => (
             <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
+
+        {/* Source (provenance) — backed by the list-level `source` field. */}
+        <select
+          value={sourceFilter}
+          onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
+          className={`px-3 py-2.5 ${INPUT_BASE}`}
+          style={inputStyle}
+        >
+          {(["all", "plaid", "import", "manual"] as SourceFilter[]).map((s) => (
+            <option key={s} value={s}>{SOURCE_LABELS[s]}</option>
           ))}
         </select>
 

@@ -194,6 +194,13 @@ export interface Transaction {
   // is set only for TRANSFER rows; null otherwise.
   transferDisposition?: TransferDisposition | null;
   needsClassification?: boolean;
+
+  // Transactions Tab Phase 1 — how this row entered Fourth Meridian, projected
+  // onto the list DTO by getTransactions() via the SAME deriveSource() precedence
+  // the detail read uses (import batch → Plaid → manual). Additive/optional:
+  // reads that omit it (e.g. getDebtTransactions, the account-modal route) leave
+  // it undefined. Presentation only — no calculation reads it.
+  source?: TransactionProvenanceSource | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

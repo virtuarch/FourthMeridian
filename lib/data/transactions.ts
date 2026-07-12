@@ -48,6 +48,7 @@ import {
   TransactionDetailCounterparty,
   TransactionDetailProvenance,
   TransactionDetailReporting,
+  TransactionProvenanceSource,
 } from "@/types";
 import { ShareStatus, FlowType } from "@prisma/client";
 
@@ -144,7 +145,23 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
       counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
     }),
     ...contextFields(r, resolvedCp),
+    // Transactions Tab Phase 1 — the provenance source as a list-level field
+    // (same precedence the detail read uses; see deriveSource). Pure, no query.
+    source: deriveSource(r),
   }));
+}
+
+/**
+ * The single provenance-source precedence used by BOTH the list read
+ * (getTransactions) and the detail read (getTransactionDetail): an import batch
+ * wins, else a Plaid-synced row, else manual entry. Pure, derived from flat
+ * columns already selected on every row — no new query, no new column. This is
+ * the ONE definition of "source"; the two callers must not diverge.
+ */
+function deriveSource(r: { importBatchId: string | null; plaidTransactionId: string | null }): TransactionProvenanceSource {
+  if (r.importBatchId != null) return "import";
+  if (r.plaidTransactionId != null) return "plaid";
+  return "manual";
 }
 
 /** CF-1 — derive the read-time context fields (transferDisposition + needsClassification)
@@ -344,16 +361,17 @@ export async function getTransactionDetail(
   }
 
   // ── Provenance (display-safe; raw ids stay internal) ───────────────────────
-  const provenance: TransactionDetailProvenance = row.importBatch
+  // Source value comes from the shared deriveSource precedence (identical to the
+  // list read); the import branch additionally carries the batch's display facts.
+  const source = deriveSource(row);
+  const provenance: TransactionDetailProvenance = source === "import" && row.importBatch
     ? {
-        source:         "import",
+        source,
         importSource:   row.importBatch.source,
         importFilename: row.importBatch.originalFilename ?? null,
         importedAt:     (row.importBatch.completedAt ?? row.importBatch.createdAt).toISOString(),
       }
-    : row.plaidTransactionId
-      ? { source: "plaid" }
-      : { source: "manual" };
+    : { source };
 
   // ── Counterparty (fails closed on name exposure) ───────────────────────────
   let counterparty: TransactionDetailCounterparty | null = null;
