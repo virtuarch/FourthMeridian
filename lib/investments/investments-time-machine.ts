@@ -1,0 +1,169 @@
+/**
+ * lib/investments/investments-time-machine.ts
+ *
+ * A10 — the DB binding for the Investments Time Machine read model. It COMPOSES
+ * the canonical services; it does not reimplement any of them:
+ *   - valuation (quantity × price × FX)  → getInvestmentValueAsOf (A8/A4/money),
+ *     called once at asOf and once at compareTo. This is the ONLY replay / price
+ *     / FX / valuation path — there is no second engine here.
+ *   - period flows                       → canonical InvestmentEvent rows read
+ *     with the provenance filter (deletedAt: null, supersededById: null), each
+ *     amount converted to the reporting currency at its own event date through
+ *     the same money layer valuation uses, then summarised by the pure core.
+ *   - assembly / reconciliation          → assembleInvestmentsTimeMachine (pure).
+ *
+ * No persistence — this is derived arithmetic over persisted facts, never a
+ * second fact store (mirrors valuation.ts). Receives resolved dates {asOf,
+ * compareTo}; it never owns preset/date state (the Perspective Shell does).
+ */
+
+import type { Prisma, PrismaClient } from "@prisma/client";
+import { db } from "@/lib/db";
+import { convertMoney, identityContext } from "@/lib/money/convert";
+import { buildSpaceConversionContextById } from "@/lib/money/server-context";
+import type { ConversionContext } from "@/lib/money/types";
+import { getInvestmentValueAsOf } from "./valuation";
+import { summarizePeriodFlows, type FlowEvent, type PeriodFlows } from "./investment-flows-core";
+import {
+  assembleInvestmentsTimeMachine,
+  type InvestmentsTimeMachineResult,
+} from "./investments-time-machine-core";
+
+type Client = PrismaClient | Prisma.TransactionClient;
+
+function ymd(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+export interface GetInvestmentsTimeMachineArgs {
+  /** Value the whole Space's investments. */
+  spaceId?: string;
+  /** Or a single account (its Space supplies the reporting currency + FX). */
+  financialAccountId?: string;
+  asOf: string;                 // YYYY-MM-DD (resolved by the shell)
+  compareTo?: string | null;    // YYYY-MM-DD; omitted/null ⇒ current-only, no flows
+  client?: Client;
+}
+
+/**
+ * The Investments Time Machine as-of a date, optionally compared to an earlier
+ * date. Holdings + valued portfolio at asOf; period flows and a change
+ * reconciliation over (compareTo, asOf] when compareTo is supplied.
+ */
+export async function getInvestmentsTimeMachine(
+  args: GetInvestmentsTimeMachineArgs,
+): Promise<InvestmentsTimeMachineResult> {
+  const client = args.client ?? db;
+  const { asOf } = args;
+  const compareTo = args.compareTo ?? null;
+
+  const scope = args.spaceId
+    ? { spaceId: args.spaceId }
+    : args.financialAccountId
+      ? { financialAccountId: args.financialAccountId }
+      : null;
+  if (!scope) {
+    throw new Error("[investments-time-machine] requires spaceId or financialAccountId");
+  }
+
+  // ── Canonical valuation at each endpoint (the single valuation path) ───────
+  const [view, compareView] = await Promise.all([
+    getInvestmentValueAsOf({ ...scope, asOf, client }),
+    compareTo ? getInvestmentValueAsOf({ ...scope, asOf: compareTo, client }) : Promise.resolve(null),
+  ]);
+
+  // ── Period flows from canonical events (only when an interval is defined) ──
+  const flows: PeriodFlows | null = compareTo
+    ? await readPeriodFlows(client, args, compareTo, asOf, view.reportingCurrency)
+    : null;
+
+  // ── Instrument display identity for the as-of holdings ─────────────────────
+  const instrumentIds = [...new Set(view.components.map((c) => c.instrumentId))];
+  const display = await readDisplay(client, instrumentIds);
+
+  return assembleInvestmentsTimeMachine({ asOf, compareTo, view, compareView, flows, display });
+}
+
+/** The (account, Space) scope for the event read + FX context. Mirrors valuation.ts. */
+async function resolveScope(
+  client: Client,
+  args: GetInvestmentsTimeMachineArgs,
+): Promise<{ accountIds: string[]; spaceId: string | null }> {
+  if (args.financialAccountId) {
+    let spaceId = args.spaceId ?? null;
+    if (!spaceId) {
+      const link = await client.spaceAccountLink.findFirst({
+        where: { financialAccountId: args.financialAccountId, status: "ACTIVE" },
+        select: { spaceId: true },
+      });
+      spaceId = link?.spaceId ?? null;
+    }
+    return { accountIds: [args.financialAccountId], spaceId };
+  }
+  const links = await client.spaceAccountLink.findMany({
+    where: { spaceId: args.spaceId!, status: "ACTIVE", financialAccount: { deletedAt: null } },
+    select: { financialAccountId: true },
+  });
+  return { accountIds: [...new Set(links.map((l) => l.financialAccountId))], spaceId: args.spaceId! };
+}
+
+/**
+ * Read the canonical InvestmentEvents in (from, to], convert each cash amount to
+ * the reporting currency at its own date, and summarise. Rolled-back / superseded
+ * rows are excluded (the A7-1 provenance filter).
+ */
+async function readPeriodFlows(
+  client: Client,
+  args: GetInvestmentsTimeMachineArgs,
+  from: string,
+  to: string,
+  reportingCurrency: string,
+): Promise<PeriodFlows> {
+  const { accountIds, spaceId } = await resolveScope(client, args);
+  if (accountIds.length === 0) {
+    return summarizePeriodFlows([], from, to, reportingCurrency);
+  }
+
+  const rows = await client.investmentEvent.findMany({
+    where: {
+      financialAccountId: { in: accountIds },
+      deletedAt: null,
+      supersededById: null,
+      date: { gt: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) },
+    },
+    select: { type: true, date: true, amount: true, quantity: true, currency: true },
+  });
+
+  // One FX context spanning the flow currencies + dates (same money layer as valuation).
+  const currencies = [...new Set(rows.map((r) => r.currency).filter((c): c is string => !!c))];
+  const dates = [...new Set(rows.map((r) => ymd(r.date)))];
+  const ctx: ConversionContext = spaceId
+    ? await buildSpaceConversionContextById(spaceId, { currencies, dates })
+    : identityContext(reportingCurrency);
+
+  const events: FlowEvent[] = rows.map((r) => {
+    const date = ymd(r.date);
+    if (r.amount == null) {
+      return { type: r.type, date, amount: null, fxEstimated: false, hasQuantity: r.quantity != null && r.quantity !== 0 };
+    }
+    const c = convertMoney({ amount: r.amount, currency: r.currency }, date, ctx);
+    return { type: r.type, date, amount: c.amount, fxEstimated: c.estimated, hasQuantity: r.quantity != null && r.quantity !== 0 };
+  });
+
+  return summarizePeriodFlows(events, from, to, ctx.target);
+}
+
+/** Display identity (symbol/name) for a set of instruments. Read-only. */
+async function readDisplay(
+  client: Client,
+  instrumentIds: string[],
+): Promise<Record<string, { symbol: string | null; name: string | null }>> {
+  if (instrumentIds.length === 0) return {};
+  const rows = await client.instrument.findMany({
+    where: { id: { in: instrumentIds } },
+    select: { id: true, tickerSymbol: true, name: true },
+  });
+  const map: Record<string, { symbol: string | null; name: string | null }> = {};
+  for (const r of rows) map[r.id] = { symbol: r.tickerSymbol, name: r.name };
+  return map;
+}
