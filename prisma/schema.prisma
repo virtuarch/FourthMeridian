@@ -662,6 +662,12 @@ model PlaidItem {
   // (drives lib/sync/status.ts and the client auto-resume). Replaces the old
   // cursor===null heuristic, which broke once the cursor is persisted per page.
   syncIncompleteAt    DateTime?
+  // Webhook concurrency guard — set while a sync/deferred pipeline is running
+  // for this item, cleared when it finishes. A conditional claim on this column
+  // serializes syncs so a duplicated/racing SYNC_UPDATES_AVAILABLE webhook can
+  // never run two pipelines (racing the cursor) at once. Stale-lock recovery is
+  // time-based (see lib/plaid/webhook-sync.ts LOCK_TTL_MS).
+  syncLockedAt        DateTime?
   // D2 Step 7B — last manual "Refresh"/"Sync Now" attempt (success or
   // failure), distinct from lastSyncedAt above (also written by the
   // scheduled sync job). Gates the manual-refresh cooldown only; the

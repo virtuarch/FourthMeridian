@@ -32,6 +32,24 @@ import { db } from "@/lib/db";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { limitByUser } from "@/lib/rate-limit";
+import { env } from "@/lib/env";
+
+/**
+ * The public URL Plaid should POST webhooks to (TRANSACTIONS/SYNC_UPDATES_AVAILABLE).
+ * Prefer an explicit PLAID_WEBHOOK_URL; otherwise derive it from the trusted app
+ * base URL (same source as email links). Plaid can only reach a public HTTPS
+ * host, so a localhost / http base yields `undefined` — the token is created
+ * without a webhook and Plaid simply never calls back (local dev needs a tunnel;
+ * see .env.example PLAID_WEBHOOK_URL).
+ */
+function resolvePlaidWebhookUrl(): string | undefined {
+  const explicit = process.env.PLAID_WEBHOOK_URL?.trim();
+  const url = explicit && explicit.length > 0
+    ? explicit
+    : `${env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "")}/api/plaid/webhook`;
+  if (!/^https:\/\//i.test(url) || /localhost|127\.0\.0\.1/i.test(url)) return undefined;
+  return url;
+}
 
 export async function GET(req: NextRequest) {
   const [user, err] = await requireUser();
@@ -134,6 +152,11 @@ export async function GET(req: NextRequest) {
       ? [Products.Investments]
       : undefined;
 
+    // Register the webhook so Plaid can tell us when the deeper history window has
+    // finished ingesting (TRANSACTIONS/SYNC_UPDATES_AVAILABLE → /api/plaid/webhook).
+    // Undefined (localhost/http) → token created without a webhook.
+    const webhookUrl = resolvePlaidWebhookUrl();
+
     // ── Server-side config log (safe fields only) ─────────────────────────────
     console.log("[plaid] link-token config:", {
       env:           PLAID_ENV,
@@ -143,6 +166,7 @@ export async function GET(req: NextRequest) {
       additional_consented_products: additionalConsentedProducts?.map(String) ?? null,
       country_codes: country_codes.map(String),
       redirect_uri:  redirectUri ? "set" : "NOT SET (OAuth institutions will fail)",
+      webhook:       webhookUrl ? "set" : "NOT SET (no public HTTPS URL — dev needs a tunnel)",
     });
 
     const response = await plaidClient.linkTokenCreate({
@@ -150,6 +174,9 @@ export async function GET(req: NextRequest) {
       client_name:   "Fourth Meridian",
       country_codes,
       language:      "en",
+      // Webhook endpoint for asynchronous updates (SYNC_UPDATES_AVAILABLE etc.).
+      // Omitted when there is no public HTTPS URL, so local dev is unaffected.
+      ...(webhookUrl && { webhook: webhookUrl }),
       // Update mode: pass access_token, omit products (Plaid requires this —
       // see LinkTokenCreateRequest docs). Default mode: unchanged from before.
       ...(accessToken ? { access_token: accessToken } : { products }),
