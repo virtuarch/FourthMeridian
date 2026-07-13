@@ -2526,6 +2526,22 @@ export function SpaceDashboard({
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
+  // ── Account deep-link (Banking→Transactions retarget) ───────────────────────
+  // `?account=<id>` seeds the Transactions tab's account filter — the target of
+  // AccountsPerspective's "View transactions" row action, which navigates to
+  // /dashboard?tab=transactions&account=<id>. Read once on mount from
+  // window.location (the shell's window.history URL convention — deliberately
+  // the same channel readUrlTabState uses, not the search-params hook, which
+  // would force a Suspense boundary; see the space-shell-seams contract). The
+  // paired ?tab=transactions drives the tab via the initial-tab logic below;
+  // this only carries the filter seed.
+  const [initialAccountFilter, setInitialAccountFilter] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const account = new URLSearchParams(window.location.search).get("account");
+    if (account) setInitialAccountFilter(account);
+  }, []);
+
   // ── Cash Flow workspace (UX-PER-3) ─────────────────────────────────────────
   // Workspace-local period state shared by every Cash Flow widget, and the
   // transactions conversion context (rehydrated F-6 / "view as" override) that
@@ -3388,6 +3404,8 @@ export function SpaceDashboard({
               // MC1 view-as: summary totals convert through the override context
               // when active; the panel's rows stay native either way.
               moneyCtx={transactionsMoneyCtxOverride ?? spaceMoneyCtx}
+              // Banking→Transactions retarget — deep-link account pre-filter.
+              initialAccountFilter={initialAccountFilter}
             />
           )
         )}
