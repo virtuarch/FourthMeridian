@@ -110,6 +110,15 @@ type Invite = {
   invitedBy: { id: string; name: string | null; username: string | null };
 };
 
+// PO1.0 — access-derived platform Spaces (one ACTIVE grant each). Rendered as
+// a separate card group linking to the platform host; never a switch target.
+type PlatformSpaceItem = {
+  id:     string;
+  name:   string;
+  area:   string;
+  access: string;
+};
+
 interface Props {
   mine: SpaceItem[];
   publicSpaces: SpaceItem[];
@@ -117,6 +126,7 @@ interface Props {
   currentUserId: string;
   activeSpaceId: string | null;
   preferredSpaceId: string | null;
+  platformSpaces?: PlatformSpaceItem[];
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -926,6 +936,67 @@ function InviteBanner({ invites, onAction }: { invites: Invite[]; onAction: () =
   );
 }
 
+// ─── Platform card group (PO1.0) ──────────────────────────────────────────────
+//
+// Access-derived (from PlatformGrant); rendered only for grant-holders. Each
+// card is a plain link to /dashboard/platform/[area] — NOT a switch target, so
+// the ambient Space context never points at a platform Space. Visually quieter
+// and distinct from customer Space cards (Shield glyph, access badge) so the two
+// families never read as the same thing.
+
+function PlatformSpaceGroup({ spaces }: { spaces: PlatformSpaceItem[] }) {
+  const router = useRouter();
+  if (spaces.length === 0) return null;
+
+  return (
+    <div className="mt-10">
+      <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]">
+        <Shield size={14} className="text-[var(--meridian-400)]" />
+        Platform
+      </h2>
+      <p className="text-xs text-[var(--text-secondary)] mt-1 mb-3">
+        Operational areas of Fourth Meridian you have been granted access to.
+      </p>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(240px,100%),1fr))] gap-3">
+        {spaces.map((p) => {
+          const href = `/dashboard/platform/${p.area}`;
+          return (
+            <div
+              key={p.id}
+              onClick={() => router.push(href)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Enter") router.push(href); }}
+              className="group relative overflow-hidden rounded-[var(--radius-md)] border p-4 flex flex-col gap-3 cursor-pointer bg-[var(--surface-muted)] hover:bg-[var(--surface-hover)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] transition-[background-color,border-color]"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div
+                  className="w-8 h-8 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0"
+                  style={{ background: "rgba(59,130,246,.12)", color: "var(--meridian-400)", border: "1px solid rgba(125,168,255,.24)" }}
+                >
+                  <Shield size={15} />
+                </div>
+                <span
+                  className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full border"
+                  style={{ background: "var(--glass-ultrathin)", color: "var(--text-secondary)", borderColor: "var(--border-hairline)" }}
+                >
+                  {p.access}
+                </span>
+              </div>
+              <div className="min-w-0">
+                <p className="font-semibold text-[var(--text-primary)] text-sm leading-snug truncate">
+                  {displaySpaceName(p.name)}
+                </p>
+                <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Platform area</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── Header ───────────────────────────────────────────────────────────────────
 //
 // Deliberately not a GlassPanel — a large boxed-in hero reads heavy and
@@ -985,6 +1056,7 @@ export function SpacesClient({
   currentUserId,
   activeSpaceId: initialActiveId,
   preferredSpaceId: initialPreferredId,
+  platformSpaces = [],
 }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -1155,6 +1227,9 @@ export function SpacesClient({
             </GlassButton>
           </div>
         )}
+
+        {/* PO1.0 — Platform group (access-derived; only shown to grant-holders). */}
+        <PlatformSpaceGroup spaces={platformSpaces} />
 
         {/* Explore Public Spaces — ALWAYS rendered. When public Spaces exist,
             it shows the compact preview grid; when none exist, it shows an

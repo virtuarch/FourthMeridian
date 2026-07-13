@@ -43,20 +43,41 @@ export const GET = withApiHandler(async () => {
   console.log(`[api/spaces] requireUser: ${Date.now() - t0}ms`);
 
   const t1 = Date.now();
-  const myMemberships = await db.spaceMember.findMany({
-    // Exclude archived/trashed spaces from the default switcher list —
-    // they're only reachable via the Archive/Bin page from here on.
-    where: { userId: user.id, status: "ACTIVE", space: { archivedAt: null, deletedAt: null } },
-    select: {
-      role: true,
-      space: { select: { id: true, name: true, type: true } },
-    },
-    orderBy: { joinedAt: "asc" },
-  });
+  // `mine` (membership-driven) and `platform` (access-derived) are independent —
+  // run them together. Platform Spaces have NO SpaceMember rows by design, so
+  // they can never appear in `mine`; the two lists never overlap.
+  const [myMemberships, grants] = await Promise.all([
+    db.spaceMember.findMany({
+      // Exclude archived/trashed spaces from the default switcher list —
+      // they're only reachable via the Archive/Bin page from here on.
+      where: { userId: user.id, status: "ACTIVE", space: { archivedAt: null, deletedAt: null } },
+      select: {
+        role: true,
+        space: { select: { id: true, name: true, type: true } },
+      },
+      orderBy: { joinedAt: "asc" },
+    }),
+    // PO1.0 — platform Spaces the caller holds an ACTIVE grant on
+    // (access-derived; no SpaceMember rows exist for platform Spaces).
+    db.platformGrant.findMany({
+      where:  { userId: user.id, status: "ACTIVE" },
+      select: { area: true, level: true },
+    }),
+  ]);
   console.log(`[api/spaces] myMemberships: ${Date.now() - t1}ms, total: ${Date.now() - t0}ms`);
+
+  const platform = grants.length === 0 ? [] : (
+    await db.space.findMany({
+      where:  { platformArea: { in: grants.map((g) => g.area) } },
+      select: { id: true, name: true, platformArea: true },
+    })
+  ).map((s) => ({ ...s, access: grants.find((g) => g.area === s.platformArea)!.level }));
 
   return NextResponse.json({
     mine: myMemberships.map((m) => ({ ...m.space, myRole: m.role })),
+    // Additive key — existing consumers (Sidebar switcher, AddManualAssetModal
+    // share picker) read only `mine`, so this is invisible to them until opted in.
+    platform,
   });
 }, "GET /api/spaces");
 

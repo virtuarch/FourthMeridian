@@ -61,6 +61,7 @@ import {
   Loader2,
   AlertTriangle,
   LayoutGrid,
+  Shield,
   type LucideIcon,
 } from "lucide-react";
 import { AppLogo } from "@/components/ui/AppLogo";
@@ -87,6 +88,16 @@ type SpaceItem = {
   myRole?: string | null;
 };
 
+// PO1.0 — access-derived platform Spaces (one ACTIVE grant each). Plain links
+// to /dashboard/platform/[area] — never a /api/space/switch target (the ambient
+// Space context never points at a platform Space).
+type PlatformItem = {
+  id:           string;
+  name:         string;
+  platformArea: string;
+  access:       string;
+};
+
 // ── Spaces nav section ──────────────────────────────────────────────────────
 // Inline, always-expanded list (not a dropdown) — Spaces are a first-class
 // nav concept now, not a page you have to go manage elsewhere. Caps at
@@ -96,6 +107,7 @@ type SpaceItem = {
 function SpacesNavSection({ pathname }: { pathname: string }) {
   const router = useRouter();
   const [spaces,         setSpaces]         = useState<SpaceItem[]>([]);
+  const [platform,       setPlatform]       = useState<PlatformItem[]>([]);
   const [activeId,       setActiveId]       = useState<string | null>(null);
   const [switching,      setSwitching]      = useState<string | null>(null);
   const [pendingInvites, setPendingInvites] = useState(0);
@@ -110,6 +122,11 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
           id: w.id, name: w.name, type: w.type, myRole: w.myRole,
         }));
         setSpaces(mine);
+        // PO1.0 — access-derived platform group (additive key; empty for users
+        // with no grants, so this is a no-op for everyone else).
+        setPlatform((data.platform ?? []).map((p: PlatformItem) => ({
+          id: p.id, name: p.name, platformArea: p.platformArea, access: p.access,
+        })));
         const cookieId = readSpaceCookie();
         if (cookieId && mine.some((w) => w.id === cookieId)) {
           setActiveId(cookieId);
@@ -272,6 +289,41 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
           Create Space
         </button>
       </div>
+
+      {/* PO1.0 — Platform group. Access-derived (from data.platform); rendered
+          only for grant-holders. Each row is a plain link to the platform host
+          page — NO /api/space/switch call and NO ACTIVE_SPACE_COOKIE write, so
+          the ambient Space context never points at a platform Space. */}
+      {platform.length > 0 && (
+        <div className="mt-3">
+          <p className="px-2 mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+            Platform
+          </p>
+          <div className="space-y-0.5">
+            {platform.map((p) => {
+              const href     = `/dashboard/platform/${p.platformArea}`;
+              const isActive = pathname === href;
+              return (
+                <Link
+                  key={p.id}
+                  href={href}
+                  className={[
+                    "w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-left text-[13px] border transition-[background-color,border-color,color]",
+                    isActive
+                      ? "text-[var(--text-primary)] bg-[rgba(59,130,246,.06)] border-[rgba(125,168,255,.16)]"
+                      : "text-[var(--text-secondary)] border-transparent hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]",
+                  ].join(" ")}
+                >
+                  <span className="shrink-0" style={{ color: isActive ? "var(--meridian-400)" : "var(--text-muted)" }}>
+                    <Shield size={13} />
+                  </span>
+                  <span className="flex-1 min-w-0 truncate">{p.name}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
