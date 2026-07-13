@@ -27,7 +27,14 @@ type Settings = {
   require_totp_all_users:    string;
   recovery_codes_enabled:    string;
   min_password_length:       string;
+  registration_mode:         string;
 };
+
+const REGISTRATION_MODE_OPTIONS = [
+  { value: "open",        label: "Open — anyone can register" },
+  { value: "invite_only", label: "Invite only — requires a beta-access invite" },
+  { value: "closed",      label: "Closed — registration disabled" },
+] as const;
 
 type AdminStatus = {
   userId:                 string;
@@ -491,6 +498,23 @@ export default function AdminSecurityPage() {
                 onChange={(e) => updateSetting("min_password_length", e.target.value)}
                 onBlur={(e) => updateSetting("min_password_length", String(Math.max(8, Number(e.target.value))))}
                 className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-sm text-white text-center focus:outline-none focus:border-gray-600" />
+            </div>
+
+            <div className="flex items-start justify-between gap-4 py-3 border-t border-gray-800/40">
+              <div>
+                <p className="text-sm text-white font-medium">Registration mode</p>
+                <p className="text-xs text-gray-500 mt-0.5">Controls who can create a new account. Invite-only requires a valid beta-access invite.</p>
+              </div>
+              <select
+                value={settings.registration_mode}
+                onChange={(e) => updateSetting("registration_mode", e.target.value)}
+                disabled={settingsSaving}
+                className="w-64 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-gray-600 disabled:opacity-40 [&>option]:bg-gray-900"
+              >
+                {REGISTRATION_MODE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
             </div>
           </div>
         )}

@@ -85,8 +85,10 @@ enum PlaidInvestmentsConsent {
 
 /// D2 (Phase 2, Step 1A): generalizes PlaidItemStatus across all connection
 /// types. Mirrors PlaidItemStatus exactly. PlaidItem keeps its own enum
-/// unchanged — this is additive, not a replacement. Not yet used by any
-/// application code.
+/// unchanged — this is additive, not a replacement. Live since the v1.5 wallet
+/// wiring (lib/accounts/wallet-connection.ts) and the PLAID Connection
+/// dual-write (lib/plaid/exchangeToken.ts) — Connection.status is the
+/// authoritative sync-health record for non-PLAID providers (WALLET included).
 enum ConnectionStatus {
   ACTIVE // syncing normally / valid credential
   NEEDS_REAUTH // user must re-authenticate
@@ -96,7 +98,10 @@ enum ConnectionStatus {
 
 /// D2 (Phase 2, Step 1A): identifies which kind of provider a Connection
 /// represents. Extensible — new values can be appended later without a
-/// breaking migration. Not yet used by any application code.
+/// breaking migration. Live: PLAID (dual-written alongside PlaidItem in
+/// lib/plaid/exchangeToken.ts) and WALLET (created/synced by
+/// lib/accounts/wallet-connection.ts + lib/crypto/btc-sync.ts); the remaining
+/// values are reserved for future providers.
 enum ProviderType {
   PLAID
   MANUAL
@@ -2310,6 +2315,47 @@ model AuditLog {
   @@index([userId, createdAt])
   @@index([spaceId, createdAt])
   @@index([action, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BetaAccessRequest  (Wave 1 S3 — beta-access request → approval → invite)
+//
+// Pre-registration access requests have no other home: `User` can't hold a
+// pre-account email (registration creates Space/agent/audit atomically), and
+// `SpaceInvite` requires an existing invitedUserId FK. So the invite token lives
+// as columns HERE (recipient has no User row yet) — the password-reset column
+// pattern verbatim: SHA-256-hashed at rest, single outstanding token, expiring,
+// nulled on redemption (User.passwordResetToken/Expiry, lines 343-344).
+//
+// Redemption invariant (register route, inside the existing $transaction):
+// status → REDEEMED, redeemedAt/redeemedUserId set, inviteTokenHash nulled —
+// single-use exactly like reset-password/route.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum BetaAccessRequestStatus {
+  PENDING
+  APPROVED // invite minted + emailed
+  DENIED
+  REDEEMED // invite consumed by a successful registration
+}
+
+model BetaAccessRequest {
+  id          String                  @id @default(cuid())
+  email       String                  @unique // one live request per address
+  note        String? // applicant's "why" answer, if the public form asks one
+  status      BetaAccessRequestStatus @default(PENDING)
+  createdAt   DateTime                @default(now())
+  decidedAt   DateTime?
+  decidedById String? // soft ref (no FK); mirrors MerchantRule.ownerUserId
+
+  // Invite token — hashed at rest, single outstanding, expiring, nulled on redeem.
+  inviteTokenHash String?   @unique
+  inviteExpiresAt DateTime?
+  invitedAt       DateTime? // when the invite email was (last) sent — resend updates this
+  redeemedAt      DateTime?
+  redeemedUserId  String? // soft ref to the User created from this invite
+
+  @@index([status, createdAt]) // the queue view
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

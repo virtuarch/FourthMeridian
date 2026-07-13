@@ -6,7 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAllSettings, setSetting, PlatformSettingKey } from "@/lib/platform-settings";
+import { getAllSettings, setSetting, PlatformSettingKey, REGISTRATION_MODES } from "@/lib/platform-settings";
 import { db } from "@/lib/db";
 import { requireSystemAdmin, requireFreshSystemAdmin } from "@/lib/session";
 
@@ -41,6 +41,15 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json(
         { error: "require_totp_system_admin cannot be disabled. SYSTEM_ADMIN accounts must always use 2FA." },
         { status: 403 },
+      );
+    }
+    // registration_mode is a closed enum — reject anything outside it so a typo
+    // can't write a value the register route won't recognize (it would fall back
+    // to `open`, but rejecting here keeps the stored state honest).
+    if (key === PlatformSettingKey.REGISTRATION_MODE && !(REGISTRATION_MODES as readonly string[]).includes(String(value))) {
+      return NextResponse.json(
+        { error: `registration_mode must be one of: ${REGISTRATION_MODES.join(", ")}.` },
+        { status: 400 },
       );
     }
     await setSetting(key as never, String(value), admin.id);

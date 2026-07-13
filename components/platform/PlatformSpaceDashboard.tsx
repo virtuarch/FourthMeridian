@@ -28,6 +28,7 @@ import { OpsJobHealthWidget } from "./widgets/OpsJobHealthWidget";
 import { OpsRateLimitsWidget } from "./widgets/OpsRateLimitsWidget";
 import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
+import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
 import { CsSyncIssuesWidget } from "./widgets/CsSyncIssuesWidget";
 
 type Section = PlatformSection;
@@ -49,8 +50,9 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   ops_job_health:   OpsJobHealthWidget,
   ops_rate_limits:  OpsRateLimitsWidget,
   ops_env_status:   OpsEnvStatusWidget,
-  // Growth & Revenue (PO1.3)
-  growth_signups:   GrowthSignupsWidget,
+  // Growth & Revenue (PO1.3 / Wave 1 S3)
+  growth_signups:        GrowthSignupsWidget,
+  growth_beta_requests:  GrowthBetaRequestsWidget,
   // Customer Success (PO1.4)
   cs_sync_issues:   CsSyncIssuesWidget,
 };
@@ -79,6 +81,7 @@ const PLATFORM_SECTION_REGISTRY: Record<string, { note: string }> = {
   sec_sessions:     { note: "Lands in PO1.1 — active-session activity over UserSession." },
   // Growth & Revenue (PO1.3) — revenue has no data source until billing (v3.0).
   growth_signups:   { note: "Lands in PO1.3 — signups/activation from User.createdAt / emailVerifiedAt / UserSession. Revenue has no data source until billing (v3.0)." },
+  growth_beta_requests: { note: "Wave 1 S3 — beta-access request queue over BetaAccessRequest (approve mints & emails a single-use invite)." },
   // Customer Success (PO1.4) — no CS primitives exist yet.
   cs_sync_issues:   { note: "Lands in PO1.4 — sync-issue triage over SyncIssue. No customer-success primitives exist yet." },
 };

@@ -118,6 +118,16 @@ export const AuditAction = {
   // Recent-Activity entry (never two independently-triggered paths).
   PLAID_HISTORY_SYNCED:     "PLAID_HISTORY_SYNCED",
   WALLET_SYNC:              "WALLET_SYNC",
+  // CH-2 — durable connection status-transition history. One action per model
+  // (not one-per-direction); direction lives in `{ from, to }` metadata, the
+  // LOGIN_FAILED+`reason` grammar. Written only-on-change from the chokepoint
+  // helper lib/connections/health-transitions.ts, alongside the existing live
+  // status columns. PLAID_ITEM_STATUS_CHANGED compares the raw PlaidItem
+  // (status, errorCode) tuple; WALLET_CONNECTION_STATUS_CHANGED compares the
+  // derived wallet health (errorCode present vs absent — wallets never flip
+  // `status` on a recoverable failure).
+  PLAID_ITEM_STATUS_CHANGED:        "PLAID_ITEM_STATUS_CHANGED",
+  WALLET_CONNECTION_STATUS_CHANGED: "WALLET_CONNECTION_STATUS_CHANGED",
   ACCOUNT_ADD:              "ACCOUNT_ADD",
   ACCOUNT_REMOVE:           "ACCOUNT_REMOVE",
   REGISTER:                 "REGISTER",
@@ -132,6 +142,17 @@ export const AuditAction = {
   // entries, no before/after snapshots — see
   // docs/initiatives/d2/implementation/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §8.
   IMPORT_BATCH_UPDATED_ON_MATCH: "IMPORT_BATCH_UPDATED_ON_MATCH",
+
+  // ── Beta access (Wave 1 S3) ─────────────────────────────────────────────
+  // The pre-registration access-request lifecycle. REQUESTED is written by the
+  // public POST /api/access-request with NO userId (there is no account yet) —
+  // ip/user-agent live in metadata. APPROVED/DENIED are written by the platform
+  // queue (performedByAdminId-style, decidedById on the row). REDEEMED is
+  // written inside the register $transaction when an invite is consumed.
+  BETA_ACCESS_REQUESTED:    "BETA_ACCESS_REQUESTED",
+  BETA_ACCESS_APPROVED:     "BETA_ACCESS_APPROVED",
+  BETA_ACCESS_DENIED:       "BETA_ACCESS_DENIED",
+  BETA_ACCESS_REDEEMED:     "BETA_ACCESS_REDEEMED",
 
   // ── Platform access (PO1.0) ─────────────────────────────────────────────
   // Grant lifecycle on a platform area (user × area × level). Never free

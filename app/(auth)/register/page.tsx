@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { AppLogo } from "@/components/ui/AppLogo";
@@ -22,8 +22,12 @@ const USE_CASE_OPTIONS = [
   { value: "OTHER",             label: "Other" },
 ];
 
-export default function RegisterPage() {
+function RegisterForm() {
   const router = useRouter();
+  // Beta-invite deep link (buildBetaInviteUrl → /register?invite=<token>). When
+  // present it is forwarded to the register API as `inviteToken`; the API only
+  // consumes it in invite_only mode. Absent → normal open-registration flow.
+  const inviteToken = useSearchParams().get("invite") ?? "";
 
   const [form, setForm] = useState({
     firstName:        "",
@@ -72,6 +76,7 @@ export default function RegisterPage() {
       employmentStatus: form.employmentStatus || undefined,
       useCase:          form.useCase         || undefined,
       creditScore:      form.creditScore ? parseInt(form.creditScore) : undefined,
+      inviteToken:      inviteToken || undefined,
     };
 
     const res = await fetch("/api/auth/register", {
@@ -328,5 +333,15 @@ export default function RegisterPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+// useSearchParams() must sit under a Suspense boundary (Next app router), same
+// pattern as the reset-password page.
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={<div className="min-h-[100svh] bg-gray-950" />}>
+      <RegisterForm />
+    </Suspense>
   );
 }

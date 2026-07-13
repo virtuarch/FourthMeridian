@@ -13,12 +13,15 @@
  */
 
 import { db } from "@/lib/db";
-import { ensurePlatformSpaces } from "@/lib/platform/seed";
+import { ensurePlatformSpaces, ensurePlatformSections } from "@/lib/platform/seed";
 import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
 
 async function main(): Promise<void> {
   console.log("Ensuring platform Spaces (idempotent)…");
   await ensurePlatformSpaces(db);
+  // Create-only backfill for sections added to PLATFORM_AREAS after a Space was
+  // first seeded (the Space upsert's `update: {}` never adds them). Safe re-run.
+  await ensurePlatformSections(db);
 
   const spaces = await db.space.findMany({
     where:   { platformArea: { not: null } },

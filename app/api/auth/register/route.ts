@@ -28,10 +28,10 @@ import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
 import { buildVerifyUrl } from "@/lib/email/verify-url";
 import { possessive } from "@/lib/format";
-import { EmploymentStatus, UseCase, SpaceMemberRole, Prisma } from "@prisma/client";
+import { EmploymentStatus, UseCase, SpaceMemberRole, BetaAccessRequestStatus, Prisma } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
-import { getMinPasswordLength } from "@/lib/platform-settings";
+import { getMinPasswordLength, getRegistrationMode } from "@/lib/platform-settings";
 import { getTemplateForCategory } from "@/lib/space-templates/registry";
 import { planTemplateApplication } from "@/lib/space-templates/apply";
 
@@ -58,7 +58,21 @@ export async function POST(req: NextRequest) {
       employmentStatus,
       useCase,
       creditScore,
+      inviteToken,
     } = body;
+
+    // ── Registration gate (Wave 1 S2) ─────────────────────────────────────────
+    // Read the platform-wide mode BEFORE any field validation so `closed` short-
+    // circuits without leaking which fields would have failed. `open` is the
+    // ship default (behavior unchanged); `invite_only` requires a valid beta
+    // invite (validated below, after the email is normalized).
+    const registrationMode = await getRegistrationMode();
+    if (registrationMode === "closed") {
+      return NextResponse.json(
+        { error: "Registration is currently closed." },
+        { status: 403 },
+      );
+    }
 
     // ── Validation ────────────────────────────────────────────────────────────
     if (!email || !EMAIL_RE.test(email)) {
@@ -93,6 +107,45 @@ export async function POST(req: NextRequest) {
     if (emailTaken)    return NextResponse.json({ error: "An account with that email already exists." },    { status: 409 });
     if (usernameTaken) return NextResponse.json({ error: "That username is already taken." }, { status: 409 });
 
+    // ── Invite-only redemption gate (Wave 1 S3) ───────────────────────────────
+    // In invite_only mode a valid, unexpired, APPROVED beta invite is required,
+    // and it is EMAIL-BOUND: the registration email must equal the address the
+    // invite was issued to (the invite proves inbox ownership). The token is
+    // hashed before lookup (same SHA-256 helper as password-reset). The row is
+    // consumed atomically inside the $transaction below (status → REDEEMED).
+    let betaRequestId: string | null = null;
+    const invitedFlow = registrationMode === "invite_only";
+    if (invitedFlow) {
+      if (!inviteToken || typeof inviteToken !== "string") {
+        return NextResponse.json(
+          { error: "An invite is required to register. Request access to receive one." },
+          { status: 403 },
+        );
+      }
+      const betaRequest = await db.betaAccessRequest.findFirst({
+        where: {
+          inviteTokenHash: hashResetToken(inviteToken),
+          inviteExpiresAt: { gt: new Date() },
+          status:          BetaAccessRequestStatus.APPROVED,
+        },
+        select: { id: true, email: true },
+      });
+      if (!betaRequest) {
+        return NextResponse.json(
+          { error: "This invite is invalid or has expired. Please request access again." },
+          { status: 403 },
+        );
+      }
+      // Email-bound: the invite is single-inbox. A mismatch is rejected outright.
+      if (betaRequest.email !== normalizedEmail) {
+        return NextResponse.json(
+          { error: "This invite was issued to a different email address." },
+          { status: 403 },
+        );
+      }
+      betaRequestId = betaRequest.id;
+    }
+
     // ── Hash password + encrypt DOB ───────────────────────────────────────────
     const passwordHash = await bcrypt.hash(password, 12);
     const dateOfBirthEncrypted = dateOfBirth ? encryptWithPurpose(dateOfBirth, EncryptionPurpose.DATE_OF_BIRTH) : undefined;
@@ -118,8 +171,16 @@ export async function POST(req: NextRequest) {
           employmentStatus:        (employmentStatus as EmploymentStatus) ?? null,
           useCase:                 (useCase as UseCase) ?? null,
           passwordHash,
-          emailVerificationToken:  hashResetToken(rawVerificationToken),
-          emailVerificationExpiry: verificationExpiry,
+          // Invited signups are pre-verified: the invite email already proved
+          // inbox ownership, so we skip the whole verification leg (no token
+          // stored, no verification email sent below). Uninvited signups start
+          // UNVERIFIED with a token as before.
+          ...(invitedFlow
+            ? { emailVerifiedAt: new Date() }
+            : {
+                emailVerificationToken:  hashResetToken(rawVerificationToken),
+                emailVerificationExpiry: verificationExpiry,
+              }),
         },
       });
 
@@ -196,9 +257,31 @@ export async function POST(req: NextRequest) {
           userId:      newUser.id,
           spaceId: space.id,
           action:      AuditAction.REGISTER,
-          metadata:    { email: normalizedEmail, username: normalizedUsername },
+          metadata:    { email: normalizedEmail, username: normalizedUsername, invited: invitedFlow },
         },
       });
+
+      // Consume the beta invite single-use, inside the same transaction so the
+      // account and the redemption commit together (or not at all). The
+      // status: APPROVED guard makes a concurrent second redemption a no-op.
+      if (betaRequestId) {
+        await tx.betaAccessRequest.updateMany({
+          where: { id: betaRequestId, status: BetaAccessRequestStatus.APPROVED },
+          data:  {
+            status:          BetaAccessRequestStatus.REDEEMED,
+            redeemedAt:      new Date(),
+            redeemedUserId:  newUser.id,
+            inviteTokenHash: null, // single-use — the token can never resolve again
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            userId:   newUser.id,
+            action:   AuditAction.BETA_ACCESS_REDEEMED,
+            metadata: { email: normalizedEmail, betaRequestId },
+          },
+        });
+      }
 
       return newUser;
     });
@@ -208,10 +291,16 @@ export async function POST(req: NextRequest) {
     // env base (never the request Host). Non-throwing: a delivery failure is
     // logged but never fails registration (the account already exists, and the
     // consumer/resend flow is a later slice).
-    const verifyUrl = buildVerifyUrl(env.NEXT_PUBLIC_APP_URL, rawVerificationToken);
-    const emailResult = await sendEmail("email-verification", normalizedEmail, { verifyUrl });
-    if (emailResult.status === "error") {
-      console.error("[register] verification email failed to send:", emailResult.error);
+    //
+    // SKIPPED for invited signups: the invite email already proved inbox
+    // ownership, so the account was created pre-verified (emailVerifiedAt set,
+    // no token stored) and there is nothing to verify.
+    if (!invitedFlow) {
+      const verifyUrl = buildVerifyUrl(env.NEXT_PUBLIC_APP_URL, rawVerificationToken);
+      const emailResult = await sendEmail("email-verification", normalizedEmail, { verifyUrl });
+      if (emailResult.status === "error") {
+        console.error("[register] verification email failed to send:", emailResult.error);
+      }
     }
 
     return NextResponse.json({ success: true, userId: user.id }, { status: 201 });

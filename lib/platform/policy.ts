@@ -88,6 +88,8 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
     sections: [
       // Honest label: revenue has no data source until v3.0 billing (D10).
       { key: "growth_signups", label: "Signups & Activation", order: 0 },
+      // Wave 1 S3 — beta-access request queue (approve → mint + email invite).
+      { key: "growth_beta_requests", label: "Beta Access Requests", order: 1 },
     ],
   },
   CUSTOMER_SUCCESS: {

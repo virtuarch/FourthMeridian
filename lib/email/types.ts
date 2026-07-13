@@ -79,7 +79,8 @@ export type EmailTemplateName =
   | "space-invite"
   | "security-alert"
   | "email-change"
-  | "notification";
+  | "notification"
+  | "beta-invite";
 
 /**
  * A template turns typed `data` into the subject + text of a message. The

@@ -55,3 +55,52 @@ export async function ensurePlatformSpaces(
     });
   }
 }
+
+/**
+ * Ensure every section declared in PLATFORM_AREAS exists on its already-seeded
+ * platform Space.
+ *
+ * WHY THIS EXISTS (Wave 1 S0): `ensurePlatformSpaces` materializes sections only
+ * inside its Space-*create* branch, and its `update: {}` deliberately never
+ * touches a live Space (line 37). So once the four Spaces are seeded, ADDING a
+ * new entry to `PLATFORM_AREAS[area].sections` does nothing for them — the new
+ * section never appears. This closes that gap: for each area it upserts each
+ * declared section against the existing `@@unique([spaceId, key])` on
+ * SpaceDashboardSection.
+ *
+ * CREATE-ONLY, exactly like the Space upsert's empty `update`: an existing row
+ * is left untouched (`update: {}`), so an operator's manual `enabled`/`order`
+ * edit on a live section is never clobbered by a re-run. Only genuinely-new
+ * (spaceId, key) pairs are inserted. Idempotent and safe to run anywhere.
+ *
+ * Runs AFTER `ensurePlatformSpaces` (it needs the Space rows to exist); wired
+ * into the same entry points. If a Space is somehow absent it is skipped
+ * defensively rather than throwing.
+ */
+export async function ensurePlatformSections(
+  client: PrismaClient = db,
+): Promise<void> {
+  for (const area of ALL_PLATFORM_AREAS) {
+    const meta = PLATFORM_AREAS[area];
+    const space = await client.space.findUnique({
+      where:  { platformArea: area },
+      select: { id: true },
+    });
+    if (!space) continue; // ensurePlatformSpaces guarantees this; be defensive.
+
+    for (const s of meta.sections) {
+      await client.spaceDashboardSection.upsert({
+        where:  { spaceId_key: { spaceId: space.id, key: s.key } },
+        update: {}, // create-only — never overwrite enabled/order on a live row
+        create: {
+          spaceId: space.id,
+          key:     s.key,
+          label:   s.label,
+          tab:     "OVERVIEW",
+          enabled: true,
+          order:   s.order,
+        },
+      });
+    }
+  }
+}

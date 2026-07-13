@@ -47,7 +47,7 @@ import { planTemplateApplication } from "../lib/space-templates/apply";
 // PO1.0 — idempotent bootstrap of the four platform Spaces (Platform/Security
 // Ops, Growth & Revenue, Customer Success). Dev DBs always have them; access is
 // grant-gated (no members are seeded).
-import { ensurePlatformSpaces } from "../lib/platform/seed";
+import { ensurePlatformSpaces, ensurePlatformSections } from "../lib/platform/seed";
 
 const prisma = new PrismaClient();
 
@@ -327,6 +327,7 @@ async function main() {
   // Idempotent; access-derived (no SpaceMember rows). Seeded here so every dev
   // DB has the four platform Spaces; grants are issued from /admin/platform-access.
   await ensurePlatformSpaces(prisma);
+  await ensurePlatformSections(prisma); // create-only backfill for sections added post-seed
   console.log("   ✓ Platform Spaces: 4 (Platform Ops, Security Ops, Growth & Revenue, Customer Success)");
 
   // ── Spaces (8) ──────────────────────────────────────────────────────────
