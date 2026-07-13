@@ -28,12 +28,9 @@
  */
 
 import { db } from "@/lib/db";
-import { PriceBasis } from "@prisma/client";
-import { priceArchive } from "@/lib/prices/archive";
-import { fetchInstrumentWindow } from "@/lib/prices/fetch";
 import { defaultPriceRegistry } from "@/lib/prices/registry";
-import { resolveBackfillWindow, chunkWindow } from "@/lib/prices/backfill-core";
-import { yesterdayUTCISO, toISODateUTC } from "@/lib/prices/config";
+import { backfillPricesForInstruments } from "@/lib/prices/backfill";
+import { yesterdayUTCISO } from "@/lib/prices/config";
 
 const argv = process.argv.slice(2);
 const has = (f: string) => argv.includes(f);
@@ -52,26 +49,6 @@ const CHUNK_DAYS = numFlag("--chunk-days", 365);
 const LIMIT = numFlag("--limit", Number.MAX_SAFE_INTEGER);
 const ONLY_INSTRUMENT = strFlag("--instrument");
 
-async function earliestActivityISO(instrumentId: string): Promise<string | null> {
-  const [obs, evt] = await Promise.all([
-    db.positionObservation.findFirst({
-      where: { instrumentId, deletedAt: null }, orderBy: { date: "asc" }, select: { date: true },
-    }),
-    db.investmentEvent.findFirst({
-      where: { instrumentId }, orderBy: { date: "asc" }, select: { date: true },
-    }),
-  ]);
-  const dates = [obs?.date, evt?.date].filter((d): d is Date => d != null).map(toISODateUTC);
-  return dates.length ? dates.sort()[0] : null;
-}
-
-async function latestCoveredISO(instrumentId: string): Promise<string | null> {
-  const row = await db.priceObservation.findFirst({
-    where: { instrumentId, basis: PriceBasis.RAW_CLOSE }, orderBy: { date: "desc" }, select: { date: true },
-  });
-  return row ? toISODateUTC(row.date) : null;
-}
-
 async function main(): Promise<void> {
   const registry = defaultPriceRegistry();
   const toISO = yesterdayUTCISO();
@@ -80,44 +57,28 @@ async function main(): Promise<void> {
     console.log("⚠ no price provider configured (A8-3B vendor gate) — reporting the plan only; --apply will fetch nothing.");
   }
 
-  // Held instruments (live, non-deleted, qty > 0), optionally filtered.
-  // tickerSymbol is resolved here (mirroring jobs/fetch-security-prices.ts) so
-  // the adapter receives a real provider symbol — not the empty string, which
-  // would make Tiingo fetch nothing even with the adapter registered.
+  // Held instruments (live, non-deleted, qty > 0), optionally filtered. The
+  // per-instrument backfill loop itself lives in lib/prices/backfill.ts (shared
+  // with the connect-time trigger); this script only selects the instrument set
+  // and renders the plan/summary.
   const held = await db.positionObservation.findMany({
     where:    { supersededById: null, deletedAt: null, quantity: { gt: 0 }, ...(ONLY_INSTRUMENT ? { instrumentId: ONLY_INSTRUMENT } : {}) },
-    select:   { instrumentId: true, instrument: { select: { tickerSymbol: true } } },
+    select:   { instrumentId: true },
     distinct: ["instrumentId"],
   });
-  const symbolById = new Map(held.map((h) => [h.instrumentId, h.instrument.tickerSymbol]));
   const instrumentIds = [...new Set(held.map((h) => h.instrumentId))].sort().slice(0, LIMIT);
   console.log(`${instrumentIds.length} held instrument(s) to consider.\n`);
 
-  let planned = 0, skipped = 0, fetchedInstruments = 0, inserted = 0;
-  for (const instrumentId of instrumentIds) {
-    const [earliest, covered] = await Promise.all([earliestActivityISO(instrumentId), latestCoveredISO(instrumentId)]);
-    const window = resolveBackfillWindow(earliest, covered, toISO);
-    if (!window) { skipped++; continue; }
-    const chunks = chunkWindow(window.fromISO, window.toISO, CHUNK_DAYS);
-    planned++;
-    console.log(`• ${instrumentId}: ${window.fromISO}→${window.toISO} (${chunks.length} chunk(s)${covered ? `, resume from ${covered}` : ""})`);
+  const r = await backfillPricesForInstruments(instrumentIds, {
+    apply:      APPLY,
+    chunkDays:  CHUNK_DAYS,
+    registry,
+    toISO,
+    onProgress: (line) => console.log(line),
+  });
 
-    if (!APPLY || registry.adapters.length === 0) continue;
-    for (const c of chunks) {
-      const res = await fetchInstrumentWindow(
-        { instrumentId, providerSymbol: symbolById.get(instrumentId) ?? "", basis: PriceBasis.RAW_CLOSE, fromISO: c.fromISO, toISO: c.toISO },
-        registry,
-      );
-      if (res.source && res.rows.length > 0) {
-        const w = await priceArchive.writeBatch(res.source, res.rows);
-        inserted += w.inserted;
-      }
-    }
-    fetchedInstruments++;
-  }
-
-  console.log(`\nsummary — planned ${planned}, skipped(covered/no-activity) ${skipped}` +
-    (APPLY ? `, fetched ${fetchedInstruments} instrument(s), stored ${inserted} row(s)` : " (dry-run: no writes)"));
+  console.log(`\nsummary — planned ${r.planned}, skipped(covered/no-activity) ${r.skipped}` +
+    (APPLY ? `, fetched ${r.fetchedInstruments} instrument(s), stored ${r.inserted} row(s)` : " (dry-run: no writes)"));
   await db.$disconnect();
 }
 

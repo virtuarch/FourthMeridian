@@ -42,6 +42,17 @@ import {
   reconstructAccount,
   investmentReconstructionEnabled,
 } from "@/lib/investments/reconstruction-runner";
+import { defaultPriceRegistry } from "@/lib/prices/registry";
+import { backfillPricesForInstruments } from "@/lib/prices/backfill";
+
+/**
+ * Soft budget for the connect-time price backfill, so this slow (one HTTP call
+ * per instrument, chunked) step cannot consume the whole 60s after() budget and
+ * starve the wealth-regen step that runs after it. A budget-truncated backfill
+ * resumes on the NEXT connect (missing-only/idempotent) — the daily cron does
+ * not backfill historical windows.
+ */
+const PRICE_BACKFILL_BUDGET_MS = 25_000;
 
 /** yesterday-anchored ISO day helpers — same convention as the snapshot
  *  backfill window and scripts/regenerate-wealth-history.ts. */
@@ -88,14 +99,17 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
       }
     }
 
-    // A4 + A9 — investment-history refinement for a just-connected item.
-    // Resolve the item's investment accounts ONCE (both stages need them) and
-    // skip the query entirely when neither stage is enabled, preserving the
-    // zero-extra-work default and honoring the 60s background budget. Both
-    // stages are best-effort / non-fatal and already post-response via after(),
-    // so they can never affect connect latency. A pure cash/card connect finds
-    // no investment accounts and does nothing.
-    if (investmentReconstructionEnabled() || wealthRegenerationEnabled()) {
+    // A4 + A8-3B + A9 — investment-history refinement for a just-connected item:
+    // reconstruct per-holding quantity → backfill historical prices → regenerate
+    // wealth history. Resolve the item's investment accounts ONCE (all stages
+    // need them) and skip the query entirely when no stage is enabled, preserving
+    // the zero-extra-work default and honoring the 60s background budget. Every
+    // stage is best-effort / non-fatal and already post-response via after(), so
+    // none can affect connect latency. A pure cash/card connect finds no
+    // investment accounts and does nothing.
+    const priceRegistry = defaultPriceRegistry();
+    const priceBackfillEnabled = priceRegistry.adapters.length > 0; // TIINGO_API_KEY set
+    if (investmentReconstructionEnabled() || priceBackfillEnabled || wealthRegenerationEnabled()) {
       const investmentFaIds = (
         await db.financialAccount.findMany({
           where:  { id: { in: faIds }, type: "investment", deletedAt: null },
@@ -128,12 +142,47 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
           }
         }
 
+        // A8-3B — auto-trigger the historical price backfill for the newly-held
+        // instruments so Wealth shows real historical valuation without anyone
+        // running the CLI script by hand. Shares lib/prices/backfill.ts with the
+        // script. Runs AFTER reconstruction (needs PositionObservation qty>0 rows
+        // to know which instruments to fetch) and BEFORE wealth regen (which reads
+        // the PriceObservation rows it writes). Gated on a configured vendor, so
+        // it's a clean no-op when TIINGO_API_KEY is unset. Best-effort/non-fatal,
+        // and soft-bounded (PRICE_BACKFILL_BUDGET_MS) so it can't starve regen; a
+        // truncated run resumes on the next connect (missing-only/idempotent).
+        if (priceBackfillEnabled) {
+          try {
+            const heldRows = await db.positionObservation.findMany({
+              where:    { financialAccountId: { in: investmentFaIds }, supersededById: null, deletedAt: null, quantity: { gt: 0 } },
+              select:   { instrumentId: true },
+              distinct: ["instrumentId"],
+            });
+            const heldInstrumentIds = [...new Set(heldRows.map((r) => r.instrumentId))];
+            if (heldInstrumentIds.length > 0) {
+              const m = await backfillPricesForInstruments(heldInstrumentIds, {
+                apply:           true,
+                registry:        priceRegistry,
+                deadlineEpochMs: Date.now() + PRICE_BACKFILL_BUDGET_MS,
+              });
+              console.log(
+                `[plaid][A8-3B] price backfill (item ${plaidItemId}) — ${heldInstrumentIds.length} held instrument(s): ` +
+                  `planned ${m.planned}, fetched ${m.fetchedInstruments}, stored ${m.inserted} row(s)` +
+                  (m.skippedForBudget ? `, deferred ${m.skippedForBudget} to next connect (budget)` : ""),
+              );
+            }
+          } catch (e) {
+            console.error(`[plaid][A8-3B] price backfill failed for item ${plaidItemId} (non-fatal):`, e);
+          }
+        }
+
         // A9 — accurate wealth-history regeneration. The Slice-4 backfill above
         // holds every investment account's value FLAT at today's value on each
         // historical day. Re-derive those days from the canonical A8 historical
         // valuation (which now reads the A4 DERIVED quantity rows produced just
-        // above), over the SAME 30-day window the backfill wrote — refining it,
-        // never instead of it. Gated on WEALTH_REGENERATION_ENABLED.
+        // above AND the A8-3B prices backfilled just above), over the SAME 30-day
+        // window the backfill wrote — refining it, never instead of it. Gated on
+        // WEALTH_REGENERATION_ENABLED.
         if (wealthRegenerationEnabled()) {
           try {
             const toDate   = minusDaysISO(isoDayUTC(new Date()), 1); // yesterday — today's live row is frozen
