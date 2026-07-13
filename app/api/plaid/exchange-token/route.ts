@@ -36,7 +36,7 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSpaceContext } from "@/lib/space";
 import { requireUser } from "@/lib/session";
-import { performPlaidTokenExchange, parsePlaidError } from "@/lib/plaid/exchangeToken";
+import { performPlaidTokenExchange, parsePlaidError, DuplicateInstitutionError } from "@/lib/plaid/exchangeToken";
 import { runDeferredHistorySync } from "@/lib/plaid/backgroundHistorySync";
 import { limitByUser } from "@/lib/rate-limit";
 
@@ -112,6 +112,12 @@ export async function POST(req: NextRequest) {
       historyPending:     result.historyPending ?? false,
     });
   } catch (err: unknown) {
+    // Duplicate connection to an already-connected institution — a clean 409 with
+    // a user-facing message (surfaced by the connect UI), not a Plaid error.
+    if (err instanceof DuplicateInstitutionError) {
+      console.warn(`[plaid] exchange-token: ${err.message}`);
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     const { message, status, code } = parsePlaidError(err, "Failed to connect account");
     console.error(`[plaid] exchange-token error (code: ${code ?? "unknown"}):`, message);
     return NextResponse.json({ error: message }, { status });

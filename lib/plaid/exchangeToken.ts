@@ -116,6 +116,20 @@ export function mapAccountType(type: string, subtype: string | null | undefined)
   }
 }
 
+/**
+ * Thrown when a fresh Link session completes for an institution the user ALREADY
+ * has an ACTIVE PlaidItem for (a genuine duplicate — a NEW Plaid item_id, not an
+ * update-mode reconnect which preserves the item_id and heals the existing row).
+ * The exchange-token route maps this to a 409 + the user-facing message; the
+ * connect UI already surfaces `{ error }` from a non-2xx exchange response.
+ */
+export class DuplicateInstitutionError extends Error {
+  constructor(public readonly institutionName: string) {
+    super(`You already have ${institutionName} connected — refresh it instead of reconnecting.`);
+    this.name = "DuplicateInstitutionError";
+  }
+}
+
 // ── Core exchange + import ────────────────────────────────────────────────────
 
 export async function performPlaidTokenExchange(
@@ -124,21 +138,34 @@ export async function performPlaidTokenExchange(
   const { userId, spaceId, public_token, institution_id, institution_name } = params;
   const deferHistorySync = params.deferHistorySync ?? false;
 
-  // 1. Duplicate institution check — log only; upsert handles collisions
-  const existingItem = await db.plaidItem.findFirst({
-    where: { userId, institutionId: institution_id, status: PlaidItemStatus.ACTIVE },
-  });
-  if (existingItem) {
-    console.log(
-      `[plaid] re-linking existing institution "${institution_name}" (${institution_id}) for user ${userId} — will refresh token`,
-    );
-  }
-
-  // 2. Exchange public_token → access_token
+  // 1. Exchange public_token → access_token (+ Plaid's item_id).
   console.log(`[plaid] exchanging public token for institution "${institution_name}" (${institution_id})`);
   const exchangeRes = await plaidClient.itemPublicTokenExchange({ public_token });
   const { access_token, item_id } = exchangeRes.data;
   console.log(`[plaid] public token exchanged — item_id: ${item_id}`);
+
+  // 2. Duplicate-institution GATE (real, not log-only). An update-mode reconnect
+  // reuses the existing access_token, so Plaid returns the SAME item_id and the
+  // upsert below heals the existing row. A genuine duplicate is a FRESH Link
+  // session for an already-connected institution: a NEW item_id. If an ACTIVE
+  // PlaidItem already exists for (userId, institutionId) under a DIFFERENT
+  // item_id, block instead of creating a second parallel connection. Best-effort
+  // itemRemove the just-created item so it doesn't linger unused at Plaid.
+  const duplicate = await db.plaidItem.findFirst({
+    where:  { userId, institutionId: institution_id, status: PlaidItemStatus.ACTIVE, externalItemId: { not: item_id } },
+    select: { id: true, institutionName: true },
+  });
+  if (duplicate) {
+    console.warn(
+      `[plaid] duplicate connect blocked — user ${userId} already has ACTIVE item ${duplicate.id} for institution "${institution_name}" (${institution_id}); removing the new item ${item_id} at Plaid`,
+    );
+    try {
+      await plaidClient.itemRemove({ access_token });
+    } catch (removeErr) {
+      console.warn(`[plaid] best-effort itemRemove of duplicate item ${item_id} failed (non-fatal):`, removeErr);
+    }
+    throw new DuplicateInstitutionError(institution_name);
+  }
 
   // 3. Encrypt access_token before it touches the DB
   const encryptedToken = encryptWithPurpose(access_token, EncryptionPurpose.PLAID_ACCESS_TOKEN);
