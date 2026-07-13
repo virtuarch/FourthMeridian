@@ -32,7 +32,7 @@ export function BriefNewUser() {
         </p>
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
           <Link
-            href="/dashboard/accounts"
+            href="/dashboard/connections"
             className="flex items-center justify-center gap-2 py-3 px-6 text-[var(--ink-0)] text-sm font-semibold transition-all duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
             style={{
               borderRadius: "var(--radius-sm)",
@@ -45,7 +45,7 @@ export function BriefNewUser() {
           </Link>
           <GlassPanel
             as={Link}
-            href="/dashboard/accounts"
+            href="/dashboard/connections"
             depth="thin"
             radius="sm"
             elevation="e1"

@@ -132,10 +132,13 @@ function buildOnboarding(): BriefSection {
     priority: 5,
     title:    "Get started",
     items: [
-      { id: "ob_bank",    label: "Connect your first bank account",                            tone: "neutral", href: "/dashboard/accounts" },
-      { id: "ob_invest",  label: "Add an investment account",                                  tone: "neutral", href: "/dashboard/accounts" },
-      { id: "ob_crypto",  label: "Import a crypto wallet",                                     tone: "neutral", href: "/dashboard/accounts" },
-      { id: "ob_manual",  label: "Add manual assets — home, vehicle, equipment, or valuables", tone: "neutral", href: "/dashboard/accounts" },
+      // Connect-intent onboarding → the Connections hub, where the actual
+      // connect/Plaid flow lives (AccountsPerspective is management-only). The
+      // standalone /dashboard/accounts page is retired.
+      { id: "ob_bank",    label: "Connect your first bank account",                            tone: "neutral", href: "/dashboard/connections" },
+      { id: "ob_invest",  label: "Add an investment account",                                  tone: "neutral", href: "/dashboard/connections" },
+      { id: "ob_crypto",  label: "Import a crypto wallet",                                     tone: "neutral", href: "/dashboard/connections" },
+      { id: "ob_manual",  label: "Add manual assets — home, vehicle, equipment, or valuables", tone: "neutral", href: "/dashboard/connections" },
     ],
   };
 }
