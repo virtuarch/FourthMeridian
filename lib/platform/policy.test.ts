@@ -24,6 +24,9 @@ import type {
   PlatformAccessLevel,
   PlatformGrantStatus,
 } from "@prisma/client";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import type { UserRole } from "@prisma/client";
 import {
   hasPlatformAccess,
   PLATFORM_AREAS,
@@ -187,6 +190,93 @@ check(`matrix covered exactly 128 combinations (got ${combos})`, combos === 128)
   const b = hasPlatformAccess("SECURITY_OPS", "READ", grants);
   const c = hasPlatformAccess("SECURITY_OPS", "READ", grants);
   check("det deterministic", a === b && b === c);
+}
+
+// ── E. decidePlatformAccess (adapter pure branch) ─────────────────────────────
+// The adapter (lib/platform/authorize.ts) pulls in `server-only`, @/lib/db
+// (Prisma engine), next/server and @/lib/session, so it cannot be imported into
+// a standalone `tsx` script — exactly the constraint lib/spaces/authorize.test.ts
+// documents for decideSpaceAction. So the pure branch is covered the same way:
+//   (a) an inline oracle pins the SPEC (SYSTEM_ADMIN ⇒ true; USER ⇒ hasPlatformAccess),
+//   (b) a source-scan of authorize.ts proves the implementation matches it.
+
+const SYSTEM_ADMIN: UserRole = "SYSTEM_ADMIN";
+const USER: UserRole = "USER";
+
+/** Spec oracle for decidePlatformAccess. */
+function oracleDecide(
+  role:   UserRole,
+  area:   PlatformArea,
+  needed: PlatformAccessLevel,
+  grants: PlatformGrantCtx[],
+): boolean {
+  if (role === "SYSTEM_ADMIN") return true;
+  return hasPlatformAccess(area, needed, grants);
+}
+
+{
+  // Spec (a): SYSTEM_ADMIN allowed everything, every level, with NO grants.
+  for (const area of AREAS) {
+    for (const needed of LEVELS) {
+      check(`dec SYSTEM_ADMIN allowed ${area} ${needed} with no grants`,
+        oracleDecide(SYSTEM_ADMIN, area, needed, []) === true);
+    }
+  }
+  // SYSTEM_ADMIN allowed even where a USER would be denied (revoked grant).
+  const revoked: PlatformGrantCtx[] = [{ area: "SECURITY_OPS", level: "READ", status: "REVOKED" }];
+  check("dec SYSTEM_ADMIN bypass ignores revoked grant",
+    oracleDecide(SYSTEM_ADMIN, "SECURITY_OPS", "WRITE", revoked) === true);
+
+  // USER with NO grants is denied everywhere; USER decision === hasPlatformAccess.
+  for (const area of AREAS) {
+    for (const needed of LEVELS) {
+      check(`dec USER denied ${area} ${needed} with no grants`,
+        oracleDecide(USER, area, needed, []) === false);
+    }
+  }
+  let decCombos = 0;
+  for (const grantArea of AREAS) {
+    for (const grantLevel of LEVELS) {
+      for (const grantStatus of STATUSES) {
+        const grants: PlatformGrantCtx[] = [{ area: grantArea, level: grantLevel, status: grantStatus }];
+        for (const askArea of AREAS) {
+          for (const needed of LEVELS) {
+            decCombos++;
+            check(
+              `dec USER === policy grant(${grantArea},${grantLevel},${grantStatus}) ask(${askArea},${needed})`,
+              oracleDecide(USER, askArea, needed, grants) === hasPlatformAccess(askArea, needed, grants),
+            );
+          }
+        }
+      }
+    }
+  }
+  check(`dec USER matrix covered 128 combinations (got ${decCombos})`, decCombos === 128);
+}
+
+// Spec (b): the real authorize.ts implements exactly this branch + the tuple
+// adapters, and never discloses existence (403 not 404).
+{
+  const ROOT = process.cwd();
+  const authSrc = readFileSync(path.join(ROOT, "lib/platform/authorize.ts"), "utf8");
+  // decidePlatformAccess: SYSTEM_ADMIN bypass then delegates to hasPlatformAccess.
+  const decBody = authSrc.slice(authSrc.indexOf("export function decidePlatformAccess"));
+  check("src decidePlatformAccess SYSTEM_ADMIN bypass returns true",
+    /role === UserRole\.SYSTEM_ADMIN\)\s*return true/.test(decBody));
+  check("src decidePlatformAccess delegates to hasPlatformAccess",
+    decBody.includes("return hasPlatformAccess(area, needed, grants)"));
+  // Adapters key on the @@unique([userId, area]) composite and use the right guards.
+  check("src requirePlatformAccess uses requireUser",
+    authSrc.includes("export async function requirePlatformAccess") && authSrc.includes("await requireUser()"));
+  check("src requireFreshPlatformAccess uses requireFreshUser",
+    authSrc.includes("export async function requireFreshPlatformAccess") && authSrc.includes("await requireFreshUser()"));
+  check("src grant lookup keyed on userId_area composite",
+    authSrc.includes("userId_area:"));
+  // Strip comments before the 404 scan — the file header DOCUMENTS the never-404
+  // rule, which must not trip the code check.
+  const authCode = authSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("src denies with forbidden() (403), never 404 in code",
+    authCode.includes("forbidden()") && !authCode.includes("404") && !authCode.includes("notFound"));
 }
 
 // ── Report ────────────────────────────────────────────────────────────────────
