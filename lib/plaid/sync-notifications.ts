@@ -48,6 +48,38 @@ function itemClient(ctx?: { itemClient?: PlaidItemReadClient }): PlaidItemReadCl
   return ctx?.itemClient ?? (db as unknown as PlaidItemReadClient);
 }
 
+/**
+ * SYNC_COMPLETED bell notification, linked to the SAME AuditLog record the
+ * Recent-Activity feed reads (auditLogId) so the two surfaces can never drift.
+ * The AuditLog row is written by the pipeline (lib/plaid/backgroundHistorySync)
+ * — this stays a thin chokepoint-only producer (the OPS-3 invariant that
+ * notification helpers touch no audit/email/Notification writes directly).
+ * suppress-while-open dedupe keeps repeated pipeline runs to one live notice.
+ * Best-effort / non-throwing.
+ */
+export async function notifyItemSyncComplete(
+  args: {
+    userId:          string;
+    plaidItemId:     string;
+    institutionName: string | null;
+    spaceId?:        string | null;
+    auditLogId?:     string | null;
+  },
+  ctx?: { createFn?: typeof createNotification },
+): Promise<void> {
+  try {
+    await (ctx?.createFn ?? createNotification)({
+      type:   "SYNC_COMPLETED",
+      userId: args.userId,
+      ...(args.spaceId ? { spaceId: args.spaceId } : {}),
+      ...(args.auditLogId ? { auditLogId: args.auditLogId } : {}),
+      data:   { plaidItemId: args.plaidItemId, institutionName: args.institutionName ?? "" },
+    });
+  } catch (err) {
+    console.warn(`[notifyItemSyncComplete] non-fatal failure for item ${args.plaidItemId}:`, err);
+  }
+}
+
 /** Ping the item's owner that the connection needs attention. Best-effort. */
 export async function notifyItemSyncFailed(
   plaidItemId: string,

@@ -213,9 +213,11 @@ const WIRED = new Set<string>([
   "SPACE_INVITE_ACCEPTED",
   "MEMBER_REMOVED",
   "MEMBER_ROLE_CHANGED",
-  // OPS-3 S5 Wave 3 — financial (SYNC_COMPLETED resolved-no-rows;
-  // DUPLICATE_DETECTED vocabulary — no PENDING substrate exists):
+  // OPS-3 S5 Wave 3 — financial. SYNC_COMPLETED is now WIRED (D2 reopened —
+  // produced on full-pipeline completion). DUPLICATE_DETECTED stays vocabulary
+  // (no PENDING substrate exists).
   "SYNC_FAILED",
+  "SYNC_COMPLETED",
   "IMPORT_COMPLETED",
   "IMPORT_COMPLETED_WITH_ERRORS",
 ]);

@@ -88,6 +88,8 @@ const ALLOWED_ACTIONS = new Set([
   // a space-scoped write lands. ACCOUNT_ADD / ACCOUNT_REMOVE carry a spaceId.
   "PLAID_SYNC", "PLAID_REFRESH", "WALLET_SYNC",
   "ACCOUNT_ADD", "ACCOUNT_REMOVE",
+  // Full deferred history pipeline finished (bell + this entry share one record).
+  "PLAID_HISTORY_SYNCED",
   // System — import rollback (real action, carries spaceId).
   "IMPORT_BATCH_ROLLED_BACK",
 ]);
@@ -351,6 +353,21 @@ function normalizeLog(log: RawLog): TimelineEvent | null {
         actorName: actor,
         title:    "Account connected",
         subtitle: institution ? `${institution} was connected` : "A new account was connected",
+      };
+    }
+
+    case "PLAID_HISTORY_SYNCED": {
+      // Verified write site (lib/plaid/sync-notifications.notifyItemSyncComplete):
+      // metadata.institutionName is the Plaid institution name; spaceId is set.
+      // Shares this one AuditLog row with the SYNC_COMPLETED bell notification.
+      const institution = str(meta.institutionName);
+      return {
+        id, date, type: log.action, icon: "CheckCircle2", tone: "positive", category: "connection",
+        actorName: actor,
+        title:    "History ready",
+        subtitle: institution
+          ? `${institution} — full transaction history and 30-day balance history are ready`
+          : "Full transaction history and 30-day balance history are ready",
       };
     }
 

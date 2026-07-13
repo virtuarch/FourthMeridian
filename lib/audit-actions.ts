@@ -112,6 +112,11 @@ export const AuditAction = {
   // ── Sync / Platform ──────────────────────────────────────────────────────────
   PLAID_SYNC:               "PLAID_SYNC",
   PLAID_REFRESH:            "PLAID_REFRESH",
+  // The full deferred history pipeline finished for a just-connected item
+  // (sync → snapshot backfill → reconstruction → prices → wealth regen). The
+  // single record that anchors BOTH the SYNC_COMPLETED bell notification and the
+  // Recent-Activity entry (never two independently-triggered paths).
+  PLAID_HISTORY_SYNCED:     "PLAID_HISTORY_SYNCED",
   WALLET_SYNC:              "WALLET_SYNC",
   ACCOUNT_ADD:              "ACCOUNT_ADD",
   ACCOUNT_REMOVE:           "ACCOUNT_REMOVE",

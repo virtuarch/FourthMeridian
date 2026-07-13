@@ -399,22 +399,29 @@ export const NOTIFICATION_REGISTRY = {
       href: "/dashboard/connections",
     }),
   },
-  // D2 RESOLVED at Wave-3 entry (OPS-3 S5): NO rows are created for this type
-  // — /dashboard/connections is the surface for healthy-sync state, and a
-  // daily per-item ping is noise by construction. The id stays reserved
-  // (VOCABULARY) with empty defaultChannels; reopening D2 means wiring a
-  // producer AND flipping these defaults consciously.
+  // WIRED (reopening the D2-deferred decision consciously): produced ONLY when
+  // the FULL deferred pipeline finishes for an item (initial connect or a
+  // webhook-triggered re-run — lib/plaid/backgroundHistorySync.runDeferredHistorySync
+  // → lib/plaid/sync-notifications.notifyItemSyncComplete), NOT the routine daily
+  // cron sync. The original D2 "daily per-item ping is noise" concern is met by
+  // suppress-while-open: one live "history ready" per item until the user
+  // dismisses it, so repeated pipeline runs during ingestion don't spam. IN_APP
+  // only (no email — a completion is informational, not actionable like
+  // SYNC_FAILED). One AuditLog row (PLAID_HISTORY_SYNCED) anchors BOTH this bell
+  // notification and the Recent-Activity entry, so they can't drift.
   SYNC_COMPLETED: {
     ...FINANCIAL,
+    status: "WIRED" as const,
     id: "SYNC_COMPLETED",
     priority: "LOW" as const,
-    defaultChannels: [] as const satisfies readonly NotificationChannel[],
-    dedupe: "none" as const,
-    dedupeKeyTemplate: null,
-    icon: "refresh-cw",
+    defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],
+    dedupe: "suppress" as const,
+    dedupeKeyTemplate: "SYNC_COMPLETED:item:{plaidItemId}:open",
+    icon: "circle-check",
     pointerContract: ["plaidItemId", "institutionName"],
     render: (d) => ({
-      title: `${str(d, "institutionName", "A connection")} synced`,
+      title: `${str(d, "institutionName", "A connection")} — history ready`,
+      body: "Full transaction history and 30-day balance history are ready.",
       href: "/dashboard/connections",
     }),
   },

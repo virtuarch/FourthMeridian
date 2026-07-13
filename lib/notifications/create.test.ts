@@ -386,13 +386,14 @@ async function run(): Promise<void> {
     check("locked category cannot be muted at the chokepoint", res.status === "created" && fake.rows.length === 1);
   }
   {
-    // Default-by-absence: SYNC_COMPLETED defaults off → skipped with no rows.
+    // SYNC_COMPLETED is now IN_APP default-ON (D2 reopened) → a row is created
+    // with no override rows (dedupe key resolves from data.plaidItemId).
     const fake = makeFakeClient();
     const res = await createNotification(
       { type: "SYNC_COMPLETED", userId: "u1", data: { plaidItemId: "p", institutionName: "Chase" } },
       { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter },
     );
-    check("default-off type (SYNC_COMPLETED) is skipped with no override rows", res.status === "skipped");
+    check("default-ON type (SYNC_COMPLETED) creates a row with no override rows", res.status === "created" && fake.rows.length === 1);
   }
   {
     // A preference-read failure is a non-throwing error result.

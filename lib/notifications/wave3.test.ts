@@ -266,7 +266,11 @@ async function run(): Promise<void> {
     check(
       "helpers flow through the chokepoint/resolve primitives only",
       helper.includes("createNotification") && helper.includes("retireOpenNotification") &&
-        !helper.includes(".notification.create") && !helper.includes("sendEmail") && !helper.includes("auditLog"),
+        // No DIRECT Notification / email / AuditLog WRITES — everything flows via
+        // the chokepoint. (Passing an auditLogId VALUE to createNotification is the
+        // sanctioned link mechanism, so guard the write `auditLog.create`, not the
+        // substring "auditLog".)
+        !helper.includes(".notification.create") && !helper.includes("sendEmail") && !helper.includes("auditLog.create"),
     );
     const importSrc = readFileSync("app/api/accounts/[id]/import/route.ts", "utf8");
     check(
@@ -285,9 +289,11 @@ async function run(): Promise<void> {
       NOTIFICATION_REGISTRY.IMPORT_COMPLETED.status === "WIRED" &&
       NOTIFICATION_REGISTRY.IMPORT_COMPLETED_WITH_ERRORS.status === "WIRED");
   check(
-    "D2 resolved: SYNC_COMPLETED stays VOCABULARY with no producer and all-off defaults",
-    NOTIFICATION_REGISTRY.SYNC_COMPLETED.status === "VOCABULARY" &&
-      NOTIFICATION_REGISTRY.SYNC_COMPLETED.defaultChannels.length === 0,
+    "SYNC_COMPLETED WIRED (D2 reopened): produced by notifyItemSyncComplete on full-pipeline finish, IN_APP + suppress-while-open",
+    NOTIFICATION_REGISTRY.SYNC_COMPLETED.status === "WIRED" &&
+      NOTIFICATION_REGISTRY.SYNC_COMPLETED.defaultChannels.length === 1 &&
+      NOTIFICATION_REGISTRY.SYNC_COMPLETED.defaultChannels[0] === "IN_APP" &&
+      NOTIFICATION_REGISTRY.SYNC_COMPLETED.dedupe === "suppress",
   );
   check(
     "drift ruling: DUPLICATE_DETECTED stays VOCABULARY (no PENDING substrate exists)",

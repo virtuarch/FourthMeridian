@@ -29,10 +29,11 @@
  */
 
 import { db } from "@/lib/db";
-import { ShareStatus } from "@prisma/client";
+import { ShareStatus, SpaceType } from "@prisma/client";
+import { AuditAction } from "@/lib/audit-actions";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth, plaidErrorSummary } from "@/lib/plaid/errors";
-import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { notifyItemSyncFailed, notifyItemSyncComplete } from "@/lib/plaid/sync-notifications";
 import { backfillSpaceSnapshots } from "@/lib/snapshots/backfill";
 import {
   regenerateWealthHistoryForAccounts,
@@ -209,6 +210,62 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
  *
  * @param plaidItemId  Our internal PlaidItem.id (primary key), not Plaid's item_id.
  */
+/**
+ * Part-3 — record the "full history pipeline complete" event ONCE and fan it out
+ * to both surfaces. Writes a single PLAID_HISTORY_SYNCED AuditLog row (the record
+ * the Recent-Activity feed reads), then links the SYNC_COMPLETED bell
+ * notification to it via auditLogId — so the bell and the activity entry can't
+ * drift. The audit write lives here (a pipeline/domain concern), keeping the
+ * notification producer a thin chokepoint-only helper. Best-effort/non-throwing.
+ */
+async function recordSyncComplete(plaidItemId: string): Promise<void> {
+  try {
+    const item = await db.plaidItem.findUnique({
+      where:  { id: plaidItemId },
+      select: { userId: true, institutionName: true },
+    });
+    if (!item) return;
+
+    // Space to surface the activity entry in: the item's accounts' ACTIVE-linked
+    // spaces, preferring the user's PERSONAL space (the connect home).
+    const conns = await db.accountConnection.findMany({
+      where:  { plaidItemDbId: plaidItemId, deletedAt: null },
+      select: { financialAccountId: true },
+    });
+    const faIds = conns.map((c) => c.financialAccountId);
+    let spaceId: string | null = null;
+    if (faIds.length > 0) {
+      const links = await db.spaceAccountLink.findMany({
+        where:  { financialAccountId: { in: faIds }, status: ShareStatus.ACTIVE },
+        select: { space: { select: { id: true, type: true } } },
+      });
+      const spaces = links.map((l) => l.space);
+      spaceId = spaces.find((s) => s.type === SpaceType.PERSONAL)?.id ?? spaces[0]?.id ?? null;
+    }
+
+    // ONE record anchors both surfaces.
+    const audit = await db.auditLog.create({
+      data: {
+        userId:   item.userId,
+        spaceId,
+        action:   AuditAction.PLAID_HISTORY_SYNCED,
+        metadata: { institutionName: item.institutionName ?? "", plaidItemId },
+      },
+      select: { id: true },
+    });
+
+    await notifyItemSyncComplete({
+      userId:          item.userId,
+      plaidItemId,
+      institutionName: item.institutionName,
+      spaceId,
+      auditLogId:      audit.id,
+    });
+  } catch (e) {
+    console.error(`[plaid][sync-complete] non-fatal record/notify failure for item ${plaidItemId}:`, e);
+  }
+}
+
 export async function runDeferredHistorySync(plaidItemId: string): Promise<void> {
   try {
     const r = await syncTransactionsForItem(plaidItemId);
@@ -221,6 +278,11 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<void>
     // D2.x Slice 4 — reconstruct historical snapshots now that full history
     // exists. Best-effort/non-fatal and gated to new Spaces inside.
     await backfillHistoryForItem(plaidItemId);
+
+    // Part-3 — the FULL deferred pipeline is done: record it + notify the owner
+    // (bell + Recent Activity, from ONE AuditLog record). Only reached on a
+    // successful sync — a failure skips to the catch.
+    await recordSyncComplete(plaidItemId);
   } catch (e) {
     console.error(
       `[plaid][D2x-slice2] background history sync FAILED for item ${plaidItemId} (non-fatal — Link already succeeded): ${plaidErrorSummary(e)}`,

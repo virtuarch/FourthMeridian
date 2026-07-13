@@ -97,8 +97,8 @@ async function run(): Promise<void> {
   check("no rows → registry default (invite in-app ON)", resolveChannelEnabled(invite, "IN_APP", []));
   check("no rows → registry default (invite email ON — the per-type outlier)", resolveChannelEnabled(invite, "EMAIL", []));
   check(
-    "no rows → SYNC_COMPLETED defaults OFF everywhere (noise ruling)",
-    !resolveChannelEnabled(syncCompleted, "IN_APP", []) && !resolveChannelEnabled(syncCompleted, "EMAIL", []),
+    "no rows → SYNC_COMPLETED IN_APP default-ON (D2 reopened), EMAIL still OFF",
+    resolveChannelEnabled(syncCompleted, "IN_APP", []) && !resolveChannelEnabled(syncCompleted, "EMAIL", []),
   );
 
   // ── Pure resolution: overrides win ──────────────────────────────────────────
