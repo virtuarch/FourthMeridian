@@ -2,19 +2,21 @@
  * lib/prices/registry.ts
  *
  * A8-3A — ordered price-provider registry (failover priority), cloned from
- * lib/fx/registry.ts. Pure module: contains NO real vendor adapter. A real
- * historical-price vendor (A8-3B) is an EXTERNAL, LICENSING-GATED decision and
- * has NOT been selected — persistent storage / redistribution rights for
- * derived historical prices must be verified before any adapter is written
- * (investigation §3.2, plan §9). Until then defaultPriceRegistry() is EMPTY: the
- * backfill/job infrastructure is complete and a no-op, and a vendor adapter
- * drops into this seam without touching any consumer.
+ * lib/fx/registry.ts.
  *
- * The fixture adapter (providers/fixture.ts) is the injectable test/dry-run
- * provider; production wires a real adapter here once it clears licensing.
+ * A8-3B — Tiingo is the selected vendor (free tier, daily EOD for US equities,
+ * a real API contract). It registers ONLY when TIINGO_API_KEY is set — the same
+ * kill-switch pattern every other flag in this codebase uses. With the key
+ * absent the registry stays EMPTY and the prior no-op behavior is unchanged
+ * (fetchInstrumentWindow → source null; backfill/daily job clean no-ops), so
+ * this code lands safely before the Tiingo account exists.
+ *
+ * The fixture adapter (providers/fixture.ts) remains the injectable test/dry-run
+ * provider; createPriceRegistry stays the DI seam for tests.
  */
 
 import type { PriceProviderAdapter, PriceRegistry } from "./types";
+import { createTiingoPriceProvider } from "./providers/tiingo";
 
 /**
  * Build a registry from an ordered adapter list (dependency-injection seam).
@@ -33,14 +35,17 @@ export function createPriceRegistry(adapters: readonly PriceProviderAdapter[]): 
 }
 
 /**
- * The production registry. EMPTY by design until a vendor is selected AND its
- * storage/redistribution licensing is verified (A8-3B, externally blocked). An
- * empty registry makes fetchInstrumentWindow return `source: null` and the
- * backfill/daily job a clean no-op — historical coverage stays whatever A8-2
- * same-day capture has accrued, never fabricated. Adding a vendor is a one-line
- * change here plus the adapter file; no consumer changes.
+ * The production registry. Registers the Tiingo adapter when TIINGO_API_KEY is
+ * present; otherwise stays EMPTY (fetchInstrumentWindow → source null, and the
+ * backfill/daily job are clean no-ops — historical coverage stays whatever A8-2
+ * same-day capture has accrued, never fabricated). Adding a further vendor is a
+ * one-line change here plus its adapter file; no consumer changes.
  */
 export function defaultPriceRegistry(): PriceRegistry {
-  // Intentionally no adapters — see the module header and A8-3B stop-gate.
+  const tiingoKey = process.env.TIINGO_API_KEY;
+  if (tiingoKey) {
+    return createPriceRegistry([createTiingoPriceProvider(tiingoKey)]);
+  }
+  // No key ⇒ no adapter — the pre-vendor no-op path stays intact.
   return createPriceRegistry([]);
 }

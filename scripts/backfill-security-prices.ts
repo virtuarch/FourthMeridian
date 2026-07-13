@@ -81,11 +81,15 @@ async function main(): Promise<void> {
   }
 
   // Held instruments (live, non-deleted, qty > 0), optionally filtered.
+  // tickerSymbol is resolved here (mirroring jobs/fetch-security-prices.ts) so
+  // the adapter receives a real provider symbol — not the empty string, which
+  // would make Tiingo fetch nothing even with the adapter registered.
   const held = await db.positionObservation.findMany({
     where:    { supersededById: null, deletedAt: null, quantity: { gt: 0 }, ...(ONLY_INSTRUMENT ? { instrumentId: ONLY_INSTRUMENT } : {}) },
-    select:   { instrumentId: true },
+    select:   { instrumentId: true, instrument: { select: { tickerSymbol: true } } },
     distinct: ["instrumentId"],
   });
+  const symbolById = new Map(held.map((h) => [h.instrumentId, h.instrument.tickerSymbol]));
   const instrumentIds = [...new Set(held.map((h) => h.instrumentId))].sort().slice(0, LIMIT);
   console.log(`${instrumentIds.length} held instrument(s) to consider.\n`);
 
@@ -101,7 +105,7 @@ async function main(): Promise<void> {
     if (!APPLY || registry.adapters.length === 0) continue;
     for (const c of chunks) {
       const res = await fetchInstrumentWindow(
-        { instrumentId, providerSymbol: "", basis: PriceBasis.RAW_CLOSE, fromISO: c.fromISO, toISO: c.toISO },
+        { instrumentId, providerSymbol: symbolById.get(instrumentId) ?? "", basis: PriceBasis.RAW_CLOSE, fromISO: c.fromISO, toISO: c.toISO },
         registry,
       );
       if (res.source && res.rows.length > 0) {

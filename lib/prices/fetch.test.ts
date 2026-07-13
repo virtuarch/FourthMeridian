@@ -106,11 +106,25 @@ async function main(): Promise<void> {
     check("empty is 'no data', noted (not a failure)", res.notes.some((n) => n.includes("no data")));
   }
 
-  // ── 6. Empty (default) registry → clean no-op ─────────────────────────────
-  console.log("6. Default (vendor-less) registry");
+  // ── 6. Default registry — vendor gate on TIINGO_API_KEY ───────────────────
+  console.log("6. Default registry (Tiingo when keyed, empty otherwise)");
   {
-    const res = await fetchInstrumentWindow(req(), defaultPriceRegistry());
-    check("no vendor selected → source null, zero rows (deferred, not fabricated)", res.source === null && res.rows.length === 0);
+    const saved = process.env.TIINGO_API_KEY;
+    try {
+      delete process.env.TIINGO_API_KEY;
+      const empty = defaultPriceRegistry();
+      check("no key → empty registry (no-op, not fabricated)", empty.adapters.length === 0);
+      const res = await fetchInstrumentWindow(req(), empty);
+      check("empty registry → source null, zero rows", res.source === null && res.rows.length === 0);
+
+      process.env.TIINGO_API_KEY = "test-key";
+      const keyed = defaultPriceRegistry();
+      check("key set → registers the tiingo adapter",
+        keyed.adapters.length === 1 && keyed.adapters[0].source === "tiingo");
+    } finally {
+      if (saved === undefined) delete process.env.TIINGO_API_KEY;
+      else process.env.TIINGO_API_KEY = saved;
+    }
   }
 
   // ── 7. Registry duplicate-source guard ────────────────────────────────────
@@ -119,7 +133,6 @@ async function main(): Promise<void> {
     let threw = false;
     try { createPriceRegistry([fixture, createFixturePriceProvider(seed, { source: "fixture" })]); } catch { threw = true; }
     check("duplicate adapter source throws", threw);
-    check("defaultPriceRegistry is empty (vendor deferred)", defaultPriceRegistry().adapters.length === 0);
   }
 
   if (failures > 0) {
