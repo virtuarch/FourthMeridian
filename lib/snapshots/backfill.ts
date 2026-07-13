@@ -23,15 +23,20 @@
  *  - Never overwrites — create-if-absent via createMany({ skipDuplicates: true })
  *    on the @@unique([spaceId, date]) key. Idempotent; re-runs are no-ops.
  *  - Excludes today (the authoritative LIVE row written by regenerateSpaceSnapshot).
- *  - Floors reconstruction at each account's FinancialAccount.createdAt /
- *    SpaceAccountLink.createdAt so it never asserts an account existed earlier.
+ *  - Floors reconstruction at each account's EARLIEST real (non-deleted)
+ *    Transaction.date — the true "the account can't have data before this" bound.
+ *    (The old FinancialAccount/SpaceAccountLink.createdAt floor was stamped at
+ *    connect = today, so it collapsed the window to zero every connect.) A SHARED
+ *    Space additionally floors at SpaceAccountLink.createdAt (an account's older
+ *    history predates when it was shared into that Space); a PERSONAL Space — the
+ *    account's home — does not, or it would re-collapse to connect day.
  *  - regenerateSpaceSnapshot is untouched. No FlowType. No SyncJob/queue.
  */
 
 import { db } from "@/lib/db";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
-import { ShareStatus } from "@prisma/client";
+import { ShareStatus, SpaceType } from "@prisma/client";
 import {
   reconstructDailyCashBalances,
   reconstructDailyLiabilityBalances,
@@ -145,18 +150,55 @@ export async function backfillSpaceSnapshots(
   const today = todayUTC();
   const windowStart = addDaysUTC(today, -BACKFILL_DAYS);
 
-  // Floors — an account cannot appear in a day before it existed / was linked.
-  // opts.ignoreFloors (dev-seed only) collapses every floor to the epoch so the
-  // full 30-day window reconstructs even when accounts/links were created
-  // recently (common in dev). Never set on the app path.
+  // Space type — PERSONAL is the account's home (reconstruct its full history); a
+  // SHARED space bounds reconstruction at when each account was shared in.
+  // reportingCurrency is read here too (used for the per-day conversion context
+  // + the row stamp below), so the Space is read exactly once.
+  const space = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true, type: true },
+  });
+  if (!space) return 0; // space vanished mid-call — nothing to backfill
+  const isSharedSpace = space.type === SpaceType.SHARED;
+
+  // Earliest real (non-deleted) transaction per account — the true account-level
+  // floor. Replaces FinancialAccount.createdAt/SpaceAccountLink.createdAt, which
+  // are stamped at connect (today) and so collapsed the window to zero every
+  // connect. One groupBy over all the Space's accounts.
+  const allAccountIds = accounts.map((a) => a.id);
+  const earliestTxByAccount = new Map<string, Date>();
+  if (allAccountIds.length > 0) {
+    const grouped = await db.transaction.groupBy({
+      by:    ["financialAccountId"],
+      where: { financialAccountId: { in: allAccountIds }, deletedAt: null },
+      _min:  { date: true },
+    });
+    for (const g of grouped) {
+      if (g.financialAccountId && g._min.date) {
+        earliestTxByAccount.set(g.financialAccountId, truncDateUTC(g._min.date));
+      }
+    }
+  }
+
+  // Floors — an account cannot appear in a day before its earliest real
+  // transaction. opts.ignoreFloors (dev-seed only) collapses every floor to the
+  // epoch so the full 30-day window reconstructs regardless. Never on the app path.
   const EPOCH = new Date(0);
   const floorByAccount = new Map<string, Date>(
-    linkRows.map((l) => [
-      l.financialAccount.id,
-      opts?.ignoreFloors
-        ? EPOCH
-        : maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt)),
-    ]),
+    linkRows.map((l) => {
+      const acctId = l.financialAccount.id;
+      if (opts?.ignoreFloors) return [acctId, EPOCH];
+      // Account-level floor: earliest real transaction. No transactions at all ⇒
+      // today ⇒ genuinely zero reconstructable days (correct, NOT the old bug).
+      const txFloor = earliestTxByAccount.get(acctId) ?? today;
+      // SECONDARY floor (SHARED spaces only): don't reconstruct this Space's
+      // history before the account was shared into it (its older history predates
+      // membership here). The account's HOME (PERSONAL) space has no such bound —
+      // using link.createdAt there would re-collapse the window to connect day —
+      // so it is kept as a secondary bound only where it's semantically real.
+      const linkFloor = isSharedSpace ? truncDateUTC(l.createdAt) : EPOCH;
+      return [acctId, maxDate(txFloor, linkFloor)];
+    }),
   );
 
   const minFloor = [...floorByAccount.values()].reduce((m, d) => (d.getTime() < m.getTime() ? d : m), today);
@@ -241,12 +283,7 @@ export async function backfillSpaceSnapshots(
   // Days beyond archive depth resolve as misses → native + estimated per D-3,
   // on rows that are already isEstimated by construction. All-USD Spaces take
   // the identity fast path throughout (numerically identical to Phase 2).
-  const space = await db.space.findUnique({
-    where:  { id: spaceId },
-    select: { reportingCurrency: true },
-  });
-  if (!space) return 0; // space vanished mid-call — nothing to backfill
-
+  // (`space` — reportingCurrency + type — was already read once above.)
   const reconstructedDates = [...dailyCash.keys()].filter((dISO) => !existingDates.has(dISO));
   const ctx = await buildSpaceConversionContext(space, {
     currencies: accounts.map((a) => a.currency ?? null),
