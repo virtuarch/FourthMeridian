@@ -13,13 +13,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { db } from "@/lib/db";
-import { requireSystemAdmin } from "@/lib/session";
+import { requireFreshSystemAdmin } from "@/lib/session";
 
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ userId: string }> },
 ) {
-  const [user, err] = await requireSystemAdmin();
+  // SEC-2 — destructive (invalidates + regenerates another user's recovery
+  // codes). Always a live revocation check, never the cache.
+  const [user, err] = await requireFreshSystemAdmin();
   if (err) return err;
 
   const { userId } = await params;

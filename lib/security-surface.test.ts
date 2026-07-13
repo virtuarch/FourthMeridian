@@ -144,5 +144,31 @@ for (const file of pwPaths) {
   check(`${file} no longer hardcodes a length < 8 check`, !/\.length\s*<\s*8\b/.test(s));
 }
 
+console.log("7. SEC-2 — destructive admin actions require FRESH auth");
+// Admin actions that change another user's (or the platform's) security
+// posture must do a live revocation check, not trust the cached session.
+const freshAdminRoutes = [
+  "app/api/admin/security/users/[userId]/2fa-reset/route.ts",
+  "app/api/admin/security/users/[userId]/recovery-codes/route.ts",
+  "app/api/admin/security/users/[userId]/sessions/route.ts",   // DELETE — pre-existing
+  "app/api/admin/security/settings/route.ts",                  // PATCH — platform policy
+];
+for (const file of freshAdminRoutes) {
+  check(`${file} uses requireFreshSystemAdmin`, src(file).includes("requireFreshSystemAdmin("));
+}
+// Read-only/list routes must NOT be blanket-converted (avoids adding a live
+// DB round-trip to every dashboard load for no security benefit — stop
+// condition #3).
+const cachedOnlyReadRoutes = [
+  "app/api/admin/audit/route.ts",
+  "app/api/admin/users/route.ts",
+  "app/api/admin/overview/route.ts",
+  "app/api/admin/security/users/route.ts",
+  "app/api/admin/security/admin-status/route.ts",
+];
+for (const file of cachedOnlyReadRoutes) {
+  check(`${file} stays on cached requireSystemAdmin (read-only)`, !src(file).includes("requireFreshSystemAdmin"));
+}
+
 console.log(failures === 0 ? "\nAll security-surface scans passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);

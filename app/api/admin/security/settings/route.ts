@@ -8,7 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAllSettings, setSetting, PlatformSettingKey } from "@/lib/platform-settings";
 import { db } from "@/lib/db";
-import { requireSystemAdmin } from "@/lib/session";
+import { requireSystemAdmin, requireFreshSystemAdmin } from "@/lib/session";
 
 const ALLOWED_KEYS = new Set(Object.values(PlatformSettingKey));
 
@@ -21,7 +21,10 @@ export async function GET() {
 }
 
 export async function PATCH(req: NextRequest) {
-  const [admin, err] = await requireSystemAdmin();
+  // SEC-2 — mutates PLATFORM-WIDE security posture (TOTP requirements, the
+  // min-password-length policy). Always a live revocation check, never the
+  // cache; the GET above stays on the cached variant (read-only).
+  const [admin, err] = await requireFreshSystemAdmin();
   if (err) return err;
 
   const body = await req.json() as { key: string; value: string }[];
