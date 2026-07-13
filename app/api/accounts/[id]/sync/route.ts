@@ -18,6 +18,7 @@ import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { regenerateWealthHistoryForAccounts, recentWealthWindow } from "@/lib/snapshots/regenerate-history";
 
 export async function POST(
   _req: NextRequest,
@@ -50,6 +51,14 @@ export async function POST(
       await regenerateSnapshotsForAccounts([id]);
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/${id}/sync] snapshot regen failed (non-fatal):`, snapshotErr);
+    }
+    // Part-2 — also regenerate the 30-day wealth HISTORY so the CoinGecko-driven
+    // per-day BTC valuation (a05ffbd) runs for a real wallet sync, not just
+    // today's flat row. Best-effort/non-fatal; gated on WEALTH_REGENERATION_ENABLED.
+    try {
+      await regenerateWealthHistoryForAccounts([id], recentWealthWindow());
+    } catch (wealthErr) {
+      console.warn(`[POST /api/accounts/${id}/sync] wealth-history regen failed (non-fatal):`, wealthErr);
     }
   }
 

@@ -29,6 +29,22 @@ import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { regenerateWealthHistoryForAccounts, recentWealthWindow } from "@/lib/snapshots/regenerate-history";
+
+/**
+ * Part-2 — after a BTC wallet's balance is synced, regenerate its Space's 30-day
+ * wealth HISTORY (not just today's flat row) so the new CoinGecko-driven per-day
+ * crypto valuation (a05ffbd) actually runs for a real wallet. Best-effort/non-
+ * fatal and gated internally on WEALTH_REGENERATION_ENABLED. Distinct from
+ * regenerateSnapshotsForAccounts (today's live row), which stays as-is.
+ */
+async function regenWalletWealthHistory(financialAccountId: string): Promise<void> {
+  try {
+    await regenerateWealthHistoryForAccounts([financialAccountId], recentWealthWindow());
+  } catch (e) {
+    console.warn(`[POST /api/accounts/wallet] wealth-history regen failed for ${financialAccountId} (non-fatal):`, e);
+  }
+}
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
@@ -140,6 +156,7 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${activeFa.id} (non-fatal):`, snapshotErr);
     }
+    if (chain === BTC_CHAIN) await regenWalletWealthHistory(activeFa.id);
 
     return NextResponse.json({ success: true, accountId: activeFa.id }, { status: 200 });
   }
@@ -206,6 +223,7 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${archivedFa.id} (non-fatal):`, snapshotErr);
     }
+    if (chain === BTC_CHAIN) await regenWalletWealthHistory(archivedFa.id);
 
     await db.auditLog.create({
       data: {
@@ -303,6 +321,7 @@ export async function POST(req: NextRequest) {
   } catch (snapshotErr) {
     console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${fa.id} (non-fatal):`, snapshotErr);
   }
+  if (chain === BTC_CHAIN) await regenWalletWealthHistory(fa.id);
 
   await db.auditLog.create({
     data: {

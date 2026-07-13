@@ -306,6 +306,18 @@ async function buildDeltas(client: Client, ids: string[], from: Date, today: Dat
 }
 
 /**
+ * The default 30-day wealth-regen window: [yesterday − 30, yesterday]. Yesterday
+ * is the upper bound because today's live row is frozen (regenerateSpaceSnapshot
+ * owns it); 30 days matches the snapshot-backfill window. Shared by every trigger
+ * (the connect pipeline, the BTC wallet sync) so they regenerate the same span.
+ */
+export function recentWealthWindow(now: Date = new Date()): { fromDate: string; toDate: string } {
+  const y = new Date(now); y.setUTCHours(0, 0, 0, 0); y.setUTCDate(y.getUTCDate() - 1); // yesterday
+  const f = new Date(y); f.setUTCDate(f.getUTCDate() - 30);
+  return { fromDate: f.toISOString().slice(0, 10), toDate: y.toISOString().slice(0, 10) };
+}
+
+/**
  * Trigger-ready fan-out: regenerate every Space that ACTIVE-links any of the
  * given accounts, over the window. Mirrors regenerateSnapshotsForAccounts;
  * exported for a future integration commit to call after price backfill /
