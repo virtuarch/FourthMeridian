@@ -209,3 +209,38 @@ export function limitByKey(
 ): Promise<NextResponse | null> {
   return enforce(`key:${name}:${key}`, cfg);
 }
+
+/**
+ * Read the current bucket count for a `limitByKey` key WITHOUT incrementing it
+ * (Wave 2 ⑥ — CAPTCHA step-up on login). `(key, name)` must match the paired
+ * `limitByKey(key, name, …)` call, and `windowSec` must equal that call's
+ * config window so the same fixed-window bucket is read.
+ *
+ * Returns the count for the current window (0 if the bucket is empty — including
+ * when rate limiting is disabled, since nothing is ever written then). Reads the
+ * same backend the limiter writes (DB in production, in-memory otherwise) and
+ * fails soft to 0 on any store error, so a peek can never take down a handler.
+ *
+ * This is a pure read: it does not enforce, block, or mutate. The caller decides
+ * what to do with the number (e.g. require a CAPTCHA once it crosses a threshold).
+ */
+export async function peekKey(key: string, name: string, windowSec: number): Promise<number> {
+  const fullKey       = `key:${name}:${key}`;
+  const windowMs      = windowSec * 1000;
+  const windowStartMs = Math.floor(Date.now() / windowMs) * windowMs;
+
+  try {
+    if (dbBackendActive()) {
+      const row = await db.rateLimit.findUnique({
+        where:  { key_windowStart: { key: fullKey, windowStart: new Date(windowStartMs) } },
+        select: { count: true },
+      });
+      return row?.count ?? 0;
+    }
+    const existing = memStore.get(fullKey);
+    return existing && existing.windowStart === windowStartMs ? existing.count : 0;
+  } catch (err) {
+    console.error("[rate-limit] peek error — treating as 0:", err);
+    return 0;
+  }
+}

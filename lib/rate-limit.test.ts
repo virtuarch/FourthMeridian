@@ -31,6 +31,7 @@ import {
   limitByIp,
   limitByUser,
   limitByKey,
+  peekKey,
   getClientIp,
 } from "@/lib/rate-limit";
 
@@ -142,6 +143,33 @@ async function main(): Promise<void> {
     getClientIp(new Request("http://x/", { headers: { "x-real-ip": "7.7.7.7" } })) === "7.7.7.7",
   );
   check("no headers → 'unknown'", getClientIp(new Request("http://x/")) === "unknown");
+
+  // ── 6. peekKey (Wave 2 ⑥ — CAPTCHA step-up read) ────────────────────────────
+  console.log("6. peekKey reads the bucket without incrementing");
+  const WIN = 3600;
+
+  // Untouched identifier → 0.
+  check("peek of an untouched key → 0", (await peekKey("nobody@example.com", "login-id", WIN)) === 0);
+
+  // Drive the SAME (key, name, window) bucket up with limitByKey, then peek.
+  const peekCfg = { limit: 100, windowSec: WIN }; // high limit: never blocks here
+  for (let i = 0; i < 4; i++) {
+    await limitByKey("peek@example.com", "login-id", peekCfg);
+  }
+  check("peek reflects 4 prior increments", (await peekKey("peek@example.com", "login-id", WIN)) === 4);
+
+  // Peeking must NOT increment — repeated peeks return the same value.
+  const p1 = await peekKey("peek@example.com", "login-id", WIN);
+  const p2 = await peekKey("peek@example.com", "login-id", WIN);
+  check("peek does not increment (stable across reads)", p1 === 4 && p2 === 4);
+
+  // A subsequent real increment moves it, proving peek never touched the count.
+  await limitByKey("peek@example.com", "login-id", peekCfg);
+  check("count advances only on limitByKey, not peek", (await peekKey("peek@example.com", "login-id", WIN)) === 5);
+
+  // Independent per (name) and per (key).
+  check("peek is bucket-scoped by name", (await peekKey("peek@example.com", "other-name", WIN)) === 0);
+  check("peek is bucket-scoped by key", (await peekKey("someone-else@example.com", "login-id", WIN)) === 0);
 
   console.log(failures === 0 ? "\nAll rate-limit tests passed." : `\n${failures} failure(s).`);
   process.exit(failures === 0 ? 0 : 1);

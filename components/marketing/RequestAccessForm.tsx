@@ -14,8 +14,11 @@
  * same success shell it would on a real submit — the form is never a dead end
  * during rollout.
  *
- * No CAPTCHA here (Wave 2⑥ owns it); the form still works unprotected until
- * that lands.
+ * CAPTCHA (Wave 2⑥): when NEXT_PUBLIC_TURNSTILE_SITE_KEY is configured, the
+ * Turnstile widget renders and its token is sent to /api/access-request (the
+ * server verifies it, env-gated). Unconfigured → the form works exactly as
+ * before. The widget lives in the marketing tree (marketing-local copy) so this
+ * form never imports the app's component library — the split seam.
  */
 
 import { useState } from "react";
@@ -24,7 +27,10 @@ import {
   isProbablyEmail,
   type AccessRequestResult,
 } from "@/lib/marketing/request-access";
+import { TurnstileWidget } from "@/components/marketing/TurnstileWidget";
 import { REQUEST_ACCESS } from "@/content/marketing/copy";
+
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
 type Status = "idle" | "submitting" | "success" | "error" | "rate_limited";
 
@@ -33,6 +39,9 @@ export function RequestAccessForm() {
   const [note, setNote] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
+  // CAPTCHA (Wave 2⑥) — only meaningful when a site key is configured.
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaNonce, setCaptchaNonce] = useState(0);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -42,16 +51,26 @@ export function RequestAccessForm() {
       setMessage("Please enter a valid email address.");
       return;
     }
+    if (TURNSTILE_SITE_KEY && !captchaToken) {
+      setStatus("error");
+      setMessage("Please complete the verification below.");
+      return;
+    }
 
     setStatus("submitting");
     setMessage("");
 
-    const result: AccessRequestResult = await submitAccessRequest({ email, note });
+    const result: AccessRequestResult = await submitAccessRequest({ email, note, captchaToken });
 
     if (result.status === "queued") {
       // Success — whether the endpoint accepted it or isn't live yet (degraded).
       setStatus("success");
       return;
+    }
+    // Turnstile tokens are single-use — force a fresh challenge before a retry.
+    if (TURNSTILE_SITE_KEY) {
+      setCaptchaToken(null);
+      setCaptchaNonce((n) => n + 1);
     }
     if (result.status === "rate_limited") {
       setStatus("rate_limited");
@@ -133,6 +152,15 @@ export function RequestAccessForm() {
           }}
         />
       </div>
+
+      {TURNSTILE_SITE_KEY && (
+        <TurnstileWidget
+          siteKey={TURNSTILE_SITE_KEY}
+          onToken={setCaptchaToken}
+          resetNonce={captchaNonce}
+          theme="dark"
+        />
+      )}
 
       {(status === "error" || status === "rate_limited") && message && (
         <p

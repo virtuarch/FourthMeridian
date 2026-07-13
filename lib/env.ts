@@ -49,6 +49,17 @@ const _e = {
   RESEND_API_KEY:       process.env.RESEND_API_KEY,
   EMAIL_FROM_DEFAULT:   process.env.EMAIL_FROM_DEFAULT,
 
+  // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Both optional — absent means
+  // CAPTCHA is DISABLED (verifyCaptchaToken skips → true; widgets don't
+  // render). The secret gates server-side verification (lib/captcha.ts reads
+  // process.env.TURNSTILE_SECRET_KEY directly — the single verify site); the
+  // NEXT_PUBLIC site key is inlined into client bundles by Next, so client
+  // widgets read process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY directly (they
+  // can't import this server-only module) — mirrored here for server-side
+  // "is it configured?" checks and env reporting.
+  NEXT_PUBLIC_TURNSTILE_SITE_KEY: process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY,
+  TURNSTILE_SECRET_KEY:           process.env.TURNSTILE_SECRET_KEY,
+
   CRON_SECRET:          process.env.CRON_SECRET,
   RATE_LIMIT_ENABLED:   process.env.RATE_LIMIT_ENABLED,
   RATE_LIMIT_SHADOW:    process.env.RATE_LIMIT_SHADOW,
@@ -251,6 +262,16 @@ export const env = {
   /** Optional default From identity; falls back to the per-purpose sender map. */
   get EMAIL_FROM_DEFAULT() { return _e.EMAIL_FROM_DEFAULT; },
 
+  // ── CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥) ────────────────────────────────
+  // NOTE: lib/captcha.ts (the single server-side verify site) reads
+  // process.env.TURNSTILE_SECRET_KEY directly; these accessors exist for
+  // feature-flag checks, not for the verify call.
+  get TURNSTILE_SECRET_KEY()   { return _e.TURNSTILE_SECRET_KEY; },
+  /** Public Turnstile site key. Client widgets read the inlined NEXT_PUBLIC_
+   *  var directly (this server-only module can't be imported client-side); this
+   *  accessor is for server components / server-side "configured?" checks. */
+  get TURNSTILE_SITE_KEY()     { return _e.NEXT_PUBLIC_TURNSTILE_SITE_KEY; },
+
   // ── Admin ─────────────────────────────────────────────────────────────────
   /** When true, all SYSTEM_ADMIN logins are blocked. */
   get isSystemAdminDisabled() { return _e.DISABLE_SYSTEM_ADMIN === "true"; },
@@ -272,6 +293,9 @@ export const env = {
   get isCryptoEnabled()   { return !!_e.ETHERSCAN_API_KEY || !!_e.HELIUS_API_KEY; },
   /** Real email delivery is available when the Resend key is set (see lib/email/providers/resend.ts). */
   get isEmailEnabled()    { return !!_e.RESEND_API_KEY; },
+  /** CAPTCHA verification is active when the Turnstile secret is set (see lib/captcha.ts).
+   *  When false, verifyCaptchaToken skips and returns true (dev/test/unconfigured). */
+  get isCaptchaEnabled()  { return !!_e.TURNSTILE_SECRET_KEY; },
 
   // ── Runtime ───────────────────────────────────────────────────────────────
   get isDev()    { return _e.NODE_ENV === "development"; },

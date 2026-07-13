@@ -29,7 +29,9 @@ import { createNotification } from "@/lib/notifications/create";
 import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
 import { getCachedRevocation, setCachedRevocation, invalidateSession } from "@/lib/session-cache";
-import { limitByKey } from "@/lib/rate-limit";
+import { limitByKey, peekKey } from "@/lib/rate-limit";
+import { verifyCaptchaToken } from "@/lib/captcha";
+import { LOGIN_ID_WINDOW_SEC, LOGIN_ID_LIMIT, LOGIN_CAPTCHA_THRESHOLD } from "@/lib/login-limits";
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -48,6 +50,10 @@ export const authOptions: NextAuthOptions = {
         // part of this login. Set to "true" only by the login page's "Cancel
         // deletion and sign in" button; never auto-set. Mirrors `reactivate`.
         cancelDeletion: { label: "Cancel Deletion",  type: "text"     },
+        // Wave 2 ⑥ — Cloudflare Turnstile token, sent by the login page only
+        // once pre-login flags captchaRequired. Verified server-side below past
+        // the same per-identifier threshold; the client flag is advisory only.
+        captchaToken:   { label: "Captcha Token",    type: "text"     },
       },
 
       async authorize(credentials, req) {
@@ -73,8 +79,27 @@ export const authOptions: NextAuthOptions = {
         // other failed login (non-enumerating — same generic CredentialsSignin).
         // Deliberately no auditLog write on the limited path: under a
         // brute-force burst the limiter must not amplify DB writes.
-        const idLimited = await limitByKey(identifier, "login-id", { limit: 10, windowSec: 900 });
+        //
+        // Peek the identifier's PRIOR attempt count BEFORE the increment below,
+        // so the CAPTCHA threshold here matches pre-login's peek exactly (both
+        // see the same pre-attempt value → the widget the client shows and the
+        // token the server demands stay in step, with no off-by-one that would
+        // reject a legitimate attempt the client couldn't have tokenized).
+        const priorAttempts = await peekKey(identifier, "login-id", LOGIN_ID_WINDOW_SEC);
+
+        const idLimited = await limitByKey(identifier, "login-id", { limit: LOGIN_ID_LIMIT, windowSec: LOGIN_ID_WINDOW_SEC });
         if (idLimited) return null;
+
+        // ── CAPTCHA step-up (Wave 2 ⑥) ────────────────────────────────────────
+        // Past the per-identifier threshold, a valid Turnstile token is required.
+        // Authoritative check (the pre-login `captchaRequired` hint is advisory).
+        // A missing/invalid token is denied like any other failed login
+        // (non-enumerating, no audit write — same posture as the limited path).
+        // No-ops when CAPTCHA is unconfigured: verifyCaptchaToken returns true.
+        if (priorAttempts >= LOGIN_CAPTCHA_THRESHOLD) {
+          const captchaOk = await verifyCaptchaToken(credentials.captchaToken || null, ipAddress ?? undefined);
+          if (!captchaOk) return null;
+        }
 
         // ── Kill switch: disable SYSTEM_ADMIN login via env flag ──────────────
         // Set DISABLE_SYSTEM_ADMIN=true before going to production to lock out

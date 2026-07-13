@@ -139,18 +139,25 @@ for (const rel of files) {
   }
 }
 
-// ── "use client" discipline: the beta form is the ONLY client component ───────
-// (server-only marketing keeps the pages light and preserves the split seam).
+// ── "use client" discipline: only the interactive islands opt in ─────────────
+// The marketing tree stays server-only EXCEPT the two forms that genuinely need
+// client interactivity: the beta-access form and its Turnstile CAPTCHA widget
+// (Wave 2 ⑥ — a marketing-local copy so the tree carries no app-component
+// dependency across the split seam). Any OTHER "use client" file is a
+// regression that pulls needless client weight into pages meant to stay light.
 
+const ALLOWED_CLIENT_FILES = [
+  path.join("components", "marketing", "RequestAccessForm.tsx"),
+  path.join("components", "marketing", "TurnstileWidget.tsx"),
+];
 const clientFiles = files.filter((rel) => {
   const raw = readFileSync(path.join(ROOT, rel), "utf8");
   return /^\s*["']use client["']/m.test(raw);
 });
 check(
-  'the ONLY "use client" file is the beta-access form',
-  clientFiles.length === 1 &&
-    clientFiles[0] === path.join("components", "marketing", "RequestAccessForm.tsx"),
-  `found: ${clientFiles.join(", ") || "none"}`,
+  'the only "use client" files are the beta-access form + its CAPTCHA widget',
+  clientFiles.every((f) => ALLOWED_CLIENT_FILES.includes(f)),
+  `unexpected client file(s): ${clientFiles.filter((f) => !ALLOWED_CLIENT_FILES.includes(f)).join(", ") || "none"}`,
 );
 
 if (failures > 0) {

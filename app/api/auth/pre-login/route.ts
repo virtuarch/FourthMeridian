@@ -22,7 +22,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
-import { limitByIp } from "@/lib/rate-limit";
+import { limitByIp, peekKey } from "@/lib/rate-limit";
+import { LOGIN_ID_WINDOW_SEC, LOGIN_CAPTCHA_THRESHOLD } from "@/lib/login-limits";
 
 // Dummy hash used when the user is not found, to keep timing consistent.
 const DUMMY_HASH =
@@ -41,6 +42,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false }, { status: 400 });
     }
 
+    // CAPTCHA step-up hint (Wave 2 ⑥): advise the client to render the Turnstile
+    // widget once this identifier has crossed the attempt threshold. Peek only —
+    // never increments (the count is driven by authorize()). Authoritative
+    // enforcement is authorize()'s server-side re-verify; this is just the UX
+    // signal. Keyed on the submitted string, so it discloses nothing about
+    // whether an account exists.
+    const captchaRequired =
+      (await peekKey(identifier, "login-id", LOGIN_ID_WINDOW_SEC)) >= LOGIN_CAPTCHA_THRESHOLD;
+
     const user = await db.user.findFirst({
       where: {
         OR: [{ email: identifier }, { username: identifier }],
@@ -53,7 +63,7 @@ export async function POST(req: NextRequest) {
     const valid = await bcrypt.compare(password, hash);
 
     if (!valid || !user) {
-      return NextResponse.json({ ok: false });
+      return NextResponse.json({ ok: false, captchaRequired });
     }
 
     // ── Email verification gate (OPS-1 S2e — block mode) ──────────────────────
@@ -92,6 +102,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok:           true,
       totpRequired: user.totpEnabled,
+      captchaRequired,
     });
   } catch {
     return NextResponse.json({ ok: false }, { status: 500 });

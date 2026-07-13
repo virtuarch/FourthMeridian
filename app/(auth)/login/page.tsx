@@ -6,6 +6,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Eye, EyeOff, Loader2, ShieldCheck, ArrowLeft, Key } from "lucide-react";
 import { AppLogo } from "@/components/ui/AppLogo";
+import { TurnstileWidget } from "@/components/ui/TurnstileWidget";
+
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
 // ── Step types ────────────────────────────────────────────────────────────────
 
@@ -37,6 +40,14 @@ function LoginForm() {
     return "";
   });
   const [loading, setLoading] = useState(false);
+
+  // CAPTCHA step-up (Wave 2 ⑥) — pre-login sets captchaRequired once this
+  // identifier crosses the attempt threshold; the widget then renders on the
+  // credentials step and its token is sent through signIn. Server-authoritative
+  // (authorize() re-verifies) — these flags are UX only.
+  const [captchaRequired, setCaptchaRequired] = useState(false);
+  const [captchaToken,    setCaptchaToken]    = useState<string | null>(null);
+  const [captchaNonce,    setCaptchaNonce]    = useState(0);
 
   // Verification resend (identifier-based) — uses the typed identifier. The
   // endpoint is non-enumerating, so we always show the same generic message.
@@ -107,6 +118,10 @@ function LoginForm() {
       });
       const data = await res.json();
 
+      // Reflect the server's CAPTCHA step-up hint (present on ok + bad-creds
+      // responses). Once true, the widget renders on the credentials step.
+      setCaptchaRequired(!!(TURNSTILE_SITE_KEY && data.captchaRequired));
+
       if (!data.ok) {
         // Deactivated account (OPS-2 S4): a correct password on a deactivated
         // account returns reason:"deactivated" — offer explicit reactivation.
@@ -135,6 +150,15 @@ function LoginForm() {
             : "Invalid email, username, or password."
         );
         setPassword("");
+        setLoading(false);
+        return;
+      }
+
+      // CAPTCHA step-up: if required and not yet solved, hold on the credentials
+      // step and render the widget — solving it must happen before we advance to
+      // TOTP or call signIn (authorize() re-verifies the token server-side).
+      if (TURNSTILE_SITE_KEY && data.captchaRequired && !captchaToken) {
+        setError("Please complete the verification below, then sign in again.");
         setLoading(false);
         return;
       }
@@ -230,6 +254,8 @@ function LoginForm() {
       recoveryCode: params.recoveryCode ?? "",
       reactivate:   params.reactivate ? "true" : "",
       cancelDeletion: params.cancelDeletion ? "true" : "",
+      // Wave 2 ⑥ — sent once past the step-up threshold; authorize() re-verifies.
+      captchaToken: captchaToken ?? "",
       redirect:     false,
     });
 
@@ -245,6 +271,11 @@ function LoginForm() {
       } else {
         setError("Invalid email, username, or password.");
         setPassword("");
+      }
+      // Turnstile tokens are single-use — refresh the challenge before a retry.
+      if (TURNSTILE_SITE_KEY && captchaRequired) {
+        setCaptchaToken(null);
+        setCaptchaNonce((n) => n + 1);
       }
     } else {
       // Honour ?callbackUrl if present (e.g. middleware redirected here from a protected route).
@@ -384,9 +415,20 @@ function LoginForm() {
             </div>
           </div>
 
+          {TURNSTILE_SITE_KEY && captchaRequired && (
+            <div className="pt-1">
+              <TurnstileWidget
+                siteKey={TURNSTILE_SITE_KEY}
+                onToken={setCaptchaToken}
+                resetNonce={captchaNonce}
+                theme="dark"
+              />
+            </div>
+          )}
+
           <button
             type="submit"
-            disabled={loading || !identifier || !password}
+            disabled={loading || !identifier || !password || (!!TURNSTILE_SITE_KEY && captchaRequired && !captchaToken)}
             className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2 mt-1"
           >
             {loading ? <><Loader2 size={15} className="animate-spin" /> Checking…</> : "Sign In"}

@@ -30,6 +30,8 @@ import { buildVerifyUrl } from "@/lib/email/verify-url";
 import { possessive } from "@/lib/format";
 import { EmploymentStatus, UseCase, SpaceMemberRole, BetaAccessRequestStatus, Prisma } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
+import { getRequestMeta } from "@/lib/api";
+import { verifyCaptchaToken } from "@/lib/captcha";
 import { AuditAction } from "@/lib/audit-actions";
 import { getMinPasswordLength, getRegistrationMode } from "@/lib/platform-settings";
 import { getTemplateForCategory } from "@/lib/space-templates/registry";
@@ -59,6 +61,7 @@ export async function POST(req: NextRequest) {
       useCase,
       creditScore,
       inviteToken,
+      captchaToken,
     } = body;
 
     // ── Registration gate (Wave 1 S2) ─────────────────────────────────────────
@@ -71,6 +74,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "Registration is currently closed." },
         { status: 403 },
+      );
+    }
+
+    // ── CAPTCHA (Wave 2 ⑥) ─────────────────────────────────────────────────────
+    // Always verified when configured (registration is a top spam target).
+    // Env-gated: no TURNSTILE_SECRET_KEY ⇒ verifyCaptchaToken returns true, so
+    // dev/test and unconfigured deploys register unchanged. Checked before any
+    // field validation or DB work so a bot burns nothing past this point.
+    const captchaOk = await verifyCaptchaToken(captchaToken, getRequestMeta(req).ip);
+    if (!captchaOk) {
+      return NextResponse.json(
+        { error: "CAPTCHA verification failed. Please try again." },
+        { status: 400 },
       );
     }
 

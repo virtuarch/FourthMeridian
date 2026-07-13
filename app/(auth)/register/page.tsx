@@ -5,6 +5,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { AppLogo } from "@/components/ui/AppLogo";
+import { TurnstileWidget } from "@/components/ui/TurnstileWidget";
+
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
 const EMPLOYMENT_OPTIONS = [
   { value: "EMPLOYED",      label: "Employed" },
@@ -46,6 +49,9 @@ function RegisterForm() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [error,       setError]       = useState("");
   const [loading,     setLoading]     = useState(false);
+  // CAPTCHA (Wave 2 ⑥) — only rendered when a site key is configured.
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaNonce, setCaptchaNonce] = useState(0);
 
   function set(field: string, value: string) {
     setForm((f) => ({ ...f, [field]: value }));
@@ -63,6 +69,10 @@ function RegisterForm() {
       setError("Password must be at least 8 characters.");
       return;
     }
+    if (TURNSTILE_SITE_KEY && !captchaToken) {
+      setError("Please complete the verification below.");
+      return;
+    }
 
     setLoading(true);
 
@@ -77,6 +87,7 @@ function RegisterForm() {
       useCase:          form.useCase         || undefined,
       creditScore:      form.creditScore ? parseInt(form.creditScore) : undefined,
       inviteToken:      inviteToken || undefined,
+      captchaToken:     captchaToken || undefined,
     };
 
     const res = await fetch("/api/auth/register", {
@@ -90,6 +101,11 @@ function RegisterForm() {
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       setError(data.error ?? "Registration failed. Please try again.");
+      // Turnstile tokens are single-use — refresh the challenge before a retry.
+      if (TURNSTILE_SITE_KEY) {
+        setCaptchaToken(null);
+        setCaptchaNonce((n) => n + 1);
+      }
       return;
     }
 
@@ -304,6 +320,15 @@ function RegisterForm() {
               </div>
             </div>
           </div>
+
+          {TURNSTILE_SITE_KEY && (
+            <TurnstileWidget
+              siteKey={TURNSTILE_SITE_KEY}
+              onToken={setCaptchaToken}
+              resetNonce={captchaNonce}
+              theme="dark"
+            />
+          )}
 
           <button
             type="submit"

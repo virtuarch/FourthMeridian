@@ -28,6 +28,9 @@ export type AccessRequestInput = {
   email: string;
   /** Optional free-text context (e.g. how they heard about us, a security report). */
   note?: string;
+  /** Cloudflare Turnstile token (Wave 2 ⑥). Sent when a site key is configured;
+   *  the server verifies it (env-gated — skipped when CAPTCHA is unconfigured). */
+  captchaToken?: string | null;
 };
 
 export type AccessRequestResult =
@@ -51,6 +54,7 @@ export async function submitAccessRequest(
 ): Promise<AccessRequestResult> {
   const email = input.email.trim().toLowerCase();
   const note = input.note?.trim();
+  const captchaToken = input.captchaToken || undefined;
 
   if (!isProbablyEmail(email)) {
     return { status: "error", message: "Please enter a valid email address." };
@@ -61,7 +65,11 @@ export async function submitAccessRequest(
     res = await fetch(ACCESS_REQUEST_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(note ? { email, note } : { email }),
+      body: JSON.stringify({
+        email,
+        ...(note ? { note } : {}),
+        ...(captchaToken ? { captchaToken } : {}),
+      }),
     });
   } catch {
     // Network-level failure — genuinely couldn't reach the server.
