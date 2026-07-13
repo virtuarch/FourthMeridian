@@ -182,6 +182,15 @@ export function ConnectionsList({ initialStatus, accountsByInstitution, accounts
       if (document.hidden) {
         stop();
       } else {
+        // Part-5 — a user returning to the tab is a real interaction: give live
+        // tracking a FRESH budget and clear the paused ("slow") state so they
+        // see real progress again instead of a frozen status. Plaid's historical
+        // ingestion is webhook-driven and can outlast the 3-min budget; the
+        // budget only bounds background polling of a focused-and-idle tab, and
+        // refocus re-arms it. (The sync also still completes server-side and
+        // fires the Part-3 notification regardless.)
+        pollCountRef.current = 0;
+        setSlow(false);
         void poll(); // immediate catch-up on refocus
         start();
       }

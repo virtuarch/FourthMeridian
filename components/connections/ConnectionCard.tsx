@@ -311,8 +311,14 @@ function ImportingContent({
         <NextRow label="AI insights" icon={Brain} />
       </ul>
       {slow && (
+        // Part-5 — honest framing once live polling has paused (past the ~3-min
+        // budget): the sync is genuinely still running server-side; we've stopped
+        // actively tracking it on screen, and the Part-3 notification is the
+        // eventual signal. Reopening/refocusing this tab resumes live tracking.
         <p className="mt-3 text-xs text-[var(--text-muted)]">
-          This can take a few minutes and will finish on its own — no action needed.
+          Still importing — accounts with a lot of history can take several minutes.
+          We&rsquo;ll notify you the moment it&rsquo;s ready, so you can safely leave this page;
+          reopen it any time to resume live progress.
         </p>
       )}
       <AccountNames accounts={accounts} />
