@@ -37,7 +37,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { getSpaceContext } from "@/lib/space";
 import { requireUser } from "@/lib/session";
 import { performPlaidTokenExchange, parsePlaidError, DuplicateInstitutionError } from "@/lib/plaid/exchangeToken";
-import { runDeferredHistorySync } from "@/lib/plaid/backgroundHistorySync";
+import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
 import { limitByUser } from "@/lib/rate-limit";
 
 // D2.x Slice 1 (fast-path split). This request returns as soon as the fast
@@ -93,11 +93,20 @@ export async function POST(req: NextRequest) {
 
     // D2.x Slice 2 — schedule the deferred history import to run after this
     // response is sent (post-response, same invocation). Fire-and-forget and
-    // best-effort: runDeferredHistorySync never throws, so a background
+    // best-effort: syncPlaidItemFromWebhook never throws, so a background
     // failure can never affect the Link success returned below. Only gated on
     // historyPending, so it never runs for a caller that synced inline.
+    //
+    // Goes through syncPlaidItemFromWebhook (the SAME syncLockedAt guard the
+    // webhook path uses), NOT runDeferredHistorySync directly: Plaid fires
+    // HOLDINGS/TRANSACTIONS webhooks within seconds of a connect, so the connect
+    // pipeline and a webhook pipeline could otherwise run the full pipeline
+    // concurrently against one item — racing PlaidItem.cursor and colliding on
+    // prisma.transaction.create() (the Amex 363-UPSERT_ERROR signature). With the
+    // shared lock, whichever fires first runs; the other is skipped-locked, and
+    // the in-flight run does the identical full work either way.
     if (result.historyPending) {
-      after(() => runDeferredHistorySync(result.plaidItemId));
+      after(() => syncPlaidItemFromWebhook(result.plaidItemId));
     }
 
     return NextResponse.json({

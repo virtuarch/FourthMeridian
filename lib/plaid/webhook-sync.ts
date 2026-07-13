@@ -34,6 +34,14 @@ export type WebhookSyncOutcome = "ran" | "skipped-locked";
  * one — instead mark the item incomplete so the existing resume path re-syncs
  * after the in-flight run finishes, and return "skipped-locked". Best-effort:
  * runDeferredHistorySync never throws, and the lock is always released.
+ *
+ * Despite the name, this is the SHARED guarded entry point for the full deferred
+ * pipeline: BOTH the webhook receiver (app/api/plaid/webhook) AND the connect
+ * trigger (app/api/plaid/exchange-token) call it, so a connect pipeline and a
+ * webhook pipeline can never run concurrently against the same item (Plaid fires
+ * investment/transaction webhooks within seconds of a connect). Whichever wins
+ * the lock runs; the other is skipped-locked. Never call runDeferredHistorySync
+ * directly from a request path — that reintroduces the lock-free race.
  */
 export async function syncPlaidItemFromWebhook(plaidItemId: string): Promise<WebhookSyncOutcome> {
   const now = new Date();
