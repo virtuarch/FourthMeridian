@@ -87,7 +87,7 @@ console.log("5. Actions row — only verified-real destinations");
   check("Rename uses PATCH", count(SRC, 'method:  "PATCH"') === 1);
   check("Remove from Space → revoke route DELETE", SRC.includes("`/api/spaces/${spaceId}/accounts/share`") && SRC.includes("financialAccountId: row.id"));
   check("Remove uses DELETE", SRC.includes('method:  "DELETE"'));
-  check("View transactions → /dashboard/banking?account=", SRC.includes("/dashboard/banking?account=${encodeURIComponent(row.id)}"));
+  check("View transactions → /dashboard?tab=transactions&account= (banking route retired)", SRC.includes("/dashboard?tab=transactions&account=${encodeURIComponent(row.id)}"));
   check("Manage Connections → /dashboard/connections", SRC.includes('href="/dashboard/connections"'));
   // Stop condition 2: no per-account detail page exists → no "View account" action, no link to a bare accounts route.
   check('no "View account" action', !SRC.includes("View account"));

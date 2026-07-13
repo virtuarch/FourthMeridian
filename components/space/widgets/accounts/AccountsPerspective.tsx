@@ -256,12 +256,18 @@ function AccountRow({
             </ActionButton>
           )}
 
-          <Link
-            href={`/dashboard/banking?account=${encodeURIComponent(row.id)}`}
+          {/* Banking→Transactions retarget — the standalone /dashboard/banking
+              route is retired; deep-link to the Transactions tab scoped to this
+              account. A plain <a> (full navigation, not a soft-nav <Link>) so
+              the shell re-reads ?tab=/?account= on mount — the shell tracks URL
+              state via window.history, not the search-params hook (seam
+              contract), so a soft nav wouldn't switch the tab. */}
+          <a
+            href={`/dashboard?tab=transactions&account=${encodeURIComponent(row.id)}`}
             className="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
           >
             <ArrowUpRight size={12} /> View transactions
-          </Link>
+          </a>
 
           <ActionButton onClick={removeFromSpace} disabled={busy === "remove"} danger>
             {busy === "remove" ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
