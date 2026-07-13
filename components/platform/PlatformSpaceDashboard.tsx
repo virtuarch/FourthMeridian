@@ -18,9 +18,29 @@
  * WIDGET_REGISTRY entries — the customer surface stays untouched.
  */
 
+import type { ComponentType } from "react";
 import { Wrench } from "lucide-react";
+import type { PlatformSection } from "./widget-kit";
+import { SecAuditFeedWidget } from "./widgets/SecAuditFeedWidget";
+import { SecAuthPostureWidget } from "./widgets/SecAuthPostureWidget";
+import { SecSessionsWidget } from "./widgets/SecSessionsWidget";
 
-type Section = { id: string; key: string; label: string };
+type Section = PlatformSection;
+
+/**
+ * Platform-local widget registry: section key → the real widget component that
+ * replaces its placeholder card. Mirrors the customer WIDGET_REGISTRY adapter
+ * pattern ("add one entry, no switch/case") but is a SEPARATE, platform-scoped
+ * map per this file's doctrine. A key with no entry here falls back to
+ * PlaceholderCard unchanged — so growth_signups / cs_sync_issues (PO1.3/PO1.4)
+ * stay placeholders until their slice adds an entry.
+ */
+const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section }>> = {
+  // Security Operations (PO1.1)
+  sec_audit_feed:   SecAuditFeedWidget,
+  sec_auth_posture: SecAuthPostureWidget,
+  sec_sessions:     SecSessionsWidget,
+};
 
 interface Props {
   areaLabel:   string;
@@ -116,9 +136,10 @@ export function PlatformSpaceDashboard({ areaLabel, spaceName, accessLevel, sect
         <p className="text-sm text-[var(--text-secondary)]">No sections configured for this area yet.</p>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-4 md:gap-5">
-          {sections.map((s) => (
-            <PlaceholderCard key={s.id} section={s} />
-          ))}
+          {sections.map((s) => {
+            const Widget = PLATFORM_WIDGET_REGISTRY[s.key];
+            return Widget ? <Widget key={s.id} section={s} /> : <PlaceholderCard key={s.id} section={s} />;
+          })}
         </div>
       )}
     </div>
