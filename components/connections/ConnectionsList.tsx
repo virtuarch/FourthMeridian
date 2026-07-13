@@ -208,34 +208,58 @@ export function ConnectionsList({ initialStatus, accountsByInstitution, accounts
   });
   const liquidAllowed = new Set(liquidOrder.slice(0, LIQUID_CAP).map((c) => c.id));
 
+  // Part-4 — split the still-importing queue from everything already resolved
+  // (ready / needs_reauth / error). The queue renders as a full-width vertical
+  // stack ABOVE the grid; the resolved connections keep the existing grid.
+  const importing = status.connections.filter((c) => c.state === "importing");
+  const resolved  = status.connections.filter((c) => c.state !== "importing");
+
+  const renderCard = (c: SyncStatus["connections"][number]) => (
+    <ConnectionCard
+      key={c.id}
+      connection={c}
+      // Wallets group by connection id (institution strings collide);
+      // Plaid keeps its institution grouping unchanged.
+      accounts={
+        c.provider === "WALLET"
+          ? (accountsByConnectionId[c.id] ?? [])
+          : (accountsByInstitution[c.institution] ?? [])
+      }
+      slow={slow}
+      allowLiquid={liquidAllowed.has(c.id)}
+    />
+  );
+
   return (
     // Centered flagship column (max-w-[1400px] mx-auto) — same design language
-    // as the Daily Brief content area. Presentation-only change: the cards now
-    // flow in a responsive grid instead of a single full-width vertical stack.
+    // as the Daily Brief content area.
     <div className="max-w-[1400px] mx-auto space-y-4">
-      {/* Responsive card grid: 1-up on mobile (full width, comfortable touch
-          targets), 2-up from md, 3-up on xl where the card content stays
-          readable. `items-stretch` (grid default) keeps cards in a row visually
-          aligned; card internals already use a min-height + flex-col so a short
-          state never collapses next to a tall one. No fixed heights (long
-          syncing/error states still grow), no clipped content. */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {status.connections.map((c) => (
-          <ConnectionCard
-            key={c.id}
-            connection={c}
-            // Wallets group by connection id (institution strings collide);
-            // Plaid keeps its institution grouping unchanged.
-            accounts={
-              c.provider === "WALLET"
-                ? (accountsByConnectionId[c.id] ?? [])
-                : (accountsByInstitution[c.institution] ?? [])
-            }
-            slow={slow}
-            allowLiquid={liquidAllowed.has(c.id)}
-          />
-        ))}
-      </div>
+      {/* In-progress queue — full-width vertical stack, ABOVE the grid. Only
+          rendered when something is genuinely importing (no empty container /
+          heading otherwise). Each card is the SAME ConnectionCard (same
+          AtlasLiquidCard/DataCard + ImportingContent), just in a stacking flex
+          container instead of a grid cell, so it takes the list's full width.
+          When a card finishes it leaves this stack and appears in the grid
+          below on the next status poll — that cross-container move remounts it
+          (keys are stable within a container, but React can't preserve identity
+          across parents), which here coincides exactly with the card's own
+          importing→ready content switch, so it reads as the intended "snaps
+          down into the grid" transition rather than a gratuitous re-mount. */}
+      {importing.length > 0 && (
+        <div className="flex flex-col gap-4">
+          {importing.map(renderCard)}
+        </div>
+      )}
+
+      {/* Resolved connections — the existing responsive grid (1/2/3-up).
+          `items-stretch` (grid default) keeps a row visually aligned; card
+          internals already use a min-height + flex-col. Rendered only when
+          there's at least one resolved connection. */}
+      {resolved.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {resolved.map(renderCard)}
+        </div>
+      )}
 
       {!status.building && anyReady && (
         <div className="pt-1">
