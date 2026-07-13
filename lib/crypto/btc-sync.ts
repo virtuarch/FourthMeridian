@@ -582,6 +582,14 @@ export interface SyncAllBtcWalletsResult {
   total: number;
   succeeded: number;
   failed: number;
+  /**
+   * The accounts that synced OK this run — the input the caller (the sync-crypto
+   * cron body) feeds to wealth-history regen. Deliberately surfaced HERE rather
+   * than running regen inside this function: the balance-sync layer stays free
+   * of snapshot coupling (965e0bd's shape decision), and the cron body owns the
+   * regen step the same way the wallet routes do.
+   */
+  syncedAccountIds: string[];
 }
 
 /**
@@ -603,11 +611,12 @@ export async function syncAllBtcWallets(deps: BtcSyncDeps = {}): Promise<SyncAll
 
   let succeeded = 0;
   let failed = 0;
+  const syncedAccountIds: string[] = [];
   for (const w of wallets) {
     const r = await syncBtcWallet(w.id, { ...deps, priceFetcher: sharedPriceFetcher });
-    if (r.ok) succeeded++;
+    if (r.ok) { succeeded++; syncedAccountIds.push(w.id); }
     else failed++;
   }
 
-  return { total: wallets.length, succeeded, failed };
+  return { total: wallets.length, succeeded, failed, syncedAccountIds };
 }

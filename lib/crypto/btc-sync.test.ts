@@ -135,10 +135,18 @@ async function main(): Promise<void> {
 
   const job = code(read("jobs", "sync-crypto.ts"));
   check("job body delegates to syncAllBtcWallets", job.includes("syncAllBtcWallets"));
+  // CH-3 — the cron body also regenerates wealth history for the wallets it
+  // synced (the step 965e0bd anticipated for this path), gated on the flag.
+  check("job body regenerates wealth history for synced wallets",
+    job.includes("regenerateWealthHistoryForAccounts") && job.includes("syncedAccountIds"));
+  check("job body gates the bulk regen on WEALTH_REGENERATION_ENABLED",
+    job.includes("wealthRegenerationEnabled"));
 
   const registry = code(read("lib", "jobs", "registry.ts"));
-  check("sync-crypto is NOT registered in the daily cron (deferred; manual/run-on-add)",
-    !registry.includes("sync-crypto"));
+  // CH-3 — sync-crypto is now REGISTERED (every 6 hours), unlocked by the Vercel
+  // plan upgrade off Hobby. The former "deferred — R7" ruling is retired.
+  check("sync-crypto is registered in the dispatcher (6-hourly)",
+    /name:\s*["']sync-crypto["']/.test(registry) && registry.includes("expectedEveryHours: 6"));
 
   const manual = code(read("app", "api", "accounts", "[id]", "sync", "route.ts"));
   check("manual route authenticates", manual.includes("requireUser"));

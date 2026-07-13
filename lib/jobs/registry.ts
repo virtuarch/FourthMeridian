@@ -8,13 +8,17 @@
  * app/api/jobs/dispatch/route.ts) selects due entries from this table and
  * executes each through runJob().
  *
- * SCHEDULE SEMANTICS: each entry names one daily UTC fire slot on a
- * half-hour boundary (hourUTC + minuteUTC ∈ {0, 30}). Slot matching (not
- * exact-minute matching) makes dispatch robust to Vercel firing a cron a few
- * minutes late — see dueJobs() in lib/jobs/dispatch.ts. The 06:00/06:30/
- * 07:00 slots are EXACTLY the three pre-S2 vercel.json schedules; the S3
- * maintenance jobs occupy the 07:30 slot the existing cron expression
- * ("0,30 6-7 * * *") already fires — S3 adds NO vercel.json entry.
+ * SCHEDULE SEMANTICS: each entry names its daily UTC fire slot(s) on a
+ * half-hour boundary (minuteUTC ∈ {0, 30}). Slot matching (not exact-minute
+ * matching) makes dispatch robust to Vercel firing a cron a few minutes late
+ * — see dueJobs() in lib/jobs/dispatch.ts. The 06:00/06:30/07:00 slots are
+ * EXACTLY the three pre-S2 vercel.json schedules; the S3 maintenance jobs
+ * occupy the 07:30 slot the paid-tier cron expression ("0,30 6-7 * * *")
+ * already fires — S3 adds NO vercel.json entry. A job that repeats INTRADAY
+ * sets hourUTC to an ARRAY of fire hours (all on the one minuteUTC slot): one
+ * registry entry, one health report, N daily fires — CH-3 sync-crypto fires at
+ * [0, 6, 12, 18]. vercel.json must trigger the dispatcher at every slot any
+ * entry lists (CH-3 restored the paid-tier multi-slot cron off the Hobby tier).
  *
  * ADDING A JOB = adding an entry here (plus its vercel.json slot if it needs
  * a new fire time). Registered bodies MUST be idempotent and safe to re-run
@@ -39,8 +43,17 @@
  * AFTER notification-cleanup so freshly aged-out notifications are never
  * re-mailed.
  *
+ * CH-3 (2026-07-14): sync-crypto registered — the BTC wallet sweep, every 6
+ * hours ([0, 6, 12, 18] UTC via the multi-slot hourUTC array; see SCHEDULE
+ * SEMANTICS), expectedEveryHours:6 so the dead-job detector tracks the
+ * 6-hourly cadence for free. Unlocked by the Vercel plan upgrade off Hobby
+ * (sub-daily cron now permitted); vercel.json restores the paid-tier
+ * multi-slot schedule. The stale "deferred — R7" ruling for sync-crypto is
+ * retired: jobs/sync-crypto.ts was always production-ready — only the schedule
+ * was gated, and the tier that gated it is gone.
+ *
  * DELIBERATELY NOT HERE (S0 rulings): dead-job detection (S5) ·
- * run-ai-advice, sync-crypto, take-snapshot (v2.6b / deferred — R7).
+ * run-ai-advice, take-snapshot (v2.6b / deferred — R7).
  *
  * IMPORT-LIGHT BY DESIGN: job bodies are dynamic-imported inside each run()
  * — never at module load. Several bodies transitively import provider
@@ -54,8 +67,12 @@
 export interface ScheduledJob {
   /** JobRun ledger name — must stay stable (pre/post ledger comparison). */
   name: string;
-  /** Daily fire hour, UTC. */
-  hourUTC: number;
+  /**
+   * Daily fire hour(s), UTC. A single number fires once daily; an array fires
+   * once at each listed hour (all on the same minuteUTC slot) — the intraday
+   * repeat shape (CH-3 sync-crypto: [0, 6, 12, 18]). dueJobs() matches either.
+   */
+  hourUTC: number | number[];
   /** Fire minute — half-hour slots only (the dispatch matching granularity). */
   minuteUTC: 0 | 30;
   /**
@@ -95,6 +112,21 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     hourUTC: 6,
     minuteUTC: 30,
     run: async () => (await import("@/jobs/fetch-security-prices")).fetchSecurityPrices(),
+  },
+  // CH-3 — BTC wallet balance sweep, every 6 hours (00/06/12/18 UTC via the
+  // multi-slot hourUTC array). The 06:00 tick co-tenants with sync-banks /
+  // fetch-fx-rates (the dispatcher ledgers each job per-slot individually, so
+  // co-tenancy is fine). expectedEveryHours:6 lets ops_job_health flag a
+  // stalled sweep for free. Idempotent + never-throws (jobs/sync-crypto.ts →
+  // syncAllBtcWallets); the job body also regenerates wealth history for the
+  // wallets it synced (the regen step the 965e0bd route wiring anticipated for
+  // this cron path). Enabled by the Vercel plan upgrade off Hobby.
+  {
+    name: "sync-crypto",
+    hourUTC: [0, 6, 12, 18],
+    minuteUTC: 0,
+    expectedEveryHours: 6,
+    run: async () => (await import("@/jobs/sync-crypto")).syncCrypto(),
   },
   // Pre-S2 slot: vercel.json "0 7 * * *". Single-purpose since S3 — the
   // OPS-3 notification-cleanup tail moved to its own 07:30 registration.

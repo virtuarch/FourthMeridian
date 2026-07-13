@@ -80,8 +80,8 @@ async function main(): Promise<void> {
   // ── 2. Registry integrity — pre-S2 jobs at their slots + S3 maintenance ───
   {
     const byName = new Map(SCHEDULED_JOBS.map((j) => [j.name, j]));
-    check("registry holds exactly the eight S2+S3+S4 jobs plus A8-3 price fetch (S5 not started)",
-      SCHEDULED_JOBS.length === 8, `got ${SCHEDULED_JOBS.length}`);
+    check("registry holds the eight S2+S3+S4 jobs + A8-3 price fetch + CH-3 sync-crypto",
+      SCHEDULED_JOBS.length === 9, `got ${SCHEDULED_JOBS.length}`);
     check("names unique", byName.size === SCHEDULED_JOBS.length);
     check("sync-banks keeps its 06:00 UTC slot",
       byName.get("sync-banks")?.hourUTC === 6 && byName.get("sync-banks")?.minuteUTC === 0);
@@ -99,8 +99,31 @@ async function main(): Promise<void> {
       SCHEDULED_JOBS.findIndex((j) => j.name === "notification-retry") >
         SCHEDULED_JOBS.findIndex((j) => j.name === "notification-cleanup"));
     check("all slots on half-hour boundaries", SCHEDULED_JOBS.every((j) => j.minuteUTC === 0 || j.minuteUTC === 30));
-    check("deferred work stays deferred (no digest / snapshot / quiet-hours jobs)",
-      !SCHEDULED_JOBS.some((j) => /digest|snapshot|quiet/i.test(j.name)));
+    check("deferred work stays deferred (no digest / quiet-hours jobs)",
+      !SCHEDULED_JOBS.some((j) => /digest|quiet/i.test(j.name)));
+
+    // CH-3 — sync-crypto: the intraday-repeat shape (hourUTC array), 6-hourly.
+    const crypto = byName.get("sync-crypto");
+    check("sync-crypto fires every 6 hours (00/06/12/18 UTC, :00 slot)",
+      Array.isArray(crypto?.hourUTC) &&
+        (crypto!.hourUTC as number[]).join() === "0,6,12,18" && crypto?.minuteUTC === 0);
+    check("sync-crypto declares expectedEveryHours:6 for the dead-job detector",
+      crypto?.expectedEveryHours === 6);
+  }
+
+  // ── 2b. Multi-slot (array hourUTC) dispatch — CH-3 ────────────────────────
+  {
+    const jobs: ScheduledJob[] = [
+      { name: "six-hourly", hourUTC: [0, 6, 12, 18], minuteUTC: 0, run: async () => ({ ok: 1 }) },
+      { name: "daily", hourUTC: 6, minuteUTC: 0, run: async () => ({ ok: 2 }) },
+    ];
+    check("array-hour job is due at every listed hour",
+      [0, 6, 12, 18].every((h) => dueJobs(utc(h, 0), jobs).some((j) => j.name === "six-hourly")));
+    check("array-hour job co-tenants the 06:00 slot with a single-hour job",
+      dueJobs(utc(6, 0), jobs).map((j) => j.name).sort().join() === "daily,six-hourly");
+    check("array-hour job is NOT due at an unlisted hour", dueJobs(utc(7, 0), jobs).length === 0);
+    check("array-hour job honors the minute slot (not due at :30)",
+      dueJobs(utc(12, 30), jobs).length === 0);
   }
 
   // ── 3. Execution through the runner, in registry order, trigger "cron" ────
@@ -153,26 +176,35 @@ async function main(): Promise<void> {
 
   // ── 6. Source scans — S2 structure ────────────────────────────────────────
   {
-    // FREE-TIER CRON DOCTRINE (add7c5e): the deployment target is the Vercel
-    // Hobby (free) plan, which REJECTS any sub-daily cron at deploy time. The
-    // dispatcher therefore runs on a SINGLE once-per-day entry. The richer
-    // paid-tier schedule — "0,30 6-7 * * *", one tick per registered half-hour
-    // slot — is preserved as documentation only (below) and must NOT be the
-    // active vercel.json invariant while on Hobby. The per-slot jobs that this
-    // daily tick does not reach stay callable through the per-job fallback
-    // routes (CRON_SECRET-guarded) and, for FX, the opportunistic
-    // stale-while-revalidate refresh (lib/money/fx-freshness.ts).
-    const FREE_TIER_SCHEDULE = "0 6 * * *";       // active: once/day (Hobby-legal)
-    const PAID_TIER_SCHEDULE = "0,30 6-7 * * *";  // documentation: restore off Hobby
+    // PAID-TIER CRON DOCTRINE (CH-3, supersedes the add7c5e Hobby doctrine):
+    // the Vercel plan upgrade removed the sub-daily deploy-time restriction, so
+    // the dispatcher now runs on a SINGLE multi-slot entry that reaches every
+    // registered slot. "0,30 0,6,7,12,18 * * *" fires the 06:00/06:30/07:00/
+    // 07:30 paid-tier slots (restoring sync-banks / fetch-fx-rates /
+    // fetch-security-prices / process-deletions / the 07:30 maintenance jobs to
+    // cron) PLUS CH-3 sync-crypto's 00:00/12:00/18:00 slots. The 00:30/12:30/
+    // 18:30 ticks it also fires hold no registered job — cheap no-op ticks. It
+    // stays ONE cron entry (one path), so no duplicate-path deploy risk.
+    const ACTIVE_SCHEDULE = "0,30 0,6,7,12,18 * * *"; // paid-tier: every registered slot
+    const HOBBY_SCHEDULE  = "0 6 * * *";              // retired: the once/day Hobby entry
     const vercel = readFileSync("vercel.json", "utf8");
     const cronPaths = [...vercel.matchAll(/"path":\s*"([^"]+)"/g)].map((m) => m[1]);
     const schedules = [...vercel.matchAll(/"schedule":\s*"([^"]+)"/g)].map((m) => m[1]);
     check("vercel.json has exactly ONE cron — the dispatcher",
       cronPaths.length === 1 && cronPaths[0] === "/api/jobs/dispatch");
-    check("the single cron runs at most once per day (Vercel Hobby free-tier limit)",
-      schedules.length === 1 && schedules[0] === FREE_TIER_SCHEDULE);
-    check("the sub-daily paid-tier schedule is retired from the active config",
-      !vercel.includes(PAID_TIER_SCHEDULE));
+    check("the single cron is the paid-tier multi-slot schedule (off Hobby)",
+      schedules.length === 1 && schedules[0] === ACTIVE_SCHEDULE);
+    check("the once/day Hobby schedule is retired from the active config",
+      !vercel.includes(HOBBY_SCHEDULE));
+    // Every hour any registered entry fires at must appear in the cron's hour
+    // field, or that job would silently never run on cron.
+    const cronHours = new Set((schedules[0].split(/\s+/)[1] ?? "").split(",").map(Number));
+    const registeredHours = new Set(
+      SCHEDULED_JOBS.flatMap((j) => (Array.isArray(j.hourUTC) ? j.hourUTC : [j.hourUTC])),
+    );
+    check("every registered fire-hour is reached by the active cron",
+      [...registeredHours].every((h) => cronHours.has(h)),
+      `cron hours {${[...cronHours].sort((a, b) => a - b)}} vs registered {${[...registeredHours].sort((a, b) => a - b)}}`);
 
     const dispatchRoute = readFileSync("app/api/jobs/dispatch/route.ts", "utf8");
     check("dispatcher route keeps CRON_SECRET protection",

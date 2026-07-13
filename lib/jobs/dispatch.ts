@@ -13,9 +13,11 @@
  * SLOT MATCHING: a job is due when the invocation time falls in its
  * half-hour UTC slot (hourUTC + minuteUTC..minuteUTC+29). Deliberately NOT
  * exact-minute matching: Vercel may fire a cron a few minutes late, and a
- * late tick must not silently skip the slot's job. The single cron fires
- * only at registered slots (vercel.json), so slots without entries are
- * no-op ticks, logged and cheap.
+ * late tick must not silently skip the slot's job. hourUTC may be a single
+ * hour OR an array of fire hours (the intraday-repeat shape — CH-3
+ * sync-crypto: [0, 6, 12, 18]); a job matches when the tick's hour is any of
+ * them. The cron fires only at registered slots (vercel.json), so slots
+ * without entries are no-op ticks, logged and cheap.
  *
  * ISOLATION & OUTCOME: each job runs in its own try/catch; a failure is
  * ledgered by runJob (status "failed"), logged here, recorded in the
@@ -47,6 +49,11 @@ function slotMinute(date: Date): 0 | 30 {
   return date.getUTCMinutes() < 30 ? 0 : 30;
 }
 
+/** True when `hour` is one of a job's fire hours (single hour or array). */
+function firesAtHour(hourUTC: number | number[], hour: number): boolean {
+  return Array.isArray(hourUTC) ? hourUTC.includes(hour) : hourUTC === hour;
+}
+
 /** Pure selection: the registry entries due at `now`'s half-hour UTC slot. */
 export function dueJobs(
   now: Date,
@@ -54,7 +61,7 @@ export function dueJobs(
 ): ScheduledJob[] {
   const hour = now.getUTCHours();
   const minute = slotMinute(now);
-  return jobs.filter((j) => j.hourUTC === hour && j.minuteUTC === minute);
+  return jobs.filter((j) => firesAtHour(j.hourUTC, hour) && j.minuteUTC === minute);
 }
 
 /** Test injection seam — production callers never pass `runner`. */

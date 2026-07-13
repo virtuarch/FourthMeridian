@@ -11,11 +11,18 @@
  *
  * Scope: BTC only. No xpub, no transaction import, no other chains, no schema
  * or SpaceAccountLink changes.
+ *
+ * CH-3 — per-user rate limit (6 / hour). NOT a Plaid-style per-item cooldown:
+ * the risk this mitigates is a shared-IP explorer ban (every wallet sync leaves
+ * Fourth Meridian's single server IP), not metered per-item cost — so a
+ * generous per-user cap is the right shape, not a strict per-item one.
+ * SYSTEM_ADMIN exempt, matching the house call-site idiom.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
+import { limitByUser } from "@/lib/rate-limit";
 import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { regenerateWealthHistoryForAccounts, recentWealthWindow } from "@/lib/snapshots/regenerate-history";
@@ -29,6 +36,11 @@ export async function POST(
 
   const [user, err] = await requireUser();
   if (err) return err;
+
+  if (user.role !== "SYSTEM_ADMIN") {
+    const limited = await limitByUser(user.id, "wallet-resync", { limit: 6, windowSec: 3600 });
+    if (limited) return limited;
+  }
 
   const account = await db.financialAccount.findUnique({
     where: { id },
