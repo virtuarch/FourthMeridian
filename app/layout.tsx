@@ -20,30 +20,22 @@ export const metadata: Metadata = {
     statusBarStyle: "black-translucent",
     title: "Fourth Meridian",
   },
+  // Open Graph / Twitter: the stale bits removed with the landing-page work
+  // (Wave 1①). The old `url` hardcoded the dead fintracker.app domain and the
+  // `images` referenced a stale og-image.png lockup; both are dropped rather
+  // than carried forward against a domain we no longer use. metadataBase above
+  // still resolves relative URLs for any per-page OG image added later. Regenerating
+  // a branded social-preview image is left as a follow-up.
   openGraph: {
     title: "Fourth Meridian",
     description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
-    // NOTE: url/images still point at the old fintracker.app domain and
-    // og-image.png asset — left untouched since this pass is UI-branding
-    // only and doesn't cover infrastructure (domain) or regenerating the
-    // social-preview image. Flagged as a future enhancement.
-    url: "https://fintracker.app",
     siteName: "Fourth Meridian",
-    images: [
-      {
-        url: "/og-image.png",
-        width: 1536,
-        height: 1024,
-        alt: "Fourth Meridian — Personal Finance Dashboard",
-      },
-    ],
     type: "website",
   },
   twitter: {
-    card: "summary_large_image",
+    card: "summary",
     title: "Fourth Meridian",
     description: "Personal finance dashboard — track your net worth, investments, crypto, and debt in one place.",
-    images: ["/og-image.png"],
   },
 };
 
