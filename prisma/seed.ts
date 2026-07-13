@@ -289,6 +289,7 @@ async function main() {
       dateOfBirthEncrypted: janeDobEncrypted,
       employmentStatus: EmploymentStatus.EMPLOYED, useCase: UseCase.PERSONAL_TRACKING,
       passwordHash: janeHash, role: UserRole.USER,
+      emailVerifiedAt: new Date(), // OPS-1 S2b — seed accounts start verified (login gate)
     },
   });
   const john = await prisma.user.create({
@@ -298,6 +299,7 @@ async function main() {
       dateOfBirthEncrypted: johnDobEncrypted,
       employmentStatus: EmploymentStatus.EMPLOYED, useCase: UseCase.PERSONAL_TRACKING,
       passwordHash: johnHash, role: UserRole.USER,
+      emailVerifiedAt: new Date(), // OPS-1 S2b — seed accounts start verified (login gate)
     },
   });
   const alex = await prisma.user.create({
@@ -307,6 +309,7 @@ async function main() {
       dateOfBirthEncrypted: alexDobEncrypted,
       employmentStatus: EmploymentStatus.EMPLOYED, useCase: UseCase.INVESTING,
       passwordHash: alexHash, role: UserRole.USER,
+      emailVerifiedAt: new Date(), // OPS-1 S2b — seed accounts start verified (login gate)
     },
   });
   // ── SYSTEM_ADMIN — unchanged, dev-only account ────────────────────────────
@@ -315,6 +318,7 @@ async function main() {
       email: "sysadmin@example.com", username: "sysadmin",
       name: "Dev Sysadmin",
       passwordHash: adminHash, role: UserRole.SYSTEM_ADMIN,
+      emailVerifiedAt: new Date(), // OPS-1 S2b — seed accounts start verified (login gate)
     },
   });
   console.log(`   ✓ Users: ${jane.email}, ${john.email}, ${alex.email}, ${admin.email}`);
