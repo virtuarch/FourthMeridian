@@ -56,6 +56,13 @@ node_modules/.prisma
 **/.DS_Store
 # macOS temp files created by some editors when saving (e.g. vim on APFS mounts)
 **/.fuse_hidden*
+# Finder / iCloud / Dropbox copy-on-conflict duplicates (KD-13): any path whose
+# name ends in " 2" — e.g. "widgets 2/" (dir) or "foo 2.ts" (file). The cloud-
+# sync tool keeps regenerating these. NOTE: this only suppresses the untracked-
+# noise SYMPTOM inside the repo; it does NOT fix the sync tool itself, which is a
+# local machine / OS-level configuration outside this repo's control.
+* 2
+* 2.*
 
 # Working / design artefacts — not part of the source distribution
 # Root-level copies that couldn't be deleted (APFS volume restriction in sandbox)
