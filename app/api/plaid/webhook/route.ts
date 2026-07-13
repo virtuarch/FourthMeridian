@@ -63,8 +63,16 @@ export async function POST(req: NextRequest) {
   const { webhook_type, webhook_code, item_id } = body;
   console.log(`[plaid webhook] ${webhook_type ?? "?"}/${webhook_code ?? "?"} item=${item_id ?? "—"}`);
 
+  // TRANSACTIONS sync signals (above) OR a HOLDINGS update (Plaid fires
+  // webhook_type "HOLDINGS" / webhook_code "DEFAULT_UPDATE" once investment
+  // holdings are ready — e.g. after the user grants Investments consent via
+  // EnableInvestmentsButton). Both re-invoke the FULL deferred pipeline via
+  // syncPlaidItemFromWebhook (sync → snapshot backfill → reconstruction → prices
+  // → wealth regen), NOT a narrow holdings-only sync, or the snapshot/A9 steps
+  // go stale — same discipline as the transactions webhook fix.
   const isSyncTrigger =
-    webhook_type === "TRANSACTIONS" && typeof webhook_code === "string" && SYNC_TRIGGER_CODES.has(webhook_code);
+    (webhook_type === "TRANSACTIONS" && typeof webhook_code === "string" && SYNC_TRIGGER_CODES.has(webhook_code)) ||
+    (webhook_type === "HOLDINGS" && webhook_code === "DEFAULT_UPDATE");
 
   if (!isSyncTrigger || !item_id) {
     // Verified but not something we act on — ack so Plaid doesn't retry.

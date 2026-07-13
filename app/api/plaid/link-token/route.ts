@@ -147,7 +147,17 @@ export async function GET(req: NextRequest) {
     // are unaffected. Placed in `additional_consented_products` (not
     // `products`): this collects consent without gating the institution and is
     // not billed until investmentsHoldingsGet is called on the Item.
-    const wantsInvestmentsConsent = Boolean(accessToken) && consentParam === "investments";
+    // B2 — request Investments consent UP FRONT via additional_consented_products
+    // (NOT `products`). This is the DTM-correct, NON-GATING mechanism: it collects
+    // Investments consent where the institution offers it (Schwab/Fidelity/etc.),
+    // avoiding the second manual "Enable Investments" re-link for the common case,
+    // while a credit-only institution (AmEx) is UNAFFECTED — it simply doesn't
+    // offer Investments (putting Investments in `products` would instead REJECT
+    // those institutions' Link tokens, which is why `products` stays
+    // Transactions-only). Update mode keeps its existing per-Item consent request.
+    const wantsInvestmentsConsent = accessToken
+      ? consentParam === "investments" // update mode: only when explicitly requested
+      : true;                          // fresh link: offer Investments consent (non-gating)
     const additionalConsentedProducts = wantsInvestmentsConsent
       ? [Products.Investments]
       : undefined;

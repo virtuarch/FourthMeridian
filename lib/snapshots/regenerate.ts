@@ -37,7 +37,7 @@ import { getAccounts } from "@/lib/data/accounts";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { ShareStatus } from "@prisma/client";
+import { ShareStatus, PlaidInvestmentsConsent } from "@prisma/client";
 
 function todayUTC(): Date {
   const d = new Date();
@@ -56,6 +56,36 @@ export async function regenerateSpaceSnapshot(
 ): Promise<void> {
   const accounts = await getAccounts({ spaceId });
 
+  // Part-B — exclude investment accounts still pending Investments consent
+  // (CONSENT_REQUIRED): holdings were never fetched, so there is no real
+  // per-holding value or history for them. Baking today's account-level balance
+  // into the net-worth snapshot injects a misleading vertical JUMP with no
+  // historical lead-up (the "net worth jumps at connect" bug). The account's
+  // balance still shows on its card + EnableInvestmentsButton prompts the user;
+  // once consent is granted the full pipeline reconstructs real history and the
+  // account enters the trend smoothly. Suppress-until-consent (chosen over a
+  // distinct "today dot", which needs new chart code) — honestly omits the
+  // account until we have real data, rather than fabricating a jump.
+  let eligible = accounts;
+  if (accounts.length > 0) {
+    const gated = new Set(
+      (
+        await db.financialAccount.findMany({
+          where: {
+            id:          { in: accounts.map((a) => a.id) },
+            type:        "investment",
+            connections: { some: { plaidItem: { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED } } },
+          },
+          select: { id: true },
+        })
+      ).map((a) => a.id),
+    );
+    if (gated.size > 0) {
+      eligible = accounts.filter((a) => !gated.has(a.id));
+      console.log(`[snapshot] space ${spaceId}: excluding ${gated.size} consent-pending investment account(s) from the snapshot (no fabricated jump).`);
+    }
+  }
+
   // MC1 Phase 3 Slice 3 — THE SNAPSHOT FLIP (plan seams #1, F-2). The context
   // target and the reportingCurrency stamp below both come from the same
   // Space read, atomically: they can never disagree. For every all-USD Space
@@ -69,10 +99,10 @@ export async function regenerateSpaceSnapshot(
   if (!space) return; // space vanished mid-call — nothing to snapshot
 
   const ctx = await buildSpaceConversionContext(space, {
-    currencies: accounts.map((a) => a.currency ?? null),
+    currencies: eligible.map((a) => a.currency ?? null),
     dates:      [yesterdayUTCISO()],
   });
-  const c = classifyAccounts(accounts, ctx);
+  const c = classifyAccounts(eligible, ctx);
 
   const stocks     = c.totalInvestments;
   const crypto     = c.totalDigitalAssets;
