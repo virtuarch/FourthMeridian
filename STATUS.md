@@ -6,16 +6,19 @@ If this file conflicts with any other document, this file wins. If it conflicts 
 
 | | |
 |---|---|
-| Last verified | 2026-07-06, against the working tree post-`f22de52` (MC1 complete incl. **QA Q1–Q6**; FX historical archive backfill applied; MC1 performance **P0** batched FX reads; navigation currency-staleness fixed; FlowType Desync **certified**; **TI Phase 1** complete — all landed since the `f22de52` checkpoint) |
-| Maintenance rule | Any PR that changes system behavior updates this file, or states in the PR why not |
+| Last verified | **2026-07-13**, against the working tree at **`e948ee3`** (the STATUS drift-correction pass — `FOURTH_MERIDIAN_STATUS_DRIFT_INVESTIGATION_2026-07-13.md`). This pass re-verified **§1, §2, §3 (all ledger tables), §4, §5, §6, §7, §9, §10, Current focus, and Verification** against git history + migrations + current source, resolving all 28 drift items. *Prior stamp: 2026-07-06 against `f22de52` — which had gone ~235 commits stale by 07-13; the 07-06→07-11 platform/intelligence lanes (OPS-2/3, TI2, MI2, A-track, wallets, cash-flow) had shipped with no ledger update.* |
+| Maintenance rule | Any PR that changes system behavior updates this file, or states in the PR why not. **Process fix (2026-07-13, drift-audit §8.4a):** every initiative plan MUST name an explicit "update STATUS.md" step/slice (the design-system push did this and stayed drift-clean; the platform/intelligence lanes did not and drifted). A migration- or closeout-bearing PR with no STATUS.md diff is a red flag — see the advisory CI tripwire in `.github/workflows/status-drift-guard.yml`. |
 | Supersedes | `ROADMAP.md` (now a redirect stub), `docs/archive/PROJECT_STATE.md` (already archived — moved from `docs/operations/`), and the status tables in `docs/architecture/PHASE_2_CANONICAL_ROADMAP_AUDIT.md` |
 
 ## Verification
 
 Last verified against:
 
-- Commit: `f22de52` (+ subsequent working-tree changes)
-- Date: 2026-07-06
+- Commit: **`e948ee3`** (HEAD of `feature/v2.5-spaces-completion` at the time of the 2026-07-13 drift-correction pass) — the STATUS.md correction commits themselves land on top of it
+- Date: **2026-07-13**
+- Prior stamp: `f22de52` / 2026-07-06 (superseded)
+
+**Per-section verification (2026-07-13 pass):** §1 overview, §2 version, §3 initiative ledger (D/AI/MC/PE/SP/DB/FlowType/Other/OPS/A-x/Other-landed tables), §4 namespace, §5 roadmap, §6 production readiness, §7 defects register, §9 doc map, §10 cleanup, Current focus, and Verification were all cross-checked against `git log --all`, the 40 `prisma/migrations/`, and current source. The design-system push sections (Current focus + §Verification bullets, 07-12/13) were already accurate and were left as-is. **Method + full evidence: `FOURTH_MERIDIAN_STATUS_DRIFT_INVESTIGATION_2026-07-13.md`.**
 
 Related investigations:
 
