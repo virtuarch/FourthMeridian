@@ -245,6 +245,33 @@ enum UserRole {
   SYSTEM_ADMIN // platform administration — not for daily use; requires TOTP (M3)
 }
 
+/// PO1.0 — a platform-facing area of Fourth Meridian itself, each backed by
+/// exactly one system-singleton Space (Space.platformArea). Extensible:
+/// adding an area = one enum value + one PLATFORM_AREAS metadata entry +
+/// re-running the idempotent seed. NOT user-facing categorization — that is
+/// SpaceCategory; do not conflate (see PO1 capabilities investigation §1.5).
+enum PlatformArea {
+  PLATFORM_OPS
+  SECURITY_OPS
+  GROWTH_REVENUE
+  CUSTOMER_SUCCESS
+}
+
+/// Ranked access level within one PlatformArea. WRITE ≥ READ (LEVEL_RANK in
+/// lib/platform/policy.ts) — never compared for equality, mirroring how
+/// SpaceMemberRole is consumed via ROLE_RANK/ROLE_ORDER.
+enum PlatformAccessLevel {
+  READ
+  WRITE
+}
+
+/// Grant lifecycle. Rows are never deleted — revocation is a status flip with
+/// provenance, mirroring SpaceMember ("rows are never deleted").
+enum PlatformGrantStatus {
+  ACTIVE
+  REVOKED
+}
+
 enum EmploymentStatus {
   EMPLOYED
   UNEMPLOYED
@@ -408,6 +435,13 @@ model User {
   // Notification preference overrides (OPS-3 S3) — rows exist ONLY when the
   // user deviates from the registry default (default-by-absence).
   notificationPreferences NotificationPreference[]
+
+  // Platform access (PO1.0) — grants HELD by this user (the platform-access
+  // source of truth), plus provenance back-relations for grants this user
+  // issued / revoked as a SYSTEM_ADMIN.
+  platformGrants        PlatformGrant[] @relation("PlatformGrantsHeld")
+  platformGrantsIssued  PlatformGrant[] @relation("PlatformGrantsIssued")
+  platformGrantsRevoked PlatformGrant[] @relation("PlatformGrantsRevoked")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -426,6 +460,13 @@ model Space {
   description       String?
   type              SpaceType     @default(PERSONAL)
   category          SpaceCategory @default(PERSONAL)
+  // PO1.0 — non-null marks this row as the system-singleton platform Space
+  // for one PlatformArea: bootstrap-seeded (lib/platform/seed.ts), never
+  // client-creatable (POST /api/spaces does not read this field), un-deletable
+  // in practice (no SpaceMember rows ever exist, so every membership-gated
+  // lifecycle route already denies; tripwired in lib/platform-surface.test.ts).
+  // @unique doubles as the one-Space-per-area invariant (NULLs are distinct).
+  platformArea      PlatformArea? @unique
   isPublic          Boolean       @default(false) // SHARED Spaces can be listed publicly
   // MC1 Phase 3 (D-1/D-2/D-4) — the AUTHORITATIVE reporting currency for every
   // aggregate, snapshot stamp, chart, and AI total computed within this Space.
@@ -509,6 +550,39 @@ model SpaceMember {
   @@index([spaceId])
   @@index([userId])
   @@index([spaceId, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PlatformGrant (PO1.0)
+// THE platform-access source of truth: user × area × level.
+// Orthogonal to SpaceMember on purpose: holding a grant makes the area's
+// platform Space visible (access-derived listing union) and gates its data
+// routes via requirePlatformAccess — it never creates a SpaceMember row and
+// never confers any customer-Space authority (and vice versa).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PlatformGrant {
+  id     String              @id @default(cuid())
+  userId String
+  user   User                @relation("PlatformGrantsHeld", fields: [userId], references: [id], onDelete: Cascade)
+  area   PlatformArea
+  level  PlatformAccessLevel
+  status PlatformGrantStatus @default(ACTIVE)
+
+  grantedById String?
+  grantedBy   User?    @relation("PlatformGrantsIssued", fields: [grantedById], references: [id], onDelete: SetNull)
+  grantedAt   DateTime @default(now())
+
+  // Populated when status transitions to REVOKED (mirrors SpaceMember.revokedBy*)
+  revokedAt   DateTime?
+  revokedById String?
+  revokedBy   User?     @relation("PlatformGrantsRevoked", fields: [revokedById], references: [id], onDelete: SetNull)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, area])
+  @@index([userId, status])
+  @@index([area, status])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
