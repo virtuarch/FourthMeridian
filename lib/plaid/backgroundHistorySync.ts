@@ -34,6 +34,21 @@ import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth, plaidErrorSummary } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { backfillSpaceSnapshots } from "@/lib/snapshots/backfill";
+import {
+  regenerateWealthHistoryForAccounts,
+  wealthRegenerationEnabled,
+} from "@/lib/snapshots/regenerate-history";
+
+/** yesterday-anchored ISO day helpers — same convention as the snapshot
+ *  backfill window and scripts/regenerate-wealth-history.ts. */
+function isoDayUTC(d: Date): string {
+  const x = new Date(d);
+  x.setUTCHours(0, 0, 0, 0);
+  return x.toISOString().slice(0, 10);
+}
+function minusDaysISO(iso: string, n: number): string {
+  return new Date(Date.parse(`${iso}T00:00:00Z`) - n * 86_400_000).toISOString().slice(0, 10);
+}
 
 /**
  * D2.x Slice 4 — after first-run history has synced, reconstruct up to 30 days
@@ -66,6 +81,44 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
         }
       } catch (e) {
         console.error(`[plaid][D2x-slice4] snapshot backfill failed for space ${spaceId} (non-fatal):`, e);
+      }
+    }
+
+    // A9 — accurate wealth-history regeneration. The Slice-4 backfill above
+    // holds every investment account's value FLAT at today's value on each
+    // historical day. When a just-connected item includes an investment
+    // account, re-derive those days from the canonical A8 historical valuation
+    // instead of the flat line, over the SAME 30-day window the backfill wrote
+    // (runs after the flat backfill, refining it — never instead of it).
+    //
+    // Gated on WEALTH_REGENERATION_ENABLED and skipped entirely when off: the
+    // flag gates only the writes INSIDE regenerateWealthHistory, but the
+    // per-day A8 valuation compute is not free, so gating the call here keeps
+    // the default (flag-off) path at zero extra work and honors the 60s
+    // background budget. Investment-relevance filter avoids running for a
+    // pure cash/card connect (nothing to reconstruct — backfill already walks
+    // cash back correctly). Best-effort / non-fatal, and already post-response
+    // via after(), so it can never affect connect latency.
+    if (wealthRegenerationEnabled()) {
+      try {
+        const investmentFaIds = (
+          await db.financialAccount.findMany({
+            where:  { id: { in: faIds }, type: "investment", deletedAt: null },
+            select: { id: true },
+          })
+        ).map((a) => a.id);
+
+        if (investmentFaIds.length > 0) {
+          const toDate   = minusDaysISO(isoDayUTC(new Date()), 1); // yesterday — today's live row is frozen
+          const fromDate = minusDaysISO(toDate, 30);               // matches the 30-day snapshot backfill window
+          const spaces = await regenerateWealthHistoryForAccounts(investmentFaIds, { fromDate, toDate });
+          console.log(
+            `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over [${fromDate} … ${toDate}] ` +
+              `(item ${plaidItemId}, ${investmentFaIds.length} investment account(s))`,
+          );
+        }
+      } catch (e) {
+        console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, e);
       }
     }
   } catch (e) {
