@@ -820,6 +820,13 @@ function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtPaymentL
       );
     }
 
+    // ── Needs classification (TE-2B disclosure; TI2-W2) ──────────────────────
+    // One honesty line: how much of the window is semantically ambiguous. The
+    // amounts stay INCLUDED in the totals above (disclosure, never subtracted) —
+    // the model must not present income that depends on them as fully verified.
+    const ncLine = needsClassificationSummaryLine(txn.needsClassification);
+    if (ncLine) lines.push(ncLine);
+
     // ── Spending aggregates: single source of truth (D6.3 Part B) ────────────
     // Average monthly spending, month-by-month spending, and category averages
     // ALL derive from the same deterministic monthlyBreakdown rows. Averages are
@@ -1288,6 +1295,32 @@ function buildSpaceAliasGuidance(spaceName: string): string {
 /** Format a number as a USD money string (e.g. $4,320.00). */
 function fmtMoney(n: number): string {
   return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/**
+ * TI2-W2 — the one-line needs-classification disclosure for the transaction
+ * summary block, following the refundTotal one-liner pattern. Exported so its
+ * exact wording is pinned by test (KD-17/KD-18 wording-pinned precedent). Returns
+ * null when nothing needs classification. DISCLOSURE ONLY — the amounts are
+ * already included in the totals above; only their source/purpose is unresolved.
+ */
+export function needsClassificationSummaryLine(
+  nc: TransactionsSummaryData['needsClassification'] | undefined | null,
+): string | null {
+  if (!nc || nc.count <= 0) return null;
+  const bits: string[] = [];
+  if (nc.unknownInflowCount > 0) {
+    bits.push(`${fmtMoney(nc.unknownInflowTotal)} of income has no identified source`);
+  }
+  if (nc.unknownPaymentAppCount > 0) {
+    bits.push(`${fmtMoney(nc.unknownPaymentAppTotal)} moved via payment apps, purpose unknown`);
+  }
+  const detail = bits.length ? ` (${bits.join('; ')})` : '';
+  return (
+    `  NEEDS CLASSIFICATION: ${nc.count} transaction${nc.count > 1 ? 's' : ''} need classification${detail}. ` +
+    'These amounts are already included in the totals above — do not subtract them; only their ' +
+    'source/purpose is unresolved, so do not present any income figure that depends on them as fully verified.'
+  );
 }
 
 // ── Explainability & provenance helpers (D6 polish) ───────────────────────────

@@ -36,7 +36,7 @@ import type {
   AccountsSectionData,
   GoalsSectionData,
 } from '@/lib/ai/types';
-import { FinanceDomains } from '@/lib/ai/types';
+import { FinanceDomains, MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedInflowShare } from '@/lib/ai/types';
 // FlowType P5 Slice 5 — the opportunity-eligibility gate derives from flow
 // semantics. Both imports are pure (no DB, no side effects), preserving this
 // module's "pure function" design constraint.
@@ -116,6 +116,14 @@ export interface DataQualitySection {
   snapshotSpanDays:               number;
   incomeConfidence:               ConfidenceLevel;
   incomeTransactionCount:         number;
+  /**
+   * TI2-W2 — fraction of in-window income that is sign-default inflow with no
+   * resolved source (unknownInflowTotal / incomeTotal), or null when there is no
+   * in-window income. A material share downgrades incomeConfidence below HIGH
+   * even when the row-count proxy alone would pass — the honesty fact TE-2B adds
+   * that a count of income transactions cannot see.
+   */
+  unidentifiedInflowShare:        number | null;
 }
 
 export interface CashFlowSection {
@@ -1490,6 +1498,10 @@ function computeRiskOpportunities(
   spendingOpportunities: SpendingOpportunitySection,
   goalAlignment:         GoalAlignmentSection,
   investmentReadiness:   InvestmentReadinessSection,
+  // TI2-W2 — the raw transaction summary, for the amount-based INCOMPLETE_INCOME_DATA
+  // wording ("$X of $Y income … has no identified source"). Optional so absent-domain
+  // callers still resolve; the evidence falls back to the count-only phrasing.
+  txn?:                  TransactionsSummaryData | null,
 ): RiskOpportunitySection {
   const risks:         AssessmentRisk[]        = [];
   const opportunities: AssessmentOpportunity[] = [];
@@ -1512,11 +1524,21 @@ function computeRiskOpportunities(
 
   // INCOMPLETE_INCOME_DATA — income confidence is LOW.
   if (dataQuality.incomeConfidence === 'LOW') {
+    // TI2-W2 — when in-window income has unidentified-source inflow, state the
+    // amount ("$X of $Y … has no identified source") rather than only a row
+    // count: the whole point of the slice is that a count cannot express how much
+    // income is unproven. Falls back to the count phrasing when there is no
+    // unidentified inflow (e.g. LOW purely from too few income rows).
+    const unknownInflowTotal = txn?.needsClassification?.unknownInflowTotal ?? 0;
+    const incomeTotal        = txn?.incomeTotal ?? 0;
+    const evidence = unknownInflowTotal > 0 && incomeTotal > 0
+      ? `$${unknownInflowTotal.toFixed(2)} of $${incomeTotal.toFixed(2)} income in-window has no identified source (${dataQuality.incomeTransactionCount} income transaction(s) captured) — income confidence LOW`
+      : `Only ${dataQuality.incomeTransactionCount} income transaction(s) captured — income confidence LOW`;
     risks.push({
       code:             'INCOMPLETE_INCOME_DATA',
       severity:         'warning',
       confidence:       'HIGH',
-      evidence:         `Only ${dataQuality.incomeTransactionCount} income transaction(s) captured — income confidence LOW`,
+      evidence,
       affectedSections: ['dataQuality', 'cashFlow'],
     });
   }
@@ -1796,15 +1818,30 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     return 'HIGH';
   })();
 
+  // TI2-W2 — unidentified-inflow share (null when no in-window income). Guarded
+  // divide (deriveUnidentifiedInflowShare) so a zero-income window is null, never
+  // NaN/Infinity. Defensive against fixtures predating the W1 aggregate block.
+  const unidentifiedInflowShare = txn ? deriveUnidentifiedInflowShare(txn) : null;
+  const unidentifiedInflowMaterial =
+    unidentifiedInflowShare !== null && unidentifiedInflowShare >= MATERIAL_UNIDENTIFIED_INFLOW_SHARE;
+
   const incomeConfidence: ConfidenceLevel = (() => {
-    if (transactionHistoryCompleteness === 'LOW' || incomeTransactionCount === 0) return 'LOW';
-    if (snapshotCount < SNAPSHOT_HIGH_THRESHOLD) {
-      if (incomeTransactionCount <= 1 || incomePlausRatio < INCOME_PLAUS_RATIO_LOW) return 'LOW';
+    const base: ConfidenceLevel = (() => {
+      if (transactionHistoryCompleteness === 'LOW' || incomeTransactionCount === 0) return 'LOW';
+      if (snapshotCount < SNAPSHOT_HIGH_THRESHOLD) {
+        if (incomeTransactionCount <= 1 || incomePlausRatio < INCOME_PLAUS_RATIO_LOW) return 'LOW';
+        return 'MEDIUM';
+      }
+      if (incomeTransactionCount <= 1 && incomePlausRatio < INCOME_PLAUS_RATIO_LOW) return 'LOW';
+      if (incomeTransactionCount >= INCOME_TXN_HIGH_THRESHOLD && incomePlausRatio >= INCOME_PLAUS_RATIO_LOW) return 'HIGH';
       return 'MEDIUM';
-    }
-    if (incomeTransactionCount <= 1 && incomePlausRatio < INCOME_PLAUS_RATIO_LOW) return 'LOW';
-    if (incomeTransactionCount >= INCOME_TXN_HIGH_THRESHOLD && incomePlausRatio >= INCOME_PLAUS_RATIO_LOW) return 'HIGH';
-    return 'MEDIUM';
+    })();
+    // TI2-W2 downgrade: a material unidentified-inflow share caps confidence at
+    // MEDIUM. This lets an honesty fact the row-count proxy cannot see pull a
+    // window down from HIGH — three unidentified deposits pass the count test but
+    // should not read as high-confidence income.
+    if (base === 'HIGH' && unidentifiedInflowMaterial) return 'MEDIUM';
+    return base;
   })();
 
   const dataQuality: DataQualitySection = {
@@ -1812,6 +1849,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     snapshotSpanDays: snapshotCount,
     incomeConfidence,
     incomeTransactionCount,
+    unidentifiedInflowShare,
   };
 
   // ── Step 2: Cash flow ────────────────────────────────────────────────────
@@ -2071,6 +2109,7 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
     spendingOpportunities,
     goalAlignment,
     investmentReadiness,
+    txn, // TI2-W2 — amount-based INCOMPLETE_INCOME_DATA wording
   );
 
   // ── Step 12: Heuristics and priorities ──────────────────────────────────

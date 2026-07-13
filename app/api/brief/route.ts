@@ -38,6 +38,8 @@ import {
   buildContext,
   FinanceDomains,
   SignalType,
+  MATERIAL_UNIDENTIFIED_INFLOW_SHARE,
+  deriveUnidentifiedInflowShare,
 } from "@/lib/ai";
 import type {
   SpaceContext_AI,
@@ -268,6 +270,22 @@ function buildAttention(
           tone:  "warning",
         });
         break;
+
+      // TI2-W2 — surfaces only at `warning` severity (material unidentified
+      // inflow); the info-severity flag is skipped above like every other info
+      // signal. Deep-links to the Transactions Tab, where the needs-review filter
+      // lives (established convention; no dedicated needs-review URL param exists).
+      case SignalType.NEEDS_CLASSIFICATION:
+        items.push({
+          id:     sig.id,
+          label:  sig.title,
+          ...(typeof sig.metadata?.detail === "string" && sig.metadata.detail
+            ? { detail: sig.metadata.detail }
+            : {}),
+          tone:   "warning",
+          href:   "/dashboard?tab=transactions",
+        });
+        break;
     }
   }
 
@@ -391,12 +409,20 @@ function buildInsight(
       ? Math.round(((txn.incomeTotal - txn.expenseTotal) / txn.incomeTotal) * 100)
       : null;
     if (savingsRate !== null && savingsRate > 0) {
+      // TI2-W2 — honesty caveat: when a material share of that income is
+      // sign-default inflow with no resolved source, the savings rate rests on
+      // income we cannot fully identify. Same threshold as the signal escalation
+      // (MATERIAL_UNIDENTIFIED_INFLOW_SHARE) — one definition, reused.
+      const share = deriveUnidentifiedInflowShare(txn);
+      const caveat = share !== null && share >= MATERIAL_UNIDENTIFIED_INFLOW_SHARE
+        ? ` Note: ${fmtCurrency(txn.needsClassification.unknownInflowTotal)} of that income has no identified source, so this rate is provisional.`
+        : "";
       return {
         id:       "insight",
         type:     "insight",
         priority: 20,
         title:    "Today's Insight",
-        body:     `You kept ${savingsRate}% of income over the last ${txn.windowDays} days. Expenses were ${fmtCurrency(txn.expenseTotal)} against ${fmtCurrency(txn.incomeTotal)} in income.`,
+        body:     `You kept ${savingsRate}% of income over the last ${txn.windowDays} days. Expenses were ${fmtCurrency(txn.expenseTotal)} against ${fmtCurrency(txn.incomeTotal)} in income.${caveat}`,
         tone:     "info",
       };
     }

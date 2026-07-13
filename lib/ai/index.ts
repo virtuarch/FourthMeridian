@@ -31,6 +31,9 @@ export type {
 export { FinanceDomains } from '@/lib/ai/types';
 export type { FinanceDomain } from '@/lib/ai/types';
 
+// TI2-W2 — unidentified-inflow materiality (single threshold + guarded share).
+export { MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedInflowShare } from '@/lib/ai/types';
+
 // Signals engine
 export { SignalType } from '@/lib/ai/signals';
 export type { SignalTypeValue } from '@/lib/ai/signals';

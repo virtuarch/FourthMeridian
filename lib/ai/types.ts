@@ -673,6 +673,35 @@ export interface TransactionsSummaryData {
 }
 
 // ---------------------------------------------------------------------------
+// TI2-W2 — unidentified-inflow materiality (single source of truth)
+// ---------------------------------------------------------------------------
+
+/**
+ * The share of in-window income that may be unidentified before it is treated as
+ * "material" — the ONE threshold reused by every consumer (§8-W2): it escalates
+ * the NEEDS_CLASSIFICATION signal from info → warning, gates the assessment's
+ * income-confidence downgrade, and triggers the Daily Brief's savings-rate
+ * honesty caveat. Defined once here so the three surfaces can never drift.
+ */
+export const MATERIAL_UNIDENTIFIED_INFLOW_SHARE = 0.15;
+
+/**
+ * TI2-W2 — the fraction of `incomeTotal` that is sign-default inflow with no
+ * resolved source (`needsClassification.unknownInflowTotal / incomeTotal`).
+ * Returns null when there is no in-window income — the divide-by-zero guard, so
+ * consumers never see NaN/Infinity. Defensive against fixtures that predate the
+ * W1 aggregate (missing block ⇒ 0 unidentified).
+ */
+export function deriveUnidentifiedInflowShare(data: {
+  needsClassification?: { unknownInflowTotal: number } | null;
+  incomeTotal: number;
+}): number | null {
+  if (!(data.incomeTotal > 0)) return null;
+  const unknown = data.needsClassification?.unknownInflowTotal ?? 0;
+  return unknown / data.incomeTotal;
+}
+
+// ---------------------------------------------------------------------------
 // Holdings summary domain types (D6.3C-1)
 // ---------------------------------------------------------------------------
 
