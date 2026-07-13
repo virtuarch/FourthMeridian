@@ -38,6 +38,10 @@ import {
   regenerateWealthHistoryForAccounts,
   wealthRegenerationEnabled,
 } from "@/lib/snapshots/regenerate-history";
+import {
+  reconstructAccount,
+  investmentReconstructionEnabled,
+} from "@/lib/investments/reconstruction-runner";
 
 /** yesterday-anchored ISO day helpers — same convention as the snapshot
  *  backfill window and scripts/regenerate-wealth-history.ts. */
@@ -84,41 +88,65 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
       }
     }
 
-    // A9 — accurate wealth-history regeneration. The Slice-4 backfill above
-    // holds every investment account's value FLAT at today's value on each
-    // historical day. When a just-connected item includes an investment
-    // account, re-derive those days from the canonical A8 historical valuation
-    // instead of the flat line, over the SAME 30-day window the backfill wrote
-    // (runs after the flat backfill, refining it — never instead of it).
-    //
-    // Gated on WEALTH_REGENERATION_ENABLED and skipped entirely when off: the
-    // flag gates only the writes INSIDE regenerateWealthHistory, but the
-    // per-day A8 valuation compute is not free, so gating the call here keeps
-    // the default (flag-off) path at zero extra work and honors the 60s
-    // background budget. Investment-relevance filter avoids running for a
-    // pure cash/card connect (nothing to reconstruct — backfill already walks
-    // cash back correctly). Best-effort / non-fatal, and already post-response
-    // via after(), so it can never affect connect latency.
-    if (wealthRegenerationEnabled()) {
-      try {
-        const investmentFaIds = (
-          await db.financialAccount.findMany({
-            where:  { id: { in: faIds }, type: "investment", deletedAt: null },
-            select: { id: true },
-          })
-        ).map((a) => a.id);
+    // A4 + A9 — investment-history refinement for a just-connected item.
+    // Resolve the item's investment accounts ONCE (both stages need them) and
+    // skip the query entirely when neither stage is enabled, preserving the
+    // zero-extra-work default and honoring the 60s background budget. Both
+    // stages are best-effort / non-fatal and already post-response via after(),
+    // so they can never affect connect latency. A pure cash/card connect finds
+    // no investment accounts and does nothing.
+    if (investmentReconstructionEnabled() || wealthRegenerationEnabled()) {
+      const investmentFaIds = (
+        await db.financialAccount.findMany({
+          where:  { id: { in: faIds }, type: "investment", deletedAt: null },
+          select: { id: true },
+        })
+      ).map((a) => a.id);
 
-        if (investmentFaIds.length > 0) {
-          const toDate   = minusDaysISO(isoDayUTC(new Date()), 1); // yesterday — today's live row is frozen
-          const fromDate = minusDaysISO(toDate, 30);               // matches the 30-day snapshot backfill window
-          const spaces = await regenerateWealthHistoryForAccounts(investmentFaIds, { fromDate, toDate });
-          console.log(
-            `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over [${fromDate} … ${toDate}] ` +
-              `(item ${plaidItemId}, ${investmentFaIds.length} investment account(s))`,
-          );
+      if (investmentFaIds.length > 0) {
+        // A4 — bootstrap per-holding quantity reconstruction from the canonical
+        // InvestmentEvents already ingested inline at connect (exchangeToken).
+        // The one-time reconstructAccount is what SEEDS the PositionReconstruction
+        // summaries (the app's live paths only ever call the incremental
+        // repairReconstructionForAccount, which no-ops until a summary exists —
+        // this is the missing bootstrap). Gated on its own kill switch,
+        // per-account best-effort/non-fatal, idempotent (a re-run rewrites only
+        // its own DERIVED rows), and it MUST run BEFORE wealth regen, which reads
+        // the DERIVED PositionObservation rows it produces.
+        if (investmentReconstructionEnabled()) {
+          for (const faId of investmentFaIds) {
+            try {
+              const m = await reconstructAccount({ financialAccountId: faId, now: new Date() });
+              console.log(
+                `[plaid][A4] reconstructed account ${faId} (item ${plaidItemId}) — ` +
+                  `${m.instruments} instrument(s): ${m.complete} complete, ${m.partial} partial, ` +
+                  `${m.failed} failed, ${m.conflicted} conflicted, ${m.derivedRows} derived row(s)`,
+              );
+            } catch (e) {
+              console.error(`[plaid][A4] reconstruction failed for account ${faId} (item ${plaidItemId}, non-fatal):`, e);
+            }
+          }
         }
-      } catch (e) {
-        console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, e);
+
+        // A9 — accurate wealth-history regeneration. The Slice-4 backfill above
+        // holds every investment account's value FLAT at today's value on each
+        // historical day. Re-derive those days from the canonical A8 historical
+        // valuation (which now reads the A4 DERIVED quantity rows produced just
+        // above), over the SAME 30-day window the backfill wrote — refining it,
+        // never instead of it. Gated on WEALTH_REGENERATION_ENABLED.
+        if (wealthRegenerationEnabled()) {
+          try {
+            const toDate   = minusDaysISO(isoDayUTC(new Date()), 1); // yesterday — today's live row is frozen
+            const fromDate = minusDaysISO(toDate, 30);               // matches the 30-day snapshot backfill window
+            const spaces = await regenerateWealthHistoryForAccounts(investmentFaIds, { fromDate, toDate });
+            console.log(
+              `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over [${fromDate} … ${toDate}] ` +
+                `(item ${plaidItemId}, ${investmentFaIds.length} investment account(s))`,
+            );
+          } catch (e) {
+            console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, e);
+          }
+        }
       }
     }
   } catch (e) {
