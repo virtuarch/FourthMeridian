@@ -6,6 +6,7 @@
  */
 
 import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
+import { recordApiUsage } from "@/lib/usage/record";
 
 // ── Validate required env vars at module load time ───────────────────────────
 const VALID_ENVS = ["sandbox", "development", "production"] as const;
@@ -44,7 +45,30 @@ const config = new Configuration({
   },
 });
 
-export const plaidClient = new PlaidApi(config);
+// The real Plaid SDK client. Kept internal; every consumer imports the
+// recording proxy below (same name, same type) instead.
+const basePlaidClient = new PlaidApi(config);
+
+/**
+ * Wave 2 S7 — usage-recording proxy over the real PlaidApi. Transparent: it has
+ * the same type and the same `plaidClient` export name, so the ~16 existing call
+ * sites keep their imports/usage unchanged (this is purely additive — no call
+ * site is edited). On each method invocation it fire-and-forgets one `calls`
+ * counter keyed on the method name (the metric), then delegates to the real
+ * client with the real instance as `this`. recordApiUsage is non-throwing, so
+ * instrumentation can never affect a Plaid call's behavior or result.
+ */
+export const plaidClient: PlaidApi = new Proxy(basePlaidClient, {
+  get(target, prop, receiver) {
+    const value = Reflect.get(target, prop, receiver);
+    if (typeof value !== "function") return value;
+    const method = typeof prop === "string" ? prop : String(prop);
+    return function (...args: unknown[]) {
+      void recordApiUsage("PLAID", method, "calls", 1);
+      return (value as (...a: unknown[]) => unknown).apply(target, args);
+    };
+  },
+});
 
 /** The resolved Plaid environment (for use in routes that need to log it). */
 export const PLAID_ENV = plaidEnv;

@@ -2359,6 +2359,33 @@ model BetaAccessRequest {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ApiUsageCounter  (Wave 2 S7 — Platform Ops API usage/cost visibility)
+//
+// Durable daily aggregate counters for external-provider API consumption. NOT
+// AuditLog (usage is system-level, high-frequency, and aggregated — the wrong
+// read shape and would pollute the security feed) and NOT RateLimit (short
+// short-window, swept). One row per (provider, metric, unit, day); the atomic
+// upsert-increment idiom is the one already proven in lib/rate-limit.ts.
+//
+// provider/metric/unit are STRINGS, not enums — house style for extensible
+// vocabularies (cf. JobRun.status). Dollar cost is deliberately NOT here:
+// per-unit prices are contract-specific code/env constants (lib/usage/pricing.ts),
+// not schema.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ApiUsageCounter {
+  id       String   @id @default(cuid())
+  provider String // "PLAID" | "OPENAI"
+  metric   String // Plaid: method name ("transactionsSync"); OpenAI: "chat.completions:<model>"
+  unit     String // "calls" | "prompt_tokens" | "completion_tokens"
+  day      DateTime // UTC date bucket (00:00:00)
+  count    BigInt   @default(0)
+
+  @@unique([provider, metric, unit, day])
+  @@index([provider, day])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // RecoveryCode
 // One-time backup codes generated when a user enables or regenerates 2FA.
 // Codes are shown once in plaintext, then stored as bcrypt hashes.

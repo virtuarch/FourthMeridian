@@ -65,6 +65,10 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "ops_job_health",  label: "Job Health",      order: 0 },
       { key: "ops_rate_limits", label: "Rate Limits",     order: 1 },
       { key: "ops_env_status",  label: "Environment",     order: 2 },
+      // Wave 2 S7 — API usage/cost visibility (Part A).
+      { key: "ops_api_usage",        label: "API Usage",        order: 3 },
+      // Wave 2 CH-1 — provider connection health (Part B).
+      { key: "ops_connection_health", label: "Connection Health", order: 4 },
     ],
   },
   SECURITY_OPS: {

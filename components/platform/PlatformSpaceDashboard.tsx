@@ -27,6 +27,8 @@ import { SecSessionsWidget } from "./widgets/SecSessionsWidget";
 import { OpsJobHealthWidget } from "./widgets/OpsJobHealthWidget";
 import { OpsRateLimitsWidget } from "./widgets/OpsRateLimitsWidget";
 import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
+import { OpsApiUsageWidget } from "./widgets/OpsApiUsageWidget";
+import { OpsConnectionHealthWidget } from "./widgets/OpsConnectionHealthWidget";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
 import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
 import { CsSyncIssuesWidget } from "./widgets/CsSyncIssuesWidget";
@@ -50,6 +52,9 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   ops_job_health:   OpsJobHealthWidget,
   ops_rate_limits:  OpsRateLimitsWidget,
   ops_env_status:   OpsEnvStatusWidget,
+  // Platform Operations (Wave 2 S7 / CH-1)
+  ops_api_usage:         OpsApiUsageWidget,
+  ops_connection_health: OpsConnectionHealthWidget,
   // Growth & Revenue (PO1.3 / Wave 1 S3)
   growth_signups:        GrowthSignupsWidget,
   growth_beta_requests:  GrowthBetaRequestsWidget,
@@ -75,6 +80,8 @@ const PLATFORM_SECTION_REGISTRY: Record<string, { note: string }> = {
   ops_job_health:  { note: "Lands in PO1.2 — job health over lib/jobs/health.ts (checkScheduledJobHealth)." },
   ops_rate_limits: { note: "Lands in PO1.2 — rate-limit status over the RateLimit table." },
   ops_env_status:  { note: "Lands in PO1.2 — environment report over a validateEnv() report-shape refactor." },
+  ops_api_usage:         { note: "Wave 2 S7 — API call/token volume over ApiUsageCounter (optional estimated spend)." },
+  ops_connection_health: { note: "Wave 2 CH-1 — normalized provider-connection health over PlaidItem + Connection." },
   // Security Operations (PO1.1)
   sec_audit_feed:   { note: "Lands in PO1.1 — audit feed over the same query as /api/admin/audit." },
   sec_auth_posture: { note: "Lands in PO1.1 — TOTP/forced-2FA posture over /api/admin/security/*." },
