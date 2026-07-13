@@ -25,6 +25,7 @@ import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
 import { buildResetUrl } from "@/lib/email/reset-url";
 import { limitByIp } from "@/lib/rate-limit";
+import { AuditAction } from "@/lib/audit-actions";
 
 const TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 
@@ -83,7 +84,7 @@ export async function POST(req: NextRequest) {
     await db.auditLog.create({
       data: {
         userId: user.id,
-        action: "PASSWORD_RESET_REQUESTED",
+        action: AuditAction.PASSWORD_RESET_REQUESTED,
         metadata: { email: user.email, emailStatus: emailResult.status },
       },
     });

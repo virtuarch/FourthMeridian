@@ -14,6 +14,11 @@ import {
   isSecurityHistoryAction,
   securityHistoryLabel,
 } from "@/lib/security-history";
+import {
+  USER_SECURITY_HISTORY_ACTIONS,
+  ADMIN_SECURITY_FILTER_ACTIONS,
+  AuditAction,
+} from "@/lib/audit-actions";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -72,6 +77,38 @@ check("LOGIN_FAILED label is friendly", securityHistoryLabel("LOGIN_FAILED") ===
 check("unknown action falls back to raw", securityHistoryLabel("NOPE_XYZ") === "NOPE_XYZ");
 check("every allowlisted action has a non-raw label",
   SECURITY_HISTORY_ACTIONS.every((a) => securityHistoryLabel(a) !== a));
+
+// 5. SEC-1 — the allowlist is DERIVED from the single canonical view, not a
+//    parallel hand-typed list. The two must be identical, in order.
+check(
+  "SECURITY_HISTORY_ACTIONS is derived from canon USER_SECURITY_HISTORY_ACTIONS",
+  SECURITY_HISTORY_ACTIONS.length === USER_SECURITY_HISTORY_ACTIONS.length &&
+    SECURITY_HISTORY_ACTIONS.every((a, i) => a === USER_SECURITY_HISTORY_ACTIONS[i]),
+);
+
+// 6. SEC-1 — the previously free-string password events are now first-class
+//    AuditAction constants (folded into the canon).
+check("PASSWORD_RESET_REQUESTED is a canon constant", AuditAction.PASSWORD_RESET_REQUESTED === "PASSWORD_RESET_REQUESTED");
+check("PASSWORD_RESET_COMPLETE is a canon constant",  AuditAction.PASSWORD_RESET_COMPLETE === "PASSWORD_RESET_COMPLETE");
+check("PASSWORD_CHANGE_FAILED is a canon constant",   AuditAction.PASSWORD_CHANGE_FAILED === "PASSWORD_CHANGE_FAILED");
+
+// 7. SEC-1 — the two security-event VIEWS diverge intentionally: the admin
+//    filter carries the admin-only session revoke that the user surface hides,
+//    and the user surface carries account-lifecycle events the admin filter
+//    omits. This codifies why they are two derived views, not one shared list.
+check(
+  "admin filter includes ADMIN_SESSION_REVOKED",
+  ADMIN_SECURITY_FILTER_ACTIONS.includes(AuditAction.ADMIN_SESSION_REVOKED),
+);
+check(
+  "user history excludes ADMIN_SESSION_REVOKED",
+  !USER_SECURITY_HISTORY_ACTIONS.includes(AuditAction.ADMIN_SESSION_REVOKED),
+);
+check(
+  "user history includes account-lifecycle events the admin filter omits",
+  USER_SECURITY_HISTORY_ACTIONS.includes(AuditAction.DATA_EXPORTED) &&
+    !ADMIN_SECURITY_FILTER_ACTIONS.includes(AuditAction.DATA_EXPORTED),
+);
 
 console.log(
   failures === 0 ? "\nAll security-history checks passed." : `\n${failures} failure(s).`,

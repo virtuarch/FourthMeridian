@@ -18,6 +18,7 @@ import { sendEmail } from "@/lib/email/send";
 import { formatDateTime } from "@/lib/format";
 import { createNotification } from "@/lib/notifications/create";
 import { limitByUser } from "@/lib/rate-limit";
+import { AuditAction } from "@/lib/audit-actions";
 
 export const PATCH = withApiHandler(async (req: NextRequest) => {
   // Sensitive action — always a live revocation check, never the cache.
@@ -54,7 +55,7 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
     await db.auditLog.create({
       data: {
         userId: user.id,
-        action: "PASSWORD_CHANGE_FAILED",
+        action: AuditAction.PASSWORD_CHANGE_FAILED,
         metadata: { reason: "wrong_current_password" },
       },
     });
@@ -86,7 +87,7 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
   const auditRow = await db.auditLog.create({
     data: {
       userId: user.id,
-      action: "PASSWORD_CHANGED",
+      action: AuditAction.PASSWORD_CHANGED,
       metadata: { revokedOtherSessions, emailStatus: emailResult.status },
     },
   });

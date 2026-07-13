@@ -16,6 +16,7 @@ import { sendEmail } from "@/lib/email/send";
 import { formatDateTime } from "@/lib/format";
 import { limitByIp } from "@/lib/rate-limit";
 import { createNotification } from "@/lib/notifications/create";
+import { AuditAction } from "@/lib/audit-actions";
 
 export async function POST(req: NextRequest) {
   try {
@@ -78,7 +79,7 @@ export async function POST(req: NextRequest) {
     const auditRow = await db.auditLog.create({
       data: {
         userId: user.id,
-        action: "PASSWORD_RESET_COMPLETE",
+        action: AuditAction.PASSWORD_RESET_COMPLETE,
         metadata: { email: user.email, revokedSessions, emailStatus: emailResult.status },
       },
     });

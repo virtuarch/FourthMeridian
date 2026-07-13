@@ -22,15 +22,9 @@ import { db } from "@/lib/db";
 import { Prisma } from "@prisma/client";
 import { requireSystemAdmin } from "@/lib/session";
 import { withApiHandler } from "@/lib/api";
-
-// Actions that count as "security events" for the quick-filter
-const SECURITY_ACTIONS = [
-  "LOGIN", "LOGIN_FAILED", "LOGOUT",
-  "PASSWORD_CHANGED", "PASSWORD_RESET",
-  "TWO_FACTOR_SETUP_STARTED", "TWO_FACTOR_ENABLED", "TWO_FACTOR_DISABLED", "TWO_FACTOR_RESET",
-  "RECOVERY_CODE_USED", "RECOVERY_CODES_GENERATED", "RECOVERY_CODES_REGENERATED",
-  "SESSION_REVOKED", "ADMIN_SESSION_REVOKED",
-];
+// SEC-1 — the "security events" quick-filter set is derived from the single
+// canonical view in lib/audit-actions.ts, not a hand-typed literal array.
+import { ADMIN_SECURITY_FILTER_ACTIONS } from "@/lib/audit-actions";
 
 export const GET = withApiHandler(async (req: NextRequest) => {
   const [, err] = await requireSystemAdmin();
@@ -71,7 +65,7 @@ export const GET = withApiHandler(async (req: NextRequest) => {
 
   // Security events quick-filter
   if (securityOnly) {
-    where.action = { in: SECURITY_ACTIONS };
+    where.action = { in: ADMIN_SECURITY_FILTER_ACTIONS };
   }
 
   // Admin-only events (performed by a sysadmin on behalf of another user)

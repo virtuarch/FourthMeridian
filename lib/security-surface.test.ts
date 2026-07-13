@@ -100,5 +100,35 @@ check(
   (health.match(/process\.env\.(\w+)/g) ?? []).every((m) => m === "process.env.VERCEL_GIT_COMMIT_SHA"),
 );
 
+console.log("5. SEC-1 — audit-vocabulary single source of truth");
+// The admin audit quick-filter consumes the canon-derived view, not a local
+// literal array.
+const adminAudit = src("app/api/admin/audit/route.ts");
+check(
+  "admin/audit imports ADMIN_SECURITY_FILTER_ACTIONS from the canon",
+  adminAudit.includes('ADMIN_SECURITY_FILTER_ACTIONS') &&
+    adminAudit.includes('from "@/lib/audit-actions"'),
+);
+check(
+  "admin/audit no longer declares a local SECURITY_ACTIONS literal array",
+  !/const\s+SECURITY_ACTIONS\s*=/.test(adminAudit),
+);
+// The security-event writers reference AuditAction constants, not raw strings.
+const writerSurfaces: [string, string][] = [
+  ["app/api/auth/forgot-password/route.ts", "AuditAction.PASSWORD_RESET_REQUESTED"],
+  ["app/api/auth/reset-password/route.ts",  "AuditAction.PASSWORD_RESET_COMPLETE"],
+  ["app/api/user/password/route.ts",        "AuditAction.PASSWORD_CHANGE_FAILED"],
+  ["app/api/user/password/route.ts",        "AuditAction.PASSWORD_CHANGED"],
+  ["app/api/auth/register/route.ts",        "AuditAction.REGISTER"],
+];
+for (const [file, needle] of writerSurfaces) {
+  const s = src(file);
+  // The constant is present, and no `action:` line still assigns the bare
+  // string literal for it (whitespace-tolerant).
+  const literal = needle.split(".")[1];
+  const rawAssign = new RegExp(`action:\\s*"${literal}"`);
+  check(`${file} writes ${needle} (not the raw literal)`, s.includes(needle) && !rawAssign.test(s));
+}
+
 console.log(failures === 0 ? "\nAll security-surface scans passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);

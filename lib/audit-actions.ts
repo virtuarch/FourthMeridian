@@ -48,6 +48,14 @@ export const AuditAction = {
   // ── Password ─────────────────────────────────────────────────────────────────
   PASSWORD_CHANGED:         "PASSWORD_CHANGED",
   PASSWORD_RESET:           "PASSWORD_RESET",
+  // SEC-1 — folded in from raw string literals that routes were already
+  // writing (forgot-password / reset-password / change-password). They are
+  // surfaced in the user's Security History; codifying them here makes
+  // lib/audit-actions.ts the single source of truth for the vocabulary so a
+  // route rename can no longer silently drop them off the security surfaces.
+  PASSWORD_RESET_REQUESTED: "PASSWORD_RESET_REQUESTED",
+  PASSWORD_RESET_COMPLETE:  "PASSWORD_RESET_COMPLETE",
+  PASSWORD_CHANGE_FAILED:   "PASSWORD_CHANGE_FAILED",
 
   // ── 2FA / TOTP ───────────────────────────────────────────────────────────────
   TWO_FACTOR_SETUP_STARTED: "TWO_FACTOR_SETUP_STARTED",
@@ -132,6 +140,74 @@ export const AuditAction = {
 } as const;
 
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];
+
+// ── Security-event classification (SEC-1) ─────────────────────────────────────
+//
+// The single source of truth for "which audit actions are security events."
+// Two surfaces consume this, and they intentionally differ — so this is
+// expressed as two derived VIEWS of the canon above rather than one shared
+// list. Collapsing them into a single set would change what each surface
+// shows (and would break the locked lib/security-history.test.ts allowlist):
+//
+//   • USER_SECURITY_HISTORY_ACTIONS — the broad, user-facing Security History
+//     (lib/security-history.ts). Includes account-lifecycle and email-change
+//     events a person wants to see about their OWN account, but hides
+//     admin-only actions (ADMIN_SESSION_REVOKED).
+//   • ADMIN_SECURITY_FILTER_ACTIONS — the narrower admin audit "security only"
+//     quick-filter (app/api/admin/audit/route.ts). Pure auth/session/2FA/
+//     password events plus the admin-performed session revoke.
+//
+// Both are lists of canon constants, so a rename of any AuditAction member is
+// a compile-time break here rather than a silent drift in a hand-typed literal
+// array living in another file.
+
+/** Actions surfaced in a user's own Security History (broad; hides admin-only). */
+export const USER_SECURITY_HISTORY_ACTIONS: AuditActionType[] = [
+  AuditAction.REGISTER,
+  AuditAction.LOGIN,
+  AuditAction.LOGIN_FAILED,
+  AuditAction.LOGOUT,
+  AuditAction.PASSWORD_CHANGED,
+  AuditAction.PASSWORD_CHANGE_FAILED,
+  AuditAction.PASSWORD_RESET,
+  AuditAction.PASSWORD_RESET_REQUESTED,
+  AuditAction.PASSWORD_RESET_COMPLETE,
+  AuditAction.EMAIL_VERIFIED,
+  AuditAction.EMAIL_VERIFICATION_RESENT,
+  AuditAction.EMAIL_CHANGE_REQUESTED,
+  AuditAction.EMAIL_CHANGE_COMPLETED,
+  AuditAction.ACCOUNT_DEACTIVATED,
+  AuditAction.ACCOUNT_REACTIVATED,
+  AuditAction.DATA_EXPORTED,
+  AuditAction.ACCOUNT_DELETION_REQUESTED,
+  AuditAction.ACCOUNT_DELETION_CANCELLED,
+  AuditAction.TWO_FACTOR_SETUP_STARTED,
+  AuditAction.TWO_FACTOR_ENABLED,
+  AuditAction.TWO_FACTOR_DISABLED,
+  AuditAction.TWO_FACTOR_RESET,
+  AuditAction.RECOVERY_CODE_USED,
+  AuditAction.RECOVERY_CODES_GENERATED,
+  AuditAction.RECOVERY_CODES_REGENERATED,
+  AuditAction.SESSION_REVOKED,
+];
+
+/** Actions counted by the admin audit "security only" quick-filter. */
+export const ADMIN_SECURITY_FILTER_ACTIONS: AuditActionType[] = [
+  AuditAction.LOGIN,
+  AuditAction.LOGIN_FAILED,
+  AuditAction.LOGOUT,
+  AuditAction.PASSWORD_CHANGED,
+  AuditAction.PASSWORD_RESET,
+  AuditAction.TWO_FACTOR_SETUP_STARTED,
+  AuditAction.TWO_FACTOR_ENABLED,
+  AuditAction.TWO_FACTOR_DISABLED,
+  AuditAction.TWO_FACTOR_RESET,
+  AuditAction.RECOVERY_CODE_USED,
+  AuditAction.RECOVERY_CODES_GENERATED,
+  AuditAction.RECOVERY_CODES_REGENERATED,
+  AuditAction.SESSION_REVOKED,
+  AuditAction.ADMIN_SESSION_REVOKED,
+];
 
 /**
  * All action types shown in the admin filter dropdown.

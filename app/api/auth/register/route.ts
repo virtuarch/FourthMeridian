@@ -30,6 +30,7 @@ import { buildVerifyUrl } from "@/lib/email/verify-url";
 import { possessive } from "@/lib/format";
 import { EmploymentStatus, UseCase, SpaceMemberRole, Prisma } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
+import { AuditAction } from "@/lib/audit-actions";
 import { getTemplateForCategory } from "@/lib/space-templates/registry";
 import { planTemplateApplication } from "@/lib/space-templates/apply";
 
@@ -191,7 +192,7 @@ export async function POST(req: NextRequest) {
         data: {
           userId:      newUser.id,
           spaceId: space.id,
-          action:      "REGISTER",
+          action:      AuditAction.REGISTER,
           metadata:    { email: normalizedEmail, username: normalizedUsername },
         },
       });

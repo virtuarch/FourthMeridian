@@ -8,16 +8,19 @@
  * caller's OWN AuditLog rows to exactly these actions and returns safe fields
  * only; nothing outside this list is ever exposed to the user.
  *
- * The list is a set of LITERAL action strings (not just the AuditAction
- * constants) because several security events are written by routes as
- * free-string actions that never made it into lib/audit-actions.ts:
- * PASSWORD_RESET_REQUESTED / PASSWORD_RESET_COMPLETE (forgot/reset-password),
- * PASSWORD_CHANGE_FAILED (change-password).
+ * SEC-1 — the allowlist itself is now derived from the single canonical view
+ * USER_SECURITY_HISTORY_ACTIONS in lib/audit-actions.ts (the previously
+ * free-string PASSWORD_RESET_REQUESTED / PASSWORD_RESET_COMPLETE /
+ * PASSWORD_CHANGE_FAILED are now first-class AuditAction constants). This file
+ * owns only the user-facing DISPLAY LABELS; the membership question lives in
+ * the canon so a route rename can't silently drop an action off this surface.
  *
- * Deliberately EXCLUDED: all Space/Goal/Account/Member/Plaid/Import/AI actions,
- * SPACE_SWITCH, and ADMIN_SESSION_REVOKED — not security-relevant to the user
- * (or too noisy for a personal security log).
+ * Deliberately EXCLUDED (see the canon view): all Space/Goal/Account/Member/
+ * Plaid/Import/AI actions, SPACE_SWITCH, and ADMIN_SESSION_REVOKED — not
+ * security-relevant to the user (or too noisy for a personal security log).
  */
+
+import { USER_SECURITY_HISTORY_ACTIONS } from "@/lib/audit-actions";
 
 /** Human-readable label for each surfaced action. */
 const SECURITY_HISTORY_LABELS: Record<string, string> = {
@@ -51,13 +54,17 @@ const SECURITY_HISTORY_LABELS: Record<string, string> = {
 
 /**
  * The allowlist — the exact set of AuditLog.action values the Security History
- * surface may return. Derived from the label keys so the two can never drift.
+ * surface may return. Derived from the canonical view in lib/audit-actions.ts
+ * (SEC-1) so membership has one source of truth; the labels above only need to
+ * cover it (guarded by lib/security-history.test.ts).
  */
-export const SECURITY_HISTORY_ACTIONS: string[] = Object.keys(SECURITY_HISTORY_LABELS);
+export const SECURITY_HISTORY_ACTIONS: string[] = [...USER_SECURITY_HISTORY_ACTIONS];
+
+const SECURITY_HISTORY_ACTION_SET = new Set<string>(SECURITY_HISTORY_ACTIONS);
 
 /** True if an action is safe to surface in the user's security history. */
 export function isSecurityHistoryAction(action: string): boolean {
-  return Object.prototype.hasOwnProperty.call(SECURITY_HISTORY_LABELS, action);
+  return SECURITY_HISTORY_ACTION_SET.has(action);
 }
 
 /** Display label for an action; falls back to the raw action if unmapped. */
