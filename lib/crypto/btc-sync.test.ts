@@ -163,10 +163,13 @@ async function main(): Promise<void> {
   check("wallet route syncs on all three branches",
     (walletRoute.match(/syncBtcWallet\(/g) || []).length >= 3);
 
-  const card = code(read("components", "dashboard", "AccountCard.tsx"));
-  check("AccountCard renders SyncWalletButton", card.includes("SyncWalletButton"));
-  check("AccountCard gates the sync button to crypto wallet-backed accounts",
-    /type\s*===\s*["']crypto["']/.test(card) && card.includes("walletAddress"));
+  // AccountCard was retired with the standalone /dashboard/accounts page; the
+  // live surface that renders the wallet sync affordance is now ConnectionCard
+  // (its WalletActions), gated to WALLET-provider connections.
+  const connCard = code(read("components", "connections", "ConnectionCard.tsx"));
+  check("ConnectionCard renders SyncWalletButton", connCard.includes("SyncWalletButton"));
+  check("ConnectionCard gates the sync button to wallet connections",
+    /provider\s*!==\s*["']WALLET["']/.test(connCard));
 
   const btn = code(read("components", "dashboard", "SyncWalletButton.tsx"));
   check("SyncWalletButton is a client component", btn.includes('"use client"') || btn.includes("'use client'"));
