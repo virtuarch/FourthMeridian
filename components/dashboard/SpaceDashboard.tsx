@@ -2340,6 +2340,9 @@ export function SpaceDashboard({
   // and the KD-15-filtered transaction list (flow categories' Overview
   // preview + every shared Space's Transactions tab doorway).
   const [snapshots,         setSnapshots]         = useState<Snapshot[] | null>(null);
+  // Part-6 — a snapshot backfill is actively running for this Space (derived
+  // server-side from PlaidItem.syncIncompleteAt). Drives the Wealth loading state.
+  const [snapshotsBackfilling, setSnapshotsBackfilling] = useState(false);
   const [spaceTransactions, setSpaceTransactions] = useState<Transaction[] | null>(null);
   // MC1 P4 Slice 6 (F-6) — serialized conversion context from the same fetch;
   // undefined => the panel's context-less native sums (kill switch).
@@ -2828,13 +2831,28 @@ export function SpaceDashboard({
     let active = true;
     fetch(`/api/spaces/${spaceId}/snapshots`)
       .then((r) => (r.ok ? r.json() : { snapshots: [] }))
-      .then((data) => { if (active) setSnapshots(data?.snapshots ?? []); })
-      .catch(() => { if (active) setSnapshots([]); });
+      .then((data) => {
+        if (!active) return;
+        setSnapshots(data?.snapshots ?? []);
+        setSnapshotsBackfilling(!!data?.backfillInProgress); // Part-6
+      })
+      .catch(() => { if (active) { setSnapshots([]); setSnapshotsBackfilling(false); } });
     return () => { active = false; };
   // currencyNonce (Q6): re-fetch the stamp-aware hero series after a currency change.
   // refreshNonce (Part-2): re-fetch after a manual Plaid sync so net worth updates.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaceId, category, debtWorkspaceActive, wealthWorkspaceActive, currencyNonce, refreshNonce]);
+
+  // Part-6 — while a backfill is running, re-fetch snapshots on an interval so
+  // the Wealth loading state clears AUTOMATICALLY once it finishes (no manual
+  // refresh). Bumping refreshNonce re-runs the snapshot fetch above, which
+  // updates snapshotsBackfilling; when it flips false this effect stops. Same
+  // syncIncompleteAt-derived signal Parts 4/5 use — not a fourth "done" detector.
+  useEffect(() => {
+    if (!snapshotsBackfilling) return;
+    const iv = setInterval(() => setRefreshNonce((n) => n + 1), 12000);
+    return () => clearInterval(iv);
+  }, [snapshotsBackfilling]);
 
   // ── Space transactions (KD-15-filtered on the server) ────────────────────
   // Flow-identified templates show an Overview preview, so they fetch up
@@ -3289,6 +3307,7 @@ export function SpaceDashboard({
                     onMetricChange={handleMetricChange}
                     accounts={accounts}
                     ctx={widgetCtx}
+                    backfillInProgress={snapshotsBackfilling}
                   />
                   {wealthEnvelope.evidence && (
                     <EvidenceDrawer

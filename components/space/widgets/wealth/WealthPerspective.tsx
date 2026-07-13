@@ -19,6 +19,7 @@
  * (every column is min-w-0).
  */
 
+import { Loader2 } from "lucide-react";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import type { ConversionContext } from "@/lib/money/types";
 import type { WealthAdapterAccount } from "@/components/space/widgets/wealth-adapters";
@@ -39,6 +40,7 @@ export function WealthPerspective({
   onMetricChange,
   accounts,
   ctx,
+  backfillInProgress,
 }: {
   result:         WealthResult;
   currency:       string;
@@ -49,7 +51,32 @@ export function WealthPerspective({
   onMetricChange?: (m: WealthMetricKey) => void;
   accounts?:      WealthAdapterAccount[];
   ctx?:           ConversionContext;
+  /** Part-6 — a snapshot backfill is actively running for this Space. */
+  backfillInProgress?: boolean;
 }) {
+  // Part-6 — while a backfill is running, the snapshot series is still being
+  // written, so a partial (or empty) WealthResult must NOT render as if final.
+  // Show an honest loading state (distinct from both the normal render and the
+  // "no history" empty state). Clears automatically once the backfill completes
+  // and the poll re-fetches with backfillInProgress=false (SpaceDashboard).
+  if (backfillInProgress) {
+    return (
+      <div
+        className="rounded-2xl border p-8 flex flex-col items-center justify-center text-center gap-3 min-h-[220px]"
+        style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}
+      >
+        <Loader2 className="animate-spin" size={26} style={{ color: "var(--meridian-400)" }} />
+        <div className="max-w-sm">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">Creating your 30-day snapshot history…</p>
+          <p className="mt-1 text-xs text-[var(--text-muted)]">
+            We&rsquo;re reconstructing balance history from the accounts you just connected.
+            This can take a few minutes — the chart appears here the moment it&rsquo;s ready.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (!result.hasHistory) {
     return (
       <div
