@@ -132,10 +132,18 @@ interface Props {
    * Slice 6 closed F-6 — by SpaceDashboard via the transactions API payload.
    */
   moneyCtx?:    SerializedConversionContext;
+  /**
+   * Banking→Transactions retarget — deep-link seed for the account filter.
+   * When the tab is opened via `?tab=transactions&account=<id>` (e.g.
+   * AccountsPerspective's "View transactions" row action), the host reads the
+   * param and passes it here so the list lands pre-scoped to that account. It
+   * only seeds the initial state — the filter select stays fully changeable.
+   */
+  initialAccountFilter?: string | null;
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
-export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, moneyCtx }: Props) {
+export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, moneyCtx, initialAccountFilter }: Props) {
   // TI5-3C — shared opener; rows call it to open the shell-mounted detail drawer.
   const openTransaction = useOpenTransaction();
   // MC1 P3 Slice 6 — rehydrated once; per-row conversion at each row's own
@@ -158,7 +166,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   );
   const [search,        setSearch]        = useState("");
   const [catFilter,     setCatFilter]     = useState<TransactionCategory | null>(null);
-  const [accountFilter, setAccountFilter] = useState<string | null>(null);
+  const [accountFilter, setAccountFilter] = useState<string | null>(initialAccountFilter ?? null);
   const [dateRange,     setDateRange]     = useState<DateRange>("all");
   const [pendingFilter, setPendingFilter] = useState<PendingFilter>("all");
   // Transactions Tab Phase 1 — pivot the existing ledger by the FlowType already
