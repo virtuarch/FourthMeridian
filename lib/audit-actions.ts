@@ -128,6 +128,16 @@ export const AuditAction = {
   // docs/initiatives/d2/implementation/D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §8.
   IMPORT_BATCH_UPDATED_ON_MATCH: "IMPORT_BATCH_UPDATED_ON_MATCH",
 
+  // ── Platform access (PO1.0) ─────────────────────────────────────────────
+  // Grant lifecycle on a platform area (user × area × level). Never free
+  // strings — the SECOPS vocabulary lesson applied from birth. Written
+  // transactionally alongside the grant mutation, always with
+  // performedByAdminId set (SYSTEM_ADMIN-only surface).
+  PLATFORM_GRANT_CREATED:       "PLATFORM_GRANT_CREATED",
+  PLATFORM_GRANT_LEVEL_CHANGED: "PLATFORM_GRANT_LEVEL_CHANGED",
+  PLATFORM_GRANT_REVOKED:       "PLATFORM_GRANT_REVOKED",
+  PLATFORM_GRANT_REINSTATED:    "PLATFORM_GRANT_REINSTATED",
+
   // ── AI Context ───────────────────────────────────────────────────────────────
   AI_CONTEXT_ASSEMBLED:     "AI_CONTEXT_ASSEMBLED",
   // Shadow-mode selection plan (D6.3D-1). Records what a token-budgeted
@@ -214,6 +224,15 @@ export const ADMIN_SECURITY_FILTER_ACTIONS: AuditActionType[] = [
  * Grouped for readability.
  */
 export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[] = [
+  {
+    label: "Platform Access",
+    actions: [
+      AuditAction.PLATFORM_GRANT_CREATED,
+      AuditAction.PLATFORM_GRANT_LEVEL_CHANGED,
+      AuditAction.PLATFORM_GRANT_REVOKED,
+      AuditAction.PLATFORM_GRANT_REINSTATED,
+    ],
+  },
   {
     label: "Auth",
     actions: [
