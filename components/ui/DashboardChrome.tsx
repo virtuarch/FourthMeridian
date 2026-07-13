@@ -49,6 +49,7 @@ import { AtlasField } from "@/components/atlas/AtlasField";
 import { AppLogo } from "@/components/ui/AppLogo";
 import { CreateSpaceModal } from "@/components/dashboard/CreateSpaceModal";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
+import { TotpNudgeBanner } from "@/components/dashboard/TotpNudgeBanner";
 import { OPEN_CREATE_SPACE_EVENT } from "@/lib/space-nav";
 
 export function DashboardChrome({ children }: { children: ReactNode }) {
@@ -142,6 +143,9 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
 
         {/* Page content */}
         <main className="flex-1 px-4 lg:px-8 pt-5 pb-24 lg:pb-8">
+          {/* S8 — dismissible 2FA nudge; renders nothing for users with TOTP
+              enabled, for SYSTEM_ADMIN, or once dismissed (per-browser). */}
+          <TotpNudgeBanner />
           {children}
         </main>
       </div>
