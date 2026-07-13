@@ -68,6 +68,7 @@ import { db } from "@/lib/db";
 import { ProviderType, PlaidItemStatus } from "@prisma/client";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { findByFingerprint } from "@/lib/transactions/fingerprint";
 // Pure Plaid → TransactionCategory mapping, extracted to a Prisma-free module so
 // it is unit-testable in isolation (lib/transactions/plaid-category.test.ts).
@@ -497,13 +498,18 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
     });
   }
 
-  await db.plaidItem.update({
-    where: { id: plaidItemDbId },
-    // syncIncompleteAt: null — the full loop finished, so history is confirmed
-    // complete; clears the marker set at connect / by a failed prior attempt,
-    // flipping the item to "ready" (lib/sync/status.ts) and ending auto-resume.
-    data:  { cursor: cursor ?? null, lastSyncedAt: new Date(), status: PlaidItemStatus.ACTIVE, errorCode: null, syncIncompleteAt: null },
-  });
+  // CH-2 — the success/recovery health flip (ACTIVE, errorCode cleared) goes
+  // through the chokepoint: it writes the same live columns and appends a
+  // durable transition row ONLY when the item was actually broken before (a
+  // normal healthy re-sync re-affirms ACTIVE/null → no duplicate row). The
+  // cursor / lastSyncedAt / syncIncompleteAt writes ride along in the same
+  // update; syncIncompleteAt: null clears the marker set at connect / by a
+  // failed prior attempt, flipping the item to "ready" (lib/sync/status.ts).
+  await setPlaidItemHealth(
+    plaidItemDbId,
+    { status: PlaidItemStatus.ACTIVE, errorCode: null },
+    { cursor: cursor ?? null, lastSyncedAt: new Date(), syncIncompleteAt: null },
+  );
 
   // OPS-3 S5 Wave 3 — the item provably works again: retire the open
   // SYNC_FAILED condition (releases the :open dedupe key + archives the stale

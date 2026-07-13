@@ -30,6 +30,7 @@ import { db } from "@/lib/db";
 import { ConnectionStatus, ProviderType, type Prisma } from "@prisma/client";
 import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
 import { walletConnectionCredential, walletExternalConnectionId } from "@/lib/accounts/wallet-connection-format";
+import { setWalletConnectionHealth } from "@/lib/connections/health-transitions";
 
 export type DbClient = Prisma.TransactionClient | typeof db;
 
@@ -101,16 +102,12 @@ export async function touchWalletConnectionStatus(params: {
   ok: boolean;
   errorCode?: string | null;
 }): Promise<void> {
-  try {
-    await db.connection.update({
-      where: { id: params.connectionId },
-      data: params.ok
-        ? { status: ConnectionStatus.ACTIVE, lastSyncedAt: new Date(), errorCode: null }
-        : { errorCode: params.errorCode ?? "SYNC_FAILED" },
-    });
-  } catch (e) {
-    console.warn(`[wallet-connection] status touch failed for ${params.connectionId} (non-fatal):`, e);
-  }
+  // CH-2 — delegate to the transition chokepoint. It reproduces the exact write
+  // body (success → ACTIVE/lastSyncedAt/errorCode null; failure → errorCode
+  // only, status untouched) and additionally records a durable transition row
+  // when the DERIVED wallet health (errorCode present vs absent) flips. Still
+  // best-effort / non-throwing.
+  await setWalletConnectionHealth(params.connectionId, { ok: params.ok, errorCode: params.errorCode });
 }
 
 /**
@@ -121,14 +118,11 @@ export async function touchWalletConnectionStatus(params: {
  * card in the importing/"Discovering addresses…" state, not ready. Best-effort.
  */
 export async function clearWalletConnectionError(connectionId: string): Promise<void> {
-  try {
-    await db.connection.update({
-      where: { id: connectionId },
-      data: { status: ConnectionStatus.ACTIVE, errorCode: null },
-    });
-  } catch (e) {
-    console.warn(`[wallet-connection] error-clear failed for ${connectionId} (non-fatal):`, e);
-  }
+  // CH-2 — delegate to the chokepoint with markSynced:false, which reproduces
+  // this body exactly (status ACTIVE, errorCode null, lastSyncedAt deliberately
+  // untouched so the card stays in "Discovering addresses…") and records a
+  // degraded→healthy transition row when a stale error is actually cleared.
+  await setWalletConnectionHealth(connectionId, { ok: true, markSynced: false });
 }
 
 /**

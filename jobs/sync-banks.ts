@@ -27,6 +27,7 @@ import { PlaidInvestmentsConsent, PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
 
@@ -72,10 +73,8 @@ export async function syncBanks(): Promise<SyncBanksResult> {
       console.error(`[sync-banks] failed for institution "${item.institutionName}" (PlaidItem ${item.id}):`, e);
       const health = classifyPlaidErrorForHealth(e);
       if (health) {
-        await db.plaidItem.update({
-          where: { id: item.id },
-          data:  { status: health.status, errorCode: health.errorCode },
-        });
+        // CH-2 — live columns (unchanged) + durable transition row only on change.
+        await setPlaidItemHealth(item.id, { status: health.status, errorCode: health.errorCode });
         // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
         await notifyItemSyncFailed(item.id);
       }

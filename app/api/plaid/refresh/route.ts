@@ -24,6 +24,7 @@ import { PlaidItemStatus } from "@prisma/client";
 import { refreshPlaidItem, refreshAllActiveItemsForUser, type RefreshSummary, type RefreshItemResult } from "@/lib/plaid/refresh";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { checkManualRefreshCooldown, markManualRefreshed, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
 import { limitByUser } from "@/lib/rate-limit";
 
@@ -81,10 +82,8 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       console.error(`[POST /api/plaid/refresh] refresh failed for PlaidItem ${item.id}:`, e);
       const health = classifyPlaidErrorForHealth(e);
       if (health) {
-        await db.plaidItem.update({
-          where: { id: item.id },
-          data:  { status: health.status, errorCode: health.errorCode },
-        });
+        // CH-2 — live columns (unchanged) + durable transition row only on change.
+        await setPlaidItemHealth(item.id, { status: health.status, errorCode: health.errorCode });
         // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
         await notifyItemSyncFailed(item.id);
       }

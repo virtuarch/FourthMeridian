@@ -45,6 +45,7 @@ import { emitDomainEvent } from "@/lib/events/emit";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { classifyPlaidErrorForHealth, getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
 import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
@@ -665,10 +666,9 @@ export async function refreshAllActiveItemsForUser(
       failedItemIds.push(item.id);
       const health = classifyPlaidErrorForHealth(e);
       if (health) {
-        await db.plaidItem.update({
-          where: { id: item.id },
-          data:  { status: health.status, errorCode: health.errorCode },
-        });
+        // CH-2 — writes the live columns (unchanged) + a durable transition row
+        // only when the effective state actually changed.
+        await setPlaidItemHealth(item.id, { status: health.status, errorCode: health.errorCode });
         // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
         await notifyItemSyncFailed(item.id);
       }

@@ -34,6 +34,7 @@ import { AuditAction } from "@/lib/audit-actions";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth, plaidErrorSummary } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed, notifyItemSyncComplete } from "@/lib/plaid/sync-notifications";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { backfillSpaceSnapshots } from "@/lib/snapshots/backfill";
 import {
   regenerateWealthHistoryForAccounts,
@@ -309,16 +310,23 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<boole
     // This update is itself best-effort.
     try {
       const health = classifyPlaidErrorForHealth(e);
-      await db.plaidItem.update({
-        where: { id: plaidItemId },
-        data:  {
-          syncIncompleteAt: new Date(),
-          ...(health ? { status: health.status, errorCode: health.errorCode } : {}),
-        },
-      });
       if (health) {
+        // CH-2 — the health flip goes through the chokepoint (live columns +
+        // durable transition row only on change), co-writing the incomplete
+        // marker in the same update. Transient/429 errors classify to null and
+        // must NOT touch status, so they still write the marker inline below.
+        await setPlaidItemHealth(
+          plaidItemId,
+          { status: health.status, errorCode: health.errorCode },
+          { syncIncompleteAt: new Date() },
+        );
         // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
         await notifyItemSyncFailed(plaidItemId);
+      } else {
+        await db.plaidItem.update({
+          where: { id: plaidItemId },
+          data:  { syncIncompleteAt: new Date() },
+        });
       }
     } catch (updateErr) {
       console.error(

@@ -41,6 +41,7 @@ import {
 } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { AuditAction } from "@/lib/audit-actions";
 import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
@@ -179,7 +180,12 @@ export async function performPlaidTokenExchange(
   const syncIncompleteAt = deferHistorySync ? new Date() : null;
   const plaidItem = await db.plaidItem.upsert({
     where:  { externalItemId: item_id },
-    update: { encryptedToken, status: PlaidItemStatus.ACTIVE, errorCode: null, syncIncompleteAt },
+    // CH-2 — the health reset (status ACTIVE, errorCode null) is no longer done
+    // inline here; setPlaidItemHealth below owns it so a relink that recovers a
+    // broken item leaves a durable transition row. The upsert still writes the
+    // non-health columns; a brand-new item is created ACTIVE (default), for
+    // which the helper's no-op comparison writes no row.
+    update: { encryptedToken, syncIncompleteAt },
     create: {
       userId,
       externalItemId:  item_id,
@@ -190,6 +196,11 @@ export async function performPlaidTokenExchange(
       syncIncompleteAt,
     },
   });
+
+  // CH-2 — flip to healthy through the chokepoint. Records a transition row only
+  // when this relink actually recovered a NEEDS_REAUTH/ERROR item (no row for a
+  // brand-new item, which is already ACTIVE from the create above).
+  await setPlaidItemHealth(plaidItem.id, { status: PlaidItemStatus.ACTIVE, errorCode: null });
 
   // OPS-3 S5 Wave 3 — a relink through Link update mode resolves an open
   // SYNC_FAILED condition immediately (don't wait for the next sync): retire
