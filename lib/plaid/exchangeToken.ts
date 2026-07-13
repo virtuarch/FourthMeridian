@@ -143,10 +143,16 @@ export async function performPlaidTokenExchange(
   // 3. Encrypt access_token before it touches the DB
   const encryptedToken = encryptWithPurpose(access_token, EncryptionPurpose.PLAID_ACCESS_TOKEN);
 
-  // 4. Upsert PlaidItem — credential belongs to User, not Space
+  // 4. Upsert PlaidItem — credential belongs to User, not Space.
+  // D2.x resume — when history is deferred, mark the item incomplete from birth
+  // (syncIncompleteAt = now) so it reads as "importing" until the background
+  // history sync confirms completion (which clears it). The inline flow (admin
+  // Expand History, deferHistorySync=false) syncs history within this call, so
+  // it leaves the marker null. Re-link re-imports history the same way.
+  const syncIncompleteAt = deferHistorySync ? new Date() : null;
   const plaidItem = await db.plaidItem.upsert({
     where:  { externalItemId: item_id },
-    update: { encryptedToken, status: PlaidItemStatus.ACTIVE, errorCode: null },
+    update: { encryptedToken, status: PlaidItemStatus.ACTIVE, errorCode: null, syncIncompleteAt },
     create: {
       userId,
       externalItemId:  item_id,
@@ -154,6 +160,7 @@ export async function performPlaidTokenExchange(
       institutionName: institution_name,
       encryptedToken,
       status:          PlaidItemStatus.ACTIVE,
+      syncIncompleteAt,
     },
   });
 

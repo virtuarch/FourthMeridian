@@ -656,6 +656,12 @@ model PlaidItem {
   cursor              String? // /transactions/sync cursor for incremental sync
   errorCode           String? // last Plaid error code when status = ERROR
   lastSyncedAt        DateTime?
+  // D2.x resume — set while an initial/resumed history import is pending or
+  // has not confirmed completion; cleared to null by syncTransactionsForItem
+  // once a full sync loop finishes. Non-null on an ACTIVE item = "importing"
+  // (drives lib/sync/status.ts and the client auto-resume). Replaces the old
+  // cursor===null heuristic, which broke once the cursor is persisted per page.
+  syncIncompleteAt    DateTime?
   // D2 Step 7B — last manual "Refresh"/"Sync Now" attempt (success or
   // failure), distinct from lastSyncedAt above (also written by the
   // scheduled sync job). Gates the manual-refresh cooldown only; the

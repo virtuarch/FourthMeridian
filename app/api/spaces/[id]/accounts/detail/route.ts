@@ -96,8 +96,8 @@ export async function GET(
             select: {
               isCanonical:   true,
               plaidItemDbId: true,
-              // cursor is consumed only by deriveConnectionState — never returned.
-              plaidItem: { select: { status: true, cursor: true } },
+              // syncIncompleteAt is consumed only by deriveConnectionState — never returned.
+              plaidItem: { select: { status: true, syncIncompleteAt: true } },
             },
           },
         },

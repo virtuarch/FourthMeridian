@@ -6,9 +6,10 @@
  *
  *     npx tsx lib/sync/status.test.ts
  *
- * Covers: deriveConnectionState across all five status × cursor combinations,
- * buildSyncStatus.building aggregation + REVOKED exclusion, and the invariant
- * that `cursor` never appears on an outward SyncConnection.
+ * Covers: deriveConnectionState across all five status × syncIncompleteAt
+ * combinations, buildSyncStatus.building aggregation + REVOKED exclusion, and
+ * the invariant that neither `cursor` nor `syncIncompleteAt` appears on an
+ * outward SyncConnection.
  */
 
 import {
@@ -33,33 +34,35 @@ function item(partial: Partial<PlaidItemStateInput>): PlaidItemStateInput {
     id:              "id_" + (partial.id ?? "x"),
     institutionName: partial.institutionName ?? "Test Bank",
     status:          partial.status ?? "ACTIVE",
-    cursor:          partial.cursor ?? null,
+    syncIncompleteAt: partial.syncIncompleteAt ?? null,
     lastSyncedAt:    partial.lastSyncedAt ?? null,
     errorCode:       partial.errorCode ?? null,
     investmentsConsent: partial.investmentsConsent,
   };
 }
 
+const INCOMPLETE = new Date(0); // any non-null timestamp = "still importing"
+
 console.log("deriveConnectionState — five combinations");
-check("ACTIVE + cursor null → importing",
-  deriveConnectionState({ status: "ACTIVE", cursor: null }) === "importing");
-check("ACTIVE + cursor set → ready",
-  deriveConnectionState({ status: "ACTIVE", cursor: "abc123" }) === "ready");
+check("ACTIVE + syncIncompleteAt set → importing",
+  deriveConnectionState({ status: "ACTIVE", syncIncompleteAt: INCOMPLETE }) === "importing");
+check("ACTIVE + syncIncompleteAt null → ready",
+  deriveConnectionState({ status: "ACTIVE", syncIncompleteAt: null }) === "ready");
 check("NEEDS_REAUTH → needs_reauth",
-  deriveConnectionState({ status: "NEEDS_REAUTH", cursor: null }) === "needs_reauth");
-check("NEEDS_REAUTH ignores cursor → needs_reauth",
-  deriveConnectionState({ status: "NEEDS_REAUTH", cursor: "abc" }) === "needs_reauth");
+  deriveConnectionState({ status: "NEEDS_REAUTH", syncIncompleteAt: INCOMPLETE }) === "needs_reauth");
+check("NEEDS_REAUTH ignores marker → needs_reauth",
+  deriveConnectionState({ status: "NEEDS_REAUTH", syncIncompleteAt: null }) === "needs_reauth");
 check("ERROR → error",
-  deriveConnectionState({ status: "ERROR", cursor: "abc" }) === "error");
+  deriveConnectionState({ status: "ERROR", syncIncompleteAt: null }) === "error");
 check("REVOKED → null (excluded)",
-  deriveConnectionState({ status: "REVOKED", cursor: "abc" }) === null);
+  deriveConnectionState({ status: "REVOKED", syncIncompleteAt: null }) === null);
 
 console.log("buildSyncStatus — aggregation + exclusion");
 const status = buildSyncStatus([
-  item({ id: "a", status: "ACTIVE", cursor: null }),                              // importing
-  item({ id: "b", status: "ACTIVE", cursor: "cur", lastSyncedAt: new Date(0) }), // ready
-  item({ id: "c", status: "NEEDS_REAUTH", cursor: null, errorCode: "ITEM_LOGIN_REQUIRED" }),
-  item({ id: "d", status: "REVOKED", cursor: "cur" }),                           // excluded
+  item({ id: "a", status: "ACTIVE", syncIncompleteAt: INCOMPLETE }),                    // importing
+  item({ id: "b", status: "ACTIVE", syncIncompleteAt: null, lastSyncedAt: new Date(0) }), // ready
+  item({ id: "c", status: "NEEDS_REAUTH", syncIncompleteAt: INCOMPLETE, errorCode: "ITEM_LOGIN_REQUIRED" }),
+  item({ id: "d", status: "REVOKED", syncIncompleteAt: null }),                         // excluded
 ]);
 check("building is true when any importing", status.building === true);
 check("REVOKED excluded (3 of 4 remain)", status.connections.length === 3);
@@ -72,8 +75,8 @@ check("importing connection has null lastSyncedAt",
 
 console.log("buildSyncStatus — building false when none importing");
 const settled = buildSyncStatus([
-  item({ id: "b", status: "ACTIVE", cursor: "cur" }),
-  item({ id: "c", status: "ERROR", cursor: null }),
+  item({ id: "b", status: "ACTIVE", syncIncompleteAt: null }),
+  item({ id: "c", status: "ERROR", syncIncompleteAt: null }),
 ]);
 check("building false when no importing", settled.building === false);
 
@@ -91,10 +94,10 @@ check("undefined → null",
 
 console.log("buildSyncStatus — investments capability wired onto SyncConnection");
 const invStatus = buildSyncStatus([
-  item({ id: "enabled",  status: "ACTIVE", cursor: "cur", investmentsConsent: "ENABLED" }),
-  item({ id: "consent",  status: "ACTIVE", cursor: "cur", investmentsConsent: "CONSENT_REQUIRED" }),
-  item({ id: "unsupp",   status: "ACTIVE", cursor: "cur", investmentsConsent: "UNSUPPORTED" }),
-  item({ id: "unknown",  status: "ACTIVE", cursor: "cur" }), // no consent field → null
+  item({ id: "enabled",  status: "ACTIVE", syncIncompleteAt: null, investmentsConsent: "ENABLED" }),
+  item({ id: "consent",  status: "ACTIVE", syncIncompleteAt: null, investmentsConsent: "CONSENT_REQUIRED" }),
+  item({ id: "unsupp",   status: "ACTIVE", syncIncompleteAt: null, investmentsConsent: "UNSUPPORTED" }),
+  item({ id: "unknown",  status: "ACTIVE", syncIncompleteAt: null }), // no consent field → null
 ]);
 check("ENABLED item → investments 'enabled'",
   invStatus.connections.find((c) => c.id === "id_enabled")?.investments === "enabled");
@@ -105,12 +108,16 @@ check("UNSUPPORTED item → investments null",
 check("unknown item → investments null",
   invStatus.connections.find((c) => c.id === "id_unknown")?.investments === null);
 
-console.log("invariant — cursor never leaks onto SyncConnection");
+console.log("invariant — internal derivation fields never leak onto SyncConnection");
 const allConns = [...status.connections, ...settled.connections];
 check("no connection object has a `cursor` key",
   allConns.every((c) => !Object.prototype.hasOwnProperty.call(c, "cursor")));
+check("no connection object has a `syncIncompleteAt` key",
+  allConns.every((c) => !Object.prototype.hasOwnProperty.call(c, "syncIncompleteAt")));
 check("serialized JSON contains no 'cursor'",
   !JSON.stringify(status).includes("cursor"));
+check("serialized JSON contains no 'syncIncompleteAt'",
+  !JSON.stringify(status).includes("syncIncompleteAt"));
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed`);

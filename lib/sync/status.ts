@@ -9,18 +9,19 @@
  * Prisma model) so it can be unit-tested with a standalone `tsx` script
  * without `prisma generate`.
  *
- * The state machine is derived entirely from EXISTING PlaidItem fields — no
- * schema, no SyncJob:
- *   - status = ACTIVE   & cursor = null → "importing"   (first-run history still loading)
- *   - status = ACTIVE   & cursor ≠ null → "ready"
- *   - status = NEEDS_REAUTH             → "needs_reauth"
- *   - status = ERROR                    → "error"
- *   - status = REVOKED                  → excluded (deriveConnectionState → null)
+ * The state machine is derived from PlaidItem fields — no SyncJob:
+ *   - status = ACTIVE   & syncIncompleteAt ≠ null → "importing"  (history still loading / interrupted)
+ *   - status = ACTIVE   & syncIncompleteAt = null → "ready"      (a full sync has completed)
+ *   - status = NEEDS_REAUTH                       → "needs_reauth"
+ *   - status = ERROR                              → "error"
+ *   - status = REVOKED                            → excluded (deriveConnectionState → null)
  *
- * `cursor` is consumed ONLY here to compute state. It is a Plaid access
- * cursor and MUST NEVER appear on the outward-facing SyncConnection / leave
- * the server — see the SyncConnection shape below (no cursor field) and the
- * unit test that asserts its absence.
+ * D2.x resume — "ready" is keyed on syncIncompleteAt, NOT the old cursor===null
+ * heuristic. The cursor is now persisted after every page (so a resume can
+ * continue mid-import), which means cursor≠null no longer implies "done"; the
+ * dedicated syncIncompleteAt marker is the completion signal. `syncIncompleteAt`
+ * is consumed ONLY here to compute state and MUST NEVER appear on the outward
+ * SyncConnection — same contract the Plaid `cursor` had (asserted by the test).
  */
 
 export type SyncConnectionState = "importing" | "ready" | "needs_reauth" | "error";
@@ -92,7 +93,12 @@ export interface PlaidItemStateInput {
   id:              string;
   institutionName: string;
   status:          "ACTIVE" | "NEEDS_REAUTH" | "ERROR" | "REVOKED";
-  cursor:          string | null;
+  /**
+   * D2.x resume completion marker. Non-null on an ACTIVE item = first-run
+   * history still importing (or a prior attempt was interrupted). Consumed only
+   * to derive state; never forwarded onto SyncConnection.
+   */
+  syncIncompleteAt: Date | null;
   lastSyncedAt:    Date | null;
   errorCode:       string | null;
   /**
@@ -123,7 +129,7 @@ export function deriveInvestmentsCapability(
  * the connection should be excluded from the surface entirely (REVOKED).
  */
 export function deriveConnectionState(
-  item: Pick<PlaidItemStateInput, "status" | "cursor">,
+  item: Pick<PlaidItemStateInput, "status" | "syncIncompleteAt">,
 ): SyncConnectionState | null {
   switch (item.status) {
     case "REVOKED":
@@ -133,10 +139,11 @@ export function deriveConnectionState(
     case "ERROR":
       return "error";
     case "ACTIVE":
-      // cursor is written only after syncTransactionsForItem's full loop
-      // completes, so a null cursor on an ACTIVE item = first-run history
-      // still importing (Slice 1 deferred the inline sync).
-      return item.cursor === null ? "importing" : "ready";
+      // syncIncompleteAt is cleared only after syncTransactionsForItem's full
+      // loop completes, so a non-null value on an ACTIVE item = first-run
+      // history still importing (or a prior attempt was interrupted and is
+      // awaiting resume).
+      return item.syncIncompleteAt !== null ? "importing" : "ready";
     default:
       // Unknown/unexpected status — omit rather than guess.
       return null;

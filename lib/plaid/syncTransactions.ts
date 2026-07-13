@@ -24,9 +24,12 @@
  *  - Resumes from PlaidItem.cursor; a null/undefined cursor means "first
  *    sync ever" and Plaid returns the full available transaction history.
  *  - Loops on `has_more` — a single call may require several pages.
- *  - Persists `next_cursor` back onto PlaidItem only after the full loop
- *    completes successfully, so a mid-loop failure can safely retry from the
- *    last *persisted* cursor rather than silently skipping a page.
+ *  - Persists `next_cursor` back onto PlaidItem after EVERY completed page
+ *    (the transactions from that page are already committed), so a mid-loop
+ *    interruption resumes from the last persisted cursor instead of restarting
+ *    the full history pull — and never skips an unprocessed page. The final
+ *    update additionally stamps lastSyncedAt and clears syncIncompleteAt to
+ *    mark the whole import complete.
  *  - Maps Plaid's account_id -> FinancialAccount.id via the unique
  *    plaidAccountId field set at import time. Transactions for an account we
  *    don't recognize (e.g. an account type we don't import) are skipped with
@@ -478,11 +481,28 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
 
     hasMore = has_more;
     cursor  = next_cursor;
+
+    // Persist the cursor after EVERY completed page, not just once at the end.
+    // A mid-loop interruption (timeout, transient error, hard kill) now
+    // preserves progress: the next attempt resumes from this page's cursor
+    // instead of restarting the full 730-day pull. The transactions from this
+    // page are already committed above, so advancing the cursor in lockstep is
+    // correct — it can never skip an unprocessed page. lastSyncedAt /
+    // syncIncompleteAt are intentionally NOT touched here: the item is not
+    // "done" until the loop exits, so the incomplete marker stays set until the
+    // final update below clears it.
+    await db.plaidItem.update({
+      where: { id: plaidItemDbId },
+      data:  { cursor: cursor ?? null },
+    });
   }
 
   await db.plaidItem.update({
     where: { id: plaidItemDbId },
-    data:  { cursor: cursor ?? null, lastSyncedAt: new Date(), status: PlaidItemStatus.ACTIVE, errorCode: null },
+    // syncIncompleteAt: null — the full loop finished, so history is confirmed
+    // complete; clears the marker set at connect / by a failed prior attempt,
+    // flipping the item to "ready" (lib/sync/status.ts) and ending auto-resume.
+    data:  { cursor: cursor ?? null, lastSyncedAt: new Date(), status: PlaidItemStatus.ACTIVE, errorCode: null, syncIncompleteAt: null },
   });
 
   // OPS-3 S5 Wave 3 — the item provably works again: retire the open

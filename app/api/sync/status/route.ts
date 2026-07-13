@@ -3,18 +3,18 @@
  *
  * D2.x Slice 3 — provider-agnostic, read-only sync-status contract for the
  * Connections experience. Returns the caller's connections with a normalized
- * state derived purely from EXISTING PlaidItem fields (no schema, no SyncJob):
- * `cursor === null` on an ACTIVE item means first-run history is still
- * importing (see lib/sync/status.ts).
+ * state derived purely from PlaidItem fields (no SyncJob):
+ * `syncIncompleteAt !== null` on an ACTIVE item means first-run history is
+ * still importing / awaiting resume (see lib/sync/status.ts).
  *
  * Provider-agnostic by design: today it enumerates PlaidItem rows and reports
  * provider="PLAID", but the { building, connections[] } envelope is the read
  * half of the future Sync Center and extends to wallets / CSV / other
  * providers without a contract change.
  *
- * Security: filtered by the session user; selects only safe fields. The Plaid
- * `cursor` is selected solely to derive state and is NEVER returned to the
- * client (buildSyncStatus omits it).
+ * Security: filtered by the session user; selects only safe fields.
+ * `syncIncompleteAt` is selected solely to derive state and is NEVER returned
+ * to the client (buildSyncStatus omits it).
  */
 
 import { NextResponse } from "next/server";
@@ -36,7 +36,7 @@ export async function GET() {
       id:                 true,
       institutionName:    true,
       status:             true,
-      cursor:             true, // used for derivation only — never returned
+      syncIncompleteAt:   true, // used for derivation only — never returned
       lastSyncedAt:       true,
       errorCode:          true,
       investmentsConsent: true, // → client-safe `investments` capability only

@@ -118,7 +118,7 @@ console.log("7. Detail route reuses established joins + pure state derivation");
   check("deriveConnectionState imported from lib/sync/status", ROUTE.includes('from "@/lib/sync/status"') && ROUTE.includes("deriveConnectionState"));
   check("state derivation not reimplemented (no local status switch)", !ROUTE.includes('case "NEEDS_REAUTH"'));
   check("BALANCE_ONLY reuses normalizeSharedAccounts", ROUTE.includes("normalizeSharedAccounts(balanceOnlyShares)"));
-  check("cursor never returned (used only for derivation)", ROUTE.includes("cursor is consumed only by deriveConnectionState"));
+  check("derivation field never returned (used only for derivation)", ROUTE.includes("syncIncompleteAt is consumed only by deriveConnectionState"));
   check("membership-gated VIEWER+", ROUTE.includes("requireSpaceRole(spaceId, SpaceMemberRole.VIEWER)"));
 }
 

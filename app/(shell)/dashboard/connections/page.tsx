@@ -37,7 +37,7 @@ export default async function ConnectionsPage() {
       id:                 true,
       institutionName:    true,
       status:             true,
-      cursor:             true, // derivation only — never sent to client
+      syncIncompleteAt:   true, // derivation only — never sent to client
       lastSyncedAt:       true,
       errorCode:          true,
       investmentsConsent: true, // → client-safe `investments` capability only

@@ -93,7 +93,11 @@ export async function POST(req: NextRequest) {
       institutionId:   true,
       institutionName: true,
       status:          true,
-      cursor:          true,   // non-null = first sync completed
+      cursor:          true,   // non-null = at least one page synced
+      // D2.x resume — the cursor is now persisted per page, so cursor≠null no
+      // longer implies the first sync FINISHED. syncIncompleteAt===null is the
+      // authoritative "fully synced" signal (Validation 2 below).
+      syncIncompleteAt: true,
       connections: {
         where:  { deletedAt: null },
         select: {
@@ -117,10 +121,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ── Validation 2: cursor must exist (first sync completed) ────────────────
-  if (item.cursor === null) {
+  // ── Validation 2: first sync must have fully completed ────────────────────
+  // cursor≠null AND syncIncompleteAt===null: real data exists AND the initial
+  // history import finished (not merely paged partway before an interruption).
+  if (item.cursor === null || item.syncIncompleteAt !== null) {
     return NextResponse.json(
-      { error: "PlaidItem has not completed its first sync (cursor is null). Wait for the initial sync to finish before expanding history." },
+      { error: "PlaidItem has not completed its first sync yet. Wait for the initial sync to finish before expanding history." },
       { status: 422 },
     );
   }

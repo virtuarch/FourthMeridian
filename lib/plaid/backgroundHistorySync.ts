@@ -150,17 +150,25 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<void>
       e,
     );
 
-    // Reflect genuine item-health problems (needs re-auth / unrecoverable) on
-    // the existing PlaidItem fields so Slice 3's status surface and the cron
-    // behave correctly. Transient / 429 errors return null here and are left
-    // untouched for the cron to retry. This update is itself best-effort.
+    // Write an EXPLICIT incomplete-sync marker so the item is never left
+    // looking as healthy as a fully-synced one: syncIncompleteAt = now() is
+    // visible to both the UI (renders "importing") and the client auto-resume
+    // (lib/sync/status.ts + ConnectionsList). This is written for EVERY failure
+    // classification — the history genuinely did not complete. On top of it,
+    // reflect a genuine item-health problem (needs re-auth / unrecoverable) on
+    // the status/errorCode fields; transient / 429 errors classify to null and
+    // leave status ACTIVE so the resume path (and cron backstop) keep retrying.
+    // This update is itself best-effort.
     try {
       const health = classifyPlaidErrorForHealth(e);
+      await db.plaidItem.update({
+        where: { id: plaidItemId },
+        data:  {
+          syncIncompleteAt: new Date(),
+          ...(health ? { status: health.status, errorCode: health.errorCode } : {}),
+        },
+      });
       if (health) {
-        await db.plaidItem.update({
-          where: { id: plaidItemId },
-          data:  { status: health.status, errorCode: health.errorCode },
-        });
         // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
         await notifyItemSyncFailed(plaidItemId);
       }

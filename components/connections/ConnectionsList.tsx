@@ -12,8 +12,15 @@
  * while the tab is hidden. On the building→false transition it calls
  * router.refresh() once so the server page repulls now-complete data.
  *
- * No POST / triggers here (Slice 3 is read-only). Reconnect is handled inside
- * ConnectionCard via the existing ReconnectAccountButton.
+ * D2.x resume — automatic history-import continuation. If a Plaid connection is
+ * still "importing" after RESUME_GRACE_MS (i.e. the post-connect background sync
+ * timed out / stalled rather than finishing), the poller starts POSTing
+ * /api/plaid/resume-sync for that item every RESUME_INTERVAL_MS, up to
+ * MAX_RESUME_ATTEMPTS, then defers to the daily cron. The server enforces the
+ * real anti-collision guard (a min-age gate on the item's incomplete marker);
+ * these client timings are deliberately conservative so the first attempt only
+ * fires well after the 60s connect budget could have completed on its own.
+ * Reconnect is still handled inside ConnectionCard via ReconnectAccountButton.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -24,6 +31,20 @@ import type { SyncStatus } from "@/lib/sync/status";
 
 const POLL_INTERVAL_MS = 4000;
 const MAX_POLLS = 45; // ~3 min safety cap, then stop polling.
+
+// D2.x resume tuning. Grace is comfortably past the 60s connect/background
+// budget so a healthy sync finishes on its own before we ever intervene; the
+// server's own min-age gate (RESUME_MIN_AGE_MS) is the real anti-collision
+// guard. After the grace, resume once per interval, capped, then defer to cron.
+const RESUME_GRACE_MS = 90_000;
+const RESUME_INTERVAL_MS = 30_000;
+const MAX_RESUME_ATTEMPTS = 5;
+
+interface ResumeEntry {
+  firstImportingAt: number;
+  lastResumeAt: number;
+  attempts: number;
+}
 
 // Max cards that may mount the Liquid material at once. Each AtlasLiquidCard
 // holds a dedicated WebGL context (browsers cap active contexts ~16); capping
@@ -50,6 +71,8 @@ export function ConnectionsList({ initialStatus, accountsByInstitution, accounts
   const inFlightRef = useRef(false);
   const pollCountRef = useRef(0);
   const prevBuildingRef = useRef(initialStatus.building);
+  // D2.x resume — per-connection resume bookkeeping (id → timing/attempts).
+  const resumeRef = useRef<Map<string, ResumeEntry>>(new Map());
 
   // Re-seed from a fresh server render. useState(initialStatus) only reads the
   // prop on first mount, so a router.refresh() (e.g. after an in-app
@@ -70,6 +93,48 @@ export function ConnectionsList({ initialStatus, accountsByInstitution, accounts
     }
   }, []);
 
+  // D2.x resume — for each Plaid connection still importing past the grace
+  // window, POST /api/plaid/resume-sync on an interval (capped). Fire-and-forget
+  // and best-effort: the server gates and reports; the next status poll reflects
+  // any progress. Connections that leave "importing" are dropped from the map.
+  const driveResume = useCallback((next: SyncStatus) => {
+    const map = resumeRef.current;
+    const now = Date.now();
+    const importingIds = new Set<string>();
+
+    for (const c of next.connections) {
+      if (c.provider !== "PLAID" || c.state !== "importing") continue;
+      importingIds.add(c.id);
+
+      const entry = map.get(c.id) ?? { firstImportingAt: now, lastResumeAt: 0, attempts: 0 };
+      if (!map.has(c.id)) map.set(c.id, entry);
+
+      const importingFor = now - entry.firstImportingAt;
+      const sinceLast = now - entry.lastResumeAt;
+      if (
+        importingFor >= RESUME_GRACE_MS &&
+        sinceLast >= RESUME_INTERVAL_MS &&
+        entry.attempts < MAX_RESUME_ATTEMPTS
+      ) {
+        entry.lastResumeAt = now;
+        entry.attempts += 1;
+        // Fire-and-forget; errors are non-fatal (status poll drives the UI).
+        void fetch("/api/plaid/resume-sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plaidItemId: c.id }),
+        }).catch(() => {});
+        // Exhausted attempts → stop pretending it's fast; defer to daily cron.
+        if (entry.attempts >= MAX_RESUME_ATTEMPTS) setSlow(true);
+      }
+    }
+
+    // Drop bookkeeping for connections that are no longer importing.
+    for (const id of map.keys()) {
+      if (!importingIds.has(id)) map.delete(id);
+    }
+  }, []);
+
   const poll = useCallback(async () => {
     if (inFlightRef.current) return; // no overlapping requests
     inFlightRef.current = true;
@@ -78,6 +143,9 @@ export function ConnectionsList({ initialStatus, accountsByInstitution, accounts
       if (res.ok) {
         const next = (await res.json()) as SyncStatus;
         setStatus(next);
+
+        // Auto-resume any stalled Plaid history imports (see driveResume).
+        driveResume(next);
 
         // building true → false: refresh the server page once to pull the
         // now-complete data (lastSyncedAt, any late accounts), then stop.
@@ -97,7 +165,7 @@ export function ConnectionsList({ initialStatus, accountsByInstitution, accounts
         stop();
       }
     }
-  }, [router, stop]);
+  }, [router, stop, driveResume]);
 
   const start = useCallback(() => {
     if (intervalRef.current) return;
