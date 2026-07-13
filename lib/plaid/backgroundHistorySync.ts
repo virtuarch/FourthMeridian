@@ -270,7 +270,7 @@ async function recordSyncComplete(plaidItemId: string): Promise<void> {
   }
 }
 
-export async function runDeferredHistorySync(plaidItemId: string): Promise<void> {
+export async function runDeferredHistorySync(plaidItemId: string): Promise<boolean> {
   try {
     const r = await syncTransactionsForItem(plaidItemId);
     console.log(
@@ -287,6 +287,11 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<void>
     // (bell + Recent Activity, from ONE AuditLog record). Only reached on a
     // successful sync — a failure skips to the catch.
     await recordSyncComplete(plaidItemId);
+
+    // Success: the item is fully synced as of now. Signal it so a webhook-lock
+    // holder (syncPlaidItemFromWebhook) can clear any stale syncIncompleteAt a
+    // concurrent duplicate delivery stamped via its skipped-locked branch.
+    return true;
   } catch (e) {
     console.error(
       `[plaid][D2x-slice2] background history sync FAILED for item ${plaidItemId} (non-fatal — Link already succeeded): ${plaidErrorSummary(e)}`,
@@ -321,5 +326,8 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<void>
         updateErr,
       );
     }
+    // Failure: history genuinely did not complete — the incomplete marker set
+    // above must stand. Signal it so the caller does NOT clear it.
+    return false;
   }
 }

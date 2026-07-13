@@ -55,12 +55,25 @@ export async function syncPlaidItemFromWebhook(plaidItemId: string): Promise<Web
     return "skipped-locked";
   }
 
+  let ok = false;
   try {
-    await runDeferredHistorySync(plaidItemId);
+    ok = await runDeferredHistorySync(plaidItemId);
     return "ran";
   } finally {
+    // Release the lock, and on a SUCCESSFUL run also clear syncIncompleteAt in the
+    // same write. A concurrent duplicate delivery that lost the lock race stamps
+    // syncIncompleteAt=now via the skipped-locked branch above; because that stamp
+    // can only land while THIS run holds the lock, this lock-holder's successful
+    // completion is the authoritative last write and clears the stale marker —
+    // otherwise the item is stuck "importing" forever despite a fully-synced
+    // history (the marker's own clearer, syncTransactionsForItem, already ran
+    // before the stamp). On failure, leave syncIncompleteAt as runDeferredHistorySync
+    // set it — the history genuinely did not complete.
     await db.plaidItem
-      .updateMany({ where: { id: plaidItemId }, data: { syncLockedAt: null } })
+      .updateMany({
+        where: { id: plaidItemId },
+        data:  ok ? { syncLockedAt: null, syncIncompleteAt: null } : { syncLockedAt: null },
+      })
       .catch((e) => console.error(`[plaid webhook] failed to release lock for item ${plaidItemId}:`, e));
   }
 }
