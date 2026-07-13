@@ -17,6 +17,7 @@ import { formatDateTime } from "@/lib/format";
 import { limitByIp } from "@/lib/rate-limit";
 import { createNotification } from "@/lib/notifications/create";
 import { AuditAction } from "@/lib/audit-actions";
+import { getMinPasswordLength } from "@/lib/platform-settings";
 
 export async function POST(req: NextRequest) {
   try {
@@ -28,8 +29,10 @@ export async function POST(req: NextRequest) {
     if (!token || !password) {
       return NextResponse.json({ error: "Token and new password are required." }, { status: 400 });
     }
-    if (password.length < 8) {
-      return NextResponse.json({ error: "Password must be at least 8 characters." }, { status: 400 });
+    // SEC-4 — enforce the admin-configurable min length, not a hardcoded 8.
+    const minPasswordLength = await getMinPasswordLength();
+    if (password.length < minPasswordLength) {
+      return NextResponse.json({ error: `Password must be at least ${minPasswordLength} characters.` }, { status: 400 });
     }
 
     // Find user with matching, non-expired token — token is hashed before

@@ -19,6 +19,7 @@ import { formatDateTime } from "@/lib/format";
 import { createNotification } from "@/lib/notifications/create";
 import { limitByUser } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
+import { getMinPasswordLength } from "@/lib/platform-settings";
 
 export const PATCH = withApiHandler(async (req: NextRequest) => {
   // Sensitive action — always a live revocation check, never the cache.
@@ -34,8 +35,10 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
   if (!currentPassword || !newPassword) {
     return NextResponse.json({ error: "Both current and new password are required." }, { status: 400 });
   }
-  if (newPassword.length < 8) {
-    return NextResponse.json({ error: "New password must be at least 8 characters." }, { status: 400 });
+  // SEC-4 — enforce the admin-configurable min length, not a hardcoded 8.
+  const minPasswordLength = await getMinPasswordLength();
+  if (newPassword.length < minPasswordLength) {
+    return NextResponse.json({ error: `New password must be at least ${minPasswordLength} characters.` }, { status: 400 });
   }
   if (currentPassword === newPassword) {
     return NextResponse.json({ error: "New password must be different from current password." }, { status: 400 });

@@ -130,5 +130,19 @@ for (const [file, needle] of writerSurfaces) {
   check(`${file} writes ${needle} (not the raw literal)`, s.includes(needle) && !rawAssign.test(s));
 }
 
+console.log("6. SEC-4 — password length reads the admin-configurable policy");
+// Every password-set/change path reads getMinPasswordLength() and no longer
+// hardcodes the `< 8` literal, so the admin policy and enforcement can't drift.
+const pwPaths = [
+  "app/api/auth/register/route.ts",
+  "app/api/auth/reset-password/route.ts",
+  "app/api/user/password/route.ts",
+];
+for (const file of pwPaths) {
+  const s = src(file);
+  check(`${file} reads getMinPasswordLength()`, s.includes("getMinPasswordLength()"));
+  check(`${file} no longer hardcodes a length < 8 check`, !/\.length\s*<\s*8\b/.test(s));
+}
+
 console.log(failures === 0 ? "\nAll security-surface scans passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);

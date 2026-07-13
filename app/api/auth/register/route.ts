@@ -31,6 +31,7 @@ import { possessive } from "@/lib/format";
 import { EmploymentStatus, UseCase, SpaceMemberRole, Prisma } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
+import { getMinPasswordLength } from "@/lib/platform-settings";
 import { getTemplateForCategory } from "@/lib/space-templates/registry";
 import { planTemplateApplication } from "@/lib/space-templates/apply";
 
@@ -69,8 +70,10 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    if (!password || password.length < 8) {
-      return NextResponse.json({ error: "Password must be at least 8 characters." }, { status: 400 });
+    // SEC-4 — enforce the admin-configurable min length, not a hardcoded 8.
+    const minPasswordLength = await getMinPasswordLength();
+    if (!password || password.length < minPasswordLength) {
+      return NextResponse.json({ error: `Password must be at least ${minPasswordLength} characters.` }, { status: 400 });
     }
     if (!firstName?.trim() || !lastName?.trim()) {
       return NextResponse.json({ error: "First and last name are required." }, { status: 400 });

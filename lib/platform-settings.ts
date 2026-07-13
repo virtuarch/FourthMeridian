@@ -40,6 +40,22 @@ export async function getSetting(key: PlatformSettingKeyType): Promise<string> {
   return row?.value ?? DEFAULTS[key];
 }
 
+/**
+ * The admin-configurable minimum password length, as an integer (SEC-4).
+ *
+ * Single source of truth for password-length enforcement: registration and
+ * every password-set/change path read THIS instead of a hardcoded literal, so
+ * the admin policy (min_password_length PlatformSetting) and actual enforcement
+ * can never silently diverge. Floored at 8 (the historical minimum and the
+ * admin UI's own lower bound) so a malformed/blank row can never weaken the
+ * policy below the baseline. Defaults to 8 when unset or non-numeric.
+ */
+export async function getMinPasswordLength(): Promise<number> {
+  const raw = await getSetting(PlatformSettingKey.MIN_PASSWORD_LENGTH);
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? Math.max(8, n) : 8;
+}
+
 /** Write a setting value. */
 export async function setSetting(
   key: PlatformSettingKeyType,
