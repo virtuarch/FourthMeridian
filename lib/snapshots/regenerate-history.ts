@@ -31,12 +31,14 @@ import {
   reconstructDailyLiabilityBalances,
   truncDateUTC,
   maxDate,
+  addDaysUTC,
   isoDate,
   fromISO,
   type CashAccountBalance,
 } from "@/lib/snapshots/backfill-core";
 import { regenerateDay, type DayRegenInput, type DayRegenResult } from "@/lib/snapshots/regenerate-history.core";
 import { backfillBtcPrices, readBtcUsdAsOf } from "@/lib/crypto/btc-price";
+import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -145,13 +147,50 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       console.warn(`[wealth-regen] ${spaceId}: BTC price backfill failed (non-fatal):`, e instanceof Error ? e.message : e);
     }
   }
+  // Schwab-class fix — investment accounts with holdings but NO reconstructable
+  // event history (provider returned current positions, zero investment events,
+  // and no Transaction rows) get the SAME constant-quantity treatment as crypto:
+  // today's holdings valued at each day's historical price. Resolve today's held
+  // instruments and force-backfill their prices over the window (their earliest
+  // ACTIVITY is today, so the normal window resolves to null — forceWindow
+  // fetches the historical span anyway). Best-effort/dark without a price vendor.
+  const investmentAccounts = accounts.filter((a) => a.type === "investment");
+  let heldInstrumentIds: string[] = [];
+  if (investmentAccounts.length > 0) {
+    heldInstrumentIds = [
+      ...new Set(
+        (
+          await client.positionObservation.findMany({
+            where:    { financialAccountId: { in: investmentAccounts.map((a) => a.id) }, quantity: { gt: 0 }, supersededById: null, deletedAt: null },
+            select:   { instrumentId: true },
+            distinct: ["instrumentId"],
+          })
+        ).map((r) => r.instrumentId),
+      ),
+    ];
+    if (heldInstrumentIds.length > 0) {
+      try {
+        const r = await backfillHeldInstrumentPrices(heldInstrumentIds, fromDate, toDate);
+        console.log(`[wealth-regen] ${spaceId}: equity price backfill — planned ${r.planned}, stored ${r.inserted} row(s)`);
+      } catch (e) {
+        console.warn(`[wealth-regen] ${spaceId}: equity price backfill failed (non-fatal):`, e instanceof Error ? e.message : e);
+      }
+    }
+  }
+  // Anything to value historically beyond cash/card → reconstruct the FULL window
+  // even when account floors collapse to today (a fresh connect).
+  const hasHoldings = heldInstrumentIds.length > 0 || cryptoAccounts.length > 0;
+
   const floorByAccount = new Map<string, Date>(
     linkRows.map((l) => [l.financialAccount.id, maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))]),
   );
 
   const today = todayUTC(now);
   // Walk anchor is today's current balances; walk back only as far as fromDate.
-  const effectiveStart = maxDate(fromISO(fromDate), truncDateUTC([...floorByAccount.values()].reduce((m, d) => (d < m ? d : m), today)));
+  // With holdings to value, span the full window; the constant-quantity valuation
+  // (investment + crypto) does not depend on the cash/card floors.
+  const cashFloorStart = maxDate(fromISO(fromDate), truncDateUTC([...floorByAccount.values()].reduce((m, d) => (d < m ? d : m), today)));
+  const effectiveStart = hasHoldings ? fromISO(fromDate) : cashFloorStart;
   if (effectiveStart.getTime() >= today.getTime()) return zero;
 
   // Cash + revolving-card transaction deltas over (effectiveStart, today].
@@ -172,8 +211,18 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   });
   const existingByDate = new Map(existing.map((r) => [isoDate(r.date), r]));
 
+  // Candidate days: the cash-reconstruction days, PLUS — when there are holdings
+  // to value — every day in the window (so a holdings-only Space with no cash
+  // still gets a full historical series). Today is excluded (its live row is frozen).
+  const todayISO = isoDate(today);
+  const dayList = new Set<string>([...dailyCash.keys()]);
+  if (hasHoldings) {
+    for (let d = new Date(effectiveStart); isoDate(d) < todayISO; d = addDaysUTC(d, 1)) {
+      dayList.add(isoDate(d));
+    }
+  }
   // One conversion context over every candidate day (each day converts at its own rate).
-  const candidateDates = [...dailyCash.keys()].filter((d) => d >= fromDate && d <= toDate).sort();
+  const candidateDates = [...dayList].filter((d) => d >= fromDate && d <= toDate && d < todayISO).sort();
   const ctx = await buildSpaceConversionContext(space, { currencies: accounts.map((a) => a.currency ?? null), dates: candidateDates });
 
   const result: RegenerateWealthHistoryResult = { ...zero };
@@ -181,7 +230,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
 
   for (const dISO of candidateDates) {
     const d = fromISO(dISO);
-    const cashMap = dailyCash.get(dISO)!;
+    const cashMap = dailyCash.get(dISO) ?? new Map<string, number>(); // empty when the Space has no cash
     const cardMap = dailyCard.get(dISO);
 
     // Day-accounts: cash/card walked back, everything else flat (backfill parity),
@@ -193,16 +242,21 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         if (cardMap?.has(a.id)) return { type: a.type, balance: cardMap.get(a.id)!, currency: a.currency };
         return { type: a.type, balance: a.balance, currency: a.currency };
       });
-    if (dayAccounts.length === 0) continue;
+    // Skip a day only when there is nothing at all to value — but a holdings-only
+    // Space (investment/crypto floored to today, so dayAccounts is empty) is still
+    // valued below via the constant-quantity overrides, so don't skip it.
+    if (dayAccounts.length === 0 && !hasHoldings) continue;
 
     const c = classifyAccounts(dayAccounts, ctx, dISO);
 
     // A8 canonical historical investment valuation for the day (best-effort).
+    // holdConstantBeforeEarliest: a holdings-only investment account (no A4 event
+    // history) is valued at today's quantity held constant × the day's price.
     let investmentValue = c.totalInvestments;
     let investmentTier: CompletenessTier = "incomplete";
     let hasInvestmentEvidence = false;
     try {
-      const view = await getInvestmentValueAsOf({ spaceId, asOf: dISO, client });
+      const view = await getInvestmentValueAsOf({ spaceId, asOf: dISO, client, holdConstantBeforeEarliest: true });
       hasInvestmentEvidence = view.components.length > 0;
       if (hasInvestmentEvidence) {
         investmentValue = view.valuedSubtotal;

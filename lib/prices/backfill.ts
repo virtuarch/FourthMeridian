@@ -47,6 +47,14 @@ export interface BackfillPricesOptions {
    * historical backfill; the next connect (or a manual script run) does.
    */
   deadlineEpochMs?: number;
+  /**
+   * A9 constant-quantity fallback: fetch this fixed window for EVERY instrument,
+   * regardless of its earliest real activity. Without it, an instrument whose
+   * earliest activity is today (holdings-only, no transaction history) resolves a
+   * null window and no prices are fetched — leaving nothing to value historical
+   * days against. Still missing-only (resumes from already-covered dates).
+   */
+  forceWindow?: { fromISO: string; toISO: string };
   /** Per-instrument progress line sink (CLI passes console.log; default no-op). */
   onProgress?: (line: string) => void;
 }
@@ -127,7 +135,13 @@ export async function backfillPricesForInstruments(
     result.considered++;
 
     const [earliest, covered] = await Promise.all([earliestActivityISO(instrumentId), latestCoveredISO(instrumentId)]);
-    const window = resolveBackfillWindow(earliest, covered, toISO);
+    // forceWindow (A9 constant-quantity fallback) treats its fromISO as the
+    // instrument's floor, so a currently-held instrument with no pre-today
+    // activity still gets its historical window fetched; covered still gates it
+    // (missing-only).
+    const window = opts.forceWindow
+      ? resolveBackfillWindow(opts.forceWindow.fromISO, covered, opts.forceWindow.toISO)
+      : resolveBackfillWindow(earliest, covered, toISO);
     if (!window) { result.skipped++; continue; }
     const chunks = chunkWindow(window.fromISO, window.toISO, chunkDays);
     result.planned++;

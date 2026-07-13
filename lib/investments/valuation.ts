@@ -64,6 +64,16 @@ export interface GetInvestmentValueArgs {
   financialAccountId?: string;
   asOf: string; // YYYY-MM-DD
   client?: Client;
+  /**
+   * A9 constant-quantity fallback. When a holding has NO position observation on
+   * or before `asOf` (e.g. a just-connected investment account whose provider
+   * returned holdings but no transaction history, so A4 reconstructed nothing),
+   * value it at the EARLIEST observed quantity held constant backward × that
+   * day's price, instead of excluding it. A labeled `estimated` value — the price
+   * is real, only the quantity is an assumption; never fabricated. Default false,
+   * so point-in-time callers keep the strict "not held before it existed" answer.
+   */
+  holdConstantBeforeEarliest?: boolean;
 }
 
 /**
@@ -74,6 +84,7 @@ export interface GetInvestmentValueArgs {
 export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Promise<InvestmentValuationView> {
   const client = args.client ?? db;
   const { asOf } = args;
+  const holdConstant = args.holdConstantBeforeEarliest === true;
   const asOfDate = new Date(`${asOf}T00:00:00.000Z`);
 
   // ── Scope: the account set ────────────────────────────────────────────────
@@ -111,7 +122,9 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
         financialAccountId: { in: accountIds },
         supersededById: null,
         deletedAt: null,
-        date: { lte: asOfDate },
+        // holdConstant needs the EARLIEST observation too (which may be after
+        // asOf), so it can hold that quantity backward when nothing covers asOf.
+        ...(holdConstant ? {} : { date: { lte: asOfDate } }),
       },
       select: {
         financialAccountId: true, instrumentId: true, date: true, quantity: true,
@@ -167,10 +180,25 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
   for (const [key, rows] of byPair) {
     const [financialAccountId, instrumentId] = key.split("|");
     const resolved = resolvePositionAsOf(rows, asOf);
-    // Not held at asOf (no covering row, or an explicit closed-zero) → excluded.
-    if (resolved.quantity == null || resolved.quantity === 0) continue;
+    let quantity      = resolved.quantity;
+    let quantityDate  = resolved.date;
+    let quantityTier  = resolved.tier;
+    let resolvedRow   = pickResolvedRow(rows, resolved.date, resolved.origin);
 
-    const resolvedRow = pickResolvedRow(rows, resolved.date, resolved.origin);
+    // Constant-quantity fallback (holdConstant): nothing covers asOf → hold the
+    // EARLIEST observed quantity backward as a labeled estimate (price is real).
+    if ((quantity == null || quantity === 0) && holdConstant && rows.length > 0) {
+      const earliest = rows.reduce((min, r) => (r.date < min.date ? r : min), rows[0]);
+      if (earliest.quantity > 0) {
+        quantity     = earliest.quantity;
+        quantityDate = earliest.date;
+        quantityTier = "estimated";
+        resolvedRow  = earliest;
+      }
+    }
+
+    // Not held at asOf (no covering row, or an explicit closed-zero) → excluded.
+    if (quantity == null || quantity === 0) continue;
     const meta = instrumentMeta.get(instrumentId);
     const isCash = resolvedRow?.isCash ?? meta?.isCash ?? false;
     const nativeCurrency = resolvedRow?.currency ?? meta?.currency ?? null;
@@ -180,9 +208,9 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
       input: {
         instrumentId,
         accountId: financialAccountId,
-        quantity: resolved.quantity,
-        quantityDate: resolved.date,
-        quantityTier: resolved.tier,
+        quantity,
+        quantityDate,
+        quantityTier,
         isCash,
         nativeCurrency,
         institutionValue: resolvedRow?.institutionValue ?? null,
