@@ -184,6 +184,7 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
     let quantityDate  = resolved.date;
     let quantityTier  = resolved.tier;
     let resolvedRow   = pickResolvedRow(rows, resolved.date, resolved.origin);
+    let heldConstant  = false;
 
     // Constant-quantity fallback (holdConstant): nothing covers asOf → hold the
     // EARLIEST observed quantity backward as a labeled estimate (price is real).
@@ -194,6 +195,7 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
         quantityDate = earliest.date;
         quantityTier = "estimated";
         resolvedRow  = earliest;
+        heldConstant = true;
       }
     }
 
@@ -213,9 +215,16 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
         quantityTier,
         isCash,
         nativeCurrency,
-        institutionValue: resolvedRow?.institutionValue ?? null,
-        institutionPrice: resolvedRow?.institutionPrice ?? null,
-        institutionPriceDate: resolvedRow?.institutionPriceDate ?? null,
+        // When holding quantity constant BACKWARD (the fallback above fired, so
+        // asOf predates the earliest observation), that observation's institution
+        // price/value pertains to ITS date — carrying it here would short-circuit
+        // valueInstrumentAsOf's Precedence 1 and value every past day at the
+        // CURRENT value. Drop the institution anchor so non-cash positions fall
+        // through to the real RAW_CLOSE market price at asOf ("price is real",
+        // above); cash still resolves via its unit-price branch.
+        institutionValue: heldConstant ? null : (resolvedRow?.institutionValue ?? null),
+        institutionPrice: heldConstant ? null : (resolvedRow?.institutionPrice ?? null),
+        institutionPriceDate: heldConstant ? null : (resolvedRow?.institutionPriceDate ?? null),
         price: null, // filled below for non-cash without an institution anchor
         conflicted: conflictByPair.get(key) ?? false,
       },
