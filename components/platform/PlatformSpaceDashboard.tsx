@@ -28,6 +28,7 @@ import { OpsJobHealthWidget } from "./widgets/OpsJobHealthWidget";
 import { OpsRateLimitsWidget } from "./widgets/OpsRateLimitsWidget";
 import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
+import { CsSyncIssuesWidget } from "./widgets/CsSyncIssuesWidget";
 
 type Section = PlatformSection;
 
@@ -50,6 +51,8 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   ops_env_status:   OpsEnvStatusWidget,
   // Growth & Revenue (PO1.3)
   growth_signups:   GrowthSignupsWidget,
+  // Customer Success (PO1.4)
+  cs_sync_issues:   CsSyncIssuesWidget,
 };
 
 interface Props {
