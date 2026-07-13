@@ -142,3 +142,11 @@ export const OPEN_CREATE_SPACE_EVENT      = "open-create-space";
 // currency-sensitive data so the whole view updates without a manual reload.
 // CustomEvent detail: { spaceId, currency } — hosts ignore other Spaces' ids.
 export const SPACE_CURRENCY_CHANGED_EVENT = "space-currency-changed";
+// Account balances/transactions/snapshots were refreshed (a manual Plaid sync
+// completed). router.refresh() re-renders the server tree, but SpaceDashboard
+// displays its OWN client-fetched accounts/snapshots/transactions (keyed on
+// spaceId), which router.refresh() does NOT re-run — so a single refresh left
+// the balances stale until a full reload. This event tells the active host to
+// re-fetch that data so one refresh reflects the true DB state.
+// CustomEvent detail: { spaceId? } — when present, hosts ignore other Spaces.
+export const SPACE_DATA_REFRESHED_EVENT   = "space-data-refreshed";

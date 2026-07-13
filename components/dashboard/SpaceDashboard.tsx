@@ -118,6 +118,7 @@ import {
   SPACE_GOALS_CHANGED_EVENT,
   SPACE_ACCOUNTS_CHANGED_EVENT,
   SPACE_CURRENCY_CHANGED_EVENT,
+  SPACE_DATA_REFRESHED_EVENT,
 } from "@/lib/space-nav";
 import { getPerspectivesForCategory, getCompositionSwitcherItems, PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
 import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
@@ -2377,6 +2378,12 @@ export function SpaceDashboard({
   // currency-correct regardless of refresh timing. All-USD: the event never
   // fires (currencyChanged is false), so nothing here ever runs.
   const [currencyNonce, setCurrencyNonce] = useState(0);
+  // Part-2 fix — bumped by SPACE_DATA_REFRESHED_EVENT (a manual Plaid sync
+  // finished) so the host's OWN client-fetched accounts/snapshots/transactions
+  // re-run. router.refresh() alone can't do this: it merges the server RSC
+  // payload but never re-runs these client effects, so one refresh otherwise
+  // left the balances stale until a full reload.
+  const [refreshNonce, setRefreshNonce] = useState(0);
   useEffect(() => {
     function onCurrencyChanged(e: Event) {
       const detail = (e as CustomEvent<{ spaceId?: string }>).detail;
@@ -2750,6 +2757,23 @@ export function SpaceDashboard({
     return () => window.removeEventListener(SPACE_ACCOUNTS_CHANGED_EVENT, handleAccountsChanged);
   }, [loadAccounts]);
 
+  // Part-2 fix — a manual Plaid sync finished (SPACE_DATA_REFRESHED_EVENT). Re-run
+  // ALL of this host's self-fetched data so a single refresh reflects the true DB
+  // state: accounts (balances), snapshots (net-worth hero) and transactions.
+  // Nulling spaceTransactions releases the tx effect's "already loaded" guard;
+  // bumping refreshNonce re-runs the snapshot + tx effects.
+  useEffect(() => {
+    function onDataRefreshed(e: Event) {
+      const detail = (e as CustomEvent<{ spaceId?: string }>).detail;
+      if (detail?.spaceId && detail.spaceId !== spaceId) return; // ignore other Spaces
+      loadAccounts();
+      setSpaceTransactions(null);
+      setRefreshNonce((n) => n + 1);
+    }
+    window.addEventListener(SPACE_DATA_REFRESHED_EVENT, onDataRefreshed);
+    return () => window.removeEventListener(SPACE_DATA_REFRESHED_EVENT, onDataRefreshed);
+  }, [spaceId, loadAccounts]);
+
   // (Activity slice) — the host no longer pre-fetches the activity feed for an
   // Overview doorway/modal. The recent_activity SECTION (TimelineWidget) self-
   // fetches /api/spaces/[id]/activity and paginates, so Activity owns its data.
@@ -2808,8 +2832,9 @@ export function SpaceDashboard({
       .catch(() => { if (active) setSnapshots([]); });
     return () => { active = false; };
   // currencyNonce (Q6): re-fetch the stamp-aware hero series after a currency change.
+  // refreshNonce (Part-2): re-fetch after a manual Plaid sync so net worth updates.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, category, debtWorkspaceActive, wealthWorkspaceActive, currencyNonce]);
+  }, [spaceId, category, debtWorkspaceActive, wealthWorkspaceActive, currencyNonce, refreshNonce]);
 
   // ── Space transactions (KD-15-filtered on the server) ────────────────────
   // Flow-identified templates show an Overview preview, so they fetch up
@@ -2835,8 +2860,9 @@ export function SpaceDashboard({
     return () => { active = false; };
   // currencyNonce (Q6): re-fetch tx rows + F-6 context after a currency change
   // (the handler also nulls spaceTransactions to release the guard above).
+  // refreshNonce (Part-2): same, after a manual Plaid sync.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, isFlowCategory, activeTab, cashFlowActive, liquidityWorkspaceActive, spaceTransactions === null, currencyNonce]);
+  }, [spaceId, isFlowCategory, activeTab, cashFlowActive, liquidityWorkspaceActive, spaceTransactions === null, currencyNonce, refreshNonce]);
 
   useEffect(() => {
     Promise.all([
