@@ -247,7 +247,7 @@ function buildAttention(
           id:    sig.id,
           label: sig.title,
           tone:  "danger",
-          href:  "/dashboard/accounts",
+          href:  "/dashboard?tab=accounts",
         });
         break;
 
@@ -257,7 +257,7 @@ function buildAttention(
           label: sig.title,
           detail: "Manual assets may be out of date",
           tone:  "warning",
-          href:  "/dashboard/accounts",
+          href:  "/dashboard?tab=accounts",
         });
         break;
 
@@ -282,7 +282,7 @@ function buildAttention(
           id:   `sync_error_${name}`,
           label: `Sync issue — ${name}`,
           tone:  "danger",
-          href:  "/dashboard/accounts",
+          href:  "/dashboard?tab=accounts",
         });
       }
     } else {
@@ -290,7 +290,7 @@ function buildAttention(
         id:    "sync_error_accounts",
         label: `${acct.health.errorCount} account${acct.health.errorCount > 1 ? "s" : ""} have sync errors`,
         tone:  "danger",
-        href:  "/dashboard/accounts",
+        href:  "/dashboard?tab=accounts",
       });
     }
   }
