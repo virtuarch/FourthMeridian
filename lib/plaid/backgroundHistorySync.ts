@@ -111,14 +111,18 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
     const priceRegistry = defaultPriceRegistry();
     const priceBackfillEnabled = priceRegistry.adapters.length > 0; // TIINGO_API_KEY set
     if (investmentReconstructionEnabled() || priceBackfillEnabled || wealthRegenerationEnabled()) {
-      const investmentFaIds = (
-        await db.financialAccount.findMany({
-          where:  { id: { in: faIds }, type: "investment", deletedAt: null },
-          select: { id: true },
-        })
-      ).map((a) => a.id);
+      // Investment accounts drive A4 reconstruction + A8-3B equity price backfill;
+      // CRYPTO accounts (Part-A) additionally drive A9 wealth regen, which values
+      // them per-day via CoinGecko (constant quantity × historical price). Both
+      // are "wealth-relevant" for the A9 step.
+      const relevant = await db.financialAccount.findMany({
+        where:  { id: { in: faIds }, type: { in: ["investment", "crypto"] }, deletedAt: null },
+        select: { id: true, type: true },
+      });
+      const investmentFaIds = relevant.filter((a) => a.type === "investment").map((a) => a.id);
+      const wealthFaIds     = relevant.map((a) => a.id); // investment + crypto → A9
 
-      if (investmentFaIds.length > 0) {
+      if (relevant.length > 0) {
         // A4 — bootstrap per-holding quantity reconstruction from the canonical
         // InvestmentEvents already ingested inline at connect (exchangeToken).
         // The one-time reconstructAccount is what SEEDS the PositionReconstruction
@@ -188,10 +192,10 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
           try {
             const toDate   = minusDaysISO(isoDayUTC(new Date()), 1); // yesterday — today's live row is frozen
             const fromDate = minusDaysISO(toDate, 30);               // matches the 30-day snapshot backfill window
-            const spaces = await regenerateWealthHistoryForAccounts(investmentFaIds, { fromDate, toDate });
+            const spaces = await regenerateWealthHistoryForAccounts(wealthFaIds, { fromDate, toDate });
             console.log(
               `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over [${fromDate} … ${toDate}] ` +
-                `(item ${plaidItemId}, ${investmentFaIds.length} investment account(s))`,
+                `(item ${plaidItemId}, ${wealthFaIds.length} investment+crypto account(s))`,
             );
           } catch (e) {
             console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, e);

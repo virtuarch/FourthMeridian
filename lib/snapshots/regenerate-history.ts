@@ -36,6 +36,7 @@ import {
   type CashAccountBalance,
 } from "@/lib/snapshots/backfill-core";
 import { regenerateDay, type DayRegenInput, type DayRegenResult } from "@/lib/snapshots/regenerate-history.core";
+import { backfillBtcPrices, readBtcUsdAsOf } from "@/lib/crypto/btc-price";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -114,7 +115,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: {
       createdAt: true,
-      financialAccount: { select: { id: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true } },
+      financialAccount: { select: { id: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true } },
     },
   });
   if (linkRows.length === 0) return zero;
@@ -126,7 +127,24 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     currency: l.financialAccount.currency,
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
+    nativeBalance: l.financialAccount.nativeBalance, // BTC quantity for crypto accounts
   }));
+
+  // Part-A — crypto accounts get an honest per-day valuation: today's on-chain
+  // quantity (nativeBalance, held CONSTANT — the block explorer in use is
+  // current-balance-only, so historical per-day balance isn't derivable) × that
+  // day's CoinGecko BTC price. Backfill the window's BTC prices once (best-effort,
+  // dark without COINGECKO_API_KEY). Independent of the per-account floor: the
+  // constant-quantity assumption spans the whole window (a labeled estimate).
+  const cryptoAccounts = accounts.filter((a) => a.type === "crypto" && a.nativeBalance != null);
+  if (cryptoAccounts.length > 0) {
+    try {
+      const r = await backfillBtcPrices(fromDate, toDate);
+      console.log(`[wealth-regen] ${spaceId}: BTC price backfill — ${r.inserted} row(s)${r.configured ? "" : " (no COINGECKO_API_KEY — crypto stays flat)"}`);
+    } catch (e) {
+      console.warn(`[wealth-regen] ${spaceId}: BTC price backfill failed (non-fatal):`, e instanceof Error ? e.message : e);
+    }
+  }
   const floorByAccount = new Map<string, Date>(
     linkRows.map((l) => [l.financialAccount.id, maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))]),
   );
@@ -194,6 +212,26 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       console.warn(`[wealth-regen] ${spaceId} ${dISO}: A8 valuation failed (non-fatal): ${err instanceof Error ? err.message : err}`);
     }
 
+    // Part-A — historical crypto valuation for the day: Σ (constant native
+    // quantity × BTC price as-of the day), converted to the reporting currency.
+    // Computed from the FULL crypto-account list (not the floored day set) so the
+    // constant-quantity estimate spans the window. No BTC price reaching the day
+    // ⇒ no evidence ⇒ the flat value is preserved (never fabricated).
+    let digitalAssetValue = c.totalDigitalAssets;
+    let hasDigitalAssetEvidence = false;
+    if (cryptoAccounts.length > 0) {
+      const btcUsd = await readBtcUsdAsOf(dISO);
+      if (btcUsd != null) {
+        // Value each crypto account at its constant native quantity × the day's
+        // BTC price (USD), then let classifyAccounts do the FX to the reporting
+        // currency — the SAME conversion path every other total uses (no second
+        // FX interpretation opened in this binding).
+        const cryptoDay = cryptoAccounts.map((a) => ({ type: "crypto", balance: (a.nativeBalance ?? 0) * btcUsd, currency: "USD" }));
+        digitalAssetValue = classifyAccounts(cryptoDay, ctx, dISO).totalDigitalAssets;
+        hasDigitalAssetEvidence = true;
+      }
+    }
+
     const prior = existingByDate.get(dISO);
     const input: DayRegenInput = {
       date: dISO,
@@ -209,6 +247,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       investmentValue,
       investmentTier,
       hasInvestmentEvidence,
+      digitalAssetValue,
+      digitalAssetTier: "estimated", // constant-quantity assumption × real price
+      hasDigitalAssetEvidence,
       cashCardTier: "derived",
     };
 

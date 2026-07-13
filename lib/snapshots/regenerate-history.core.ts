@@ -58,6 +58,17 @@ export interface DayRegenInput {
   investmentTier: CompletenessTier;
   /** True when A8 had at least one position with evidence reaching the day. */
   hasInvestmentEvidence: boolean;
+  /**
+   * Part-A — historical DIGITAL-ASSET (crypto) valuation for the day, reporting
+   * currency: Σ (crypto account native quantity, held constant) × that day's
+   * CoinGecko price. Overrides the flat totalDigitalAssets exactly like
+   * investmentValue overrides totalInvestments. Absent evidence ⇒ flat is kept.
+   */
+  digitalAssetValue: number;
+  /** Completeness tier of the day's crypto valuation ("estimated" — constant quantity). */
+  digitalAssetTier: CompletenessTier;
+  /** True when a historical BTC price reached the day (else keep flat, never fabricate). */
+  hasDigitalAssetEvidence: boolean;
   /** Trust tier of the walked-back cash/card component (typically "derived"). */
   cashCardTier: CompletenessTier;
 }
@@ -103,20 +114,29 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   // exists); otherwise there is nothing to value (flat ≈ 0) and the day is a
   // cash-only reconstruction.
   const investments = input.hasInvestmentEvidence ? input.investmentValue : flatInvestments;
-  const totals: ClassifyTotals = { ...base, totalInvestments: investments };
+  // Part-A — override the flat crypto component with the historical
+  // (constant-quantity × CoinGecko price) valuation when a BTC price reached the
+  // day; otherwise keep the flat estimate (never fabricated).
+  const digitalAssets = input.hasDigitalAssetEvidence ? input.digitalAssetValue : base.totalDigitalAssets;
+  const totals: ClassifyTotals = { ...base, totalInvestments: investments, totalDigitalAssets: digitalAssets };
   const fields = computeSnapshotFields(totals);
 
   const investmentTier: CompletenessTier = input.hasInvestmentEvidence ? input.investmentTier : "derived";
-  const tier = worstTier([input.cashCardTier, investmentTier]);
+  // Crypto tier only constrains the day when crypto was actually valued; with no
+  // BTC evidence it must not drag an otherwise-observed day down.
+  const tiers: CompletenessTier[] = [input.cashCardTier, investmentTier];
+  if (input.hasDigitalAssetEvidence) tiers.push(input.digitalAssetTier);
+  const tier = worstTier(tiers);
   // FLIP: observed only when every component is observed; otherwise the row is a
   // reconstruction and stays estimated (a derived date is never "observed").
   const isEstimated = tier !== "observed";
 
+  const parts: string[] = [];
+  if (input.hasInvestmentEvidence) parts.push("investments at A8 historical value");
+  if (input.hasDigitalAssetEvidence) parts.push("crypto at historical price × today's quantity");
   return {
     date, action: "write", fields, isEstimated, tier,
-    reason: input.hasInvestmentEvidence
-      ? `Investments valued at the A8 historical portfolio value (${tier}).`
-      : `Cash-only reconstruction for this date (${tier}).`,
+    reason: parts.length ? `${parts.join(" + ")} (${tier}).` : `Cash-only reconstruction for this date (${tier}).`,
   };
 }
 

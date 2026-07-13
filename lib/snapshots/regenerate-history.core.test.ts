@@ -36,6 +36,11 @@ const input = (over: Partial<DayRegenInput> = {}): DayRegenInput => ({
   investmentValue: 8_500, // A8 historical value (lower than the flat 10,000)
   investmentTier: "derived",
   hasInvestmentEvidence: true,
+  // Part-A crypto override — default OFF (no evidence) so existing cases are
+  // unchanged (flat totalDigitalAssets preserved); crypto cases set these.
+  digitalAssetValue: 0,
+  digitalAssetTier: "estimated",
+  hasDigitalAssetEvidence: false,
   cashCardTier: "derived",
   ...over,
 });
@@ -53,6 +58,19 @@ function main(): void {
     const expected = computeSnapshotFields({ ...base(), totalInvestments: 8_500 });
     check("derived aggregates match computeSnapshotFields (formula parity)", JSON.stringify(r.fields) === JSON.stringify(expected));
     check("netWorth reflects the A8 value", r.fields?.netWorth === expected.netWorth);
+  }
+
+  // ── 1b. Crypto (digital-asset) override (Part-A) ──────────────────────────
+  console.log("1b. Crypto override");
+  {
+    // Evidence present → totalDigitalAssets replaced with the historical value.
+    const r = regenerateDay(input({ digitalAssetValue: 3_500, hasDigitalAssetEvidence: true }));
+    check("crypto replaced with the historical value, not the flat 2,000", r.fields?.crypto === 3_500);
+    const expected = computeSnapshotFields({ ...base(), totalInvestments: 8_500, totalDigitalAssets: 3_500 });
+    check("aggregates match computeSnapshotFields with BOTH overrides", JSON.stringify(r.fields) === JSON.stringify(expected));
+    // No evidence → flat crypto preserved (never fabricated).
+    const flat = regenerateDay(input({ digitalAssetValue: 9_999, hasDigitalAssetEvidence: false }));
+    check("no crypto evidence → flat 2,000 preserved", flat.fields?.crypto === 2_000);
   }
 
   // ── 2. Frozen-row safety (observed rows never touched) ────────────────────
