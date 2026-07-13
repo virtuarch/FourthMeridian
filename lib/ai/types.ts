@@ -602,6 +602,27 @@ export interface TransactionsSummaryData {
   /** Absolute value of pending outflows. */
   pendingDebitTotal:  number;
 
+  // ── Needs classification (TE-2B disclosure; TI2-W1) ──────────────────────
+  /**
+   * Semantic "needs a human to say what this was" disclosure over the window's
+   * rows (settled + pending). DISCLOSURE ONLY — never subtracted from any money
+   * total above (the §3.2 invariant the Cash Flow Perspective already holds).
+   * Two earned clusters, per lib/transactions/needs-classification.ts:
+   *   - UNKNOWN_INFLOW_SOURCE      — income by sign only, no resolved source.
+   *   - UNKNOWN_PAYMENT_APP_PURPOSE — payment-app movement, purpose unresolved.
+   * `counterpartyResolution` records whether cluster A used read-time transfer
+   * parity ('PERSISTED_AND_READ_TIME', matching the Transactions Tab) or the
+   * persisted-only fallback — so a consumer knows the count's provenance.
+   */
+  needsClassification: {
+    count:                  number;
+    unknownInflowCount:     number;
+    unknownInflowTotal:     number;
+    unknownPaymentAppCount: number;
+    unknownPaymentAppTotal: number;
+    counterpartyResolution: 'PERSISTED_AND_READ_TIME' | 'PERSISTED_ONLY';
+  };
+
   // ── By category ─────────────────────────────────────────────────────────
   byCategory: CategorySpend[];
 

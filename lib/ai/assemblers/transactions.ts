@@ -75,6 +75,14 @@ import type {
 } from '@/lib/ai/types';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
 import { isCostFlow, isRefund, isIncome, isTransfer, isDebtPayment } from '@/lib/transactions/flow-predicates';
+// TE-2B — the canonical "needs classification" predicate (single authority; this
+// assembler is a consumer, never a fork). TI2-W1: needs-classification aggregates.
+import { shouldSurfaceAsNeedsClassification } from '@/lib/transactions/needs-classification';
+// TI4 Slice 1 — read-time owned-account transfer matching, the SAME impure wrapper
+// the Tab's list reads call (lib/data/transactions.ts:136). TI2-W1 §3.3 parity:
+// so a payment-app row the Tab shows as a resolved internal transfer is NOT counted
+// here as UNKNOWN_PAYMENT_APP_PURPOSE (a KD-10 cross-surface divergence otherwise).
+import { resolveOwnedTransferCounterparties } from '@/lib/transactions/transfer-resolution';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { convertMoney, identityContext } from '@/lib/money/convert';
 import { buildSpaceConversionContext } from '@/lib/money/server-context';
@@ -174,6 +182,11 @@ const MAX_EXPLICIT_WINDOW_DAYS = 800; // ~26 months
 // ---------------------------------------------------------------------------
 
 type TxnRow = {
+  // TI2-W1 — row identity + account keys, needed to run the read-time transfer
+  // matcher (resolveOwnedTransferCounterparties) for counterparty parity (§3.3).
+  id:                 string;
+  accountId:          string | null;
+  financialAccountId: string | null;
   date:     Date;
   merchant: string;   // RAW provider descriptor — preserved for forensic use
   // MI M6 read cutover — resolved Merchant identity (null/absent when unresolved).
@@ -190,7 +203,20 @@ type TxnRow = {
   // BANKING_FLOWS query filter admits (the filter is on flowType itself).
   flowType:      FlowType | null;
   flowDirection: FlowDirection | null;
+  // TI2-W1 — canonical inputs to shouldSurfaceAsNeedsClassification (all flat
+  // persisted columns). counterpartyAccountId is the PERSISTED provider-confirmed
+  // link; the read-time match supplements it (§3.3 parity).
+  classificationReason:  string | null;
+  transferRail:          string | null;
+  counterpartyAccountId: string | null;
 };
+
+/**
+ * The subset of a row buildMonthlyBreakdown actually reads. Kept narrower than
+ * TxnRow so the KD-17 / golden fixtures (which never carry the TI2-W1 identity /
+ * needs-classification columns) still satisfy the exported seam unchanged.
+ */
+type MonthlyRow = Pick<TxnRow, 'date' | 'amount' | 'currency' | 'category' | 'flowType'>;
 
 /**
  * MC1 Phase 2 Slice 4 — a row's amount in the money-context target, converted
@@ -201,13 +227,96 @@ type TxnRow = {
  * preserved by positive rates, so sign-partitioned accumulators (debit vs
  * credit, source-side legs) partition identically.
  */
-function amountInTarget(txn: TxnRow, ctx: ConversionContext): { amount: number; estimated: boolean } {
+function amountInTarget(
+  txn: { amount: number; currency: string | null; date: Date },
+  ctx: ConversionContext,
+): { amount: number; estimated: boolean } {
   const c = convertMoney(
     { amount: txn.amount, currency: txn.currency },
     txn.date.toISOString().slice(0, 10),
     ctx,
   );
   return { amount: c.amount, estimated: c.estimated };
+}
+
+// ---------------------------------------------------------------------------
+// TI2-W1 — needs-classification aggregation (pure; exported for the golden /
+// parity tests). The predicate itself lives in one place
+// (lib/transactions/needs-classification.ts); this only sums its verdicts into
+// the disclosure aggregate. It is DISCLOSURE ONLY — it never feeds any money
+// total in the assembler (§3.2 invariant: needs-classification is a review flag,
+// never subtracted from Cash In/Out).
+// ---------------------------------------------------------------------------
+
+/** The minimal per-row facts the needs-classification aggregate reads. */
+export interface NeedsClassificationRow {
+  id:                    string;
+  flowType:              string | null;
+  classificationReason:  string | null;
+  transferRail:          string | null;
+  merchantId?:           string | null;
+  counterpartyAccountId: string | null;
+  amount:                number;
+  currency:              string | null;
+  date:                  Date;
+}
+
+export interface NeedsClassificationAggregate {
+  count:                  number;
+  unknownInflowCount:     number;
+  unknownInflowTotal:     number;
+  unknownPaymentAppCount: number;
+  unknownPaymentAppTotal: number;
+}
+
+/**
+ * Accumulate the needs-classification disclosure aggregate over the fetched rows
+ * (settled + pending both, per §3.1). `resolvedCp` is the set of row ids whose
+ * counterparty was resolved at read time by the TI4 matcher — the parity term
+ * (§3.3): a row's `hasResolvedCounterparty` is `counterpartyAccountId != null OR
+ * read-time-resolved`, IDENTICAL to how the Tab builds the input
+ * (lib/data/transactions.ts:190 → deriveTransactionContext). Amounts are in the
+ * target currency at each row's own date (identical to every other accumulator).
+ */
+export function accumulateNeedsClassification(
+  rows:       readonly NeedsClassificationRow[],
+  resolvedCp: ReadonlySet<string>,
+  ctx:        ConversionContext,
+): NeedsClassificationAggregate {
+  let count = 0;
+  let unknownInflowCount = 0;
+  let unknownInflowTotal = 0;
+  let unknownPaymentAppCount = 0;
+  let unknownPaymentAppTotal = 0;
+
+  for (const r of rows) {
+    const res = shouldSurfaceAsNeedsClassification({
+      flowType:                r.flowType,
+      classificationReason:    r.classificationReason,
+      transferRail:            r.transferRail,
+      hasResolvedMerchant:     r.merchantId != null,
+      hasResolvedCounterparty: r.counterpartyAccountId != null || resolvedCp.has(r.id),
+    });
+    if (!res.needsClassification) continue;
+
+    count += 1;
+    const { amount } = amountInTarget(r, ctx);
+    if (res.reason === 'UNKNOWN_INFLOW_SOURCE') {
+      unknownInflowCount += 1;
+      unknownInflowTotal += amount;
+    } else if (res.reason === 'UNKNOWN_PAYMENT_APP_PURPOSE') {
+      unknownPaymentAppCount += 1;
+      unknownPaymentAppTotal += Math.abs(amount);
+    }
+  }
+
+  return {
+    count,
+    unknownInflowCount,
+    unknownInflowTotal:     Math.round(unknownInflowTotal * 100) / 100,
+    unknownPaymentAppCount,
+    unknownPaymentAppTotal: Math.round(unknownPaymentAppTotal * 100) / 100,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +379,10 @@ async function assembleTransactions(
       date:      win.end ? { gte: win.start, lte: win.end } : { gte: win.start },
     },
     select: {
+      // TI2-W1 — id + account keys for the read-time transfer matcher (§3.3 parity).
+      id:                 true,
+      accountId:          true,
+      financialAccountId: true,
       date:          true,
       merchant:      true,
       // MI M6 read cutover — resolved Merchant identity (additive join).
@@ -281,6 +394,10 @@ async function assembleTransactions(
       currency:      true, // MC1 Phase 2 Slice 4 — read-only conversion input
       flowType:      true,
       flowDirection: true,
+      // TI2-W1 — flat canonical inputs to the needs-classification predicate.
+      classificationReason:  true,
+      transferRail:          true,
+      counterpartyAccountId: true,
     },
     orderBy: { date: 'desc' },
     take:    TRANSACTION_FETCH_LIMIT + 1,
@@ -324,6 +441,22 @@ async function assembleTransactions(
         dates:      [...new Set(rows.map((r) => r.date.toISOString().slice(0, 10)))],
       })
     : identityContext(DEFAULT_DISPLAY_CURRENCY);
+
+  // ── TI2-W1: needs-classification disclosure aggregate ─────────────────────
+  // §3.3 counterparty parity: only pay for the read-time transfer matcher when
+  // an unresolved payment-app row actually exists in the window (the common
+  // case has none — one array scan to detect). Without such a row, a read-time
+  // match could not change any needs-classification verdict, so the extra
+  // queries are pure waste. When present, we call the SAME wrapper the Tab's
+  // list reads use, so a resolved internal transfer is not miscounted as
+  // UNKNOWN_PAYMENT_APP_PURPOSE (KD-10 cross-surface consistency).
+  const hasUnresolvedPaymentApp = rows.some(
+    (r) => r.transferRail === 'PAYMENT_APP' && r.counterpartyAccountId == null,
+  );
+  const resolvedCp = hasUnresolvedPaymentApp
+    ? new Set((await resolveOwnedTransferCounterparties(rows, { spaceId })).keys())
+    : new Set<string>();
+  const needsClassification = accumulateNeedsClassification(rows, resolvedCp, moneyCtx);
 
   // MC1 P3 Slice 4 (D-7) — window-level taint, mirrors the monthly buckets.
   let windowEstimated = false;
@@ -716,6 +849,15 @@ async function assembleTransactions(
     pendingDebitCount,
     pendingDebitTotal:  Math.round(pendingDebitTotal  * 100) / 100,
 
+    // TI2-W1 — needs-classification disclosure aggregate (six scalars). Purely
+    // additive: no money total above is affected. counterpartyResolution reports
+    // that read-time parity was applied (§3.3 option (a), not the PERSISTED_ONLY
+    // fallback).
+    needsClassification: {
+      ...needsClassification,
+      counterpartyResolution: 'PERSISTED_AND_READ_TIME' as const,
+    },
+
     byCategory: byCategoryOutput,
 
     monthlyBreakdown,
@@ -827,8 +969,8 @@ export function checkSpendingCategoryInvariant(
 // Exported for KD-17 regression tests (lib/ai/assemblers/transactions.kd17.test.ts)
 // — no runtime consumer outside this module.
 export function buildMonthlyBreakdown(
-  settled:  TxnRow[],
-  pending:  TxnRow[],
+  settled:  MonthlyRow[],
+  pending:  MonthlyRow[],
   startIso: string,
   endIso:   string,
   // KD-7: YYYY-MM of the fetch-cap coverage floor, or null when not truncated.
