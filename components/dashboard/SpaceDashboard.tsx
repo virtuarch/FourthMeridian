@@ -41,6 +41,7 @@ import { InvestmentAccountsWidget } from "@/components/space/widgets/InvestmentA
 // section-backed (net_worth_chart + allocation).
 import { NetWorthChart, type Interval } from "@/components/charts/NetWorthChart";
 import { NetWorthChartModal } from "@/components/charts/NetWorthChartModal";
+import { RebuildHistoryButton } from "@/components/dashboard/RebuildHistoryButton";
 import { AllocationChart } from "@/components/charts/AllocationChart";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
@@ -1072,6 +1073,9 @@ function ContextualCard({ sectionKey, label }: { sectionKey: string; label: stri
 type SectionRenderProps = {
   accounts:              SpaceAccount[];
   spaceId:           string;
+  /** Wealth-timeline amendment (Phase 2) — "PERSONAL" | "SHARED"; gates the
+   *  personal-only "Rebuild history" action on net_worth_chart. */
+  spaceType:             string;
   canManage:             boolean;
   onAddGoal?:            () => void;
   payoffFullscreen:      boolean;
@@ -1303,16 +1307,27 @@ function NetWorthChartSection({
   snapshots,
   ctx,
   snapshotCurrency,
+  spaceId,
+  spaceType,
+  accounts,
 }: {
   snapshots?:        Snapshot[] | null;
   ctx?:              ConversionContext;
   snapshotCurrency?: string;
+  spaceId?:          string;
+  spaceType?:        string;
+  accounts?:         SpaceAccount[];
 }): React.ReactElement {
   const [chartInterval, setChartInterval] = useState<Interval>("1M");
   const [expanded, setExpanded] = useState(false);
   return (
     <>
-      <div className="flex justify-end mb-1">
+      <div className="flex justify-end items-center gap-1 mb-1">
+        {/* Wealth-timeline amendment (Phase 2) — personal-space only; SHARED
+            approval is Phase 3. */}
+        {spaceType === "PERSONAL" && spaceId && accounts && accounts.length > 0 && (
+          <RebuildHistoryButton spaceId={spaceId} accounts={accounts} />
+        )}
         <button
           onClick={() => setExpanded(true)}
           aria-label="Expand chart"
@@ -1367,7 +1382,7 @@ function AllocationSection({
 
 const SectionRegistry: Record<string, (p: SectionRenderProps) => React.ReactElement> = {
   "net_worth":              renderNetWorth,
-  "net_worth_chart":        (p) => <NetWorthChartSection snapshots={p.snapshots} ctx={p.ctx} snapshotCurrency={p.snapshotCurrency} />,
+  "net_worth_chart":        (p) => <NetWorthChartSection snapshots={p.snapshots} ctx={p.ctx} snapshotCurrency={p.snapshotCurrency} spaceId={p.spaceId} spaceType={p.spaceType} accounts={p.accounts} />,
   "allocation":             (p) => <AllocationSection accounts={p.accounts} ctx={p.ctx} />,
   // ── Wealth Perspective (UX-PER-3) — assets-only analytical widgets ──────────
   // EXPERIMENT (UX): temporarily render "Wealth by Account" as a two-column
@@ -1685,6 +1700,7 @@ function SectionCard({
   section,
   accounts,
   spaceId,
+  spaceType,
   category,
   canManage,
   onAddGoal,
@@ -1705,6 +1721,7 @@ function SectionCard({
   section:     DashboardSection;
   accounts:    SpaceAccount[];
   spaceId: string;
+  spaceType:   string;
   category:    string;
   canManage:   boolean;
   onAddGoal?:  () => void;
@@ -1804,7 +1821,7 @@ function SectionCard({
     if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen, ctx);
 
     const render = SectionRegistry[section.key];
-    if (render) return render({ accounts, spaceId, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, onSelectPeriod, perspective, filterId, onPerspectiveChange, ficoScore, ficoUpdatedAt, goals });
+    if (render) return render({ accounts, spaceId, spaceType, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, onSelectPeriod, perspective, filterId, onPerspectiveChange, ficoScore, ficoUpdatedAt, goals });
     return <ContextualCard sectionKey={section.key} label={section.label} />;
   }
 
@@ -3404,6 +3421,7 @@ export function SpaceDashboard({
                     section={vs}
                     accounts={accounts}
                     spaceId={spaceId}
+                    spaceType={spaceType}
                     category={category}
                     canManage={canManage}
                     ctx={widgetCtx}
@@ -3505,6 +3523,7 @@ export function SpaceDashboard({
                     section={s}
                     accounts={accounts}
                     spaceId={spaceId}
+                    spaceType={spaceType}
                     category={category}
                     canManage={canManage}
                     onAddGoal={() => setShowAddGoal(true)}
@@ -3631,6 +3650,7 @@ export function SpaceDashboard({
                         section={s}
                         accounts={accounts}
                         spaceId={spaceId}
+                        spaceType={spaceType}
                         category={category}
                         canManage={canManage}
                         onAddGoal={() => setShowAddGoal(true)}
@@ -3649,6 +3669,7 @@ export function SpaceDashboard({
                   section={s}
                   accounts={accounts}
                   spaceId={spaceId}
+                  spaceType={spaceType}
                   category={category}
                   canManage={canManage}
                   onAddGoal={() => setShowAddGoal(true)}

@@ -83,6 +83,23 @@ export interface RegenerateWealthHistoryArgs {
   dryRun?:  boolean;
   now?:     Date;
   client?:  Client;
+  /**
+   * 2026-07-14 (Phase 2 — amendment system) — when true, this run is an
+   * EXPLICIT, consent-gated SnapshotAmendment, not the automatic pipeline. It
+   * (a) exempts every day from the frozen + membership-changed guards (the core
+   * bypass), and (b) bypasses the WEALTH_REGENERATION_ENABLED kill switch —
+   * that env flag gates the AUTOMATIC pipeline; a deliberately-consented
+   * amendment is gated by consent, recorded on the SnapshotAmendment row, not by
+   * an operational switch. Callers must be the amendment layer
+   * (lib/snapshots/snapshot-amendment.ts). Defaults false (undefined) → nothing
+   * about the automatic path changes.
+   */
+  isAmendment?: boolean;
+  /**
+   * The SnapshotAmendment.id to stamp on every row this run rewrites (only used
+   * with isAmendment). Lets a row point back at the amendment that revised it.
+   */
+  amendedByAmendmentId?: string;
 }
 
 export interface WealthHistoryDiff {
@@ -91,6 +108,8 @@ export interface WealthHistoryDiff {
   tier:          CompletenessTier;
   stocksBefore:  number | null; // existing row's investment component (null when no row)
   stocksAfter:   number | null; // regenerated investment component (null when skipped)
+  cryptoBefore:  number | null; // existing row's digital-asset component (null when no row)
+  cryptoAfter:   number | null; // regenerated digital-asset component (null when skipped)
   // 2026-07-15 — cash/savings/debt/netWorth before/after, so a caller can see the
   // cash-walk-back + floor fix take effect too, not just the A8 investment
   // override. Previously silent here — a full 30-day cash/debt regeneration
@@ -131,7 +150,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const client = args.client ?? db;
   const now = args.now ?? new Date();
   const { spaceId, fromDate, toDate } = args;
-  const applyWrites = !args.dryRun && wealthRegenerationEnabled();
+  // Automatic runs are gated by the WEALTH_REGENERATION_ENABLED kill switch; an
+  // explicit consent-gated amendment is gated by consent instead (see args.isAmendment).
+  const applyWrites = !args.dryRun && (wealthRegenerationEnabled() || args.isAmendment === true);
 
   const zero: RegenerateWealthHistoryResult = {
     spaceId, fromDate, toDate, considered: 0, written: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0, applied: applyWrites, diffs: [],
@@ -283,7 +304,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // Existing rows in the window — for the frozen-row flag + before/after diffs.
   const existing = await client.spaceSnapshot.findMany({
     where:  { spaceId, date: { gte: fromISO(fromDate), lte: fromISO(toDate) } },
-    select: { date: true, isEstimated: true, stocks: true, cash: true, savings: true, debt: true, netWorth: true },
+    select: { date: true, isEstimated: true, stocks: true, crypto: true, cash: true, savings: true, debt: true, netWorth: true },
   });
   const existingByDate = new Map(existing.map((r) => [isoDate(r.date), r]));
 
@@ -386,6 +407,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // array above only reflects CURRENTLY active links, so writing this day
       // would silently drop that account's real contribution.
       membershipChangedSince: revokedDates.some((r) => r.getTime() > d.getTime()),
+      // Phase 2 — an explicit amendment bypasses the frozen + membership guards.
+      isAmendment: args.isAmendment === true,
     };
 
     const res = regenerateDay(input);
@@ -398,6 +421,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       date: dISO, action: res.action, tier: res.tier,
       stocksBefore: prior ? prior.stocks : null,
       stocksAfter: res.fields ? res.fields.stocks : null,
+      cryptoBefore: prior ? prior.crypto : null,
+      cryptoAfter: res.fields ? res.fields.crypto : null,
       cashBefore: prior ? prior.cash : null,
       cashAfter: res.fields ? res.fields.cash : null,
       savingsBefore: prior ? prior.savings : null,
@@ -415,7 +440,13 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
 
   if (applyWrites) {
     for (const w of writes) {
-      const data = { ...w.fields, isEstimated: w.isEstimated, reportingCurrency: space.reportingCurrency };
+      const data = {
+        ...w.fields,
+        isEstimated: w.isEstimated,
+        reportingCurrency: space.reportingCurrency,
+        // Phase 2 — stamp the amendment that revised this row (amendment runs only).
+        ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
+      };
       await client.spaceSnapshot.upsert({
         where:  { spaceId_date: { spaceId, date: w.date } },
         create: { spaceId, date: w.date, ...data },

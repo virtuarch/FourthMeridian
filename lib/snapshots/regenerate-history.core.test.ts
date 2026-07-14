@@ -99,6 +99,29 @@ function main(): void {
     check("no membership change ⇒ writes normally", regenerateDay(input({ membershipChangedSince: false })).action === "write");
   }
 
+  // ── 2c. Amendment bypass (Phase 2 — explicit, consent-gated rebuild) ──────
+  console.log("2c. Amendment bypass");
+  {
+    // A frozen (observed) row IS revised by an amendment — the one sanctioned
+    // way to deliberately rewrite an observation (proposal §4).
+    const frozen = regenerateDay(input({ existingIsEstimated: false, isAmendment: true }));
+    check("amendment revises a frozen row → write (not skip-frozen)", frozen.action === "write" && frozen.fields !== null);
+    check("amended row lands isEstimated=true (a revised observation is a reconstruction)", frozen.isEstimated === true);
+
+    // A membership-changed day IS revised by an amendment (the guard is exempt
+    // by construction for the consent-gated path).
+    const member = regenerateDay(input({ membershipChangedSince: true, isAmendment: true }));
+    check("amendment revises a membership-changed day → write (not skip)", member.action === "write" && member.fields !== null);
+
+    // Even an all-observed day stays estimated once amended (§4 flip).
+    const allObserved = regenerateDay(input({ investmentTier: "observed", cashCardTier: "observed", isAmendment: true }));
+    check("amendment forces isEstimated=true even when every component is observed", allObserved.isEstimated === true);
+
+    // Regression: without isAmendment the guards are unchanged.
+    check("no isAmendment ⇒ frozen still skips (automatic path unchanged)", regenerateDay(input({ existingIsEstimated: false })).action === "skip-frozen");
+    check("no isAmendment ⇒ membership-changed still skips", regenerateDay(input({ membershipChangedSince: true })).action === "skip-membership-changed");
+  }
+
   // ── 3. Flip rule (derived/estimated never presented as observed) ──────────
   console.log("3. Flip rule");
   {

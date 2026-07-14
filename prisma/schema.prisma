@@ -447,6 +447,9 @@ model User {
   platformGrants        PlatformGrant[] @relation("PlatformGrantsHeld")
   platformGrantsIssued  PlatformGrant[] @relation("PlatformGrantsIssued")
   platformGrantsRevoked PlatformGrant[] @relation("PlatformGrantsRevoked")
+
+  // Wealth-timeline amendment system (Phase 2) — amendments this user requested.
+  requestedSnapshotAmendments SnapshotAmendment[] @relation("SnapshotAmendmentRequester")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -520,6 +523,10 @@ model Space {
 
   // Notifications (OPS-3 S1) — optional Space context; SetNull on Space delete.
   notifications Notification[]
+
+  // Wealth-timeline amendment system (Phase 2) — deliberate, consent-gated
+  // rebuilds of this Space's already-written historical SpaceSnapshot rows.
+  snapshotAmendments SnapshotAmendment[]
 
   @@index([type])
   @@index([isPublic])
@@ -955,6 +962,9 @@ model FinancialAccount {
   // FlowType (v2.5.5 P3) — transactions whose counterparty ("other side") is
   // this account. Relation-only back-reference; populated from P4 onward.
   counterpartyTransactions Transaction[]               @relation("TransactionCounterpartyAccount")
+
+  // Wealth-timeline amendment system (Phase 2) — amendments scoped to this account.
+  snapshotAmendments SnapshotAmendment[]
 
   @@index([ownerUserId])
   @@index([ownerSpaceId])
@@ -2246,6 +2256,15 @@ model SpaceSnapshot {
   // USD-presenting code, so the default is a true statement about old rows.
   reportingCurrency String @default("USD")
 
+  // Wealth-timeline amendment system (Phase 2) — points at the most recent
+  // deliberate, consent-gated amendment that revised this row. Nullable/SetNull:
+  // additive, zero migration risk; every existing row reads null (never amended).
+  // An amended row also flips isEstimated→true (a deliberately revised
+  // observation is honestly a reconstruction again). See
+  // docs/initiatives/wealth-timeline/WEALTH_TIMELINE_AMENDMENT_SYSTEM_PROPOSAL.md §4.
+  amendedByAmendmentId String?
+  amendedByAmendment   SnapshotAmendment? @relation(fields: [amendedByAmendmentId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
 
   @@unique([spaceId, date])
@@ -2726,4 +2745,89 @@ model MerchantMergeDecision {
   createdAt       DateTime             @default(now())
 
   @@index([verdict, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SnapshotAmendment (Wealth-timeline amendment system — Phase 2)
+//
+// One row per deliberate, consent-gated rebuild of an already-written historical
+// range of SpaceSnapshot rows. Automatic A9 regen never rewrites a frozen
+// (observed) row or a day whose account membership changed
+// (regenerate-history.core.ts's frozen + skip-membership-changed guards); an
+// amendment is the ONLY sanctioned way to revise such a day on purpose, in
+// either direction (enrich the past with a newly-added long-held account, or
+// erase a removed account's contribution). See the proposal doc §4.
+//
+// Phase 2 scope: PERSONAL-space flow only — PENDING → APPLIED, no approval
+// state. Phase 3 (SHARED-space) will add PENDING_APPROVAL/APPROVED/DENIED +
+// approver columns; deliberately not modelled yet.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum SnapshotAmendmentKind {
+  ACCOUNT_ADDED_RETROACTIVE // enrich past days with a newly-added long-held account
+  ACCOUNT_REMOVED_RETROACTIVE // erase a removed account's contribution from past days
+  ACCOUNT_HARD_DELETED // like REMOVED, but the account is being permanently deleted
+  IMPORT_ENRICHMENT // enrich past days from newly-imported historical data
+}
+
+enum SnapshotAmendmentStatus {
+  PENDING // created, not yet applied
+  APPLIED // the affected SpaceSnapshot rows have been rewritten in place
+}
+
+model SnapshotAmendment {
+  id                 String                  @id @default(cuid())
+  spaceId            String
+  space              Space                   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  financialAccountId String
+  financialAccount   FinancialAccount        @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  kind               SnapshotAmendmentKind
+  fromDate           DateTime                @db.Date
+  toDate             DateTime                @db.Date
+  requestedByUserId  String
+  requestedByUser    User                    @relation("SnapshotAmendmentRequester", fields: [requestedByUserId], references: [id], onDelete: Cascade)
+  requestedAt        DateTime                @default(now())
+  status             SnapshotAmendmentStatus @default(PENDING)
+  // The explicit "yes, rewrite my history" confirmation — an auditable fact, not
+  // a boolean anyone could flip. Set when the amendment is applied.
+  consentedAt        DateTime?
+  appliedAt          DateTime?
+  // Links to the AuditLog row written on apply (same auditLogId-link pattern the
+  // sync-complete flow uses), so Activity gets a quantified delta for free.
+  auditLogId         String?
+  // Per-day stored before/after breakdown — NOT recompute-on-read: a stored value
+  // stays true forever even after the account is hard-deleted and its source
+  // transactions are gone. See proposal §4.
+  days               SnapshotAmendmentDay[]
+  // The SpaceSnapshot rows most recently revised by this amendment.
+  amendedSnapshots   SpaceSnapshot[]
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  @@index([spaceId, status])
+  @@index([financialAccountId])
+  @@index([requestedByUserId])
+}
+
+model SnapshotAmendmentDay {
+  id          String            @id @default(cuid())
+  amendmentId String
+  amendment   SnapshotAmendment @relation(fields: [amendmentId], references: [id], onDelete: Cascade)
+  date        DateTime          @db.Date
+  // before/after for each component that changed (null = unchanged / no prior row).
+  stocksBefore   Float?
+  stocksAfter    Float?
+  cryptoBefore   Float?
+  cryptoAfter    Float?
+  cashBefore     Float?
+  cashAfter      Float?
+  savingsBefore  Float?
+  savingsAfter   Float?
+  debtBefore     Float?
+  debtAfter      Float?
+  netWorthBefore Float?
+  netWorthAfter  Float?
+
+  @@unique([amendmentId, date])
+  @@index([amendmentId])
 }

@@ -96,6 +96,12 @@ export const AuditAction = {
   ACCOUNT_RENAMED:          "ACCOUNT_RENAMED",
   ACCOUNT_RESTORE:          "ACCOUNT_RESTORE",
   DEBT_PROFILE_UPDATED:     "DEBT_PROFILE_UPDATED",
+  // Wealth-timeline amendment system (Phase 2) — an explicit, consent-gated
+  // rebuild of already-written historical SpaceSnapshot rows was applied.
+  // metadata carries the quantified delta (net-worth before→after over the
+  // range) so Activity can render "June net worth revised $X → $Y" without
+  // knowing anything about snapshot internals.
+  SNAPSHOT_AMENDMENT_APPLIED: "SNAPSHOT_AMENDMENT_APPLIED",
 
   // ── Members ──────────────────────────────────────────────────────────────────
   MEMBER_INVITED:           "MEMBER_INVITED",
