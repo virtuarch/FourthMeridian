@@ -24,6 +24,7 @@ import type { PlatformSection } from "./widget-kit";
 import { SecAuditFeedWidget } from "./widgets/SecAuditFeedWidget";
 import { SecAuthPostureWidget } from "./widgets/SecAuthPostureWidget";
 import { SecSessionsWidget } from "./widgets/SecSessionsWidget";
+import { SecAnomaliesWidget } from "./widgets/SecAnomaliesWidget";
 import { OpsJobHealthWidget } from "./widgets/OpsJobHealthWidget";
 import { OpsRateLimitsWidget } from "./widgets/OpsRateLimitsWidget";
 import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
@@ -48,6 +49,8 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   sec_audit_feed:   SecAuditFeedWidget,
   sec_auth_posture: SecAuthPostureWidget,
   sec_sessions:     SecSessionsWidget,
+  // Security Operations (Wave 3 ⑧)
+  sec_anomalies:    SecAnomaliesWidget,
   // Platform Operations (PO1.2)
   ops_job_health:   OpsJobHealthWidget,
   ops_rate_limits:  OpsRateLimitsWidget,

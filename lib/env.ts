@@ -49,6 +49,11 @@ const _e = {
   RESEND_API_KEY:       process.env.RESEND_API_KEY,
   EMAIL_FROM_DEFAULT:   process.env.EMAIL_FROM_DEFAULT,
 
+  // Security Ops alerts inbox (Wave 3 ⑧). Optional — the anomaly detector sends
+  // its direct security-alert email here; defaults to security@fourthmeridian.com
+  // when unset (still env-gated by RESEND_API_KEY like all mail).
+  SECURITY_ALERTS_EMAIL: process.env.SECURITY_ALERTS_EMAIL,
+
   // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Both optional — absent means
   // CAPTCHA is DISABLED (verifyCaptchaToken skips → true; widgets don't
   // render). The secret gates server-side verification (lib/captcha.ts reads
@@ -261,6 +266,11 @@ export const env = {
   get RESEND_API_KEY()     { return _e.RESEND_API_KEY; },
   /** Optional default From identity; falls back to the per-purpose sender map. */
   get EMAIL_FROM_DEFAULT() { return _e.EMAIL_FROM_DEFAULT; },
+
+  // ── Security Ops (Wave 3 ⑧) ─────────────────────────────────────────────────
+  /** Inbox for direct security-anomaly alert emails. Defaults to
+   *  security@fourthmeridian.com when unset. */
+  get SECURITY_ALERTS_EMAIL() { return _e.SECURITY_ALERTS_EMAIL ?? "security@fourthmeridian.com"; },
 
   // ── CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥) ────────────────────────────────
   // NOTE: lib/captcha.ts (the single server-side verify site) reads

@@ -164,6 +164,15 @@ export const AuditAction = {
   PLATFORM_GRANT_REVOKED:       "PLATFORM_GRANT_REVOKED",
   PLATFORM_GRANT_REINSTATED:    "PLATFORM_GRANT_REINSTATED",
 
+  // ── Security Ops anomalies (Wave 3 ⑧) ────────────────────────────────────
+  // Written once per open anomaly window by lib/security/anomaly-alerts.ts when
+  // a threshold trips (failed-login burst per identifier/IP, recovery-code
+  // streak, disabled-admin probe). `metadata.key` carries the dedupe identity
+  // ({identifier|ip|…}); the row is BOTH the trip record the Security Ops
+  // anomalies widget reads AND the suppress-while-open lock (one row per window,
+  // not one per failed attempt).
+  SECURITY_ANOMALY_DETECTED:    "SECURITY_ANOMALY_DETECTED",
+
   // ── AI Context ───────────────────────────────────────────────────────────────
   AI_CONTEXT_ASSEMBLED:     "AI_CONTEXT_ASSEMBLED",
   // Shadow-mode selection plan (D6.3D-1). Records what a token-budgeted
@@ -243,6 +252,9 @@ export const ADMIN_SECURITY_FILTER_ACTIONS: AuditActionType[] = [
   AuditAction.RECOVERY_CODES_REGENERATED,
   AuditAction.SESSION_REVOKED,
   AuditAction.ADMIN_SESSION_REVOKED,
+  // Wave 3 ⑧ — anomaly trips surface in the security audit feed too, not just
+  // the dedicated anomalies widget.
+  AuditAction.SECURITY_ANOMALY_DETECTED,
 ];
 
 /**

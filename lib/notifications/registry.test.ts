@@ -220,6 +220,8 @@ const WIRED = new Set<string>([
   "SYNC_COMPLETED",
   "IMPORT_COMPLETED",
   "IMPORT_COMPLETED_WITH_ERRORS",
+  // Wave 3 ⑧ — Security Ops anomaly bell (lib/security/anomaly-alerts.ts).
+  "SECURITY_ANOMALY_DETECTED",
 ]);
 for (const [key, e] of entries) {
   if (WIRED.has(key)) {

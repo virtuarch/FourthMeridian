@@ -608,6 +608,32 @@ export const NOTIFICATION_REGISTRY = {
       title: `${str(d, "policyName", "A policy")} was updated`,
     }),
   },
+  // WIRED (Wave 3 ⑧): the Security Ops in-app bell for a detected auth anomaly,
+  // fanned out to every ACTIVE SECURITY_OPS grant holder + SYSTEM_ADMIN from
+  // lib/security/anomaly-alerts.ts. Reuses the existing PLATFORM category (this
+  // is platform-staff visibility, same audience as the other platform bells —
+  // no new category needed). IN_APP ONLY: the two direct security-alert EMAILS
+  // (SECURITY_ALERTS_EMAIL + the affected owner, when resolvable) are sent by
+  // the orchestrator, NOT this channel — the registry's no-double-email
+  // doctrine. suppress-while-open on the anomaly key means one bell per open
+  // window per recipient, not one per failed attempt.
+  SECURITY_ANOMALY_DETECTED: {
+    ...PLATFORM,
+    status: "WIRED" as const,
+    id: "SECURITY_ANOMALY_DETECTED",
+    priority: "HIGH" as const,
+    defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],
+    digestable: false,
+    dedupe: "suppress" as const,
+    dedupeKeyTemplate: "SECURITY_ANOMALY_DETECTED:{anomalyKey}:open",
+    icon: "shield-alert",
+    pointerContract: ["anomalyKey", "title", "summary"],
+    render: (d) => ({
+      title: str(d, "title", "Security anomaly detected"),
+      body:  str(d, "summary", "Unusual authentication activity was detected."),
+      href:  "/dashboard/platform/SECURITY_OPS",
+    }),
+  },
 
   // ══ DIGEST — the digest is ITSELF a notification (F13): its email delivery
   //    writes NotificationDelivery rows like any other type, so OPS-5 never

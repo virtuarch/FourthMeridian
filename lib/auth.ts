@@ -32,6 +32,53 @@ import { getCachedRevocation, setCachedRevocation, invalidateSession } from "@/l
 import { limitByKey, peekKey } from "@/lib/rate-limit";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { LOGIN_ID_WINDOW_SEC, LOGIN_ID_LIMIT, LOGIN_CAPTCHA_THRESHOLD } from "@/lib/login-limits";
+import { reportLoginFailureAnomalies } from "@/lib/security/anomaly-alerts";
+
+// ── Login-failure recording + inline anomaly detection (Wave 3 ⑧) ─────────────
+// Reasons that could contribute to a security anomaly (credential guessing /
+// disabled-admin probing) — only these trigger the detector, so a
+// blocked-but-correct-password failure (unverified/deactivated/pending) skips
+// the extra queries.
+const ANOMALY_SUSPICIOUS_REASONS = new Set<string>([
+  "user_not_found",
+  "invalid_password",
+  "totp_required",
+  "totp_invalid",
+  "recovery_code_invalid",
+  "system_admin_disabled",
+]);
+
+/**
+ * Write the LOGIN_FAILED audit row (canonical shape: userId when the account
+ * resolved, always ipAddress + userAgent, `{ identifier, reason, role? }`
+ * metadata) and, for suspicious reasons, run the inline anomaly detector. The
+ * detector is best-effort and non-throwing, so awaiting it here never affects
+ * the (already-failed) login outcome — it only adds a cheap bounded count on the
+ * common path, and the fan-out cost only on an actual threshold trip.
+ */
+async function recordLoginFailure(args: {
+  reason:     string;
+  identifier: string;
+  ipAddress:  string | null;
+  userAgent:  string | null;
+  userId?:    string;
+  role?:      UserRole;
+  userEmail?: string | null;
+}): Promise<void> {
+  const { reason, identifier, ipAddress, userAgent, userId, role, userEmail } = args;
+  await db.auditLog.create({
+    data: {
+      ...(userId ? { userId } : {}),
+      action:    AuditAction.LOGIN_FAILED,
+      ipAddress,
+      userAgent,
+      metadata:  { identifier, reason, ...(role ? { role } : {}) },
+    },
+  });
+  if (ANOMALY_SUSPICIOUS_REASONS.has(reason)) {
+    await reportLoginFailureAnomalies({ identifier, ip: ipAddress, reason, userId, userEmail });
+  }
+}
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -118,24 +165,18 @@ export const authOptions: NextAuthOptions = {
         });
 
         if (!user || !user.passwordHash) {
-          // Log failed attempt — no userId because user may not exist
-          await db.auditLog.create({
-            data: {
-              action:   "LOGIN_FAILED",
-              metadata: { identifier, reason: "user_not_found" },
-            },
-          });
+          // Log failed attempt — no userId because user may not exist. No owner
+          // email is possible here (unresolved identifier) — the enumeration-safe
+          // property: the hybrid only ever reaches a real, resolved inbox.
+          await recordLoginFailure({ reason: "user_not_found", identifier, ipAddress, userAgent });
           return null;
         }
 
         // ── Kill switch check ─────────────────────────────────────────────────
         if (adminDisabled && user.role === UserRole.SYSTEM_ADMIN) {
-          await db.auditLog.create({
-            data: {
-              userId:   user.id,
-              action:   "LOGIN_FAILED",
-              metadata: { reason: "system_admin_disabled", role: user.role },
-            },
+          await recordLoginFailure({
+            reason: "system_admin_disabled", identifier, ipAddress, userAgent,
+            userId: user.id, role: user.role, userEmail: user.email,
           });
           return null;
         }
@@ -143,12 +184,9 @@ export const authOptions: NextAuthOptions = {
         // ── Verify password ───────────────────────────────────────────────────
         const valid = await bcrypt.compare(credentials.password, user.passwordHash);
         if (!valid) {
-          await db.auditLog.create({
-            data: {
-              userId:   user.id,
-              action:   "LOGIN_FAILED",
-              metadata: { identifier, reason: "invalid_password", role: user.role },
-            },
+          await recordLoginFailure({
+            reason: "invalid_password", identifier, ipAddress, userAgent,
+            userId: user.id, role: user.role, userEmail: user.email,
           });
           return null;
         }
@@ -163,14 +201,9 @@ export const authOptions: NextAuthOptions = {
         // CredentialsSignin error is fine here — the two-step login UI surfaces
         // the specific "verify your email" message via /api/auth/pre-login.
         if (!user.emailVerifiedAt) {
-          await db.auditLog.create({
-            data: {
-              userId:   user.id,
-              action:   "LOGIN_FAILED",
-              ipAddress,
-              userAgent,
-              metadata: { identifier, reason: "email_unverified", role: user.role },
-            },
+          await recordLoginFailure({
+            reason: "email_unverified", identifier, ipAddress, userAgent,
+            userId: user.id, role: user.role, userEmail: user.email,
           });
           return null;
         }
@@ -196,14 +229,9 @@ export const authOptions: NextAuthOptions = {
         const wantsCancelDeletion =
           (credentials as Record<string, string>).cancelDeletion === "true";
         if (user.deletionScheduledAt && !wantsCancelDeletion) {
-          await db.auditLog.create({
-            data: {
-              userId:   user.id,
-              action:   "LOGIN_FAILED",
-              ipAddress,
-              userAgent,
-              metadata: { identifier, reason: "pending_deletion", role: user.role },
-            },
+          await recordLoginFailure({
+            reason: "pending_deletion", identifier, ipAddress, userAgent,
+            userId: user.id, role: user.role, userEmail: user.email,
           });
           return null;
         }
@@ -213,14 +241,9 @@ export const authOptions: NextAuthOptions = {
         // also carries deactivatedAt) through to full auth; it never lets a
         // merely-deactivated account (deletionScheduledAt null) bypass the gate.
         if (user.deactivatedAt && !wantsReactivation && !(user.deletionScheduledAt && wantsCancelDeletion)) {
-          await db.auditLog.create({
-            data: {
-              userId:   user.id,
-              action:   "LOGIN_FAILED",
-              ipAddress,
-              userAgent,
-              metadata: { identifier, reason: "account_deactivated", role: user.role },
-            },
+          await recordLoginFailure({
+            reason: "account_deactivated", identifier, ipAddress, userAgent,
+            userId: user.id, role: user.role, userEmail: user.email,
           });
           return null;
         }
@@ -256,14 +279,9 @@ export const authOptions: NextAuthOptions = {
 
           if (!totpCode && !recoveryCode) {
             // No second factor provided — block login
-            await db.auditLog.create({
-              data: {
-                userId:   user.id,
-                action:   AuditAction.LOGIN_FAILED,
-                ipAddress,
-                userAgent,
-                metadata: { reason: "totp_required", identifier },
-              },
+            await recordLoginFailure({
+              reason: "totp_required", identifier, ipAddress, userAgent,
+              userId: user.id, role: user.role, userEmail: user.email,
             });
             return null;
           }
@@ -276,14 +294,9 @@ export const authOptions: NextAuthOptions = {
               return null; // corrupted secret — fail safe
             }
             if (!verifyTOTP(totpCode, secret, 1)) {
-              await db.auditLog.create({
-                data: {
-                  userId:   user.id,
-                  action:   AuditAction.LOGIN_FAILED,
-                  ipAddress,
-                  userAgent,
-                  metadata: { reason: "totp_invalid", identifier },
-                },
+              await recordLoginFailure({
+                reason: "totp_invalid", identifier, ipAddress, userAgent,
+                userId: user.id, role: user.role, userEmail: user.email,
               });
               return null;
             }
@@ -291,14 +304,9 @@ export const authOptions: NextAuthOptions = {
             // Verify and consume a recovery code
             const used = await verifyRecoveryCode(user.id, recoveryCode);
             if (!used) {
-              await db.auditLog.create({
-                data: {
-                  userId:   user.id,
-                  action:   AuditAction.LOGIN_FAILED,
-                  ipAddress,
-                  userAgent,
-                  metadata: { reason: "recovery_code_invalid", identifier },
-                },
+              await recordLoginFailure({
+                reason: "recovery_code_invalid", identifier, ipAddress, userAgent,
+                userId: user.id, role: user.role, userEmail: user.email,
               });
               return null;
             }

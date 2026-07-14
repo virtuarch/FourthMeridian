@@ -81,6 +81,10 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "sec_audit_feed",   label: "Audit Feed",          order: 0 },
       { key: "sec_auth_posture", label: "Authentication Posture", order: 1 },
       { key: "sec_sessions",     label: "Sessions",            order: 2 },
+      // Wave 3 ⑧ — real-time auth-anomaly trips (failed-login bursts, recovery
+      // streaks, disabled-admin probes). Backfilled onto the live Space by
+      // ensurePlatformSections.
+      { key: "sec_anomalies",    label: "Anomalies",           order: 3 },
     ],
   },
   GROWTH_REVENUE: {
