@@ -80,3 +80,7 @@ cloudflared/cert.pem
 
 # Deprecated stub files (superseded by lib/plaid/ and lib/db.ts)
 .env*
+
+# scratch/backup artifacts
+_to_delete/
+fintracker_backup.sql
