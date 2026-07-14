@@ -8,7 +8,7 @@ import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
 import { env }                                    from "@/lib/env";
 import { requireSpaceRole }                   from "@/lib/session";
-import { SpaceMemberRole, SpaceMemberStatus } from "@prisma/client";
+import { SpaceMemberRole, SpaceMemberStatus, SpaceType } from "@prisma/client";
 import { getClientIp }                            from "@/lib/api";
 import { emitDomainEvent }                        from "@/lib/events/emit";
 import { sendEmail }                              from "@/lib/email/send";
@@ -25,6 +25,18 @@ export async function POST(
   const [auth, err] = await requireSpaceRole(spaceId, SpaceMemberRole.ADMIN);
   if (err) return err;
   const { user } = auth;
+
+  // Personal Spaces are strictly single-user — their sole member is the OWNER.
+  // Every "which personal space is mine?" lookup in the app resolves by
+  // membership (lib/space.ts, space-account-link, brief, sidebar, and — most
+  // dangerously — account-deletion purge), so a second member (even a VIEWER)
+  // could make a personal Space resolve as someone else's context or be
+  // cross-user-deleted. Reject the invite outright rather than clamp the role.
+  // SHARED spaces are unaffected.
+  const space = await db.space.findUnique({ where: { id: spaceId }, select: { type: true } });
+  if (space?.type === SpaceType.PERSONAL) {
+    return NextResponse.json({ error: "Personal Spaces can't have additional members." }, { status: 400 });
+  }
 
   const body = await req.json();
   const { username, role = "MEMBER" } = body as { username: string; role?: string };

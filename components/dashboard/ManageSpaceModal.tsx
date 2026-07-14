@@ -561,7 +561,12 @@ function MembersTab({
   const [rescindingId,  setRescindingId]  = useState<string | null>(null);
   const [changingRoleId, setChangingRoleId] = useState<string | null>(null);
 
-  const canInvite = ["OWNER", "ADMIN"].includes(myRole);
+  // Personal Spaces are strictly single-user (enforced server-side in the
+  // invite / accept / role-change routes). Hide the invite affordance, pending-
+  // invite list, role selectors, and remove buttons entirely — there is no one
+  // to invite or manage but the owner. SHARED spaces are unchanged.
+  const isPersonal = space.type === "PERSONAL";
+  const canInvite = !isPersonal && ["OWNER", "ADMIN"].includes(myRole);
   const isOwner   = myRole === "OWNER";
 
   const fetchQueue = useCallback(async () => {

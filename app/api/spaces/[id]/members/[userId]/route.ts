@@ -22,7 +22,7 @@
 
 import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
-import { SpaceMemberStatus, ShareStatus, SpaceMemberRole } from "@prisma/client";
+import { SpaceMemberStatus, ShareStatus, SpaceMemberRole, SpaceType } from "@prisma/client";
 import { requireSpaceRole }                   from "@/lib/session";
 import { withApiHandler, getClientIp }            from "@/lib/api";
 import { emitDomainEvent }                        from "@/lib/events/emit";
@@ -45,6 +45,15 @@ export const PATCH = withApiHandler(async (
   const [auth, err] = await requireSpaceRole(spaceId, SpaceMemberRole.OWNER);
   if (err) return err;
   const { user } = auth;
+
+  // Personal Spaces are strictly single-user — their only member is the OWNER
+  // (whose role is immutable below anyway), so there is never a non-owner member
+  // to re-role. Reject defensively so a role change can never be the operation
+  // that first gives a personal Space a non-owner member. SHARED unaffected.
+  const pspace = await db.space.findUnique({ where: { id: spaceId }, select: { type: true } });
+  if (pspace?.type === SpaceType.PERSONAL) {
+    return NextResponse.json({ error: "Personal Spaces have no additional members to manage." }, { status: 400 });
+  }
 
   const targetMembership = await db.spaceMember.findUnique({
     where: { spaceId_userId: { spaceId, userId: targetUserId } },
