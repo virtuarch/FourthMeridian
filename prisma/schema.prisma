@@ -963,9 +963,6 @@ model FinancialAccount {
   // this account. Relation-only back-reference; populated from P4 onward.
   counterpartyTransactions Transaction[]               @relation("TransactionCounterpartyAccount")
 
-  // Wealth-timeline amendment system (Phase 2) — amendments scoped to this account.
-  snapshotAmendments SnapshotAmendment[]
-
   @@index([ownerUserId])
   @@index([ownerSpaceId])
   @@index([createdByUserId])
@@ -2779,8 +2776,15 @@ model SnapshotAmendment {
   id                 String                  @id @default(cuid())
   spaceId            String
   space              Space                   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  // Soft ref (no FK), mirroring MerchantMergeDecision.decidedByUserId. An FK with
+  // onDelete: Cascade would DESTROY this amendment — and, via
+  // SnapshotAmendmentDay's cascade, its whole stored per-day breakdown — the
+  // moment the account is hard-deleted. That directly contradicts this table's
+  // purpose (a stored delta must stay true even AFTER the account is
+  // hard-deleted; ACCOUNT_HARD_DELETED is a first-class kind). So the account is
+  // referenced by id only. spaceId / requestedByUserId keep their FKs: nothing
+  // promises an amendment outlives its own space or requester, only its account.
   financialAccountId String
-  financialAccount   FinancialAccount        @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
   kind               SnapshotAmendmentKind
   fromDate           DateTime                @db.Date
   toDate             DateTime                @db.Date
