@@ -18,10 +18,21 @@
  * Gated behind WEALTH_REGENERATION_ENABLED: absent ⇒ zero writes (dry-run still
  * computes the plan). Best-effort/non-fatal per day — an A8 valuation failure
  * for one date leaves that date's existing row untouched, never fails the run.
+ *
+ * 2026-07-14 fix: the per-account floor used to be FinancialAccount.createdAt/
+ * SpaceAccountLink.createdAt (stamped at connect = today), so a freshly
+ * connected cash/debt account was permanently excluded from every historical
+ * day this ever computed — including on a LATER re-run after its transactions
+ * had finished syncing, since connect-date never changes. It now floors at
+ * the account's earliest real Transaction (parity with backfill.ts, including
+ * the SHARED-space secondary link-floor), so a re-run genuinely picks up days
+ * it previously couldn't once evidence exists — see jobs/sync-banks.ts, which
+ * now calls regenerateWealthHistoryForAccounts on every daily sync so this
+ * self-heals without a manual re-run.
  */
 
 import { db } from "@/lib/db";
-import { ShareStatus, type Prisma, type PrismaClient } from "@prisma/client";
+import { ShareStatus, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { getInvestmentValueAsOf } from "@/lib/investments/valuation";
@@ -75,11 +86,24 @@ export interface RegenerateWealthHistoryArgs {
 }
 
 export interface WealthHistoryDiff {
-  date:         string;
-  action:       DayRegenResult["action"];
-  tier:         CompletenessTier;
-  stocksBefore: number | null; // existing row's investment component (null when no row)
-  stocksAfter:  number | null; // regenerated investment component (null when skipped)
+  date:          string;
+  action:        DayRegenResult["action"];
+  tier:          CompletenessTier;
+  stocksBefore:  number | null; // existing row's investment component (null when no row)
+  stocksAfter:   number | null; // regenerated investment component (null when skipped)
+  // 2026-07-15 — cash/savings/debt/netWorth before/after, so a caller can see the
+  // cash-walk-back + floor fix take effect too, not just the A8 investment
+  // override. Previously silent here — a full 30-day cash/debt regeneration
+  // could run and this diff would never show it, which read as "nothing
+  // changed" even when it had.
+  cashBefore:    number | null;
+  cashAfter:     number | null;
+  savingsBefore: number | null;
+  savingsAfter:  number | null;
+  debtBefore:    number | null;
+  debtAfter:     number | null;
+  netWorthBefore: number | null;
+  netWorthAfter:  number | null;
 }
 
 export interface RegenerateWealthHistoryResult {
@@ -90,6 +114,11 @@ export interface RegenerateWealthHistoryResult {
   written:            number; // rows upserted (0 on dry-run / flag off)
   skippedFrozen:      number; // observed rows left untouched
   skippedUnsupported: number; // no A8 evidence — flat estimate preserved, not fabricated
+  // 2026-07-15 — days left untouched because an account was removed from the
+  // Space after that date. See regenerate-history.core.ts's
+  // "MEMBERSHIP CHANGED" guard and
+  // docs/initiatives/wealth-timeline/WEALTH_TIMELINE_AMENDMENT_SYSTEM_PROPOSAL.md §9.
+  skippedMembershipChanged: number;
   applied:            boolean; // whether writes actually happened
   diffs:              WealthHistoryDiff[];
 }
@@ -105,12 +134,15 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const applyWrites = !args.dryRun && wealthRegenerationEnabled();
 
   const zero: RegenerateWealthHistoryResult = {
-    spaceId, fromDate, toDate, considered: 0, written: 0, skippedFrozen: 0, skippedUnsupported: 0, applied: applyWrites, diffs: [],
+    spaceId, fromDate, toDate, considered: 0, written: 0, skippedFrozen: 0, skippedUnsupported: 0, skippedMembershipChanged: 0, applied: applyWrites, diffs: [],
   };
 
-  // Space reporting currency (for the per-day conversion context, historical FX).
-  const space = await client.space.findUnique({ where: { id: spaceId }, select: { reportingCurrency: true } });
+  // Space reporting currency (for the per-day conversion context, historical FX)
+  // + type (SHARED vs PERSONAL — used by the account-floor secondary bound below).
+  const space = await client.space.findUnique({ where: { id: spaceId }, select: { reportingCurrency: true, type: true } });
   if (!space) return zero;
+  const isSharedSpace = space.type === SpaceType.SHARED;
+  const today = todayUTC(now);
 
   // Account set + floors — the SAME ACTIVE, non-deleted link set backfill uses.
   const linkRows = await client.spaceAccountLink.findMany({
@@ -170,7 +202,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     ];
     if (heldInstrumentIds.length > 0) {
       try {
-        const r = await backfillHeldInstrumentPrices(heldInstrumentIds, fromDate, toDate);
+        const r = await backfillHeldInstrumentPrices(heldInstrumentIds, fromDate, toDate, (line) => console.log(`[wealth-regen] ${spaceId}: ${line}`));
         console.log(`[wealth-regen] ${spaceId}: equity price backfill — planned ${r.planned}, stored ${r.inserted} row(s)`);
       } catch (e) {
         console.warn(`[wealth-regen] ${spaceId}: equity price backfill failed (non-fatal):`, e instanceof Error ? e.message : e);
@@ -181,11 +213,42 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // even when account floors collapse to today (a fresh connect).
   const hasHoldings = heldInstrumentIds.length > 0 || cryptoAccounts.length > 0;
 
+  // Account-level floor: earliest real (non-deleted) Transaction — same fix as
+  // backfill.ts's header comment describes. This used to be
+  // FinancialAccount.createdAt/SpaceAccountLink.createdAt, which are stamped at
+  // connect (today) and so permanently collapsed the reconstructable window to
+  // zero for that account on every re-run, no matter how much later regeneration
+  // runs or how many transactions have since synced in. Using the earliest
+  // transaction instead means a re-run AFTER transactions finish syncing (the
+  // very next connect-pipeline pass, or the daily cron) can pick up days it
+  // previously couldn't — the whole point of re-running this at all.
+  const allAccountIds = accounts.map((a) => a.id);
+  const earliestTxByAccount = new Map<string, Date>();
+  if (allAccountIds.length > 0) {
+    const grouped = await client.transaction.groupBy({
+      by:    ["financialAccountId"],
+      where: { financialAccountId: { in: allAccountIds }, deletedAt: null },
+      _min:  { date: true },
+    });
+    for (const g of grouped) {
+      if (g.financialAccountId && g._min.date) earliestTxByAccount.set(g.financialAccountId, truncDateUTC(g._min.date));
+    }
+  }
+  const EPOCH = new Date(0);
   const floorByAccount = new Map<string, Date>(
-    linkRows.map((l) => [l.financialAccount.id, maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))]),
+    linkRows.map((l) => {
+      const acctId = l.financialAccount.id;
+      // No transactions synced yet ⇒ floor = today ⇒ genuinely zero
+      // reconstructable days for this account (correct, not the old bug).
+      const txFloor = earliestTxByAccount.get(acctId) ?? today;
+      // SECONDARY floor (SHARED spaces only) — mirrors backfill.ts: don't
+      // reconstruct this Space's history before the account was shared into it.
+      // The account's HOME (PERSONAL) space has no such bound.
+      const linkFloor = isSharedSpace ? truncDateUTC(l.createdAt) : EPOCH;
+      return [acctId, maxDate(txFloor, linkFloor)];
+    }),
   );
 
-  const today = todayUTC(now);
   // Walk anchor is today's current balances; walk back only as far as fromDate.
   // With holdings to value, span the full window; the constant-quantity valuation
   // (investment + crypto) does not depend on the cash/card floors.
@@ -204,10 +267,23 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const dailyCash = reconstructDailyCashBalances(cashAccounts, cashDeltas, today, effectiveStart);
   const dailyCard = reconstructDailyLiabilityBalances(cardAccounts, cardDeltas, today, effectiveStart);
 
+  // 2026-07-15 — dates any account was REVOKED from this Space (§9 fix). Used
+  // to gate automatic regen: a day whose date precedes a revocation may still
+  // have had that account as a genuine member, and this function only ever
+  // queries CURRENTLY active links (linkRows above) — writing over such a day
+  // would silently drop that account's real historical contribution. Cheap,
+  // one query, independent of the ACTIVE-only linkRows query above.
+  const revokedDates = (
+    await client.spaceAccountLink.findMany({
+      where:  { spaceId, status: ShareStatus.REVOKED, revokedAt: { not: null } },
+      select: { revokedAt: true },
+    })
+  ).map((r) => truncDateUTC(r.revokedAt!));
+
   // Existing rows in the window — for the frozen-row flag + before/after diffs.
   const existing = await client.spaceSnapshot.findMany({
     where:  { spaceId, date: { gte: fromISO(fromDate), lte: fromISO(toDate) } },
-    select: { date: true, isEstimated: true, stocks: true },
+    select: { date: true, isEstimated: true, stocks: true, cash: true, savings: true, debt: true, netWorth: true },
   });
   const existingByDate = new Map(existing.map((r) => [isoDate(r.date), r]));
 
@@ -305,17 +381,31 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       digitalAssetTier: "estimated", // constant-quantity assumption × real price
       hasDigitalAssetEvidence,
       cashCardTier: "derived",
+      // 2026-07-15 §9 fix — any account revoked strictly after this day was
+      // plausibly still a member of the Space as of this day; the `accounts`
+      // array above only reflects CURRENTLY active links, so writing this day
+      // would silently drop that account's real contribution.
+      membershipChangedSince: revokedDates.some((r) => r.getTime() > d.getTime()),
     };
 
     const res = regenerateDay(input);
     result.considered++;
     if (res.action === "skip-frozen") result.skippedFrozen++;
     else if (res.action === "skip-unsupported") result.skippedUnsupported++;
+    else if (res.action === "skip-membership-changed") result.skippedMembershipChanged++;
 
     result.diffs.push({
       date: dISO, action: res.action, tier: res.tier,
       stocksBefore: prior ? prior.stocks : null,
       stocksAfter: res.fields ? res.fields.stocks : null,
+      cashBefore: prior ? prior.cash : null,
+      cashAfter: res.fields ? res.fields.cash : null,
+      savingsBefore: prior ? prior.savings : null,
+      savingsAfter: res.fields ? res.fields.savings : null,
+      debtBefore: prior ? prior.debt : null,
+      debtAfter: res.fields ? res.fields.debt : null,
+      netWorthBefore: prior ? prior.netWorth : null,
+      netWorthAfter: res.fields ? res.fields.netWorth : null,
     });
 
     if (res.action === "write" && res.fields) {

@@ -16,6 +16,18 @@
  * fully-covered instrument is skipped without a network call. NO interpolation.
  * Idempotent + resumable: a re-run (or a budget-truncated run resumed on the
  * next connect) fetches only what is still missing.
+ *
+ * 2026-07-15 — a `forceWindow` request (A9's constant-quantity fallback, via
+ * lib/investments/holding-price-backfill.ts) is planned differently: it fills
+ * the gap(s) BEHIND/AHEAD of whatever the daily cron already covers
+ * (resolveForceBackfillWindows), not "resume after the latest covered date"
+ * (resolveBackfillWindow) — that resume logic is only valid for the normal
+ * path, where coverage grows forward from earliest activity. Reusing it for
+ * forceWindow made a 2-year historical regen request resolve to an empty
+ * window the moment the daily cron had already written ANY recent price rows
+ * — the root cause of historical investment valuation silently falling off
+ * after ~30 days back (the age of the cron's own accrued coverage), with the
+ * request never reaching the price vendor at all for the older span.
  */
 
 import { db } from "@/lib/db";
@@ -23,7 +35,7 @@ import { PriceBasis } from "@prisma/client";
 import { priceArchive } from "./archive";
 import { fetchInstrumentWindow } from "./fetch";
 import { defaultPriceRegistry } from "./registry";
-import { resolveBackfillWindow, chunkWindow } from "./backfill-core";
+import { resolveBackfillWindow, resolveForceBackfillWindows, chunkWindow } from "./backfill-core";
 import { yesterdayUTCISO, toISODateUTC } from "./config";
 import type { PriceRegistry } from "./types";
 
@@ -95,6 +107,18 @@ async function latestCoveredISO(instrumentId: string): Promise<string | null> {
 }
 
 /**
+ * 2026-07-15 — companion to latestCoveredISO, needed by the forceWindow branch
+ * (resolveForceBackfillWindows) to find the gap BEHIND the daily cron's
+ * front-edge coverage block, not just resume after its newest date.
+ */
+async function earliestCoveredISO(instrumentId: string): Promise<string | null> {
+  const row = await db.priceObservation.findFirst({
+    where: { instrumentId, basis: PriceBasis.RAW_CLOSE }, orderBy: { date: "asc" }, select: { date: true },
+  });
+  return row ? toISODateUTC(row.date) : null;
+}
+
+/**
  * Backfill historical RAW_CLOSE prices for the given instruments. Caller-scoped:
  * the CLI passes every held instrument (optionally filtered); the connect
  * trigger passes only a newly-connected account's held instrument ids. Returns
@@ -134,18 +158,36 @@ export async function backfillPricesForInstruments(
     }
     result.considered++;
 
-    const [earliest, covered] = await Promise.all([earliestActivityISO(instrumentId), latestCoveredISO(instrumentId)]);
-    // forceWindow (A9 constant-quantity fallback) treats its fromISO as the
-    // instrument's floor, so a currently-held instrument with no pre-today
-    // activity still gets its historical window fetched; covered still gates it
-    // (missing-only).
-    const window = opts.forceWindow
-      ? resolveBackfillWindow(opts.forceWindow.fromISO, covered, opts.forceWindow.toISO)
-      : resolveBackfillWindow(earliest, covered, toISO);
-    if (!window) { result.skipped++; continue; }
-    const chunks = chunkWindow(window.fromISO, window.toISO, chunkDays);
+    let windows: Array<{ fromISO: string; toISO: string }>;
+    let covered: string | null; // for the log line only
+    if (opts.forceWindow) {
+      // 2026-07-15 fix — forceWindow (A9 constant-quantity fallback) is a
+      // DIFFERENT shape of request than the normal path: it wants to backfill
+      // a historical span BEHIND whatever the daily cron has already accreted
+      // forward from today, not resume forward from the latest covered date.
+      // Reusing resolveBackfillWindow here (the old behavior) collapsed to
+      // null the moment ANY recent front-edge coverage existed — the root
+      // cause of historical investment valuation falling off after ~30 days
+      // (every held instrument already had ~20 days of daily-cron coverage,
+      // so the force window always resolved empty and never reached the
+      // price vendor for the older span). resolveForceBackfillWindows fills
+      // the gap(s) on either side of the existing covered block instead.
+      const [earliestCov, latestCov] = await Promise.all([earliestCoveredISO(instrumentId), latestCoveredISO(instrumentId)]);
+      windows = resolveForceBackfillWindows(opts.forceWindow.fromISO, opts.forceWindow.toISO, earliestCov, latestCov);
+      covered = latestCov;
+    } else {
+      const [earliest, latestCov] = await Promise.all([earliestActivityISO(instrumentId), latestCoveredISO(instrumentId)]);
+      const window = resolveBackfillWindow(earliest, latestCov, toISO);
+      windows = window ? [window] : [];
+      covered = latestCov;
+    }
+
+    if (windows.length === 0) { result.skipped++; continue; }
+    const chunkGroups = windows.map((w) => chunkWindow(w.fromISO, w.toISO, chunkDays));
+    const chunks = chunkGroups.flat();
     result.planned++;
-    log(`• ${instrumentId}: ${window.fromISO}→${window.toISO} (${chunks.length} chunk(s)${covered ? `, resume from ${covered}` : ""})`);
+    const windowsDesc = windows.map((w) => `${w.fromISO}→${w.toISO}`).join(", ");
+    log(`• ${instrumentId}: ${windowsDesc} (${chunks.length} chunk(s)${covered ? `, existing coverage through ${covered}` : ""})`);
 
     if (!apply || registry.adapters.length === 0) continue;
     for (const c of chunks) {

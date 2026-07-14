@@ -86,6 +86,39 @@ export async function regenerateSpaceSnapshot(
     }
   }
 
+  // Part-B2 — the same "no fabricated jump" principle, applied to cash/debt.
+  // backfill.ts (and A9's regenerate-history.ts, once fixed) floor an account's
+  // reconstructable history at its EARLIEST real Transaction — an account with
+  // zero transactions synced so far has a floor of "today" and is therefore
+  // excluded from every historical day. If the live writer includes that same
+  // account's current balance right away, the Space's total shows a vertical
+  // jump the very first time the chart renders (today's dot appears with no
+  // history behind it) — reported 2026-07-14 as an unexplained ~$10k jump.
+  // Mirrors Part-B: suppress-until-evidence, not a fabricated flat lead-in.
+  // Self-resolving — the very next transaction sync (same connect pipeline, or
+  // the next daily cron) gives the account ≥1 transaction and this stops
+  // applying on its own; nothing to reverse manually. Scoped to checking/
+  // savings/debt only — investment/crypto/real-asset accounts are legitimately
+  // valued from holdings/manual entry, not transactions, so "zero Transaction
+  // rows" is normal for them and must not suppress them here.
+  if (eligible.length > 0) {
+    const cashDebtIds = eligible
+      .filter((a) => a.type === "checking" || a.type === "savings" || a.type === "debt")
+      .map((a) => a.id);
+    if (cashDebtIds.length > 0) {
+      const withTx = await db.transaction.groupBy({
+        by:    ["financialAccountId"],
+        where: { financialAccountId: { in: cashDebtIds }, deletedAt: null },
+      });
+      const hasTx = new Set(withTx.map((g) => g.financialAccountId).filter((id): id is string => id !== null));
+      const noEvidence = new Set(cashDebtIds.filter((id) => !hasTx.has(id)));
+      if (noEvidence.size > 0) {
+        eligible = eligible.filter((a) => !noEvidence.has(a.id));
+        console.log(`[snapshot] space ${spaceId}: excluding ${noEvidence.size} cash/debt account(s) with no synced transactions yet from the snapshot (no fabricated jump).`);
+      }
+    }
+  }
+
   // MC1 Phase 3 Slice 3 — THE SNAPSHOT FLIP (plan seams #1, F-2). The context
   // target and the reportingCurrency stamp below both come from the same
   // Space read, atomically: they can never disagree. For every all-USD Space

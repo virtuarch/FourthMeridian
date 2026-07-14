@@ -9,7 +9,7 @@
  * chunking/pagination, and daily missing-date selection — no DB, no network.
  */
 
-import { resolveBackfillWindow, chunkWindow, selectInstrumentsMissingDate } from "./backfill-core";
+import { resolveBackfillWindow, resolveForceBackfillWindows, chunkWindow, selectInstrumentsMissingDate } from "./backfill-core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -36,6 +36,44 @@ function main(): void {
     // Latest covered earlier than activity → clamp to activity.
     const c = resolveBackfillWindow("2026-03-01", "2026-01-15", "2026-06-09");
     check("resume never precedes earliest activity", c?.fromISO === "2026-03-01");
+  }
+
+  // ── 1b. resolveForceBackfillWindows (A9 force-backfill, 2026-07-15 fix) ───
+  console.log("1b. resolveForceBackfillWindows");
+  {
+    // No coverage at all → the whole forced span, unchanged from today's behavior.
+    const fresh = resolveForceBackfillWindows("2024-07-14", "2026-07-13", null, null);
+    check("no coverage → single window spanning the whole force range",
+      JSON.stringify(fresh) === JSON.stringify([{ fromISO: "2024-07-14", toISO: "2026-07-13" }]));
+
+    // The actual bug: daily-cron front-edge coverage exists (2026-06-12..2026-07-13).
+    // The OLD resolveBackfillWindow(forceFrom, latestCovered, forceTo) collapsed to
+    // null here (dayAfter(2026-07-13) > 2026-07-13). The fix must instead return the
+    // gap BEHIND that block.
+    const behind = resolveForceBackfillWindows("2024-07-14", "2026-07-13", "2026-06-12", "2026-07-13");
+    check("front-edge coverage exists → returns the OLDER gap, not null/empty", behind.length === 1);
+    check("older gap runs up to the day before earliest covered",
+      behind[0]?.fromISO === "2024-07-14" && behind[0]?.toISO === "2026-06-11");
+
+    // Symmetric case: coverage exists only for an OLDER block; force range extends
+    // past it into the present → returns the NEWER gap.
+    const ahead = resolveForceBackfillWindows("2024-07-14", "2026-07-13", "2024-07-14", "2024-08-01");
+    check("existing coverage precedes force range's tail → returns the NEWER gap", ahead.length === 1);
+    check("newer gap starts the day after latest covered",
+      ahead[0]?.fromISO === "2024-08-02" && ahead[0]?.toISO === "2026-07-13");
+
+    // Coverage sits in the middle of the force range → BOTH gaps returned.
+    const both = resolveForceBackfillWindows("2024-07-14", "2026-07-13", "2025-01-01", "2025-06-01");
+    check("coverage in the middle → both older and newer gaps returned", both.length === 2);
+    check("older gap correct", both[0]?.fromISO === "2024-07-14" && both[0]?.toISO === "2024-12-31");
+    check("newer gap correct", both[1]?.fromISO === "2025-06-02" && both[1]?.toISO === "2026-07-13");
+
+    // Force range fully inside existing coverage → no gaps at all.
+    const covered = resolveForceBackfillWindows("2026-06-15", "2026-06-20", "2026-06-01", "2026-07-01");
+    check("force range fully covered → no windows", covered.length === 0);
+
+    // Invalid range → no windows (defensive, matches resolveBackfillWindow's null).
+    check("forceFrom > forceTo → no windows", resolveForceBackfillWindows("2026-06-20", "2026-06-01", null, null).length === 0);
   }
 
   // ── 2. chunkWindow (batched/paginated) ────────────────────────────────────

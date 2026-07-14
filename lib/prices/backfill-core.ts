@@ -81,6 +81,65 @@ export function chunkWindow(
 }
 
 /**
+ * A9 force-backfill — the missing sub-window(s) of [forceFromISO, forceToISO]
+ * that fall OUTSIDE existing coverage.
+ *
+ * 2026-07-15 bug fix: resolveBackfillWindow assumes coverage grows FORWARD
+ * from earliest activity and resumes the day after the latest covered date —
+ * correct for the daily cron's normal path. A forceWindow's job is the
+ * opposite: backfill a historical span BEHIND whatever the daily cron has
+ * already accreted forward from today. Reusing resolveBackfillWindow's
+ * "resume after latest covered" logic for a forceWindow collapses to an empty
+ * window the moment ANY recent coverage exists — the root cause of historical
+ * investment valuation falling off after ~30 days (every held instrument
+ * already had ~20 days of front-edge cron coverage, so `dayAfter(latestCovered)
+ * > toISO` and the force window resolved to null before ever reaching the
+ * price vendor for the older span).
+ *
+ * Assumes a single contiguous covered interval [earliestCoveredISO,
+ * latestCoveredISO] — true in practice (the cron accretes one contiguous
+ * block forward from wherever the last backfill left off); does not attempt
+ * to detect gaps WITHIN that interval.
+ *
+ * Returns 0, 1, or 2 windows:
+ *  - no coverage at all → [forceFromISO, forceToISO] (unchanged from today)
+ *  - an OLDER gap: [forceFromISO, earliestCoveredISO − 1], when forceFromISO
+ *    precedes existing coverage
+ *  - a NEWER gap: [latestCoveredISO + 1, forceToISO], when forceToISO follows
+ *    existing coverage (rare — the daily cron usually keeps this current, but
+ *    not assumed)
+ */
+export function resolveForceBackfillWindows(
+  forceFromISO: string,
+  forceToISO: string,
+  earliestCoveredISO: string | null,
+  latestCoveredISO: string | null,
+): Array<{ fromISO: string; toISO: string }> {
+  assertISODate(forceFromISO);
+  assertISODate(forceToISO);
+  if (forceFromISO > forceToISO) return [];
+
+  if (!earliestCoveredISO || !latestCoveredISO) {
+    return [{ fromISO: forceFromISO, toISO: forceToISO }];
+  }
+  assertISODate(earliestCoveredISO);
+  assertISODate(latestCoveredISO);
+
+  const windows: Array<{ fromISO: string; toISO: string }> = [];
+
+  if (forceFromISO < earliestCoveredISO) {
+    const olderTo = minusDaysISO(earliestCoveredISO, 1);
+    if (forceFromISO <= olderTo) windows.push({ fromISO: forceFromISO, toISO: olderTo });
+  }
+  if (forceToISO > latestCoveredISO) {
+    const newerFrom = minusDaysISO(latestCoveredISO, -1);
+    if (newerFrom <= forceToISO) windows.push({ fromISO: newerFrom, toISO: forceToISO });
+  }
+
+  return windows;
+}
+
+/**
  * Given per-instrument coverage for a single target date, the instrument ids
  * still MISSING that date — the daily job's fetch list. An instrument absent
  * from `covered` (never priced) is missing; one whose set lacks the date is

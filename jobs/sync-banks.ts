@@ -25,6 +25,16 @@
  * One institution's failure (e.g. ITEM_LOGIN_REQUIRED after the user revokes
  * access at their bank) must never block syncing the rest — each item is
  * wrapped individually.
+ *
+ * 2026-07-14 — after each item's successful sync, best-effort re-runs A9
+ * wealth-history regeneration (regenerate-history.ts) over its accounts'
+ * spaces. This is the ongoing self-heal half of the same-day fix: connect
+ * time only gets ONE regen pass (backgroundHistorySync.ts), and if this
+ * item's transactions genuinely weren't all available yet at that moment,
+ * nothing previously ever retried it. Every daily sync now gives it another
+ * chance, using the SAME earliest-transaction floor, so history catches up
+ * on its own within a day or two with no manual re-run. Gated on
+ * WEALTH_REGENERATION_ENABLED; a no-op when unset.
  */
 
 import { db } from "@/lib/db";
@@ -36,6 +46,7 @@ import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
+import { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled, recentWealthWindow } from "@/lib/snapshots/regenerate-history";
 
 export interface SyncBanksResult {
   succeeded: number;
@@ -81,6 +92,30 @@ export async function syncBanks(): Promise<SyncBanksResult> {
           console.log(
             `[sync-banks] ${item.institutionName}: +${result.added} ~${result.modified} -${result.removed}`
           );
+        }
+
+        // 2026-07-14 — ongoing self-heal for the "connect-time regen ran before
+        // this item's transactions were fully available" gap (see
+        // backgroundHistorySync.ts's A9 step, which already does this once at
+        // connect). regenerateWealthHistory's account floor is now
+        // earliest-real-Transaction based (regenerate-history.ts fix, same day),
+        // so a re-run here after EVERY daily sync can pick up days it couldn't
+        // before, with no manual re-run ever needed. Cheap best-effort no-op
+        // when the flag is off or this item has no active-linked accounts.
+        if (wealthRegenerationEnabled()) {
+          try {
+            const conns = await db.accountConnection.findMany({
+              where:  { plaidItemDbId: item.id, deletedAt: null },
+              select: { financialAccountId: true },
+            });
+            const faIds = conns.map((c) => c.financialAccountId);
+            if (faIds.length > 0) {
+              const { fromDate, toDate } = recentWealthWindow();
+              await regenerateWealthHistoryForAccounts(faIds, { fromDate, toDate });
+            }
+          } catch (e) {
+            console.warn(`[sync-banks] wealth-history regen failed for "${item.institutionName}" (PlaidItem ${item.id}) (non-fatal):`, e);
+          }
         }
       }
     } catch (e) {

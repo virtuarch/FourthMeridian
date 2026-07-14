@@ -101,29 +101,21 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
       }
     }
 
-    // A4 + A8-3B + A9 — investment-history refinement for a just-connected item:
-    // reconstruct per-holding quantity → backfill historical prices → regenerate
-    // wealth history. Resolve the item's investment accounts ONCE (all stages
-    // need them) and skip the query entirely when no stage is enabled, preserving
-    // the zero-extra-work default and honoring the 60s background budget. Every
-    // stage is best-effort / non-fatal and already post-response via after(), so
-    // none can affect connect latency. A pure cash/card connect finds no
-    // investment accounts and does nothing.
+    // A4 + A8-3B — investment-only refinement stages. Resolve the item's
+    // investment accounts ONCE and skip the query entirely when neither stage
+    // is enabled, preserving the zero-extra-work default and honoring the 60s
+    // background budget. Best-effort / non-fatal; a pure cash/card connect
+    // finds no investment accounts and this whole block does nothing.
     const priceRegistry = defaultPriceRegistry();
     const priceBackfillEnabled = priceRegistry.adapters.length > 0; // TIINGO_API_KEY set
-    if (investmentReconstructionEnabled() || priceBackfillEnabled || wealthRegenerationEnabled()) {
-      // Investment accounts drive A4 reconstruction + A8-3B equity price backfill;
-      // CRYPTO accounts (Part-A) additionally drive A9 wealth regen, which values
-      // them per-day via CoinGecko (constant quantity × historical price). Both
-      // are "wealth-relevant" for the A9 step.
+    if (investmentReconstructionEnabled() || priceBackfillEnabled) {
       const relevant = await db.financialAccount.findMany({
-        where:  { id: { in: faIds }, type: { in: ["investment", "crypto"] }, deletedAt: null },
-        select: { id: true, type: true },
+        where:  { id: { in: faIds }, type: "investment", deletedAt: null },
+        select: { id: true },
       });
-      const investmentFaIds = relevant.filter((a) => a.type === "investment").map((a) => a.id);
-      const wealthFaIds     = relevant.map((a) => a.id); // investment + crypto → A9
+      const investmentFaIds = relevant.map((a) => a.id);
 
-      if (relevant.length > 0) {
+      if (investmentFaIds.length > 0) {
         // A4 — bootstrap per-holding quantity reconstruction from the canonical
         // InvestmentEvents already ingested inline at connect (exchangeToken).
         // The one-time reconstructAccount is what SEEDS the PositionReconstruction
@@ -181,27 +173,36 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
             console.error(`[plaid][A8-3B] price backfill failed for item ${plaidItemId} (non-fatal):`, e);
           }
         }
+      }
+    }
 
-        // A9 — accurate wealth-history regeneration. The Slice-4 backfill above
-        // holds every investment account's value FLAT at today's value on each
-        // historical day. Re-derive those days from the canonical A8 historical
-        // valuation (which now reads the A4 DERIVED quantity rows produced just
-        // above AND the A8-3B prices backfilled just above), over the SAME 30-day
-        // window the backfill wrote — refining it, never instead of it. Gated on
-        // WEALTH_REGENERATION_ENABLED.
-        if (wealthRegenerationEnabled()) {
-          try {
-            const toDate   = minusDaysISO(isoDayUTC(new Date()), 1); // yesterday — today's live row is frozen
-            const fromDate = minusDaysISO(toDate, 30);               // matches the 30-day snapshot backfill window
-            const spaces = await regenerateWealthHistoryForAccounts(wealthFaIds, { fromDate, toDate });
-            console.log(
-              `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over [${fromDate} … ${toDate}] ` +
-                `(item ${plaidItemId}, ${wealthFaIds.length} investment+crypto account(s))`,
-            );
-          } catch (e) {
-            console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, e);
-          }
-        }
+    // A9 — accurate wealth-history regeneration. Runs for EVERY connect,
+    // cash/debt-only included (2026-07-14 fix) — it used to be gated behind
+    // "this item has an investment or crypto account" (relevant.length > 0
+    // above), so a pure bank/card connect never got this refinement pass at
+    // all. That mattered because the Slice-4 backfill just above floors each
+    // account's reconstructable history at its earliest real Transaction —
+    // an account with zero transactions synced at that exact moment (e.g. a
+    // brand-new connection whose history hadn't fully landed yet) gets a
+    // flat-zero history for every day, which then jumps against the live
+    // row's immediate balance. Passing the item's FULL account set here (not
+    // just investment/crypto) lets regenerateWealthHistory — whose floor is
+    // now ALSO earliest-transaction-based (regenerate-history.ts, fixed the
+    // same day) — pick up whatever evidence has landed by now. Gated on
+    // WEALTH_REGENERATION_ENABLED; jobs/sync-banks.ts calls this same
+    // function after every daily sync too, so if evidence still isn't there
+    // yet, this keeps self-healing on its own without a manual re-run.
+    if (wealthRegenerationEnabled()) {
+      try {
+        const toDate   = minusDaysISO(isoDayUTC(new Date()), 1); // yesterday — today's live row is frozen
+        const fromDate = minusDaysISO(toDate, 30);               // matches the 30-day snapshot backfill window
+        const spaces = await regenerateWealthHistoryForAccounts(faIds, { fromDate, toDate });
+        console.log(
+          `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over [${fromDate} … ${toDate}] ` +
+            `(item ${plaidItemId}, ${faIds.length} account(s))`,
+        );
+      } catch (e) {
+        console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, e);
       }
     }
   } catch (e) {
