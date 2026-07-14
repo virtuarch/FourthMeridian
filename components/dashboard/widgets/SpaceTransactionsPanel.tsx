@@ -14,9 +14,18 @@
  */
 
 import { useState, useMemo, useCallback } from "react";
-import { Account, Transaction, TransactionCategory } from "@/types";
+import type { ComponentType, CSSProperties } from "react";
+import { Account, AccountType, Transaction, TransactionCategory } from "@/types";
 import { DataCard } from "@/components/atlas/DataCard";
-import { Search, X } from "lucide-react";
+import {
+  Search, X, SlidersHorizontal, CalendarDays, ChevronRight, ChevronLeft, ArrowDownUp,
+  Landmark, CreditCard, TrendingUp, Wallet, Building2,
+  ArrowUpRight, ArrowDownRight, ArrowLeftRight, RotateCcw, Minus, Percent, HelpCircle, Settings2,
+} from "lucide-react";
+import { SegmentedControl } from "@/components/atlas/SegmentedControl";
+import { ToolbarMenuButton } from "@/components/dashboard/widgets/transactions/ToolbarMenuButton";
+import { QuickFlowPills } from "@/components/dashboard/widgets/transactions/QuickFlowPills";
+import { TransactionSummaryCards } from "@/components/dashboard/widgets/transactions/TransactionSummaryCards";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
@@ -25,6 +34,17 @@ import { TransactionsCalendarHeatmap } from "@/components/dashboard/widgets/tran
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 import { TransactionDate } from "@/components/ui/TransactionDate";
+import { TransactionsFilterOverlay } from "@/components/dashboard/widgets/transactions/TransactionsFilterOverlay";
+import {
+  CAT_CHIP,
+  TRANSFER_DISPOSITION_LABEL,
+  INPUT_BASE,
+  inputStyle,
+  type PendingFilter,
+  type SourceFilter,
+  type GroupBy,
+} from "@/components/dashboard/widgets/transactions/transactions-filter-constants";
+import { TransactionFilterChips } from "@/components/dashboard/widgets/transactions/TransactionFilterChips";
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
 // MC1 QA Q3 — itemized transaction rows pass the ROW's own currency.
@@ -35,87 +55,121 @@ const fmt = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
     maximumFractionDigits: 2,
   }).format(Math.abs(n));
 
-// ── Category badge ──────────────────────────────────────────────────────────
-// Step C: category colour-coding neutralised to a single ink chip (matches the
-// other transaction surfaces); the label carries the meaning.
-const CAT_CHIP = "bg-[var(--surface-inset)] text-[var(--text-secondary)]";
-
-const BANKING_CATEGORIES: TransactionCategory[] = [
-  "Income", "Transfer", "Groceries", "Dining", "Shopping",
-  "Travel", "Subscriptions", "Utilities", "Interest", "Payment", "Other",
-];
-
 // FlowType P5 Slice 2 / TI1 — money-out cost flows that count toward the "Spend"
 // chip. Membership now lives in the single-authority predicate module.
 
 // ── Date-range filter ─────────────────────────────────────────────────────────
-type DateRange = "all" | "90d" | "30d" | "7d";
+// Redesign Slice 2 — "custom" adds an explicit [from, to] window (both optional)
+// alongside the rolling presets. The predicate stays a pure date comparison over
+// the already-fetched list; no query/API change.
+type DateRange = "all" | "90d" | "30d" | "7d" | "custom";
 
 const DATE_RANGE_LABELS: Record<DateRange, string> = {
   all:  "All Time",
   "90d": "90 Days",
   "30d": "30 Days",
   "7d":  "7 Days",
+  custom: "Custom",
+};
+
+// ── Sort (Slice 7) ────────────────────────────────────────────────────────────
+// Pure client-side reorder of the already-fetched, already-filtered list — the
+// same "no refetch" philosophy as Group By. "newest" returns the list untouched
+// so the default order is byte-identical to the pre-redesign behavior (the data
+// arrives date-desc from getTransactions()).
+type SortBy = "newest" | "oldest" | "largest" | "smallest" | "merchant";
+
+const SORT_LABELS: Record<SortBy, string> = {
+  newest:   "Newest",
+  oldest:   "Oldest",
+  largest:  "Largest",
+  smallest: "Smallest",
+  merchant: "Merchant A–Z",
+};
+
+// ── Column presentation helpers (table redesign follow-up) ───────────────────
+type IconType = ComponentType<{ size?: number; className?: string; style?: CSSProperties }>;
+
+// Shared grid template — the desktop column header and every desktop TxRow use
+// the SAME string so columns can never drift out of alignment with each other.
+const TX_GRID_COLS = "40px minmax(0,1fr) 170px 130px 120px 100px 118px 20px";
+
+// Account-type glyph for the new Account column — presentation only, no new data.
+const ACCOUNT_TYPE_ICON: Record<AccountType, IconType> = {
+  checking:   Landmark,
+  savings:    Landmark,
+  investment: TrendingUp,
+  crypto:     Wallet,
+  debt:       CreditCard,
+  other:      Building2,
+};
+
+// Flow-type glyph for the new Flow type column — covers every FLOW_TYPE_LABEL
+// key (QuickFlowPills' pill row deliberately shows only a curated subset; this
+// column needs all of them). Kept local rather than shared with QuickFlowPills
+// — the same "not worth extracting until a third consumer" threshold this
+// codebase already applies to the Panel/GlassPanel pattern.
+const FLOW_TYPE_ICON: Record<string, IconType> = {
+  INCOME:       ArrowUpRight,
+  SPENDING:     ArrowDownRight,
+  TRANSFER:     ArrowLeftRight,
+  DEBT_PAYMENT: CreditCard,
+  REFUND:       RotateCcw,
+  FEE:          Minus,
+  INTEREST:     Percent,
+  INVESTMENT:   TrendingUp,
+  ADJUSTMENT:   Settings2,
+  UNKNOWN:      HelpCircle,
+};
+
+// Status column — posting state, reusing the existing `pending` boolean that
+// already drives the row's inline "Pending" badge (same source, no new concept).
+function statusOf(tx: Transaction): { label: string; color: string } {
+  return tx.pending
+    ? { label: "Pending", color: "var(--accent-warning)" }
+    : { label: "Posted", color: "var(--accent-positive)" };
+}
+
+// ── Pagination (table redesign follow-up) ─────────────────────────────────────
+// Page-size options — default 25, capped at 100 (product decision). Pure
+// client-side slicing of the already-filtered/sorted list; no query change.
+// Scoped to the flat Table view: Group By keeps rendering full buckets, since
+// paginating across group boundaries is a separate, unrequested feature.
+type PageSize = 25 | 50 | 100;
+const PAGE_SIZE_OPTIONS: readonly PageSize[] = [25, 50, 100];
+
+/** Compact page-number sequence with "…" gaps, e.g. [1, "…", 4, 5, 6, "…", 154]. */
+function paginationRange(current: number, total: number): (number | "…")[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const keep = new Set([1, total, current - 1, current, current + 1]);
+  const sortedPages = [...keep].filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
+  const out: (number | "…")[] = [];
+  sortedPages.forEach((p, i) => {
+    if (i > 0 && p - (sortedPages[i - 1] as number) > 1) out.push("…");
+    out.push(p);
+  });
+  return out;
+}
+
+// Friendly subtitle for the KPI cards (Slice 4) — reflects the active window.
+const RANGE_SUBTITLE: Record<DateRange, string> = {
+  all:  "All time",
+  "90d": "Last 90 days",
+  "30d": "Last 30 days",
+  "7d":  "Last 7 days",
+  custom: "Custom range",
 };
 
 function cutoffForRange(r: DateRange): string | null {
-  if (r === "all") return null;
+  if (r === "all" || r === "custom") return null;
   const d = new Date();
   d.setDate(d.getDate() - (r === "90d" ? 90 : r === "30d" ? 30 : 7));
   return d.toISOString().split("T")[0];
 }
 
-// ── Pending filter ────────────────────────────────────────────────────────────
-type PendingFilter = "all" | "cleared" | "pending";
-
-const PENDING_LABELS: Record<PendingFilter, string> = {
-  all:     "All",
-  cleared: "Cleared",
-  pending: "Pending",
-};
-
-// ── Source filter (provenance) ─────────────────────────────────────────────────
-// Backed by the list-level `source` field (getTransactions() → deriveSource).
-type SourceFilter = "all" | "plaid" | "import" | "manual";
-
-const SOURCE_LABELS: Record<SourceFilter, string> = {
-  all:    "All sources",
-  plaid:  "Plaid",
-  import: "Import",
-  manual: "Manual",
-};
-
-// ── Group By / perspective ─────────────────────────────────────────────────────
-// One control does both jobs: the vision's "Perspective toggle" (List vs. a
-// pivoted view) IS Group By with "none" as the flat/List perspective — shipping
-// a second toggle would be redundant (plan §2.3 / stop condition #4). Pure
-// client-side reduce over the already-fetched, already-filtered list — no refetch.
-type GroupBy = "none" | "flow" | "merchant" | "account" | "category";
-
-const GROUP_BY_LABELS: Record<GroupBy, string> = {
-  none:     "No grouping",
-  flow:     "Flow type",
-  merchant: "Merchant",
-  account:  "Account",
-  category: "Category",
-};
-
-// ── Transfer disposition (CF-1) ────────────────────────────────────────────────
-// Humanized labels for the canonical TransferDisposition already computed for
-// every TRANSFER row by getTransactions(). These present the existing canonical
-// concept (lib/transactions/transfer-evidence.ts) — no new terminology is coined.
-const TRANSFER_DISPOSITION_LABEL: Record<string, string> = {
-  INTERNAL_TRANSFER:      "Internal transfer",
-  EXTERNAL_BANK_TRANSFER: "External bank transfer",
-  ASSET_VENUE_TRANSFER:   "Asset venue transfer",
-  CASH_MOVEMENT:          "Cash movement",
-  PAYMENT_APP_MOVEMENT:   "Payment app movement",
-  UNKNOWN_MOVEMENT:       "Unknown movement",
-};
-
-// ── Shared input styling (Atlas tokens) ──────────────────────────────────────
-const INPUT_BASE = "border rounded-xl text-sm placeholder:text-[var(--text-faint)] focus:outline-none focus:border-[var(--accent-info)] transition-colors";
-const inputStyle: React.CSSProperties = { background: "var(--surface-inset)", borderColor: "var(--border-hairline)", color: "var(--text-primary)" };
+// Pending / Source / Group By / Movement vocabulary + shared input styling now
+// live in ./transactions/transactions-filter-constants (shared with the Filters
+// overlay). Group By stays a table-only sub-mode — "none" is the flat List view.
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 interface Props {
@@ -168,6 +222,10 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   const [catFilter,     setCatFilter]     = useState<TransactionCategory | null>(null);
   const [accountFilter, setAccountFilter] = useState<string | null>(initialAccountFilter ?? null);
   const [dateRange,     setDateRange]     = useState<DateRange>("all");
+  // Custom [from, to] window (ISO YYYY-MM-DD, both optional) — only consulted
+  // when dateRange === "custom".
+  const [customStart,   setCustomStart]   = useState<string>("");
+  const [customEnd,     setCustomEnd]     = useState<string>("");
   const [pendingFilter, setPendingFilter] = useState<PendingFilter>("all");
   // Transactions Tab Phase 1 — pivot the existing ledger by the FlowType already
   // on every row (no new query). null = all flow types.
@@ -189,6 +247,13 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   // applies); "calendar" = the day heat-map over the same filtered set. One
   // control, not two — Group By is a table-only sub-mode, Calendar is a peer view.
   const [viewMode, setViewMode] = useState<"table" | "calendar">("table");
+  // Redesign Slice 1 — the wall of dropdowns now lives in one on-demand overlay.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  // Redesign Slice 7 — client-side sort. "newest" leaves the list untouched.
+  const [sortBy, setSortBy] = useState<SortBy>("newest");
+  // Table redesign follow-up — page size + current page (flat Table view only).
+  const [pageSize, setPageSize] = useState<PageSize>(25);
+  const [page, setPage] = useState(1);
 
   // ── Account lookup helpers ───────────────────────────────────────────────
   const accountMap = useMemo(() => {
@@ -247,7 +312,10 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       if (merchantFilter && (tx.merchantDisplayName ?? tx.merchant) !== merchantFilter) return false;
       if (needsReviewOnly && !tx.needsClassification)       return false;
       if (accountFilter && tx.accountId  !== accountFilter) return false;
-      if (cutoff        && tx.date        < cutoff)         return false;
+      if (dateRange === "custom") {
+        if (customStart && tx.date < customStart) return false;
+        if (customEnd   && tx.date > customEnd)   return false;
+      } else if (cutoff && tx.date < cutoff)                return false;
       if (pendingFilter === "cleared" &&  tx.pending)       return false;
       if (pendingFilter === "pending" && !tx.pending)       return false;
       if (q && !tx.merchant.toLowerCase().includes(q) && !(tx.merchantDisplayName ?? "").toLowerCase().includes(q) /* MI M6 — alias-aware */ && !(tx.description ?? "").toLowerCase().includes(q)) {
@@ -255,7 +323,55 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       }
       return true;
     });
-  }, [transactions, catFilter, flowFilter, dispositionFilter, sourceFilter, merchantFilter, needsReviewOnly, accountFilter, cutoff, pendingFilter, search]);
+  }, [transactions, catFilter, flowFilter, dispositionFilter, sourceFilter, merchantFilter, needsReviewOnly, accountFilter, cutoff, dateRange, customStart, customEnd, pendingFilter, search]);
+
+  // ── Sort (Slice 7) ─────────────────────────────────────────────────────────
+  // Reorders the RENDERED rows only. "newest" returns `filtered` unchanged (its
+  // date-desc order is the pre-redesign default); every other mode sorts a copy.
+  // Summary math reads `filtered` (order-independent), so totals never shift.
+  const sorted = useMemo(() => {
+    if (sortBy === "newest") return filtered;
+    const arr = [...filtered];
+    switch (sortBy) {
+      case "oldest":
+        arr.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+        break;
+      case "largest":
+        arr.sort((a, b) => Math.abs(rowAmount(b)) - Math.abs(rowAmount(a)));
+        break;
+      case "smallest":
+        arr.sort((a, b) => Math.abs(rowAmount(a)) - Math.abs(rowAmount(b)));
+        break;
+      case "merchant":
+        arr.sort((a, b) =>
+          (a.merchantDisplayName ?? a.merchant).localeCompare(b.merchantDisplayName ?? b.merchant),
+        );
+        break;
+    }
+    return arr;
+  }, [filtered, sortBy, rowAmount]);
+
+  // Never strand the user on a page past the end when the visible set reshuffles
+  // (a new filter, a new sort, a new page size). Adjusted DURING render, not in
+  // an effect — react-hooks/set-state-in-effect (this repo's eslint config)
+  // flags setState-in-effect as a cascading-render risk; this is React's own
+  // documented "storing information from previous renders" alternative.
+  const pageResetKey = `${filtered.length}|${sortBy}|${pageSize}|${groupBy}|${viewMode}`;
+  const [prevPageResetKey, setPrevPageResetKey] = useState(pageResetKey);
+  if (pageResetKey !== prevPageResetKey) {
+    setPrevPageResetKey(pageResetKey);
+    setPage(1);
+  }
+
+  // ── Pagination (flat Table view only — see PAGE_SIZE_OPTIONS comment) ──────
+  const totalPages  = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const paged = useMemo(
+    () => sorted.slice((currentPage - 1) * pageSize, (currentPage - 1) * pageSize + pageSize),
+    [sorted, currentPage, pageSize],
+  );
+  const pageStart = sorted.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const pageEnd    = Math.min(currentPage * pageSize, sorted.length);
 
   // ── Shared per-FlowType aggregation (§2.3.1) ───────────────────────────────
   // ONE sumByFlowType map drives BOTH the summary chips and the "By Flow Type"
@@ -272,7 +388,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
   const groups = useMemo(() => {
     if (groupBy === "none") return null;
     const map = new Map<string, { label: string; rows: Transaction[] }>();
-    for (const tx of filtered) {
+    for (const tx of sorted) {
       let key: string;
       let label: string;
       switch (groupBy) {
@@ -307,7 +423,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
         ? (flowSums.get(key) ?? 0)
         : g.rows.reduce((s, t) => s + Math.abs(rowAmount(t)), 0),
     }));
-  }, [filtered, groupBy, acctInst, acctName, flowSums, rowAmount]);
+  }, [sorted, groupBy, acctInst, acctName, flowSums, rowAmount]);
 
   // ── Summary totals (§2.3.1) ────────────────────────────────────────────────
   // Composed from the shared flowSums map above (same source as Group By).
@@ -334,143 +450,49 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     setNeedsReviewOnly(false);
     setAccountFilter(null);
     setDateRange("all");
+    setCustomStart("");
+    setCustomEnd("");
     setPendingFilter("all");
   }, []);
 
-  const hasActiveFilters =
-    search || catFilter || flowFilter || dispositionFilter || sourceFilter !== "all" ||
-    merchantFilter || needsReviewOnly || accountFilter || dateRange !== "all" || pendingFilter !== "all";
+  // Count of active filter GROUPS inside the Filters overlay — drives the
+  // "Filters (N)" badge. Search, time range, view, and grouping are toolbar-level
+  // concerns and are deliberately excluded (they have their own controls).
+  const activeFilterCount =
+    (catFilter ? 1 : 0) +
+    (flowFilter ? 1 : 0) +
+    (dispositionFilter ? 1 : 0) +
+    (sourceFilter !== "all" ? 1 : 0) +
+    (merchantFilter ? 1 : 0) +
+    (needsReviewOnly ? 1 : 0) +
+    (accountFilter ? 1 : 0) +
+    (pendingFilter !== "all" ? 1 : 0);
 
   return (
     <div className="space-y-4">
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      {scopeNote && (
-        <p className="text-[11px] px-1" style={{ color: "var(--text-muted)" }}>{scopeNote}</p>
-      )}
-      <div className="flex items-center justify-between flex-wrap gap-2 px-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>
-            Transactions
-          </p>
-          {/* Active filter chips */}
-          {selectedAccount && (
-            <span className="text-xs border px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: "var(--surface-inset)", color: "var(--accent-info)", borderColor: "var(--border-hairline)" }}>
-              {selectedAccount.institution} · {selectedAccount.name}
-              <button onClick={() => setAccountFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
-                <X size={10} />
-              </button>
-            </span>
-          )}
-          {catFilter && (
-            <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
-              {catFilter}
-              <button onClick={() => setCatFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
-                <X size={10} />
-              </button>
-            </span>
-          )}
-          {flowFilter && (
-            <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
-              {FLOW_TYPE_LABEL[flowFilter] ?? flowFilter}
-              <button onClick={() => setFlowFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
-                <X size={10} />
-              </button>
-            </span>
-          )}
-          {dispositionFilter && (
-            <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
-              {TRANSFER_DISPOSITION_LABEL[dispositionFilter] ?? dispositionFilter}
-              <button onClick={() => setDispositionFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
-                <X size={10} />
-              </button>
-            </span>
-          )}
-          {sourceFilter !== "all" && (
-            <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
-              {SOURCE_LABELS[sourceFilter]}
-              <button onClick={() => setSourceFilter("all")} className="hover:text-[var(--text-primary)] ml-0.5">
-                <X size={10} />
-              </button>
-            </span>
-          )}
-          {merchantFilter && (
-            <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
-              {merchantFilter}
-              <button onClick={() => setMerchantFilter(null)} className="hover:text-[var(--text-primary)] ml-0.5">
-                <X size={10} />
-              </button>
-            </span>
-          )}
-          {needsReviewOnly && (
-            <span className="text-xs border px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: "var(--surface-inset)", color: "var(--accent-warning)", borderColor: "var(--border-hairline)" }}>
-              Needs review
-              <button onClick={() => setNeedsReviewOnly(false)} className="hover:text-[var(--text-primary)] ml-0.5">
-                <X size={10} />
-              </button>
-            </span>
-          )}
-          {pendingFilter !== "all" && (
-            <span className="text-xs border px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)", borderColor: "var(--border-hairline)" }}>
-              {PENDING_LABELS[pendingFilter]}
-              <button onClick={() => setPendingFilter("all")} className="hover:text-[var(--text-primary)] ml-0.5">
-                <X size={10} />
-              </button>
-            </span>
-          )}
-          {hasActiveFilters && (
-            <button
-              onClick={clearAll}
-              className="text-xs hover:text-[var(--text-secondary)] transition-colors"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Clear all
-            </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          {/* Table / Calendar view switch (§2.4) */}
-          <div className="flex items-center gap-1 border rounded-xl p-1" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
-            {(["table", "calendar"] as const).map((v) => (
-              <button
-                key={v}
-                onClick={() => setViewMode(v)}
-                className="text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors touch-manipulation capitalize"
-                style={viewMode === v
-                  ? { background: "var(--accent-info)", color: "#fff" }
-                  : { color: "var(--text-secondary)" }}
-              >
-                {v}
-              </button>
-            ))}
-          </div>
-
-          {/* Date-range pill strip */}
-          <div className="flex items-center gap-1 border rounded-xl p-1" style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}>
-            {(["all", "90d", "30d", "7d"] as DateRange[]).map((r) => (
-              <button
-                key={r}
-                onClick={() => setDateRange(r)}
-                className="text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors touch-manipulation"
-                style={dateRange === r
-                  ? { background: "var(--accent-info)", color: "#fff" }
-                  : { color: "var(--text-secondary)" }}
-              >
-                {DATE_RANGE_LABELS[r]}
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* ── Title + description ─────────────────────────────────────────────── */}
+      <div className="px-1">
+        <h2 className="text-2xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>
+          Transactions
+        </h2>
+        {scopeNote && (
+          <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>{scopeNote}</p>
+        )}
       </div>
 
-      {/* ── Search + filters row ────────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row gap-2 flex-wrap">
+      {/* ── Primary toolbar + Quick Flow ────────────────────────────────────── */}
+      {/* One wrapping flex row whose `order` yields the intended hierarchy at
+          each breakpoint:
+            mobile  → Search · Quick Flow · Controls  (stacked, order 1·2·3)
+            desktop → Search + Controls on one row, Quick Flow beneath.
+          Search is the dominant affordance (~half width on desktop). */}
+      <div className="flex flex-wrap items-center gap-2">
         {/* Search */}
-        <div className="relative flex-1 min-w-[180px]">
+        <div className="relative w-full lg:w-[52%] order-1">
           <Search
-            size={14}
-            className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+            size={16}
+            className="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
             style={{ color: "var(--text-muted)" }}
           />
           <input
@@ -478,194 +500,182 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             placeholder="Search transactions…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className={`w-full pl-8 pr-8 py-2.5 ${INPUT_BASE}`}
+            aria-label="Search transactions"
+            className={`w-full pl-10 pr-9 py-3 text-[15px] ${INPUT_BASE}`}
             style={inputStyle}
           />
           {search && (
             <button
               onClick={() => setSearch("")}
+              aria-label="Clear search"
               className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-primary)]"
               style={{ color: "var(--text-muted)" }}
             >
-              <X size={13} />
+              <X size={14} />
             </button>
           )}
         </div>
 
-        {/* Category */}
-        <select
-          value={catFilter ?? ""}
-          onChange={(e) => setCatFilter((e.target.value as TransactionCategory) || null)}
-          className={`px-3 py-2.5 ${INPUT_BASE}`}
-          style={inputStyle}
-        >
-          <option value="">All categories</option>
-          {BANKING_CATEGORIES.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
+        {/* Right cluster — view, time, filters, sort. */}
+        <div className="w-full lg:w-auto lg:flex-1 order-3 lg:order-2 flex items-center gap-2 flex-wrap lg:flex-nowrap lg:justify-end">
+          {/* Table / Calendar — a segmented control, visually distinct from the
+              Time selector so the two don't compete (§2.4). */}
+          <SegmentedControl
+            options={[
+              { id: "table", label: "Table" },
+              { id: "calendar", label: "Calendar" },
+            ]}
+            value={viewMode}
+            onChange={setViewMode}
+            aria-label="View mode"
+          />
 
-        {/* Flow type — pivots the ledger by Fourth Meridian's own FlowType
-            (already on every row), not the provider category. */}
-        <select
-          value={flowFilter ?? ""}
-          onChange={(e) => setFlowFilter(e.target.value || null)}
-          className={`px-3 py-2.5 ${INPUT_BASE}`}
-          style={inputStyle}
-        >
-          <option value="">All flow types</option>
-          {Object.entries(FLOW_TYPE_LABEL).map(([value, label]) => (
-            <option key={value} value={value}>{label}</option>
-          ))}
-        </select>
-
-        {/* Account / institution */}
-        <select
-          value={accountFilter ?? ""}
-          onChange={(e) => setAccountFilter(e.target.value || null)}
-          className={`px-3 py-2.5 ${INPUT_BASE}`}
-          style={inputStyle}
-        >
-          <option value="">All accounts</option>
-          {[...institutionGroups.entries()].map(([inst, accts]) => (
-            <optgroup key={inst} label={inst}>
-              {accts.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-
-        {/* Movement (transfer disposition) — only meaningful for TRANSFER rows;
-            the canonical disposition is already on every row (CF-1). */}
-        <select
-          value={dispositionFilter ?? ""}
-          onChange={(e) => setDispositionFilter(e.target.value || null)}
-          className={`px-3 py-2.5 ${INPUT_BASE}`}
-          style={inputStyle}
-        >
-          <option value="">All movements</option>
-          {Object.entries(TRANSFER_DISPOSITION_LABEL).map(([value, label]) => (
-            <option key={value} value={value}>{label}</option>
-          ))}
-        </select>
-
-        {/* Source (provenance) — backed by the list-level `source` field. */}
-        <select
-          value={sourceFilter}
-          onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
-          className={`px-3 py-2.5 ${INPUT_BASE}`}
-          style={inputStyle}
-        >
-          {(["all", "plaid", "import", "manual"] as SourceFilter[]).map((s) => (
-            <option key={s} value={s}>{SOURCE_LABELS[s]}</option>
-          ))}
-        </select>
-
-        {/* Pending / cleared */}
-        <select
-          value={pendingFilter}
-          onChange={(e) => setPendingFilter(e.target.value as PendingFilter)}
-          className={`px-3 py-2.5 ${INPUT_BASE}`}
-          style={inputStyle}
-        >
-          {(["all", "cleared", "pending"] as PendingFilter[]).map((p) => (
-            <option key={p} value={p}>{PENDING_LABELS[p]}</option>
-          ))}
-        </select>
-
-        {/* Merchant — distinct resolved-merchant names in the fetched list. */}
-        <select
-          value={merchantFilter ?? ""}
-          onChange={(e) => setMerchantFilter(e.target.value || null)}
-          className={`px-3 py-2.5 ${INPUT_BASE}`}
-          style={inputStyle}
-        >
-          <option value="">All merchants</option>
-          {merchantOptions.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
-
-        {/* Group by / perspective — one control; "none" is the flat List view.
-            Table-only: grouping doesn't apply to the calendar view (§2.4). */}
-        {viewMode === "table" && (
-          <select
-            value={groupBy}
-            onChange={(e) => setGroupBy(e.target.value as GroupBy)}
-            className={`px-3 py-2.5 ${INPUT_BASE}`}
-            style={inputStyle}
-            aria-label="Group by"
+          {/* Time selector — presets + a Custom [from, to] window. */}
+          <ToolbarMenuButton
+            icon={<CalendarDays size={14} />}
+            triggerLabel={DATE_RANGE_LABELS[dateRange]}
+            options={(["all", "90d", "30d", "7d", "custom"] as DateRange[]).map((r) => ({ id: r, label: DATE_RANGE_LABELS[r] }))}
+            value={dateRange}
+            onChange={setDateRange}
+            shouldCloseOnSelect={(id) => id !== "custom"}
+            aria-label="Time range"
           >
-            {(["none", "flow", "merchant", "account", "category"] as GroupBy[]).map((g) => (
-              <option key={g} value={g}>{g === "none" ? "No grouping" : `Group: ${GROUP_BY_LABELS[g]}`}</option>
-            ))}
-          </select>
-        )}
+            {dateRange === "custom" && (
+              <div className="mt-1 pt-2 px-3 pb-1 border-t space-y-2" style={{ borderColor: "var(--border-hairline)" }}>
+                <label className="block">
+                  <span className="text-[11px] uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>From</span>
+                  <input
+                    type="date"
+                    value={customStart}
+                    max={customEnd || undefined}
+                    onChange={(e) => setCustomStart(e.target.value)}
+                    className={`w-full mt-1 px-2.5 py-2 ${INPUT_BASE}`}
+                    style={inputStyle}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[11px] uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>To</span>
+                  <input
+                    type="date"
+                    value={customEnd}
+                    min={customStart || undefined}
+                    onChange={(e) => setCustomEnd(e.target.value)}
+                    className={`w-full mt-1 px-2.5 py-2 ${INPUT_BASE}`}
+                    style={inputStyle}
+                  />
+                </label>
+              </div>
+            )}
+          </ToolbarMenuButton>
 
-        {/* Needs review — reuses the TE-2B needsClassification boolean as-is. */}
-        <button
-          type="button"
-          onClick={() => setNeedsReviewOnly((v) => !v)}
-          aria-pressed={needsReviewOnly}
-          className={`px-3 py-2.5 rounded-xl text-sm border transition-colors touch-manipulation ${INPUT_BASE}`}
-          style={needsReviewOnly
-            ? { background: "var(--surface-inset)", borderColor: "var(--accent-warning)", color: "var(--accent-warning)" }
-            : inputStyle}
-        >
-          Needs review
-        </button>
+          {/* Filters — the wall of dropdowns now lives in one grouped, on-demand
+              overlay (Slice 1). All filter semantics are unchanged; only their
+              location moved. The badge counts active filter groups. */}
+          <button
+            type="button"
+            onClick={() => setFiltersOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={filtersOpen}
+            className={`flex items-center gap-2 px-3 py-2.5 touch-manipulation ${INPUT_BASE}`}
+            style={activeFilterCount > 0
+              ? { background: "var(--surface-inset)", borderColor: "var(--accent-info)", color: "var(--text-primary)" }
+              : inputStyle}
+          >
+            <SlidersHorizontal size={14} />
+            <span>Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
+          </button>
+
+          {/* Sort — pure client-side reorder of the filtered list (Slice 7). */}
+          <ToolbarMenuButton
+            icon={<ArrowDownUp size={14} />}
+            triggerLabel={SORT_LABELS[sortBy]}
+            options={(["newest", "oldest", "largest", "smallest", "merchant"] as SortBy[]).map((s) => ({ id: s, label: SORT_LABELS[s] }))}
+            value={sortBy}
+            onChange={setSortBy}
+            aria-label="Sort transactions"
+          />
+        </div>
+
+        {/* Quick Flow shortcuts — common FlowType filters as pills; they drive the
+            same flowFilter state. Sits beneath the toolbar on desktop, and between
+            search and the toolbar on mobile (order-2). */}
+        <div className="w-full order-2 lg:order-3">
+          <QuickFlowPills value={flowFilter} onChange={setFlowFilter} />
+        </div>
       </div>
 
-      {/* ── Summary strip ───────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-4 text-sm flex-wrap px-1">
-        <span style={{ color: "var(--text-secondary)" }}>
-          <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{filtered.length}</span>{" "}
-          {filtered.length === 1 ? "transaction" : "transactions"}
-        </span>
-        {totalSpend > 0 && (
-          <span style={{ color: "var(--text-secondary)" }}>
-            Spend:{" "}
-            <span className="font-semibold" style={{ color: "var(--accent-negative)" }}>-{fmtAgg(totalSpend)}</span>
-          </span>
-        )}
-        {totalIn > 0 && (
-          <span style={{ color: "var(--text-secondary)" }}>
-            In:{" "}
-            <span className="font-semibold" style={{ color: "var(--accent-positive)" }}>+{fmtAgg(totalIn)}</span>
-          </span>
-        )}
-        {/* §2.3.1 — the rest of the FlowType ontology, one figure per kind.
-            Zero-count discipline (§9.7): a kind absent from the filtered list
-            renders NO chip (never a fabricated "$0.00"). Refund is disclosed as
-            its own figure while Spend stays net of refunds, so no dollar is
-            counted twice (§2.3.1's "do not double-count"). Transfers / debt
-            payments / investments are movements, not P&L — shown in neutral ink. */}
-        {totalTransfer > 0 && (
-          <span style={{ color: "var(--text-secondary)" }}>
-            Transfers:{" "}
-            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{fmtAgg(totalTransfer)}</span>
-          </span>
-        )}
-        {totalDebtPmt > 0 && (
-          <span style={{ color: "var(--text-secondary)" }}>
-            Debt payments:{" "}
-            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{fmtAgg(totalDebtPmt)}</span>
-          </span>
-        )}
-        {totalInvestment > 0 && (
-          <span style={{ color: "var(--text-secondary)" }}>
-            Investments:{" "}
-            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{fmtAgg(totalInvestment)}</span>
-          </span>
-        )}
-        {totalRefund > 0 && (
-          <span style={{ color: "var(--text-secondary)" }}>
-            Refunds:{" "}
-            <span className="font-semibold" style={{ color: "var(--accent-positive)" }}>+{fmtAgg(totalRefund)}</span>
-          </span>
-        )}
-      </div>
+      {/* Filters overlay — centered dialog on desktop, bottom sheet on mobile. */}
+      <TransactionsFilterOverlay
+        open={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        resultCount={filtered.length}
+        activeCount={activeFilterCount}
+        onClearAll={clearAll}
+        catFilter={catFilter}
+        setCatFilter={setCatFilter}
+        flowFilter={flowFilter}
+        setFlowFilter={setFlowFilter}
+        accountFilter={accountFilter}
+        setAccountFilter={setAccountFilter}
+        dispositionFilter={dispositionFilter}
+        setDispositionFilter={setDispositionFilter}
+        sourceFilter={sourceFilter}
+        setSourceFilter={setSourceFilter}
+        merchantFilter={merchantFilter}
+        setMerchantFilter={setMerchantFilter}
+        needsReviewOnly={needsReviewOnly}
+        setNeedsReviewOnly={setNeedsReviewOnly}
+        pendingFilter={pendingFilter}
+        setPendingFilter={setPendingFilter}
+        groupBy={groupBy}
+        setGroupBy={setGroupBy}
+        institutionGroups={institutionGroups}
+        merchantOptions={merchantOptions}
+        showGrouping={viewMode === "table"}
+      />
+
+      {/* ── Active filter chips ─────────────────────────────────────────────── */}
+      {/* Only rendered when a filter group is active (reduce noise). */}
+      <TransactionFilterChips
+        selectedAccount={selectedAccount}
+        setAccountFilter={setAccountFilter}
+        catFilter={catFilter}
+        setCatFilter={setCatFilter}
+        flowFilter={flowFilter}
+        setFlowFilter={setFlowFilter}
+        dispositionFilter={dispositionFilter}
+        setDispositionFilter={setDispositionFilter}
+        sourceFilter={sourceFilter}
+        setSourceFilter={setSourceFilter}
+        merchantFilter={merchantFilter}
+        setMerchantFilter={setMerchantFilter}
+        needsReviewOnly={needsReviewOnly}
+        setNeedsReviewOnly={setNeedsReviewOnly}
+        pendingFilter={pendingFilter}
+        setPendingFilter={setPendingFilter}
+        activeCount={activeFilterCount}
+        onClearAll={clearAll}
+        onAddFilter={() => setFiltersOpen(true)}
+      />
+
+      {/* ── Summary KPI cards (§2.3.1) ──────────────────────────────────────────
+          Same shared-map math as before, re-presented as KPI cards. Zero-count
+          discipline (§9.7) is preserved inside TransactionSummaryCards: a money
+          card renders only when its figure > 0 — never a fabricated "$0.00".
+          Spend stays net of refunds while Refund is disclosed as its own figure,
+          so no dollar is double-counted; transfers / debt payments / investments
+          are movements shown in neutral ink. */}
+      <TransactionSummaryCards
+        count={filtered.length}
+        spend={totalSpend}
+        income={totalIn}
+        transfers={totalTransfer}
+        debtPayments={totalDebtPmt}
+        investments={totalInvestment}
+        refunds={totalRefund}
+        fmt={fmtAgg}
+        rangeLabel={RANGE_SUBTITLE[dateRange]}
+      />
 
       {/* ── Transaction list ─────────────────────────────────────────────────── */}
       {transactions.length === 0 ? (
@@ -676,78 +686,180 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
           </p>
         </div>
       ) : (
-        <DataCard padding="0" className="overflow-hidden">
-          {filtered.length === 0 ? (
-            <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>
-              No transactions match your filters.
-            </p>
-          ) : viewMode === "calendar" ? (
-            // §2.4 — day heat-map over the same filtered set (net in − out), the
-            // amount accessor + formatter shared with the summary chips.
-            <TransactionsCalendarHeatmap transactions={filtered} amountOf={rowAmount} fmt={fmtAgg} />
-          ) : groups ? (
-            // Grouped (pivoted) view — a header per bucket, then its rows.
-            <div className="divide-y divide-[var(--border-hairline)]">
-              {groups.map((g) => (
-                <div key={g.key}>
-                  <div
-                    className="flex items-center justify-between gap-2 px-4 py-2 sticky top-0 z-10"
-                    style={{ background: "var(--surface-muted)", color: "var(--text-secondary)" }}
-                  >
-                    <span className="text-xs font-semibold uppercase tracking-wide truncate">{g.label}</span>
-                    <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
-                      {/* By-Flow-Type sum comes from the shared sumByFlowType map (§9.8). */}
-                      <span className="tabular-nums" style={{ color: "var(--text-secondary)" }}>{fmtAgg(g.sum)}</span>
-                      <span>·</span>
-                      <span>{g.rows.length}</span>
-                    </span>
+        <>
+          <DataCard padding="0" className="overflow-hidden">
+            {/* Column header — desktop table only (`lg:` and up). Mobile keeps
+                the original compact card row unchanged, and has nothing below
+                `lg` for a column header to align to. Hidden for the calendar
+                view and the no-results state, where there is no row grid. */}
+            {filtered.length > 0 && viewMode === "table" && (
+              <div
+                className="hidden lg:grid gap-3 px-5 py-2.5 border-b text-[11px] font-semibold uppercase tracking-wide"
+                style={{ gridTemplateColumns: TX_GRID_COLS, borderColor: "var(--border-hairline)", color: "var(--text-faint)" }}
+              >
+                <span aria-hidden />
+                <span>Description</span>
+                <span>Account</span>
+                <span>Category</span>
+                <span>Flow type</span>
+                <span className="text-right">Amount</span>
+                <span>Status</span>
+                <span aria-hidden />
+              </div>
+            )}
+            {filtered.length === 0 ? (
+              <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>
+                No transactions match your filters.
+              </p>
+            ) : viewMode === "calendar" ? (
+              // §2.4 — day heat-map over the same filtered set (net in − out), the
+              // amount accessor + formatter shared with the summary chips.
+              <TransactionsCalendarHeatmap transactions={filtered} amountOf={rowAmount} fmt={fmtAgg} />
+            ) : groups ? (
+              // Grouped (pivoted) view — a header per bucket, then its rows. Not
+              // paginated (see PAGE_SIZE_OPTIONS comment): every matching row
+              // renders, same as before this redesign.
+              <div className="divide-y divide-[var(--border-hairline)]">
+                {groups.map((g) => (
+                  <div key={g.key}>
+                    <div
+                      className="flex items-center justify-between gap-2 px-4 sm:px-5 py-2.5 sticky top-0 z-10 border-b"
+                      style={{ background: "color-mix(in srgb, var(--surface-muted) 88%, transparent)", color: "var(--text-secondary)", borderColor: "var(--border-hairline)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
+                    >
+                      <span className="text-xs font-semibold uppercase tracking-wide truncate">{g.label}</span>
+                      <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
+                        {/* By-Flow-Type sum comes from the shared sumByFlowType map (§9.8). */}
+                        <span className="tabular-nums" style={{ color: "var(--text-secondary)" }}>{fmtAgg(g.sum)}</span>
+                        <span>·</span>
+                        <span>{g.rows.length}</span>
+                      </span>
+                    </div>
+                    <div className="divide-y divide-[var(--border-hairline)]">
+                      {g.rows.map((tx) => (
+                        <TxRow
+                          key={tx.id}
+                          tx={tx}
+                          acctName={acctName(tx.accountId)}
+                          acctInst={acctInst(tx.accountId)}
+                          acctType={accountMap.get(tx.accountId)?.type ?? "other"}
+                          onOpen={() => openTransaction(tx.id)}
+                        />
+                      ))}
+                    </div>
                   </div>
-                  <div className="divide-y divide-[var(--border-hairline)]">
-                    {g.rows.map((tx) => (
-                      <TxRow
-                        key={tx.id}
-                        tx={tx}
-                        acctName={acctName(tx.accountId)}
-                        acctInst={acctInst(tx.accountId)}
-                        onOpen={() => openTransaction(tx.id)}
-                      />
-                    ))}
+                ))}
+              </div>
+            ) : (
+              <div className="divide-y divide-[var(--border-hairline)]">
+                {paged.map((tx) => (
+                  <TxRow
+                    key={tx.id}
+                    tx={tx}
+                    acctName={acctName(tx.accountId)}
+                    acctInst={acctInst(tx.accountId)}
+                    acctType={accountMap.get(tx.accountId)?.type ?? "other"}
+                    onOpen={() => openTransaction(tx.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </DataCard>
+
+          {/* Pagination footer — flat Table view only. Page-size choice always
+              visible once there are any rows; the numbered nav only appears once
+              there is more than one page. */}
+          {viewMode === "table" && groupBy === "none" && sorted.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                Showing {pageStart} to {pageEnd} of {sorted.length} transactions
+              </p>
+              <div className="flex items-center gap-3">
+                {totalPages > 1 && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      disabled={currentPage === 1}
+                      aria-label="Previous page"
+                      className="flex items-center justify-center h-7 w-7 rounded-lg border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[var(--surface-hover)] transition-colors"
+                      style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}
+                    >
+                      <ChevronLeft size={14} />
+                    </button>
+                    {paginationRange(currentPage, totalPages).map((p, i) =>
+                      p === "…" ? (
+                        <span key={`gap-${i}`} className="px-1 text-xs" style={{ color: "var(--text-faint)" }}>…</span>
+                      ) : (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => setPage(p)}
+                          aria-current={p === currentPage ? "page" : undefined}
+                          className="flex items-center justify-center h-7 min-w-7 px-1.5 rounded-lg text-xs font-semibold transition-colors"
+                          style={p === currentPage
+                            ? { background: "var(--meridian-400)", color: "#fff" }
+                            : { color: "var(--text-secondary)" }}
+                        >
+                          {p}
+                        </button>
+                      ),
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                      disabled={currentPage === totalPages}
+                      aria-label="Next page"
+                      className="flex items-center justify-center h-7 w-7 rounded-lg border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[var(--surface-hover)] transition-colors"
+                      style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}
+                    >
+                      <ChevronRight size={14} />
+                    </button>
                   </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="divide-y divide-[var(--border-hairline)]">
-              {filtered.map((tx) => (
-                <TxRow
-                  key={tx.id}
-                  tx={tx}
-                  acctName={acctName(tx.accountId)}
-                  acctInst={acctInst(tx.accountId)}
-                  onOpen={() => openTransaction(tx.id)}
-                />
-              ))}
+                )}
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value) as PageSize)}
+                  aria-label="Transactions per page"
+                  className={`px-2 py-1.5 ${INPUT_BASE}`}
+                  style={inputStyle}
+                >
+                  {PAGE_SIZE_OPTIONS.map((n) => (
+                    <option key={n} value={n}>{n} per page</option>
+                  ))}
+                </select>
+              </div>
             </div>
           )}
-        </DataCard>
+        </>
       )}
     </div>
   );
 }
 
 // ── Transaction row ───────────────────────────────────────────────────────────
+// Two layouts, one component: below `lg` this is exactly the original compact
+// card row (unchanged); at `lg` and up it renders the full column table row
+// (table redesign follow-up), sharing TX_GRID_COLS with the header above so the
+// two can never drift apart. Only one of the two is ever visible at a time —
+// Tailwind's `flex lg:hidden` / `hidden lg:grid` pair, no JS breakpoint check.
 function TxRow({
   tx,
   acctName,
   acctInst,
+  acctType,
   onOpen,
 }: {
   tx:       Transaction;
   acctName: string;
   acctInst: string;
+  acctType: AccountType;
   onOpen:   () => void;
 }) {
   const isCredit = tx.amount > 0;
+  const title    = tx.merchantDisplayName ?? tx.merchant; // MI M6 — resolved name, raw fallback
+  const AcctIcon = ACCOUNT_TYPE_ICON[acctType] ?? Building2;
+  const FlowIcon = tx.flowType ? FLOW_TYPE_ICON[tx.flowType] : null;
+  const status   = statusOf(tx);
 
   return (
     <div
@@ -755,42 +867,100 @@ function TxRow({
       tabIndex={0}
       onClick={onOpen}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
-      className="flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
+      className="group hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
     >
-      {/* Date column */}
-      <TransactionDate date={tx.date} />
+      {/* Mobile / tablet (below `lg`) — the original compact card row, byte-for-byte unchanged. */}
+      <div className="flex lg:hidden items-center gap-3.5 px-4 py-3.5 sm:px-5">
+        <TransactionDate date={tx.date} />
 
-      {/* Merchant + meta */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{tx.merchantDisplayName ?? tx.merchant}{/* MI M6 — resolved name, raw fallback */}</p>
-          {tx.pending && (
-            <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>
-              Pending
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-          <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
-            {tx.category}
-          </span>
-          {/* CF-1 transfer disposition — canonical concept, already on the row. */}
-          {tx.transferDisposition && (
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{title}</p>
+            {tx.pending && (
+              <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>
+                Pending
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
+              {tx.category}
+            </span>
+            {tx.transferDisposition && (
+              <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
+                {TRANSFER_DISPOSITION_LABEL[tx.transferDisposition] ?? tx.transferDisposition}
+              </span>
+            )}
+            <span className="text-xs truncate" style={{ color: "var(--text-faint)" }}>
+              {acctInst}{acctInst && acctName ? " · " : ""}{acctName}
+            </span>
+          </div>
+        </div>
+
+        <div className="shrink-0 text-right">
+          <p className="text-sm font-bold tabular-nums" style={{ color: isCredit ? "var(--accent-positive)" : "var(--text-primary)" }}>
+            {isCredit ? "+" : "−"}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
+          </p>
+        </div>
+
+        <ChevronRight
+          size={15}
+          aria-hidden
+          className="shrink-0 -mr-1 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity"
+          style={{ color: "var(--text-faint)" }}
+        />
+      </div>
+
+      {/* Desktop (`lg` and up) — full column row: Description · Account · Category ·
+          Flow type · Amount · Status. Table redesign follow-up. */}
+      <div className="hidden lg:grid items-center gap-3 px-5 py-3" style={{ gridTemplateColumns: TX_GRID_COLS }}>
+        <TransactionDate date={tx.date} />
+
+        <div className="min-w-0">
+          <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{title}</p>
+          {tx.transferDisposition && (
+            <span className={`inline-block mt-0.5 text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
               {TRANSFER_DISPOSITION_LABEL[tx.transferDisposition] ?? tx.transferDisposition}
             </span>
           )}
-          <span className="text-xs truncate" style={{ color: "var(--text-faint)" }}>
-            {acctInst}{acctInst && acctName ? " · " : ""}{acctName}
+        </div>
+
+        <div className="min-w-0 flex items-center gap-2">
+          <AcctIcon size={14} className="shrink-0" style={{ color: "var(--text-faint)" }} />
+          <div className="min-w-0">
+            <p className="text-xs font-medium truncate" style={{ color: "var(--text-secondary)" }}>{acctName}</p>
+            {acctInst && <p className="text-[11px] truncate" style={{ color: "var(--text-faint)" }}>{acctInst}</p>}
+          </div>
+        </div>
+
+        <div className="min-w-0">
+          <span className={`inline-block max-w-full truncate text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
+            {tx.category}
           </span>
         </div>
-      </div>
 
-      {/* Amount */}
-      <div className="shrink-0 text-right">
-        <p className="text-sm font-bold tabular-nums" style={{ color: isCredit ? "var(--accent-positive)" : "var(--text-primary)" }}>
+        <div className="min-w-0 flex items-center gap-1.5">
+          {FlowIcon && <FlowIcon size={13} className="shrink-0" style={{ color: "var(--text-faint)" }} />}
+          <span className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>
+            {tx.flowType ? (FLOW_TYPE_LABEL[tx.flowType] ?? tx.flowType) : "—"}
+          </span>
+        </div>
+
+        <p className="text-sm font-bold tabular-nums text-right" style={{ color: isCredit ? "var(--accent-positive)" : "var(--text-primary)" }}>
           {isCredit ? "+" : "−"}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
         </p>
+
+        <div className="min-w-0 flex items-center gap-1.5">
+          <span aria-hidden className="h-1.5 w-1.5 rounded-full shrink-0" style={{ background: status.color }} />
+          <span className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>{status.label}</span>
+        </div>
+
+        <ChevronRight
+          size={15}
+          aria-hidden
+          className="shrink-0 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity justify-self-end"
+          style={{ color: "var(--text-faint)" }}
+        />
       </div>
     </div>
   );
