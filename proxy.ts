@@ -11,7 +11,7 @@
  *
  * Rules:
  *   - Any route matching /dashboard/* or /admin/* requires a valid JWT session.
- *     Unauthenticated requests are redirected to /login?callbackUrl=<path>.
+ *     Unauthenticated requests are redirected to /login?callbackUrl=<path+query>.
  *   - SYSTEM_ADMIN users are redirected away from /dashboard/* to /admin.
  *   - Regular USER/ADMIN accounts cannot access /admin/* routes.
  *   - If the platform requires TOTP and this user hasn't enrolled yet,
@@ -40,7 +40,14 @@ export default async function middleware(req: NextRequest) {
   // No valid JWT → redirect to login, preserving the intended destination.
   if (!token) {
     const signIn = new URL("/login", req.url);
-    signIn.searchParams.set("callbackUrl", pathname);
+    // Preserve the FULL intended destination, not just the path: virtually all
+    // deep-link state (tab, perspective, asof, compareto, preset, account, …)
+    // lives in the query string, so `pathname` alone silently drops it. `search`
+    // includes the leading "?" (empty string when there's no query), keeping this
+    // a same-origin-relative "/dashboard?…" value — it still starts with "/", so
+    // the open-redirect guard in app/(auth)/login/page.tsx (dest.startsWith("/"))
+    // passes it through unchanged after a successful login.
+    signIn.searchParams.set("callbackUrl", pathname + req.nextUrl.search);
     return NextResponse.redirect(signIn);
   }
 

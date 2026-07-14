@@ -251,8 +251,17 @@ interface Props {
 // ─── URL-backed tab state (?tab=…&perspective=…) ────────────────────────────────
 // Persist the active Space tab (and, on Perspectives, the selected Perspective)
 // in the query string via window.history — no server re-run, no full reload.
-// Only these rail tabs are URL-synced; modal-routed tabs (GOALS/DEBT/…) are not.
-const URL_SYNCED_TABS = new Set(["OVERVIEW", "PERSPECTIVES", "ACCOUNTS", "ACTIVITY", "TRANSACTIONS", "MEMBERS"]);
+// Every tab that `parseTabParam`/`URL_TAB_ALIAS` can restore is synced, so a
+// refresh lands back where it left off — INCLUDING the modal-routed tabs
+// (GOALS/DEBT/INVESTMENTS/RETIREMENT). Those render the DB section-template
+// stack in a GlassModal — genuinely distinct content from the same-named
+// Perspective compositions — and were previously dropped to OVERVIEW on refresh
+// because the write below was gated off them (the read path already handled
+// ?tab=debt etc. via URL_TAB_ALIAS).
+const URL_SYNCED_TABS = new Set([
+  "OVERVIEW", "PERSPECTIVES", "ACCOUNTS", "ACTIVITY", "TRANSACTIONS", "MEMBERS",
+  "GOALS", "DEBT", "INVESTMENTS", "RETIREMENT",
+]);
 // URL "tab" value → activeTab. Includes rail tabs, the modal-routed tabs, and
 // legacy aliases (timeline/banking/credit) so existing deep links keep working.
 const URL_TAB_ALIAS: Record<string, string> = {
@@ -2502,7 +2511,10 @@ export function SpaceDashboard({
   // Mirror activeTab (+ selected Perspective) into ?tab=…&perspective=… via
   // window.history — no server re-run, no reload. First sync canonicalizes with
   // replaceState; later user changes pushState so browser back/forward works.
-  // Only rail tabs are synced; modal-routed tabs (GOALS/DEBT/…) leave the URL.
+  // Any tab in URL_SYNCED_TABS is mirrored — including the modal-routed
+  // GOALS/DEBT/INVESTMENTS/RETIREMENT — so refreshing inside one restores it
+  // instead of falling back to OVERVIEW. The perspective param is written only
+  // on PERSPECTIVES (else deleted), so a modal tab yields a clean ?tab=<name>.
   const urlInitDone = useRef(false);
   useEffect(() => {
     if (!activeTab || typeof window === "undefined") return;

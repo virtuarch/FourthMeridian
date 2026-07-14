@@ -60,10 +60,12 @@ import {
   Check,
   Loader2,
   AlertTriangle,
+  Clock,
   LayoutGrid,
   Shield,
   type LucideIcon,
 } from "lucide-react";
+import { useManualRefresh } from "@/components/plaid/useManualRefresh";
 import { AppLogo } from "@/components/ui/AppLogo";
 import { displaySpaceName } from "@/lib/format";
 import {
@@ -357,46 +359,55 @@ function ComingSoonRow({ icon: Icon, label }: { icon: LucideIcon; label: string 
 // Reuses existing functionality only; no new backend surface.
 
 function SidebarRefreshButton() {
-  const router = useRouter();
-  const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  // Shared refresh/cooldown logic (same hook the topbar RefreshButton uses) so a
+  // 200 where every item was on cooldown no longer shows a false "Synced".
+  const { phase, banner, run } = useManualRefresh();
 
-  async function handleClick() {
-    if (status === "loading") return;
-    setStatus("loading");
-    try {
-      const res = await fetch("/api/plaid/refresh", { method: "POST" });
-      if (!res.ok) throw new Error("Refresh failed");
-      setStatus("done");
-      router.refresh();
-    } catch {
-      setStatus("error");
-    } finally {
-      setTimeout(() => setStatus("idle"), 2500);
-    }
-  }
-
-  const isError = status === "error";
-  const isDone  = status === "done";
+  const isError    = phase === "error";
+  const isDone     = phase === "done" || phase === "partial";
+  const isCooldown = phase === "cooldown";
 
   return (
-    <button
-      onClick={handleClick}
-      disabled={status === "loading"}
-      className={[
-        "flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium border",
-        "backdrop-blur-xl transition-[transform,background-color,border-color,color] duration-[var(--dur-base)] ease-[var(--ease-standard)]",
-        "active:scale-[0.97] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:active:scale-100",
-        isError
-          ? "text-[var(--coral-400)] bg-[rgba(237,82,71,.08)] hover:bg-[rgba(237,82,71,.14)] border-[rgba(237,82,71,.3)]"
-          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--glass-ultrathin)] hover:bg-[var(--surface-hover-strong)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:-translate-y-[1px]",
-      ].join(" ")}
-    >
-      {status === "loading" && <Loader2 size={17} className="animate-spin shrink-0" />}
-      {isDone && <Check size={17} className="shrink-0 text-[var(--emerald-400)]" />}
-      {isError && <AlertTriangle size={17} className="shrink-0" />}
-      {status === "idle" && <RefreshCw size={17} strokeWidth={1.75} className="shrink-0" />}
-      {status === "loading" ? "Refreshing…" : isDone ? "Synced" : isError ? "Failed — retry" : "Refresh Data"}
-    </button>
+    <div className="w-full">
+      <button
+        onClick={run}
+        disabled={phase === "loading"}
+        className={[
+          "flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium border",
+          "backdrop-blur-xl transition-[transform,background-color,border-color,color] duration-[var(--dur-base)] ease-[var(--ease-standard)]",
+          "active:scale-[0.97] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:active:scale-100",
+          isError
+            ? "text-[var(--coral-400)] bg-[rgba(237,82,71,.08)] hover:bg-[rgba(237,82,71,.14)] border-[rgba(237,82,71,.3)]"
+            : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--glass-ultrathin)] hover:bg-[var(--surface-hover-strong)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:-translate-y-[1px]",
+        ].join(" ")}
+      >
+        {phase === "loading" && <Loader2 size={17} className="animate-spin shrink-0" />}
+        {isDone && <Check size={17} className="shrink-0 text-[var(--emerald-400)]" />}
+        {isError && <AlertTriangle size={17} className="shrink-0" />}
+        {isCooldown && <Clock size={17} strokeWidth={1.75} className="shrink-0 text-[var(--text-muted)]" />}
+        {phase === "idle" && <RefreshCw size={17} strokeWidth={1.75} className="shrink-0" />}
+        {phase === "loading"
+          ? "Refreshing…"
+          : phase === "done"
+          ? "Synced"
+          : phase === "partial"
+          ? "Partial sync"
+          : isCooldown
+          ? "On cooldown"
+          : isError
+          ? "Failed — retry"
+          : "Refresh Data"}
+      </button>
+
+      {banner && (
+        <p
+          role="status"
+          className="mt-1.5 px-3 py-1.5 rounded-lg border border-[var(--border-hairline)] bg-[var(--surface-muted)] text-[11px] font-medium text-[var(--text-secondary)]"
+        >
+          {banner}
+        </p>
+      )}
+    </div>
   );
 }
 
