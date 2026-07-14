@@ -25,6 +25,7 @@ import { refreshPlaidItem, refreshAllActiveItemsForUser, type RefreshSummary, ty
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
+import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { checkManualRefreshCooldown, markManualRefreshed, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
 import { limitByUser } from "@/lib/rate-limit";
 
@@ -66,8 +67,18 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     // Marked on every attempt (success or failure) — see D2-7B checklist §5.
     await markManualRefreshed(item.id);
 
+    // F1 (2026-07-14) — same shared syncLockedAt guard the webhook/connect
+    // pipeline uses, so a manual "Refresh" can never race a webhook/cron/other
+    // manual trigger against this item's cursor. See the connections-weirdness
+    // investigation §4.1(d) — a freshly-connected item is off-cooldown, so a
+    // user who connects and immediately hits Refresh used to race their own
+    // background import.
     try {
-      const r = await refreshPlaidItem(item.id);
+      const lockResult = await withPlaidItemSyncLock(item.id, () => refreshPlaidItem(item.id));
+      if (!lockResult.ok) {
+        return NextResponse.json({ error: "in-flight" }, { status: 409 });
+      }
+      const r = lockResult.result;
       summary = {
         results:                   [r],
         itemCount:                 1,

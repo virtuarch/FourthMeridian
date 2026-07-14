@@ -13,9 +13,14 @@
  * dormant since birth (startScheduler() was never invoked) — was retired in
  * S2; the registry is its successor.
  *
- * Idempotent and safe to overlap with a user-triggered sync of the same
- * item — both paths upsert on the unique Transaction.plaidTransactionId, so
- * re-processing the same page of Plaid results never creates duplicates.
+ * F1 (2026-07-14) — each item's sync goes through the shared syncLockedAt
+ * guard (lib/plaid/sync-lock.ts). Two concurrent full pipelines against the
+ * same item DO race PlaidItem.cursor and can collide on
+ * prisma.transaction.create() (the "Amex 363 UPSERT_ERROR" signature) — the
+ * old "idempotent and safe to overlap" claim below was stale/wrong (see the
+ * connections-weirdness investigation §2.2); a webhook or manual trigger
+ * firing during this job's run on the same item is now skipped-locked instead
+ * of racing it, and picked up by whichever pipeline is already in flight.
  *
  * One institution's failure (e.g. ITEM_LOGIN_REQUIRED after the user revokes
  * access at their bank) must never block syncing the rest — each item is
@@ -28,12 +33,15 @@ import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
+import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
 
 export interface SyncBanksResult {
   succeeded: number;
   failed:    number;
+  /** F1 (2026-07-14) — items skipped because another sync already held their lock. Neither succeeded nor failed; picked up by the in-flight run. */
+  skipped:   number;
   total:     number;
   /** A3-4 — items whose scheduled investment-event ingestion ran (flag on + consent ENABLED). */
   eventItems: number;
@@ -52,21 +60,28 @@ export async function syncBanks(): Promise<SyncBanksResult> {
     select: { id: true, institutionName: true, investmentsConsent: true, encryptedToken: true },
   });
 
-  if (items.length === 0) return { succeeded: 0, failed: 0, total: 0, eventItems: 0 };
+  if (items.length === 0) return { succeeded: 0, failed: 0, skipped: 0, total: 0, eventItems: 0 };
 
   let succeeded = 0;
   let failed = 0;
+  let skipped = 0;
   let eventItems = 0;
   const eventsOn = investmentEventsEnabled();
 
   for (const item of items) {
     try {
-      const result = await syncTransactionsForItem(item.id);
-      succeeded++;
-      if (result.added || result.modified || result.removed) {
-        console.log(
-          `[sync-banks] ${item.institutionName}: +${result.added} ~${result.modified} -${result.removed}`
-        );
+      const lockResult = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id));
+      if (!lockResult.ok) {
+        skipped++;
+        console.log(`[sync-banks] ${item.institutionName}: skipped — sync already in progress elsewhere`);
+      } else {
+        succeeded++;
+        const result = lockResult.result;
+        if (result.added || result.modified || result.removed) {
+          console.log(
+            `[sync-banks] ${item.institutionName}: +${result.added} ~${result.modified} -${result.removed}`
+          );
+        }
       }
     } catch (e) {
       failed++;
@@ -86,6 +101,9 @@ export async function syncBanks(): Promise<SyncBanksResult> {
     // Investments consent (avoids a doomed call on every non-investment Item).
     // Fully isolated best-effort: never affects the transaction-sync counts
     // above, never fails the job, never touches Holding/PositionObservation.
+    // Deliberately unconditional on the lock outcome above — event ingestion is
+    // a separate Plaid call (investmentsTransactionsGet) with its own dedupe,
+    // not part of the cursor/transaction race this lock guards against.
     if (eventsOn && item.investmentsConsent === PlaidInvestmentsConsent.ENABLED) {
       try {
         const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
@@ -97,7 +115,7 @@ export async function syncBanks(): Promise<SyncBanksResult> {
     }
   }
 
-  console.log(`[sync-banks] complete — ${succeeded} succeeded, ${failed} failed, ${items.length} total, ${eventItems} event-ingest`);
+  console.log(`[sync-banks] complete — ${succeeded} succeeded, ${failed} failed, ${skipped} skipped, ${items.length} total, ${eventItems} event-ingest`);
 
-  return { succeeded, failed, total: items.length, eventItems };
+  return { succeeded, failed, skipped, total: items.length, eventItems };
 }

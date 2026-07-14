@@ -28,6 +28,8 @@ import { PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth, plaidErrorSummary } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
+import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { limitByUser } from "@/lib/rate-limit";
 
 // Resuming a large remaining history can take a while — same budget as the
@@ -86,18 +88,31 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     data:  { syncIncompleteAt: new Date() },
   });
 
+  // F1 (2026-07-14) — go through the SAME syncLockedAt guard the webhook/connect
+  // pipeline uses. Without this, a resume can run concurrently with a webhook
+  // that fires mid-import (the age gate above only protects against the
+  // in-flight post-connect run; it predates the webhook receiver and knows
+  // nothing about it) — the highest-probability repro of the original
+  // Amex stuck-import incident. See sync-lock.ts + the connections-weirdness
+  // investigation §4.1(a).
   try {
-    await syncTransactionsForItem(item.id);
+    const lockResult = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id));
+    if (!lockResult.ok) {
+      // Another sync already holds the lock — don't race it. That run's own
+      // completion resolves this item's state; the next resume attempt (or
+      // that run's success) picks it up.
+      return NextResponse.json({ resumed: false, reason: "in-flight" });
+    }
     // syncTransactionsForItem cleared syncIncompleteAt on a full completion.
     return NextResponse.json({ resumed: true, complete: true });
   } catch (e) {
     console.error(`[plaid][resume-sync] resume failed for item ${item.id}: ${plaidErrorSummary(e)}`, e);
     const health = classifyPlaidErrorForHealth(e);
     if (health) {
-      await db.plaidItem.update({
-        where: { id: item.id },
-        data:  { status: health.status, errorCode: health.errorCode },
-      });
+      // CH-2 chokepoint (previously a direct db.plaidItem.update here — §5.1
+      // of the connections-weirdness investigation: this failure path bypassed
+      // the durable transition-history record).
+      await setPlaidItemHealth(item.id, { status: health.status, errorCode: health.errorCode });
       await notifyItemSyncFailed(item.id);
     }
     // syncIncompleteAt stays set (re-armed above) so the item still reads as

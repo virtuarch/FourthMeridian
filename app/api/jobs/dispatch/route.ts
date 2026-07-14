@@ -2,16 +2,20 @@
  * GET /api/jobs/dispatch  (OPS-4 S2)
  *
  * THE single Vercel Cron entrypoint. vercel.json carries exactly one cron —
- * this path. On the current Vercel Hobby (free) tier, sub-daily cron is
- * rejected at deploy time, so the active schedule is once per day ("0 6 * * *",
- * the 06:00 slot). The richer paid-tier schedule ("0,30 6-7 * * *", one tick
- * per registered half-hour slot — 06:00 / 06:30 / 07:00 / 07:30) is restored
- * when off Hobby. The dispatcher (lib/jobs/dispatch.ts) selects the jobs due
- * at the invocation's slot from the registry (lib/jobs/registry.ts) and runs
- * each through runJob() — individually ledgered, individually isolated. Slots
- * the daily tick does not reach stay reachable via the per-job fallback routes
- * (CRON_SECRET-guarded); FX freshness is additionally kept current by the
- * opportunistic stale-while-revalidate refresh (lib/money/fx-freshness.ts).
+ * this path — now multi-slot: "0,30 0,6,7,12,18 * * *" (CH-3, 2026-07-13,
+ * confirmed off the Hobby tier's sub-daily-cron-rejected-at-deploy constraint
+ * — the note that used to live here about being pinned to a single daily
+ * 06:00 tick is stale; see the connections-weirdness investigation §5.2).
+ * This covers every registered slot — sync-crypto 00:00/06:00/12:00/18:00,
+ * sync-banks + fx/security-prices 06:00/06:30, deletions 07:00, maintenance
+ * 07:30 — plus two slots (00:30, 12:30) with no registered job, where the
+ * dispatcher harmlessly no-ops. The dispatcher (lib/jobs/dispatch.ts) selects
+ * the jobs due at the invocation's slot from the registry
+ * (lib/jobs/registry.ts) and runs each through runJob() — individually
+ * ledgered, individually isolated. Any slot a future registry change doesn't
+ * reach stays reachable via the per-job fallback routes (CRON_SECRET-guarded);
+ * FX freshness is additionally kept current by the opportunistic
+ * stale-while-revalidate refresh (lib/money/fx-freshness.ts).
  *
  * Auth: identical to the pre-S2 cron routes — Vercel sends
  * `Authorization: Bearer ${CRON_SECRET}` on cron-triggered requests when

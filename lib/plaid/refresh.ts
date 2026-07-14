@@ -46,6 +46,7 @@ import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { classifyPlaidErrorForHealth, getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
+import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
 import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
@@ -125,8 +126,13 @@ export interface RefreshItemResult {
    */
   updatedAccountIds?: string[];
   error?:                 string;
-  /** D2 Step 7B — set instead of calling Plaid when this item is on the manual-refresh cooldown. */
-  skipped?:               "cooldown";
+  /**
+   * D2 Step 7B — set instead of calling Plaid when this item is on the
+   * manual-refresh cooldown. F1 (2026-07-14) adds "in-flight": another sync
+   * already held this item's syncLockedAt guard, so this refresh was skipped
+   * rather than racing it (see lib/plaid/sync-lock.ts).
+   */
+  skipped?:               "cooldown" | "in-flight";
   /** D2 Step 7B — only set when skipped === "cooldown". */
   retryAfterSeconds?:     number;
 }
@@ -652,8 +658,30 @@ export async function refreshAllActiveItemsForUser(
       continue;
     }
 
+    // F1 (2026-07-14) — same shared syncLockedAt guard the webhook/connect
+    // pipeline uses (lib/plaid/sync-lock.ts), so the daily-cron-adjacent bulk
+    // refresh path can never race a webhook/manual/cron sync against the same
+    // item's cursor. A skip here isn't a failure — it's deferred to whichever
+    // run is already in flight, so it's excluded from both succeededAccountIds
+    // and failedItemIds (nothing to snapshot, nothing to mark unhealthy).
     try {
-      const r = await refreshPlaidItem(item.id, { deferSnapshot: true });
+      const lockResult = await withPlaidItemSyncLock(item.id, () => refreshPlaidItem(item.id, { deferSnapshot: true }));
+      if (!lockResult.ok) {
+        results.push({
+          plaidItemId:          item.id,
+          institution:          item.institutionName,
+          ok:                   false,
+          accountsUpdated:      0,
+          holdingsUpdated:      0,
+          transactionsAdded:    0,
+          transactionsModified: 0,
+          transactionsRemoved:  0,
+          spacesSnapshotted:    [],
+          skipped:              "in-flight",
+        });
+        continue;
+      }
+      const r = lockResult.result;
       results.push(r);
       totalAccountsUpdated      += r.accountsUpdated;
       totalHoldingsUpdated      += r.holdingsUpdated;
