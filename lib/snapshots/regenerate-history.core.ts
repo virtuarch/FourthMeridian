@@ -71,9 +71,22 @@ export interface DayRegenInput {
   hasDigitalAssetEvidence: boolean;
   /** Trust tier of the walked-back cash/card component (typically "derived"). */
   cashCardTier: CompletenessTier;
+  /**
+   * 2026-07-15 — true when some account in this Space was revoked from the
+   * Space (SpaceAccountLink.revokedAt) strictly AFTER this day's date — i.e.
+   * that account was plausibly part of the Space as of this day and has
+   * since left. Automatic (non-amendment) regen must never silently drop a
+   * since-revoked account's contribution from a day it was genuinely part
+   * of — that's a real account-membership change, not new evidence, and
+   * violates "historical snapshots may remain historical"
+   * (docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md's
+   * principle, which A9 broke without anyone deciding to). See
+   * docs/initiatives/wealth-timeline/WEALTH_TIMELINE_AMENDMENT_SYSTEM_PROPOSAL.md §9.
+   */
+  membershipChangedSince: boolean;
 }
 
-export type RegenAction = "write" | "skip-frozen" | "skip-unsupported";
+export type RegenAction = "write" | "skip-frozen" | "skip-unsupported" | "skip-membership-changed";
 
 /** The per-day decision + the row to upsert when action === "write". */
 export interface DayRegenResult {
@@ -97,6 +110,20 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   // FROZEN: an observed row is never touched (the safety invariant).
   if (existingIsEstimated === false) {
     return { date, action: "skip-frozen", fields: null, isEstimated: false, tier: "observed", reason: "Observed row is frozen." };
+  }
+
+  // MEMBERSHIP CHANGED: an account that was plausibly part of this Space as of
+  // this day has since been revoked. The account set this function was called
+  // with reflects only CURRENTLY active accounts, so writing now would
+  // silently drop that account's contribution from a day it genuinely
+  // belonged to — a real account-membership change, not new evidence. Skip
+  // and leave whatever is already stored; only an explicit, consent-gated
+  // amendment (not automatic regen) may deliberately revise a day like this.
+  if (input.membershipChangedSince) {
+    return {
+      date, action: "skip-membership-changed", fields: null, isEstimated: existingIsEstimated ?? true, tier: "incomplete",
+      reason: "An account was removed from this Space after this date; automatic regen leaves the existing value untouched (requires an explicit amendment).",
+    };
   }
 
   const flatInvestments = base.totalInvestments;

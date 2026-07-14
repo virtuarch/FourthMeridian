@@ -42,6 +42,7 @@ const input = (over: Partial<DayRegenInput> = {}): DayRegenInput => ({
   digitalAssetTier: "estimated",
   hasDigitalAssetEvidence: false,
   cashCardTier: "derived",
+  membershipChangedSince: false,
   ...over,
 });
 
@@ -79,6 +80,23 @@ function main(): void {
     const r = regenerateDay(input({ existingIsEstimated: false }));
     check("observed row → skip-frozen, no fields", r.action === "skip-frozen" && r.fields === null);
     check("frozen row stays observed/false", r.tier === "observed" && r.isEstimated === false);
+  }
+
+  // ── 2b. Membership-changed guard (2026-07-15 — the archived-account leak fix) ─
+  console.log("2b. Membership-changed guard");
+  {
+    const r = regenerateDay(input({ membershipChangedSince: true }));
+    check("account removed since this day ⇒ skip-membership-changed, no fields", r.action === "skip-membership-changed" && r.fields === null);
+    check("reason names the account-removal boundary", /removed from this Space/i.test(r.reason));
+    check("preserves the prior isEstimated flag when one exists", regenerateDay(input({ membershipChangedSince: true, existingIsEstimated: true })).isEstimated === true);
+    check("defaults isEstimated true when there was no existing row", regenerateDay(input({ membershipChangedSince: true, existingIsEstimated: null })).isEstimated === true);
+    // FROZEN still takes priority — an observed row is never touched regardless
+    // of membership changes (frozen is the load-bearing safety rule; membership
+    // changed is a softer "don't guess" guard for still-estimated days).
+    const frozenWins = regenerateDay(input({ membershipChangedSince: true, existingIsEstimated: false }));
+    check("FROZEN check still wins over membership-changed", frozenWins.action === "skip-frozen");
+    // No membership change ⇒ ordinary write proceeds unaffected (regression guard).
+    check("no membership change ⇒ writes normally", regenerateDay(input({ membershipChangedSince: false })).action === "write");
   }
 
   // ── 3. Flip rule (derived/estimated never presented as observed) ──────────
