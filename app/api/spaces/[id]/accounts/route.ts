@@ -73,11 +73,40 @@ export async function GET(
     ],
   });
 
+  // Per-account earliest-transaction floor — the SAME definition the wealth-
+  // history regen uses (lib/snapshots/regenerate-history.ts: min non-deleted
+  // Transaction.date per account, NOT createdAt). Consumed by the personal-space
+  // RebuildHistoryButton as the "From" min bound so you can't ask to rebuild
+  // days before an account has any data. One groupBy over the visible accounts;
+  // attached below by FinancialAccount id. FULL rows carry a real
+  // FinancialAccount.id (personal/home links are 1:1), so they match; a
+  // BALANCE_ONLY aggregate row's synthetic id won't be in the map → null.
+  const accountIds = links.map((l) => l.financialAccount.id);
+  const floors = accountIds.length
+    ? await db.transaction.groupBy({
+        by:    ["financialAccountId"],
+        where: { financialAccountId: { in: accountIds }, deletedAt: null },
+        _min:  { date: true },
+      })
+    : [];
+  const floorByAccount = new Map<string, string>();
+  for (const f of floors) {
+    // Transaction.date is @db.Date (UTC midnight) — slice gives YYYY-MM-DD,
+    // matching the regen's truncDateUTC day granularity.
+    if (f.financialAccountId && f._min.date) {
+      floorByAccount.set(f.financialAccountId, f._min.date.toISOString().slice(0, 10));
+    }
+  }
+
   // normalizeSharedAccounts handles both visibility tiers:
   //   FULL        → individual records with all fields
   //   BALANCE_ONLY → sanitised, aggregated by owner × type × currency
   // It is table-agnostic — it only depends on the ShareRow shape
   // (visibilityLevel, addedByUserId, addedByUser, financialAccount), which
   // SpaceAccountLink's select below matches field-for-field.
-  return NextResponse.json(normalizeSharedAccounts(links));
+  const normalized = normalizeSharedAccounts(links).map((a) => ({
+    ...a,
+    earliestTxDate: floorByAccount.get(a.id) ?? null,
+  }));
+  return NextResponse.json(normalized);
 }

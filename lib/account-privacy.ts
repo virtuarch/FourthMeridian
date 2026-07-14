@@ -68,6 +68,15 @@ export interface NormalizedAccount {
   debtSubtype?:    string | null;
   interestRate?:   number | null;
   minimumPayment?: number | null;
+  /**
+   * YYYY-MM-DD of the account's earliest non-deleted transaction — the same
+   * per-account floor the wealth-history regen uses (lib/snapshots/regenerate-
+   * history.ts). Attached by the accounts route, not normalizeSharedAccounts
+   * itself. Present on FULL rows with transactions; null otherwise (no synced
+   * transactions, or a BALANCE_ONLY aggregate row that maps to no single
+   * FinancialAccount). Consumed by RebuildHistoryButton as the "From" min.
+   */
+  earliestTxDate?: string | null;
 }
 
 /** Raw share row shape expected by normalizeSharedAccounts. */

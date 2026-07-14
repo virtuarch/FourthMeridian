@@ -164,6 +164,7 @@ type SpaceAccount = {
   creditLimit?:   number;
   interestRate?:  number;  // APR, e.g. 19.99
   minimumPayment?: number; // monthly minimum
+  earliestTxDate?: string | null; // YYYY-MM-DD earliest non-deleted tx (regen floor); FULL rows only
 };
 
 type SpaceGoal = {
