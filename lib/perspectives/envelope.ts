@@ -20,6 +20,7 @@ import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import { formatCurrency } from "@/lib/format";
 import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import type { InvestmentsTimeMachineResult } from "@/lib/investments/investments-time-machine-core";
+import { buildInvestmentsTrustSummary } from "@/lib/investments/investments-trust";
 
 export type EnvelopeTier = "observed" | "derived" | "estimated" | "incomplete";
 export type EnvelopeTone = "neutral" | "positive" | "warning";
@@ -148,8 +149,10 @@ function investmentsEnvelope(r: InvestmentsTimeMachineResult): PerspectiveEnvelo
   const toneByTier: Record<EnvelopeTier, EnvelopeTone> = {
     observed: "positive", derived: "neutral", estimated: "warning", incomplete: "warning",
   };
-  const valued = r.portfolio.valuedCount;
-  const total = valued + r.portfolio.unvaluedCount;
+  // The valued/total evidence string is authored once, in the canonical Trust
+  // summary (PCS-1C) — the Investments Portfolio Header reads the SAME builder,
+  // so the chip and the header can never disagree on the count.
+  const trust = buildInvestmentsTrustSummary(r);
   return {
     completeness: {
       tier,
@@ -158,7 +161,7 @@ function investmentsEnvelope(r: InvestmentsTimeMachineResult): PerspectiveEnvelo
       tone:  r.completeness.conflict ? "warning" : toneByTier[tier],
       detail: r.completeness.reason,
     },
-    evidence: total > 0 ? { label: `${valued} of ${total} positions valued` } : undefined,
+    evidence: trust.valuedOfTotalLabel ? { label: trust.valuedOfTotalLabel } : undefined,
   };
 }
 

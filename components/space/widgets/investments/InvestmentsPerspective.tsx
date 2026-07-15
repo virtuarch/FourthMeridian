@@ -29,6 +29,7 @@ import Link from "next/link";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { formatCurrency } from "@/lib/format";
 import type { InvestmentsTimeMachineResult } from "@/lib/investments/investments-time-machine-core";
+import { buildInvestmentsTrustSummary } from "@/lib/investments/investments-trust";
 import { InvestmentsHoldings } from "./InvestmentsHoldings";
 import { InvestmentAllocationPanel } from "./InvestmentAllocationPanel";
 import { InvestmentsActivityCard } from "./InvestmentsActivityCard";
@@ -61,11 +62,14 @@ function PortfolioHeader({
   loading:   boolean;
 }) {
   const { portfolio, asOf } = result;
-  const total = portfolio.valuedCount + portfolio.unvaluedCount;
-  const partial = portfolio.unvaluedCount > 0;
-  // The pixel rule: NEVER present the subtotal as "portfolio value" when some
-  // holdings could not be valued — it is a partial ("Valued holdings").
-  const figureLabel = partial ? "Valued holdings" : "Portfolio value";
+  // Canonical Activity + Trust summary (PCS-1C) — the single source for the
+  // partial flag, the figure-label intent, and the "N of M positions valued"
+  // evidence string (the shell envelope reads the SAME builder), so this header
+  // no longer re-derives any of them. The pixel rule (never present a partial
+  // subtotal as "portfolio value") lives inside the summary's figureLabel.
+  const trust = buildInvestmentsTrustSummary(result);
+  const partial = trust.partial;
+  const figureLabel = trust.figureLabel;
   // Only claim a comparison window when the host actually resolved one (< asOf).
   const comparing = compareTo != null && compareTo < asOf;
 
@@ -83,13 +87,13 @@ function PortfolioHeader({
       </div>
       <span
         className="text-xs font-medium px-2.5 py-1 rounded-full shrink-0"
-        title={portfolio.completeness.reason}
+        title={trust.reason}
         style={{
           background: "var(--surface-inset)",
           color: partial ? "var(--accent-warning, #f59e0b)" : "var(--text-muted)",
         }}
       >
-        {portfolio.valuedCount} of {total} positions valued
+        {trust.valuedOfTotalLabel}
       </span>
     </div>
   );

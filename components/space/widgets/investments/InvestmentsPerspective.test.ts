@@ -74,8 +74,13 @@ console.log("4. Unvalued handling present; partial-subtotal label branch exists 
   check("holdings maps the full result set", HOLD.includes(".map("));
   check("unvalued rows detected via reportingValue == null", HOLD.includes("reportingValue == null"));
   check("holdings never filters rows out", !HOLD.includes(".filter("));
-  // The pixel rule: partial subtotal is labelled, never presented as the total.
-  check("partial-subtotal label branch exists", SRC.includes("unvaluedCount > 0") && SRC.includes("Valued holdings"));
+  // The pixel rule (partial subtotal labelled, never presented as the total)
+  // now lives in the canonical Activity + Trust summary (PCS-1C): the header
+  // consumes buildInvestmentsTrustSummary().figureLabel instead of re-deriving
+  // the "Valued holdings" branch inline. The branch itself is pinned in
+  // lib/investments/investments-trust.test.ts.
+  check("delegates the partial-subtotal label to the canonical Trust summary",
+    SRC.includes("buildInvestmentsTrustSummary") && SRC.includes("trust.figureLabel"));
   check("unvalued positions surfaced (unvaluedCount referenced)", SRC.includes("portfolio.unvaluedCount"));
 }
 

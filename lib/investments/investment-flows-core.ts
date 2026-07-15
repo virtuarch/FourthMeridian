@@ -247,15 +247,26 @@ export function summarizePeriodFlows(
   };
 }
 
-function buildReason(
-  n: number,
-  flags: {
-    externalAmountMissingCount: number;
-    inKindTransferCount: number;
-    unclassifiedCount: number;
-    fxEstimated: boolean;
-  },
-): string {
+/**
+ * The four honesty counters (+ FX flag) that degrade flow completeness. A
+ * `PeriodFlows` satisfies this structurally, so any consumer can pass one
+ * directly. Declared so the caveat authors below take a narrow, name-free input.
+ */
+export interface FlowCaveatCounts {
+  inKindTransferCount:        number;
+  externalAmountMissingCount: number;
+  unclassifiedCount:          number;
+  fxEstimated:                boolean;
+}
+
+/**
+ * THE single author of the per-caveat honesty phrases, in canonical order
+ * (in-kind → external-missing → unclassified → FX). The flow `reason`, the
+ * Activity card caveat, and the PCS-1C Trust summary all derive their caveat
+ * prose from here rather than each re-writing the same four sentences. Empty ⇒
+ * the period is clean.
+ */
+export function flowCaveatPhrases(flags: FlowCaveatCounts): string[] {
   const caveats: string[] = [];
   if (flags.inKindTransferCount > 0) {
     caveats.push(`${flags.inKindTransferCount} in-kind transfer${flags.inKindTransferCount === 1 ? "" : "s"} moved holdings without a cash value`);
@@ -269,6 +280,23 @@ function buildReason(
   if (flags.fxEstimated) {
     caveats.push("some amounts were converted at an estimated rate");
   }
+  return caveats;
+}
+
+/**
+ * One capitalised caveat SENTENCE (phrases joined with "; ", terminal period), or
+ * null when the period is clean. This is the exact string the Activity panel and
+ * the Trust summary surface — one authority, never re-authored per panel.
+ */
+export function formatFlowCaveatSentence(flags: FlowCaveatCounts): string | null {
+  const phrases = flowCaveatPhrases(flags);
+  if (phrases.length === 0) return null;
+  const joined = phrases.join("; ");
+  return `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`;
+}
+
+function buildReason(n: number, flags: FlowCaveatCounts): string {
+  const caveats = flowCaveatPhrases(flags);
   const base = `${n} event${n === 1 ? "" : "s"} in the period.`;
   return caveats.length === 0 ? base : `${base} ${caveats.join("; ")}.`;
 }

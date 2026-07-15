@@ -20,7 +20,11 @@
  * states, never fabricated windows.
  */
 
-import type { PeriodFlows, FlowCategory } from "@/lib/investments/investment-flows-core";
+import {
+  formatFlowCaveatSentence,
+  type PeriodFlows,
+  type FlowCategory,
+} from "@/lib/investments/investment-flows-core";
 import { formatCurrencyExact } from "@/lib/format";
 
 export type ActivityGroupKey = "money_in" | "money_out" | "inside";
@@ -110,25 +114,8 @@ export function buildActivityGroups(flows: PeriodFlows | null): ActivityModel {
     groups.push({ key: "inside", title: "Inside the portfolio", amount: null, sentence: `Inside the portfolio: ${parts}.` });
   }
 
-  return { state: "events", message: null, groups, caveat: buildCaveat(flows) };
-}
-
-/** One caveat sentence from the four counters + FX-estimated flag. Null when clean. */
-function buildCaveat(flows: PeriodFlows): string | null {
-  const caveats: string[] = [];
-  if (flows.inKindTransferCount > 0) {
-    caveats.push(`${flows.inKindTransferCount} in-kind transfer${flows.inKindTransferCount === 1 ? "" : "s"} moved holdings without a cash value`);
-  }
-  if (flows.externalAmountMissingCount > 0) {
-    caveats.push(`${flows.externalAmountMissingCount} external movement${flows.externalAmountMissingCount === 1 ? "" : "s"} had no amount`);
-  }
-  if (flows.unclassifiedCount > 0) {
-    caveats.push(`${flows.unclassifiedCount} event${flows.unclassifiedCount === 1 ? "" : "s"} could not be categorised`);
-  }
-  if (flows.fxEstimated) {
-    caveats.push("some amounts were converted at an estimated rate");
-  }
-  if (caveats.length === 0) return null;
-  const joined = caveats.join("; ");
-  return `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`;
+  // The caveat sentence is single-authored in investment-flows-core
+  // (formatFlowCaveatSentence) — PCS-1C removed this panel's private copy so
+  // Activity, the flow `reason`, and the Trust summary can never diverge.
+  return { state: "events", message: null, groups, caveat: formatFlowCaveatSentence(flows) };
 }
