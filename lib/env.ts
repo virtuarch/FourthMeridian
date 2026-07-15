@@ -77,6 +77,35 @@ const _e = {
   // access is a deliberate SYSTEM_ADMIN act of creating the Space, setting this,
   // and granting membership. Config, not schema, per the ratified refinement.
   MERCHANT_OPS_SPACE_ID: process.env.MERCHANT_OPS_SPACE_ID,
+
+  // ── Price / FX vendor keys (A-track investment history + MC1 FX archive) ─────
+  // Declared here for documentation + value-free env reporting. Each SDK/adapter
+  // call site still reads process.env directly (registry pattern) so it fails at
+  // its own boundary; these snapshot entries exist for "is it configured?" checks
+  // and getEnvReport, NOT to feed the adapters. All OPTIONAL — absent degrades
+  // the integration gracefully (see the accessors below), never a boot failure.
+  TIINGO_API_KEY:    process.env.TIINGO_API_KEY,    // securities price vendor (lib/prices/registry.ts)
+  COINGECKO_API_KEY: process.env.COINGECKO_API_KEY, // BTC/USD daily close backfill (lib/crypto/btc-price.ts)
+  OXR_APP_ID:        process.env.OXR_APP_ID,        // primary FX provider (lib/fx/registry.ts)
+
+  // ── Investment-history pipeline kill switches (A1/A3/A4/A9 + price capture) ──
+  // Each is strict `=== "true"` at its own reader; absent/anything-else = OFF.
+  // Mirrored here for documentation + feature-flag checks only (the pipeline
+  // readers still consult process.env directly at their call sites).
+  INVESTMENT_OBSERVATIONS_ENABLED:   process.env.INVESTMENT_OBSERVATIONS_ENABLED,
+  INVESTMENT_EVENTS_ENABLED:         process.env.INVESTMENT_EVENTS_ENABLED,
+  INVESTMENT_RECONSTRUCTION_ENABLED: process.env.INVESTMENT_RECONSTRUCTION_ENABLED,
+  WEALTH_REGENERATION_ENABLED:       process.env.WEALTH_REGENERATION_ENABLED,
+  SECURITY_PRICES_ENABLED:           process.env.SECURITY_PRICES_ENABLED,
+  INVESTMENT_IMPORTS_ENABLED:        process.env.INVESTMENT_IMPORTS_ENABLED,
+
+  // ── AI output enforcement / diagnostics ─────────────────────────────────────
+  // AI_OUTPUT_VALIDATION_MODE: shadow | annotate | block; unset/unrecognized ⇒
+  // 'annotate' (the live KD-2 default) at app/api/ai/chat/route.ts. FLOWTYPE_SHADOW
+  // toggles an optional non-PII flow-distribution log line only (no data-path
+  // effect); unset ⇒ "off". Both read directly at their sites — mirrored for docs.
+  AI_OUTPUT_VALIDATION_MODE: process.env.AI_OUTPUT_VALIDATION_MODE,
+  FLOWTYPE_SHADOW:           process.env.FLOWTYPE_SHADOW,
 } as const;
 
 // ── Required variable getter ──────────────────────────────────────────────────
@@ -174,6 +203,17 @@ export function getEnvReport(): EnvReport {
     keys.push({ key: "RATE_LIMIT_ENABLED", status: "warn", scope: "optional", note: "unexpected value" });
   } else {
     keys.push({ key: "RATE_LIMIT_ENABLED", status: "pass", scope: "optional" });
+  }
+
+  // Optional price/FX vendor keys — never fatal. Represented in the report so the
+  // ops surface shows whether each external integration is configured. Absent is a
+  // warn ("integration disabled / graceful degrade"), never a fail. Names only.
+  for (const k of ["TIINGO_API_KEY", "OXR_APP_ID", "COINGECKO_API_KEY"] as const) {
+    keys.push(
+      _e[k]
+        ? { key: k, status: "pass", scope: "optional" }
+        : { key: k, status: "warn", scope: "optional", note: "optional vendor key — integration disabled" },
+    );
   }
 
   const counts = { pass: 0, warn: 0, fail: 0 };
@@ -289,6 +329,37 @@ export const env = {
   // ── Merchant Operations (MI2 S2) ────────────────────────────────────────────
   /** The designated Merchant Operations Space id, or null when unset (gate fails closed). */
   get merchantOpsSpaceId() { return _e.MERCHANT_OPS_SPACE_ID ?? null; },
+
+  // ── Price / FX vendor keys ──────────────────────────────────────────────────
+  // NOTE: the price/FX registries read process.env directly at their call sites;
+  // these accessors are for feature-flag checks and env reporting, not the SDKs.
+  get TIINGO_API_KEY()    { return _e.TIINGO_API_KEY; },
+  get COINGECKO_API_KEY() { return _e.COINGECKO_API_KEY; },
+  get OXR_APP_ID()        { return _e.OXR_APP_ID; },
+
+  // ── Investment-history pipeline enablement (documentation mirror) ────────────
+  // Strict "true" semantics, matching each pipeline reader. These do NOT gate the
+  // pipeline (the readers own that) — they answer "is the switch on?" for reports.
+  get isInvestmentObservationsEnabled()   { return _e.INVESTMENT_OBSERVATIONS_ENABLED === "true"; },
+  get isInvestmentEventsEnabled()         { return _e.INVESTMENT_EVENTS_ENABLED === "true"; },
+  get isInvestmentReconstructionEnabled() { return _e.INVESTMENT_RECONSTRUCTION_ENABLED === "true"; },
+  get isWealthRegenerationEnabled()       { return _e.WEALTH_REGENERATION_ENABLED === "true"; },
+  get isSecurityPriceCaptureEnabled()     { return _e.SECURITY_PRICES_ENABLED === "true"; },
+  get isInvestmentImportsEnabled()        { return _e.INVESTMENT_IMPORTS_ENABLED === "true"; },
+  /** Securities price vendor (Tiingo) is available when the key is set (see lib/prices/registry.ts). */
+  get isSecurityPriceVendorEnabled()      { return !!_e.TIINGO_API_KEY; },
+  /** BTC daily-close backfill is available when the CoinGecko key is set. */
+  get isCryptoPriceVendorEnabled()        { return !!_e.COINGECKO_API_KEY; },
+  /** Primary FX provider (Open Exchange Rates) is available when OXR_APP_ID is set;
+   *  absent falls back to the keyless Frankfurter/ECB failover. */
+  get isFxPrimaryEnabled()                { return !!_e.OXR_APP_ID; },
+
+  // ── AI output enforcement mode (documentation mirror) ────────────────────────
+  /** shadow | annotate | block. Unset/unrecognized ⇒ 'annotate' (live default). */
+  get aiOutputValidationMode() {
+    const raw = (_e.AI_OUTPUT_VALIDATION_MODE ?? "annotate").toLowerCase();
+    return raw === "shadow" || raw === "block" ? raw : "annotate";
+  },
 
   // ── Feature flags ─────────────────────────────────────────────────────────
   /** Plaid integration is available when both credentials are set. */

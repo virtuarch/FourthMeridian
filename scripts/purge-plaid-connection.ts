@@ -47,7 +47,7 @@
  *
  * Usage:
  *   npx tsx scripts/purge-plaid-connection.ts \
- *     [--email <login-email>] [--institution <substring>] [--apply]
+ *     --email <login-email> [--institution <substring>] [--apply]
  *
  *   (default)      DRY RUN. Resolves the user, finds matching PlaidItem(s),
  *                  prints full detail (item id, institution, status, createdAt,
@@ -55,9 +55,9 @@
  *                  rows that WOULD be cascade-deleted). Zero DB writes, zero
  *                  Plaid calls. Irreversible when applied — read this output
  *                  carefully and confirm it is ONLY the intended connection.
- *   --email        Login email of the account to scope to.
- *                  Default: chr.hogan1997@gmail.com (confirm against the real
- *                  dev-DB user printed in the dry-run before applying).
+ *   --email        REQUIRED. Login email of the account to scope to. No default —
+ *                  the script exits with usage if omitted (confirm against the
+ *                  real dev-DB user printed in the dry-run before applying).
  *   --institution  Case-insensitive substring matched against
  *                  PlaidItem.institutionName. Default: matches "amex" OR
  *                  "american express".
@@ -77,7 +77,23 @@ function argValue(flag: string): string | null {
   return i !== -1 && i + 1 < process.argv.length ? process.argv[i + 1] : null;
 }
 
-const EMAIL = (argValue("--email") ?? "chr.hogan1997@gmail.com").trim();
+// --email is REQUIRED (P0-3E) — no default. A destructive, irreversible purge
+// must never silently target a hardcoded account. Fail with usage if omitted.
+const EMAIL_ARG = argValue("--email");
+if (!EMAIL_ARG || !EMAIL_ARG.trim()) {
+  console.error(
+    "\nERROR: --email is required.\n\n" +
+    "Usage:\n" +
+    "  npx tsx scripts/purge-plaid-connection.ts --email <login-email> \\\n" +
+    "    [--institution <substring>] [--apply]\n\n" +
+    "  --email        (REQUIRED) login email of the account to scope to.\n" +
+    "  --institution  case-insensitive substring vs PlaidItem.institutionName\n" +
+    "                 (default: \"amex\" OR \"american express\").\n" +
+    "  --apply        perform the severance + hard deletes (default is DRY RUN).\n",
+  );
+  process.exit(1);
+}
+const EMAIL = EMAIL_ARG.trim();
 // Default institution matcher: amex OR american express (case-insensitive).
 const INSTITUTION_ARG = argValue("--institution");
 function institutionMatches(name: string): boolean {

@@ -64,7 +64,7 @@ export interface ConfigField {
  * accounts      → GET /api/spaces/[id]/accounts     (NormalizedAccount[])
  * goals         → GET /api/spaces/[id]/goals         (SpaceGoal[])
  * activity      → GET /api/spaces/[id]/activity      (TimelineEvent[])
- * holdings      → GET /api/spaces/[id]/holdings      (future — Tier 4)
+ * holdings      → GET /api/spaces/[id]/investments   (holdings/positions; Tier 4)
  * transactions  → aggregated tx data                      (future — Tier 5)
  * none          → no external data (config-only, etc.)
  */
@@ -761,7 +761,8 @@ const registry: WidgetRegistryEntry[] = [
 
   {
     // Placeholder — currently renders InvestmentsCard.
-    // Intended: AllocationChart.tsx donut by asset class (needs holdings endpoint).
+    // Intended: AllocationChart.tsx donut by asset class (holdings from the
+    // existing GET /api/spaces/[id]/investments — there is no /holdings route).
     implemented: false,
     meta: {
       key:         "investment_allocation",
@@ -769,7 +770,7 @@ const registry: WidgetRegistryEntry[] = [
       description: "Asset allocation breakdown across all investment accounts.",
       tab:         SpaceDashboardTab.INVESTMENTS,
       icon:        "PieChart",
-      dataTier:    "holdings", // Tier 4 — needs GET /api/spaces/[id]/holdings
+      dataTier:    "holdings", // Tier 4 — holdings via GET /api/spaces/[id]/investments
       requires:    [
         {
           accountTypes: ["investment"],

@@ -238,7 +238,33 @@ async function updateSectionConfig(spaceId: string, key: string, config: Record<
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
+/**
+ * Fail-closed guard (P0-3D). This seed wipes EVERY table before recreating the
+ * demo world, so accidental execution against a deployed database is destructive
+ * and irreversible. Refuse to run under any production/preview environment, with
+ * no interactive prompt (CI/dev keep working). Set SEED_ALLOW_DESTRUCTIVE=1 only
+ * as a deliberate, documented override.
+ */
+function assertNonProductionSeed(): void {
+  const nodeEnv   = process.env.NODE_ENV;
+  const vercelEnv = process.env.VERCEL_ENV; // "production" | "preview" | "development"
+  const override  = process.env.SEED_ALLOW_DESTRUCTIVE === "1";
+  const looksDeployed =
+    nodeEnv === "production" ||
+    vercelEnv === "production" ||
+    vercelEnv === "preview";
+  if (looksDeployed && !override) {
+    throw new Error(
+      "[seed] Refusing to run: this seed wipes ALL data and a production/preview " +
+      `environment was detected (NODE_ENV=${nodeEnv ?? "unset"}, VERCEL_ENV=${vercelEnv ?? "unset"}). ` +
+      "prisma/seed.ts is DEVELOPMENT ONLY. If you truly intend a destructive reseed " +
+      "of this environment, set SEED_ALLOW_DESTRUCTIVE=1 explicitly.",
+    );
+  }
+}
+
 async function main() {
+  assertNonProductionSeed();
   console.log("🌱  Seeding Fourth Meridian database…");
   console.log("   ⏳ Hashing passwords (bcrypt cost 12)…");
 
