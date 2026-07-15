@@ -15,28 +15,25 @@
  * so this lands safely before the key exists.
  */
 
-import { db } from "@/lib/db";
-import { AssetClass, PriceBasis } from "@prisma/client";
+import { PriceBasis } from "@prisma/client";
 import { priceArchive } from "@/lib/prices/archive";
 import { fetchBtcDailyClosesUsd, type CoinGeckoOptions } from "@/lib/prices/providers/coingecko";
+import { resolveCanonicalBtcInstrumentId } from "@/lib/investments/crypto-instrument";
 
 export const BTC_PRICE_SOURCE = "coingecko";
 
 /**
- * Get-or-create the single global BTC Instrument (assetClass CRYPTO). Idempotent:
- * concurrent callers converge on one row (matched by tickerSymbol + assetClass).
+ * The single global BTC Instrument (assetClass CRYPTO) the RAW_CLOSE price series
+ * is written against. Delegates to the ONE canonical crypto Instrument resolver
+ * (P2-6) so the price series and the position spine share ONE Instrument by
+ * construction — a position writer's valuation finds the very prices written here,
+ * and no second BTC Instrument can be minted. Idempotent + dedupe-safe (alias
+ * unique). The prior get-or-create predicate (tickerSymbol="BTC" + CRYPTO) is
+ * preserved inside the resolver's legacy-adoption step, so an already-created
+ * price Instrument is adopted, not duplicated.
  */
 export async function resolveBtcInstrumentId(): Promise<string> {
-  const existing = await db.instrument.findFirst({
-    where:  { tickerSymbol: "BTC", assetClass: AssetClass.CRYPTO },
-    select: { id: true },
-  });
-  if (existing) return existing.id;
-  const created = await db.instrument.create({
-    data:   { tickerSymbol: "BTC", assetClass: AssetClass.CRYPTO, name: "Bitcoin", currency: "USD", isCashEquivalent: false },
-    select: { id: true },
-  });
-  return created.id;
+  return resolveCanonicalBtcInstrumentId();
 }
 
 export interface BtcBackfillResult {

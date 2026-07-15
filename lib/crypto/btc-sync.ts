@@ -66,6 +66,8 @@ import {
   applyXpubStep,
   type AddrRef,
 } from "@/lib/crypto/btc-discovery-core";
+import { captureWalletPosition } from "@/lib/crypto/wallet-position-capture";
+import { BTC_ASSET } from "@/lib/investments/crypto-instrument";
 
 /** The only chain this v1 sync supports. */
 export const BTC_CHAIN = "BTC";
@@ -167,6 +169,36 @@ async function writeBtcHolding(
     });
   } catch (e) {
     console.warn(`[btc-sync] BTC Holding upsert failed for account ${financialAccountId} (non-fatal):`, e);
+  }
+}
+
+/**
+ * P2-6 — TRANSITIONAL DUAL-WRITE. Alongside the legacy `Holding` above, record the
+ * same balance as a canonical OBSERVED `PositionObservation` on the investment
+ * spine (via the ONE canonical BTC Instrument), so `getCurrentPositions()` sees
+ * crypto without a legacy Holding compatibility reader. Quantity-only: valued
+ * through the canonical RAW_CLOSE price series, never a synthetic institution
+ * anchor (see wallet-position-capture.ts). A zero balance writes a `quantity:0`
+ * closure row. Gated behind INVESTMENT_OBSERVATIONS_ENABLED and best-effort/
+ * non-fatal — the balance/Holding write above is what Wealth still reads this
+ * slice, so a spine-write failure never fails the sync.
+ *
+ * DELETION CONDITION — this dual-write drops to a spine-only write (remove the
+ * `writeBtcHolding` call) once EVERY current crypto `Holding` reader is cut over
+ * to `getCurrentPositions()` (P2-4 AI holdings assembler, P2-5 data export +
+ * ConnectionsCard) AND the Part 9 census shows zero remaining crypto Holding
+ * readers. Kept dual only to protect those concurrently-migrating consumers from
+ * timing; NOT indefinitely. Invariant covered by wallet-position-capture.test.ts.
+ */
+async function writeBtcObservation(
+  financialAccountId: string,
+  nativeBalance: number,
+  date: Date,
+): Promise<void> {
+  try {
+    await captureWalletPosition({ financialAccountId, asset: BTC_ASSET, quantity: nativeBalance, date });
+  } catch (e) {
+    console.warn(`[btc-sync] BTC PositionObservation write failed for account ${financialAccountId} (non-fatal):`, e);
   }
 }
 
@@ -536,6 +568,8 @@ export async function syncBtcWallet(
   //    BOUNDED to the first N addresses per run so a behemoth wallet never issues
   //    hundreds of tx requests; history fills in across runs (idempotent dedupe).
   await writeBtcHolding(accountId, { nativeBalance, priceUsd, balanceUsd });
+  // P2-6 — transitional dual-write onto the canonical spine (gated, non-fatal).
+  await writeBtcObservation(accountId, nativeBalance, new Date());
   const txAddrCap = Number(process.env.BTC_TX_ADDR_CAP) || 25;
   await importBtcTransactions({ id: accountId, ownerUserId: account.ownerUserId, addresses: addresses.slice(0, txAddrCap) }, deps);
 
