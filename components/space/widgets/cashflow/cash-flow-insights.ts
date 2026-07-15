@@ -133,14 +133,18 @@ export function buildCashFlowInsights(args: {
     });
     const dNet = cmp.delta.totals.net;
     const prevLabel = periodLabel(then);
+    // P2-1B — the compare net is perspective-aware: in LIQUIDITY mode the delta
+    // is Cash In − Cash Out ("Net cash"); in ECONOMIC mode it is income − clamped
+    // spending, which is NOT cash ("Income after spending"). Arithmetic unchanged.
+    const netNoun = perspective === "liquidity" ? "Net cash" : "Income after spending";
     if (Math.abs(dNet) >= 1) {
       insights.push({
         id:   "compare-net",
-        text: `Net cash is ${dNet > 0 ? "up" : "down"} ${fmt(Math.abs(dNet))} vs ${prevLabel} (${fmt(cmp.then.totals.net)} → ${fmt(cmp.now.totals.net)}).`,
+        text: `${netNoun} is ${dNet > 0 ? "up" : "down"} ${fmt(Math.abs(dNet))} vs ${prevLabel} (${fmt(cmp.then.totals.net)} → ${fmt(cmp.now.totals.net)}).`,
         tone: dNet > 0 ? "positive" : "warning",
       });
     } else {
-      insights.push({ id: "compare-net", text: `Net cash is about flat vs ${prevLabel}.`, tone: "neutral" });
+      insights.push({ id: "compare-net", text: `${netNoun} is about flat vs ${prevLabel}.`, tone: "neutral" });
     }
   }
 
@@ -165,9 +169,22 @@ export function buildCashFlowInsights(args: {
     insights.push({ id: "top-source", text: `${topSource.label} is your largest source of ${noun} at ${fmt(topSource.value)}.`, tone: "neutral" });
   }
 
-  // (c) Credit usage — spending charged to a liability, not yet paid as cash.
+  // (c) Credit usage — a TWO-FACT statement over facts already in `facts`
+  //     (P2-1B). `creditCardSpending` is this period's cost flows charged to a
+  //     liability tier; `byReason.DEBT_PAYMENT` is this period's cash-out toward
+  //     liabilities — the SAME DayFacts, same window, same FX. The two are shown
+  //     side by side and NEVER subtracted: a period's debt payments can settle
+  //     balances from earlier periods, so they do not "pay off" this period's
+  //     charges and imply no unpaid balance (a balance is a Debt-domain stock
+  //     fact, not a Cash-Flow flow fact). When no debt payments are visible
+  //     (common — payments from unconnected accounts have no liquid leg), degrade
+  //     to the timing-only sentence rather than announcing "$0 of payments".
   if (facts.creditCardSpending > 0) {
-    insights.push({ id: "credit", text: `${fmt(facts.creditCardSpending)} of spending was charged to credit and isn't yet paid as cash.`, tone: "neutral" });
+    const debtPaid = facts.byReason.DEBT_PAYMENT ?? 0;
+    const text = debtPaid > 0
+      ? `${fmt(facts.creditCardSpending)} of spending went on credit this period, and ${fmt(debtPaid)} of cash went to debt payments. Payments can cover balances from earlier periods, so the two won't necessarily match.`
+      : `${fmt(facts.creditCardSpending)} of spending was charged to credit this period — it counts as spending now; the cash leaves when you pay the balance.`;
+    insights.push({ id: "credit", text, tone: "neutral" });
   }
 
   // (d) Unresolved transfers — a review flag, never subtracted from the totals.

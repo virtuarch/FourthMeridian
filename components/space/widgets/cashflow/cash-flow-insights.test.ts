@@ -16,6 +16,8 @@
  *      and the list stays ≤5.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { type LiquidityTx } from "@/lib/transactions/liquidity";
 import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
@@ -115,6 +117,54 @@ console.log("6. buildCashFlowInsights — credit usage + incomplete caveat is th
   // No caveat when the stamp is observed.
   const obs = buildCashFlowInsights({ transactions: ccRows, accounts: ccAccounts, period: MAY, perspective: "economic", now: CLOCK, stamp: { completeness: { tier: "observed", conflict: false, reason: "ok" }, dataAsOf: "2026-06-10" } });
   check("observed stamp ⇒ no completeness caveat", !obs.some((i) => i.id === "completeness"));
+}
+
+console.log("7. P2-1B — credit insight is a two-fact statement (no unpaid-balance overclaim)");
+{
+  const ccAccounts = [{ id: "chk", type: "checking" }, { id: "cc", type: "debt" }];
+  const creditSpend = tx({ amount: -300, date: "2026-05-18", category: "Shopping", flowType: "SPENDING", accountId: "cc", financialAccountId: "cc" });
+  const debtPay = tx({ amount: -800, date: "2026-05-20", category: "Payment", flowType: "DEBT_PAYMENT" }); // liquid chk → debt payment
+
+  // (a) credit spend + visible debt payments → combined two-fact sentence.
+  const combined = buildCashFlowInsights({ transactions: [...rows, creditSpend, debtPay], accounts: ccAccounts, period: MAY, perspective: "economic", now: CLOCK });
+  const cCombined = combined.find((i) => i.id === "credit")!;
+  check("combined bullet present", !!cCombined);
+  check("combined bullet states BOTH facts (on credit + debt payments)",
+    /went on credit this period/.test(cCombined.text) && /of cash went to debt payments/.test(cCombined.text));
+  check("combined bullet carries the no-subtraction clarifier (earlier periods)",
+    /earlier periods/.test(cCombined.text) && /won.t necessarily match/.test(cCombined.text));
+  check("combined bullet NEVER implies unpaid balance / subtraction",
+    !/isn.t yet paid|not yet paid|remaining|unpaid|exceeded/i.test(cCombined.text));
+
+  // (b) credit spend + ZERO visible debt payments → timing-only fallback.
+  const fallback = buildCashFlowInsights({ transactions: [...rows, creditSpend], accounts: ccAccounts, period: MAY, perspective: "economic", now: CLOCK });
+  const cFallback = fallback.find((i) => i.id === "credit")!;
+  check("fallback bullet is the timing sentence", /counts as spending now/.test(cFallback.text) && /the cash leaves when you pay the balance/.test(cFallback.text));
+  check("fallback bullet drops the old 'not yet paid as cash' overclaim", !/not yet paid as cash|isn.t yet paid as cash/i.test(cFallback.text));
+  check("fallback bullet never announces a $0 debt payment", !/debt payments/.test(cFallback.text));
+
+  // (c) no liability spend → no credit bullet at all (all-liquid fixture).
+  const liquidOnly = buildCashFlowInsights({ transactions: rows, accounts, period: MAY, perspective: "economic", now: CLOCK });
+  check("no credit bullet when nothing is charged to a liability", !liquidOnly.some((i) => i.id === "credit"));
+
+  // (d) compare-net noun is perspective-aware.
+  const ecoCmp = buildCashFlowInsights({ transactions: rows, accounts, period: MAY, perspective: "economic", now: CLOCK }).find((i) => i.id === "compare-net")!;
+  const liqCmp = buildCashFlowInsights({ transactions: rows, accounts, period: MAY, perspective: "liquidity", now: CLOCK }).find((i) => i.id === "compare-net")!;
+  check("economic compare → 'Income after spending' (not 'Net cash')", /Income after spending/.test(ecoCmp.text) && !/Net cash/.test(ecoCmp.text));
+  check("liquidity compare → 'Net cash' (not 'Income after spending')", /Net cash/.test(liqCmp.text) && !/Income after spending/.test(liqCmp.text));
+}
+
+console.log("8. P2-1B — source-scan: overclaim wording removed, no subtraction");
+{
+  const insSrc = readFileSync(join(process.cwd(), "components", "space", "widgets", "cashflow", "cash-flow-insights.ts"), "utf8");
+  const sumSrc = readFileSync(join(process.cwd(), "components", "space", "widgets", "CashFlowSummaryWidget.tsx"), "utf8");
+  check("insights: 'isn't yet paid as cash' is gone", !/isn.t yet paid as cash/.test(insSrc));
+  check("insights: 'not yet paid as cash' is gone", !/not yet paid as cash/.test(insSrc));
+  check("Summary context row: 'not yet paid as cash' is gone", !/not yet paid as cash/.test(sumSrc));
+  // Arithmetic guard runs on comment-stripped CODE (a comment can't be a subtraction).
+  const insCode = insSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  check("insights: credit spend is never subtracted from debt payments (no unpaid-debt math)",
+    !/creditCardSpending\s*[-−]\s*[^;]*DEBT_PAYMENT/.test(insCode) && !/DEBT_PAYMENT[^;]*[-−]\s*[^;]*creditCardSpending/.test(insCode));
 }
 
 if (failures > 0) { console.error(`\n${failures} cash-flow-insights check(s) failed`); process.exit(1); }

@@ -177,3 +177,149 @@ per-row classifiers). Two rules hold everywhere:
 - DayFacts completeness + `byReason` effect-partition + `LIQUIDITY_REASON_SIDE` — `dayfacts-completeness.test.ts` (Σ byReason[in]==cashIn, Σ byReason[out]==cashOut; straddle NEUTRAL legs excluded; unresolved sums back).
 - Summary / History / Calendar / economic-only all derive the same economic semantics — `cash-flow-projection.test.ts` + `cash-flow-fold-authority.test.ts`.
 - `groupLiquidityByReason` output matches the old row-fold on real fixtures — `liquidity-breakdown.test.ts`.
+
+---
+
+## Debt semantic family
+
+**Doctrine gate (read first):** debt has TWO independent truths that must never be
+conflated. **Flow truth** (what cash/spending moved this window) comes from
+`FlowType` → `classifyLiquidity` → DayFacts — the same funnel as everything above.
+**Balance truth** (what is owed at a point in time) comes from account balances /
+`SpaceSnapshot.debt` and is NOT derivable by subtracting period flows (money is
+fungible; charges predate the window; payments settle earlier statements;
+interest/fees/credits/adjustments/charge-offs move the balance with no matching
+flow). A period's `creditCardSpending − debtServiceCashOut` is **not** an unpaid
+balance and must never be presented as one.
+
+Each entry is tagged with a **status**:
+- **AVAILABLE NOW** — a canonical DayFacts fact or a trivial derived total over one.
+- **AVAILABLE WITH COVERAGE CAVEAT** — derivable today at **Space-aggregate** grain
+  from `SpaceSnapshot.debt`, subject to snapshot coverage + `isEstimated`
+  (flat-held backfill) + `fxMiss` exclusions.
+- **FUTURE PER-ACCOUNT SUPPORT** — blocked on data the schema does not hold today
+  (per-account daily balance history / statement data). Not a refactor.
+
+Each entry is also one of: **CURRENT CANONICAL FACT** (produced by an authority),
+**CURRENT DERIVED SEMANTIC** (a pure view over authorities), **PLANNED CANONICAL
+PROJECTION** (the `DebtFacts` projection, not yet built), or **FUTURE DATA
+REQUIREMENT** (needs new data).
+
+### A. `creditCardSpending`  — CURRENT CANONICAL FACT · AVAILABLE NOW
+- **Purpose:** period cost flows (SPENDING + FEE + INTEREST) charged to liability-tier accounts.
+- **Authority:** `foldDayFacts` (DayFacts field), via `FlowType`/`isCostFlow` + `classifyLiquidity` tier.
+- **Inputs:** window-filtered `LiquidityTx[]` + `LiquidityContext`; per-row FX at row date when a `ConversionContext` is supplied.
+- **Outputs:** one number on `DayFacts` (⊂ `spendGross`, ∉ `cashOut`).
+- **Consumers:** Cash Flow Summary context row, Cash Flow Key Insights (credit bullet), economic tile.
+- **Must NOT be used for:** an unpaid credit-card balance; net purchases (it is **gross of refunds**); a card-only figure (**includes interest & fees**, and **any `debt` account** incl. loans/LOC); same-window debt still outstanding.
+
+### B. `debtPayment` / debt-payment fact family  — CURRENT CANONICAL FACT · AVAILABLE NOW
+- **Purpose:** cash leaving a liquid account toward a liability (a credit-card/loan payment).
+- **Authority:** `classifyLiquidity` → `CASH_OUT / DEBT_PAYMENT` → `DayFacts.byReason.DEBT_PAYMENT` (source-side liquid legs; the received-on-liability leg is NEUTRAL, so a payment is counted once). Per-row membership: `CALENDAR_MEASURES.debtPayments.rowMatches`.
+- **Inputs:** window-filtered rows + tier context (a `flowType === DEBT_PAYMENT` liquid row, OR a `TRANSFER` from liquid to a liability counterparty).
+- **Outputs:** `byReason.DEBT_PAYMENT` total + the `debtPayments` Calendar measure + the "Debt payments" liquidity-breakdown line.
+- **Consumers:** Cash Flow Summary/Calendar/History, `DebtPaymentsWidget`, Key Insights.
+- **Must NOT be used for:** new spending (it is ignored by `foldEconomicRow`); proof that this window's purchases were paid (payments settle **earlier** statements); proof of balance reduction net of interest. **May undercount** payments from accounts not connected to Fourth Meridian (no visible liquid leg).
+- **Same-family VIEW (not a second authority):** `lib/debt.ts` `totalDebtPaid` / `rollupDebtPaymentsByAccount` are the **received-by-liability** (destination-side) view of the same DebtPayment family — a per-liability attribution, useful for a connected card's own balance math. The AI assembler's `debtPaymentTotal` (flowType, negative-only) is the settled-window view. All three are views of ONE fact family; they can disagree at the population edges (unconnected payer; TRANSFER-typed payments) and should be reconciled by a future oracle (B-S2), **not** treated as competing truths.
+
+### C. `debtServiceCashOut`  — CURRENT DERIVED SEMANTIC · AVAILABLE NOW
+- **Purpose:** "How much cash went toward debt during this period?" — the period total of canonical DEBT_PAYMENT cash-out.
+- **Authority:** a trivial view over B: `= DayFacts.byReason.DEBT_PAYMENT ?? 0`. No new fold.
+- **Inputs / Outputs:** a DayFacts → one number.
+- **Consumers:** Cash Flow timing insight; a future `DebtFacts.cashPaid`.
+- **Must NOT be used for:** principal reduction; total debt reduction; unpaid balance. It is a **cash-flow** answer, not a balance answer.
+
+### D. `debtOpeningBalance`  — CURRENT DERIVED SEMANTIC · AVAILABLE WITH COVERAGE CAVEAT
+- **Purpose:** aggregate liability balance at the start of a window.
+- **Authority:** **balance truth** — `SpaceSnapshot.debt` at `t₀−1` (daily, per-Space, abs sum of all debt balances).
+- **Inputs:** a snapshot series + the window start; the reporting currency stamped on the snapshot.
+- **Outputs:** a number or `null` (no coverage before the connection date).
+- **Consumers:** Debt Perspective opening/closing panel; a future `DebtFacts`.
+- **Must NOT be used for:** a transaction-derived number; per-account opening balance (**no per-account history** → FUTURE PER-ACCOUNT SUPPORT). Backfilled rows hold debt **flat** (`isEstimated`) and `fxMiss` rows are unusable — carry the estimated/coverage disclosure.
+
+### E. `debtClosingBalance`  — CURRENT DERIVED SEMANTIC · AVAILABLE WITH COVERAGE CAVEAT
+- **Purpose:** aggregate liability balance at the end of a window.
+- **Authority:** `SpaceSnapshot.debt` at `t₁` (or `FinancialAccount.balance` when `t₁` = today).
+- **Inputs / Outputs / Consumers / Caveats:** as D.
+- **Must NOT be used for:** as D.
+
+### F. `debtNetChange`  — CURRENT DERIVED SEMANTIC · AVAILABLE WITH COVERAGE CAVEAT
+- **Purpose:** `closing − opening`. Negative ⇒ aggregate debt fell; positive ⇒ it rose.
+- **Authority:** **balance truth** (D − E), NOT transaction subtraction.
+- **Inputs / Outputs:** two balances → a number or `null`.
+- **Consumers:** Debt Perspective; `DebtFacts`.
+- **Must NOT be used for:** `charges − payments` (that is a different, non-reconciling quantity — see `debtReconciliationResidual`).
+
+### G. `debtReduction`  — CURRENT DERIVED SEMANTIC · AVAILABLE WITH COVERAGE CAVEAT
+- **Purpose:** observed liability reduction over the window: `max(0, opening − closing)`.
+- **Authority:** balance truth.
+- **Outputs:** a non-negative number or `null`.
+- **Must NOT be used for:** "how much of payments went to old debt" (that needs an allocation convention — see the allocation note below); it is not `debtServiceCashOut` (payments can exceed reduction when interest/new borrowing occur).
+
+### H. `debtCarryover`  — CURRENT DERIVED SEMANTIC · AVAILABLE WITH COVERAGE CAVEAT
+- **Purpose:** the closing balance of one period, used as the opening liability state of the next.
+- **Authority:** balance truth — **it is not a new computed quantity; it is the closing balance re-labeled** for the next window.
+- **Must NOT be used for:** a charge/payment-arithmetic figure; anything implying it is "unpaid current-period charges".
+
+### I. `debtReconciliationResidual`  — PLANNED CANONICAL PROJECTION · AVAILABLE WITH COVERAGE CAVEAT
+- **Purpose:** a completeness/trust signal: `actual closing − expected closing`, where `expected = opening + liability charges + interest + fees − debt payments − credits`.
+- **Authority:** balance truth (opening/closing) reconciled against DayFacts flow facts. A `DebtFacts` projection (not yet implemented).
+- **Outputs:** a signed number surfaced as a disclosure — **never silently forced to zero**.
+- **Consumers:** Debt Perspective / AI completeness copy.
+- **Must NOT be used for:** a hidden correction. Likely non-zero causes to document alongside it: incomplete history, unconnected payment sources, adjustments, charge-offs, estimated (flat-held) snapshots, FX gaps.
+
+### J. `averageCarriedDebt`  — CURRENT DERIVED SEMANTIC · AVAILABLE WITH COVERAGE CAVEAT
+- **Purpose:** average observed aggregate debt balance across a window.
+- **Authority:** balance truth (mean of `SpaceSnapshot.debt` over the window).
+- **Outputs:** a number, computed **only** over reliable (non-`isEstimated`, non-`fxMiss`) snapshot days.
+- **Must NOT be used for:** any window with estimated/missing coverage without disclosure; per-account averages (FUTURE PER-ACCOUNT SUPPORT).
+
+### K. `debtFreeStreak`  — CURRENT DERIVED SEMANTIC · AVAILABLE WITH COVERAGE CAVEAT
+- **Purpose:** a continuous run of observed snapshot days where aggregate debt == 0.
+- **Authority:** balance truth (runs over daily `SpaceSnapshot.debt`).
+- **Must NOT be used for:** streaks across estimated/uncovered gaps (they break the observation); a per-account claim.
+
+### L. `debtPaydownVelocity`  — CURRENT DERIVED SEMANTIC · AVAILABLE WITH COVERAGE CAVEAT
+- **Purpose:** change in observed aggregate debt balance over a normalized period (Δ balance / time).
+- **Authority:** balance truth.
+- **Must NOT be used for:** equating it with `debtServiceCashOut` — **it is balance movement, not cash service.** Interest / new borrowing can make payments high while paydown velocity is low (or negative).
+
+### Allocation note (Part 4) — payments vs opening debt is NOT observed
+Splitting debt payments into "toward prior-period debt" vs "funding current-period
+purchases" is **not an observed fact** — money is fungible and no statement
+allocation exists. Do **not** add either as a canonical fact. Any such split
+requires an explicit **convention** (e.g. "payments apply to the opening balance
+first": `towardPrior = min(payments, opening)`). If ever exposed, it MUST carry an
+`assumptions[]` disclosure and be presented as an assumption, never as observed
+truth. (By contrast, interest paid / fee payments / net principal ≈ payments −
+(interest + fees) ARE derivable from flowType splits, exact when issuer INTEREST/FEE
+rows exist and otherwise estimated with the existing `estimated` taint.)
+
+### Planned projection contract — `DebtWindowFacts` / `DebtFacts` (NOT yet implemented)
+The window debt record is documented here as a **contract**; it is **deferred** —
+no module, type, or DB read is added in this slice (see the P2-1B report for why).
+When built, it is a **projection, not a fourth fold**: every transaction figure
+reads DayFacts, every balance figure reads the `SpaceSnapshot.debt` series, and the
+`residual` is disclosed, never zeroed.
+
+```
+DebtWindowFacts(window) {   // PLANNED — conceptual, not implemented
+  opening   : number | null   // SpaceSnapshot.debt at t₀−1        (balance truth)
+  closing   : number | null   // SpaceSnapshot.debt at t₁          (balance truth)
+  charged   : number          // DayFacts liability-tier SPENDING  (flow truth)
+  interest  : number          // DayFacts liability-tier INTEREST  (exact | estimated)
+  fees      : number          // DayFacts liability-tier FEE
+  credits   : number          // DayFacts liability-tier REFUND
+  cashPaid  : number          // DayFacts byReason.DEBT_PAYMENT (source-side)
+  netChange : number | null   // closing − opening
+  reduction : number | null   // max(0, opening − closing)
+  carryover : number | null   // = closing
+  residual  : number | null   // closing − (opening + charged + interest + fees − cashPaid − credits)
+  completeness                // cashFlowStamp ⊕ snapshot coverage/isEstimated
+  assumptions[]               // e.g. payments-apply-to-opening, only if a split is exposed
+}
+```
+
+- **Sequencing:** lands **after** the debt-payment reconciliation oracle (B-S2); per-account carryover is gated on adding **per-account daily balance snapshots** (FUTURE DATA REQUIREMENT).
+- **Consumers when built:** Cash Flow (uses only `cashPaid` + timing language — already has it today), Debt Perspective (opening/closing/reduction), AI Daily Brief, Planning (carryover as the payoff-sim initial condition).
+- **Must NOT (when built):** introduce a new classifier, a second aggregate fold, or per-account semantics before the per-account balance data exists.

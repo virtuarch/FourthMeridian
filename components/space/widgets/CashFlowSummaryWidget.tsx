@@ -264,7 +264,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
       {!economic && facts.creditCardSpending > 0 && (
         <div className="pt-1 border-t border-[var(--border-hairline)]">
           <ContextRow
-            label="Spent on credit (not yet paid as cash)"
+            label="Spent on credit (no cash moved at purchase)"
             value={fmt(facts.creditCardSpending, ctx)}
             onOpen={() => setSlice({ title: "Credit-card spending", subtitle: "Bought on credit this period", rows: rows.filter((r) => isCostFlow(r.flowType) && isLiabilityRow(r)) })}
           />

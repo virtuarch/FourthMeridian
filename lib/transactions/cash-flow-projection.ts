@@ -89,6 +89,14 @@ export interface DayFacts {
    *     (a card purchase is `creditCardSpending`).
    * Invariant (pinned): every reason present maps to a single side (see
    *   LIQUIDITY_REASON_SIDE in liquidity-breakdown.ts).
+   *
+   * `byReason.DEBT_PAYMENT` is the canonical Cash-Flow debt-payment fact (cash
+   * leaving a liquid account toward a liability; the received-on-liability leg is
+   * NEUTRAL, so it is counted once). It does NOT necessarily correspond to
+   * purchases occurring in the SAME selected window — a period's payments can
+   * settle balances from earlier statements — and it is not proof of balance
+   * reduction (interest/fees/credits move the balance too). It may undercount
+   * payments made from accounts not connected to Fourth Meridian (no liquid leg).
    */
   byReason: Partial<Record<LiquidityReason, number>>;
   // Economic axis
@@ -96,7 +104,15 @@ export interface DayFacts {
   spendGross: number;   // Σ|amount| cost flows (SPENDING+FEE+INTEREST), pre-refund
   refunds:    number;   // Σ|amount| REFUND
   // Cross-cutting subsets
-  creditCardSpending: number;  // cost flow charged to a liability account (⊂ spendGross)
+  /**
+   * Cost flow (SPENDING+FEE+INTEREST) charged to a liability-tier account this
+   * period; ⊂ spendGross, ∉ cashOut. Gross of refunds; includes card interest &
+   * fees; "liability" is any `debt` account (loans included), not card-only.
+   * `creditCardSpending` does NOT mean an unpaid credit-card balance — it is a
+   * period FLOW fact and never reads a balance, a payment, or charge→payment
+   * linkage. Current outstanding debt is a Debt-domain STOCK fact (balance truth).
+   */
+  creditCardSpending: number;
   directSpending:     number;  // cost flow charged to a NON-liability account (⊂ spendGross)
   cashWithdrawals:    number;  // physical-cash withdrawals (⊄ cashOut, ⊄ spend)
 }
