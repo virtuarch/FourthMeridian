@@ -58,19 +58,30 @@ export function toAccountsCsv(rows: ExportAccount[]): string {
   );
 }
 
-/** holdings.csv */
+/**
+ * holdings.csv (P2-5). `value`/`price`/`currency` are the NATIVE (quote) currency
+ * — the pre-P2-5 contract. `reporting_value`/`reporting_currency` are the ADDED
+ * FX-converted figure from the canonical seam; `cost_basis` is added where the
+ * provider supplied it; `source` marks canonical vs the temporary crypto bridge.
+ * Null numerics render as BLANK cells — an unvalued position is never shown as 0.
+ */
 export function toHoldingsCsv(rows: ExportHolding[]): string {
+  const blank = (n: number | null): number | string => (n == null ? "" : n);
   return Papa.unparse(
     rows.map((r) => ({
-      account_id: r.accountId,
-      symbol:     r.symbol,
-      name:       r.name,
-      quantity:   r.quantity,
-      price:      r.price,
-      value:      r.value,
-      currency:   r.currency ?? "",
-      is_cash:    r.isCash,
-      space_id:   r.spaceId,
+      account_id:         r.accountId,
+      symbol:             r.symbol ?? "",
+      name:               r.name ?? "",
+      quantity:           blank(r.quantity),
+      price:              blank(r.price),
+      value:              blank(r.value),
+      currency:           r.currency ?? "",
+      reporting_value:    blank(r.reportingValue),
+      reporting_currency: r.reportingCurrency,
+      cost_basis:         blank(r.costBasis),
+      is_cash:            r.isCash,
+      source:             r.source,
+      space_id:           r.spaceId,
     })),
   );
 }

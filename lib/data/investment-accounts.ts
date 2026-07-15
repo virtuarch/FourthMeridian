@@ -6,11 +6,15 @@
  * sync state so the workspace can render honest per-account states (holdings /
  * zero / enable / needs-reauth / error).
  *
- * Visibility: reuses getAccounts() + getHoldings() from lib/data/accounts.ts,
- * which already enforce Space visibility (positions require a FULL link; the
- * same gate the AI/transaction read paths use). This module adds NO new read
- * surface to Prisma beyond the ownership-scoped PlaidItem lookup below, which
- * only attaches Enable/Refresh affordances to connections the VIEWER owns.
+ * Visibility: reuses getAccounts() from lib/data/accounts.ts and the canonical
+ * position-presence signal countCurrentPositionsByAccount() (getCurrentPositions),
+ * both of which enforce Space visibility (positions require a FULL link; the same
+ * gate the AI/transaction read paths use). P2-5: Connections no longer reads the
+ * general legacy `Holding` model — it needs only per-account position PRESENCE
+ * (count), not holding contents, so it derives that from the ONE canonical
+ * authority instead of the retiring read model. This module adds NO new Prisma
+ * read surface beyond the ownership-scoped PlaidItem lookup below, which only
+ * attaches Enable/Refresh affordances to connections the VIEWER owns.
  *
  * Current-state only — no historical positions/prices/returns (see Slice B
  * scope). No new schema.
@@ -18,16 +22,16 @@
 
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { getAccounts, getHoldings } from "@/lib/data/accounts";
+import { getAccounts } from "@/lib/data/accounts";
+import { countCurrentPositionsByAccount } from "@/lib/investments/current-positions";
 import {
   buildInvestmentAccountsView,
   type InvestmentAccountInput,
   type InvestmentAccountView,
-  type HoldingView,
   type InvestmentProvider,
 } from "@/lib/investments/current-holdings";
 
-export type { InvestmentAccountView, HoldingView } from "@/lib/investments/current-holdings";
+export type { InvestmentAccountView } from "@/lib/investments/current-holdings";
 
 /**
  * Build the per-account Investments view for a Space. `userId` is the VIEWER —
@@ -41,9 +45,11 @@ export async function getInvestmentAccountsView(
 ): Promise<InvestmentAccountView[]> {
   const { spaceId, userId } = ctx ?? (await getSpaceContext());
 
-  const [accounts, holdings] = await Promise.all([
+  // Canonical non-cash position count per account (getCurrentPositions, FULL-gated
+  // inside the seam) — the position-PRESENCE signal, not holding contents.
+  const [accounts, positionCountByAccount] = await Promise.all([
     getAccounts({ spaceId }),
-    getHoldings({ spaceId }),
+    countCurrentPositionsByAccount({ spaceId }),
   ]);
 
   const investmentAccounts = accounts.filter(
@@ -52,25 +58,6 @@ export async function getInvestmentAccountsView(
   if (investmentAccounts.length === 0) return [];
 
   const accountIds = investmentAccounts.map((a) => a.id);
-
-  // Holdings grouped by (normalized) accountId.
-  const holdingsByAccount = new Map<string, HoldingView[]>();
-  for (const h of holdings) {
-    if (!accountIds.includes(h.accountId)) continue;
-    const list = holdingsByAccount.get(h.accountId) ?? [];
-    list.push({
-      id:        h.id,
-      symbol:    h.symbol,
-      name:      h.name,
-      quantity:  h.quantity,
-      price:     h.price,
-      value:     h.value,
-      currency:  h.currency ?? null,
-      change24h: h.change24h,
-      isCash:    h.isCash,
-    });
-    holdingsByAccount.set(h.accountId, list);
-  }
 
   // Owner-scoped Plaid connection state per account. Only the viewer's own
   // connection (PlaidItem.userId === userId) attaches consent/status so the
@@ -117,7 +104,7 @@ export async function getInvestmentAccountsView(
       itemStatus:         (item?.status as InvestmentAccountInput["itemStatus"]) ?? null,
       itemErrorCode:      item?.errorCode ?? null,
       lastSyncedAt:       item?.lastSyncedAt ? item.lastSyncedAt.toISOString() : null,
-      holdings:           holdingsByAccount.get(a.id) ?? [],
+      positionCount:      positionCountByAccount[a.id] ?? 0,
     };
   });
 

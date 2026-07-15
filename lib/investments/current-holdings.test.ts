@@ -1,32 +1,29 @@
 /**
  * lib/investments/current-holdings.test.ts
  *
- * Pure tests for the Investments-by-account derivation (Slice B). Standalone
- * `tsx` script (exit 0/1), no DB — same pattern as lib/sync/status.test.ts.
+ * Pure tests for the Investment connection-state derivation (Connections card).
+ * Standalone `tsx` script (exit 0/1), no DB — same pattern as lib/sync/status.test.ts.
  *
  *     npx tsx lib/investments/current-holdings.test.ts
+ *
+ * P2-5: the module derives state from a canonical position COUNT
+ * (getCurrentPositions), not from legacy Holding contents — it is a connection-
+ * health surface, not a portfolio surface.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   deriveInvestmentAccountState,
   buildInvestmentAccountView,
   buildInvestmentAccountsView,
   type InvestmentAccountInput,
-  type HoldingView,
 } from "./current-holdings";
 
 let failures = 0;
 function check(name: string, cond: boolean) {
   if (cond) console.log(`  ✓ ${name}`);
   else { failures++; console.error(`  ✗ ${name}`); }
-}
-
-function holding(p: Partial<HoldingView>): HoldingView {
-  return {
-    id: p.id ?? "h", symbol: p.symbol ?? "AAA", name: p.name ?? "Thing",
-    quantity: p.quantity ?? 1, price: p.price ?? 10, value: p.value ?? 10,
-    currency: p.currency ?? "USD", change24h: p.change24h ?? 0, isCash: p.isCash ?? false,
-  };
 }
 
 function acct(p: Partial<InvestmentAccountInput>): InvestmentAccountInput {
@@ -37,12 +34,12 @@ function acct(p: Partial<InvestmentAccountInput>): InvestmentAccountInput {
     plaidItemId: p.plaidItemId ?? "item1",
     investmentsConsent: p.investmentsConsent ?? "ENABLED",
     itemStatus: p.itemStatus ?? "ACTIVE", itemErrorCode: p.itemErrorCode ?? null,
-    lastSyncedAt: p.lastSyncedAt ?? null, holdings: p.holdings ?? [],
+    lastSyncedAt: p.lastSyncedAt ?? null, positionCount: p.positionCount ?? 0,
   };
 }
 
 console.log("deriveInvestmentAccountState — precedence + honesty");
-check("crypto/wallet → wallet",
+check("crypto/wallet → wallet (before positionCount is consulted)",
   deriveInvestmentAccountState({ type: "crypto", provider: "WALLET", investmentsConsent: null, itemStatus: null, positionCount: 0 }) === "wallet");
 check("plaid ERROR beats holdings → error",
   deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ERROR", positionCount: 5 }) === "error");
@@ -55,19 +52,11 @@ check("enabled + positions → holdings",
 check("enabled + no positions → zero_holdings (NOT collapsed to consent)",
   deriveInvestmentAccountState({ type: "investment", provider: "PLAID", investmentsConsent: "ENABLED", itemStatus: "ACTIVE", positionCount: 0 }) === "zero_holdings");
 
-console.log("buildInvestmentAccountView — split cash + sort positions");
-const view = buildInvestmentAccountView(acct({
-  holdings: [
-    holding({ id: "c", symbol: "CASH", isCash: true, value: 200 }),
-    holding({ id: "s", symbol: "VOO", value: 500 }),
-    holding({ id: "b", symbol: "AAPL", value: 900 }),
-  ],
-}));
-check("cash split out of positions", view.cash?.id === "c" && view.positions.every((p) => !p.isCash));
-check("positionCount excludes cash", view.positionCount === 2);
-check("positions sorted by value desc", view.positions[0].symbol === "AAPL" && view.positions[1].symbol === "VOO");
-check("totalValue = account balance (canonical)", view.totalValue === 1000);
-check("state = holdings", view.state === "holdings");
+console.log("buildInvestmentAccountView — canonical count → state");
+const withPositions = buildInvestmentAccountView(acct({ positionCount: 2 }));
+check("positionCount passed through", withPositions.positionCount === 2);
+check("totalValue = account balance (canonical, from FinancialAccount)", withPositions.totalValue === 1000);
+check("state = holdings", withPositions.state === "holdings");
 
 console.log("buildInvestmentAccountsView — richest account first");
 const list = buildInvestmentAccountsView([
@@ -77,9 +66,24 @@ const list = buildInvestmentAccountsView([
 check("sorted by totalValue desc", list[0].accountId === "big" && list[1].accountId === "small");
 
 console.log("zero-holdings account keeps its balance visible");
-const zero = buildInvestmentAccountView(acct({ balance: 484.22, holdings: [] }));
+const zero = buildInvestmentAccountView(acct({ balance: 484.22, positionCount: 0 }));
 check("zero_holdings state", zero.state === "zero_holdings");
 check("balance preserved for display", zero.totalValue === 484.22);
+
+// ── Source guard — Connections stays off the general legacy Holding read ──────
+console.log("source guard — no general legacy Holding read in Connections");
+{
+  const dataFn = readFileSync(join(process.cwd(), "lib/data/investment-accounts.ts"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ""); // strip comments
+  check("investment-accounts.ts does NOT call getHoldings", !/getHoldings/.test(dataFn));
+  check("investment-accounts.ts does NOT read prisma.holding directly", !/\.holding\./.test(dataFn));
+  check("investment-accounts.ts sources presence from countCurrentPositionsByAccount",
+    /countCurrentPositionsByAccount\s*\(/.test(dataFn));
+
+  const pureMod = readFileSync(join(process.cwd(), "lib/investments/current-holdings.ts"), "utf8");
+  check("current-holdings.ts carries no holding-contents view (position PRESENCE only)",
+    !/HoldingView/.test(pureMod));
+}
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nAll current-holdings checks passed");

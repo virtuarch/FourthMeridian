@@ -1,29 +1,19 @@
 /**
  * lib/investments/current-holdings.ts
  *
- * Pure, Prisma-free derivation for the read-only "current Investments by
- * account" view (Slice B). Groups already-persisted Holding rows under their
- * investment/crypto account and derives an honest per-account display state.
- * Kept side-effect-free so it is unit-testable with a standalone `tsx` script
- * (no DB, no prisma generate) — same pattern as lib/sync/status.ts.
+ * Pure, Prisma-free derivation for the read-only "Investment connection state by
+ * account" view (Connections card). Given a per-account CONNECTION context plus a
+ * canonical non-cash position COUNT, it derives an honest per-account display
+ * state. Kept side-effect-free so it is unit-testable with a standalone `tsx`
+ * script (no DB, no prisma generate) — same pattern as lib/sync/status.ts.
  *
- * This is a CURRENT-STATE read model only. No historical positions, prices,
- * cost basis history, returns, or simulations — see the Slice B scope.
+ * P2-5: this module is a connection-HEALTH surface, NOT a portfolio/valuation
+ * surface. It no longer carries holding contents (symbol/quantity/price/value) —
+ * position PRESENCE is a single canonical count from getCurrentPositions
+ * (countCurrentPositionsByAccount), so Connections can never become a second
+ * valuation authority. Connection health / consent come from PlaidItem, account
+ * state (balance) from FinancialAccount.
  */
-
-export interface HoldingView {
-  id:        string;
-  symbol:    string;
-  name:      string;
-  quantity:  number;
-  price:     number;
-  value:     number;
-  /** Native currency of price/value (null = unknown residue). */
-  currency:  string | null;
-  change24h: number;
-  /** Synthetic brokerage-cash row (account.balance − Σ positions). */
-  isCash:    boolean;
-}
 
 /** Provider of an investment account's data. */
 export type InvestmentProvider = "PLAID" | "WALLET" | "MANUAL";
@@ -47,8 +37,13 @@ export interface InvestmentAccountInput {
   itemErrorCode:      string | null;
   /** ISO — PlaidItem.lastSyncedAt (last completed sync). */
   lastSyncedAt:       string | null;
-  /** All holdings for this account (positions + any cash row). */
-  holdings:           HoldingView[];
+  /**
+   * Canonical non-cash position count for this account (getCurrentPositions,
+   * excluding cash). The ONLY position signal Connections needs — presence, not
+   * contents. Unvalued positions still count (a held-but-unpriced position IS
+   * present).
+   */
+  positionCount:      number;
 }
 
 /**
@@ -65,12 +60,7 @@ export type InvestmentAccountState =
   | "wallet";           // self-custody / crypto — no Plaid consent concept
 
 export interface InvestmentAccountView extends InvestmentAccountInput {
-  /** Non-cash positions, highest value first. */
-  positions:     HoldingView[];
-  /** The single synthetic brokerage-cash row, if Plaid reported one. */
-  cash:          HoldingView | null;
-  positionCount: number;
-  /** Canonical portfolio value shown for the account (its own currency). */
+  /** Canonical account value shown for the account (its own currency = balance). */
   totalValue:    number;
   state:         InvestmentAccountState;
 }
@@ -98,27 +88,19 @@ export function deriveInvestmentAccountState(
   return input.positionCount > 0 ? "holdings" : "zero_holdings";
 }
 
-/** Group + split holdings and derive state for one account. */
+/** Derive connection state for one account from its canonical position count. */
 export function buildInvestmentAccountView(input: InvestmentAccountInput): InvestmentAccountView {
-  const positions = input.holdings
-    .filter((h) => !h.isCash)
-    .sort((a, b) => b.value - a.value);
-  const cash = input.holdings.find((h) => h.isCash) ?? null;
-
   const state = deriveInvestmentAccountState({
     type:               input.type,
     provider:           input.provider,
     investmentsConsent: input.investmentsConsent,
     itemStatus:         input.itemStatus,
-    positionCount:      positions.length,
+    positionCount:      input.positionCount,
   });
 
   return {
     ...input,
-    positions,
-    cash,
-    positionCount: positions.length,
-    totalValue:    input.balance,
+    totalValue: input.balance,
     state,
   };
 }

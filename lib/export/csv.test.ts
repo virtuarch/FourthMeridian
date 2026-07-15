@@ -63,11 +63,32 @@ const accounts = [
 const accountsCsv = toAccountsCsv(accounts);
 check("accounts.csv has id + balance headers", accountsCsv.split("\n")[0]?.includes("id") === true && accountsCsv.includes("balance"));
 
-const holdings = [
-  { id: "h1", accountId: "a2", symbol: "VTI", name: "Vanguard", quantity: 3, price: 250, value: 750, change24h: 0, isCash: false, currency: "USD", spaceId: "s1" },
-] as unknown as ExportHolding[];
+const holdings: ExportHolding[] = [
+  // A canonical, fully-valued position (native value + FX-converted reporting value).
+  { id: "a2:i-vti", accountId: "a2", symbol: "VTI", name: "Vanguard", quantity: 3,
+    price: 250, value: 750, currency: "USD", reportingValue: 600, reportingCurrency: "GBP",
+    costBasis: 500, isCash: false, spaceId: "s1", source: "canonical" },
+  // An UNVALUED canonical position — retained, value/price BLANK (never 0).
+  { id: "a2:i-xyz", accountId: "a2", symbol: "XYZ", name: "Illiquid", quantity: 10,
+    price: null, value: null, currency: null, reportingValue: null, reportingCurrency: "GBP",
+    costBasis: null, isCash: false, spaceId: "s1", source: "canonical" },
+];
 const holdingsCsv = toHoldingsCsv(holdings);
-check("holdings.csv has symbol header", holdingsCsv.split("\n")[0]?.includes("symbol") === true);
+const holdingsHeader = holdingsCsv.split("\n")[0] ?? "";
+check("holdings.csv has symbol header", holdingsHeader.includes("symbol"));
+check("holdings.csv adds reporting_value + reporting_currency columns",
+  holdingsHeader.includes("reporting_value") && holdingsHeader.includes("reporting_currency"));
+check("holdings.csv adds cost_basis + source columns",
+  holdingsHeader.includes("cost_basis") && holdingsHeader.includes("source"));
+
+const holdingRows = (Papa.parse(holdingsCsv, { header: true, skipEmptyLines: true }).data as Record<string, string>[]);
+check("valued row: native value in `value`, converted in `reporting_value`",
+  holdingRows[0]?.value === "750" && holdingRows[0]?.reporting_value === "600" && holdingRows[0]?.reporting_currency === "GBP");
+check("valued row: cost_basis + source emitted",
+  holdingRows[0]?.cost_basis === "500" && holdingRows[0]?.source === "canonical");
+check("unvalued row: value/price/reporting_value BLANK, never 0",
+  holdingRows[1]?.value === "" && holdingRows[1]?.price === "" && holdingRows[1]?.reporting_value === "" && holdingRows[1]?.cost_basis === "");
+check("unvalued row: still present (quantity retained)", holdingRows[1]?.quantity === "10" && holdingRows[1]?.symbol === "XYZ");
 
 const snapshots = [
   { date: "2026-03-01", netWorth: 1000, totalAssets: 1000, totalDebt: 0, totalCash: 500, totalSavings: 500, totalInvestments: 0, totalCrypto: 0, cashOnHand: 500, spaceId: "s1", spaceName: "Personal" },
