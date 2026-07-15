@@ -82,7 +82,15 @@ function main(): void {
   // The pure current assembler builds only the current slice — it must not read or
   // emit the historical result. Isolate its body and assert it is A10-free.
   const asmIdx = spaceDataCore.indexOf("export function assembleCurrentPortfolio");
-  const asmBody = asmIdx >= 0 ? spaceDataCore.slice(asmIdx) : "";
+  // Bound to JUST this function's body — up to the next top-level export — so the
+  // sibling composition assembler (assembleInvestmentsSpaceData, which DOES read
+  // `historical` by design) is not swallowed by a slice-to-EOF.
+  const afterAsm = asmIdx >= 0 ? spaceDataCore.slice(asmIdx + 1) : "";
+  // End at this function's own top-level closing brace (`\n}`) — excludes the next
+  // function AND its doc comment, so a sibling that legitimately names `historical`
+  // in its prose can't trip this isolation.
+  const closeIdx = afterAsm.indexOf("\n}");
+  const asmBody = closeIdx >= 0 ? afterAsm.slice(0, closeIdx) : afterAsm;
   check("assembleCurrentPortfolio does not touch the Time Machine result",
     asmBody.length > 0 &&
     !/InvestmentsTimeMachineResult|HistoricalPortfolio|getInvestmentsTimeMachine|\bhistorical\b/.test(asmBody));

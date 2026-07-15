@@ -32,6 +32,8 @@
 import { computeAllocation, type AllocationResult } from "./investments-allocation-core";
 import type { CurrentPositions, CurrentPositionRow } from "./current-positions-core";
 import type { InvestmentsPortfolio, InvestmentsTimeMachineResult } from "./investments-time-machine-core";
+import { buildInvestmentsTrustSummary, type InvestmentsTrustSummary } from "./investments-trust";
+import type { PeriodFlows } from "./investment-flows-core";
 
 /**
  * THE canonical current-portfolio contract. Every field is either passed through
@@ -62,22 +64,35 @@ export interface CurrentPortfolio {
 export type HistoricalPortfolio = InvestmentsTimeMachineResult;
 
 /**
- * The Investments Space data contract. Two independently-loadable slices, split by
- * TIME and never cross-derived:
- *   - `current`    — the canonical current-portfolio view, sourced EXCLUSIVELY from
- *     getCurrentPositions() (PCS-1A; loaded by loadInvestmentsSpaceData).
- *   - `historical` — the A10 Time Machine view (as-of / compare / period flows /
- *     reconciliation), sourced EXCLUSIVELY from getInvestmentsTimeMachine (PCS-1B;
- *     loaded by loadInvestmentsHistory). Optional: a surface that needs only the
- *     current view (or only historical) populates just its slice.
+ * THE canonical Investments workspace contract (PCS-1D) — the single boundary
+ * every Investments consumer reads through before SpaceDashboard decomposition.
+ * FOUR slices, each owned by ONE canonical authority and NEVER cross-derived:
  *
- * The two are NEVER back-filled from each other — `historical` is not derived from
- * `current`, and `current` is not derived from the Time Machine. A caller that
- * wants as-of / compare / flows is a `historical` (A10) caller, full stop.
+ *   - `current`    — the current-portfolio view, sourced EXCLUSIVELY from
+ *     getCurrentPositions() (PCS-1A).
+ *   - `historical` — the A10 Time Machine view (as-of / compare / period flows /
+ *     reconciliation), sourced EXCLUSIVELY from getInvestmentsTimeMachine (PCS-1B).
+ *   - `activity`   — the canonical `PeriodFlows` (PCS-1C); it IS `historical.flows`
+ *     re-surfaced at the top level, never a second flow read. Present only when the
+ *     historical view defines a comparison window (else flows is null → absent).
+ *   - `trust`      — the canonical `InvestmentsTrustSummary` (PCS-1C), the ONE
+ *     reduction `buildInvestmentsTrustSummary(historical)` produces. Present with
+ *     `historical`.
+ *
+ * `historical`, `activity`, and `trust` are all OPTIONAL and travel together: a
+ * current-only workspace read populates just `current`; asking for the historical
+ * view additionally yields `activity` (when there is a window) and `trust`. The
+ * slices are never back-filled from each other — `historical` is not derived from
+ * `current`, `current` is not derived from the Time Machine, and `activity`/`trust`
+ * are pure re-surfacings of the historical result, computing no new arithmetic.
  */
 export interface InvestmentsSpaceData {
   current:     CurrentPortfolio;
   historical?: HistoricalPortfolio;
+  /** `historical.flows` re-surfaced — the canonical PeriodFlows. Absent when no window. */
+  activity?:   PeriodFlows;
+  /** `buildInvestmentsTrustSummary(historical)` — present whenever `historical` is. */
+  trust?:      InvestmentsTrustSummary;
 }
 
 /**
@@ -96,5 +111,29 @@ export function assembleCurrentPortfolio(
     holdings:          positions.rows,
     portfolio:         positions.portfolio,
     allocation:        computeAllocation(positions.rows, accountNames),
+  };
+}
+
+/**
+ * Compose the full Investments workspace contract from the already-loaded slices.
+ * PURE ORCHESTRATION — it performs NO valuation, FX, flow, allocation, or trust
+ * arithmetic of its own: `activity` is `historical.flows` re-surfaced, and `trust`
+ * is the ONE canonical `buildInvestmentsTrustSummary` reduction. When `historical`
+ * is absent (a current-only read) it returns just `current`; the historical,
+ * activity, and trust slices are populated together, off the SAME A10 result, so
+ * they can never disagree.
+ */
+export function assembleInvestmentsSpaceData(args: {
+  current:     CurrentPortfolio;
+  historical?: HistoricalPortfolio | null;
+}): InvestmentsSpaceData {
+  const { current, historical } = args;
+  if (!historical) return { current };
+  return {
+    current,
+    historical,
+    // `flows` is null when there is no comparison window — omit rather than carry null.
+    ...(historical.flows ? { activity: historical.flows } : {}),
+    trust: buildInvestmentsTrustSummary(historical),
   };
 }

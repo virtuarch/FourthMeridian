@@ -1,15 +1,21 @@
 /**
- * lib/investments/space-data.ts  (PCS-1A · PCS-1B)
+ * lib/investments/space-data.ts  (PCS-1A · PCS-1B · PCS-1D)
  *
  * THE canonical read contract for the Investments workspace — the Investments
- * analogue of `lib/connections/space-data.ts`. Two loaders, split by TIME and
- * never cross-derived (the PCS-1 invariant):
+ * analogue of `lib/connections/space-data.ts`. ONE public composition loader over
+ * slices split by TIME and never cross-derived (the PCS-1 invariant):
  *
- *   CURRENT    → loadInvestmentsSpaceData(scope, options) → { current }   (PCS-1A)
- *                sourced EXCLUSIVELY from getCurrentPositions() (A10-at-today seam).
- *   HISTORICAL → loadInvestmentsHistory(args)             → HistoricalPortfolio (PCS-1B)
- *                = getInvestmentsTimeMachine() — the A10 Time Machine, VERBATIM.
- *                As-of / compare / period flows / reconciliation live ONLY here.
+ *   loadInvestmentsSpaceData(scope, options) → InvestmentsSpaceData             (PCS-1D)
+ *     the single orchestrator. It composes the canonical slices — it computes none
+ *     of them:
+ *       • current    → getCurrentPositions() (A10-at-today seam)                 (PCS-1A)
+ *       • historical → getInvestmentsTimeMachine() = A10, VERBATIM (opt-in)      (PCS-1B)
+ *       • activity   → historical.flows re-surfaced (canonical PeriodFlows)      (PCS-1C)
+ *       • trust      → buildInvestmentsTrustSummary(historical)                  (PCS-1C)
+ *   loadInvestmentsHistory(args) → HistoricalPortfolio                          (PCS-1B)
+ *     the A10 binding under its contract name, still exported for the /time-machine
+ *     route (JSON byte-identical). As-of / compare / period flows / reconciliation
+ *     live ONLY here; the composition loader reuses this SAME binding.
  *
  * Historical truth belongs EXCLUSIVELY to A10; the historical loader is that binding
  * under its contract name and reuses NONE of the current-position DTOs. No surface
@@ -32,8 +38,9 @@
  * balances, credit limits, visibility tiers, or valuations of its own — every
  * figure in the contract comes from the seam or a pure reduce of its rows.
  *
- * Pure assembly (shape + allocation) lives in ./space-data-core; this binding only
- * gathers the two inputs (positions + names) and hands them in.
+ * Pure assembly (current shape + allocation, and the four-slice composition) lives
+ * in ./space-data-core; this binding only gathers the reads (positions + names +
+ * the optional A10 result) and hands them to the pure assemblers.
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
@@ -43,7 +50,11 @@ import {
   type CurrentPositionsScope,
   type CurrentPositionsOptions,
 } from "./current-positions";
-import { assembleCurrentPortfolio } from "./space-data-core";
+import { getInvestmentsTimeMachine } from "./investments-time-machine";
+import {
+  assembleCurrentPortfolio,
+  assembleInvestmentsSpaceData,
+} from "./space-data-core";
 import type { InvestmentsSpaceData } from "./space-data-core";
 
 export type {
@@ -59,6 +70,7 @@ export type {
 // the A10 result VERBATIM keeps the /investments/time-machine route JSON — and so
 // the client hook — byte-identical. Args = getInvestmentsTimeMachine's resolved
 // { spaceId | financialAccountId, asOf, compareTo }, owned by the Perspective Shell.
+// The composition loader below reuses this SAME binding for the historical slice.
 export {
   getInvestmentsTimeMachine as loadInvestmentsHistory,
 } from "./investments-time-machine";
@@ -90,21 +102,58 @@ async function resolveAccountNames(
 }
 
 /**
- * THE canonical Investments Space loader (current-state). Reads the canonical
- * current positions for the scope, resolves account names for the by-account
- * axis, and composes the `current` contract. Accepts the same scope/options as
- * getCurrentPositions (including the injected `asOf` clock and `client` for
- * determinism / tests).
+ * When set, the workspace read ALSO loads the A10 historical view and derives its
+ * `activity` + `trust` slices from it. `asOf`/`compareTo` are the Perspective
+ * Shell's resolved dates; omit this to get a current-only read. Kept separate from
+ * the current seam's own injected `asOf` clock (CurrentPositionsOptions.asOf) so
+ * the two time axes never collide.
+ */
+export interface InvestmentsHistoryRequest {
+  asOf:       string;
+  compareTo?: string | null;
+}
+
+export interface LoadInvestmentsSpaceDataOptions extends CurrentPositionsOptions {
+  history?: InvestmentsHistoryRequest;
+}
+
+/**
+ * THE single public Investments workspace loader (PCS-1D). ORCHESTRATION ONLY — it
+ * performs no financial computation, no reduction, no translation. It:
+ *   1. calls the canonical CURRENT loader   (getCurrentPositions → assembleCurrentPortfolio),
+ *   2. calls the canonical HISTORICAL loader (getInvestmentsTimeMachine = A10) when
+ *      `options.history` is supplied,
+ *   3. delegates to the pure `assembleInvestmentsSpaceData`, which re-surfaces
+ *      ACTIVITY (historical.flows) and builds TRUST (buildInvestmentsTrustSummary)
+ *      off that ONE A10 result.
+ *
+ * Every consumer that needs any mix of current holdings, A10, activity, allocation,
+ * completeness, concentration, or trust reads it through this one contract instead
+ * of assembling the graph itself. Accepts the same scope/options as
+ * getCurrentPositions (injected `asOf` clock + `client`), plus the optional
+ * `history` request for the A10 slice.
  */
 export async function loadInvestmentsSpaceData(
   scope:    CurrentPositionsScope,
-  options?: CurrentPositionsOptions,
+  options?: LoadInvestmentsSpaceDataOptions,
 ): Promise<InvestmentsSpaceData> {
   const client = options?.client ?? db;
 
   const positions = await getCurrentPositions(scope, options);
   const accountIds = [...new Set(positions.rows.map((r) => r.accountId))];
   const accountNames = await resolveAccountNames(client, accountIds);
+  const current = assembleCurrentPortfolio(positions, accountNames);
 
-  return { current: assembleCurrentPortfolio(positions, accountNames) };
+  // Historical slice through the SAME A10 binding the /time-machine route uses —
+  // scoped identically to the current read, so both views cover the same accounts.
+  const historical = options?.history
+    ? await getInvestmentsTimeMachine({
+        ...scope,
+        asOf:      options.history.asOf,
+        compareTo: options.history.compareTo ?? null,
+        client,
+      })
+    : null;
+
+  return assembleInvestmentsSpaceData({ current, historical });
 }
