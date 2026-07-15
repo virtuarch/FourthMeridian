@@ -27,6 +27,7 @@ import {
   isTransfer,
   isDebtPayment,
   isInvestmentFlow,
+  isBankingPopulation,
 } from './flow-predicates';
 
 // Every FlowType value (mirrors flow-classifier.ts FlowType union).
@@ -67,6 +68,30 @@ test('single-value predicates match strict equality', () => {
     assert.equal(isTransfer(ft), ft === 'TRANSFER');
     assert.equal(isDebtPayment(ft), ft === 'DEBT_PAYMENT');
     assert.equal(isInvestmentFlow(ft), ft === 'INVESTMENT');
+  }
+});
+
+test('P2-2 isBankingPopulation admits every flow EXCEPT INVESTMENT, and keeps UNKNOWN/null visible', () => {
+  // The canonical banking-population rule: FlowType, not provider category, decides
+  // eligibility. Only pure investment security-activity is excluded.
+  for (const ft of ALL) {
+    assert.equal(isBankingPopulation(ft), ft !== 'INVESTMENT', `banking membership for ${ft}`);
+  }
+  // The requirements that make this a population rule, not a taxonomy allow-list:
+  //  - canonical banking flows are admitted regardless of category label,
+  assert.equal(isBankingPopulation('SPENDING'), true);
+  assert.equal(isBankingPopulation('INCOME'), true);   // e.g. a cash Dividend row
+  assert.equal(isBankingPopulation('FEE'), true);      // e.g. a card/investment Fee row
+  assert.equal(isBankingPopulation('ADJUSTMENT'), true);
+  //  - UNKNOWN / unclassified rows STAY IN so review / needs-classification paths see them,
+  assert.equal(isBankingPopulation('UNKNOWN'), true);
+  assert.equal(isBankingPopulation(null), true);
+  assert.equal(isBankingPopulation(undefined), true);
+  //  - and ONLY investment security-activity is held out (the banking/investment split).
+  assert.equal(isBankingPopulation('INVESTMENT'), false);
+  // It is exactly the complement of the single INVESTMENT authority (no new list).
+  for (const ft of [...ALL, null, undefined]) {
+    assert.equal(isBankingPopulation(ft), !isInvestmentFlow(ft));
   }
 });
 

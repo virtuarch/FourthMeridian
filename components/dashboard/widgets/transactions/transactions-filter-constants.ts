@@ -17,6 +17,13 @@ import type { TransactionCategory } from "@/types";
 export const CAT_CHIP = "bg-[var(--surface-inset)] text-[var(--text-secondary)]";
 
 // ── Category options ──────────────────────────────────────────────────────────
+// PRESENTATION ONLY (P2-2): this is the vocabulary for the Transactions-perspective
+// category dropdown (TransactionsFilterOverlay) — a display/search filter the user
+// opts into. It is NOT a semantic-population authority and must NEVER gate whether a
+// row reaches canonical financial analysis (that is FlowType's job — see
+// isBankingPopulation / BANKING_POPULATION in lib/data/transactions.ts). Using this
+// list as a `category: { in: … }` query filter is a P2-2 regression; the source-scan
+// in lib/data/transactions.population.test.ts guards against it.
 export const BANKING_CATEGORIES: TransactionCategory[] = [
   "Income", "Transfer", "Groceries", "Dining", "Shopping",
   "Travel", "Subscriptions", "Utilities", "Interest", "Payment", "Other",

@@ -112,6 +112,28 @@ export function isInvestmentFlow(flowType: Flow): boolean {
   return flowType === 'INVESTMENT';
 }
 
+/**
+ * P2-2 — banking semantic-population membership. FlowType, NOT provider category,
+ * decides whether a row is eligible for canonical banking financial analysis:
+ * every flow EXCEPT pure investment security-activity (INVESTMENT) belongs to the
+ * banking population. null / UNKNOWN are deliberately INCLUDED — an unclassified
+ * row must stay visible to review / needs-classification paths, never silently
+ * dropped by a taxonomy allow-list.
+ *
+ * This is the row-level statement of the DB population rule the banking reads in
+ * lib/data/transactions.ts (getTransactions / getDebtTransactions) apply as the
+ * Prisma fragment `flowType: { not: INVESTMENT }` — Prisma scalar `not` returns
+ * null rows too, so the query and this predicate agree on the null/UNKNOWN case
+ * (pinned by lib/data/transactions.population.test.ts). Structural exclusions
+ * (deletedAt, Space visibility, date window) are ANDed on top and are unaffected.
+ *
+ * Delegates to the single INVESTMENT authority (isInvestmentFlow) — it introduces
+ * no new membership list, only names the partition already implied by it.
+ */
+export function isBankingPopulation(flowType: Flow): boolean {
+  return !isInvestmentFlow(flowType);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Presentation — humanized FlowType labels (Transactions Tab Phase 1).
 // ─────────────────────────────────────────────────────────────────────────────

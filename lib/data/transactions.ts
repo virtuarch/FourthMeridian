@@ -80,10 +80,33 @@ import { deriveTransactionContext } from "@/lib/transactions/transaction-context
 import { convertMoney } from "@/lib/money/convert";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 
-const BANKING_CATEGORIES = [
-  "Income","Transfer","Groceries","Dining","Shopping","Travel",
-  "Subscriptions","Utilities","Interest","Payment","Other",
-];
+/**
+ * P2-2 — the canonical banking-population WHERE fragment. FlowType (not provider
+ * category) decides eligibility for canonical financial analysis: every row EXCEPT
+ * pure investment security-activity (FlowType.INVESTMENT) belongs to the banking
+ * semantic population that reaches Cash Flow / DayFacts, the Transactions
+ * Perspective, exports, and the liquidity axis.
+ *
+ * Why `not: INVESTMENT` and not a flow allow-list: the ONLY structural split among
+ * banking reads is banking vs. investment security-activity. Expressing the rule as
+ * a single exclusion (a) keeps unclassified rows visible — Prisma scalar `not`
+ * returns null/UNKNOWN rows too, so a row awaiting classification still surfaces to
+ * review / needs-classification paths, never dropped by a taxonomy allow-list; and
+ * (b) admits every legitimate banking flow (SPENDING/INCOME/REFUND/FEE/INTEREST/
+ * TRANSFER/DEBT_PAYMENT/ADJUSTMENT) regardless of its provider category label. The
+ * DayFacts fold already handles each of these canonically (UNKNOWN → unresolved
+ * transparency total; ADJUSTMENT → NON_CASH context reason; neither enters net), so
+ * widening the population changes no Cash-Flow math — it only stops the old
+ * `category ∈ BANKING_CATEGORIES` allow-list from silently omitting rows whose
+ * category fell outside 11 hand-listed values (e.g. cash Dividend income, card Fees,
+ * newer/merchant PFC categories). This mirrors the AI assembler's already-migrated
+ * `flowType: { in: BANKING_FLOWS }` cutover (lib/ai/assemblers/transactions.ts).
+ *
+ * Row-level statement of the same rule: isBankingPopulation (flow-predicates.ts).
+ * Pinned in lockstep by lib/data/transactions.population.test.ts. Structural
+ * filters (deletedAt, SpaceAccountLink visibility, date) are ANDed separately.
+ */
+const BANKING_POPULATION = { flowType: { not: FlowType.INVESTMENT } } as const;
 
 /**
  * KD-15 counterparty-visibility include for the list reads (Cash Flow liquidity
@@ -124,7 +147,12 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
       // Transaction.deletedAt: null — D2 Step 4D-R: excludes rows soft-deleted
       // by an import rollback. See module header above for rationale.
       deletedAt: null,
-      category: { in: BANKING_CATEGORIES as never[] },
+      // P2-2 — banking semantic population by canonical FlowType, not by provider
+      // category allow-list. `flowType: { not: INVESTMENT }` (see BANKING_POPULATION):
+      // admits every banking flow incl. UNKNOWN/unclassified (visible for review) and
+      // excludes only pure investment security-activity. Replaces the former
+      // `category: { in: BANKING_CATEGORIES }` gate.
+      ...BANKING_POPULATION,
     },
     orderBy: { date: "desc" },
     // MI M6 read cutover — resolved Merchant presentation (additive join).
@@ -205,7 +233,13 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
       ],
       // Transaction.deletedAt: null — D2 Step 4D-R, see getTransactions() above.
       deletedAt: null,
-      category: { in: BANKING_CATEGORIES as never[] },
+      // P2-2 — banking semantic population by canonical FlowType (see
+      // BANKING_POPULATION / getTransactions above); replaces the former
+      // `category: { in: BANKING_CATEGORIES }` gate. ANDed with the debt-account
+      // scope in the OR above, so this stays "debt-account banking activity"; the
+      // debt-payment consumers (lib/debt.ts) additionally filter on
+      // isDebtPayment(flowType), so the wider population does not change their totals.
+      ...BANKING_POPULATION,
     },
     orderBy: { date: "desc" },
     // MI M6 read cutover — resolved Merchant presentation (additive join).
@@ -227,7 +261,18 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
   }));
 }
 
-/** Investment transactions (Buy/Sell/Dividend/Split/Fee), newest first. */
+/**
+ * Investment transactions (Buy/Sell/Dividend/Split/Fee), newest first.
+ *
+ * P2-2 scope note: this is the INVESTMENT partition read and currently has NO live
+ * consumers (dead). Its `category ∈ {Buy,Sell,Dividend,Split,Fee}` gate is therefore
+ * NOT a live semantic-population authority — nothing downstream depends on it. It is
+ * left untouched here on purpose: it is investment-domain and owned by the concurrent
+ * investment truth-spine track (P2-5/P2-6, current-positions / PositionObservation),
+ * whose canonical migration will retire or re-express it. The P2-2 population
+ * invariant (lib/data/transactions.population.test.ts) deliberately scopes to the
+ * BANKING reads and does not police this line.
+ */
 export async function getInvestmentTransactions(): Promise<InvestmentTransaction[]> {
   const { spaceId } = await getSpaceContext();
 
