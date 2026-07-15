@@ -11,10 +11,11 @@
  *
  * It owns NO data of its own — the caller passes the already-loaded, already-
  * filtered Cash Flow rows for the slice, and the drawer only presents them. All
- * money math reuses aggregateCashFlow (the same FlowType doctrine), so the
- * drawer's totals always match the visualization that opened it. The row visual
- * mirrors SpaceTransactionsPanel's TxRow. Rendered in-place (portaled modal), so
- * it never navigates away from the Cash Flow Perspective.
+ * money math reuses economicTotals (the economic projection over the single
+ * foldEconomicRow authority — same FlowType doctrine), so the drawer's totals
+ * always match the visualization that opened it. The row visual mirrors
+ * SpaceTransactionsPanel's TxRow. Rendered in-place (portaled modal), so it never
+ * navigates away from the Cash Flow Perspective.
  */
 
 import { useState } from "react";
@@ -23,7 +24,7 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
-import { aggregateCashFlow } from "@/lib/transactions/cash-flow";
+import { economicTotals } from "@/lib/transactions/cash-flow";
 import { TransactionDate } from "@/components/ui/TransactionDate";
 import { Waves, Layers, ListFilter } from "lucide-react";
 
@@ -111,7 +112,7 @@ export function TransactionSliceDrawer({
   const viewingAll = showAll && canShowAll;
   const displayRows = viewingAll ? slice.allRows! : slice.rows;
 
-  const { income, spend, net } = aggregateCashFlow(displayRows, ctx);
+  const { income, spend, net } = economicTotals(displayRows, ctx);
 
   return (
     <GlassModal title={slice.title} subtitle={slice.subtitle} icon={Waves} onClose={onClose} size="md">

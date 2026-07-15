@@ -11,7 +11,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { groupCashFlowContext } from "./cash-flow-context";
-import { tierResolver, deriveCashFlowAxes, type LiquidityTx } from "./liquidity";
+import { tierResolver, type LiquidityTx } from "./liquidity";
+import { aggregateDayFacts } from "./cash-flow-projection";
 
 const ACCOUNTS = [
   { id: "chk", type: "checking" }, { id: "sav", type: "savings" },
@@ -100,9 +101,9 @@ test("zero overlap: every row appears in at most one displayed group", () => {
 });
 
 test("Cash In / Cash Out / Net are computed independently and unchanged by the grouping", () => {
-  const before = deriveCashFlowAxes(rows, ctx);
+  const before = aggregateDayFacts(rows, ctx);
   groupCashFlowContext(rows, ctx);
-  const after = deriveCashFlowAxes(rows, ctx);
-  assert.deepEqual({ in: after.cashIn, out: after.cashOut, net: after.netCash },
-                   { in: before.cashIn, out: before.cashOut, net: before.netCash });
+  const after = aggregateDayFacts(rows, ctx);
+  assert.deepEqual({ in: after.cashIn, out: after.cashOut, net: (after.cashIn - after.cashOut) },
+                   { in: before.cashIn, out: before.cashOut, net: (before.cashIn - before.cashOut) });
 });

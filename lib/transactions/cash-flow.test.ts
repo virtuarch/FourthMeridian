@@ -9,7 +9,7 @@
 import {
   periodRange,
   filterByPeriod,
-  aggregateCashFlow,
+  economicTotals,
   granularityFor,
   outflowByCategory,
   incomeBySource,
@@ -209,15 +209,15 @@ const rows: Transaction[] = [
   tx("2026-07-07", -1000,"TRANSFER", "Transfer"),    // excluded
   tx("2026-07-08", -500, "DEBT_PAYMENT", "Payment"), // excluded
 ];
-const agg = aggregateCashFlow(rows);
+const agg = economicTotals(rows);
 check("income = INCOME only (5000)", agg.income === 5000);
 check("spend = SPENDING+FEE+INTEREST − REFUND = 280−40 = 240", agg.spend === 240);
 check("refunds disclosed separately (40)", agg.refunds === 40);
 check("net = income − spend = 4760", agg.net === 4760);
 check("transfers & debt payments excluded from cash flow",
-  aggregateCashFlow([tx("2026-07-02", -1000, "TRANSFER"), tx("2026-07-02", -500, "DEBT_PAYMENT")]).net === 0);
+  economicTotals([tx("2026-07-02", -1000, "TRANSFER"), tx("2026-07-02", -500, "DEBT_PAYMENT")]).net === 0);
 check("refund clamps spend at ≥ 0",
-  aggregateCashFlow([tx("2026-07-02", -50, "SPENDING"), tx("2026-07-02", 200, "REFUND")]).spend === 0);
+  economicTotals([tx("2026-07-02", -50, "SPENDING"), tx("2026-07-02", 200, "REFUND")]).spend === 0);
 
 // ── History bucketing granularity (bucketCashFlow itself retired — P1 closeout) ──
 check("granularity: MTD → day",     granularityFor("MTD") === "day");
@@ -331,7 +331,7 @@ check("source label: Unknown source when nothing usable",
 
 // ── BTC INVESTMENT disposal excluded from Cash Flow (Part B doctrine) ─────────────
 check("INVESTMENT (BTC sale) is neither spend nor income nor refund in aggregate",
-  (() => { const a = aggregateCashFlow([tx("2026-07-02", -8888, "INVESTMENT", "Sell")]);
+  (() => { const a = economicTotals([tx("2026-07-02", -8888, "INVESTMENT", "Sell")]);
            return a.spend === 0 && a.income === 0 && a.refunds === 0 && a.net === 0; })());
 check("INVESTMENT (BTC sale) never appears in Spending by Category",
   outflowByCategory([tx("2026-07-02", -8888, "INVESTMENT", "Sell")]).length === 0);
@@ -347,7 +347,7 @@ const drillRows: Transaction[] = [
 const day02 = drillRows.filter((t) => t.date === "2026-07-02");
 check("calendar day slice = that date's rows", day02.length === 2);
 check("day slice aggregate matches the day net (5000−200=4800)",
-  aggregateCashFlow(day02).net === 4800);
+  economicTotals(day02).net === 4800);
 
 // History bucket slice (MTD → daily granularity): key is the date itself.
 check("transactionsInBucket returns that day's rows for a daily period",
@@ -370,12 +370,12 @@ const grocerySlice = catRows.filter((t) => t.category === "Groceries" && (isCost
 check("category slice = cost + refund rows of that category",
   grocerySlice.length === 2);
 check("category slice aggregate spend matches card (200−40=160)",
-  aggregateCashFlow(grocerySlice).spend === 160);
+  economicTotals(grocerySlice).spend === 160);
 
 // Income-by-source slice = INCOME rows whose source label matches.
 const acmeSlice = srcRows.filter((t) => isIncome(t.flowType) && incomeSourceLabel(t) === "Acme Payroll");
 check("income source slice = INCOME rows for that source",
-  acmeSlice.length === 1 && aggregateCashFlow(acmeSlice).income === 5000);
+  acmeSlice.length === 1 && economicTotals(acmeSlice).income === 5000);
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log(`\n${passes} passed, ${failures} failed (${passes + failures} checks).`);

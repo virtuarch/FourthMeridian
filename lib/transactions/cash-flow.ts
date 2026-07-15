@@ -254,18 +254,62 @@ export interface CashFlowTotals {
   net:     number;   // income − spend
 }
 
-export function aggregateCashFlow(transactions: Transaction[], ctx?: ConversionContext): CashFlowTotals {
-  let grossSpend = 0, refunds = 0, income = 0;
+// ─── The single economic-fold authority (P2-1) ────────────────────────────────
+//
+// The economic "which bucket does this row's magnitude go in, and how is spend
+// clamped" decision lived independently in TWO folds: economicTotals (below)
+// and cash-flow-projection.ts's foldDayFacts. P2-1 collapses that decision to
+// ONE place — foldEconomicRow + clampEconomicSpend — so economicTotals, the
+// canonical DayFacts fold, and economicSpend can never disagree on the economic
+// answer. These are the SOLE definition of economic income / gross spend /
+// refund / spend-clamp; do not re-inline the 3-way branch or the clamp anywhere.
+
+/** Mutable accumulator for the economic axis (tier-independent). DayFacts is a
+ *  structural superset, so it can be passed directly where this is expected. */
+export interface EconomicAccumulator {
+  income:     number;   // Σ|amount| INCOME
+  spendGross: number;   // Σ|amount| cost flows (SPENDING+FEE+INTEREST), pre-refund
+  refunds:    number;   // Σ|amount| REFUND
+}
+
+/**
+ * Fold ONE row's already-converted magnitude into the economic accumulator by
+ * FlowType. The single authority for what counts as income / gross spend /
+ * refund. TRANSFER / DEBT_PAYMENT / INVESTMENT / null are not cash flow and are
+ * ignored (matching SpaceTransactionsPanel exactly). `magnitude` must be the
+ * non-negative converted amount (Math.abs of the row's converted amount).
+ */
+export function foldEconomicRow(acc: EconomicAccumulator, flowType: string | null | undefined, magnitude: number): void {
+  if (isCostFlow(flowType)) acc.spendGross += magnitude;
+  else if (isRefund(flowType)) acc.refunds += magnitude;
+  else if (isIncome(flowType)) acc.income += magnitude;
+}
+
+/** Economic spend: gross cost flows minus refunds, floored at 0. The single
+ *  clamp authority (was duplicated in economicTotals and economicSpend). */
+export function clampEconomicSpend(spendGross: number, refunds: number): number {
+  return Math.max(0, spendGross - refunds);
+}
+
+/**
+ * economicTotals — the economic-axis PROJECTION (income / spend / refunds / net)
+ * over a set of rows. NOT an aggregation authority: it is a thin projection over
+ * the single foldEconomicRow + clampEconomicSpend primitives, byte-identical to
+ * `perspectiveTotals(aggregateDayFacts(rows, liqCtx, ctx), "economic")` (proven by
+ * the cash-flow-fold-authority + cash-flow-projection parity tests). It exists as
+ * the ergonomic entry point for callers that have rows but NO liquidity/account
+ * context (TransactionSliceDrawer over an arbitrary slice; income-vs-spending).
+ * (Renamed from `aggregateCashFlow` in P2-1A — the old name wrongly implied a
+ * second aggregation authority.) Reach for aggregateDayFacts whenever you also
+ * need the liquidity axis / subsets.
+ */
+export function economicTotals(transactions: Transaction[], ctx?: ConversionContext): CashFlowTotals {
+  const acc: EconomicAccumulator = { income: 0, spendGross: 0, refunds: 0 };
   for (const t of transactions) {
-    const flow = t.flowType ?? null;
-    const amt = Math.abs(rowAmount(t, ctx));
-    if (isCostFlow(flow)) grossSpend += amt;
-    else if (isRefund(flow)) refunds += amt;
-    else if (isIncome(flow)) income += amt;
-    // TRANSFER / DEBT_PAYMENT / INVESTMENT / null → not cash flow, ignored.
+    foldEconomicRow(acc, t.flowType ?? null, Math.abs(rowAmount(t, ctx)));
   }
-  const spend = Math.max(0, grossSpend - refunds);
-  return { income, spend, refunds, net: income - spend };
+  const spend = clampEconomicSpend(acc.spendGross, acc.refunds);
+  return { income: acc.income, spend, refunds: acc.refunds, net: acc.income - spend };
 }
 
 // ─── History (time buckets) ───────────────────────────────────────────────────

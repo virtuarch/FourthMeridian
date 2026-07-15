@@ -18,6 +18,7 @@ import {
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
 import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { aggregateDayFacts } from "@/lib/transactions/cash-flow-projection";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
@@ -58,7 +59,7 @@ export function buildWhatChangedRows(args: {
   if (rows.length === 0) return { state: "empty" };
 
   const liqCtx = tierResolver(accounts);
-  const b = groupLiquidityByReason(rows as LiquidityTx[], liqCtx, ctx);
+  const b = groupLiquidityByReason(aggregateDayFacts(rows as LiquidityTx[], liqCtx, ctx));
 
   const inRows: WhatChangedRow[] = b.cashIn.slice(0, TOP_N).map((l) => ({ id: `in:${l.reason}`, label: l.label, amount: l.amount, direction: "in" }));
   const outRows: WhatChangedRow[] = b.cashOut.slice(0, TOP_N).map((l) => ({ id: `out:${l.reason}`, label: l.label, amount: -l.amount, direction: "out" }));

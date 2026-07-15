@@ -2,13 +2,16 @@
  * lib/transactions/liquidity-breakdown.test.ts
  *
  * Cash Flow Summary consuming the LIQUIDITY axis — proves the summary's headline
- * (deriveCashFlowAxes) and its reason breakdown (groupLiquidityByReason) agree,
- * and that the economic axis is untouched. Runnable with tsx.
+ * (the DayFacts fold, aggregateDayFacts) and its reason breakdown (the pure
+ * projection groupLiquidityByReason(facts)) agree, and that the economic axis is
+ * untouched. Also pins the LIQUIDITY_REASON_SIDE partition by exercising real
+ * reasons. Runnable with tsx.
  */
 
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
-import { deriveCashFlowAxes, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
-import { aggregateCashFlow } from "@/lib/transactions/cash-flow";
+import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
+import { economicTotals } from "@/lib/transactions/cash-flow";
+import { aggregateDayFacts, economicSpend } from "@/lib/transactions/cash-flow-projection";
 import type { FlowType, TransactionCategory } from "@/types";
 
 let failures = 0, passes = 0;
@@ -41,10 +44,10 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
     tx({ ownAccount: "chk", amount: 8141.98, flowType: "TRANSFER", counterpartyAccountId: "cb" }),
     tx({ ownAccount: "chk", amount: 1902.12, flowType: "TRANSFER", counterpartyAccountId: "cb" }),
   ];
-  const axes = deriveCashFlowAxes(rows, ctx);
-  const bd = groupLiquidityByReason(rows, ctx);
+  const f = aggregateDayFacts(rows, ctx);
+  const bd = groupLiquidityByReason(f);
   check("Feb 27 Coinbase→Chase: Cash In = 8141.98 + 1902.12 = 10044.10",
-    Math.abs(axes.cashIn - 10044.10) < 1e-9, JSON.stringify(axes));
+    Math.abs(f.cashIn - 10044.10) < 1e-9, JSON.stringify(f));
   check("Feb 27: breakdown line is Asset liquidation with the full total",
     bd.cashIn.length === 1 && bd.cashIn[0].reason === "ASSET_LIQUIDATION" &&
     bd.cashIn[0].label === "Asset liquidation" &&
@@ -60,12 +63,12 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
     tx({ ownAccount: "chk", amount: -1500, flowType: "SPENDING" }),
     tx({ ownAccount: "cb",  amount: 10044, flowType: "INVESTMENT" }),  // the sale itself → neutral
   ];
-  const axes = deriveCashFlowAxes(rows, ctx);
-  const bd = groupLiquidityByReason(rows, ctx);
+  const f = aggregateDayFacts(rows, ctx);
+  const bd = groupLiquidityByReason(f);
 
-  check("salary+liquidation: Cash In = 16044 (deriveCashFlowAxes)", axes.cashIn === 16044);
-  check("salary+liquidation: Cash Out = 1500", axes.cashOut === 1500);
-  check("salary+liquidation: Net Cash = 14544", axes.netCash === 14544);
+  check("salary+liquidation: Cash In = 16044 (DayFacts)", f.cashIn === 16044);
+  check("salary+liquidation: Cash Out = 1500", f.cashOut === 1500);
+  check("salary+liquidation: Net Cash = 14544", f.cashIn - f.cashOut === 14544);
 
   const earned = bd.cashIn.find((l) => l.reason === "EARNED_INCOME");
   const liq    = bd.cashIn.find((l) => l.reason === "ASSET_LIQUIDATION");
@@ -78,16 +81,16 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
 
   // Drill-down totals match displayed values (headline == sum of breakdown lines).
   check("Cash In breakdown total === displayed Cash In",
-    bd.cashInTotal === axes.cashIn && bd.cashIn.reduce((s, l) => s + l.amount, 0) === axes.cashIn);
+    bd.cashInTotal === f.cashIn && bd.cashIn.reduce((s, l) => s + l.amount, 0) === f.cashIn);
   check("Cash Out breakdown total === displayed Cash Out",
-    bd.cashOutTotal === axes.cashOut && bd.cashOut.reduce((s, l) => s + l.amount, 0) === axes.cashOut);
+    bd.cashOutTotal === f.cashOut && bd.cashOut.reduce((s, l) => s + l.amount, 0) === f.cashOut);
 
   // Economic axis unchanged — crypto sale is NOT income economically.
-  check("economic axis income = 6000 only (crypto NOT income)", axes.economic.income === 6000);
-  check("economic axis === aggregateCashFlow (unchanged)",
-    axes.economic.income === aggregateCashFlow(rows).income &&
-    axes.economic.spend === aggregateCashFlow(rows).spend &&
-    axes.economic.net === aggregateCashFlow(rows).net);
+  check("economic axis income = 6000 only (crypto NOT income)", f.income === 6000);
+  check("economic axis === economicTotals (unchanged)",
+    f.income === economicTotals(rows).income &&
+    economicSpend(f) === economicTotals(rows).spend &&
+    (f.income - economicSpend(f)) === economicTotals(rows).net);
 }
 
 // ── Non-zero only + unresolved surfaced separately ─────────────────────────────
@@ -96,7 +99,7 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
     tx({ ownAccount: "chk", amount: 500, flowType: "TRANSFER" }),  // unknown counterparty → unresolved
     tx({ ownAccount: "chk", amount: 200, flowType: "INCOME" }),
   ];
-  const bd = groupLiquidityByReason(rows, ctx);
+  const bd = groupLiquidityByReason(aggregateDayFacts(rows, ctx));
   check("breakdown lists only non-zero reasons",
     bd.cashIn.every((l) => l.amount > 0) && bd.cashOut.every((l) => l.amount > 0));
   check("Cash In has only Earned income (unresolved not counted as cash in)",
@@ -111,13 +114,13 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
     tx({ ownAccount: "chk",  amount: -30829,  flowType: "DEBT_PAYMENT" }),  // paid the card (cash out)
     tx({ ownAccount: "card", amount: -23047,  flowType: "SPENDING" }),      // credit card purchases (context)
   ];
-  const axes = deriveCashFlowAxes(rows, ctx);
-  const bd = groupLiquidityByReason(rows, ctx);
+  const f = aggregateDayFacts(rows, ctx);
+  const bd = groupLiquidityByReason(f);
 
   check("Cash Out = direct cash spending + debt payments (73 + 30829 = 30902)",
-    axes.cashOut === 30902 && bd.cashOutTotal === 30902, JSON.stringify(axes));
+    f.cashOut === 30902 && bd.cashOutTotal === 30902, JSON.stringify(f));
   check("Cash Out does NOT double-count credit-card purchases",
-    axes.cashOut === 30902 && !bd.cashOut.some((l) => l.amount === 23047));
+    f.cashOut === 30902 && !bd.cashOut.some((l) => l.amount === 23047));
   check("direct cash spending row = REAL_COST relabeled 'Direct cash spending' ($73)",
     bd.cashOut.some((l) => l.reason === "REAL_COST" && l.label === "Direct cash spending" && l.amount === 73));
   check("debt payments row present ($30,829)",
@@ -127,7 +130,7 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
   check("credit card purchases NOT in cashOut total (context is separate)",
     bd.cashOutTotal === 30902 && bd.cashOutTotal !== bd.cashOutTotal + bd.creditCardPurchases);
   check("Cash Out breakdown lines sum to displayed Cash Out (no context leakage)",
-    bd.cashOut.reduce((s, l) => s + l.amount, 0) === axes.cashOut);
+    bd.cashOut.reduce((s, l) => s + l.amount, 0) === f.cashOut);
 }
 
 // ── Context rows composition: none enter Cash Out ──────────────────────────────
@@ -139,10 +142,10 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
     tx({ ownAccount: "chk",  amount: -500,   flowType: "TRANSFER", counterpartyAccountId: "sav" }),    // context: internal (liquid→liquid)
     tx({ ownAccount: "chk",  amount: 800,    flowType: "TRANSFER" }),                                  // context: unresolved (unknown cp)
   ];
-  const axes = deriveCashFlowAxes(rows, ctx);
-  const bd = groupLiquidityByReason(rows, ctx);
+  const f = aggregateDayFacts(rows, ctx);
+  const bd = groupLiquidityByReason(f);
 
-  check("Cash Out = direct cash + debt payments only (30902)", axes.cashOut === 30902 && bd.cashOutTotal === 30902);
+  check("Cash Out = direct cash + debt payments only (30902)", f.cashOut === 30902 && bd.cashOutTotal === 30902);
   check("credit card purchases context = 23047", bd.creditCardPurchases === 23047);
   check("internal transfers context = 500 (liquid↔liquid)", bd.internalTransfers === 500);
   check("unresolved context = 800 (unknown counterparty)", bd.unresolved === 800);
@@ -159,7 +162,7 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
     tx({ ownAccount: "chk",  amount: -100, flowType: "SPENDING" }),  // liquid → direct cash spending
     tx({ ownAccount: "card", amount: -250, flowType: "SPENDING" }),  // liability → credit purchase
   ];
-  const bd = groupLiquidityByReason(rows, ctx);
+  const bd = groupLiquidityByReason(aggregateDayFacts(rows, ctx));
   check("creditCardPurchases = only liability-tier cost flows (250, not 350)", bd.creditCardPurchases === 250);
   check("direct cash spending still in Cash Out (100)",
     bd.cashOutTotal === 100 && bd.cashOut.some((l) => l.reason === "REAL_COST" && l.amount === 100));

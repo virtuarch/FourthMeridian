@@ -20,10 +20,10 @@ import {
 import { chooseCounterpartyId } from './counterparty-visibility';
 import {
   classifyLiquidity,
-  deriveCashFlowAxes,
   tierResolver,
   type LiquidityTx,
 } from './liquidity';
+import { aggregateDayFacts } from './cash-flow-projection';
 
 // fa_chk/fa_sav = liquid; fa_brk = asset (investment).
 const liqCtx = tierResolver([
@@ -79,7 +79,7 @@ test('checking → savings resolves both legs to INTERNAL_TRANSFER (was UNRESOLV
   assert.equal(b.effect, 'NEUTRAL');
 
   // No double-count: neither neutral leg moves spendable cash.
-  const axes = deriveCashFlowAxes([liqLeg('fa_chk', -500, chkCp), liqLeg('fa_sav', 500, savCp)], liqCtx);
+  const axes = aggregateDayFacts([liqLeg('fa_chk', -500, chkCp), liqLeg('fa_sav', 500, savCp)], liqCtx);
   assert.equal(axes.cashIn, 0);
   assert.equal(axes.cashOut, 0);
   assert.equal(axes.unresolved, 0);
@@ -99,7 +99,7 @@ test('checking → brokerage contribution: liquid leg = ASSET_DEPLOYMENT, asset 
   assert.equal(liquid.effect, 'CASH_OUT');
   assert.equal(asset.effect, 'NEUTRAL'); // the non-liquid leg is anchored out
 
-  const axes = deriveCashFlowAxes([liqLeg('fa_chk', -500, chkCp), liqLeg('fa_brk', 500, brkCp)], liqCtx);
+  const axes = aggregateDayFacts([liqLeg('fa_chk', -500, chkCp), liqLeg('fa_brk', 500, brkCp)], liqCtx);
   assert.equal(axes.cashOut, 500); // counted ONCE, on the liquid leg
   assert.equal(axes.cashIn, 0);
 });
@@ -118,7 +118,7 @@ test('brokerage → checking withdrawal: liquid leg = ASSET_LIQUIDATION, asset l
   assert.equal(liquid.effect, 'CASH_IN');
   assert.equal(asset.effect, 'NEUTRAL');
 
-  const axes = deriveCashFlowAxes([liqLeg('fa_chk', 500, chkCp), liqLeg('fa_brk', -500, brkCp)], liqCtx);
+  const axes = aggregateDayFacts([liqLeg('fa_chk', 500, chkCp), liqLeg('fa_brk', -500, brkCp)], liqCtx);
   assert.equal(axes.cashIn, 500); // counted ONCE
   assert.equal(axes.cashOut, 0);
 });

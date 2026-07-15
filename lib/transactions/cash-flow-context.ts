@@ -5,7 +5,7 @@
  * grouping of the period's transactions into two human sections, consuming ONLY
  * existing canonical facts (liquidity effect + transferDisposition + the TE-2B
  * needsClassification flag). It computes NO money totals that feed Cash In / Cash
- * Out / Net Cash — those are derived elsewhere (deriveCashFlowAxes) and untouched.
+ * Out / Net Cash — those are derived from the canonical DayFacts fold and untouched.
  *
  * Scope invariant (keeps the context honest and non-double-counting): the
  * "Moved, not spent" buckets contain ONLY transfers that are liquidity-NEUTRAL or

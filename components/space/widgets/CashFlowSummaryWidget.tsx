@@ -5,10 +5,11 @@
  *
  * Cash Flow Perspective headline — now the LIQUIDITY axis (spendable cash),
  * which is the primary user-facing model. Shows Cash In / Cash Out / Net Cash
- * from deriveCashFlowAxes(), each expandable into its reason breakdown (Earned
- * income, Asset liquidation, Debt proceeds, Spending, Debt payments, Asset
- * deployment, …) taken straight from the liquidity engine's per-reason output —
- * no recomputation here.
+ * from the shared DayFacts projection (aggregateDayFacts — the SOLE fold; P2-1
+ * removed the former second deriveCashFlowAxes pass), each expandable into its
+ * reason breakdown (Earned income, Asset liquidation, Debt proceeds, Spending,
+ * Debt payments, Asset deployment, …) taken straight from the liquidity engine's
+ * per-reason output (groupLiquidityByReason) — no recomputation here.
  *
  * The economic axis (earned income vs real cost) is NOT deleted: it's preserved
  * behind a quiet "Economic view" disclosure, and remains the basis of AI facts
@@ -32,7 +33,6 @@ import {
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
 import {
-  deriveCashFlowAxes,
   classifyLiquidity,
   tierResolver,
   type LiquidityTx,
@@ -169,13 +169,14 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   }
 
   const liqCtx = tierResolver(accounts);
-  // Cash In / Cash Out / Net Cash come from deriveCashFlowAxes (liquidity axis).
-  const axes = deriveCashFlowAxes(rows, liqCtx, ctx);
-  // Reason breakdown (effect-split) — its per-side totals equal axes.cashIn/out.
-  const breakdown = groupLiquidityByReason(rows, liqCtx, ctx);
-  // CF-3 — economic axis + cross-cutting subsets (credit-card spending) from the
-  // shared projection: ONE pass, both axes, no re-classification.
+  // CF-3 / P2-1 — the shared DayFacts projection is the SOLE fold: ONE pass over
+  // the rows yields BOTH axes (liquidity cashIn/cashOut + economic income/spend/
+  // subsets). Cash In / Cash Out / Net Cash read straight off `facts` — no second
+  // deriveCashFlowAxes pass (that was the removed production double-fold).
   const facts = aggregateDayFacts(rows, liqCtx, ctx);
+  // Reason breakdown (effect-split) — a PURE PROJECTION over the same `facts`
+  // (no second fold); its per-side totals equal facts.cashIn/out by construction.
+  const breakdown = groupLiquidityByReason(facts);
   const econSpendTotal = economicSpend(facts);
   const econCard = Math.min(facts.creditCardSpending, econSpendTotal);
   const econOther = Math.max(0, econSpendTotal - econCard);
@@ -187,7 +188,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   const hasContext = context.movedNotSpent.length > 0 || context.needsClassification.length > 0;
 
   const economic = perspective === "economic";
-  const net = economic ? econNet : axes.netCash;
+  const net = economic ? econNet : facts.cashIn - facts.cashOut;
 
   // Drill-down for a Cash In / Cash Out breakdown line — its exact contributing rows
   // (matched by effect + reason), opened in the shared slice drawer. Reuses the same
@@ -251,8 +252,8 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
       ) : (
         /* Liquidity: Cash In / Cash Out — expandable into reason breakdown. */
         <div className="grid grid-cols-2 gap-3">
-          <AxisTile label="Cash In"  total={axes.cashIn}  accent="green" sign="+" lines={breakdown.cashIn}  ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_IN", l)} />
-          <AxisTile label="Cash Out" total={axes.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_OUT", l)} />
+          <AxisTile label="Cash In"  total={facts.cashIn}  accent="green" sign="+" lines={breakdown.cashIn}  ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_IN", l)} />
+          <AxisTile label="Cash Out" total={facts.cashOut} accent="red"   sign="−" lines={breakdown.cashOut} ctx={ctx} onOpenLine={(l) => openReasonSlice("CASH_OUT", l)} />
         </div>
       )}
 

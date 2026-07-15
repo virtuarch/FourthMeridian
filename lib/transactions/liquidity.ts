@@ -1,9 +1,12 @@
 /**
  * lib/transactions/liquidity.ts
  *
- * Cash Flow LIQUIDITY axis — the derived, spendable-cash view that sits ALONGSIDE
- * the existing economic view (aggregateCashFlow), never replacing it. Pure and
- * importable (no DB/React/next), unit-testable under tsx.
+ * Cash Flow LIQUIDITY axis — the derived, spendable-cash CLASSIFIER
+ * (classifyLiquidity): the single per-row authority for whether a row moved
+ * spendable cash (CASH_IN / CASH_OUT / NEUTRAL / UNRESOLVED) and why (reason).
+ * Pure and importable (no DB/React/next), unit-testable under tsx. The AGGREGATE
+ * fold over this classifier lives in cash-flow-projection.ts (DayFacts); this
+ * file only classifies a single row.
  *
  * Doctrine (see the liquidity-axis investigation): the economic KIND of a row is
  * a stable, persisted fact (Transaction.flowType). Whether the row moved
@@ -17,9 +20,6 @@
  * account is the non-liquid side, the spendable effect (if any) belongs to the
  * other leg, so this row is NEUTRAL. When the counterparty tier is unknown, we
  * do NOT guess — the row is UNRESOLVED.
- *
- * This file does NOT modify aggregateCashFlow; deriveCashFlowAxes calls it for
- * the economic axis and adds the liquidity axis next to it.
  */
 
 import {
@@ -31,12 +31,6 @@ import {
   isTransfer,
 } from "@/lib/transactions/flow-predicates";
 import { accountTier, type AccountTier } from "@/lib/account-classifier";
-import {
-  aggregateCashFlow,
-  type CashFlowTotals,
-} from "@/lib/transactions/cash-flow";
-import { convertMoney } from "@/lib/money/convert";
-import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -230,63 +224,3 @@ function classifyTransfer(
   return make(ft, "UNRESOLVED", "UNRESOLVED", 0.2);
 }
 
-// ─── Two-axis aggregation ───────────────────────────────────────────────────────
-
-const REASON_KEYS: LiquidityReason[] = [
-  "EARNED_INCOME", "REAL_COST", "REFUND", "ASSET_LIQUIDATION", "ASSET_DEPLOYMENT",
-  "INVESTMENT_INFLOW", "INVESTMENT_OUTFLOW", "PAYMENT_APP_INFLOW", "PAYMENT_APP_OUTFLOW",
-  "ASSET_CONVERSION", "DEBT_PROCEEDS", "DEBT_PAYMENT", "INTERNAL_TRANSFER",
-  "NON_CASH", "UNRESOLVED",
-];
-
-export interface CashFlowAxes {
-  // ── Liquidity axis (spendable tier) ──
-  cashIn:      number;   // Σ|amount| of CASH_IN rows
-  cashOut:     number;   // Σ|amount| of CASH_OUT rows
-  netCash:     number;   // cashIn − cashOut
-  unresolved:  number;   // Σ|amount| of UNRESOLVED rows (transparency, not summed into net)
-  byReason:    Record<LiquidityReason, number>;   // |amount| grouped by reason
-  // ── Economic axis (reuses aggregateCashFlow, unmodified) ──
-  economic:    CashFlowTotals;   // { income, spend, refunds, net }
-}
-
-/** Converted magnitude of a row at its own date; absent ctx ⇒ raw amount. */
-function rowMagnitude(t: LiquidityTx, ctx?: ConversionContext): number {
-  const amt = ctx
-    ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount
-    : t.amount;
-  return Math.abs(amt);
-}
-
-/**
- * Both Cash Flow axes over a set of transactions. The economic axis is the
- * EXISTING aggregateCashFlow (untouched); the liquidity axis is derived per-row
- * via classifyLiquidity and summed, with a per-reason breakdown so callers/AI can
- * say "$16,044 cash in = $6,000 earned income + $10,044 asset liquidation".
- */
-export function deriveCashFlowAxes(
-  transactions: LiquidityTx[],
-  liquidityCtx: LiquidityContext,
-  moneyCtx?: ConversionContext,
-): CashFlowAxes {
-  const byReason = Object.fromEntries(REASON_KEYS.map((k) => [k, 0])) as Record<LiquidityReason, number>;
-  let cashIn = 0, cashOut = 0, unresolved = 0;
-
-  for (const t of transactions) {
-    const c = classifyLiquidity(t, liquidityCtx);
-    const amt = rowMagnitude(t, moneyCtx);
-    byReason[c.reason] += amt;
-    if (c.effect === "CASH_IN") cashIn += amt;
-    else if (c.effect === "CASH_OUT") cashOut += amt;
-    else if (c.effect === "UNRESOLVED") unresolved += amt;
-  }
-
-  return {
-    cashIn,
-    cashOut,
-    netCash: cashIn - cashOut,
-    unresolved,
-    byReason,
-    economic: aggregateCashFlow(transactions, moneyCtx),
-  };
-}

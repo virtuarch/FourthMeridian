@@ -2,8 +2,9 @@
  * lib/transactions/cash-flow-projection.test.ts
  *
  * CF-3 — proves the shared two-perspective projection (cash-flow-projection.ts):
- *   1. reconciles with BOTH canonical authorities (deriveCashFlowAxes for the
- *      liquidity axis, aggregateCashFlow for the economic axis);
+ *   1. reconciles with the canonical semantics: the liquidity totals match the
+ *      fixture's expected Cash In/Out/unresolved, and the economic axis matches
+ *      economicTotals (the economic projection over the shared foldEconomicRow);
  *   2. daily / bucketed facts sum back to the aggregate;
  *   3. the governing invariants hold — a credit-card purchase is ECONOMIC spend
  *      but NOT liquidity Cash Out; a debt payment is Cash Out but NOT new spend
@@ -14,8 +15,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveCashFlowAxes, tierResolver, type LiquidityTx } from "./liquidity";
-import { aggregateCashFlow, outflowByCategory, incomeBySource } from "./cash-flow";
+import { tierResolver, type LiquidityTx } from "./liquidity";
+import { economicTotals, outflowByCategory, incomeBySource } from "./cash-flow";
 import {
   aggregateDayFacts, projectDailyFacts, bucketDayFacts,
   perspectiveTotals, economicSpend, netOfMeasures, defaultMeasures,
@@ -47,16 +48,19 @@ const rows: LiquidityTx[] = [
 
 const liqCtx = tierResolver([{ id: "chk", type: "checking" }, { id: "card", type: "debt" }, { id: "brk", type: "investment" }]);
 
-test("liquidity axis reconciles with deriveCashFlowAxes", () => {
+test("liquidity axis totals for the fixture (Cash In / Cash Out / unresolved)", () => {
   const f = aggregateDayFacts(rows, liqCtx);
-  const axes = deriveCashFlowAxes(rows, liqCtx);
-  assert.equal(Math.round(f.cashIn * 100),  Math.round(axes.cashIn * 100));
-  assert.equal(Math.round(f.cashOut * 100), Math.round(axes.cashOut * 100));
+  // income 6000 (liquid) + payment-app inflow 200 = 6200 Cash In; direct grocery
+  // 120.50 + debt payment 800 + invested 1000 + app out 50 = 1970.50 Cash Out;
+  // the ATM withdrawal 300 (unknown counterparty) surfaces as unresolved, never net.
+  assert.equal(Math.round(f.cashIn * 100),     Math.round(6200 * 100));
+  assert.equal(Math.round(f.cashOut * 100),    Math.round(1970.50 * 100));
+  assert.equal(Math.round(f.unresolved * 100), Math.round(300 * 100));
 });
 
-test("economic axis reconciles with aggregateCashFlow", () => {
+test("economic axis reconciles with economicTotals", () => {
   const f = aggregateDayFacts(rows, liqCtx);
-  const eco = aggregateCashFlow(rows);
+  const eco = economicTotals(rows);
   assert.equal(Math.round(f.income * 100),        Math.round(eco.income * 100));
   assert.equal(Math.round(economicSpend(f) * 100), Math.round(eco.spend * 100));
   assert.equal(Math.round(f.refunds * 100),       Math.round(eco.refunds * 100));
@@ -77,7 +81,7 @@ test("INVARIANT: a debt payment is liquidity Cash Out but NOT new economic spend
   assert.equal(Math.round((f.byReason.DEBT_PAYMENT ?? 0) * 100), Math.round(800 * 100)); // in Cash Out
   // economic spend never includes DEBT_PAYMENT (not a cost flow) — so the card
   // purchase (£737.97) and its later payment (£800) are never both counted as spend.
-  const eco = aggregateCashFlow(rows);
+  const eco = economicTotals(rows);
   // gross cost flows = 120.50 + 692.97 + 45 = 858.47 ; refund 30 ; spend = 828.47
   assert.equal(Math.round(eco.spend * 100), Math.round(828.47 * 100));
 });
@@ -86,11 +90,10 @@ test("INVARIANT: an ATM withdrawal is neither economic spend nor liquidity Cash 
   const f = aggregateDayFacts(rows, liqCtx);
   assert.equal(Math.round(f.cashWithdrawals * 100), Math.round(300 * 100));
   // it is NOT a cost flow, so not in economic spend…
-  const eco = aggregateCashFlow(rows);
+  const eco = economicTotals(rows);
   assert.ok(eco.spend < 900, "withdrawal not in economic spend");
   // …and it is UNRESOLVED on the liquidity axis (unknown counterparty), so not in Cash Out.
-  const axes = deriveCashFlowAxes(rows, liqCtx);
-  assert.ok(axes.unresolved >= 300 - 0.01, "withdrawal surfaces as UNRESOLVED, not Cash Out");
+  assert.ok(f.unresolved >= 300 - 0.01, "withdrawal surfaces as UNRESOLVED, not Cash Out");
 });
 
 test("directSpending + creditCardSpending partition gross cost flows by tier", () => {

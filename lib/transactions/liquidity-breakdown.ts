@@ -1,25 +1,22 @@
 /**
  * lib/transactions/liquidity-breakdown.ts
  *
- * Presentation-facing breakdown of the Cash Flow LIQUIDITY axis: groups the
- * per-row classifyLiquidity output into non-zero, effect-split reason lines
+ * Presentation-facing breakdown of the Cash Flow LIQUIDITY axis: turns the
+ * canonical DayFacts liquidity facts into non-zero, effect-split reason lines
  * (Cash In vs Cash Out) so the summary can render "Cash In $16,044 = Earned
  * income $6,000 + Asset liquidation $10,044".
  *
- * Pure CONSUMER of the liquidity engine — it calls classifyLiquidity but does
- * NOT modify it. Grouping is keyed on (effect, reason), so the per-side totals
- * here are exactly the CASH_IN / CASH_OUT totals deriveCashFlowAxes reports
- * (proven in tests); the UI never recomputes anything itself.
+ * P2-1A: this is now a PURE PROJECTION over DayFacts — it holds NO fold of its
+ * own. It reads the already-computed `byReason` (the effect-partitioned reason
+ * sums), `cashIn`/`cashOut`/`unresolved` totals, and `creditCardSpending` off a
+ * DayFacts and shapes them for display. It never calls classifyLiquidity and
+ * never re-sums rows (that fold is DayFacts' sole job — cash-flow-projection.ts).
+ * The per-side split uses LIQUIDITY_REASON_SIDE, a static classification of each
+ * LiquidityReason's canonical effect, pinned against classifyLiquidity by tests.
  */
 
-import {
-  classifyLiquidity,
-  type LiquidityTx,
-  type LiquidityContext,
-  type LiquidityReason,
-} from "@/lib/transactions/liquidity";
-import { convertMoney } from "@/lib/money/convert";
-import type { ConversionContext } from "@/lib/money/types";
+import { type LiquidityReason } from "@/lib/transactions/liquidity";
+import type { DayFacts } from "@/lib/transactions/cash-flow-projection";
 
 /** User-facing labels — liquidity terminology, not economic (see doctrine). */
 export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
@@ -46,6 +43,33 @@ export const LIQUIDITY_REASON_LABEL: Record<LiquidityReason, string> = {
   UNRESOLVED:        "Unresolved movement",
 };
 
+/**
+ * Canonical side (net direction) of each liquidity reason — the static
+ * classification that lets this projection split DayFacts.byReason into Cash In
+ * vs Cash Out lines without re-inspecting rows. Derived from classifyLiquidity
+ * (each directional reason is only ever emitted with one CASH_IN/CASH_OUT
+ * effect; the four straddle reasons above are "in"/"out" here because DayFacts
+ * only records their CASH_IN/CASH_OUT legs). "context" reasons are neutral and
+ * never appear as a line. Pinned to classifyLiquidity by liquidity-breakdown.test.ts.
+ */
+export const LIQUIDITY_REASON_SIDE: Record<LiquidityReason, "in" | "out" | "context"> = {
+  EARNED_INCOME:       "in",
+  REFUND:              "in",
+  ASSET_LIQUIDATION:   "in",
+  DEBT_PROCEEDS:       "in",
+  INVESTMENT_INFLOW:   "in",
+  PAYMENT_APP_INFLOW:  "in",
+  REAL_COST:           "out",
+  DEBT_PAYMENT:        "out",
+  ASSET_DEPLOYMENT:    "out",
+  INVESTMENT_OUTFLOW:  "out",
+  PAYMENT_APP_OUTFLOW: "out",
+  ASSET_CONVERSION:    "context",
+  INTERNAL_TRANSFER:   "context",
+  NON_CASH:            "context",
+  UNRESOLVED:          "context",
+};
+
 export interface LiquiditySliceLine {
   reason: LiquidityReason;
   label:  string;
@@ -55,8 +79,8 @@ export interface LiquiditySliceLine {
 export interface LiquidityBreakdown {
   cashIn:      LiquiditySliceLine[];   // non-zero, descending
   cashOut:     LiquiditySliceLine[];   // non-zero, descending
-  cashInTotal:  number;                // == deriveCashFlowAxes().cashIn
-  cashOutTotal: number;                // == deriveCashFlowAxes().cashOut
+  cashInTotal:  number;                // == DayFacts.cashIn
+  cashOutTotal: number;                // == DayFacts.cashOut
   netCash:      number;
   unresolved:   number;                // magnitude of UNRESOLVED rows (not in net)
   /**
@@ -76,61 +100,36 @@ export interface LiquidityBreakdown {
   internalTransfers: number;
 }
 
-function rowMagnitude(t: LiquidityTx, ctx?: ConversionContext): number {
-  const amt = ctx
-    ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount
-    : t.amount;
-  return Math.abs(amt);
-}
-
-function toLines(map: Map<LiquidityReason, number>): LiquiditySliceLine[] {
-  return [...map.entries()]
-    .filter(([, v]) => v > 0)
-    .map(([reason, amount]) => ({ reason, label: LIQUIDITY_REASON_LABEL[reason], amount }))
-    .sort((a, b) => b.amount - a.amount);
-}
-
-/** Effect-split, non-zero reason breakdown of a set of transactions. */
-export function groupLiquidityByReason(
-  transactions: LiquidityTx[],
-  liquidityCtx: LiquidityContext,
-  moneyCtx?: ConversionContext,
-): LiquidityBreakdown {
-  const inMap = new Map<LiquidityReason, number>();
-  const outMap = new Map<LiquidityReason, number>();
-  let cashInTotal = 0, cashOutTotal = 0, unresolved = 0, creditCardPurchases = 0, internalTransfers = 0;
-
-  for (const t of transactions) {
-    const { effect, reason } = classifyLiquidity(t, liquidityCtx);
-    const amt = rowMagnitude(t, moneyCtx);
-    if (effect === "CASH_IN") {
-      inMap.set(reason, (inMap.get(reason) ?? 0) + amt);
-      cashInTotal += amt;
-    } else if (effect === "CASH_OUT") {
-      outMap.set(reason, (outMap.get(reason) ?? 0) + amt);
-      cashOutTotal += amt;
-    } else if (effect === "UNRESOLVED") {
-      unresolved += amt;
-    }
-    // Context (never in cashOut — all liquidity-NEUTRAL / non-cash-out):
-    // Cost flow charged to a liability account = a credit purchase.
-    if (reason === "REAL_COST" && liquidityCtx.tierOf(t.financialAccountId ?? t.accountId ?? null) === "liability") {
-      creditCardPurchases += amt;
-    }
-    // Liquidity-neutral internal transfer (money stayed within your tiers).
-    if (reason === "INTERNAL_TRANSFER") {
-      internalTransfers += amt;
+/** Non-zero, descending reason lines for one side, read off DayFacts.byReason. */
+function toLines(facts: DayFacts, side: "in" | "out"): LiquiditySliceLine[] {
+  const lines: LiquiditySliceLine[] = [];
+  for (const [reason, amount] of Object.entries(facts.byReason) as [LiquidityReason, number][]) {
+    if (amount > 0 && LIQUIDITY_REASON_SIDE[reason] === side) {
+      lines.push({ reason, label: LIQUIDITY_REASON_LABEL[reason], amount });
     }
   }
+  return lines.sort((a, b) => b.amount - a.amount);
+}
 
+/**
+ * Effect-split, non-zero reason breakdown — a PURE PROJECTION over a DayFacts.
+ * All numbers come straight from the facts: the lines from the effect-partitioned
+ * `byReason`, the totals from `cashIn`/`cashOut`/`unresolved`, the credit-card
+ * context from `creditCardSpending`, and internal transfers from the neutral
+ * `byReason.INTERNAL_TRANSFER`. No fold, no classifyLiquidity, no re-sum.
+ */
+export function groupLiquidityByReason(facts: DayFacts): LiquidityBreakdown {
   return {
-    cashIn:  toLines(inMap),
-    cashOut: toLines(outMap),
-    cashInTotal,
-    cashOutTotal,
-    netCash: cashInTotal - cashOutTotal,
-    unresolved,
-    creditCardPurchases,
-    internalTransfers,
+    cashIn:  toLines(facts, "in"),
+    cashOut: toLines(facts, "out"),
+    cashInTotal:  facts.cashIn,
+    cashOutTotal: facts.cashOut,
+    netCash:      facts.cashIn - facts.cashOut,
+    unresolved:   facts.unresolved,
+    // Cost flow charged to a liability account = a credit purchase (⊂ economic
+    // spend, ∉ cashOut). Identical to the old REAL_COST-on-liability sum.
+    creditCardPurchases: facts.creditCardSpending,
+    // Liquidity-neutral internal transfer (money stayed within your tiers).
+    internalTransfers:   facts.byReason.INTERNAL_TRANSFER ?? 0,
   };
 }

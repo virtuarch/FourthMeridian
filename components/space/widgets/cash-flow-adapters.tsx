@@ -27,7 +27,7 @@ import type { Transaction } from "@/types";
 import { Waves } from "lucide-react";
 import {
   filterByPeriod,
-  aggregateCashFlow,
+  economicTotals,
   outflowByCategory,
   incomeBySource,
   incomeSourceLabel,
@@ -36,7 +36,7 @@ import {
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
-import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
+import { aggregateDayFacts, type CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";
 import { CashFlowCategoryBreakdown } from "@/components/space/widgets/CashFlowCategoryBreakdown";
 import { DebtPaymentsWidget } from "@/components/space/widgets/DebtPaymentsWidget";
@@ -69,9 +69,10 @@ function EmptyCard({ sub }: { sub: string }) {
 
 // ─── 1. Cash Flow Summary (LIQUIDITY axis — primary) ──────────────────────────
 
-/** Cash In / Cash Out / Net Cash for the selected period, from the derived
- *  liquidity axis (deriveCashFlowAxes). The economic axis is preserved behind a
- *  disclosure in the widget. Needs `accounts` to resolve account tiers. */
+/** Cash In / Cash Out / Net Cash for the selected period, from the shared
+ *  DayFacts projection (aggregateDayFacts — the sole fold; both axes in one pass).
+ *  The economic axis is preserved behind a disclosure in the widget. Needs
+ *  `accounts` to resolve account tiers. */
 export function renderCashFlowSummary(
   transactions: Transaction[] | null | undefined,
   period: CashFlowPeriod,
@@ -113,7 +114,7 @@ export function renderIncomeVsSpending(
   if (state === "loading") return <LoadingCard />;
   if (state === "empty") return <EmptyCard sub="Add income and spending to compare the two." />;
 
-  const t = aggregateCashFlow(rows, ctx);
+  const t = economicTotals(rows, ctx);
   const items: BreakdownItem[] = [
     { id: "income",   label: "Income",   value: t.income, color: "#22c55e" },
     { id: "spending", label: "Spending", value: t.spend,  color: "#ef4444" },
@@ -181,7 +182,8 @@ export function renderIncomeBySource(
   if (perspective === "liquidity") {
     if (state === "empty") return <EmptyCard sub="Cash in by source appears once cash arrives." />;
     const liqCtx = tierResolver(accounts);
-    const cashIn = groupLiquidityByReason(rows as LiquidityTx[], liqCtx, ctx).cashIn;
+    const facts = aggregateDayFacts(rows as LiquidityTx[], liqCtx, ctx);
+    const cashIn = groupLiquidityByReason(facts).cashIn;
     return (
       <div className="space-y-2">
         <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Cash in by source</p>

@@ -8,12 +8,12 @@
 
 import {
   classifyLiquidity,
-  deriveCashFlowAxes,
   tierResolver,
   type LiquidityTx,
   type LiquidityContext,
 } from "@/lib/transactions/liquidity";
-import { aggregateCashFlow } from "@/lib/transactions/cash-flow";
+import { economicTotals } from "@/lib/transactions/cash-flow";
+import { aggregateDayFacts, economicSpend } from "@/lib/transactions/cash-flow-projection";
 import type { FlowType, FlowDirection, TransactionCategory } from "@/types";
 
 let failures = 0, passes = 0;
@@ -158,7 +158,7 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
     c.effect === "NEUTRAL" && c.reason === "INTERNAL_TRANSFER");
 }
 
-// ── deriveCashFlowAxes: the salary + crypto-liquidation composition ────────────
+// ── DayFacts fold: the salary + crypto-liquidation composition ─────────────────
 {
   const rows: LiquidityTx[] = [
     tx({ ownAccount: "chk", amount: 6000, flowType: "INCOME" }),                                  // earned income
@@ -166,16 +166,16 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
     tx({ ownAccount: "chk", amount: -1500, flowType: "SPENDING" }),                               // real cost
     tx({ ownAccount: "cb",  amount: 10044, flowType: "INVESTMENT" }),                             // the sale itself (neutral)
   ];
-  const axes = deriveCashFlowAxes(rows, ctx);
-  check("cashIn = 6000 earned + 10044 liquidation = 16044", axes.cashIn === 16044, JSON.stringify(axes));
-  check("cashOut = 1500", axes.cashOut === 1500);
-  check("netCash = 14544", axes.netCash === 14544);
+  const f = aggregateDayFacts(rows, ctx);
+  check("cashIn = 6000 earned + 10044 liquidation = 16044", f.cashIn === 16044, JSON.stringify(f));
+  check("cashOut = 1500", f.cashOut === 1500);
+  check("netCash = 14544", f.cashIn - f.cashOut === 14544);
   check("byReason splits earned income vs liquidation",
-    axes.byReason.EARNED_INCOME === 6000 && axes.byReason.ASSET_LIQUIDATION === 10044);
-  check("economic axis income = 6000 only (crypto NOT income)", axes.economic.income === 6000);
-  check("economic axis spend = 1500", axes.economic.spend === 1500);
+    (f.byReason.EARNED_INCOME ?? 0) === 6000 && (f.byReason.ASSET_LIQUIDATION ?? 0) === 10044);
+  check("economic axis income = 6000 only (crypto NOT income)", f.income === 6000);
+  check("economic axis spend = 1500", economicSpend(f) === 1500);
   check("INVESTMENT sale contributes to neither economic income nor cashIn double-count",
-    axes.byReason.ASSET_CONVERSION === 10044 && axes.cashIn === 16044);
+    (f.byReason.ASSET_CONVERSION ?? 0) === 10044 && f.cashIn === 16044);
 }
 
 // unresolved surfaced separately, never in net
@@ -183,12 +183,12 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
   const rows: LiquidityTx[] = [
     tx({ ownAccount: "chk", amount: 500, flowType: "TRANSFER" }), // unknown counterparty
   ];
-  const axes = deriveCashFlowAxes(rows, ctx);
+  const f = aggregateDayFacts(rows, ctx);
   check("unresolved magnitude surfaced, excluded from net",
-    axes.unresolved === 500 && axes.cashIn === 0 && axes.netCash === 0);
+    f.unresolved === 500 && f.cashIn === 0 && f.cashIn - f.cashOut === 0);
 }
 
-// ── aggregateCashFlow parity: economic axis is byte-identical to the existing fn ──
+// ── economicTotals parity: DayFacts economic axis is byte-identical to economicTotals ──
 {
   const rows: LiquidityTx[] = [
     tx({ ownAccount: "chk", amount: 6000, flowType: "INCOME" }),
@@ -196,11 +196,11 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
     tx({ ownAccount: "cb",  amount: 10044, flowType: "INVESTMENT" }),
     tx({ ownAccount: "chk", amount: -500, flowType: "TRANSFER", counterpartyAccountId: "sav" }),
   ];
-  const axes = deriveCashFlowAxes(rows, ctx);
-  const direct = aggregateCashFlow(rows);
-  check("economic axis === aggregateCashFlow (unchanged)",
-    axes.economic.income === direct.income && axes.economic.spend === direct.spend &&
-    axes.economic.net === direct.net && axes.economic.refunds === direct.refunds);
+  const f = aggregateDayFacts(rows, ctx);
+  const direct = economicTotals(rows);
+  check("economic axis === economicTotals (unchanged)",
+    f.income === direct.income && economicSpend(f) === direct.spend &&
+    (f.income - economicSpend(f)) === direct.net && f.refunds === direct.refunds);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

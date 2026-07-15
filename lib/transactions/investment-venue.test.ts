@@ -12,8 +12,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { classifyLiquidity, deriveCashFlowAxes, tierResolver, type LiquidityTx } from "./liquidity";
-import { aggregateCashFlow } from "./cash-flow";
+import { classifyLiquidity, tierResolver, type LiquidityTx } from "./liquidity";
+import { economicTotals } from "./cash-flow";
+import { aggregateDayFacts } from "./cash-flow-projection";
 import { groupLiquidityByReason, LIQUIDITY_REASON_LABEL } from "./liquidity-breakdown";
 
 const ACCOUNTS = [{ id: "chk", type: "checking" }, { id: "brk", type: "investment" }, { id: "card", type: "debt" }];
@@ -47,7 +48,7 @@ test("2. venue IN to a liquid account → Cash In · From investments", () => {
 test("3. venue IN does NOT become earned income (economic axis untouched)", () => {
   assert.equal(classifyLiquidity(venueIn, ctx).reason !== "EARNED_INCOME", true);
   // Economic axis: a TRANSFER is neither income nor spend — venue IN adds $0 to income.
-  assert.equal(aggregateCashFlow([venueIn]).income, 0);
+  assert.equal(economicTotals([venueIn]).income, 0);
 });
 
 test("5. venue evidence alone does NOT claim an asset sale (never ASSET_LIQUIDATION)", () => {
@@ -73,13 +74,13 @@ test("debt-account venue leg stays NEUTRAL (excluded from Cash Out)", () => {
 
 test("9/11. Cash In/Out reconcile: breakdown sums to totals, venue rows counted once", () => {
   const set = [venueOut, venueIn, tx({ amount: 6000, flowType: "INCOME", transferDisposition: null })];
-  const axes = deriveCashFlowAxes(set, ctx);
-  const bd = groupLiquidityByReason(set, ctx);
-  assert.equal(bd.cashInTotal, axes.cashIn);   // reconciles
-  assert.equal(bd.cashOutTotal, axes.cashOut);
-  assert.equal(axes.cashIn, 6000 + 8141.98);   // earned income + From investments
-  assert.equal(axes.cashOut, 1000);            // Money invested
-  assert.equal(axes.netCash, axes.cashIn - axes.cashOut);
+  const facts = aggregateDayFacts(set, ctx);
+  const bd = groupLiquidityByReason(facts);     // pure projection over the same facts
+  assert.equal(bd.cashInTotal, facts.cashIn);   // reconciles
+  assert.equal(bd.cashOutTotal, facts.cashOut);
+  assert.equal(facts.cashIn, 6000 + 8141.98);   // earned income + From investments
+  assert.equal(facts.cashOut, 1000);            // Money invested
+  assert.equal(bd.netCash, facts.cashIn - facts.cashOut);
   // From investments appears exactly once, in Cash In.
   assert.equal(bd.cashIn.filter((l) => l.reason === "INVESTMENT_INFLOW").length, 1);
   assert.ok(!bd.cashOut.some((l) => l.reason === "INVESTMENT_INFLOW"));

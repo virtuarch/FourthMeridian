@@ -36,6 +36,7 @@ import {
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import {
   granularityFor, bucketKey, bucketLabel,
+  foldEconomicRow, clampEconomicSpend,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
 import { convertMoney } from "@/lib/money/convert";
@@ -66,6 +67,29 @@ export interface DayFacts {
   // Liquidity axis
   cashIn:   number;
   cashOut:  number;
+  /**
+   * Σ|amount| of UNRESOLVED-effect rows (counterparty/tier unknowable) — a
+   * transparency total, deliberately NOT part of net. P2-1A: DayFacts is the
+   * complete liquidity fact record, so this fact (formerly only on the retired
+   * deriveCashFlowAxes) now lives here.
+   */
+  unresolved: number;
+  /**
+   * |amount| grouped by liquidity reason. EFFECT-PARTITIONED, not flat: it
+   * aggregates a reason ONLY under its canonical effect —
+   *   • CASH_IN / CASH_OUT rows → recorded under their reason (the reason
+   *     partition of Cash In / Cash Out that the measures + line breakdown read);
+   *   • the three PURE-NEUTRAL context reasons (INTERNAL_TRANSFER,
+   *     ASSET_CONVERSION, NON_CASH) → recorded (they only ever occur NEUTRAL);
+   *   • the four STRADDLE reasons' NEUTRAL legs (EARNED_INCOME / REFUND /
+   *     REAL_COST / DEBT_PAYMENT charged to a non-liquid account) are DELIBERATELY
+   *     NOT recorded — merging them here would corrupt the Cash In/Out reason
+   *     partition (e.g. inflate the debtPayments measure with received-on-card
+   *     legs). Those neutral legs are surfaced by dedicated facts instead
+   *     (a card purchase is `creditCardSpending`).
+   * Invariant (pinned): every reason present maps to a single side (see
+   *   LIQUIDITY_REASON_SIDE in liquidity-breakdown.ts).
+   */
   byReason: Partial<Record<LiquidityReason, number>>;
   // Economic axis
   income:     number;   // Σ|amount| INCOME
@@ -77,8 +101,16 @@ export interface DayFacts {
   cashWithdrawals:    number;  // physical-cash withdrawals (⊄ cashOut, ⊄ spend)
 }
 
+/**
+ * The three liquidity reasons that ONLY ever occur with a NEUTRAL effect. They
+ * are safe to record in byReason (no cash-in/out partition to corrupt); every
+ * OTHER neutral row is the NEUTRAL leg of a straddle reason and is skipped. Kept
+ * as a Set so the fold check is O(1) and the intent is explicit.
+ */
+const NEUTRAL_CONTEXT_REASONS = new Set<LiquidityReason>(["INTERNAL_TRANSFER", "ASSET_CONVERSION", "NON_CASH"]);
+
 function emptyFacts(): DayFacts {
-  return { cashIn: 0, cashOut: 0, byReason: {}, income: 0, spendGross: 0, refunds: 0, creditCardSpending: 0, directSpending: 0, cashWithdrawals: 0 };
+  return { cashIn: 0, cashOut: 0, unresolved: 0, byReason: {}, income: 0, spendGross: 0, refunds: 0, creditCardSpending: 0, directSpending: 0, cashWithdrawals: 0 };
 }
 
 function rowMagnitude(t: LiquidityTx, ctx?: ConversionContext): number {
@@ -97,16 +129,20 @@ function foldDayFacts(acc: DayFacts, t: LiquidityTx, liqCtx: LiquidityContext, m
   const c = classifyLiquidity(t, liqCtx);
   if (c.effect === "CASH_IN")  { acc.cashIn += amt;  acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt; }
   else if (c.effect === "CASH_OUT") { acc.cashOut += amt; acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt; }
+  else if (c.effect === "UNRESOLVED") { acc.unresolved += amt; }
+  // NEUTRAL: record ONLY the pure-context reasons; a straddle reason's neutral leg
+  // is skipped so it never pollutes the Cash In/Out reason partition (see byReason doc).
+  else if (NEUTRAL_CONTEXT_REASONS.has(c.reason)) { acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt; }
 
   // ── Economic axis (real value, tier-independent — includes card purchases) ──
+  // income / spendGross / refunds come from the SINGLE economic-fold authority
+  // (foldEconomicRow) shared with economicTotals — no independent 3-way branch.
+  foldEconomicRow(acc, ft, amt);
+  // The liability/direct tier split of gross spend is DayFacts-only (needs liqCtx),
+  // so it stays here alongside the shared economic fold.
   if (isCostFlow(ft)) {
-    acc.spendGross += amt;
     if (liqCtx.tierOf(t.financialAccountId ?? t.accountId ?? null) === "liability") acc.creditCardSpending += amt;
     else acc.directSpending += amt;
-  } else if (isRefund(ft)) {
-    acc.refunds += amt;
-  } else if (isIncome(ft)) {
-    acc.income += amt;
   }
 
   // ── Physical cash (form change, Part 5) — CASH_MOVEMENT disposition, out ──
@@ -168,9 +204,10 @@ export interface PerspectiveTotals {
   net:  number;   // in − out
 }
 
-/** Economic spend, refunds netted then clamped ≥ 0 (same doctrine as aggregateCashFlow). */
+/** Economic spend, refunds netted then clamped ≥ 0. Delegates to the single
+ *  clamp authority (clampEconomicSpend) shared with economicTotals. */
 export function economicSpend(f: DayFacts): number {
-  return Math.max(0, f.spendGross - f.refunds);
+  return clampEconomicSpend(f.spendGross, f.refunds);
 }
 
 /** Collapse a `DayFacts` to the selected perspective's in/out/net.

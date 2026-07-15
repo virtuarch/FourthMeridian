@@ -153,7 +153,8 @@ export function buildCashFlowInsights(args: {
   // (b) Top income / cash-in source (perspective-aware, mirroring Income by Source).
   let topSource: { label: string; value: number } | null = null;
   if (perspective === "liquidity") {
-    const cashIn = groupLiquidityByReason(rows, liqCtx, moneyCtx).cashIn;
+    // Pure projection over the `facts` already folded above (no second fold).
+    const cashIn = groupLiquidityByReason(facts).cashIn;
     if (cashIn.length > 0) topSource = { label: cashIn[0].label, value: cashIn[0].amount };
   } else {
     const src = incomeBySource(rows, moneyCtx);
