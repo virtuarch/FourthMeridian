@@ -162,7 +162,7 @@ for (const file of freshAdminRoutes) {
 const cachedOnlyReadRoutes = [
   "app/api/admin/audit/route.ts",
   "app/api/admin/users/route.ts",
-  "app/api/admin/overview/route.ts",
+  // app/api/admin/overview retired (P1 closeout — superseded by RSC admin/page.tsx)
   "app/api/admin/security/users/route.ts",
   "app/api/admin/security/admin-status/route.ts",
 ];

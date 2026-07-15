@@ -46,7 +46,9 @@ function codeOf(rel: string[]): string {
 const COUNT_PATHS: { label: string; rel: string[] }[] = [
   { label: "dashboard/spaces/page.tsx", rel: ["app", "(shell)", "dashboard", "spaces", "page.tsx"] },
   { label: "admin/page.tsx",            rel: ["app", "admin", "page.tsx"] },
-  { label: "api/admin/overview",        rel: ["app", "api", "admin", "overview", "route.ts"] },
+  // NOTE: api/admin/overview was retired (P1 closeout — superseded by the RSC
+  // admin/page.tsx direct DB read); its A1 count invariants live on in the RSC
+  // page and api/admin/spaces below.
   { label: "api/admin/spaces",          rel: ["app", "api", "admin", "spaces", "route.ts"] },
   { label: "api/admin/users",           rel: ["app", "api", "admin", "users", "route.ts"] },
 ];
@@ -89,8 +91,10 @@ for (const { label, rel } of COUNT_PATHS) {
     "expected accountLinks: { where: { status: 'ACTIVE', financialAccount: { deletedAt: null } } }");
 }
 
-// The two system-wide totals use the canonical FinancialAccount count.
-for (const rel of [["app", "admin", "page.tsx"], ["app", "api", "admin", "overview", "route.ts"]]) {
+// The system-wide total uses the canonical FinancialAccount count. (The former
+// api/admin/overview mirror of this was retired in the P1 closeout; the RSC
+// admin/page.tsx is now the sole system-total surface.)
+for (const rel of [["app", "admin", "page.tsx"]]) {
   const code = codeOf(rel);
   check(`${rel.join("/")}: system total via db.financialAccount.count`,
     /financialAccount\.count\(\s*\{\s*where:\s*\{\s*deletedAt:\s*null\s*\}\s*\}\s*\)/.test(code));
