@@ -63,14 +63,21 @@ export async function GET() {
             },
           },
         },
+        // Canonical per-space account count (A1): ACTIVE SpaceAccountLink rows
+        // with a live FinancialAccount (legacy `Space.accounts` undercounted).
         _count: {
-          select: { accounts: true },
+          select: {
+            accountLinks: {
+              where: { status: "ACTIVE", financialAccount: { deletedAt: null } },
+            },
+          },
         },
       },
     }),
 
-    // Totals
-    db.account.count(),
+    // Totals — canonical system-wide account total (A1): non-deleted
+    // FinancialAccounts (legacy `db.account.count()` counted legacy `Account`).
+    db.financialAccount.count({ where: { deletedAt: null } }),
     db.auditLog.count(),
 
     // 100 most recent audit log entries
@@ -121,7 +128,7 @@ export async function GET() {
       name:         w.name,
       type:         w.type,
       createdAt:    w.createdAt,
-      accountCount: w._count.accounts,
+      accountCount: w._count.accountLinks,
       members:      w.members.map((m) => ({
         userId:   m.user.id,
         email:    m.user.email,

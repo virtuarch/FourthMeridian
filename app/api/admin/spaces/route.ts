@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
   if (type)     where.type     = type as "PERSONAL" | "SHARED";
   if (isPublic !== undefined) where.isPublic = isPublic === "true";
 
-  const spaces = await db.space.findMany({
+  const spacesRaw = await db.space.findMany({
     where,
     orderBy: { createdAt: "desc" },
     select: {
@@ -49,14 +49,32 @@ export async function GET(req: NextRequest) {
           user: { select: { id: true, email: true, username: true, name: true, firstName: true } },
         },
       },
-      accounts: {
-        select: { type: true },
+      // Canonical account read (A1): ACTIVE SpaceAccountLink rows with a live
+      // FinancialAccount, surfacing each account's type. Legacy `Space.accounts`
+      // returned legacy `Account` rows — empty on current data.
+      accountLinks: {
+        where:  { status: "ACTIVE", financialAccount: { deletedAt: null } },
+        select: { financialAccount: { select: { type: true } } },
       },
       _count: {
-        select: { accounts: true, members: true },
+        select: {
+          accountLinks: {
+            where: { status: "ACTIVE", financialAccount: { deletedAt: null } },
+          },
+          members: true,
+        },
       },
     },
   });
+
+  // Reshape the canonical `accountLinks` back onto the stable admin response
+  // contract (`accounts: [{ type }]`, `_count: { accounts, members }`) so the
+  // admin Spaces client stays unchanged.
+  const spaces = spacesRaw.map(({ accountLinks, _count, ...rest }) => ({
+    ...rest,
+    accounts: accountLinks.map((l) => ({ type: l.financialAccount.type })),
+    _count:   { accounts: _count.accountLinks, members: _count.members },
+  }));
 
   return NextResponse.json({ spaces });
 }

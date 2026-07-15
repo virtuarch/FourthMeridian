@@ -46,7 +46,16 @@ export default async function SpacesPage() {
               orderBy: { joinedAt: "asc" },
             },
             _count: {
-              select: { accounts: { where: { deletedAt: null } } },
+              // Canonical account count (A1): ACTIVE SpaceAccountLink rows whose
+              // FinancialAccount is not soft-deleted. Legacy `Space.accounts`
+              // counted only legacy `Account` rows — always ~0 on current data,
+              // a user-facing undercount. @@unique([spaceId, financialAccountId])
+              // makes the ACTIVE-link count equal the distinct-account count.
+              select: {
+                accountLinks: {
+                  where: { status: "ACTIVE", financialAccount: { deletedAt: null } },
+                },
+              },
             },
           },
         },
@@ -112,7 +121,12 @@ export default async function SpacesPage() {
         orderBy: { joinedAt: "asc" },
       },
       _count: {
-        select: { accounts: { where: { deletedAt: null } } },
+        // Canonical account count (A1) — see the myMemberships query above.
+        select: {
+          accountLinks: {
+            where: { status: "ACTIVE", financialAccount: { deletedAt: null } },
+          },
+        },
       },
     },
     orderBy: { createdAt: "desc" },
@@ -151,7 +165,7 @@ export default async function SpacesPage() {
       createdAt:    m.space.createdAt.toISOString(),
       members:      serializeMembers(m.space.members),
       myRole:       m.role as string,
-      accountCount: m.space._count.accounts,
+      accountCount: m.space._count.accountLinks,
       netWorth:     nw?.netWorth ?? 0,
       // MC1 QA Q5 — each card labels in its OWN Space's reporting currency.
       currency:     nw?.currency ?? "USD",
@@ -171,7 +185,7 @@ export default async function SpacesPage() {
       isPublic:     w.isPublic,
       createdAt:    w.createdAt.toISOString(),
       members:      serializeMembers(w.members),
-      accountCount: w._count.accounts,
+      accountCount: w._count.accountLinks,
       netWorth:     nw?.netWorth ?? 0,
       // MC1 QA Q5 — each card labels in its OWN Space's reporting currency.
       currency:     nw?.currency ?? "USD",
