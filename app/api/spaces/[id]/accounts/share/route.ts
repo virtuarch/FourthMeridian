@@ -21,6 +21,7 @@ import { can } from "@/lib/spaces/policy";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
 import { emitDomainEvent, dispatchDomainEvent } from "@/lib/events/emit";
+import { storedActivityAccountName } from "@/lib/activity/account-name-privacy";
 import type { DomainEvent } from "@/lib/events/types";
 
 // ─── POST ─────────────────────────────────────────────────────────────────────
@@ -53,10 +54,11 @@ export const POST = withApiHandler(async (
     return NextResponse.json({ error: "Invalid visibilityLevel" }, { status: 400 });
   }
 
-  // Verify the caller owns this FinancialAccount
+  // Verify the caller owns this FinancialAccount. type + debtSubtype are
+  // selected for the P1-3 display-safe activity name below.
   const fa = await db.financialAccount.findUnique({
     where: { id: financialAccountId },
-    select: { ownerUserId: true, deletedAt: true, name: true },
+    select: { ownerUserId: true, deletedAt: true, name: true, type: true, debtSubtype: true },
   });
 
   if (!fa || fa.deletedAt) {
@@ -69,12 +71,25 @@ export const POST = withApiHandler(async (
   // EV-1 Slice 2 — AccountShared. The AuditLog row is persisted inside the
   // transaction (KD-4: it commits together with the SAL write); the snapshot
   // handler runs post-commit via dispatchDomainEvent (best-effort, non-fatal).
+  //
+  // P1-3 — the persisted `accountName` is display-safe: for a non-FULL share it
+  // is a generic typed label, never the real account name, so the activity feed
+  // (and any other AuditLog consumer) can never surface a BALANCE_ONLY account's
+  // real name to Space members.
   const event: DomainEvent = {
     type:        "AccountShared",
     spaceId,
     actorUserId: userId,
     ipAddress:   getClientIp(req),
-    payload:     { financialAccountId, accountName: fa.name, visibilityLevel },
+    payload:     {
+      financialAccountId,
+      accountName: storedActivityAccountName(
+        visibilityLevel as VisibilityLevel,
+        fa.name,
+        { type: fa.type, debtSubtype: fa.debtSubtype },
+      ),
+      visibilityLevel,
+    },
   };
 
   // KD-4 Phase 3 — the share write (SAL upsert) and its audit row commit
@@ -142,7 +157,8 @@ export const DELETE = withApiHandler(async (
       status:          true,
       addedByUserId:   true,
       visibilityLevel: true,
-      financialAccount: { select: { name: true } },
+      // type + debtSubtype for the P1-3 display-safe activity name below.
+      financialAccount: { select: { name: true, type: true, debtSubtype: true } },
     },
   });
 
@@ -162,12 +178,26 @@ export const DELETE = withApiHandler(async (
 
   // EV-1 Slice 2 — AccountShareRevoked. AuditLog row persisted in-tx (KD-4);
   // snapshot handler runs post-commit via dispatchDomainEvent (best-effort).
+  //
+  // P1-3 — the persisted `accountName` is display-safe (generic typed label for
+  // a non-FULL link's revoke), and `visibilityLevel` is now carried so the
+  // activity renderer can fail closed on this row too.
   const event: DomainEvent = {
     type:        "AccountShareRevoked",
     spaceId,
     actorUserId: userId,
     ipAddress:   getClientIp(req),
-    payload:     { financialAccountId, accountName: link.financialAccount?.name ?? null },
+    payload:     {
+      financialAccountId,
+      accountName: link.financialAccount
+        ? storedActivityAccountName(
+            link.visibilityLevel,
+            link.financialAccount.name,
+            { type: link.financialAccount.type, debtSubtype: link.financialAccount.debtSubtype },
+          )
+        : null,
+      visibilityLevel: link.visibilityLevel,
+    },
   };
 
   // KD-4 Phase 3 — the revoke write and its audit row commit together.

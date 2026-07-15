@@ -57,6 +57,7 @@ import { possessive }                   from "@/lib/format";
 import { withApiHandler }               from "@/lib/api";
 import { normalizeImportBatchEvent }    from "@/lib/activity/normalize-import-batch";
 import { normalizeSyncIssueEvent }      from "@/lib/activity/normalize-sync-issue";
+import { displayActivityAccountName }   from "@/lib/activity/account-name-privacy";
 import type { TimelineEvent, TimelineTone } from "@/lib/timeline-types";
 
 // ─── Events we actively show ──────────────────────────────────────────────────
@@ -207,8 +208,11 @@ function normalizeLog(log: RawLog): TimelineEvent | null {
     // ── Account sharing ───────────────────────────────────────────────────────
     case "ACCOUNT_SHARED":
     case "ACCOUNT_SHARE": {
-      const accountName  = str(meta.accountName) || str(meta.name) || "an account";
       const visibility   = str(meta.visibilityLevel) || str(meta.visibility);
+      // P1-3 — display-safe name: only a FULL share surfaces the real name;
+      // BALANCE_ONLY / SUMMARY_ONLY and legacy rows fall back to a generic
+      // identity. The visibility label uses the SAME marker, so the two agree.
+      const accountName  = displayActivityAccountName(str(meta.accountName) || str(meta.name), visibility);
       const visLabel     = visibility === "BALANCE_ONLY" ? "balance only" : visibility === "FULL" ? "full access" : "";
       return {
         id, date, type: log.action, icon: "Landmark", tone: "info", category: "space",
@@ -222,7 +226,10 @@ function normalizeLog(log: RawLog): TimelineEvent | null {
 
     case "ACCOUNT_REVOKED":
     case "ACCOUNT_SHARE_REVOKE": {
-      const accountName = str(meta.accountName) || str(meta.name) || "an account";
+      // P1-3 — fail closed: legacy revoke rows carry no visibility marker, so a
+      // persisted real name (BALANCE_ONLY account) is redacted to the generic
+      // label here; only a FULL-marked revoke surfaces the real name.
+      const accountName = displayActivityAccountName(str(meta.accountName) || str(meta.name), str(meta.visibilityLevel));
       return {
         id, date, type: log.action, icon: "Landmark", tone: "warning", category: "space",
         actorName: actor,

@@ -9,6 +9,8 @@ import { GoalCategory, GoalType, SpaceMemberRole } from "@prisma/client";
 import { db } from "@/lib/db";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { emitDomainEvent } from "@/lib/events/emit";
+import { resolveFullVisibleAccountIds } from "@/lib/accounts/space-account-link";
+import { filterVisibleContributions } from "@/lib/export/select";
 
 const VALID_GOAL_CATEGORIES = new Set(Object.values(GoalCategory));
 const VALID_GOAL_TYPES      = new Set(Object.values(GoalType));
@@ -46,7 +48,24 @@ export const GET = withApiHandler(async (
     },
   });
 
-  return NextResponse.json(goals);
+  // P1-3 privacy convergence — this route is Space-scoped: it returns every
+  // goal in the Space to every member, and each contribution carried the real
+  // FinancialAccount name + balance ungated. A contribution pointing at an
+  // account the viewing Space can only see as BALANCE_ONLY / SUMMARY_ONLY (or a
+  // REVOKED / deleted link) would leak that account's real name, balance, and
+  // id. Apply the canonical goals-contribution doctrine (export decision D4):
+  // keep only contributions whose account is FULL-visible in this Space. The
+  // FULL set already fails closed for non-FULL tiers, REVOKED/inactive links,
+  // and soft-deleted accounts, so nothing beyond the link's tier is serialized.
+  // Owner/Personal behavior is unchanged: an owned account carries a FULL HOME
+  // link in its Space, so its contributions are always retained.
+  const fullVisibleAccountIds = await resolveFullVisibleAccountIds(spaceId);
+  const safeGoals = goals.map((g) => ({
+    ...g,
+    contributions: filterVisibleContributions(g.contributions, fullVisibleAccountIds),
+  }));
+
+  return NextResponse.json(safeGoals);
 }, "GET /api/spaces/[id]/goals");
 
 export const POST = withApiHandler(async (

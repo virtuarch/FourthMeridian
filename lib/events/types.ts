@@ -58,8 +58,13 @@ export type DomainEvent =
   | (DomainEventEnvelope & { type: "MemberLeft"; payload: { removedUserId: string; removedName: string; newStatus: string } }) // EXERCISED (Slice 3) — self-leave
   | (DomainEventEnvelope & { type: "MemberRoleChanged"; payload: { targetUserId: string; targetName: string; oldRole: string; newRole: string } }) // EXERCISED (Slice 5B) — audit-only, no handler
   // ── Account sharing ─────────────────────────────────────────────────────
+  // P1-3 — `accountName` is display-safe at the write site (real name only for a
+  // FULL share; a generic typed label for BALANCE_ONLY / SUMMARY_ONLY), so a
+  // non-FULL account's real name is never persisted. `visibilityLevel` is
+  // carried on both events so the activity renderer can fail closed on legacy
+  // rows (revoke previously stored no visibility marker).
   | (DomainEventEnvelope & { type: "AccountShared"; payload: { financialAccountId: string; accountName: string; visibilityLevel: string } }) // PROVISIONAL
-  | (DomainEventEnvelope & { type: "AccountShareRevoked"; payload: { financialAccountId: string; accountName: string | null } }) // PROVISIONAL
+  | (DomainEventEnvelope & { type: "AccountShareRevoked"; payload: { financialAccountId: string; accountName: string | null; visibilityLevel?: string } }) // PROVISIONAL
   // ── Goals ───────────────────────────────────────────────────────────────
   | (DomainEventEnvelope & { type: "GoalCreated"; payload: { goalId: string; name: string; goalType: string; targetAmount?: number } }) // EXERCISED (Slice 5B) — audit-only; targetAmount omitted when absent (never null)
   | (DomainEventEnvelope & { type: "GoalCheckedIn"; payload: { goalId: string; goalName: string; streak: number } }) // EXERCISED (Timeline T-2) — audit-only, no handler; note deliberately excluded

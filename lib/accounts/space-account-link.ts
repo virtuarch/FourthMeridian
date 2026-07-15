@@ -56,6 +56,7 @@
 
 import { db } from "@/lib/db";
 import { Prisma, SpaceAccountLinkKind, ShareStatus, VisibilityLevel } from "@prisma/client";
+import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 
 /**
  * A Prisma client handle that is either the module-level singleton `db` or an
@@ -94,6 +95,36 @@ export async function resolvePersonalSpaceId(userId: string): Promise<string | n
     orderBy: { joinedAt: "asc" },
   });
   return membership?.spaceId ?? null;
+}
+
+/**
+ * Resolve the set of FinancialAccount ids the given Space may see at FULL
+ * DETAIL — an ACTIVE SpaceAccountLink whose visibilityLevel grants account
+ * detail (TRANSACTION_DETAIL_VISIBILITY / FULL) against a non-deleted account.
+ *
+ * P1-3 privacy convergence. Reuses the canonical detail gate so any surface that
+ * serializes account identity beside a Space-scoped read (goals contributions,
+ * and any future consumer) can never disagree with the data layer / export
+ * (getAccountsWithVisibility, isFullVisibility) about who may see an account's
+ * real name/balance. Fails closed on every non-FULL tier (BALANCE_ONLY /
+ * SUMMARY_ONLY), REVOKED/inactive links (status filter), and soft-deleted
+ * accounts (financialAccount.deletedAt filter) — a hard-deleted link simply has
+ * no row and so is absent from the set.
+ */
+export async function resolveFullVisibleAccountIds(
+  spaceId: string,
+  client: DbClient = db,
+): Promise<Set<string>> {
+  const links = await client.spaceAccountLink.findMany({
+    where: {
+      spaceId,
+      status:           ShareStatus.ACTIVE,
+      visibilityLevel:  { in: TRANSACTION_DETAIL_VISIBILITY },
+      financialAccount: { deletedAt: null },
+    },
+    select: { financialAccountId: true },
+  });
+  return new Set(links.map((l) => l.financialAccountId));
 }
 
 /**
