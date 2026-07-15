@@ -52,7 +52,7 @@ import { ShareStatus, PlaidItemStatus, VisibilityLevel } from '@prisma/client';
 
 import { classifyAccounts, type ClassifiableAccount } from '@/lib/account-classifier';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
-import { identityContext } from '@/lib/money/convert';
+import { identityContext, convertMoney } from '@/lib/money/convert';
 import { buildSpaceConversionContext } from '@/lib/money/server-context';
 import { yesterdayUTCISO } from '@/lib/fx/config';
 import { genericAccountName } from '@/lib/account-privacy';
@@ -230,6 +230,19 @@ async function assembleAccounts(
     : identityContext(DEFAULT_DISPLAY_CURRENCY);
   const classification = classifyAccounts(classifiableAll, moneyCtx);
 
+  // P2-7D — per-account reporting-currency balance. Uses the SAME moneyCtx and
+  // valuation date (latest close) classifyAccounts uses for the totals above, so a
+  // per-account reportingBalance and the section totals reconcile exactly.
+  // Native `balance`/`currency` are preserved on each item for account-detail
+  // display; reportingBalance is the cross-account comparison/weighting/ranking
+  // value (FINANCIAL_SEMANTIC_AUTHORITIES reporting-currency invariant). Missing
+  // FX degrades to the native amount + estimated taint (P2-7C conversion contract).
+  const valuationDateISO = yesterdayUTCISO();
+  const toReporting = (fa: { balance: number; currency: string }): { reportingBalance: number; estimated: boolean } => {
+    const c = convertMoney({ amount: fa.balance, currency: fa.currency }, valuationDateISO, moneyCtx);
+    return { reportingBalance: c.amount, estimated: c.estimated };
+  };
+
   // ── Health summary ────────────────────────────────────────────────────────
 
   let errorCount       = 0;
@@ -343,6 +356,8 @@ async function assembleAccounts(
           c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH,
       );
 
+      const rep = toReporting(fa);
+
       if (isFull) {
         const base: AccountSummaryItem = {
           id:              fa.id,
@@ -351,6 +366,8 @@ async function assembleAccounts(
           institution:     fa.institution,
           balance:         fa.balance,
           currency:        fa.currency,
+          reportingBalance: rep.reportingBalance,
+          ...(rep.estimated ? { reportingBalanceEstimated: true } : {}),
           lastUpdated:          fa.lastUpdated.toISOString(),
           balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
           syncStatus:      fa.syncStatus,
@@ -396,6 +413,8 @@ async function assembleAccounts(
         type:            fa.type,
         balance:         fa.balance,
         currency:        fa.currency,
+        reportingBalance: rep.reportingBalance,
+        ...(rep.estimated ? { reportingBalanceEstimated: true } : {}),
         lastUpdated:          fa.lastUpdated.toISOString(),
         balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
         syncStatus:      fa.syncStatus,

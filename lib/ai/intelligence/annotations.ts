@@ -243,6 +243,12 @@ export type DebtPayoffUrgency = 'CRITICAL' | 'HIGH' | 'MODERATE' | 'LOW' | 'NONE
 /** A single debt account as a payoff strategy candidate. */
 export interface DebtCandidate {
   accountName: string;
+  /**
+   * P2-7D — REPORTING-currency balance (AccountSummaryItem.reportingBalance), the
+   * same basis the candidate was ranked/weighted on, so a candidate surfaced next
+   * to other reporting-currency figures reads in one consistent currency. NOT the
+   * native account balance (that is account-detail on AccountSummaryItem.balance).
+   */
   balance:     number;
   /** null when APR is structurally inaccessible (balance-only account or missing user input). */
   apr:         number | null;
@@ -258,13 +264,23 @@ export interface DebtStrategySection {
   payoffUrgency:              DebtPayoffUrgency;
   /** Highest-APR FULL-visibility account — the avalanche strategy target. null if APR unknown everywhere. */
   avalancheCandidate:         DebtCandidate | null;
-  /** Lowest-balance debt account — the snowball strategy target. null if no accounts available. */
+  /** Lowest REPORTING-balance debt account — the snowball strategy target (ranked in
+   *  the Space reporting currency, not native magnitudes). null if no accounts available. */
   snowballCandidate:          DebtCandidate | null;
-  /** Weighted average APR across accounts where APR is known. null if none known. */
+  /** Weighted average APR across accounts where APR is known — weighted by REPORTING
+   *  balance. null if none known. */
   weightedAvgApr:             number | null;
   knownMonthlyInterestBurden: number | null;
   missingAprAccountNames:     string[];
   hasBalanceOnlyDebt:         boolean;
+  /**
+   * P2-7D — true when any debt account driving this strategy had an ESTIMATED
+   * reporting-currency balance (missing/walked-back FX or null-residue provenance),
+   * so the cross-currency ranking/weighting/interest-burden figures are not exact.
+   * Omitted when false. Data-only until Phase 4; consumers must not present the
+   * cross-currency comparison as exact when this is set.
+   */
+  balancesEstimated?:         boolean;
 }
 
 // ── 2.1 Capital Allocation — evidence enhancement ─────────────────────────────
@@ -1312,38 +1328,51 @@ function computeDebtStrategy(
 
   const debtAccounts = (accts.accounts ?? []).filter((a) => a.type === 'debt');
 
+  // P2-7D — every cross-account monetary comparison below uses reportingBalance
+  // (Space reporting currency), NEVER native balance: ranking, weighting, and the
+  // candidate balances must be currency-commensurable. APR stays dimensionless and
+  // is untouched. Native balance/currency remain on AccountSummaryItem for detail.
+
   // Avalanche target: highest APR — FULL visibility, APR known and positive.
   const fullWithApr = [...debtAccounts]
     .filter((a) => a.visibilityLevel === 'FULL' && a.apr != null && a.apr > 0)
     .sort((a, b) => (b.apr ?? 0) - (a.apr ?? 0));
 
   const avalancheCandidate: DebtCandidate | null = fullWithApr.length > 0
-    ? { accountName: fullWithApr[0].name, balance: Math.abs(fullWithApr[0].balance), apr: fullWithApr[0].apr! }
+    ? { accountName: fullWithApr[0].name, balance: Math.abs(fullWithApr[0].reportingBalance), apr: fullWithApr[0].apr! }
     : null;
 
-  // Snowball target: lowest absolute balance — any debt account.
+  // Snowball target: lowest absolute REPORTING balance — any debt account. Ranking
+  // native magnitudes here would compare unlike currencies (e.g. AED 20,000 vs
+  // USD 10,000) and pick the wrong "smallest" account.
   const byBalance = [...debtAccounts].sort(
-    (a, b) => Math.abs(a.balance) - Math.abs(b.balance),
+    (a, b) => Math.abs(a.reportingBalance) - Math.abs(b.reportingBalance),
   );
   const snowballCandidate: DebtCandidate | null = byBalance.length > 0
     ? {
         accountName: byBalance[0].name,
-        balance:     Math.abs(byBalance[0].balance),
+        balance:     Math.abs(byBalance[0].reportingBalance),
         apr:         byBalance[0].apr ?? null,
       }
     : null;
 
-  // Weighted average APR across accounts where APR is known.
+  // Weighted average APR across accounts where APR is known — weighted by REPORTING
+  // balance so a larger true (reporting-currency) balance carries more weight.
   let totalWeighted    = 0;
   let totalForWeighting = 0;
   for (const a of fullWithApr) {
-    const bal         = Math.abs(a.balance);
+    const bal         = Math.abs(a.reportingBalance);
     totalWeighted    += (a.apr ?? 0) * bal;
     totalForWeighting += bal;
   }
   const weightedAvgApr: number | null = totalForWeighting > 0
     ? Math.round((totalWeighted / totalForWeighting) * 100) / 100
     : null;
+
+  // P2-7D honesty: taint the strategy when any driving debt account had an
+  // estimated reporting balance (missing/walked-back FX) — the ranking/weighting is
+  // then not exact. Mirrors AccountsSectionData.totalsEstimated; omitted when false.
+  const balancesEstimated = debtAccounts.some((a) => a.reportingBalanceEstimated === true);
 
   const payoffUrgency: DebtPayoffUrgency =
     debt.classification === 'CRITICAL'         ? 'CRITICAL' :
@@ -1362,6 +1391,7 @@ function computeDebtStrategy(
     knownMonthlyInterestBurden: debt.monthlyInterestBurden,
     missingAprAccountNames:     debt.aprGapAccountNames,
     hasBalanceOnlyDebt:         debt.hasBalanceOnlyDebt,
+    ...(balancesEstimated ? { balancesEstimated: true } : {}),
   };
 }
 
@@ -1961,7 +1991,10 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
       } else {
         fullVisWithAPR++;
         if (acct.apr > 0) {
-          const balance   = Math.abs(acct.balance);
+          // P2-7D — reporting-currency balance: monthlyInterestBurden and the
+          // APR-weighting denominator sum across accounts, so mixed-currency
+          // native balances would be an invalid sum. APR stays dimensionless.
+          const balance   = Math.abs(acct.reportingBalance);
           interestBurden   += balance * acct.apr / 100 / 12;
           totalDebtWithAPR += balance;
         }
