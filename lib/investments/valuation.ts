@@ -62,6 +62,40 @@ interface FullPositionRow extends PositionRow {
   institutionPriceDate: string | null;
 }
 
+/**
+ * The PositionObservation fields the valuation pipeline reads. Shared by the
+ * historical window read (getInvestmentValueAsOf) and the cheap latest-per-pair
+ * read (getCurrentPositions), so both feed `valuePositionRows` the SAME shape and
+ * can never diverge on which columns valuation consumes.
+ */
+export const POSITION_VALUATION_SELECT = {
+  financialAccountId: true, instrumentId: true, date: true, quantity: true,
+  origin: true, completeness: true, isCash: true, currency: true,
+  institutionValue: true, institutionPrice: true, institutionPriceAsOf: true,
+} as const;
+
+/** One PositionObservation row as read for valuation (POSITION_VALUATION_SELECT shape). */
+export interface ObservationValuationRow {
+  financialAccountId:   string;
+  instrumentId:         string;
+  date:                 Date;
+  quantity:             number;
+  origin:               PositionOrigin;
+  completeness:         string | null;
+  isCash:               boolean;
+  currency:             string | null;
+  institutionValue:     number | null;
+  institutionPrice:     number | null;
+  institutionPriceAsOf: Date | null;
+}
+
+/** Reconstruction conflict flags for the scoped accounts. */
+export interface ReconstructionConflictRow {
+  financialAccountId: string;
+  instrumentId:       string;
+  conflicted:         boolean;
+}
+
 export interface GetInvestmentValueArgs {
   /** Value the whole Space's investment holdings. */
   spaceId?: string;
@@ -101,27 +135,16 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
   const holdConstant = args.holdConstantBeforeEarliest === true;
   const asOfDate = new Date(`${asOf}T00:00:00.000Z`);
 
-  // ── Scope: the account set (visibility-filtered per KD-21a) ───────────────
+  // ── Scope: the account set (visibility-filtered per KD-21a) + reporting ccy ─
   const visibilityScope: InvestmentVisibilityScope = args.visibilityScope ?? "all";
-  let accountIds: string[];
-  let contextSpaceId: string | null = args.spaceId ?? null;
-  if (args.financialAccountId) {
-    const s = await resolveSingleAccountScope(client, args.financialAccountId, contextSpaceId, visibilityScope);
-    accountIds = s.accountIds;
-    contextSpaceId = s.spaceId;
-  } else if (args.spaceId) {
-    accountIds = await resolveSpaceInvestmentAccountIds(client, args.spaceId, visibilityScope);
-  } else {
-    throw new Error("[valuation] getInvestmentValueAsOf requires spaceId or financialAccountId");
-  }
-
-  const reportingCurrency = (await resolveReportingCurrency(client, contextSpaceId));
+  const { accountIds, contextSpaceId, reportingCurrency } =
+    await resolveInvestmentScopeAndCurrency(client, args, visibilityScope);
 
   if (accountIds.length === 0) {
     return valuePortfolioAsOf([], asOf, reportingCurrency);
   }
 
-  // ── Batched reads ─────────────────────────────────────────────────────────
+  // ── Batched reads — historical WINDOW (every observation ≤ asOf) ───────────
   const [posRows, reconRows] = await Promise.all([
     client.positionObservation.findMany({
       where: {
@@ -132,17 +155,61 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
         // asOf), so it can hold that quantity backward when nothing covers asOf.
         ...(holdConstant ? {} : { date: { lte: asOfDate } }),
       },
-      select: {
-        financialAccountId: true, instrumentId: true, date: true, quantity: true,
-        origin: true, completeness: true, isCash: true, currency: true,
-        institutionValue: true, institutionPrice: true, institutionPriceAsOf: true,
-      },
+      select: POSITION_VALUATION_SELECT,
     }),
     client.positionReconstruction.findMany({
       where: { financialAccountId: { in: accountIds } },
       select: { financialAccountId: true, instrumentId: true, conflicted: true },
     }),
   ]);
+
+  return valuePositionRows({ client, asOf, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows });
+}
+
+/**
+ * Resolve the scoped account set + reporting currency for an investment read.
+ * Shared by getInvestmentValueAsOf (window) and getCurrentPositions (latest), so
+ * scope + visibility (KD-21a) are resolved in exactly one place.
+ */
+export async function resolveInvestmentScopeAndCurrency(
+  client: Client,
+  args: { spaceId?: string; financialAccountId?: string },
+  visibilityScope: InvestmentVisibilityScope,
+): Promise<{ accountIds: string[]; contextSpaceId: string | null; reportingCurrency: string }> {
+  let accountIds: string[];
+  let contextSpaceId: string | null = args.spaceId ?? null;
+  if (args.financialAccountId) {
+    const s = await resolveSingleAccountScope(client, args.financialAccountId, contextSpaceId, visibilityScope);
+    accountIds = s.accountIds;
+    contextSpaceId = s.spaceId;
+  } else if (args.spaceId) {
+    accountIds = await resolveSpaceInvestmentAccountIds(client, args.spaceId, visibilityScope);
+  } else {
+    throw new Error("[valuation] resolveInvestmentScopeAndCurrency requires spaceId or financialAccountId");
+  }
+  const reportingCurrency = await resolveReportingCurrency(client, contextSpaceId);
+  return { accountIds, contextSpaceId, reportingCurrency };
+}
+
+/**
+ * The valuation pipeline over ALREADY-FETCHED position rows: group by
+ * (account, instrument), resolve each as-of (A4 origin precedence), attach the
+ * price window + FX context, and value through valuation-core. This is THE
+ * single valuation path — getInvestmentValueAsOf (historical window) and
+ * getCurrentPositions (cheap latest-per-pair) both call it with the identical
+ * `posRows` shape, so they can differ ONLY in how the rows were read, never in
+ * how they are valued. Reuse, not a second engine.
+ */
+export async function valuePositionRows(args: {
+  client:            Client;
+  asOf:              string;
+  contextSpaceId:    string | null;
+  reportingCurrency: string;
+  holdConstant:      boolean;
+  posRows:           readonly ObservationValuationRow[];
+  reconRows:         readonly ReconstructionConflictRow[];
+}): Promise<InvestmentValuationView> {
+  const { client, asOf, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows } = args;
 
   // Group full rows by (account|instrument).
   const byPair = new Map<string, FullPositionRow[]>();

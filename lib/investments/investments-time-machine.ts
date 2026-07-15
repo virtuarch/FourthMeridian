@@ -163,7 +163,7 @@ async function readPeriodFlows(
  * flag, same source valuation.ts uses). Additive — existing consumers read only
  * symbol/name; the allocation fields are ignored by everything else.
  */
-async function readDisplay(
+export async function readDisplay(
   client: Client,
   instrumentIds: string[],
 ): Promise<Record<string, InstrumentDisplay>> {

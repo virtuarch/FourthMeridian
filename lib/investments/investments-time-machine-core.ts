@@ -126,20 +126,19 @@ function holdingSort(a: ValuedHoldingRow, b: ValuedHoldingRow): number {
   return a.instrumentId < b.instrumentId ? -1 : a.instrumentId > b.instrumentId ? 1 : 0;
 }
 
-/** Compose the canonical result. Pure and deterministic. */
-export function assembleInvestmentsTimeMachine(args: {
-  asOf:        string;
-  compareTo:   string | null;
-  view:        InvestmentValuationView;
-  compareView: InvestmentValuationView | null;
-  flows:       PeriodFlows | null;
-  display:     Record<string, InstrumentDisplay>;
-}): InvestmentsTimeMachineResult {
-  const { asOf, compareTo, view, compareView, flows, display } = args;
-  const reportingCurrency = view.reportingCurrency;
+/**
+ * Enrich a valuation view's components into display-carrying, share-weighted,
+ * deterministically-sorted holding rows. PURE. This is the single definition of
+ * "a valuation view → ValuedHoldingRow[]", reused by both the Time Machine
+ * assembler and the current-position seam (getCurrentPositions), so the two
+ * surfaces present holdings identically — parity by shared code, not convention.
+ */
+export function toValuedHoldingRows(
+  view: InvestmentValuationView,
+  display: Record<string, InstrumentDisplay>,
+): ValuedHoldingRow[] {
   const subtotal = view.valuedSubtotal;
-
-  const holdings: ValuedHoldingRow[] = view.components
+  return view.components
     .map((c) => {
       const d = display[c.instrumentId];
       const share = c.reportingValue != null && subtotal > 0 ? c.reportingValue / subtotal : null;
@@ -156,15 +155,34 @@ export function assembleInvestmentsTimeMachine(args: {
       };
     })
     .sort(holdingSort);
+}
 
-  const portfolio: InvestmentsPortfolio = {
-    reportingCurrency,
-    valuedSubtotal: view.valuedSubtotal,
-    valuedCount:    view.valuedCount,
-    unvaluedCount:  view.unvaluedCount,
-    unvalued:       view.unvalued,
-    completeness:   view.completeness,
+/** Re-surface a valuation view as the portfolio subtotal + unvalued remainder. PURE. */
+export function toInvestmentsPortfolio(view: InvestmentValuationView): InvestmentsPortfolio {
+  return {
+    reportingCurrency: view.reportingCurrency,
+    valuedSubtotal:    view.valuedSubtotal,
+    valuedCount:       view.valuedCount,
+    unvaluedCount:     view.unvaluedCount,
+    unvalued:          view.unvalued,
+    completeness:      view.completeness,
   };
+}
+
+/** Compose the canonical result. Pure and deterministic. */
+export function assembleInvestmentsTimeMachine(args: {
+  asOf:        string;
+  compareTo:   string | null;
+  view:        InvestmentValuationView;
+  compareView: InvestmentValuationView | null;
+  flows:       PeriodFlows | null;
+  display:     Record<string, InstrumentDisplay>;
+}): InvestmentsTimeMachineResult {
+  const { asOf, compareTo, view, compareView, flows, display } = args;
+  const reportingCurrency = view.reportingCurrency;
+
+  const holdings = toValuedHoldingRows(view, display);
+  const portfolio = toInvestmentsPortfolio(view);
 
   const reconciliation = compareView
     ? buildReconciliation(asOf, compareTo!, reportingCurrency, view, compareView, flows)
