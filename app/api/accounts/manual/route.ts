@@ -27,7 +27,7 @@
 import { NextRequest, NextResponse }        from "next/server";
 import { db }                               from "@/lib/db";
 import { getSpaceContext }              from "@/lib/space";
-import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, SpaceMemberStatus } from "@prisma/client";
+import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, SpaceMemberStatus, SpaceMemberRole } from "@prisma/client";
 import { requireUser }                      from "@/lib/session";
 import { withApiHandler }                   from "@/lib/api";
 import { dualWriteSpaceAccountLink }        from "@/lib/accounts/space-account-link";
@@ -76,7 +76,9 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   const personalSpaceId = ctx.space.type === "PERSONAL"
     ? ctx.spaceId
     : (await db.spaceMember.findFirst({
-        where: { userId, status: SpaceMemberStatus.ACTIVE, space: { type: "PERSONAL" } },
+        // role: OWNER — defense in depth (PERSONAL Spaces are single-owner by
+        // construction now); never resolve to a stranger's personal Space.
+        where: { userId, status: SpaceMemberStatus.ACTIVE, role: SpaceMemberRole.OWNER, space: { type: "PERSONAL" } },
         select: { spaceId: true },
       }))?.spaceId;
 

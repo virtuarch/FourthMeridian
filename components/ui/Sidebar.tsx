@@ -133,7 +133,10 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
         if (cookieId && mine.some((w) => w.id === cookieId)) {
           setActiveId(cookieId);
         } else {
-          setActiveId(mine.find((w) => w.type === "PERSONAL")?.id ?? null);
+          // myRole === "OWNER" — defense in depth: PERSONAL Spaces are
+          // single-owner by construction now, so this never highlights a
+          // personal-type Space this user is merely a member of.
+          setActiveId(mine.find((w) => w.type === "PERSONAL" && w.myRole === "OWNER")?.id ?? null);
         }
       }
     } catch {
@@ -187,7 +190,8 @@ function SpacesNavSection({ pathname }: { pathname: string }) {
     }
   }
 
-  const personal  = spaces.find((s) => s.type === "PERSONAL");
+  // myRole === "OWNER" — same defense-in-depth reasoning as above.
+  const personal  = spaces.find((s) => s.type === "PERSONAL" && s.myRole === "OWNER");
   const others    = spaces.filter((s) => s.id !== personal?.id);
   const ordered   = personal ? [personal, ...others] : others;
   const inline    = ordered.slice(0, INLINE_SPACE_LIMIT);

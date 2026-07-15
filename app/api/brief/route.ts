@@ -486,6 +486,7 @@ export async function GET() {
     },
     select: {
       spaceId: true,
+      role:    true,
       space:   { select: { type: true } },
     },
   });
@@ -495,8 +496,12 @@ export async function GET() {
   }
 
   // Primary Space: personal Space preferred; first eligible as fallback.
+  // role check is defense in depth — PERSONAL Spaces are enforced single-owner
+  // at every mutation entry point, so no ADMIN/MEMBER row on one should exist;
+  // this just means that invariant holding is what makes "personal" here mean
+  // MY personal Space, not merely a personal-type Space I happen to be in.
   const primaryMembership =
-    memberships.find((m) => m.space.type === "PERSONAL") ?? memberships[0];
+    memberships.find((m) => m.space.type === "PERSONAL" && m.role === SpaceMemberRole.OWNER) ?? memberships[0];
 
   // ── Build context for every eligible Space in parallel ─────────────────────
   // scopeHint='brief' keeps each context lean (no per-account list, no raw

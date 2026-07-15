@@ -73,15 +73,21 @@ export type DbClient = Prisma.TransactionClient | typeof db;
 
 /**
  * Resolve a user's personal Space — same lookup used by
- * scripts/backfill-space-account-link.ts (ACTIVE membership in a
+ * scripts/backfill-space-account-link.ts (ACTIVE OWNER membership in a
  * non-archived, non-deleted, type=PERSONAL Space). Duplicated here
  * deliberately so this module has no dependency on the backfill script.
+ *
+ * role: OWNER is defense in depth, not new behavior — PERSONAL Spaces are
+ * enforced single-owner at every mutation entry point (personal-space
+ * hardening), so no ACTIVE non-owner membership on one should exist. Filtered
+ * here anyway so this resolver can never return a stranger's personal Space.
  */
 export async function resolvePersonalSpaceId(userId: string): Promise<string | null> {
   const membership = await db.spaceMember.findFirst({
     where: {
       userId,
       status: "ACTIVE",
+      role: "OWNER",
       space: { type: "PERSONAL", archivedAt: null, deletedAt: null },
     },
     select: { spaceId: true },

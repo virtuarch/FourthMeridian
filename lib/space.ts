@@ -204,9 +204,14 @@ export async function resolveSpaceContext(
   // ── Fall back to PERSONAL Space ──────────────────────────────────────────
   // PERSONAL Spaces can never be archived/trashed (enforced in the API
   // layer), but the filter is kept here too as defense in depth.
+  // role: OWNER — defense in depth: PERSONAL Spaces are enforced single-owner
+  // at every mutation entry point (see personal-single-user.test.ts), so no
+  // ACTIVE non-owner membership on a PERSONAL Space should exist. Filtering
+  // here anyway means this resolver can never return a stranger's personal
+  // Space even if that invariant were ever violated by a bug or bad data.
   let t = Date.now();
   const personal = await db.spaceMember.findFirst({
-    where:   { userId, status: "ACTIVE", space: { type: "PERSONAL", archivedAt: null, deletedAt: null } },
+    where:   { userId, status: "ACTIVE", role: "OWNER", space: { type: "PERSONAL", archivedAt: null, deletedAt: null } },
     include: { space: { select: { id: true, name: true, type: true, category: true, isPublic: true, reportingCurrency: true } } },
   });
   lap("spaceMember.findFirst [personal fallback]", t);

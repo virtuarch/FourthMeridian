@@ -35,7 +35,7 @@ import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
-import { ShareStatus, PlaidItemStatus } from "@prisma/client";
+import { ShareStatus, PlaidItemStatus, SpaceMemberRole, SpaceMemberStatus } from "@prisma/client";
 
 export interface PurgeResult {
   userId:          string;
@@ -139,8 +139,17 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
   // Space delete leaves no ownerless "ghost" account (S5 §4b). Deleting a
   // FinancialAccount cascades its transactions, holdings, connections,
   // debtProfile, provider identities, SALs, goal contributions and imports.
+  // role: OWNER, status: ACTIVE — this purge runs for a user whose OWN account
+  // is being permanently deleted; without this filter, ANY personal-type Space
+  // this user was ever added to (even as a long-removed VIEWER, or — pre the
+  // personal-space hardening fix — a still-active non-owner member) would
+  // match and be deleted at step 6 below, destroying a Space that may belong
+  // to someone else entirely. PERSONAL Spaces are enforced single-owner at
+  // every mutation entry point now, so this should be a no-op in practice —
+  // but this step is destructive and irreversible, so it gets the filter
+  // regardless of what the invariant elsewhere promises.
   const personalSpaces = await db.space.findMany({
-    where:  { type: "PERSONAL", members: { some: { userId } } },
+    where:  { type: "PERSONAL", members: { some: { userId, role: SpaceMemberRole.OWNER, status: SpaceMemberStatus.ACTIVE } } },
     select: { id: true },
   });
   const personalSpaceIds = personalSpaces.map((s) => s.id);
