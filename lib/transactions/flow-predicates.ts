@@ -112,6 +112,26 @@ export function isInvestmentFlow(flowType: Flow): boolean {
   return flowType === 'INVESTMENT';
 }
 
+/** Balance-correction / provider-artifact kind (non-economic). */
+export function isAdjustment(flowType: Flow): boolean {
+  return flowType === 'ADJUSTMENT';
+}
+
+/**
+ * P2-7B — the NON-ECONOMIC residue INSIDE the banking population: UNKNOWN,
+ * ADJUSTMENT, or unclassified (null). These rows ARE in the banking population
+ * (isBankingPopulation true — visible for review / needs-classification, never
+ * dropped) but they carry NO economic bucket, so they must never fold into
+ * income / spend / refund / transfer / debt totals or a category money sum
+ * (doctrine: an ADJUSTMENT is not spending, an UNKNOWN is not income). It is the
+ * exact complement, within the banking population, of the five economic-bucket
+ * predicates (isCostFlow ∪ isRefund ∪ isIncome ∪ isTransfer ∪ isDebtPayment) —
+ * a named partition over the single authorities, NOT a new membership list.
+ */
+export function isNonEconomicResidue(flowType: Flow): boolean {
+  return flowType == null || flowType === 'UNKNOWN' || flowType === 'ADJUSTMENT';
+}
+
 /**
  * P2-2 — banking semantic-population membership. FlowType, NOT provider category,
  * decides whether a row is eligible for canonical banking financial analysis:

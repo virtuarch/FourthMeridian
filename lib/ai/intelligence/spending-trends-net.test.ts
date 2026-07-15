@@ -150,6 +150,7 @@ function mkMonth(over: Partial<MonthlyBreakdownEntry> & { month: string }): Mont
     incomeTotal: 0, expenseTotal: 0, refundTotal: 0, debtPaymentTotal: 0, transferTotal: 0,
     netCashFlow: 0, estimated: false,
     pendingCreditCount: 0, pendingCreditTotal: 0, pendingDebitCount: 0, pendingDebitTotal: 0,
+    unclassifiedCount: 0, adjustmentCount: 0,
     needsClassification: {
       count: 0, unknownInflowCount: 0, unknownInflowTotal: 0,
       unknownPaymentAppCount: 0, unknownPaymentAppTotal: 0,

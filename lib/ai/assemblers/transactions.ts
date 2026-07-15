@@ -74,7 +74,7 @@ import type {
   DrilldownTransaction,
 } from '@/lib/ai/types';
 import { normalizeMerchant } from '@/lib/transactions/merchant';
-import { isCostFlow, isRefund, isIncome, isTransfer, isDebtPayment } from '@/lib/transactions/flow-predicates';
+import { isCostFlow, isRefund, isIncome, isTransfer, isDebtPayment, isAdjustment, isNonEconomicResidue } from '@/lib/transactions/flow-predicates';
 // TE-2B — the canonical "needs classification" predicate (single authority; this
 // assembler is a consumer, never a fork). TI2-W1: needs-classification aggregates.
 import { shouldSurfaceAsNeedsClassification } from '@/lib/transactions/needs-classification';
@@ -85,7 +85,7 @@ import { shouldSurfaceAsNeedsClassification } from '@/lib/transactions/needs-cla
 import { resolveOwnedTransferCounterparties } from '@/lib/transactions/transfer-resolution';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
 import { convertMoney, identityContext } from '@/lib/money/convert';
-import { buildSpaceConversionContext } from '@/lib/money/server-context';
+import { buildSpaceConversionContext, buildSpaceConversionContextById } from '@/lib/money/server-context';
 import type { ConversionContext } from '@/lib/money/types';
 import type { SpaceContext } from '@/lib/space';
 
@@ -115,21 +115,24 @@ const BANKING_CATEGORIES: TransactionCategory[] = [
 // (resolveCategory drilldown phrase → category), not flow semantics.
 
 /**
- * FlowType P5 Slice 4 (D-1) — the banking-flow row set. Which rows the AI sees
- * is now defined by economic flow, not merchant taxonomy: Dividend rows
- * (flowType=INCOME) and Fee rows (flowType=FEE) become reachable. Excluded:
- * INVESTMENT (security activity, stays in the Investments view), ADJUSTMENT
- * (non-economic artifacts), UNKNOWN (0 rows by the P4 backfill invariant).
+ * P2-7B — the CANONICAL banking population, consumed instead of a separate
+ * per-assembler flow allow-list. This is the ROW-INCLUSION rule the whole
+ * product now shares: `flowType: { not: INVESTMENT }` (the same `BANKING_POPULATION`
+ * fragment lib/data/transactions.ts applies; row-level predicate
+ * `isBankingPopulation`). Prisma scalar `not` returns null rows too, so UNKNOWN,
+ * ADJUSTMENT, and unclassified (null) rows are ADMITTED — closing the P2-2/P2-7A
+ * divergence where the old `BANKING_FLOWS` allow-list silently dropped rows the
+ * UI/data layer still showed.
+ *
+ * Admitting them is a VISIBILITY change, not an economics change: the settled /
+ * pending / monthly money folds below gate on `isNonEconomicResidue`, so an
+ * UNKNOWN / ADJUSTMENT / null row is counted (transactionCount) and surfaced
+ * (needs-classification + the unclassified/adjustment disclosure) but NEVER folds
+ * into byCategory / income / spend / refund / debt / net (doctrine: an
+ * ADJUSTMENT is not spending, an UNKNOWN is not income). INVESTMENT stays out —
+ * it is the sole flow outside the banking population.
  */
-const BANKING_FLOWS: FlowType[] = [
-  FlowType.SPENDING,
-  FlowType.REFUND,
-  FlowType.INCOME,
-  FlowType.DEBT_PAYMENT,
-  FlowType.TRANSFER,
-  FlowType.FEE,
-  FlowType.INTEREST,
-];
+const BANKING_POPULATION = { flowType: { not: FlowType.INVESTMENT } } as const;
 
 // FlowType P5 Slice 4 (D-2) / TI1 — flows counted in expenseTotal (gross
 // Σ|amount|): SPENDING + FEE + INTEREST charges. This membership (the former
@@ -199,8 +202,9 @@ type TxnRow = {
   // money-context seam below. Null = pre-backfill residue (native
   // pass-through under any context, plan D-3).
   currency: string | null;
-  // FlowType P5 Slice 4 — flow semantics. Non-null for every row the
-  // BANKING_FLOWS query filter admits (the filter is on flowType itself).
+  // FlowType P5 Slice 4 — flow semantics. P2-7B: the canonical banking
+  // population (`not: INVESTMENT`) admits UNKNOWN / ADJUSTMENT / null too, so
+  // flowType can now be null here (non-economic residue — counted, never money-folded).
   flowType:      FlowType | null;
   flowDirection: FlowDirection | null;
   // TI2-W1 — canonical inputs to shouldSurfaceAsNeedsClassification (all flat
@@ -371,10 +375,12 @@ async function assembleTransactions(
         },
       ],
       deletedAt: null,
-      // FlowType P5 Slice 4 (D-1): row set defined by economic flow, replacing
-      // `category: { in: BANKING_CATEGORIES } ` — admits Dividend (INCOME) and
-      // Fee (FEE) rows; excludes INVESTMENT/ADJUSTMENT/UNKNOWN.
-      flowType:  { in: BANKING_FLOWS },
+      // P2-7B — canonical banking population (`not: INVESTMENT`, incl. UNKNOWN /
+      // ADJUSTMENT / null), replacing the old `flowType: { in: BANKING_FLOWS }`
+      // allow-list that silently dropped UNKNOWN/ADJUSTMENT rows the UI still
+      // shows. Economics are unchanged — the money folds gate on
+      // isNonEconomicResidue (see the settled/pending loops).
+      ...BANKING_POPULATION,
       // Floor always applied; ceiling only for an explicit past-bounded window.
       date:      win.end ? { gte: win.start, lte: win.end } : { gte: win.start },
     },
@@ -480,7 +486,25 @@ async function assembleTransactions(
   // docs/investigations/KD17_TRANSACTION_LEVEL_PROOF.md.
   const categoryMap = new Map<string, { debitTotal: number; creditTotal: number; count: number }>();
 
+  // P2-7B — the canonical population now admits non-economic residue (UNKNOWN /
+  // ADJUSTMENT / null). These rows are counted in transactionCount and surfaced
+  // (needs-classification + the disclosure below), but carry NO economic bucket:
+  // they must never fold into any category / income / spend / refund / debt /
+  // net figure (doctrine: an ADJUSTMENT is not spending, an UNKNOWN is not
+  // income). The disclosure is computed over the full fetched set (settled +
+  // pending) so a row the UI shows never silently vanishes from AI context.
+  let unclassifiedCount = 0;
+  let adjustmentCount   = 0;
+  for (const r of rows) {
+    if (isAdjustment(r.flowType)) adjustmentCount++;
+    else if (isNonEconomicResidue(r.flowType)) unclassifiedCount++;
+  }
+
   for (const txn of settled) {
+    // P2-7B — non-economic residue is excluded from every money fold (still
+    // counted + surfaced above). INVESTMENT never reaches here (out of population).
+    if (isNonEconomicResidue(txn.flowType)) continue;
+
     // MC1 Phase 2 Slice 4 — one converted amount per row drives every
     // accumulator and comparison below; MC1 P3 Slice 4 — the same conversion
     // carries the estimated taint into the window flag.
@@ -495,9 +519,9 @@ async function assembleTransactions(
     entry.count += 1;
     categoryMap.set(txn.category, entry);
 
-    // FlowType P5 Slice 4 — partition by flowType (D-1..D-4). Each settled row
-    // lands in exactly one bucket; INVESTMENT/ADJUSTMENT/UNKNOWN never reach
-    // this loop (excluded by the BANKING_FLOWS query filter).
+    // FlowType P5 Slice 4 — partition by flowType (D-1..D-4). Each economic
+    // settled row lands in exactly one bucket; INVESTMENT never reaches this loop
+    // (out of population) and the non-economic residue was skipped above.
 
     if (isTransfer(txn.flowType)) {
       transferTotal += Math.abs(amt);
@@ -553,6 +577,9 @@ async function assembleTransactions(
   let pendingDebitTotal  = 0;
 
   for (const txn of pending) {
+    // P2-7B — non-economic residue (UNKNOWN / ADJUSTMENT / null) never enters the
+    // pending money totals either (already counted in the disclosure above).
+    if (isNonEconomicResidue(txn.flowType)) continue;
     // MC1 P2 Slice 4 threading; P3 Slice 4 real context + taint.
     const conv = amountInTarget(txn, moneyCtx);
     const amt = conv.amount;
@@ -622,41 +649,11 @@ async function assembleTransactions(
   // Groups by case-insensitive merchant name. Excludes Transfer and Payment
   // categories since predictable internal moves aren't interesting signals.
 
-  let recurringCandidates: RecurringCandidate[] | undefined;
-
-  if (scopeHint !== 'brief') {
-    const merchantMap = new Map<string, { amounts: number[]; category: string }>();
-
-    for (const txn of settled) {
-      // Slice 4: flow-based exclusion (was category Transfer/Payment).
-      if (isTransfer(txn.flowType) || isDebtPayment(txn.flowType)) continue;
-
-      const key     = txn.merchant.trim().toLowerCase();
-      const group   = merchantMap.get(key) ?? { amounts: [], category: txn.category };
-      group.amounts.push(txn.amount);
-      merchantMap.set(key, group);
-    }
-
-    recurringCandidates = [];
-    for (const [merchant, group] of merchantMap) {
-      if (group.amounts.length < 2) continue;
-      const sum = group.amounts.reduce((s, a) => s + a, 0);
-      const avg = sum / group.amounts.length;
-      recurringCandidates.push({
-        merchant,
-        occurrences:   group.amounts.length,
-        typicalAmount: Math.round(avg * 100) / 100,
-        category:      group.category,
-      });
-    }
-
-    // Most frequent first, then largest absolute typical amount
-    recurringCandidates.sort(
-      (a, b) =>
-        b.occurrences - a.occurrences ||
-        Math.abs(b.typicalAmount) - Math.abs(a.typicalAmount),
-    );
-  }
+  // P2-7C — the rollup now converts each occurrence per-row at its own date
+  // before averaging (was a native Σ txn.amount), so typicalAmount reads in the
+  // Space reporting currency like every other money figure here.
+  const recurringCandidates: RecurringCandidate[] | undefined =
+    scopeHint !== 'brief' ? buildRecurringCandidates(settled, moneyCtx) : undefined;
 
   // ── Merchant rollup (D6.3A-1 + D6.3 stabilization — SPENDING merchants only) ─
   // Groups settled rows by the deterministic canonical merchant key
@@ -670,91 +667,13 @@ async function assembleTransactions(
   // internal transfers, debt payments, fees, and refunds out of "top merchants
   // by spend"; inflows are rolled up separately into `incomeSources` below.
 
-  // MI M6 read cutover — group + display by the RESOLVED Merchant identity when
-  // present (so aliases like "WALMART #1842" / "WM SUPERCENTER" collapse to one
-  // "Walmart"), falling back to the per-request normalizer for unresolved rows.
-  // The raw descriptor stays on txn.merchant for forensic use.
-  function merchantGroupOf(txn: TxnRow): { key: string; name: string } {
-    if (txn.merchantId && txn.resolvedMerchant) {
-      return { key: `id:${txn.merchantId}`, name: txn.resolvedMerchant.displayName };
-    }
-    const { canonicalKey, canonicalName } = normalizeMerchant(txn.merchant);
-    return { key: canonicalKey, name: canonicalName };
-  }
-
-  let merchants: MerchantSummary[] | undefined;
-
-  if (scopeHint !== 'brief') {
-    type MerchantAgg = {
-      canonicalName: string;
-      total:         number;                      // absolute settled expense sum
-      occurrences:   number;
-      firstSeen:     string;                      // YYYY-MM-DD
-      lastSeen:      string;                      // YYYY-MM-DD
-      categoryCount: Map<string, { count: number; absTotal: number }>;
-    };
-
-    const merchantMap = new Map<string, MerchantAgg>();
-
-    for (const txn of settled) {
-      // Spending merchants only (Slice 4): one flow predicate replaces the
-      // category-exclusion set + sign check. Payroll (INCOME), transfers,
-      // debt payments, fees, and refunds structurally cannot surface here.
-      if (txn.flowType !== FlowType.SPENDING) continue;
-
-      const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
-      const iso = txn.date.toISOString().split('T')[0];
-      const abs = Math.abs(txn.amount);
-
-      const agg = merchantMap.get(canonicalKey) ?? {
-        canonicalName,
-        total:         0,
-        occurrences:   0,
-        firstSeen:     iso,
-        lastSeen:      iso,
-        categoryCount: new Map<string, { count: number; absTotal: number }>(),
-      };
-
-      agg.total       += abs;
-      agg.occurrences += 1;
-      if (iso < agg.firstSeen) agg.firstSeen = iso;
-      if (iso > agg.lastSeen)  agg.lastSeen  = iso;
-
-      const cat = agg.categoryCount.get(txn.category) ?? { count: 0, absTotal: 0 };
-      cat.count    += 1;
-      cat.absTotal += abs;
-      agg.categoryCount.set(txn.category, cat);
-
-      merchantMap.set(canonicalKey, agg);
-    }
-
-    merchants = Array.from(merchantMap.entries())
-      .map(([canonicalKey, agg]): MerchantSummary => {
-        // Dominant category: most transactions, ties broken by larger abs total.
-        let dominant = '';
-        let best = { count: -1, absTotal: -1 };
-        for (const [category, stat] of agg.categoryCount) {
-          if (
-            stat.count > best.count ||
-            (stat.count === best.count && stat.absTotal > best.absTotal)
-          ) {
-            dominant = category;
-            best = stat;
-          }
-        }
-        return {
-          canonicalName: agg.canonicalName,
-          canonicalKey,
-          occurrences:   agg.occurrences,
-          total:         Math.round(agg.total * 100) / 100,
-          category:      dominant,
-          firstSeen:     agg.firstSeen,
-          lastSeen:      agg.lastSeen,
-        };
-      })
-      .sort((a, b) => b.total - a.total)
-      .slice(0, MERCHANT_ROLLUP_LIMIT);
-  }
+  // P2-7C — the rollup converts each row per its own date into the reporting
+  // currency before summing (was a native Σ|amount|), so a merchant total can
+  // never be a native-currency sum shown next to a converted expenseTotal.
+  const merchants: MerchantSummary[] | undefined =
+    scopeHint !== 'brief'
+      ? buildMerchantRollup(settled, moneyCtx, MERCHANT_ROLLUP_LIMIT)
+      : undefined;
 
   // ── Income-source rollup (D6.3 stabilization — INFLOW sources only) ───────
   // Mirror image of the merchant rollup: groups settled INFLOW rows by the same
@@ -764,56 +683,12 @@ async function assembleTransactions(
   // excluded by construction (TRANSFER is a different flow). This is where
   // payroll belongs — never `merchants`.
 
-  let incomeSources: IncomeSource[] | undefined;
-
-  if (scopeHint !== 'brief') {
-    type IncomeAgg = {
-      canonicalName: string;
-      total:         number;                      // positive settled inflow sum
-      occurrences:   number;
-      firstSeen:     string;                      // YYYY-MM-DD
-      lastSeen:      string;                      // YYYY-MM-DD
-    };
-
-    const incomeMap = new Map<string, IncomeAgg>();
-
-    for (const txn of settled) {
-      // Slice 4: flow-based inclusion (was INCOME_CATEGORIES + sign). Dividend
-      // payers now appear as income sources (approved N6).
-      if (txn.flowType !== FlowType.INCOME) continue;
-      if (txn.amount <= 0) continue;
-
-      const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
-      const iso = txn.date.toISOString().split('T')[0];
-
-      const agg = incomeMap.get(canonicalKey) ?? {
-        canonicalName,
-        total:       0,
-        occurrences: 0,
-        firstSeen:   iso,
-        lastSeen:    iso,
-      };
-
-      agg.total       += txn.amount;
-      agg.occurrences += 1;
-      if (iso < agg.firstSeen) agg.firstSeen = iso;
-      if (iso > agg.lastSeen)  agg.lastSeen  = iso;
-
-      incomeMap.set(canonicalKey, agg);
-    }
-
-    incomeSources = Array.from(incomeMap.entries())
-      .map(([canonicalKey, agg]): IncomeSource => ({
-        canonicalName: agg.canonicalName,
-        canonicalKey,
-        occurrences:   agg.occurrences,
-        total:         Math.round(agg.total * 100) / 100,
-        firstSeen:     agg.firstSeen,
-        lastSeen:      agg.lastSeen,
-      }))
-      .sort((a, b) => b.total - a.total)
-      .slice(0, INCOME_SOURCE_ROLLUP_LIMIT);
-  }
+  // P2-7C — same per-row conversion as the merchant rollup, so income sources
+  // reconcile with the converted incomeTotal (never a native Σ txn.amount).
+  const incomeSources: IncomeSource[] | undefined =
+    scopeHint !== 'brief'
+      ? buildIncomeSourceRollup(settled, moneyCtx, INCOME_SOURCE_ROLLUP_LIMIT)
+      : undefined;
 
   // ── Drilldown evidence (D6 — only when an explicit drilldown was requested) ─
   // Re-reads real line items behind a category/merchant/period for explainability.
@@ -849,6 +724,14 @@ async function assembleTransactions(
     pendingDebitCount,
     pendingDebitTotal:  Math.round(pendingDebitTotal  * 100) / 100,
 
+    // P2-7B — non-economic residue disclosure. The canonical banking population
+    // admits UNKNOWN / ADJUSTMENT / null; these are counted (transactionCount) and
+    // reachable by needs-classification, but excluded from every money total. The
+    // counts make their presence explicit so a row the UI shows never silently
+    // vanishes from AI context (data-only; consumers may surface "N unclassified").
+    unclassifiedCount,
+    adjustmentCount,
+
     // TI2-W1 — needs-classification disclosure aggregate (six scalars). Purely
     // additive: no money total above is affected. counterpartyResolution reports
     // that read-time parity was applied (§3.3 option (a), not the PERSISTED_ONLY
@@ -862,10 +745,14 @@ async function assembleTransactions(
 
     monthlyBreakdown,
 
+    // P2-7C — serialize the amount already converted into the reporting currency
+    // (largestIncomeAmt / largestExpenseAmt, the same target units used to SELECT
+    // the row), not the row's native amount. Otherwise a headline like "largest
+    // income €5,000" would sit beside a converted incomeTotal in USD.
     largestIncome: largestIncomeRow
       ? {
           merchant: largestIncomeRow.merchant,
-          amount:   Math.round(largestIncomeRow.amount * 100) / 100,
+          amount:   Math.round(largestIncomeAmt * 100) / 100,
           date:     largestIncomeRow.date.toISOString().split('T')[0],
         }
       : null,
@@ -873,7 +760,7 @@ async function assembleTransactions(
     largestExpense: largestExpenseRow
       ? {
           merchant: largestExpenseRow.merchant,
-          amount:   Math.round(Math.abs(largestExpenseRow.amount) * 100) / 100,
+          amount:   Math.round(largestExpenseAmt * 100) / 100,
           date:     largestExpenseRow.date.toISOString().split('T')[0],
         }
       : null,
@@ -1016,13 +903,17 @@ export function buildMonthlyBreakdown(
     // MC1 Phase 2 Slice 4 — per-row target amount (native when no ctx).
     // MC1 Phase 3 Slice 2 — the same conversion carries the estimated taint (D-7).
     const b = bucketFor(monthKey(txn.date));
+    b.transactionCount += 1;
+    // P2-7B — non-economic residue (UNKNOWN / ADJUSTMENT / null) is counted in
+    // this month's transactionCount but never folded into its category or money
+    // totals (same rule as the top-level window loop).
+    if (isNonEconomicResidue(txn.flowType)) continue;
     let amt = txn.amount;
     if (ctx) {
       const c = amountInTarget(txn, ctx);
       amt = c.amount;
       if (c.estimated) b.estimated = true;
     }
-    b.transactionCount += 1;
     const agg = b.categoryAgg.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
     if (amt < 0) agg.debitTotal += Math.abs(amt);
     else if (amt > 0) agg.creditTotal += amt;
@@ -1101,6 +992,236 @@ export function buildMonthlyBreakdown(
         ...(topCategories.length > 0 ? { topCategories } : {}),
       };
     });
+}
+
+// ---------------------------------------------------------------------------
+// P2-7C — canonicalized rollup helpers (pure; exported for the multi-currency
+// FX tests). Extracted verbatim from assembleTransactions so the merchant /
+// income-source / recurring rollups share ONE reporting-currency contract with
+// the top-level totals: every row is converted per-row at its own date via
+// amountInTarget(row, ctx) BEFORE it is grouped or summed, and any row that
+// converted with an estimated rate (walk-back / miss / null-residue) taints the
+// entry's `estimated` flag. Under an identity context (all-USD Space) this is
+// byte-identical to the pre-P2-7C native sums (pinned by the golden gates).
+// ---------------------------------------------------------------------------
+
+/** The minimal per-row facts the rollup helpers read (a structural subset of TxnRow). */
+export interface RollupRow {
+  merchant:          string;
+  merchantId?:       string | null;
+  resolvedMerchant?: { displayName: string } | null;
+  category:          string;
+  amount:            number;
+  currency:          string | null;
+  date:              Date;
+  flowType:          FlowType | null;
+}
+
+/**
+ * MI M6 read cutover — group + display by the RESOLVED Merchant identity when
+ * present (so aliases like "WALMART #1842" / "WM SUPERCENTER" collapse to one
+ * "Walmart"), falling back to the per-request normalizer for unresolved rows.
+ * The raw descriptor stays on row.merchant for forensic use.
+ */
+function merchantGroupOf(row: Pick<RollupRow, 'merchant' | 'merchantId' | 'resolvedMerchant'>): { key: string; name: string } {
+  if (row.merchantId && row.resolvedMerchant) {
+    return { key: `id:${row.merchantId}`, name: row.resolvedMerchant.displayName };
+  }
+  const { canonicalKey, canonicalName } = normalizeMerchant(row.merchant);
+  return { key: canonicalKey, name: canonicalName };
+}
+
+/**
+ * Canonicalized SPENDING merchant rollup. `total` is the absolute sum of each
+ * row's amount CONVERTED into `ctx.target` at the row's own date. Sorted by
+ * converted total descending, capped to `limit`.
+ */
+export function buildMerchantRollup(
+  settled: readonly RollupRow[],
+  ctx:     ConversionContext,
+  limit:   number,
+): MerchantSummary[] {
+  type MerchantAgg = {
+    canonicalName: string;
+    total:         number; // absolute settled expense sum, in ctx.target
+    occurrences:   number;
+    firstSeen:     string;
+    lastSeen:      string;
+    estimated:     boolean;
+    categoryCount: Map<string, { count: number; absTotal: number }>;
+  };
+
+  const merchantMap = new Map<string, MerchantAgg>();
+
+  for (const txn of settled) {
+    // Spending merchants only (Slice 4): payroll (INCOME), transfers, debt
+    // payments, fees, and refunds structurally cannot surface here.
+    if (txn.flowType !== FlowType.SPENDING) continue;
+
+    const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
+    const iso  = txn.date.toISOString().split('T')[0];
+    const conv = amountInTarget(txn, ctx);
+    const abs  = Math.abs(conv.amount);
+
+    const agg = merchantMap.get(canonicalKey) ?? {
+      canonicalName,
+      total:         0,
+      occurrences:   0,
+      firstSeen:     iso,
+      lastSeen:      iso,
+      estimated:     false,
+      categoryCount: new Map<string, { count: number; absTotal: number }>(),
+    };
+
+    agg.total       += abs;
+    agg.occurrences += 1;
+    if (conv.estimated) agg.estimated = true;
+    if (iso < agg.firstSeen) agg.firstSeen = iso;
+    if (iso > agg.lastSeen)  agg.lastSeen  = iso;
+
+    const cat = agg.categoryCount.get(txn.category) ?? { count: 0, absTotal: 0 };
+    cat.count    += 1;
+    cat.absTotal += abs;
+    agg.categoryCount.set(txn.category, cat);
+
+    merchantMap.set(canonicalKey, agg);
+  }
+
+  return Array.from(merchantMap.entries())
+    .map(([canonicalKey, agg]): MerchantSummary => {
+      // Dominant category: most transactions, ties broken by larger abs total.
+      let dominant = '';
+      let best = { count: -1, absTotal: -1 };
+      for (const [category, stat] of agg.categoryCount) {
+        if (
+          stat.count > best.count ||
+          (stat.count === best.count && stat.absTotal > best.absTotal)
+        ) {
+          dominant = category;
+          best = stat;
+        }
+      }
+      return {
+        canonicalName: agg.canonicalName,
+        canonicalKey,
+        occurrences:   agg.occurrences,
+        total:         Math.round(agg.total * 100) / 100,
+        category:      dominant,
+        firstSeen:     agg.firstSeen,
+        lastSeen:      agg.lastSeen,
+        ...(agg.estimated ? { estimated: true } : {}),
+      };
+    })
+    .sort((a, b) => b.total - a.total)
+    .slice(0, limit);
+}
+
+/**
+ * Canonicalized INCOME-source rollup — the mirror of buildMerchantRollup over
+ * positive flowType=INCOME rows. `total` is the sum of each row's amount
+ * CONVERTED into `ctx.target` at the row's own date.
+ */
+export function buildIncomeSourceRollup(
+  settled: readonly RollupRow[],
+  ctx:     ConversionContext,
+  limit:   number,
+): IncomeSource[] {
+  type IncomeAgg = {
+    canonicalName: string;
+    total:         number; // positive settled inflow sum, in ctx.target
+    occurrences:   number;
+    firstSeen:     string;
+    lastSeen:      string;
+    estimated:     boolean;
+  };
+
+  const incomeMap = new Map<string, IncomeAgg>();
+
+  for (const txn of settled) {
+    if (txn.flowType !== FlowType.INCOME) continue;
+    // Native sign gate: conversion preserves sign (positive rates), so a native
+    // inflow is a converted inflow — identical population either way.
+    if (txn.amount <= 0) continue;
+
+    const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
+    const iso  = txn.date.toISOString().split('T')[0];
+    const conv = amountInTarget(txn, ctx);
+
+    const agg = incomeMap.get(canonicalKey) ?? {
+      canonicalName,
+      total:       0,
+      occurrences: 0,
+      firstSeen:   iso,
+      lastSeen:    iso,
+      estimated:   false,
+    };
+
+    agg.total       += conv.amount;
+    agg.occurrences += 1;
+    if (conv.estimated) agg.estimated = true;
+    if (iso < agg.firstSeen) agg.firstSeen = iso;
+    if (iso > agg.lastSeen)  agg.lastSeen  = iso;
+
+    incomeMap.set(canonicalKey, agg);
+  }
+
+  return Array.from(incomeMap.entries())
+    .map(([canonicalKey, agg]): IncomeSource => ({
+      canonicalName: agg.canonicalName,
+      canonicalKey,
+      occurrences:   agg.occurrences,
+      total:         Math.round(agg.total * 100) / 100,
+      firstSeen:     agg.firstSeen,
+      lastSeen:      agg.lastSeen,
+      ...(agg.estimated ? { estimated: true } : {}),
+    }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, limit);
+}
+
+/**
+ * Recurring-charge candidates — merchants appearing 2+ times. `typicalAmount`
+ * is the mean of the occurrences' amounts CONVERTED into `ctx.target` at each
+ * row's own date (signed; negative = expense). Transfers and debt payments are
+ * excluded (predictable internal moves aren't interesting signals).
+ */
+export function buildRecurringCandidates(
+  settled: readonly RollupRow[],
+  ctx:     ConversionContext,
+): RecurringCandidate[] {
+  const merchantMap = new Map<string, { amounts: number[]; category: string; estimated: boolean }>();
+
+  for (const txn of settled) {
+    if (isTransfer(txn.flowType) || isDebtPayment(txn.flowType)) continue;
+    const key   = txn.merchant.trim().toLowerCase();
+    const group = merchantMap.get(key) ?? { amounts: [], category: txn.category, estimated: false };
+    const conv  = amountInTarget(txn, ctx);
+    group.amounts.push(conv.amount);
+    if (conv.estimated) group.estimated = true;
+    merchantMap.set(key, group);
+  }
+
+  const out: RecurringCandidate[] = [];
+  for (const [merchant, group] of merchantMap) {
+    if (group.amounts.length < 2) continue;
+    const sum = group.amounts.reduce((s, a) => s + a, 0);
+    const avg = sum / group.amounts.length;
+    out.push({
+      merchant,
+      occurrences:   group.amounts.length,
+      typicalAmount: Math.round(avg * 100) / 100,
+      category:      group.category,
+      ...(group.estimated ? { estimated: true } : {}),
+    });
+  }
+
+  // Most frequent first, then largest absolute typical amount.
+  out.sort(
+    (a, b) =>
+      b.occurrences - a.occurrences ||
+      Math.abs(b.typicalAmount) - Math.abs(a.typicalAmount),
+  );
+  return out;
 }
 
 /** Returns midnight UTC on the day N days ago. */
@@ -1196,14 +1317,17 @@ async function assembleDrilldown(
   const includeNonSpending = request.includeNonSpending === true;
   const merchantQuery      = request.merchant?.trim();
 
-  // Category constraint (Slice 4, D-5):
+  // Category constraint (Slice 4, D-5; P2-7B population):
   //   - a specific resolved category → exactly that category (explicit ask)
-  //   - includeNonSpending           → any banking-flow row
+  //   - includeNonSpending           → any banking-population row (canonical:
+  //                                     not INVESTMENT — incl. UNKNOWN/ADJUSTMENT,
+  //                                     so an explicit "show me everything" drill
+  //                                     matches the same rows the UI shows)
   //   - default                      → discretionary spending (flowType=SPENDING)
   const categoryWhere = resolvedCategory
     ? { category: resolvedCategory }
     : includeNonSpending
-      ? { flowType: { in: BANKING_FLOWS } }
+      ? BANKING_POPULATION
       : { flowType: FlowType.SPENDING };
 
   // Sign constraint: spending only (amount < 0) unless a non-spending category
@@ -1243,6 +1367,7 @@ async function assembleDrilldown(
       description: true,
       category:    true,
       amount:      true,
+      currency:    true, // P2-7C — conversion input for the drilldown's FX seam
       account:          { select: { name: true } },
       financialAccount: { select: { name: true, displayName: true } },
     },
@@ -1257,19 +1382,38 @@ async function assembleDrilldown(
   const fetchTruncated = rows.length > TRANSACTION_FETCH_LIMIT;
   const capped         = fetchTruncated ? rows.slice(0, TRANSACTION_FETCH_LIMIT) : rows;
 
+  // P2-7C — the drilldown is the EVIDENCE behind a category/merchant total, so
+  // its figures must read in the same reporting currency as that total. Build a
+  // Space conversion context over exactly the capped rows' (currency × date)
+  // pairs and convert every row at its own date, mirroring the summary seam.
+  // Degrades to identity if the Space row vanished mid-request.
+  const drillCtx = await buildSpaceConversionContextById(spaceId, {
+    currencies: capped.map((r) => r.currency),
+    dates:      [...new Set(capped.map((r) => r.date.toISOString().slice(0, 10)))],
+  });
+  // One converted magnitude per row drives matchedTotal, the "largest" sort, and
+  // each serialized amount — never a native amount beside a converted total.
+  const converted = capped.map((r) => {
+    const c = amountInTarget(r, drillCtx);
+    return { row: r, amount: c.amount, estimated: c.estimated };
+  });
+  let drilldownEstimated = false;
+  for (const c of converted) if (c.estimated) drilldownEstimated = true;
+
   // matchedTotal / totalCount describe the matching set actually aggregated. When
   // fetchTruncated they are a lower bound (older rows beyond the cap are omitted);
   // `truncated` below is forced true so the consumer never implies exhaustiveness.
-  const matchedTotal = capped.reduce((s, r) => s + Math.abs(r.amount), 0);
-  const totalCount   = capped.length;
+  const matchedTotal = converted.reduce((s, c) => s + Math.abs(c.amount), 0);
+  const totalCount   = converted.length;
 
   const limit = Math.min(request.limit ?? DRILLDOWN_DEFAULT_LIMIT, DRILLDOWN_MAX_LIMIT);
 
-  const shown = [...capped]
+  // "Largest first" is in the reporting currency now (converted magnitude).
+  const shown = [...converted]
     .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
     .slice(0, limit);
 
-  const transactions: DrilldownTransaction[] = shown.map((r) => {
+  const transactions: DrilldownTransaction[] = shown.map(({ row: r, amount, estimated }) => {
     const accountName =
       r.financialAccount?.displayName ?? r.financialAccount?.name ?? r.account?.name ?? undefined;
     return {
@@ -1279,13 +1423,14 @@ async function assembleDrilldown(
       // Forensic preservation — the original provider descriptor is never lost.
       ...(r.merchant !== (r.resolvedMerchant?.displayName ?? normalizeMerchant(r.merchant).canonicalName) ? { rawMerchant: r.merchant } : {}),
       ...(r.description ? { description: r.description } : {}),
-      amount:   Math.round(r.amount * 100) / 100,
+      amount:   Math.round(amount * 100) / 100, // P2-7C — reporting currency, at row date
       category: r.category,
       ...(accountName ? { accountName } : {}),
+      ...(estimated ? { estimated: true } : {}),
     };
   });
 
-  const shownTotal = shown.reduce((s, r) => s + Math.abs(r.amount), 0);
+  const shownTotal = shown.reduce((s, c) => s + Math.abs(c.amount), 0);
 
   return {
     ...(resolvedCategory ? { category: resolvedCategory } : {}),
@@ -1299,6 +1444,7 @@ async function assembleDrilldown(
     shownTotal:   Math.round(shownTotal   * 100) / 100,
     matchedTotal: Math.round(matchedTotal * 100) / 100,
     truncated:    fetchTruncated || totalCount > transactions.length,
+    ...(drilldownEstimated ? { estimated: true } : {}),
   };
 }
 

@@ -194,6 +194,23 @@ export interface AccountSummaryItem {
   institution?:     string;
   balance:          number;
   currency:         string;
+  /**
+   * P2-7D — `balance` converted into the Space's reporting currency at the latest
+   * close, via the SAME conversion seam (moneyCtx) that produces the
+   * AccountsSectionData totals. This is the ONLY balance field valid for
+   * CROSS-ACCOUNT aggregation, weighting, or ranking: native `balance`/`currency`
+   * above are account-detail facts and must never be summed, weighted, or compared
+   * across mixed currencies (FINANCIAL_SEMANTIC_AUTHORITIES — reporting-currency
+   * comparison invariant). Equal to `balance` for all-USD / same-currency accounts.
+   */
+  reportingBalance: number;
+  /**
+   * P2-7D — true when the reportingBalance conversion was estimated (rate walked
+   * back / missing / null-residue provenance), mirroring
+   * AccountsSectionData.totalsEstimated. Omitted when false. Data-only until Phase 4;
+   * consumers must not claim an exact cross-currency figure when this is set.
+   */
+  reportingBalanceEstimated?: boolean;
   lastUpdated:           string;      // ISO-8601 — when FM last wrote this row from Plaid
   /** D4 Balance Freshness Provenance. ISO-8601 timestamp Plaid reports for when
    *  the balance was last fetched from the institution. Null when Plaid does not
@@ -431,6 +448,14 @@ export interface MerchantSummary {
   firstSeen:     string;
   /** Latest settled expense date for this merchant (YYYY-MM-DD). */
   lastSeen:      string;
+  /**
+   * P2-7C — `total` is converted per-row at each row's own date into the Space
+   * reporting currency (same seam as expenseTotal/byCategory). True when any
+   * contributing row's rate was walked back / missing / null-residue, so the
+   * merchant total is estimated rather than exact. Omitted when false (all-USD
+   * and clean-rate rollups stay byte-identical). Data-only until Phase 4.
+   */
+  estimated?:    boolean;
 }
 
 /**
@@ -459,6 +484,13 @@ export interface IncomeSource {
   firstSeen:     string;
   /** Latest settled inflow date for this source (YYYY-MM-DD). */
   lastSeen:      string;
+  /**
+   * P2-7C — `total` is converted per-row at each row's own date into the Space
+   * reporting currency (same seam as incomeTotal). True when any contributing
+   * row's rate was walked back / missing / null-residue. Omitted when false.
+   * Data-only until Phase 4.
+   */
+  estimated?:    boolean;
 }
 
 /**
@@ -471,6 +503,13 @@ export interface RecurringCandidate {
   occurrences:   number;
   typicalAmount: number; // mean amount across occurrences (negative = expense)
   category:      string;
+  /**
+   * P2-7C — `typicalAmount` is the mean of the occurrences' amounts converted
+   * per-row at each row's own date into the Space reporting currency. True when
+   * any contributing row's rate was walked back / missing / null-residue.
+   * Omitted when false. Data-only until Phase 4.
+   */
+  estimated?:    boolean;
 }
 
 /**
@@ -488,6 +527,13 @@ export interface DrilldownTransaction {
   amount:       number;  // signed (negative = spend)
   category:     string;  // TransactionCategory value
   accountName?: string;  // FULL-visibility source account only
+  /**
+   * P2-7C — `amount` is converted at this row's own date into the Space
+   * reporting currency (same seam as the summary totals), so a drilldown reads
+   * in the same currency as the aggregate it explains. True when this row's rate
+   * was walked back / missing / null-residue. Omitted when false.
+   */
+  estimated?:   boolean;
 }
 
 /**
@@ -524,6 +570,13 @@ export interface TransactionDrilldown {
   matchedTotal: number;
   /** True when totalCount > shownCount (rows omitted by the cap). */
   truncated:    boolean;
+  /**
+   * P2-7C — `matchedTotal`/`shownTotal` and every row `amount` are converted
+   * per-row into the Space reporting currency, so the drilldown reconciles with
+   * the summary/category totals it explains. True when any converted row was
+   * estimated (rate walked back / missing / null-residue). Omitted when false.
+   */
+  estimated?:   boolean;
 }
 
 /**
@@ -601,6 +654,24 @@ export interface TransactionsSummaryData {
   pendingDebitCount:  number;
   /** Absolute value of pending outflows. */
   pendingDebitTotal:  number;
+
+  // ── Non-economic residue disclosure (P2-7B) ──────────────────────────────
+  /**
+   * P2-7B — count of rows in the canonical banking population (settled + pending)
+   * that carry NO economic flow bucket: flowType UNKNOWN or unclassified (null).
+   * These rows are INCLUDED in the population (visible for review, reachable by
+   * needs-classification, counted in transactionCount) but are excluded from
+   * every money total — an unclassified row is neither spending nor income. The
+   * count exists so a row the UI shows never silently vanishes from AI context.
+   */
+  unclassifiedCount:  number;
+  /**
+   * P2-7B — count of ADJUSTMENT rows (balance corrections / provider artifacts)
+   * in the window. Non-economic: excluded from all money totals (never spending
+   * or income), surfaced only so their presence is explicit, mirroring how the
+   * DayFacts fold folds ADJUSTMENT to the NON_CASH context reason (∉ net).
+   */
+  adjustmentCount:    number;
 
   // ── Needs classification (TE-2B disclosure; TI2-W1) ──────────────────────
   /**
