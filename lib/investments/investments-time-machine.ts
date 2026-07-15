@@ -26,6 +26,7 @@ import { getInvestmentValueAsOf } from "./valuation";
 import { summarizePeriodFlows, type FlowEvent, type PeriodFlows } from "./investment-flows-core";
 import {
   assembleInvestmentsTimeMachine,
+  type InstrumentDisplay,
   type InvestmentsTimeMachineResult,
 } from "./investments-time-machine-core";
 
@@ -153,17 +154,32 @@ async function readPeriodFlows(
   return summarizePeriodFlows(events, from, to, ctx.target);
 }
 
-/** Display identity (symbol/name) for a set of instruments. Read-only. */
+/**
+ * Display + allocation identity for a set of instruments. Read-only.
+ *
+ * Carries symbol/name (row identity) plus the three fields the Allocation panel
+ * groups by: `assetClass`, `sector`, and `isCash` (the canonical cash-equivalent
+ * flag, same source valuation.ts uses). Additive — existing consumers read only
+ * symbol/name; the allocation fields are ignored by everything else.
+ */
 async function readDisplay(
   client: Client,
   instrumentIds: string[],
-): Promise<Record<string, { symbol: string | null; name: string | null }>> {
+): Promise<Record<string, InstrumentDisplay>> {
   if (instrumentIds.length === 0) return {};
   const rows = await client.instrument.findMany({
     where: { id: { in: instrumentIds } },
-    select: { id: true, tickerSymbol: true, name: true },
+    select: { id: true, tickerSymbol: true, name: true, assetClass: true, sector: true, isCashEquivalent: true },
   });
-  const map: Record<string, { symbol: string | null; name: string | null }> = {};
-  for (const r of rows) map[r.id] = { symbol: r.tickerSymbol, name: r.name };
+  const map: Record<string, InstrumentDisplay> = {};
+  for (const r of rows) {
+    map[r.id] = {
+      symbol:     r.tickerSymbol,
+      name:       r.name,
+      assetClass: r.assetClass,
+      sector:     r.sector,
+      isCash:     r.isCashEquivalent === true,
+    };
+  }
   return map;
 }

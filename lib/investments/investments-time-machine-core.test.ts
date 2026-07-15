@@ -41,7 +41,11 @@ function ev(type: InvestmentEventType, amount: number | null, date: string, opts
 
 const ASOF = "2026-06-30";
 const CMP = "2026-03-31";
-const DISPLAY = { i1: { symbol: "AAA", name: "Alpha" }, i2: { symbol: "BBB", name: "Beta" }, i3: { symbol: null, name: "Gamma" } };
+const DISPLAY = {
+  i1: { symbol: "AAA", name: "Alpha", assetClass: "EQUITY", sector: "Technology", isCash: false },
+  i2: { symbol: "BBB", name: "Beta",  assetClass: "ETF",    sector: null,         isCash: false },
+  i3: { symbol: null,  name: "Gamma", assetClass: "UNKNOWN", sector: null,        isCash: false },
+};
 
 function main(): void {
   // ── 1. current-only (no compareTo): holdings, composition, no reconciliation ─
@@ -52,6 +56,8 @@ function main(): void {
     check("no compareTo → null reconciliation & flows", r.reconciliation === null && r.flows === null);
     check("portfolio subtotal = 2500", r.portfolio.valuedSubtotal === 2500);
     check("holdings joined with symbol/name", r.holdings[0].symbol === "AAA" && r.holdings[0].name === "Alpha");
+    check("allocation identity passes through (assetClass/sector/isCash)",
+      r.holdings[0].assetClass === "EQUITY" && r.holdings[0].sector === "Technology" && r.holdings[0].isCash === false);
     check("composition shares sum to 1", approx((r.holdings[0].share ?? 0) + (r.holdings[1].share ?? 0), 1));
     check("share reflects value weight (2000/2500 = 0.8)", approx(r.holdings.find((h) => h.instrumentId === "i1")!.share!, 0.8));
     check("overall completeness tier observed", r.completeness.tier === "observed");

@@ -57,10 +57,9 @@ import type {
   ContextDomainSection,
   HoldingsSummaryData,
   HoldingPosition,
-  HoldingsConcentration,
-  ConcentrationClassification,
 } from '@/lib/ai/types';
 import type { SpaceContext } from '@/lib/space';
+import { computeConcentration } from '@/lib/investments/concentration';
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -75,16 +74,11 @@ const HOLDINGS_TOP_N = 10;
  * portfolio dominated by one position and one dominated by a few positions are
  * both caught. Bands are checked most-severe first. See
  * docs/investigations/D6_3C_INVESTMENT_INTELLIGENCE_INVESTIGATION.md §5.
+ *
+ * The band table + the concentration formula now live in the shared pure module
+ * lib/investments/concentration.ts (reused by the Investments Allocation panel);
+ * this assembler delegates to it so the thresholds have one home.
  */
-const CONCENTRATION_BANDS: Array<{
-  classification: Exclude<ConcentrationClassification, 'INSUFFICIENT_DATA'>;
-  topWeight:      number;
-  herfindahl:     number;
-}> = [
-  { classification: 'HIGHLY_CONCENTRATED', topWeight: 0.40, herfindahl: 0.25 },
-  { classification: 'CONCENTRATED',        topWeight: 0.25, herfindahl: 0.15 },
-  { classification: 'MODERATE',            topWeight: 0.15, herfindahl: 0.10 },
-];
 
 // ---------------------------------------------------------------------------
 // Internal query result types
@@ -265,54 +259,6 @@ async function assembleHoldings(
     domain: FinanceDomains.HOLDINGS_SUMMARY,
     assembledAt,
     data,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Concentration computation
-// ---------------------------------------------------------------------------
-
-/**
- * Deterministic concentration metrics over analyzable (FULL, non-cash)
- * positions. `positions` must already be sorted by value descending and carry
- * weights relative to `analyzedInvestedValue`. Returns INSUFFICIENT_DATA with
- * null metrics when there is nothing to analyze.
- */
-function computeConcentration(
-  positions:             HoldingPosition[],
-  analyzedInvestedValue: number,
-): HoldingsConcentration {
-  if (positions.length === 0 || analyzedInvestedValue <= 0) {
-    return {
-      classification:    'INSUFFICIENT_DATA',
-      topSymbol:         null,
-      topWeight:         null,
-      top5Weight:        null,
-      herfindahl:        null,
-      effectiveHoldings: null,
-    };
-  }
-
-  const topWeight  = positions[0].weight;
-  const top5Weight = positions.slice(0, 5).reduce((sum, p) => sum + p.weight, 0);
-  const herfindahl = positions.reduce((sum, p) => sum + p.weight * p.weight, 0);
-  const effectiveHoldings = herfindahl > 0 ? 1 / herfindahl : positions.length;
-
-  let classification: ConcentrationClassification = 'DIVERSIFIED';
-  for (const band of CONCENTRATION_BANDS) {
-    if (topWeight >= band.topWeight || herfindahl >= band.herfindahl) {
-      classification = band.classification;
-      break;
-    }
-  }
-
-  return {
-    classification,
-    topSymbol:         positions[0].symbol,
-    topWeight,
-    top5Weight,
-    herfindahl,
-    effectiveHoldings,
   };
 }
 

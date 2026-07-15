@@ -30,6 +30,7 @@ import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { formatCurrency } from "@/lib/format";
 import type { InvestmentsTimeMachineResult } from "@/lib/investments/investments-time-machine-core";
 import { InvestmentsHoldings } from "./InvestmentsHoldings";
+import { InvestmentAllocationPanel } from "./InvestmentAllocationPanel";
 import { InvestmentsActivityCard } from "./InvestmentsActivityCard";
 import { InvestmentsBridgeCard } from "./InvestmentsBridgeCard";
 import { InvestmentConnectionsCard } from "./InvestmentConnectionsCard";
@@ -178,9 +179,17 @@ export function InvestmentsPerspective({
         </Panel>
       </div>
 
-      {/* ③ Side column — Period Activity → The Bridge → Connections (conditional).
-           A flex stack (not a grid row-span) so panel heights stay content-defined. */}
+      {/* ③ Side column — Allocation → Period Activity → The Bridge → Connections
+           (conditional). A flex stack (not a grid row-span) so panel heights stay
+           content-defined. */}
       <div className="min-w-0 lg:col-span-5 xl:col-span-4 flex flex-col gap-4">
+        <Panel title="Allocation">
+          <InvestmentAllocationPanel
+            holdings={result.holdings}
+            accounts={accounts}
+            reportingCurrency={result.reportingCurrency}
+          />
+        </Panel>
         <Panel title="Period Activity">
           <InvestmentsActivityCard flows={result.flows} />
         </Panel>

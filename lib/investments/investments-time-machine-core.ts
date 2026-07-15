@@ -26,12 +26,31 @@ import type { Completeness, CompletenessTier } from "@/lib/perspective-engine/ty
 import type { InstrumentValuation, InvestmentValuationView, UnvaluedPosition } from "./valuation-core";
 import type { PeriodFlows } from "./investment-flows-core";
 
+/**
+ * Instrument display + allocation identity, keyed by instrumentId. `symbol`/`name`
+ * are the row identity every consumer reads; `assetClass`/`sector`/`isCash` are the
+ * additive allocation-grouping fields (Allocation panel). `assetClass` is the raw
+ * AssetClass enum VALUE as a plain string, matching this module's Prisma-free
+ * convention (no @prisma/client import).
+ */
+export interface InstrumentDisplay {
+  symbol:     string | null;
+  name:       string | null;
+  assetClass: string;
+  sector:     string | null;
+  isCash:     boolean;
+}
+
 /** A valued holding enriched with display identity and its composition share. */
 export interface ValuedHoldingRow extends InstrumentValuation {
   symbol: string | null;
   name:   string | null;
   /** reportingValue / valuedSubtotal in 0..1; null when unvalued or subtotal ≤ 0. */
   share:  number | null;
+  /** Allocation-grouping identity (additive) — see InstrumentDisplay. */
+  assetClass: string;
+  sector:     string | null;
+  isCash:     boolean;
 }
 
 /** The as-of portfolio view (the A8 shape, re-surfaced verbatim). */
@@ -114,7 +133,7 @@ export function assembleInvestmentsTimeMachine(args: {
   view:        InvestmentValuationView;
   compareView: InvestmentValuationView | null;
   flows:       PeriodFlows | null;
-  display:     Record<string, { symbol: string | null; name: string | null }>;
+  display:     Record<string, InstrumentDisplay>;
 }): InvestmentsTimeMachineResult {
   const { asOf, compareTo, view, compareView, flows, display } = args;
   const reportingCurrency = view.reportingCurrency;
@@ -124,7 +143,17 @@ export function assembleInvestmentsTimeMachine(args: {
     .map((c) => {
       const d = display[c.instrumentId];
       const share = c.reportingValue != null && subtotal > 0 ? c.reportingValue / subtotal : null;
-      return { ...c, symbol: d?.symbol ?? null, name: d?.name ?? null, share };
+      return {
+        ...c,
+        symbol:     d?.symbol ?? null,
+        name:       d?.name ?? null,
+        share,
+        // Absent display (instrument row not found) ⇒ honest UNKNOWN class, no
+        // sector, non-cash — the allocation core buckets these as "Unknown".
+        assetClass: d?.assetClass ?? "UNKNOWN",
+        sector:     d?.sector ?? null,
+        isCash:     d?.isCash ?? false,
+      };
     })
     .sort(holdingSort);
 
