@@ -85,6 +85,24 @@ export function accountTier(type: string | null | undefined): AccountTier {
   }
 }
 
+/**
+ * The account types whose value belongs in the DIGITAL-ASSET (crypto) net-worth
+ * bucket — `classifyAccounts`' `totalDigitalAssets` partition. The single authority
+ * for that boundary: `classifyAccounts` reads it here, and so does the historical
+ * investment valuation scope, so `totalInvestments` and `totalDigitalAssets` can
+ * never disagree about which side crypto sits on (they are separate buckets, and a
+ * crypto position must never also count as an investment). NOTE: `accountTier`
+ * deliberately collapses investment + crypto + other into "asset" for the liquidity
+ * axis, so it is NOT the authority for the investment-vs-digital-asset split — this
+ * predicate is.
+ */
+export const DIGITAL_ASSET_ACCOUNT_TYPES = ["crypto"] as const;
+
+/** True when an account's value belongs in `totalDigitalAssets`, not `totalInvestments`. */
+export function isDigitalAssetAccountType(type: string | null | undefined): boolean {
+  return type != null && (DIGITAL_ASSET_ACCOUNT_TYPES as readonly string[]).includes(type);
+}
+
 // ─── Classification result ────────────────────────────────────────────────────
 
 /**
@@ -187,7 +205,7 @@ export function classifyAccounts<T extends ClassifiableAccount>(
   const savings       = accounts.filter((a) => a.type === "savings");
   const liquid        = [...checking, ...savings];
   const investments   = accounts.filter((a) => a.type === "investment");
-  const digitalAssets = accounts.filter((a) => a.type === "crypto");
+  const digitalAssets = accounts.filter((a) => isDigitalAssetAccountType(a.type));
   // All 'other' accounts are real/manual assets. syncStatus='manual' is the
   // canonical tag but we include all 'other' since no other bucket exists yet.
   const realAssets    = accounts.filter((a) => a.type === "other");

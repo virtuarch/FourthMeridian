@@ -148,6 +148,32 @@ export interface SnapshotFields {
 }
 
 /**
+ * REG-2 — held-flat inclusion predicate. A cash/savings/debt account with a real
+ * (non-zero) current balance but NO reconstructable transaction history is held
+ * FLAT at its current balance across the historical window — an honest estimate
+ * (the row stays isEstimated=true; the day's cash/card tier degrades to
+ * "estimated") — instead of being floored to today and dropped from every
+ * historical day. This mirrors the constant-quantity treatment crypto / holdings-
+ * only investment accounts already get, and keeps the historical writers symmetric
+ * with the live writer (regenerate.ts), which includes every balance-bearing
+ * account regardless of transaction evidence.
+ *
+ * Single authority for the predicate, imported by BOTH historical writers
+ * (backfill.ts, regenerate-history.ts) so "which accounts are held flat" can never
+ * diverge between them. Investment/crypto/real-asset accounts are excluded here —
+ * they are valued from holdings / manual entry, so "zero Transaction rows" is
+ * normal for them and is handled by their own valuation path, not this one.
+ *
+ * @param hasTransactions true when the account has ≥1 non-deleted Transaction (so
+ *   its history is reconstructed by the walk-back, not held flat).
+ */
+export function isHeldFlatBalanceAccount(a: { type: string; balance: number }, hasTransactions: boolean): boolean {
+  if (hasTransactions) return false;
+  if (a.type !== "checking" && a.type !== "savings" && a.type !== "debt") return false;
+  return a.balance !== 0;
+}
+
+/**
  * Exact same arithmetic as regenerateSpaceSnapshot (lib/snapshots/regenerate.ts)
  * so a backfilled row is internally consistent with the live "today" row.
  * realAssets is included in totalAssets/netWorth, excluded from netLiquid.

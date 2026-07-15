@@ -24,10 +24,11 @@
  * background content bled through, unlike every other modal in the app.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { History } from "lucide-react";
 import { FormModal } from "@/components/atlas/FormModal";
+import { resolveRebuildRange } from "@/components/dashboard/rebuild-range";
 
 interface AmendAccount {
   id: string;
@@ -35,9 +36,9 @@ interface AmendAccount {
   type: string;
   /**
    * YYYY-MM-DD of the account's earliest non-deleted transaction — the regen's
-   * per-account floor, supplied by GET /api/spaces/[id]/accounts. Used as the
-   * "From" input's min so you can't request a rebuild of days before the
-   * account has any data. null/absent ⇒ no synced transactions ⇒ no floor.
+   * per-account floor, supplied by GET /api/spaces/[id]/accounts. Aggregated
+   * across the Space (min) into the SPACE-WIDE "From" floor (REG-3: the rebuild is
+   * Space-wide, so the floor must be too). null/absent ⇒ no synced transactions.
    */
   earliestTxDate?: string | null;
 }
@@ -80,16 +81,40 @@ function fmtMoney(n: number | null): string {
   if (n == null) return "—";
   return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }
+/** "YYYY-MM-DD" → "Jul 15, 2024" (UTC, no timezone drift). */
+function fmtDate(iso: string): string {
+  return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, {
+    year: "numeric", month: "short", day: "numeric", timeZone: "UTC",
+  });
+}
 
 export function RebuildHistoryButton({ spaceId, accounts }: { spaceId: string; accounts: AmendAccount[] }): React.ReactElement {
   const router = useRouter();
   const [open, setOpen] = useState(false);
 
+  // To defaults to (and is capped at) YESTERDAY on purpose: today's snapshot is the
+  // LIVE, observed row owned by the live writer (regenerate.ts) and is frozen — the
+  // amendment/regeneration window is ≤ yesterday (regenerate-history.ts:83,
+  // snapshot-amendment.ts:51). So yesterday is the rebuild ceiling; the practical
+  // default From below is a To − 30 day window off it.
   const yesterday = minusDays(isoDay(new Date()), 1);
+  // REG-3/REG-4 — one Space-wide range authority. `range.earliest` is the picker
+  // MINIMUM (the full history the server can rebuild); `range.defaultFrom` is the
+  // INITIAL value — a practical To−30d window (clamped to `earliest`) so opening the
+  // dialog isn't a huge full-history rebuild, while the user can still drag From all
+  // the way back to `earliest`.
+  const range = useMemo(() => resolveRebuildRange(accounts, minusDays(yesterday, 30)), [accounts, yesterday]);
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
   const [kind, setKind] = useState(KIND_OPTIONS[0].value);
-  const [fromDate, setFromDate] = useState(minusDays(yesterday, 30));
+  const [fromDate, setFromDate] = useState(range.defaultFrom);
   const [toDate, setToDate] = useState(yesterday);
+
+  // PART-2 — the informational "history available" line reflects the SELECTED
+  // account (its own earliest synced transaction), which changes as the account
+  // dropdown changes. This is messaging only: the From floor + rebuild scope stay
+  // Space-wide (REG-3), as the note below makes explicit.
+  const selectedAccount = accounts.find((a) => a.id === accountId);
+  const selectedEarliest = selectedAccount?.earliestTxDate ?? null;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -131,17 +156,14 @@ export function RebuildHistoryButton({ spaceId, accounts }: { spaceId: string; a
     }
   }
 
-  // The selected account's earliest-transaction floor bounds the "From" input
-  // (recalculated whenever accountId changes, since it's derived from it).
-  const fromMin = accounts.find((a) => a.id === accountId)?.earliestTxDate ?? undefined;
+  // REG-3 — the "From" floor is the SPACE-WIDE earliest available date (the rebuild
+  // is Space-wide — see snapshot-amendment.ts §2), NOT the selected account's. The
+  // account picker only records which account motivated the rebuild; it never
+  // narrows the range, so UI and server agree on one scope + one range.
+  const fromMin = range.earliest ?? undefined;
 
-  // Switch account → if the current From predates the new account's floor, pull
-  // it up to the floor (never past To). Keeps the value inside the valid range
-  // rather than leaving a below-min value the picker would flag.
   function selectAccount(id: string): void {
     setAccountId(id);
-    const floor = accounts.find((a) => a.id === id)?.earliestTxDate;
-    if (floor && fromDate < floor) setFromDate(floor > toDate ? toDate : floor);
     reset();
   }
 
@@ -168,7 +190,7 @@ export function RebuildHistoryButton({ spaceId, accounts }: { spaceId: string; a
   return (
     <>
       <button
-        onClick={() => setOpen(true)}
+        onClick={() => { setFromDate(range.defaultFrom); setOpen(true); }}
         aria-label="Rebuild wealth history"
         title="Rebuild wealth history"
         className="h-7 px-2 flex items-center gap-1 rounded-lg text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] transition-colors touch-manipulation"
@@ -240,6 +262,26 @@ export function RebuildHistoryButton({ spaceId, accounts }: { spaceId: string; a
                   className="mt-1 w-full h-9 px-2 rounded-lg text-sm bg-[var(--surface-muted)] border border-[var(--border-hairline)] text-[var(--text-primary)]" />
               </label>
             </div>
+
+            {/* PART-2 — the "history available" line reflects the SELECTED account
+                (REG-4 honesty: show the account's true earliest synced date, or say
+                it's still importing). The note makes the Space-wide rebuild scope
+                explicit so the per-account date is never mistaken for the range. */}
+            {selectedEarliest ? (
+              <p className="text-[11px] text-[var(--text-muted)] leading-snug">
+                Available transaction history for this account begins{" "}
+                <span className="font-medium text-[var(--text-secondary)]">{fmtDate(selectedEarliest)}</span>.
+              </p>
+            ) : (
+              <p className="text-[11px] text-[var(--text-muted)] leading-snug">
+                No synced transactions yet for this account — its history may still be importing
+                after a recent connection.
+              </p>
+            )}
+            <p className="text-[11px] text-[var(--text-muted)] leading-snug">
+              History shown above is for the selected account. Rebuilding recalculates the entire
+              Space over the selected date range.
+            </p>
 
             {error && <p className="text-[12px] text-[var(--danger,#e5484d)]">{error}</p>}
 

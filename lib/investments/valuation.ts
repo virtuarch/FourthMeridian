@@ -29,6 +29,7 @@ import { identityContext } from "@/lib/money/convert";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 import { resolvePositionAsOf, type PositionRow } from "@/lib/investments/reconstruction-read";
+import { DIGITAL_ASSET_ACCOUNT_TYPES } from "@/lib/account-classifier";
 import { priceArchive } from "@/lib/prices/archive";
 import { createPriceService } from "@/lib/prices/service";
 import { PRICE_MAX_STALE_DAYS, minusDaysISO } from "@/lib/prices/config";
@@ -122,6 +123,18 @@ export interface GetInvestmentValueArgs {
    * positions of a BALANCE_ONLY / SUMMARY_ONLY account. See account-scope.ts.
    */
   visibilityScope?: InvestmentVisibilityScope;
+  /**
+   * Net-worth INVESTMENT-BUCKET scope. When true, crypto / digital-asset accounts
+   * (canonical `DIGITAL_ASSET_ACCOUNT_TYPES`) contribute NO positions to this
+   * valuation — their value belongs in `totalDigitalAssets`, not `totalInvestments`
+   * (the `classifyAccounts` partition). A caller that assigns `valuedSubtotal` to
+   * `totalInvestments` (the A9 snapshot regeneration) MUST set this, or a crypto
+   * position on the shared PositionObservation spine (P2-6) is double-counted —
+   * once here and again in the separate digital-asset total. Default false, so the
+   * holdings-display callers (AI holdings, A10 Investments Time Machine,
+   * getCurrentPositions) are unchanged and still surface crypto positions.
+   */
+  excludeDigitalAssetAccounts?: boolean;
 }
 
 /**
@@ -144,6 +157,15 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
     return valuePortfolioAsOf([], asOf, reportingCurrency);
   }
 
+  // Net-worth investment-bucket scope: crypto / digital-asset accounts are valued
+  // in totalDigitalAssets, never here, so a crypto position on the shared spine
+  // (P2-6) is not double-counted into totalInvestments. Applied as a relation
+  // filter on the position read (localized to this consumer), so the shared
+  // scope resolver — used by the holdings-display callers — is untouched.
+  const digitalAssetFilter = args.excludeDigitalAssetAccounts === true
+    ? { financialAccount: { type: { notIn: [...DIGITAL_ASSET_ACCOUNT_TYPES] } } }
+    : {};
+
   // ── Batched reads — historical WINDOW (every observation ≤ asOf) ───────────
   const [posRows, reconRows] = await Promise.all([
     client.positionObservation.findMany({
@@ -151,6 +173,7 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
         financialAccountId: { in: accountIds },
         supersededById: null,
         deletedAt: null,
+        ...digitalAssetFilter,
         // holdConstant needs the EARLIEST observation too (which may be after
         // asOf), so it can hold that quantity backward when nothing covers asOf.
         ...(holdConstant ? {} : { date: { lte: asOfDate } }),

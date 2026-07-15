@@ -69,6 +69,24 @@ function main(): void {
   console.log("5. Frozen-row safety wired");
   check("reads existing isEstimated to feed the core's frozen-row guard", /isEstimated:\s*true/.test(code) || /existingIsEstimated/.test(code));
 
+  // ── 6. REG-2 — held-flat balance accounts (historical symmetry) ───────────
+  console.log("6. REG-2 held-flat inclusion (symmetric with the live writer)");
+  check("uses the shared held-flat predicate (single authority, no local reimpl)",
+    /isHeldFlatBalanceAccount\s*\(/.test(code));
+  check("held-flat accounts floor to EPOCH (span the window), not today",
+    /heldFlatIds\.has\([^)]*\)\s*\?\s*EPOCH\s*:\s*today/.test(code));
+  check("held-flat spans the full window like holdings",
+    /hasHoldings\s*\|\|\s*hasFlatHeld/.test(code));
+  check("a held-flat day degrades the cash/card tier to estimated (not derived)",
+    /dayHasHeldFlat\s*\?\s*["']estimated["']\s*:\s*["']derived["']/.test(code));
+
+  // ── 7. BTC double-count fix — totalInvestments excludes digital assets ─────
+  console.log("7. Investment component excludes crypto (no BTC double-count)");
+  check("A9 asks getInvestmentValueAsOf for the investment bucket only",
+    /excludeDigitalAssetAccounts:\s*true/.test(code));
+  check("crypto is still valued SEPARATELY into the digital-asset component",
+    /digitalAssetValue/.test(code) && /totalDigitalAssets/.test(code));
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);
     process.exit(1);

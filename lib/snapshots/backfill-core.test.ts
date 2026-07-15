@@ -14,11 +14,12 @@ import {
   reconstructDailyCashBalances,
   reconstructDailyLiabilityBalances,
   computeSnapshotFields,
+  isHeldFlatBalanceAccount,
   isoDate,
   addDaysUTC,
   fromISO,
 } from "./backfill-core";
-import { classifyAccounts } from "../account-classifier";
+import { classifyAccounts, isDigitalAssetAccountType, DIGITAL_ASSET_ACCOUNT_TYPES } from "../account-classifier";
 
 let failures = 0;
 function check(name: string, cond: boolean) {
@@ -125,6 +126,90 @@ console.log("overpayment clamp — classifyAccounts treats negative owed as $0 l
   ]);
   check("negative owed clamped out of totalLiabilities (=300)", c.totalLiabilities === 300);
   check("overpaid card does not inflate assets", c.totalAssets === 1000);
+}
+
+console.log("REG-2 — isHeldFlatBalanceAccount (held-flat cash inclusion predicate)");
+{
+  check("checking with balance + no tx → held flat",
+    isHeldFlatBalanceAccount({ type: "checking", balance: 9000 }, false) === true);
+  check("savings with balance + no tx → held flat",
+    isHeldFlatBalanceAccount({ type: "savings", balance: 500 }, false) === true);
+  check("debt with balance + no tx → held flat",
+    isHeldFlatBalanceAccount({ type: "debt", balance: 2000 }, false) === true);
+  check("cash WITH tx → NOT held flat (walk-back reconstructs it)",
+    isHeldFlatBalanceAccount({ type: "checking", balance: 9000 }, true) === false);
+  check("zero-balance cash + no tx → NOT held flat (nothing to hold)",
+    isHeldFlatBalanceAccount({ type: "checking", balance: 0 }, false) === false);
+  check("investment + no tx → NOT held flat (valued from holdings)",
+    isHeldFlatBalanceAccount({ type: "investment", balance: 5000 }, false) === false);
+  check("crypto + no tx → NOT held flat",
+    isHeldFlatBalanceAccount({ type: "crypto", balance: 5000 }, false) === false);
+  check("other/real-asset + no tx → NOT held flat",
+    isHeldFlatBalanceAccount({ type: "other", balance: 5000 }, false) === false);
+}
+
+console.log("REG-1/REG-2 — a balance-bearing cash account is always in total assets / net worth");
+{
+  // Validation #1 — totalAssets includes liquid cash; a $9,000 checking account
+  // with zero transactions still reaches cash → totalAssets → netWorth.
+  const c = classifyAccounts([{ id: "chk", type: "checking", balance: 9000 }]);
+  const f = computeSnapshotFields(c);
+  check("cash reaches totalAssets ($9,000)", f.totalAssets === 9000);
+  check("cash reaches netWorth ($9,000)", f.netWorth === 9000);
+  check("cash reaches the cash field ($9,000)", f.cash === 9000);
+  check("depository-only space is a positive asset point (validation #2)", f.totalAssets > 0);
+
+  // Validation #3 — adding an investment position must not remove the cash.
+  const c2 = classifyAccounts([
+    { id: "chk", type: "checking", balance: 9000 },
+    { id: "inv", type: "investment", balance: 4000 },
+  ]);
+  const f2 = computeSnapshotFields(c2);
+  check("adding investments keeps cash in totalAssets (13,000)", f2.totalAssets === 13000);
+  check("adding investments leaves cash unchanged (9,000)", f2.cash === 9000);
+}
+
+console.log("BTC double-count fix — digital-asset account boundary (canonical authority)");
+{
+  check("crypto is a digital-asset account type", isDigitalAssetAccountType("crypto") === true);
+  check("investment is NOT a digital-asset type", isDigitalAssetAccountType("investment") === false);
+  check("checking/savings/debt/other are NOT digital-asset types",
+    !isDigitalAssetAccountType("checking") && !isDigitalAssetAccountType("savings") &&
+    !isDigitalAssetAccountType("debt") && !isDigitalAssetAccountType("other"));
+  check("DIGITAL_ASSET_ACCOUNT_TYPES contains crypto", (DIGITAL_ASSET_ACCOUNT_TYPES as readonly string[]).includes("crypto"));
+}
+
+console.log("BTC counted EXACTLY ONCE in the snapshot (totalInvestments ≠ totalDigitalAssets bucket)");
+{
+  // A Space with a brokerage account + a BTC wallet + cash + debt.
+  const c = classifyAccounts([
+    { id: "brk", type: "investment", balance: 5000 },  // brokerage → totalInvestments
+    { id: "btc", type: "crypto",     balance: 15000 }, // BTC wallet → totalDigitalAssets
+    { id: "chk", type: "checking",   balance: 6000 },
+    { id: "card", type: "debt",      balance: 8000 },
+  ]);
+  // Invariant: totalInvestments = brokerage only; totalDigitalAssets = crypto only.
+  check("totalInvestments = brokerage only (5,000)", c.totalInvestments === 5000);
+  check("totalDigitalAssets = BTC only (15,000)", c.totalDigitalAssets === 15000);
+  check("BTC is NOT in totalInvestments", c.totalInvestments === 5000);
+
+  const f = computeSnapshotFields(c);
+  // Invariant #5 — totalAssets includes BTC exactly once (= inv + BTC + cash).
+  check("totalAssets = investments + digital + cash (26,000) — BTC once", f.totalAssets === 26000);
+  check("stocks (totalInvestments) excludes BTC (5,000)", f.stocks === 5000);
+  check("crypto (totalDigitalAssets) is BTC (15,000)", f.crypto === 15000);
+  // Invariant #6 — netWorth reconciles: totalAssets − debt.
+  check("netWorth = totalAssets − debt (18,000)", f.netWorth === f.totalAssets - f.debt && f.netWorth === 18000);
+}
+
+console.log("Invariant #7 — a crypto balance cannot inflate BOTH investments and digital assets");
+{
+  const base = classifyAccounts([{ id: "brk", type: "investment", balance: 5000 }, { id: "btc", type: "crypto", balance: 10000 }]);
+  const more = classifyAccounts([{ id: "brk", type: "investment", balance: 5000 }, { id: "btc", type: "crypto", balance: 25000 }]);
+  check("raising crypto raises totalDigitalAssets", more.totalDigitalAssets > base.totalDigitalAssets);
+  check("raising crypto leaves totalInvestments UNCHANGED (never both)", more.totalInvestments === base.totalInvestments);
+  check("totalAssets rises by exactly the crypto delta (counted once)",
+    Math.abs((more.totalAssets - base.totalAssets) - 15000) < 0.001);
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

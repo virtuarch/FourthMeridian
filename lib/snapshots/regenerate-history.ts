@@ -40,6 +40,7 @@ import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import {
   reconstructDailyCashBalances,
   reconstructDailyLiabilityBalances,
+  isHeldFlatBalanceAccount,
   truncDateUTC,
   maxDate,
   addDaysUTC,
@@ -255,13 +256,27 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       if (g.financialAccountId && g._min.date) earliestTxByAccount.set(g.financialAccountId, truncDateUTC(g._min.date));
     }
   }
+  // REG-2 — balance-bearing cash/savings/debt accounts with NO reconstructable
+  // transaction history are HELD FLAT at their current balance across the window
+  // (an honest estimate) rather than floored to today and dropped from every
+  // historical day. Symmetric with the live writer (regenerate.ts), which after
+  // REG-1 includes every balance-bearing account. Single predicate authority in
+  // backfill-core (shared with backfill.ts).
+  const heldFlatIds = new Set(
+    accounts.filter((a) => isHeldFlatBalanceAccount(a, earliestTxByAccount.has(a.id))).map((a) => a.id),
+  );
+  const hasFlatHeld = heldFlatIds.size > 0;
+
   const EPOCH = new Date(0);
   const floorByAccount = new Map<string, Date>(
     linkRows.map((l) => {
       const acctId = l.financialAccount.id;
-      // No transactions synced yet ⇒ floor = today ⇒ genuinely zero
-      // reconstructable days for this account (correct, not the old bug).
-      const txFloor = earliestTxByAccount.get(acctId) ?? today;
+      // Account-level floor: earliest real Transaction. No transactions ⇒ floor =
+      // today (genuinely zero reconstructable days) EXCEPT a held-flat balance-
+      // bearing cash/debt account, which floors to EPOCH so it spans the window
+      // held flat (REG-2) — its current balance is an honest flat estimate, not a
+      // fabricated reconstruction.
+      const txFloor = earliestTxByAccount.get(acctId) ?? (heldFlatIds.has(acctId) ? EPOCH : today);
       // SECONDARY floor (SHARED spaces only) — mirrors backfill.ts: don't
       // reconstruct this Space's history before the account was shared into it.
       // The account's HOME (PERSONAL) space has no such bound.
@@ -271,10 +286,11 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   );
 
   // Walk anchor is today's current balances; walk back only as far as fromDate.
-  // With holdings to value, span the full window; the constant-quantity valuation
-  // (investment + crypto) does not depend on the cash/card floors.
+  // With holdings to value OR a held-flat balance account, span the full window;
+  // the constant-quantity valuation (investment + crypto) and the held-flat cash
+  // estimate do not depend on the walk-back cash/card floors.
   const cashFloorStart = maxDate(fromISO(fromDate), truncDateUTC([...floorByAccount.values()].reduce((m, d) => (d < m ? d : m), today)));
-  const effectiveStart = hasHoldings ? fromISO(fromDate) : cashFloorStart;
+  const effectiveStart = (hasHoldings || hasFlatHeld) ? fromISO(fromDate) : cashFloorStart;
   if (effectiveStart.getTime() >= today.getTime()) return zero;
 
   // Cash + revolving-card transaction deltas over (effectiveStart, today].
@@ -313,7 +329,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // still gets a full historical series). Today is excluded (its live row is frozen).
   const todayISO = isoDate(today);
   const dayList = new Set<string>([...dailyCash.keys()]);
-  if (hasHoldings) {
+  if (hasHoldings || hasFlatHeld) {
     for (let d = new Date(effectiveStart); isoDate(d) < todayISO; d = addDaysUTC(d, 1)) {
       dayList.add(isoDate(d));
     }
@@ -331,18 +347,23 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     const cardMap = dailyCard.get(dISO);
 
     // Day-accounts: cash/card walked back, everything else flat (backfill parity),
-    // excluding accounts that did not exist / were not linked yet on day d.
+    // excluding accounts that did not exist / were not linked yet on day d. REG-2:
+    // a held-flat balance account (no walk-back deltas) flows through the flat
+    // fallback below; note its presence so the day's cash/card tier degrades to
+    // "estimated" (a held-flat balance is a weaker estimate than a walk-back).
+    let dayHasHeldFlat = false;
     const dayAccounts = accounts
       .filter((a) => floorByAccount.get(a.id)!.getTime() <= d.getTime())
       .map((a) => {
+        if (heldFlatIds.has(a.id)) dayHasHeldFlat = true;
         if (cashMap.has(a.id)) return { type: a.type, balance: cashMap.get(a.id)!, currency: a.currency };
         if (cardMap?.has(a.id)) return { type: a.type, balance: cardMap.get(a.id)!, currency: a.currency };
         return { type: a.type, balance: a.balance, currency: a.currency };
       });
     // Skip a day only when there is nothing at all to value — but a holdings-only
-    // Space (investment/crypto floored to today, so dayAccounts is empty) is still
-    // valued below via the constant-quantity overrides, so don't skip it.
-    if (dayAccounts.length === 0 && !hasHoldings) continue;
+    // Space (investment/crypto floored to today, so dayAccounts is empty) or a
+    // held-flat balance account is still valued below, so don't skip it.
+    if (dayAccounts.length === 0 && !hasHoldings && !hasFlatHeld) continue;
 
     const c = classifyAccounts(dayAccounts, ctx, dISO);
 
@@ -353,7 +374,12 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     let investmentTier: CompletenessTier = "incomplete";
     let hasInvestmentEvidence = false;
     try {
-      const view = await getInvestmentValueAsOf({ spaceId, asOf: dISO, client, holdConstantBeforeEarliest: true });
+      // excludeDigitalAssetAccounts — this valuedSubtotal becomes the day's
+      // totalInvestments; crypto is valued separately into totalDigitalAssets
+      // (digitalAssetValue below), so it must NOT also count here or BTC is
+      // double-counted (the historical net-worth cliff). Mirrors the live writer,
+      // where classifyAccounts already partitions crypto out of totalInvestments.
+      const view = await getInvestmentValueAsOf({ spaceId, asOf: dISO, client, holdConstantBeforeEarliest: true, excludeDigitalAssetAccounts: true });
       hasInvestmentEvidence = view.components.length > 0;
       if (hasInvestmentEvidence) {
         investmentValue = view.valuedSubtotal;
@@ -401,7 +427,11 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       digitalAssetValue,
       digitalAssetTier: "estimated", // constant-quantity assumption × real price
       hasDigitalAssetEvidence,
-      cashCardTier: "derived",
+      // REG-2 — a held-flat balance account (current balance carried backward, no
+      // transaction reconstruction) makes the day's cash/card component an
+      // "estimated" (not "derived") value, so the row is honestly labeled a weaker
+      // estimate. Still isEstimated=true either way; never presented as observed.
+      cashCardTier: dayHasHeldFlat ? "estimated" : "derived",
       // 2026-07-15 §9 fix — any account revoked strictly after this day was
       // plausibly still a member of the Space as of this day; the `accounts`
       // array above only reflects CURRENTLY active links, so writing this day
