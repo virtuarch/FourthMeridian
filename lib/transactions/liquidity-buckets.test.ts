@@ -1,14 +1,20 @@
 /**
  * lib/transactions/liquidity-buckets.test.ts
  *
- * CF-2B convergence — proves the shared liquidity projection (deriveCashFlowAxes,
- * bucketLiquidity, dailyLiquidity) reconciles: Summary == Σ History buckets ==
- * Σ Calendar days for the same rows. Pure — no DB.
+ * Liquidity reason breakdown — proves the canonical Summary (deriveCashFlowAxes)
+ * counts a liquid-account payment-app movement as spendable cash while excluding
+ * a liability payment-app leg and an internal transfer. Pure — no DB.
+ *
+ * NOTE: the former History/Calendar reconciliation cases were removed together
+ * with the dead `bucketLiquidity`/`dailyLiquidity` folds (zero production
+ * consumers — CF-3 `DayFacts` in cash-flow-projection.ts is the live per-bucket
+ * / per-day projection). What remains here is the deriveCashFlowAxes reason
+ * coverage those cases also carried.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveCashFlowAxes, bucketLiquidity, dailyLiquidity, tierResolver, type LiquidityTx } from "./liquidity";
+import { deriveCashFlowAxes, tierResolver, type LiquidityTx } from "./liquidity";
 
 let n = 0;
 function tx(over: Partial<LiquidityTx> & { amount: number; date: string }): LiquidityTx {
@@ -26,24 +32,6 @@ const rows: LiquidityTx[] = [
 ];
 const ctxWithSav = tierResolver([{ id: "chk", type: "checking" }, { id: "chk2", type: "savings" }, { id: "brk", type: "investment" }, { id: "card", type: "debt" }]);
 
-test("History buckets sum to the Summary totals (reconcile)", () => {
-  const axes = deriveCashFlowAxes(rows, ctxWithSav);
-  const buckets = bucketLiquidity(rows, ctxWithSav, "PAST_YEAR");
-  const sumIn = buckets.reduce((s, b) => s + b.cashIn, 0);
-  const sumOut = buckets.reduce((s, b) => s + b.cashOut, 0);
-  assert.equal(Math.round(sumIn * 100), Math.round(axes.cashIn * 100));
-  assert.equal(Math.round(sumOut * 100), Math.round(axes.cashOut * 100));
-});
-
-test("Calendar days sum to the Summary totals (reconcile)", () => {
-  const axes = deriveCashFlowAxes(rows, ctxWithSav);
-  const days = dailyLiquidity(rows, ctxWithSav);
-  const sumIn = [...days.values()].reduce((s, d) => s + d.cashIn, 0);
-  const sumOut = [...days.values()].reduce((s, d) => s + d.cashOut, 0);
-  assert.equal(Math.round(sumIn * 100), Math.round(axes.cashIn * 100));
-  assert.equal(Math.round(sumOut * 100), Math.round(axes.cashOut * 100));
-});
-
 test("liquid payment-app is counted; liability payment-app + internal are excluded", () => {
   const axes = deriveCashFlowAxes(rows, ctxWithSav);
   // Cash In = 6000 income + 8141.98 investments + 200 payment-app-in.
@@ -52,19 +40,4 @@ test("liquid payment-app is counted; liability payment-app + internal are exclud
   assert.equal(Math.round(axes.cashOut * 100), Math.round((50 + 1000) * 100));
   assert.equal(Math.round(axes.byReason.PAYMENT_APP_INFLOW * 100), 20000);
   assert.equal(Math.round(axes.byReason.PAYMENT_APP_OUTFLOW * 100), 5000);
-});
-
-test("only CASH_IN/CASH_OUT rows enter buckets — NEUTRAL/UNRESOLVED are absent", () => {
-  const days = dailyLiquidity(rows, ctxWithSav);
-  // 2026-02-15 (liability payment-app) and 2026-02-20 (internal) produced no cash-flow.
-  assert.ok(!days.has("2026-02-15"));
-  assert.ok(!days.has("2026-02-20"));
-});
-
-test("byReason on buckets enables future filters without a new classifier", () => {
-  const buckets = bucketLiquidity(rows, ctxWithSav, "PAST_YEAR");
-  const all = buckets.flatMap((b) => Object.keys(b.byReason));
-  assert.ok(all.includes("EARNED_INCOME"));
-  assert.ok(all.includes("INVESTMENT_INFLOW"));
-  assert.ok(all.includes("PAYMENT_APP_OUTFLOW"));
 });

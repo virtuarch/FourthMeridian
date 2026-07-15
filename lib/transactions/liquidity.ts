@@ -33,8 +33,7 @@ import {
 import { accountTier, type AccountTier } from "@/lib/account-classifier";
 import {
   aggregateCashFlow,
-  granularityFor, bucketKey, bucketLabel,
-  type CashFlowTotals, type CashFlowPeriod,
+  type CashFlowTotals,
 } from "@/lib/transactions/cash-flow";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
@@ -290,76 +289,4 @@ export function deriveCashFlowAxes(
     byReason,
     economic: aggregateCashFlow(transactions, moneyCtx),
   };
-}
-
-// ─── Shared time-bucketed liquidity projection (CF-2B convergence) ───────────────
-//
-// ONE projection over classifyLiquidity that Summary, History, and Calendar all
-// reconcile on. Summary uses deriveCashFlowAxes (a single bucket); History uses
-// bucketLiquidity (per period bucket); Calendar uses dailyLiquidity (per day).
-// Only CASH_IN / CASH_OUT rows contribute — NEUTRAL/UNRESOLVED movements are
-// context, never spendable-cash totals. `byReason` is retained so future filters
-// (Income only, Cash In, Spending, Debt payments, Money invested, From investments,
-// From payment apps, combined) become a reason selection with no new classifier.
-
-export interface LiquidityBucketTotals {
-  cashIn:   number;
-  cashOut:  number;
-  net:      number;   // cashIn − cashOut
-  byReason: Partial<Record<LiquidityReason, number>>;
-}
-
-/** Fold one row's liquidity effect into a bucket accumulator. */
-function foldLiquidity(acc: LiquidityBucketTotals, t: LiquidityTx, liqCtx: LiquidityContext, moneyCtx?: ConversionContext): void {
-  const c = classifyLiquidity(t, liqCtx);
-  if (c.effect !== "CASH_IN" && c.effect !== "CASH_OUT") return; // context, not a cash-flow total
-  const amt = rowMagnitude(t, moneyCtx);
-  if (c.effect === "CASH_IN") acc.cashIn += amt; else acc.cashOut += amt;
-  acc.byReason[c.reason] = (acc.byReason[c.reason] ?? 0) + amt;
-  acc.net = acc.cashIn - acc.cashOut;
-}
-
-export interface LiquidityBucket extends LiquidityBucketTotals {
-  key:   string;
-  label: string;
-}
-
-/** Cash In/Out/Net per time bucket for the period (History). Same classifier and
- *  bucket-key scheme as the economic bucketCashFlow, so it reconciles with the
- *  Summary total for the same rows/period. */
-export function bucketLiquidity(
-  transactions: LiquidityTx[],
-  liquidityCtx: LiquidityContext,
-  period: CashFlowPeriod,
-  moneyCtx?: ConversionContext,
-): LiquidityBucket[] {
-  const g = granularityFor(period);
-  const acc = new Map<string, LiquidityBucketTotals>();
-  for (const t of transactions) {
-    const key = bucketKey(t.date, g);
-    const b = acc.get(key) ?? { cashIn: 0, cashOut: 0, net: 0, byReason: {} };
-    foldLiquidity(b, t, liquidityCtx, moneyCtx);
-    acc.set(key, b);
-  }
-  return [...acc.entries()]
-    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-    .map(([key, v]) => ({ key, label: bucketLabel(key, g), ...v }));
-}
-
-/** Cash In/Out/Net per calendar day (Calendar), keyed by YYYY-MM-DD. Same
- *  classifier as Summary/History — days with no spendable movement are absent. */
-export function dailyLiquidity(
-  transactions: LiquidityTx[],
-  liquidityCtx: LiquidityContext,
-  moneyCtx?: ConversionContext,
-): Map<string, LiquidityBucketTotals> {
-  const acc = new Map<string, LiquidityBucketTotals>();
-  for (const t of transactions) {
-    const b = acc.get(t.date) ?? { cashIn: 0, cashOut: 0, net: 0, byReason: {} };
-    foldLiquidity(b, t, liquidityCtx, moneyCtx);
-    acc.set(t.date, b);
-  }
-  // Drop days that ended with no cash-flow (only context movements).
-  for (const [k, v] of acc) if (v.cashIn === 0 && v.cashOut === 0) acc.delete(k);
-  return acc;
 }

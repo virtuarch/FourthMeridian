@@ -124,8 +124,9 @@ export function aggregateDayFacts(transactions: LiquidityTx[], liqCtx: Liquidity
 }
 
 /** Per-calendar-day `DayFacts`, keyed by YYYY-MM-DD (Calendar). Every day with
- *  ANY activity on either axis is present (unlike dailyLiquidity, which drops
- *  liquidity-neutral days) — the economic perspective needs card-only days too. */
+ *  ANY activity on either axis is present (unlike a liquidity-only projection,
+ *  which drops liquidity-neutral days) — the economic perspective needs
+ *  card-only days too. */
 export function projectDailyFacts(transactions: LiquidityTx[], liqCtx: LiquidityContext, moneyCtx?: ConversionContext): Map<string, DayFacts> {
   const out = new Map<string, DayFacts>();
   for (const t of transactions) {

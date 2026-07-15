@@ -310,43 +310,14 @@ export function bucketLabel(key: string, g: CashFlowGranularity): string {
     : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-export interface CashFlowBucket {
-  key:    string;
-  label:  string;
-  income: number;
-  spend:  number;
-  net:    number;
-}
+// NOTE: bucketCashFlow / CashFlowBucket were retired in the P1 closeout (dead
+// folds — zero production callers; the canonical per-bucket income/spend/net is
+// cash-flow-projection.ts's DayFacts path). bucketLabel / bucketKey /
+// granularityFor below remain live (consumed by cash-flow-projection.ts and
+// transactionsInBucket).
 
-/** Income/spend/net per time bucket for the period, ordered chronologically. */
-export function bucketCashFlow(
-  transactions: Transaction[],
-  period: CashFlowPeriod,
-  ctx?: ConversionContext,
-): CashFlowBucket[] {
-  const g = granularityFor(period);
-  const acc = new Map<string, { income: number; spend: number; refunds: number }>();
-  for (const t of transactions) {
-    const flow = t.flowType ?? null;
-    if (!isCostFlow(flow) && !isRefund(flow) && !isIncome(flow)) continue;
-    const key = bucketKey(t.date, g);
-    const b = acc.get(key) ?? { income: 0, spend: 0, refunds: 0 };
-    const amt = Math.abs(rowAmount(t, ctx));
-    if (isCostFlow(flow)) b.spend += amt;
-    else if (isRefund(flow)) b.refunds += amt;
-    else if (isIncome(flow)) b.income += amt;
-    acc.set(key, b);
-  }
-  return [...acc.entries()]
-    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-    .map(([key, v]) => {
-      const spend = Math.max(0, v.spend - v.refunds);
-      return { key, label: bucketLabel(key, g), income: v.income, spend, net: v.income - spend };
-    });
-}
-
-/** Member transactions of one history bucket (same key scheme as bucketCashFlow
- *  at the period's granularity) — drives Cash Flow History card drill-down.
+/** Member transactions of one history bucket (same key scheme as the DayFacts
+ *  bucketing at the period's granularity) — drives Cash Flow History card drill-down.
  *  Returns rows chronologically; the caller decides how to present them. */
 export function transactionsInBucket(
   transactions: Transaction[],
@@ -359,41 +330,9 @@ export function transactionsInBucket(
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
-// ─── Calendar (daily net) ─────────────────────────────────────────────────────
-
-export interface DayCashFlow {
-  income:  number;
-  spend:   number;   // clamped ≥ 0 after refunds (same doctrine as buckets)
-  refunds: number;   // disclosed separately (same as aggregateCashFlow)
-  net:     number;   // income − spend
-}
-
-/**
- * Per-calendar-day income/spend/net, keyed by YYYY-MM-DD, using the SAME
- * FlowType-aware doctrine as aggregateCashFlow/bucketCashFlow (spend =
- * SPENDING+FEE+INTEREST − REFUND clamped ≥ 0; transfers/debt/investment
- * excluded). Feeds the calendar visualization — callers pass the already
- * period-filtered rows; days with no cash-flow activity are simply absent.
- */
-export function dailyCashFlow(transactions: Transaction[], ctx?: ConversionContext): Map<string, DayCashFlow> {
-  const acc = new Map<string, { income: number; spend: number; refunds: number }>();
-  for (const t of transactions) {
-    const flow = t.flowType ?? null;
-    if (!isCostFlow(flow) && !isRefund(flow) && !isIncome(flow)) continue;
-    const b = acc.get(t.date) ?? { income: 0, spend: 0, refunds: 0 };
-    const amt = Math.abs(rowAmount(t, ctx));
-    if (isCostFlow(flow)) b.spend += amt;
-    else if (isRefund(flow)) b.refunds += amt;
-    else if (isIncome(flow)) b.income += amt;
-    acc.set(t.date, b);
-  }
-  const out = new Map<string, DayCashFlow>();
-  for (const [date, v] of acc) {
-    const spend = Math.max(0, v.spend - v.refunds);
-    out.set(date, { income: v.income, spend, refunds: v.refunds, net: v.income - spend });
-  }
-  return out;
-}
+// NOTE: dailyCashFlow / DayCashFlow were retired in the P1 closeout (dead fold —
+// zero production callers; the canonical per-day income/spend/net is
+// cash-flow-projection.ts's DayFacts). No financial semantics changed.
 
 /** Calendar months (ascending) spanned by an inclusive ISO-date range. A month
  *  scale yields 1 (or 2 for rolling windows), a quarter 3–4, a year 12–13. */

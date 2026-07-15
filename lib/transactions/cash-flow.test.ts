@@ -10,7 +10,6 @@ import {
   periodRange,
   filterByPeriod,
   aggregateCashFlow,
-  bucketCashFlow,
   granularityFor,
   outflowByCategory,
   incomeBySource,
@@ -25,7 +24,6 @@ import {
   getCashFlowHistoryModes,
   getDefaultCashFlowHistoryMode,
   monthsInRange,
-  dailyCashFlow,
   CASH_FLOW_PERIODS,
   TO_DATE_PERIODS,
   ROLLING_PERIODS,
@@ -221,20 +219,10 @@ check("transfers & debt payments excluded from cash flow",
 check("refund clamps spend at ≥ 0",
   aggregateCashFlow([tx("2026-07-02", -50, "SPENDING"), tx("2026-07-02", 200, "REFUND")]).spend === 0);
 
-// ── History bucketing ───────────────────────────────────────────────────────────
+// ── History bucketing granularity (bucketCashFlow itself retired — P1 closeout) ──
 check("granularity: MTD → day",     granularityFor("MTD") === "day");
 check("granularity: QTD → week",    granularityFor("QTD") === "week");
 check("granularity: YTD → month",   granularityFor("YTD") === "month");
-
-const buckets = bucketCashFlow(rows, "MTD");
-check("daily buckets are chronological", buckets.map((b) => b.key).every((k, i, a) => i === 0 || a[i - 1] < k));
-check("a bucket carries income/spend/net", buckets.some((b) => b.income === 5000));
-
-const yearBuckets = bucketCashFlow(
-  [tx("2026-01-15", 100, "INCOME"), tx("2026-03-20", 100, "INCOME")],
-  "YTD",
-);
-check("YTD buckets are monthly (2 distinct months)", yearBuckets.length === 2 && yearBuckets[0].key === "2026-01");
 
 // ── Outflow by category ─────────────────────────────────────────────────────────
 const contrib = outflowByCategory(rows);
@@ -299,25 +287,9 @@ check("monthsInRange spans a year boundary",
   monthsInRange("2025-11-15", "2026-02-03").map((m) => `${m.year}-${m.month}`).join(",")
     === "2025-11,2025-12,2026-1,2026-2");
 
-// ── dailyCashFlow (calendar buckets) ─────────────────────────────────────────────
-const dayRows: Transaction[] = [
-  tx("2026-07-02", 5000, "INCOME",   "Income"),
-  tx("2026-07-03", -200, "SPENDING", "Groceries"),
-  tx("2026-07-03", 40,   "REFUND",   "Groceries"),   // same day → nets spend to 160
-  tx("2026-07-04", -1000,"TRANSFER", "Transfer"),    // excluded
-];
-const daily = dailyCashFlow(dayRows);
-check("daily net: income day", daily.get("2026-07-02")?.net === 5000);
-check("daily net: refund nets same-day spend (−160)",
-  daily.get("2026-07-03")?.spend === 160 && daily.get("2026-07-03")?.net === -160);
-check("daily net: transfers excluded (no cash-flow day)", !daily.has("2026-07-04"));
-check("daily refunds disclosed separately for tooltip (40)",
-  daily.get("2026-07-03")?.refunds === 40);
-check("daily spend clamps ≥ 0 per day",
-  dailyCashFlow([tx("2026-07-05", -50, "SPENDING"), tx("2026-07-05", 200, "REFUND")]).get("2026-07-05")?.spend === 0);
-check("dailyCashFlow matches aggregate net over the same rows",
-  (() => { const total = [...dailyCashFlow(dayRows).values()].reduce((s, d) => s + d.net, 0);
-           return total === aggregateCashFlow(dayRows).net; })());
+// NOTE: the dailyCashFlow calendar-bucket suite was removed here — the helper
+// was retired in the P1 closeout (dead fold; the canonical per-day fold is
+// cash-flow-projection.ts's DayFacts, covered by cash-flow-projection.test.ts).
 
 // ── Income by Source (Part A) ────────────────────────────────────────────────────
 function inc(amount: number, flow: FlowType, over: Partial<Transaction> = {}): Transaction {
