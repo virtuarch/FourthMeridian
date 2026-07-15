@@ -22,7 +22,7 @@ import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { EnableInvestmentsButton } from "@/components/dashboard/EnableInvestmentsButton";
-import { AccountRefreshButton } from "@/components/space/widgets/InvestmentAccountsWidget";
+import { AccountRefreshButton } from "@/components/plaid/AccountRefreshButton";
 import type { InvestmentAccountView } from "@/lib/investments/current-holdings";
 
 /** The states this card surfaces — everything else (holdings/wallet) is healthy. */

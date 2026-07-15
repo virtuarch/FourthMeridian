@@ -23,8 +23,8 @@
  * It never calls router.refresh() when nothing changed (all-cooldown), and does
  * for "done"/"partial". `banner` carries human-readable cooldown detail for the
  * two informational phases (null otherwise). Minutes use the same
- * Math.ceil(secs / 60) convention as InvestmentAccountsWidget's
- * AccountRefreshButton for consistency.
+ * Math.ceil(secs / 60) convention as components/plaid/AccountRefreshButton
+ * for consistency.
  *
  * Server side (route + lib/plaid/refreshCooldown.ts) is already correct and is
  * intentionally not touched — this is a client-only fix.

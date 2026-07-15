@@ -124,9 +124,15 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // historical pricing (the A8 price foundation). Wealth owns "how much am I
     // worth"; Investments never restates that hero. Per-holding gain/loss and
     // cost basis stay out — the data does not carry them, and unknown is
-    // preferable to incorrect. widgets[] is retained for the shell's workspace
-    // affordance (the composition mounts via SpaceDashboard's investments branch).
-    widgets: ["investment_accounts"],
+    // preferable to incorrect. widgets[] is retained ONLY as the shell's
+    // "has-workspace" affordance marker — it is consumed for `.length > 0`
+    // (default-perspective pick, Overview-doorway clickability, tab
+    // hasWorkspace), never rendered: the composition mounts via SpaceDashboard's
+    // dedicated `activePerspectiveId === "investments"` branch, so the generic
+    // toVirtualSections path is unreachable here. The former "investment_accounts"
+    // registry widget was retired (P1 closeout); this marker is not a registry
+    // key (toVirtualSections would fall back to the raw string, but never runs).
+    widgets: ["investments_workspace"],
   },
   debt: {
     id: "debt", label: "Debt", icon: "CreditCard", status: "available", group: "Financial",

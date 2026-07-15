@@ -27,12 +27,33 @@ function check(name: string, ok: boolean, detail?: string): void {
 
 // ── 1. Registry parity — every PerspectiveDef.widgets[] key exists in
 //      WIDGET_REGISTRY and is a real (implemented, non-deprecated) widget. ──
+//
+// EXCEPTION (P1 closeout): the Investments perspective renders via
+// SpaceDashboard's dedicated `activePerspectiveId === "investments"` branch, NOT
+// through toVirtualSections. Its former `investment_accounts` registry widget
+// was retired; it now carries a non-registry AFFORDANCE MARKER kept only so
+// `widgets.length > 0` (default-pick / Overview-doorway clickability / tab
+// hasWorkspace). The marker is intentionally NOT a registry widget — every OTHER
+// perspective's keys must still be real registry widgets.
+const DEDICATED_BRANCH_MARKERS = new Set(["investments_workspace"]);
+
+// Compensating assertions so a typo/rename can't silently slip through the
+// exemption: investments must use exactly this marker, and the marker must be
+// absent from the registry (proving no dead `investment_accounts` entry lingers).
+check("investments perspective uses the dedicated-branch affordance marker",
+  JSON.stringify(PERSPECTIVE_LIBRARY.investments.widgets) === JSON.stringify(["investments_workspace"]));
+check("the affordance marker is intentionally NOT a registry widget",
+  !WIDGET_REGISTRY.has("investments_workspace"));
+check("the retired investment_accounts widget is gone from the registry",
+  !WIDGET_REGISTRY.has("investment_accounts"));
+
 const withWidgets = Object.values(PERSPECTIVE_LIBRARY).filter((p) => p.widgets && p.widgets.length > 0);
 check("at least one Perspective has a widgets[] workspace (wealth)",
   withWidgets.some((p) => p.id === "wealth"));
 
 for (const p of withWidgets) {
   for (const key of p.widgets!) {
+    if (DEDICATED_BRANCH_MARKERS.has(key)) continue; // dedicated-branch affordance marker (see above)
     const entry = WIDGET_REGISTRY.get(key);
     check(`perspective "${p.id}" widget "${key}" exists in WIDGET_REGISTRY`, entry !== undefined);
     if (entry) {

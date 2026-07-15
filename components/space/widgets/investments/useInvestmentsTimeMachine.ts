@@ -71,8 +71,8 @@ export function useInvestmentsTimeMachine(
     if (compareToForFetch) params.set("compareTo", compareToForFetch);
 
     // Every setState runs inside an async callback, never synchronously in the
-    // effect body — the house pattern (InvestmentAccountsWidget / the goals
-    // fetch) that satisfies react-hooks/set-state-in-effect. The loading flip is
+    // effect body — the house pattern (the goals fetch / GoalsCard) that
+    // satisfies react-hooks/set-state-in-effect. The loading flip is
     // deferred to a microtask for the same reason.
     Promise.resolve().then(() => { if (alive) setLoading(true); });
 
