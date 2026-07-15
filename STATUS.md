@@ -54,7 +54,7 @@ Related investigations:
 **Pre-Decomposition roadmap:**
 
 - **In parallel:**
-  - **PCS-1 — Investments Space Contract** — stabilize the Investments workspace's canonical read contract over `getCurrentPositions()` / A10.
+  - **PCS-1 — Investments Space Contract** — stabilize the Investments workspace's canonical read contract over `getCurrentPositions()` / A10. **PCS-1A ✅** (`InvestmentsSpaceData.current` = `CurrentPortfolio` from `getCurrentPositions`, `lib/investments/space-data.ts`). **PCS-1B ✅ (2026-07-16)** — added the `historical` slice: `InvestmentsSpaceData.historical` = `HistoricalPortfolio` (A10 result verbatim) + `loadInvestmentsHistory` (the A10 binding under its contract name); the `/investments/time-machine` route now reads through the contract module; invariant `Current → getCurrentPositions() · Historical → A10` pinned by `space-data-historical.test.ts` (incl. the `getCurrentPositions.asOf`-is-only-today guard). Additive, zero UI behavior change — the Investments Perspective UI *current-default* rewire off the A10-at-today route stays a flagged follow-up. PCS-1C (`buildInvestmentsTrustSummary`) also landed. Remaining: the deferred UI rewire.
   - **PCS-2 — Connections Contract** — stabilize the Connections/provider-health workspace contract.
   - **PCS-3 — Legacy Account M1 Verification** — verify the legacy `Account` runtime-read retirement (the M1 exit criterion).
 - **then PCS-4 — Space Workspace Composition Contract Investigation** — investigate the canonical composition contract by which the host assembles per-workspace SpaceData.

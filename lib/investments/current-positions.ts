@@ -58,9 +58,15 @@ export type CurrentPositionsScope =
 
 export interface CurrentPositionsOptions {
   /**
-   * Override "today" (YYYY-MM-DD). Injected clock for determinism / tests. When
-   * set, the seam returns the current-shape projection valued AT that date using
-   * the latest observation ≤ it — i.e. A10-at-`asOf` without compare/flows.
+   * The seam's injected "today" clock (YYYY-MM-DD) — for determinism / tests, and
+   * so a caller can value CURRENT positions and an all-visibility aggregate at the
+   * exact same instant (the AI holdings assembler's use; always todayIso() in
+   * production). It is NOT a historical portal: this seam has no compare/flows/
+   * reconciliation, and a genuine as-of / historical read is an A10 caller
+   * (loadInvestmentsHistory / getInvestmentsTimeMachine), never this. PCS-1B pins
+   * "asOf is only ever today here" in space-data-historical.test.ts. When set, the
+   * seam still returns the current-shape projection valued at that date via the
+   * latest observation ≤ it (A10-at-`asOf` without compare/flows).
    */
   asOf?:  string;
   client?: Client;

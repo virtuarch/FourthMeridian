@@ -4,22 +4,24 @@
  * A10 — the canonical Investments Time Machine read path, proven end-to-end.
  * Membership-gated (ACTIVE member, any role) exactly like GET
  * /api/spaces/[id]/investments. Visibility is enforced inside the read (KD-21a):
- * getInvestmentsTimeMachine scopes positions AND period flows to the Space's
- * detail-eligible (FULL) account links via the canonical TRANSACTION_DETAIL_VISIBILITY
+ * loadInvestmentsHistory (the A10 binding) scopes positions AND period flows to the
+ * Space's detail-eligible (FULL) account links via the canonical TRANSACTION_DETAIL_VISIBILITY
  * predicate, so a BALANCE_ONLY / SUMMARY_ONLY account never exposes its positions
  * or investment events here.
  *
  * The Perspective Shell owns preset/asOf/compareTo and passes RESOLVED dates
- * here as query params; this route resolves no time state of its own. Returns the
- * canonical InvestmentsTimeMachineResult (holdings + valued portfolio at asOf,
- * plus period flows and a change reconciliation when compareTo is supplied). No
- * access tokens, cursors, or credentials are ever returned.
+ * here as query params; this route resolves no time state of its own. It reads the
+ * historical slice through the canonical Investments SpaceData contract
+ * (loadInvestmentsHistory = the A10 binding, PCS-1B) and returns that
+ * HistoricalPortfolio (holdings + valued portfolio at asOf, plus period flows and a
+ * change reconciliation when compareTo is supplied) VERBATIM — the JSON is
+ * unchanged. No access tokens, cursors, or credentials are ever returned.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { SpaceMemberRole } from "@prisma/client";
 import { requireSpaceRole } from "@/lib/session";
-import { getInvestmentsTimeMachine } from "@/lib/investments/investments-time-machine";
+import { loadInvestmentsHistory } from "@/lib/investments/space-data";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +51,6 @@ export async function GET(
   // ctx.user is unused here — visibility is enforced inside the read via the
   // Space's ACTIVE account links; membership above is the gate.
   void ctx;
-  const result = await getInvestmentsTimeMachine({ spaceId, asOf, compareTo: compareToRaw ?? null });
+  const result = await loadInvestmentsHistory({ spaceId, asOf, compareTo: compareToRaw ?? null });
   return NextResponse.json(result);
 }

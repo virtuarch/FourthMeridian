@@ -224,10 +224,19 @@ same per-row classifiers).
 - **Must NOT be used for:** As-Of / compare / period flows — it deliberately cannot do those. A caller needing any of them is an **A10 caller** (below), not a `getCurrentPositions` caller.
 
 ### A10 Investments Time Machine
-- **Purpose:** the historical / As-Of / compare / period investment read.
-- **Authority:** `lib/investments/investments-time-machine.ts` (`getInvestmentsTimeMachine`), over the same valuation core.
+- **Purpose:** the historical / As-Of / compare / period investment read. **Historical truth belongs EXCLUSIVELY to A10.**
+- **Authority:** `lib/investments/investments-time-machine.ts` (`getInvestmentsTimeMachine`), over the same valuation core. Surfaced under its contract name as `loadInvestmentsHistory` (see the InvestmentsSpaceData contract below); the `/investments/time-machine` route reads through that.
+- **Outputs:** `InvestmentsTimeMachineResult` = the `HistoricalPortfolio` slice — as-of holdings (`ValuedHoldingRow[]`), valued portfolio, period `flows`, and the `opening + netExternalFlows + residual = closing` reconciliation. Reuses NONE of the current-position DTOs.
 - **Consumers:** the Investments Perspective UI, Wealth composition/trend.
 - **Must NOT be used for:** the cheap "today" read that has no As-Of need — that is `getCurrentPositions`.
+
+### InvestmentsSpaceData — the Investments workspace read contract  *(PCS-1A · PCS-1B)*
+- **Purpose:** the ONE navigational home for reading the Investments workspace (the analogue of `lib/connections/space-data.ts`), so the host composes a uniform per-workspace contract instead of reaching into mechanism modules.
+- **Authority:** `lib/investments/space-data.ts` + `space-data-core.ts`. `InvestmentsSpaceData` has two slices split by **time**, never cross-derived:
+  - `current` (**PCS-1A**) → `loadInvestmentsSpaceData(scope, options)` → `CurrentPortfolio`, sourced EXCLUSIVELY from `getCurrentPositions()` (+ folded allocation).
+  - `historical` (**PCS-1B**) → `loadInvestmentsHistory(args)` → `HistoricalPortfolio` = the A10 result VERBATIM.
+- **The invariant (pinned):** `Current → getCurrentPositions()` · `Historical → A10`. `historical` is never derived from `current` and the current seam is never a historical portal (`getCurrentPositions`'s `asOf` is only ever today). Guarded by `space-data-historical.test.ts` (PCS-1B) + `space-data-core.test.ts` (PCS-1A).
+- **Deferred (flagged):** repointing the Investments Perspective UI's current-default view off the A10-at-today route onto `loadInvestmentsSpaceData` — the current view still renders through A10 today. Additive stabilization first (PCS-1A/B cadence); the UI rewire is a separately-reviewed follow-up.
 
 ### PositionObservation — the canonical position spine  *(P2-6)*
 - **Purpose:** the canonical, provider-neutral evidence record of a held position at a point in time — the identity/evidence layer beneath both current and historical reads. Crypto wallet positions and Plaid/brokerage holdings both write here.
