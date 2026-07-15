@@ -1,70 +1,35 @@
 /**
  * app/(shell)/dashboard/connections/page.tsx
  *
- * D2.x Slice 3 — first increment of the permanent Connections hub.
+ * The permanent Connections hub — the single place users land after connecting a
+ * provider. Server-renders the canonical Connections view model
+ * (lib/connections/space-data → { status, accountsByConnectionId }) and hands off
+ * to the ConnectionsList client poller which drives first-run "building" cards →
+ * "ready".
  *
- * The single place users land after connecting a provider. Server-renders the
- * current connections (from PlaidItem, via the provider-agnostic
- * lib/sync/status derivation) plus discovered accounts (existing getAccounts,
- * grouped by institution), then hands off to the ConnectionsList client poller
- * which drives first-run "building" cards → "ready".
+ * PCS-2 — this page NO LONGER reads the portfolio (getAccounts). The account
+ * inventory is resolved per connection by stable id, gated to the owning user,
+ * inside loadConnectionsSpaceData — no balances, no visibility redaction, no
+ * institution-string grouping. See that module's header for the full rationale.
  *
- * This route is additive: /dashboard/accounts is untouched. Provider picker,
- * Sync Center actions, and folding the Accounts list in here are later slices.
+ * This route is additive: /dashboard/accounts is untouched.
  */
 
 import { getSpaceContext } from "@/lib/space";
-import { getAccounts } from "@/lib/data/accounts";
-import { db } from "@/lib/db";
-import { PlaidItemStatus } from "@prisma/client";
-import { buildSyncStatus, finalizeSyncStatus } from "@/lib/sync/status";
-import { loadWalletSyncConnections } from "@/lib/sync/wallet-connections";
+import { loadConnectionsSpaceData } from "@/lib/connections/space-data";
 import { ConnectionsList } from "@/components/connections/ConnectionsList";
 import { ConnectionsActions } from "@/components/connections/ConnectionsActions";
-import type { AccountLite } from "@/components/connections/ConnectionCard";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export default async function ConnectionsPage() {
-  const { userId, spaceId } = await getSpaceContext();
+  const { userId } = await getSpaceContext();
 
-  // Connections (own PlaidItems) → provider-agnostic status seed.
-  const items = await db.plaidItem.findMany({
-    where:  { userId, status: { not: PlaidItemStatus.REVOKED } },
-    select: {
-      id:                 true,
-      institutionName:    true,
-      status:             true,
-      syncIncompleteAt:   true, // derivation only — never sent to client
-      lastSyncedAt:       true,
-      errorCode:          true,
-      investmentsConsent: true, // → client-safe `investments` capability only
-    },
-    orderBy: { createdAt: "asc" },
-  });
-  const plaidStatus = buildSyncStatus(items);
-
-  // Wallet connections (provider=WALLET) ride the same SyncConnection contract.
-  // Merge them so self-custodied wallets appear as cards alongside Plaid, and a
-  // wallet-only user never sees the empty state.
-  const wallet = await loadWalletSyncConnections(userId);
-  const initialStatus = finalizeSyncStatus([...plaidStatus.connections, ...wallet.connections]);
-
-  // Discovered accounts grouped by institution name (own Space). NAMES ONLY —
-  // Connections is a provider-management surface, not the Accounts page, so no
-  // balances/currency are carried into this view model at all.
-  const accounts = await getAccounts({ spaceId });
-  const accountsByInstitution: Record<string, AccountLite[]> = {};
-  for (const a of accounts) {
-    if (!a.institution) continue; // redacted/BALANCE_ONLY — not one of the user's own connections
-    (accountsByInstitution[a.institution] ??= []).push({
-      id:   a.id,
-      name: a.name,
-      type: a.type,
-    });
-  }
+  // The single canonical read: sync status + per-connection account inventory
+  // (NAMES ONLY), both keyed by connection id. No portfolio read.
+  const { status: initialStatus, accountsByConnectionId } = await loadConnectionsSpaceData(userId);
 
   const hasConnections = initialStatus.connections.length > 0;
 
@@ -81,8 +46,7 @@ export default async function ConnectionsPage() {
       {hasConnections ? (
         <ConnectionsList
           initialStatus={initialStatus}
-          accountsByInstitution={accountsByInstitution}
-          accountsByConnectionId={wallet.accountsByConnectionId}
+          accountsByConnectionId={accountsByConnectionId}
         />
       ) : (
         <div className="mx-auto max-w-md pt-4">

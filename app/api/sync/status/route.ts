@@ -19,10 +19,7 @@
 
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
-import { db } from "@/lib/db";
-import { PlaidItemStatus } from "@prisma/client";
-import { buildSyncStatus, finalizeSyncStatus } from "@/lib/sync/status";
-import { loadWalletSyncConnections } from "@/lib/sync/wallet-connections";
+import { loadConnectionsSyncStatus } from "@/lib/connections/space-data";
 
 export const dynamic = "force-dynamic";
 
@@ -30,25 +27,8 @@ export async function GET() {
   const [user, err] = await requireUser();
   if (err) return err;
 
-  const items = await db.plaidItem.findMany({
-    where:  { userId: user.id, status: { not: PlaidItemStatus.REVOKED } },
-    select: {
-      id:                 true,
-      institutionName:    true,
-      status:             true,
-      syncIncompleteAt:   true, // used for derivation only — never returned
-      lastSyncedAt:       true,
-      errorCode:          true,
-      investmentsConsent: true, // → client-safe `investments` capability only
-    },
-    orderBy: { createdAt: "asc" },
-  });
-
-  // Include WALLET connections so polling never drops wallet cards (they carry
-  // the same ids the server-rendered account map is keyed on).
-  const wallet = await loadWalletSyncConnections(user.id);
-
-  return NextResponse.json(
-    finalizeSyncStatus([...buildSyncStatus(items).connections, ...wallet.connections]),
-  );
+  // PCS-2 — one shared assembly (Plaid + WALLET) with the first render, so the
+  // poll can never derive state differently. WALLET connections are included so
+  // polling never drops wallet cards (same ids the account map is keyed on).
+  return NextResponse.json(await loadConnectionsSyncStatus(user.id));
 }

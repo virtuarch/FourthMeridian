@@ -55,14 +55,13 @@ const LIQUID_CAP = 6;
 
 interface Props {
   initialStatus: SyncStatus;
-  /** Plaid FinancialAccounts grouped by institution name (server-rendered). */
-  accountsByInstitution: Record<string, AccountLite[]>;
-  /** Wallet accounts grouped by Connection id — wallets never group by the
-   *  (colliding) institution string. Default empty for Plaid-only callers. */
+  /** Per-connection account inventory (NAMES/TYPES only), keyed by
+   *  SyncConnection.id for EVERY provider — Plaid and wallet alike. PCS-2
+   *  unified the two grouping schemes onto one stable-id map. Default empty. */
   accountsByConnectionId?: Record<string, AccountLite[]>;
 }
 
-export function ConnectionsList({ initialStatus, accountsByInstitution, accountsByConnectionId = {} }: Props) {
+export function ConnectionsList({ initialStatus, accountsByConnectionId = {} }: Props) {
   const router = useRouter();
   const [status, setStatus] = useState<SyncStatus>(initialStatus);
   const [slow, setSlow] = useState(false);
@@ -227,13 +226,9 @@ export function ConnectionsList({ initialStatus, accountsByInstitution, accounts
     <ConnectionCard
       key={c.id}
       connection={c}
-      // Wallets group by connection id (institution strings collide);
-      // Plaid keeps its institution grouping unchanged.
-      accounts={
-        c.provider === "WALLET"
-          ? (accountsByConnectionId[c.id] ?? [])
-          : (accountsByInstitution[c.institution] ?? [])
-      }
+      // One id space for every provider — Plaid and wallet accounts both look up
+      // by connection id (PCS-2). No more institution-string grouping.
+      accounts={accountsByConnectionId[c.id] ?? []}
       slow={slow}
       allowLiquid={liquidAllowed.has(c.id)}
     />
