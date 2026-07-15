@@ -350,8 +350,11 @@ export type SpendingTrendMetric = 'income' | 'expense' | 'net';
  * is excluded before any comparison. Fields are null when there is not enough
  * complete-month history to compute them (< 2 months for MoM, < 3 for rolling).
  *
- * `net` mirrors the top-level netCashFlow convention: income − expense − debt
- * payments (transfers excluded).
+ * `net` mirrors the top-level netCashFlow convention EXACTLY, refunds included:
+ * income + refunds − expense − debt payments (transfers excluded). Refunds are
+ * added back because expense is the GROSS cost-flow sum; omitting them would
+ * make the trend net a different (refund-blind) measure than the canonical
+ * window net it claims to track. Single formula source: metricValue().
  */
 export interface MetricTrend {
   metric:                SpendingTrendMetric;
@@ -860,13 +863,24 @@ function round2(n: number): number {
 
 /**
  * Value of a single cash-flow metric for one month.
- * `net` mirrors the top-level netCashFlow definition (income − expense − debt
- * payments; transfers excluded).
+ *
+ * `net` is the canonical refund-inclusive net cash flow — byte-identical to the
+ * assembler's window `netCashFlow` formula (lib/ai/assemblers/transactions.ts:
+ * `incomeTotal + refundTotal - expenseTotal - debtPaymentTotal`), applied per
+ * month. `refundTotal` MUST be added: expenseTotal is the gross cost-flow sum
+ * (refunds are never netted into it — the KD-17 debit-only rule), so a net that
+ * dropped refunds would understate cash flow by the month's refund total and no
+ * longer mirror the top-level measure it advertises. Transfers stay excluded.
+ * This is the sole trend/annotation net definition site; the parity test
+ * (spending-trends-net.test.ts) pins it to the assembler formula so the two
+ * same-named measures can never drift apart again.
+ *
+ * Exported for that doctrine/parity test — no runtime consumer outside this module.
  */
-function metricValue(m: MonthlyBreakdownEntry, metric: SpendingTrendMetric): number {
+export function metricValue(m: MonthlyBreakdownEntry, metric: SpendingTrendMetric): number {
   if (metric === 'income')  return m.incomeTotal;
   if (metric === 'expense') return m.expenseTotal;
-  return m.incomeTotal - m.expenseTotal - m.debtPaymentTotal; // net
+  return m.incomeTotal + m.refundTotal - m.expenseTotal - m.debtPaymentTotal; // net
 }
 
 /**
