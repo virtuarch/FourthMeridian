@@ -35,7 +35,7 @@ const liqCtx = tierResolver([
 /** A transfer leg as the matcher sees it (date is a Date; currency required). */
 function relLeg(id: string, faId: string, amount: number, over: Partial<RelationshipTransaction> = {}): RelationshipTransaction {
   return {
-    id, accountId: null, financialAccountId: faId,
+    id, financialAccountId: faId,
     plaidTransactionId: null, pendingTransactionRef: null,
     date: new Date('2026-06-01'), amount, merchant: '', pending: false,
     deletedAt: null, flowType: 'TRANSFER', currency: 'USD', ...over,

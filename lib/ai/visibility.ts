@@ -30,9 +30,8 @@
  *
  * Absence of a grant always fails closed.
  *
- * The legacy Account path (transaction.account.spaceId) is the Space's own
- * account set and is treated as FULL by definition — this predicate governs
- * only the SpaceAccountLink (D3 canonical) path.
+ * This predicate governs the SpaceAccountLink (D3 canonical) path — the sole
+ * way a FinancialAccount's transactions reach a Space.
  */
 
 import { VisibilityLevel } from '@prisma/client';

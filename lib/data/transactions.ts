@@ -3,20 +3,17 @@
  *
  * Server-only transaction queries.
  *
- * Transactions reach a space via two paths (see Transaction model comment
- * in prisma/schema.prisma):
- *  - legacy rows: account.spaceId (the old Account model)
- *  - Plaid-synced rows: financialAccount.spaceAccountLinks (D3 Step 4C read
- *    cutover — see docs/initiatives/d3/D3_STEP4C_CORE_DASHBOARD_REVIEW.md; replaces the prior
+ * Transactions reach a space via the canonical path (see Transaction model
+ * comment in prisma/schema.prisma):
+ *  - financialAccount.spaceAccountLinks (D3 Step 4C read cutover — see
+ *    docs/initiatives/d3/D3_STEP4C_CORE_DASHBOARD_REVIEW.md; replaces the prior
  *    financialAccount.workspaceShares query). Visibility is status: ACTIVE on
  *    the link; `kind` (HOME vs SHARED) is not filtered on — both confer
  *    visibility. This is the identical link/status shape lib/data/accounts.ts
  *    now uses, so accounts, holdings, and transactions cannot disagree on
  *    what's visible.
- * Every query below matches both so newly-synced Plaid transactions show up
- * alongside legacy/manual ones. `accountId` on the returned objects is
- * normalized to whichever FK is actually set, since callers (e.g. AccountModal)
- * match transactions to an account by this single id field.
+ * `accountId` on the returned DTOs is the FinancialAccount id, since callers
+ * (e.g. AccountModal) match transactions to an account by this single id field.
  *
  * D2 Step 4D-R: every query below also filters Transaction.deletedAt: null,
  * excluding rows soft-deleted by an import rollback. This is the row's own
@@ -32,9 +29,8 @@
  * BALANCE_ONLY / SUMMARY_ONLY shared account can never leak its transaction
  * rows — the account still contributes a balance total via lib/account-privacy.ts
  * (the accounts path), but its rows, merchants, and amounts never reach these UI
- * lists. The legacy Account path (account.spaceId) is the Space's own accounts
- * and is FULL by definition, so it is left unfiltered. Fails closed: absence of
- * a transaction-detail grant excludes the rows, never leaks them.
+ * lists. Fails closed: absence of a transaction-detail grant excludes the rows,
+ * never leaks them.
  * KD-15 is tracked in STATUS.md (known defects register).
  */
 
@@ -135,15 +131,12 @@ export async function getTransactions(ctx?: { spaceId: string }): Promise<Transa
 
   const rows = await db.transaction.findMany({
     where: {
-      OR: [
-        { account:          { spaceId } },
-        // deletedAt: null guards against an archived account's transactions
-        // surfacing in a shared Space if its link were ever left ACTIVE —
-        // same defensive filter getAccounts()/getHoldings() already apply.
-        // visibilityLevel (KD-15): only links granting transaction detail
-        // (FULL) contribute rows; BALANCE_ONLY / SUMMARY_ONLY are excluded.
-        { financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } } },
-      ],
+      // deletedAt: null guards against an archived account's transactions
+      // surfacing in a shared Space if its link were ever left ACTIVE —
+      // same defensive filter getAccounts()/getHoldings() already apply.
+      // visibilityLevel (KD-15): only links granting transaction detail
+      // (FULL) contribute rows; BALANCE_ONLY / SUMMARY_ONLY are excluded.
+      financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } },
       // Transaction.deletedAt: null — D2 Step 4D-R: excludes rows soft-deleted
       // by an import rollback. See module header above for rationale.
       deletedAt: null,
@@ -226,11 +219,8 @@ export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Tr
 
   const rows = await db.transaction.findMany({
     where: {
-      OR: [
-        { account:          { spaceId, type: "debt" } },
-        // deletedAt: null + visibilityLevel (KD-15) — see getTransactions() above.
-        { financialAccount: { type: "debt", deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } } },
-      ],
+      // deletedAt: null + visibilityLevel (KD-15) — see getTransactions() above.
+      financialAccount: { type: "debt", deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } },
       // Transaction.deletedAt: null — D2 Step 4D-R, see getTransactions() above.
       deletedAt: null,
       // P2-2 — banking semantic population by canonical FlowType (see
@@ -278,11 +268,8 @@ export async function getInvestmentTransactions(): Promise<InvestmentTransaction
 
   const rows = await db.transaction.findMany({
     where: {
-      OR: [
-        { account:          { spaceId } },
-        // deletedAt: null + visibilityLevel (KD-15) — see getTransactions() above.
-        { financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } } },
-      ],
+      // deletedAt: null + visibilityLevel (KD-15) — see getTransactions() above.
+      financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } },
       // Transaction.deletedAt: null — D2 Step 4D-R, see getTransactions() above.
       deletedAt: null,
       category: { in: ["Buy","Sell","Dividend","Split","Fee"] as never[] },
@@ -345,9 +332,6 @@ export async function getTransactionDetail(
     include: {
       // MI M6 read cutover — resolved Merchant presentation (additive join).
       resolvedMerchant: { select: { displayName: true, logoUrl: true } },
-      account: {
-        select: { id: true, name: true, institution: true, type: true },
-      },
       financialAccount: {
         select: {
           id: true, name: true, displayName: true, officialName: true,
@@ -379,31 +363,19 @@ export async function getTransactionDetail(
   if (!row) return null;
 
   // ── Resolved account context (never raw FKs) ───────────────────────────────
-  let account: TransactionDetailAccount;
-  if (row.financialAccount) {
-    const fa = row.financialAccount;
-    account = {
-      id:          fa.id,
-      name:        resolveAccountName(fa),
-      institution: fa.institution,
-      mask:        fa.mask ?? null,
-      type:        fa.type,
-      legacy:      false,
-    };
-  } else if (row.account) {
-    account = {
-      id:          row.account.id,
-      name:        row.account.name,
-      institution: row.account.institution,
-      mask:        null,
-      type:        row.account.type,
-      legacy:      true,
-    };
-  } else {
-    // Unreachable by the WHERE construction (one parent path must have
-    // matched); fail closed rather than fabricate context.
+  if (!row.financialAccount) {
+    // Unreachable by the WHERE construction (the canonical FinancialAccount
+    // path must have matched); fail closed rather than fabricate context.
     return null;
   }
+  const fa = row.financialAccount;
+  const account: TransactionDetailAccount = {
+    id:          fa.id,
+    name:        resolveAccountName(fa),
+    institution: fa.institution,
+    mask:        fa.mask ?? null,
+    type:        fa.type,
+  };
 
   // ── Provenance (display-safe; raw ids stay internal) ───────────────────────
   // Source value comes from the shared deriveSource precedence (identical to the
@@ -468,9 +440,7 @@ export async function getTransactionDetail(
     where: {
       OR: [
         // Same-account candidates — pending→posted + duplicate (unchanged behavior).
-        row.financialAccountId
-          ? { financialAccountId: row.financialAccountId }
-          : { accountId: row.accountId },
+        { financialAccountId: row.financialAccountId },
         // Owned cross-account TRANSFER legs — the transferCandidate population.
         ...(ownedAccountIds.length
           ? [{ financialAccountId: { in: ownedAccountIds }, flowType: FlowType.TRANSFER }]
@@ -483,7 +453,7 @@ export async function getTransactionDetail(
       },
     },
     select: {
-      id: true, accountId: true, financialAccountId: true,
+      id: true, financialAccountId: true,
       plaidTransactionId: true, pendingTransactionRef: true,
       date: true, amount: true, merchant: true, pending: true,
       deletedAt: true, flowType: true, currency: true,

@@ -77,14 +77,13 @@ async function main(): Promise<void> {
         id:               true,
         pending:          true,
         currency:         true,
-        account:          { select: { currency: true } },
         financialAccount: { select: { currency: true } },
       },
     });
     if (rows.length === 0) break;
 
     for (const r of rows) {
-      const accountCurrency = r.financialAccount?.currency ?? r.account?.currency ?? null;
+      const accountCurrency = r.financialAccount?.currency ?? null;
       const facts = buildBackfillFacts({ pending: r.pending, currency: r.currency, accountCurrency });
 
       bySettlement[facts.settlementState ?? "null"] = (bySettlement[facts.settlementState ?? "null"] ?? 0) + 1;

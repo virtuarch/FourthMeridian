@@ -160,7 +160,7 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
   base.deletedAccounts = deleted.count;
 
   // ── 6. Delete the PERSONAL Space (existing cascade) ────────────────────────
-  // Cascades SpaceMember, SpaceInvite, AiAgent, AiAdvice, legacy Account,
+  // Cascades SpaceMember, SpaceInvite, AiAgent, AiAdvice,
   // SpaceGoal (+contributions/check-ins), SpaceDashboardSection, SpaceSnapshot,
   // ImportMappingProfile. Same cascade the permanent-delete route relies on.
   for (const s of personalSpaces) {

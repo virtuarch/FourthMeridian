@@ -46,11 +46,10 @@ export default async function SpacesPage() {
               orderBy: { joinedAt: "asc" },
             },
             _count: {
-              // Canonical account count (A1): ACTIVE SpaceAccountLink rows whose
-              // FinancialAccount is not soft-deleted. Legacy `Space.accounts`
-              // counted only legacy `Account` rows — always ~0 on current data,
-              // a user-facing undercount. @@unique([spaceId, financialAccountId])
-              // makes the ACTIVE-link count equal the distinct-account count.
+              // Canonical account count: ACTIVE SpaceAccountLink rows whose
+              // FinancialAccount is not soft-deleted.
+              // @@unique([spaceId, financialAccountId]) makes the ACTIVE-link
+              // count equal the distinct-account count.
               select: {
                 accountLinks: {
                   where: { status: "ACTIVE", financialAccount: { deletedAt: null } },

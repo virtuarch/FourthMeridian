@@ -76,14 +76,11 @@ interface LogEntry { id: string; from: string; to: string }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Space scope (optional) — mirrors the read-layer join in lib/data/transactions.ts:
-// legacy rows via account.spaceId, Plaid-synced rows via an ACTIVE spaceAccountLink.
+// Plaid-synced rows via an ACTIVE spaceAccountLink.
 // ─────────────────────────────────────────────────────────────────────────────
 function spaceScopeWhere(spaceId: string): Prisma.TransactionWhereInput {
   return {
-    OR: [
-      { account: { spaceId } },
-      { financialAccount: { spaceAccountLinks: { some: { spaceId, status: "ACTIVE" } } } },
-    ],
+    financialAccount: { spaceAccountLinks: { some: { spaceId, status: "ACTIVE" } } },
   };
 }
 

@@ -178,12 +178,14 @@ enum InviteStatus {
 
 /// Controls how a FinancialAccount is visible to a Space it has been shared into.
 /// BALANCE_ONLY added for privacy-sensitive sharing (e.g. a partner sees total but not institution).
-/// FULL replaces the old SHARED value; SHARED kept temporarily for Account (legacy) rows.
+/// FULL replaces the old SHARED value; SHARED is a dormant legacy enum value
+/// (maps to FULL) whose removal is tracked separately from the Account retirement
+/// — a Postgres enum-value drop is its own migration.
 enum VisibilityLevel {
   PRIVATE // only the owning Space can see this account
   BALANCE_ONLY // other Space sees the balance total, no institution or transactions
   SUMMARY_ONLY // qualitative summary, no raw numbers
-  SHARED // legacy — maps to FULL; kept for backward compat with Account model
+  SHARED // legacy — maps to FULL; dormant, retirement tracked separately
   FULL // fully visible to all Space members (new canonical value)
 }
 
@@ -407,7 +409,6 @@ model User {
   connections           Connection[] // D2 — PLAID rows created/updated by lib/plaid/exchangeToken.ts; read by app/api/plaid/link-token
   importBatches         ImportBatch[] // D2 Step 4D — populated by the import pipeline (app/api/accounts/[id]/import)
   importMappingProfiles ImportMappingProfile[] // D2 (Phase 2, Step 4D-5b) — additive; display-only creator ref, not an authorization boundary
-  ownedAccounts         Account[] // legacy: accounts this user connected/created
   creditScores          CreditScore[]
   auditLogs             AuditLog[]
 
@@ -502,7 +503,6 @@ model Space {
 
   members       SpaceMember[]
   invites       SpaceInvite[]
-  accounts      Account[] // legacy account relation
   snapshots     SpaceSnapshot[]
   aiAgent       AiAgent?
   adviceHistory AiAdvice[]
@@ -693,7 +693,6 @@ model PlaidItem {
   createdAt           DateTime                 @default(now())
   updatedAt           DateTime                 @updatedAt
 
-  accounts    Account[] // legacy relation
   connections AccountConnection[] // new relation
 
   @@index([userId])
@@ -801,53 +800,11 @@ model ProviderAccountIdentity {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Account (LEGACY — kept temporarily during migration)
-// Will be removed once all data is migrated to FinancialAccount +
-// AccountConnection + SpaceAccountLink and validated in production
-// (v2.5-B follow-up — gated on the Phase 0 prod counts; see
-// docs/investigations/V25A_PHASE0_SEAM_RETIREMENT_READINESS.md §6).
-// Do not add new features here; use FinancialAccount instead.
+// Legacy `Account` model (PCS-3B, 2026-07-16): physically retired. All account
+// truth is now FinancialAccount + AccountConnection + SpaceAccountLink (with
+// ProviderAccountIdentity where applicable). Transaction and Holding anchor
+// solely on financialAccountId. No compatibility bridge or fallback remains.
 // ─────────────────────────────────────────────────────────────────────────────
-
-model Account {
-  id               String          @id @default(cuid())
-  spaceId          String
-  space            Space           @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  ownerId          String? // who connected this account; nullable (SetNull on user delete)
-  owner            User?           @relation(fields: [ownerId], references: [id], onDelete: SetNull)
-  visibilityLevel  VisibilityLevel @default(PRIVATE)
-  name             String
-  type             AccountType
-  institution      String
-  balance          Float           @default(0) // current/ledger balance
-  availableBalance Float? // Plaid: balance after pending transactions clear
-  creditLimit      Float? // credit cards: limit from Plaid or manual entry
-  currency         String          @default("USD")
-  lastUpdated      DateTime        @default(now())
-  deletedAt        DateTime? // soft delete — hides from UI, preserves history
-
-  // Plaid — token lives on PlaidItem, not here
-  plaidAccountId String?    @unique // Plaid's account_id for this specific account
-  plaidItemDbId  String? // FK → PlaidItem.id (our internal id)
-  plaidItem      PlaidItem? @relation(fields: [plaidItemDbId], references: [id])
-
-  // Crypto self-custody fields (wallet address accounts only)
-  walletAddress String?
-  walletChain   String?
-  nativeBalance Float?
-  syncStatus    String? @default("pending")
-
-  holdings     Holding[]
-  transactions Transaction[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([spaceId])
-  @@index([spaceId, type])
-  @@index([ownerId])
-  @@index([plaidItemDbId])
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FinancialAccount
@@ -1278,22 +1235,12 @@ model SpaceDashboardSection {
 // Holding
 // One row per position (stock / ETF / crypto) per account.
 //
-// D11 (Phase 2 schema modernization): accountId (legacy Account FK) and
-// financialAccountId (canonical FK) are both optional; exactly one is expected
-// to be set per row — the same dual-FK pattern already used by Transaction
-// (867–892 below). Legacy/seed-created rows keep accountId. Holdings synced
-// for real Plaid-linked investment accounts (which only ever have a
-// FinancialAccount, not a legacy Account) set financialAccountId instead.
-// accountId was loosened from required to optional to allow this — no
-// existing data is affected, every pre-existing row already has accountId set.
-// Read-layer code (lib/data/accounts.ts getHoldings()) normalizes both back
-// to a single accountId field on read, same as Transaction's pattern.
+// Holdings anchor solely on financialAccountId (PCS-3B — legacy Account FK
+// retired). One position row per (financialAccount, symbol).
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Holding {
-  id        String   @id @default(cuid())
-  accountId String?
-  account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id String @id @default(cuid())
 
   financialAccountId String?
   financialAccount   FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
@@ -1315,10 +1262,7 @@ model Holding {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([accountId, symbol])
   @@unique([financialAccountId, symbol])
-  @@index([accountId])
-  @@index([accountId, isCash])
   @@index([financialAccountId])
   @@index([financialAccountId, isCash])
 }
@@ -1584,7 +1528,7 @@ model PositionReconstruction {
   reconciliation ReconstructionStatus
   failureReason  String? // e.g. UNSUPPORTED_CORPORATE_ACTION — null unless FAILED/degraded
   completeness   String // canonical A5-S1 tier ("derived" | "incomplete") — write-time guarded
-  conflicted     Boolean @default(false) // unmatched CANCEL on the walk
+  conflicted     Boolean              @default(false) // unmatched CANCEL on the walk
 
   reconstructionVersion Int
   eventCount            Int
@@ -1804,19 +1748,12 @@ enum MerchantEnrichmentSource {
 // Transaction
 // Pulled from Plaid or entered manually. Positive = money in, negative = out.
 //
-// accountId (legacy Account FK) and financialAccountId (canonical FK) are both
-// optional; exactly one is expected to be set per row. Legacy/seed-created rows
-// keep accountId. Transactions synced for real Plaid-linked accounts (which only
-// ever have a FinancialAccount, not a legacy Account) set financialAccountId
-// instead. accountId was loosened from required to optional to allow this —
-// no existing data is affected, every pre-existing row already has accountId set.
-// Data-layer code normalizes both back to a single accountId field on read.
+// Transactions anchor solely on financialAccountId (PCS-3B — legacy Account FK
+// retired). The data layer exposes it as a single `accountId` DTO field on read.
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Transaction {
-  id        String   @id @default(cuid())
-  accountId String?
-  account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id String @id @default(cuid())
 
   financialAccountId String?
   financialAccount   FinancialAccount? @relation("FinancialAccountTransactions", fields: [financialAccountId], references: [id], onDelete: Cascade)
@@ -1948,8 +1885,6 @@ model Transaction {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([accountId])
-  @@index([accountId, date])
   @@index([financialAccountId])
   @@index([financialAccountId, date])
   @@index([date])
@@ -2814,10 +2749,10 @@ model SnapshotAmendment {
 }
 
 model SnapshotAmendmentDay {
-  id          String            @id @default(cuid())
-  amendmentId String
-  amendment   SnapshotAmendment @relation(fields: [amendmentId], references: [id], onDelete: Cascade)
-  date        DateTime          @db.Date
+  id             String            @id @default(cuid())
+  amendmentId    String
+  amendment      SnapshotAmendment @relation(fields: [amendmentId], references: [id], onDelete: Cascade)
+  date           DateTime          @db.Date
   // before/after for each component that changed (null = unchanged / no prior row).
   stocksBefore   Float?
   stocksAfter    Float?

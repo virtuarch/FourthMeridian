@@ -14,11 +14,9 @@
  *
  * `id` refers to a FinancialAccount.id. Import specifically requires a
  * FinancialAccount: ImportBatch.financialAccountId is a required FK to
- * FinancialAccount, not the legacy Account model, and the two id spaces
- * never overlap. A legacy-only match (no FinancialAccount counterpart) is
- * therefore a real "can't do this" case, not just a fallback to try — same
- * SpaceAccountLink-first, legacy-Account-fallback pattern as GET
- * .../transactions, unchanged by this extraction.
+ * FinancialAccount. An account not resolvable via an ACTIVE SpaceAccountLink
+ * to a live FinancialAccount is a real "can't do this" case (404) — same
+ * SpaceAccountLink visibility gate as GET .../transactions.
  *
  * D2 Slice B — Import Ownership Guard.
  *
@@ -71,25 +69,14 @@ export async function resolveImportableFinancialAccount(
   // ── Step 1: Visibility check ─────────────────────────────────────────────
   // Confirms the account is linked to this Space via an ACTIVE, non-deleted
   // link. 404 if the account doesn't exist / is soft-deleted (deletedAt filter
-  // fails closed — a deleted account is never importable); 400 if it exists
-  // only in the legacy Account table (those accounts don't support ImportBatch).
+  // fails closed — a deleted account is never importable).
   const link = await client.spaceAccountLink.findFirst({
     where:  { spaceId, financialAccountId: id, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: { id: true, visibilityLevel: true },
   });
 
   if (!link) {
-    const legacyAccount = await client.account.findFirst({ where: { id, spaceId }, select: { id: true } });
-    if (!legacyAccount) {
-      return { ok: false, response: NextResponse.json({ error: "Not found" }, { status: 404 }) };
-    }
-    return {
-      ok: false,
-      response: NextResponse.json(
-        { error: "This account does not support transaction import." },
-        { status: 400 }
-      ),
-    };
+    return { ok: false, response: NextResponse.json({ error: "Not found" }, { status: 404 }) };
   }
 
   // ── Step 2: Write-authority check (D2 Slice B) ───────────────────────────

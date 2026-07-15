@@ -41,7 +41,6 @@ const CANDIDATE_CAP = 5000;
 /** The fields a transfer LEG contributes to matching (a target or a candidate). */
 export interface TransferLegLike {
   id:                 string;
-  accountId:          string | null;
   financialAccountId: string | null;
   date:               Date;
   amount:             number;
@@ -65,7 +64,6 @@ function bucketKey(currency: string | null, amount: number): string {
 function toRel(r: TransferLegLike): RelationshipTransaction {
   return {
     id:                    r.id,
-    accountId:             r.accountId,
     financialAccountId:    r.financialAccountId,
     plaidTransactionId:    null,
     pendingTransactionRef: null,
@@ -150,7 +148,7 @@ export async function resolveOwnedTransferCounterparties(
       date: { gte, lte },
     },
     select: {
-      id: true, accountId: true, financialAccountId: true,
+      id: true, financialAccountId: true,
       date: true, amount: true, currency: true, flowType: true, deletedAt: true,
     },
     take: CANDIDATE_CAP,

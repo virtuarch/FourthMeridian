@@ -13,15 +13,13 @@
  *
  *   - id                      — the single row being inspected
  *   - deletedAt: null         — D2 Step 4D-R import-rollback soft delete
- *   - OR path 1 (legacy)      — account.spaceId: the Space's own legacy
- *                               accounts, FULL by definition (KD-15 doctrine)
- *   - OR path 2 (canonical)   — financialAccount.deletedAt: null AND an
+ *   - financialAccount        — financialAccount.deletedAt: null AND an
  *                               ACTIVE SpaceAccountLink at a visibility tier
  *                               granting transaction detail
  *                               (TRANSACTION_DETAIL_VISIBILITY — FULL only)
  *
  * Fails closed by construction: a nonexistent id, a soft-deleted row, a row
- * in another Space, a BALANCE_ONLY / SUMMARY_ONLY / PRIVATE / legacy-SHARED
+ * in another Space, a BALANCE_ONLY / SUMMARY_ONLY / PRIVATE / SHARED-only
  * link, or a soft-deleted FinancialAccount all simply fail to match, and the
  * caller returns 404 — indistinguishable from "does not exist" (no existence
  * disclosure). See
@@ -40,21 +38,16 @@ import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 export function transactionDetailWhere(id: string, spaceId: string) {
   return {
     id,
-    OR: [
-      { account: { spaceId } },
-      {
-        financialAccount: {
-          deletedAt: null,
-          spaceAccountLinks: {
-            some: {
-              spaceId,
-              status: ShareStatus.ACTIVE,
-              visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
-            },
-          },
+    financialAccount: {
+      deletedAt: null,
+      spaceAccountLinks: {
+        some: {
+          spaceId,
+          status: ShareStatus.ACTIVE,
+          visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
         },
       },
-    ],
+    },
     // Transaction-level soft delete (import rollback) — independent of, and
     // ANDed with, the financialAccount.deletedAt guard above.
     deletedAt: null,

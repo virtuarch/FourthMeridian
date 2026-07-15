@@ -42,7 +42,6 @@ import { merchantDisplayName, merchantLogoUrl, type ResolvedMerchantLike } from 
  */
 export interface TransactionRowLike {
   id:                 string;
-  accountId:          string | null;
   financialAccountId: string | null;
   date:               Date;
   merchant:           string;
@@ -71,17 +70,15 @@ export interface TransactionRowLike {
  * Canonical list-row DTO serialization — the single source for every
  * banking/debt list read and the account-modal route.
  *
- * `accountId` is normalized to whichever FK is actually set (legacy
- * `accountId` or canonical `financialAccountId`) — the same single-id
- * contract callers like AccountModal have always relied on. Exactly one FK
- * is expected to be set per row (Transaction model comment,
- * prisma/schema.prisma); the cast preserves the pre-TI-1 behavior for any
- * hypothetical row violating that invariant rather than inventing a new one.
+ * `accountId` on the DTO is the canonical `financialAccountId` — the single-id
+ * contract callers like AccountModal rely on to match transactions to an
+ * account. Every row carries a FinancialAccount FK (Transaction model comment,
+ * prisma/schema.prisma); the cast documents that invariant.
  */
 export function serializeTransactionRow(r: TransactionRowLike): Transaction {
   return {
     id:          r.id,
-    accountId:   (r.accountId ?? r.financialAccountId) as string,
+    accountId:   r.financialAccountId as string,
     date:        r.date.toISOString().split("T")[0],
     merchant:    r.merchant,
     // MI M6 read cutover — resolved presentation (additive; raw `merchant` kept).
@@ -116,7 +113,7 @@ export function serializeInvestmentTransactionRow(
 ): InvestmentTransaction {
   return {
     id:          r.id,
-    accountId:   (r.accountId ?? r.financialAccountId) as string,
+    accountId:   r.financialAccountId as string,
     date:        r.date.toISOString().split("T")[0],
     ticker:      r.merchant,
     description: r.description ?? "",

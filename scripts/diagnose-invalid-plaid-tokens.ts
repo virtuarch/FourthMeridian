@@ -139,9 +139,6 @@ async function main(): Promise<void> {
         .map((c) => c.financialAccount!.id),
     );
 
-    // Legacy Account[] relation count (pre-FinancialAccount).
-    const legacyAccounts = await db.account.count({ where: { plaidItemDbId: item.id } });
-
     console.log("-".repeat(74));
     console.log(`PlaidItem      ${item.id}`);
     console.log(`  user         ${item.userId}  <${user?.email ?? "?"}>`);
@@ -157,8 +154,7 @@ async function main(): Promise<void> {
     );
     console.log(
       `  relations    AccountConnections=${connActive} active / ${connTotal} total; ` +
-        `FinancialAccounts=${faActive.size} active / ${faIds.size} total; ` +
-        `legacyAccounts=${legacyAccounts}`,
+        `FinancialAccounts=${faActive.size} active / ${faIds.size} total`,
     );
   }
 

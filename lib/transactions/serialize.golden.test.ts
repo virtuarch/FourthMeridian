@@ -5,12 +5,15 @@
  * (lib/transactions/serialize.ts) produce BYTE-IDENTICAL output to the
  * inline row→DTO mappings they replaced in lib/data/transactions.ts.
  *
- * The legacy mappers below are copied VERBATIM from the pre-TI-1
+ * The reference mappers below mirror the row→DTO mappings in
  * lib/data/transactions.ts (getTransactions/getDebtTransactions shared one
  * shape; getInvestmentTransactions the other). They are frozen here as the
  * reference implementation: if the serializer ever diverges — a field
  * added/removed/reordered, a fallback changed — the JSON comparison fails.
  * Deliberate future extensions must update this reference consciously.
+ * (PCS-3B: the account-id fallback was simplified from
+ * `accountId ?? financialAccountId` to `financialAccountId` when the legacy
+ * `Account` model was retired.)
  *
  * Also pins the ONE deliberate behavior change TI-1 made: the account-modal
  * route (app/api/accounts/[id]/transactions) previously omitted `currency`
@@ -48,7 +51,7 @@ function check(name: string, ok: boolean, detail?: string): void {
 function legacyListMapper(r: any) {
   return {
     id:          r.id,
-    accountId:   r.accountId ?? r.financialAccountId,
+    accountId:   r.financialAccountId,
     date:        r.date.toISOString().split("T")[0],
     merchant:    r.merchant,
     // MI M6 read cutover — CONSCIOUS extension (see module header): resolved
@@ -78,7 +81,7 @@ function legacyListMapper(r: any) {
 function legacyInvestmentMapper(r: any) {
   return {
     id:          r.id,
-    accountId:   r.accountId ?? r.financialAccountId,
+    accountId:   r.financialAccountId,
     date:        r.date.toISOString().split("T")[0],
     ticker:      r.merchant,
     description: r.description ?? "",
@@ -88,15 +91,14 @@ function legacyInvestmentMapper(r: any) {
 }
 
 // ---------------------------------------------------------------------------
-// Fixtures — every branch of every fallback: legacy vs canonical FK, null vs
-// present description/currency/flow fields, pending, negative amounts.
+// Fixtures — every branch of every fallback: null vs present
+// description/currency/flow fields, pending, negative amounts.
 // ---------------------------------------------------------------------------
 
 const fixtures: TransactionRowLike[] = [
   // Fully-populated canonical (Plaid-synced) row.
   {
     id: 'tx_full',
-    accountId: null,
     financialAccountId: 'fa_1',
     date: new Date('2026-06-14T00:00:00.000Z'),
     merchant: 'SQ *BLUE BOTTLE #442',
@@ -116,11 +118,10 @@ const fixtures: TransactionRowLike[] = [
     // MI M6 — a resolved Merchant (raw descriptor above is preserved).
     resolvedMerchant: { displayName: 'Blue Bottle', logoUrl: 'https://logos/bb.png' },
   },
-  // Legacy-FK row, null-heavy (pre-provenance residue).
+  // Null-heavy row (pre-provenance residue) on a canonical FinancialAccount.
   {
-    id: 'tx_legacy_nulls',
-    accountId: 'acct_legacy',
-    financialAccountId: null,
+    id: 'tx_nulls',
+    financialAccountId: 'fa_nulls',
     date: new Date('2024-01-02T00:00:00.000Z'),
     merchant: 'PAYROLL DEPOSIT',
     description: null,
@@ -138,7 +139,6 @@ const fixtures: TransactionRowLike[] = [
   // exercises the `??` fallbacks the same way a narrow Prisma select would).
   {
     id: 'tx_pending_sparse',
-    accountId: null,
     financialAccountId: 'fa_2',
     date: new Date('2026-07-05T00:00:00.000Z'),
     merchant: 'UBER *TRIP',
@@ -150,7 +150,6 @@ const fixtures: TransactionRowLike[] = [
   // Non-USD stamped row (MC1) with a refund flow.
   {
     id: 'tx_sar_refund',
-    accountId: null,
     financialAccountId: 'fa_3',
     date: new Date('2026-05-30T00:00:00.000Z'),
     merchant: 'Careem',
@@ -171,7 +170,6 @@ const investmentFixtures: TransactionRowLike[] = [
   // Buy with description.
   {
     id: 'tx_buy',
-    accountId: null,
     financialAccountId: 'fa_inv',
     date: new Date('2026-03-10T00:00:00.000Z'),
     merchant: 'VOO',
@@ -183,8 +181,7 @@ const investmentFixtures: TransactionRowLike[] = [
   // Dividend with null description (exercises the `?? ""` branch).
   {
     id: 'tx_div',
-    accountId: 'acct_legacy_inv',
-    financialAccountId: null,
+    financialAccountId: 'fa_inv_div',
     date: new Date('2026-04-01T00:00:00.000Z'),
     merchant: 'SCHD',
     description: null,
@@ -234,18 +231,17 @@ for (const f of investmentFixtures) {
 // ---------------------------------------------------------------------------
 
 const full = serializeTransactionRow(fixtures[0]);
-check('accountId normalizes to financialAccountId when legacy FK is null',
-  full.accountId === 'fa_1');
+check('accountId is the FinancialAccount id', full.accountId === 'fa_1');
 check('date renders as YYYY-MM-DD', full.date === '2026-06-14');
 
-const legacyRow = serializeTransactionRow(fixtures[1]);
-check('accountId prefers the legacy FK when set', legacyRow.accountId === 'acct_legacy');
+const nullsRow = serializeTransactionRow(fixtures[1]);
+check('accountId is the FinancialAccount id (null-heavy row)', nullsRow.accountId === 'fa_nulls');
 check('null description → undefined (key omitted from JSON)',
-  legacyRow.description === undefined &&
-    !Object.prototype.hasOwnProperty.call(JSON.parse(JSON.stringify(legacyRow)), 'description'));
+  nullsRow.description === undefined &&
+    !Object.prototype.hasOwnProperty.call(JSON.parse(JSON.stringify(nullsRow)), 'description'));
 check('null currency → null (key PRESENT in JSON as null)',
-  legacyRow.currency === null &&
-    Object.prototype.hasOwnProperty.call(JSON.parse(JSON.stringify(legacyRow)), 'currency'));
+  nullsRow.currency === null &&
+    Object.prototype.hasOwnProperty.call(JSON.parse(JSON.stringify(nullsRow)), 'currency'));
 
 const sparse = serializeTransactionRow(fixtures[2]);
 check('absent optional fields → null flow metadata (not undefined)',

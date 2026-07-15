@@ -20,10 +20,8 @@ export async function GET(
 
   const { spaceId } = await getSpaceContext();
 
-  // `id` is most commonly a FinancialAccount.id (the canonical model — see
-  // getAccounts() in lib/data/accounts.ts), visible to this space via an
-  // active SpaceAccountLink. Fall back to the legacy Account model for
-  // any pre-migration rows that might still be referenced directly.
+  // `id` is a FinancialAccount.id (the canonical model — see getAccounts() in
+  // lib/data/accounts.ts), visible to this space via an active SpaceAccountLink.
   //
   // D3 Step 4B read cutover: this used to query WorkspaceAccountShare.
   // SpaceAccountLink is kept in sync with it by the D3 Step 3 dual-write
@@ -35,14 +33,7 @@ export async function GET(
   });
 
   if (!link) {
-    const legacyAccount = await db.account.findFirst({
-      where:  { id, spaceId },
-      select: { id: true },
-    });
-    if (!legacyAccount) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
-    }
-    // Legacy Account rows are the Space's own accounts — FULL by definition.
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   } else if (!grantsTransactionDetail(link.visibilityLevel)) {
     // KD-15: the account IS shared into this Space (so it's not "not found"),
     // but at a visibility tier that does not grant transaction detail
@@ -55,11 +46,9 @@ export async function GET(
     return NextResponse.json({ transactions: [] });
   }
 
-  // Match either FK — Plaid-synced transactions carry financialAccountId,
-  // legacy/manual rows carry accountId.
   const rows = await db.transaction.findMany({
     where: {
-      OR: [{ accountId: id }, { financialAccountId: id }],
+      financialAccountId: id,
       // deletedAt: null — D2 Step 4D-R: excludes rows soft-deleted by an
       // import rollback, the same Transaction-level guard the dashboard
       // reads in lib/data/transactions.ts apply. See

@@ -94,10 +94,7 @@ interface LogEntry { id: string; from: string; to: string }
 // ─────────────────────────────────────────────────────────────────────────────
 function spaceScopeWhere(spaceId: string): Prisma.TransactionWhereInput {
   return {
-    OR: [
-      { account: { spaceId } },
-      { financialAccount: { spaceAccountLinks: { some: { spaceId, status: "ACTIVE" } } } },
-    ],
+    financialAccount: { spaceAccountLinks: { some: { spaceId, status: "ACTIVE" } } },
   };
 }
 

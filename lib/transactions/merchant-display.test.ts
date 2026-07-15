@@ -71,7 +71,7 @@ function eq<T>(name: string, got: T, want: T): void {
 // ── 5. Serializer cutover (list + detail) — resolved display, RAW preserved ────
 {
   const base: TransactionRowLike = {
-    id: "t1", accountId: null, financialAccountId: "fa1",
+    id: "t1", financialAccountId: "fa1",
     date: new Date("2026-06-01T00:00:00.000Z"),
     merchant: "SQ *BLUE BOTTLE #442", description: "SQ *BLUE BOTTLE #442",
     category: "Dining", amount: -6, pending: false,

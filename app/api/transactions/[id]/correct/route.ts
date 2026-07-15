@@ -63,15 +63,15 @@ export async function POST(
       id: true, merchant: true, description: true, category: true, amount: true,
       merchantId: true, categorySource: true, merchantEntityId: true,
       pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true,
-      account: { select: { type: true } },
       financialAccount: { select: { type: true, debtSubtype: true } },
     },
   });
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const acct: CorrectionAcct = row.financialAccount
-    ? { accountType: (row.financialAccount.type as string | null) ?? null, debtSubtype: row.financialAccount.debtSubtype ?? null }
-    : { accountType: (row.account?.type as string | null) ?? null, debtSubtype: null };
+  const acct: CorrectionAcct = {
+    accountType: (row.financialAccount?.type as string | null) ?? null,
+    debtSubtype: row.financialAccount?.debtSubtype ?? null,
+  };
   const correctionRow: CorrectionRow = {
     id: row.id, merchant: row.merchant, description: row.description, category: row.category,
     amount: row.amount, merchantId: row.merchantId, categorySource: row.categorySource,

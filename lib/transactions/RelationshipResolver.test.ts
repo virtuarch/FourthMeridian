@@ -16,7 +16,6 @@ import {
 function tx(over: Partial<RelationshipTransaction> = {}): RelationshipTransaction {
   return {
     id: 'row_1',
-    accountId: null,
     financialAccountId: 'fa_1',
     plaidTransactionId: 'plaid_1',
     pendingTransactionRef: null,

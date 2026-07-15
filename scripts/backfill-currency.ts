@@ -6,9 +6,8 @@
  *
  * Stamps Transaction.currency and Holding.currency on pre-Phase-0 rows by
  * DERIVING from provenance already stored in the database: the parent
- * account's currency (FinancialAccount.currency, or legacy Account.currency
- * for rows still on the legacy FK — the dual-FK pattern guarantees exactly
- * one parent). No currency is ever manufactured:
+ * FinancialAccount's currency (FinancialAccount.currency). No currency is
+ * ever manufactured:
  *   - no conversion, no rate inference, no hardcoded "USD";
  *   - a row whose parent cannot supply a currency stays NULL — that IS its
  *     provenance ("denomination never recorded").
@@ -74,7 +73,6 @@ async function backfillTable(
   fetchBatch: (lastId: string, take: number) => Promise<Array<{
     id: string;
     financialAccount: { currency: string } | null;
-    account: { currency: string } | null;
   }>>,
   applyStamp: (id: string, currency: string) => Promise<number>,
 ): Promise<void> {
@@ -88,11 +86,10 @@ async function backfillTable(
     if (rows.length === 0) break;
 
     for (const r of rows) {
-      // Derivation rule (plan §3.3): parent FinancialAccount.currency first,
-      // legacy Account.currency second. Both columns are NOT NULL in the
-      // schema, so a present parent always resolves; "unresolved" means the
-      // row has no surviving parent to derive from.
-      const derived = r.financialAccount?.currency ?? r.account?.currency ?? null;
+      // Derivation rule (plan §3.3): parent FinancialAccount.currency. The
+      // column is NOT NULL in the schema, so a present parent always resolves;
+      // "unresolved" means the row has no surviving parent to derive from.
+      const derived = r.financialAccount?.currency ?? null;
 
       if (derived === null) {
         rep.unresolved++;
@@ -147,7 +144,6 @@ async function main(): Promise<void> {
         select: {
           id:               true,
           financialAccount: { select: { currency: true } },
-          account:          { select: { currency: true } },
         },
       }),
     // Raw UPDATE: stamps ONLY currency, preserves updatedAt and every other
@@ -174,7 +170,6 @@ async function main(): Promise<void> {
         select: {
           id:               true,
           financialAccount: { select: { currency: true } },
-          account:          { select: { currency: true } },
         },
       }),
     (id, currency) =>

@@ -9,20 +9,17 @@
  * for explicit opt-in raw access.
  *
  * ── Transaction visibility ────────────────────────────────────────────────────
- * Transactions reach a Space via two paths (mirroring lib/data/transactions.ts):
- *   1. Legacy:  transaction.account.spaceId   (old Account model)
- *   2. Current: transaction.financialAccount via SpaceAccountLink (D3 canonical)
- * Both paths are ORed together so no transaction is silently excluded during
- * the migration period. Transaction.deletedAt is always filtered to null
- * (D2 Step 4D-R soft-delete guard).
+ * Transactions reach a Space via the canonical path (mirroring
+ * lib/data/transactions.ts): transaction.financialAccount via an ACTIVE
+ * SpaceAccountLink (D3 canonical). Transaction.deletedAt is always filtered to
+ * null (D2 Step 4D-R soft-delete guard).
  *
  * KD-1 (2026-07-02): the SpaceAccountLink path additionally requires a
  * visibilityLevel that grants transaction detail (TRANSACTION_DETAIL_VISIBILITY,
  * lib/ai/visibility.ts — currently FULL only). BALANCE_ONLY / SUMMARY_ONLY
  * links contribute balance / summary data via the accounts assembler only;
  * their transaction rows, merchants, and amounts never enter AI context —
- * neither directly nor through any aggregate in this summary. The legacy path
- * is the Space's own accounts and is FULL by definition.
+ * neither directly nor through any aggregate in this summary.
  *
  * ── What is included ─────────────────────────────────────────────────────────
  * Banking categories only (Income, Transfer, Groceries, Dining, Shopping,
@@ -185,10 +182,9 @@ const MAX_EXPLICIT_WINDOW_DAYS = 800; // ~26 months
 // ---------------------------------------------------------------------------
 
 type TxnRow = {
-  // TI2-W1 — row identity + account keys, needed to run the read-time transfer
+  // TI2-W1 — row identity + account key, needed to run the read-time transfer
   // matcher (resolveOwnedTransferCounterparties) for counterparty parity (§3.3).
   id:                 string;
-  accountId:          string | null;
   financialAccountId: string | null;
   date:     Date;
   merchant: string;   // RAW provider descriptor — preserved for forensic use
@@ -344,12 +340,10 @@ async function assembleTransactions(
   const win = resolveWindow(scopeHint, transactionWindow);
 
   // ── Query ─────────────────────────────────────────────────────────────────
-  // Mirrors the dual-path OR in lib/data/transactions.ts:
-  //   path 1 — legacy Account.spaceId
-  //   path 2 — FinancialAccount via active SpaceAccountLink (D3 canonical),
-  //            restricted to links granting transaction detail (KD-1) so
-  //            BALANCE_ONLY / SUMMARY_ONLY accounts never contribute rows.
-  // Both deletedAt guards (account-level and transaction-level) are applied.
+  // Mirrors the canonical scope in lib/data/transactions.ts: FinancialAccount
+  // via an active SpaceAccountLink (D3 canonical), restricted to links granting
+  // transaction detail (KD-1) so BALANCE_ONLY / SUMMARY_ONLY accounts never
+  // contribute rows. Both deletedAt guards (account- and transaction-level) apply.
 
   // KD-7 truncation sentinel: fetch one row beyond the cap so we can detect
   // deterministically whether the matching set exceeded TRANSACTION_FETCH_LIMIT.
@@ -357,23 +351,16 @@ async function assembleTransactions(
   // silently deflate older-month totals, category/merchant rollups, and trends.
   const fetched: TxnRow[] = await db.transaction.findMany({
     where: {
-      OR: [
-        {
-          account: { spaceId },
-        },
-        {
-          financialAccount: {
-            deletedAt:         null,
-            spaceAccountLinks: {
-              some: {
-                spaceId,
-                status:          ShareStatus.ACTIVE,
-                visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
-              },
-            },
+      financialAccount: {
+        deletedAt:         null,
+        spaceAccountLinks: {
+          some: {
+            spaceId,
+            status:          ShareStatus.ACTIVE,
+            visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
           },
         },
-      ],
+      },
       deletedAt: null,
       // P2-7B — canonical banking population (`not: INVESTMENT`, incl. UNKNOWN /
       // ADJUSTMENT / null), replacing the old `flowType: { in: BANKING_FLOWS }`
@@ -385,9 +372,8 @@ async function assembleTransactions(
       date:      win.end ? { gte: win.start, lte: win.end } : { gte: win.start },
     },
     select: {
-      // TI2-W1 — id + account keys for the read-time transfer matcher (§3.3 parity).
+      // TI2-W1 — id + account key for the read-time transfer matcher (§3.3 parity).
       id:                 true,
-      accountId:          true,
       financialAccountId: true,
       date:          true,
       merchant:      true,
@@ -1287,12 +1273,11 @@ function resolveCategory(raw: string | undefined): TransactionCategory | null {
  * engine. Re-reads the real transactions behind a resolved category / merchant /
  * period so the AI can explain "what is this made up of?".
  *
- * Visibility: mirrors the summary's dual-path Space scoping. The
+ * Visibility: mirrors the summary's canonical Space scoping. The
  * FinancialAccount path is restricted to TRANSACTION_DETAIL_VISIBILITY
  * (lib/ai/visibility.ts — the same predicate the summary query uses, so
  * drilldown and summary can never disagree; KD-1) so BALANCE_ONLY /
- * SUMMARY_ONLY accounts never contribute raw line items. The legacy Account
- * path is the Space's own accounts (account.spaceId) and is treated as FULL.
+ * SUMMARY_ONLY accounts never contribute raw line items.
  * Because every surfaced row is FULL-visibility, the source account name is
  * safe to include.
  *
@@ -1336,21 +1321,16 @@ async function assembleDrilldown(
 
   const rows = await db.transaction.findMany({
     where: {
-      OR: [
-        { account: { spaceId } },
-        {
-          financialAccount: {
-            deletedAt:         null,
-            spaceAccountLinks: {
-              some: {
-                spaceId,
-                status:          ShareStatus.ACTIVE,
-                visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
-              },
-            },
+      financialAccount: {
+        deletedAt:         null,
+        spaceAccountLinks: {
+          some: {
+            spaceId,
+            status:          ShareStatus.ACTIVE,
+            visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
           },
         },
-      ],
+      },
       deletedAt: null,
       pending:   false,
       date:      { gte: start, lte: end },
@@ -1368,7 +1348,6 @@ async function assembleDrilldown(
       category:    true,
       amount:      true,
       currency:    true, // P2-7C — conversion input for the drilldown's FX seam
-      account:          { select: { name: true } },
       financialAccount: { select: { name: true, displayName: true } },
     },
     orderBy: { date: 'desc' },
@@ -1415,7 +1394,7 @@ async function assembleDrilldown(
 
   const transactions: DrilldownTransaction[] = shown.map(({ row: r, amount, estimated }) => {
     const accountName =
-      r.financialAccount?.displayName ?? r.financialAccount?.name ?? r.account?.name ?? undefined;
+      r.financialAccount?.displayName ?? r.financialAccount?.name ?? undefined;
     return {
       date:     r.date.toISOString().split('T')[0],
       // MI M6 read cutover — resolved Merchant display name, else the normalizer.

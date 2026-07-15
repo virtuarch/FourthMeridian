@@ -1,24 +1,20 @@
 /**
- * lib/legacy-account-invariants.test.ts
+ * lib/account-count-canonical-invariants.test.ts
  *
- * A1-S2 source-scan invariant (no DOM/DB runner needed).
- * Standalone tsx script:  npx tsx lib/legacy-account-invariants.test.ts
+ * Source-scan invariant (no DOM/DB runner needed).
+ * Standalone tsx script:  npx tsx lib/account-count-canonical-invariants.test.ts
  *
- * Guards the *safe-to-retire count paths* that A1-S1 migrated off the legacy
- * `Account` model. On current data all account creation is canonical
- * (FinancialAccount + SpaceAccountLink), so a legacy `Space.accounts`
- * relation-count or a `db.account.count()` counts only legacy `Account` rows —
- * i.e. systematically ~0, a user-facing undercount. This test pins those paths
- * to the canonical form (ACTIVE `SpaceAccountLink` with a live
- * `FinancialAccount`, or `db.financialAccount.count`) and fails CI if a legacy
- * read is reintroduced in any of them.
+ * Pins the per-Space / system account-count paths to the CANONICAL form —
+ * ACTIVE `SpaceAccountLink` with a live `FinancialAccount`, or
+ * `db.financialAccount.count` for system totals — and fails CI if any of them
+ * regresses to a `Space.accounts` relation count or a `db.account.*` read.
  *
- * SCOPE (deliberately narrow): only the count paths A1-S1 converted. This test
- * does NOT police the dual-read Transaction/Holding compatibility OR arms
- * (`lib/data/transactions.ts`, `lib/transactions/detail-query.ts`, the AI
- * assemblers, …) — those legacy reads are intentionally retained until the
- * Phase-0 prod gates are recorded (A1-S4 / the deferred DB milestone). Adding
- * more files here should track that retirement, not pre-empt it.
+ * The legacy `Account` model was physically retired (PCS-3B, 2026-07-16), so a
+ * `db.account.*` read no longer compiles; these negative checks remain as a
+ * cheap, self-documenting tripwire against reintroducing the count anti-pattern
+ * under any future name. The positive checks are the live guarantee: they keep
+ * the count surfaces reading SpaceAccountLink/FinancialAccount so Space cards
+ * and admin totals can never silently disagree with the canonical account set.
  */
 
 import { readFileSync } from "node:fs";

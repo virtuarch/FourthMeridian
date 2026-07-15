@@ -49,9 +49,8 @@ export async function GET(req: NextRequest) {
           user: { select: { id: true, email: true, username: true, name: true, firstName: true } },
         },
       },
-      // Canonical account read (A1): ACTIVE SpaceAccountLink rows with a live
-      // FinancialAccount, surfacing each account's type. Legacy `Space.accounts`
-      // returned legacy `Account` rows — empty on current data.
+      // Canonical account read: ACTIVE SpaceAccountLink rows with a live
+      // FinancialAccount, surfacing each account's type.
       accountLinks: {
         where:  { status: "ACTIVE", financialAccount: { deletedAt: null } },
         select: { financialAccount: { select: { type: true } } },

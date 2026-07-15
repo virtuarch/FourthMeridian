@@ -22,7 +22,7 @@ function detail(over: Partial<TransactionDetail> = {}): TransactionDetail {
     paymentChannel: null, paymentMethod: null, settlementState: 'POSTED',
     authorizedAt: null, counterpartyType: null, fxApplied: null,
     pendingTransactionRef: null, tiFactsVersion: 1,
-    account: { id: 'a1', name: 'Everyday Checking', institution: 'Chase', mask: '1234', type: 'checking', legacy: false },
+    account: { id: 'a1', name: 'Everyday Checking', institution: 'Chase', mask: '1234', type: 'checking' },
     provenance: { source: 'plaid' },
     counterparty: null,
     reporting: null,
@@ -51,7 +51,7 @@ test('null facts are hidden; Flow row absent when flowType null', () => {
 
 test('Account shows mask formatted; omits mask when null', () => {
   assert.equal(find(buildTransactionDetailSections(detail()), 'Account')!.rows!.find((r) => r.label === 'Mask')!.value, '••••1234');
-  const noMask = detail({ account: { id: 'a1', name: 'A', institution: 'B', mask: null, type: 'checking', legacy: false } });
+  const noMask = detail({ account: { id: 'a1', name: 'A', institution: 'B', mask: null, type: 'checking' } });
   assert.ok(!find(buildTransactionDetailSections(noMask), 'Account')!.rows!.some((r) => r.label === 'Mask'));
 });
 

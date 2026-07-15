@@ -50,8 +50,8 @@ export default async function AdminOverviewPage() {
         members: {
           select: { role: true, user: { select: { id: true, email: true, username: true, name: true, role: true } } },
         },
-        // Canonical per-space account count (A1): ACTIVE SpaceAccountLink rows
-        // with a live FinancialAccount (legacy `Space.accounts` undercounted).
+        // Canonical per-space account count: ACTIVE SpaceAccountLink rows
+        // with a live FinancialAccount.
         _count: {
           select: {
             accountLinks: {
@@ -61,8 +61,7 @@ export default async function AdminOverviewPage() {
         },
       },
     }),
-    // Canonical system-wide account total (A1): non-deleted FinancialAccounts
-    // (legacy `db.account.count()` counted legacy `Account` rows — always ~0).
+    // Canonical system-wide account total: non-deleted FinancialAccounts.
     db.financialAccount.count({ where: { deletedAt: null } }),
     db.auditLog.count(),
   ]);

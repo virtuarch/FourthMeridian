@@ -143,16 +143,16 @@ async function main(): Promise<void> {
         pfcDetailed:        true,
         pfcConfidenceLevel: true,
         merchantEntityId:   true,
-        account:            { select: { type: true } },
         financialAccount:   { select: { type: true, debtSubtype: true } },
       },
     });
     if (rows.length === 0) break;
 
     for (const r of rows) {
-      const acct = r.financialAccount
-        ? { accountType: (r.financialAccount.type as string | null) ?? null, debtSubtype: r.financialAccount.debtSubtype ?? null }
-        : { accountType: (r.account?.type as string | null) ?? null, debtSubtype: null };
+      const acct = {
+        accountType: (r.financialAccount?.type as string | null) ?? null,
+        debtSubtype: r.financialAccount?.debtSubtype ?? null,
+      };
 
       const { input, captured } = buildFlowInputFromRow(
         {

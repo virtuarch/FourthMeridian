@@ -67,21 +67,13 @@ check(
 );
 
 check(
-  'WHERE has exactly two visibility paths (legacy own-account OR canonical SAL) — no third, unguarded path',
-  Array.isArray(where.OR) && where.OR.length === 2,
+  'WHERE has a single canonical visibility path (FinancialAccount via SAL) — no legacy OR arm, no unguarded path',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  !('OR' in (where as any)) && (where as any).financialAccount != null,
 );
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const legacyPath: any = where.OR[0];
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const canonicalPath: any = where.OR[1];
-
-check(
-  'legacy path is Space-scoped (own accounts only — other Space → 404)',
-  legacyPath?.account?.spaceId === 'space_A' &&
-    Object.keys(legacyPath).length === 1 &&
-    Object.keys(legacyPath.account).length === 1,
-);
+const canonicalPath: any = where;
 
 check(
   'canonical path excludes soft-deleted FinancialAccounts (deleted account → 404)',

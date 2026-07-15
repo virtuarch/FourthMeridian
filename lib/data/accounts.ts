@@ -11,11 +11,9 @@
  * visibility, only ownership semantics differ, and only after the D3 Step 3
  * HOME Semantics Correction (docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md) is
  * the link set here guaranteed to agree with WorkspaceAccountShare's.
- * getHoldings() reads both Holding anchors during the D11 migration: legacy
- * rows still pointing at Account (spaceId direct), and current/new rows
- * pointing at FinancialAccount (visibility via SpaceAccountLink, same join
- * getAccounts() uses). Output is normalized back to a single `accountId`
- * field so existing UI call sites need no changes.
+ * getHoldings() reads Holding rows anchored to FinancialAccount (visibility via
+ * SpaceAccountLink, the same join getAccounts() uses), exposing the anchor as a
+ * single `accountId` field so existing UI call sites need no changes.
  */
 
 import { db } from "@/lib/db";
@@ -234,52 +232,37 @@ export async function getAccounts(ctx?: { spaceId: string; userId?: string }): P
 /**
  * All holdings across all investment accounts.
  *
- * D11: Holding now has two possible anchors — legacy Account (accountId) and
- * FinancialAccount (financialAccountId) — while the migration is in
- * progress. Queried separately because each anchor resolves space visibility
- * differently (Account.spaceId is direct; FinancialAccount visibility goes
- * through an active SpaceAccountLink, mirroring getAccounts() above), then
- * merged. A given row only ever has one of the two FKs set, so there's no
- * double-counting. Once every Holding is confirmed migrated off Account,
- * the legacy branch can be deleted — not done here (additive-only for D11).
+ * Holdings are anchored to a FinancialAccount (financialAccountId); visibility
+ * goes through an active SpaceAccountLink, mirroring getAccounts() above.
  */
 export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]> {
   const { spaceId } = ctx ?? (await getSpaceContext());
 
-  const [legacyRows, financialAccountRows] = await Promise.all([
-    db.holding.findMany({
-      where: { accountId: { not: null }, account: { spaceId } },
-    }),
-    db.holding.findMany({
-      where: {
-        financialAccountId: { not: null },
-        financialAccount: {
-          deletedAt: null,
-          // KD-19 — individual positions are per-item DETAIL and require a
-          // FULL link. BALANCE_ONLY / SUMMARY_ONLY accounts contribute their
-          // balance (via getAccounts) but never expose symbols/quantities.
-          // Same FULL-only gate the transaction read paths use, so positions
-          // and rows can never disagree.
-          spaceAccountLinks: {
-            some: {
-              spaceId,
-              status:          ShareStatus.ACTIVE,
-              visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
-            },
+  const rows = (await db.holding.findMany({
+    where: {
+      financialAccountId: { not: null },
+      financialAccount: {
+        deletedAt: null,
+        // KD-19 — individual positions are per-item DETAIL and require a
+        // FULL link. BALANCE_ONLY / SUMMARY_ONLY accounts contribute their
+        // balance (via getAccounts) but never expose symbols/quantities.
+        // Same FULL-only gate the transaction read paths use, so positions
+        // and rows can never disagree.
+        spaceAccountLinks: {
+          some: {
+            spaceId,
+            status:          ShareStatus.ACTIVE,
+            visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
           },
         },
       },
-    }),
-  ]);
-
-  const rows = [...legacyRows, ...financialAccountRows].sort((a, b) => b.value - a.value);
+    },
+  })).sort((a, b) => b.value - a.value);
 
   return rows.map((r) => ({
     id:        r.id,
-    // Exactly one of accountId/financialAccountId is set per row — normalize
-    // to a single field so downstream UI (which matches holdings to accounts
-    // by this id) needs no changes.
-    accountId: (r.accountId ?? r.financialAccountId) as string,
+    // Holdings match to accounts by this single id (the FinancialAccount FK).
+    accountId: r.financialAccountId as string,
     symbol:    r.symbol,
     name:      r.name,
     quantity:  r.quantity,

@@ -36,7 +36,6 @@ const FA = "fa-1";
 
 interface Fixture {
   link?: { visibilityLevel: VisibilityLevel; status: ShareStatus; deleted: boolean };
-  legacyAccount?: boolean;
   fa?: { ownerUserId: string | null; createdByUserId: string | null };
   member?: { role: SpaceMemberRole; status: SpaceMemberStatus };
 }
@@ -57,9 +56,6 @@ function fakeClient(f: Fixture) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       findFirst: async ({ where }: any) =>
         linkMatches(where) ? { id: "link-1", visibilityLevel: f.link!.visibilityLevel } : null,
-    },
-    account: {
-      findFirst: async () => (f.legacyAccount ? { id: FA } : null),
     },
     financialAccount: {
       findUnique: async () => f.fa ?? null,
@@ -125,14 +121,7 @@ async function main(): Promise<void> {
     check("no link at all → 404", !noLink.ok && (noLink as { response: Response }).response.status === 404);
   }
 
-  // ── 5. Legacy-only account → 400 (unchanged behavior) ─────────────────────
-  console.log("5. legacy Account (no FinancialAccount link) → 400");
-  {
-    const legacy = await access("owner", { legacyAccount: true });
-    check("legacy-only match → 400 (does not support import)", !legacy.ok && (legacy as { response: Response }).response.status === 400);
-  }
-
-  // ── 6. Wrong Space → 404 (link is scoped to its own Space) ────────────────
+  // ── 5. Wrong Space → 404 (link is scoped to its own Space) ────────────────
   console.log("6. wrong Space → 404 (no link in the requested Space)");
   {
     // A FULL owner link exists in SPACE, but the caller asks against a different

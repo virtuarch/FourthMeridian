@@ -294,10 +294,6 @@ async function main() {
   await prisma.spaceSnapshot.deleteMany();
   await prisma.transaction.deleteMany();
   await prisma.holding.deleteMany();
-  // Legacy Account is no longer seeded (v2.5-A Phase 4a). This wipe stays so a
-  // re-seed clears legacy rows left by pre-rewrite seeds (making a re-seeded
-  // dev DB pass the Phase 0 gates). Remove with the Phase 5 model drop.
-  await prisma.account.deleteMany();
   await prisma.plaidItem.deleteMany();
   await prisma.aiAgent.deleteMany();
   await prisma.spaceInvite.deleteMany();

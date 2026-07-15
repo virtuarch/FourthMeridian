@@ -45,9 +45,7 @@
 
 export interface RelationshipTransaction {
   id:                    string;
-  /** Legacy Account FK. */
-  accountId:             string | null;
-  /** Canonical FinancialAccount FK. Exactly one of the two identifies the account. */
+  /** Canonical FinancialAccount FK — the account identity. */
   financialAccountId:    string | null;
   /** Provider transaction id (unique). Anchor for the pending↔posted match. */
   plaidTransactionId:    string | null;
@@ -149,9 +147,9 @@ function normalizeMerchantKey(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toUpperCase();
 }
 
-/** The account identity — whichever FK is set (both normalized to one on read). */
+/** The account identity — the canonical FinancialAccount FK. */
 function accountKey(t: RelationshipTransaction): string | null {
-  return t.financialAccountId ?? t.accountId;
+  return t.financialAccountId;
 }
 
 /** Same calendar day (Transaction.date is @db.Date — day granularity). */

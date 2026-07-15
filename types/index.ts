@@ -228,8 +228,6 @@ export interface TransactionDetailAccount {
   /** Last-4 mask when known (canonical accounts only). */
   mask:        string | null;
   type:        AccountType;
-  /** True when resolved from the legacy Account model (pre-migration rows). */
-  legacy:      boolean;
 }
 
 /** Display-safe import/sync provenance. */
