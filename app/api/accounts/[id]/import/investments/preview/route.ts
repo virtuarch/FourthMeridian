@@ -1,8 +1,9 @@
 /**
  * app/api/accounts/[id]/import/investments/preview/route.ts
  *
- * A7-4/A7-6 — investment import PREVIEW (zero writes). Authz mirrors the banking
- * preview route (resolveImportableFinancialAccount + FULL visibility). A7-6 runs
+ * A7-4/A7-6 — investment import PREVIEW (zero writes). Authz is the canonical
+ * import rule via the shared resolveImportableFinancialAccount guard (owner OR
+ * FULL non-owner + role), identical to the confirm route. A7-6 runs
  * the shared safety gate (buildImportPreview): source detection, connection
  * compatibility, file assessment, and dedupe classification, returning a
  * structured verdict (canCommit + reasons) — a wrong file yields an EXPLAINED
@@ -13,7 +14,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireFreshUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { ShareStatus, VisibilityLevel } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { investmentImportsEnabled } from "@/lib/investments/opening-position";
@@ -30,11 +30,12 @@ export const POST = withApiHandler(async (
   if (err) return err;
   if (!investmentImportsEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  // Canonical import rule (P1 closeout convergence) via the shared guard —
+  // owner/creator OR non-owner with FULL visibility + permitted role. The
+  // redundant inlined FULL check (which gated the owner too) was removed.
   const { spaceId } = await getSpaceContext();
   const access = await resolveImportableFinancialAccount(user.id, spaceId, id);
   if (!access.ok) return access.response;
-  const link = await db.spaceAccountLink.findFirst({ where: { spaceId, financialAccountId: id, status: ShareStatus.ACTIVE }, select: { visibilityLevel: true } });
-  if (link?.visibilityLevel !== VisibilityLevel.FULL) return NextResponse.json({ error: "Full account visibility is required to import." }, { status: 403 });
 
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");

@@ -5,21 +5,21 @@
  * event + observation pair (lib/investments/opening-position.ts). Behind
  * INVESTMENT_IMPORTS_ENABLED: absent ⇒ 404, zero writes, no user-visible surface.
  *
- * Authorization mirrors the import routes exactly (this IS a write into an
- * investment account):
- *   - requireFreshUser() — a state-changing action, never trusts the cache;
- *   - ACTIVE SpaceAccountLink for the account in the caller's Space, else 404
- *     (existence-safe: same 404 as a missing account, no enumeration signal);
- *   - write authority (account owner/creator, or Space OWNER/ADMIN) via the
- *     shared resolveImportableFinancialAccount guard, else 403;
- *   - FULL visibility on the link — asserting positions requires seeing holdings.
+ * Authorization is the single canonical import rule, enforced entirely by the
+ * shared resolveImportableFinancialAccount guard (P1 closeout — import owner
+ * doctrine convergence). This IS a detail-mutating write into an investment
+ * account, so the guard requires: an ACTIVE, non-deleted SpaceAccountLink for
+ * the account in the caller's Space, and either the account owner/creator
+ * (inherent authority over their own account) OR a non-owner with FULL
+ * visibility + a permitted Space role (OWNER/ADMIN). BALANCE_ONLY/SUMMARY_ONLY
+ * non-owners, REVOKED/deleted links, and insufficient roles all fail closed
+ * inside the guard. The previously-inlined redundant "FULL even for the owner"
+ * check was removed here so this route can never disagree with the guard.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { requireFreshUser } from "@/lib/session";
-import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { ShareStatus, VisibilityLevel } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { assertOpeningPosition, investmentImportsEnabled } from "@/lib/investments/opening-position";
@@ -63,19 +63,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Provide either instrumentId or symbol" }, { status: 400 });
   }
 
-  // ── Authorize (ACTIVE link + write authority) ──────────────────────────────
+  // ── Authorize (canonical import rule — owner OR FULL non-owner + role) ──────
   const { spaceId } = await getSpaceContext();
   const access = await resolveImportableFinancialAccount(user.id, spaceId, financialAccountId);
   if (!access.ok) return access.response;
-
-  // ── FULL visibility required for position assertion ────────────────────────
-  const link = await db.spaceAccountLink.findFirst({
-    where:  { spaceId, financialAccountId, status: ShareStatus.ACTIVE },
-    select: { visibilityLevel: true },
-  });
-  if (link?.visibilityLevel !== VisibilityLevel.FULL) {
-    return NextResponse.json({ error: "Full account visibility is required to assert a position." }, { status: 403 });
-  }
 
   // ── Write ──────────────────────────────────────────────────────────────────
   const result = await assertOpeningPosition({

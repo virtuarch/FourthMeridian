@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireFreshUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { ShareStatus, VisibilityLevel, ImportSource } from "@prisma/client";
+import { ImportSource } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { investmentImportsEnabled } from "@/lib/investments/opening-position";
@@ -28,11 +28,13 @@ export const POST = withApiHandler(async (
   if (err) return err;
   if (!investmentImportsEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  // Canonical import rule (P1 closeout convergence): owner/creator OR non-owner
+  // with FULL visibility + permitted Space role. The shared guard is the single
+  // authority; the previously-inlined redundant FULL check (which gated the
+  // owner too) was removed so this route cannot disagree with it.
   const { spaceId } = await getSpaceContext();
   const access = await resolveImportableFinancialAccount(user.id, spaceId, id);
   if (!access.ok) return access.response;
-  const link = await db.spaceAccountLink.findFirst({ where: { spaceId, financialAccountId: id, status: ShareStatus.ACTIVE }, select: { visibilityLevel: true } });
-  if (link?.visibilityLevel !== VisibilityLevel.FULL) return NextResponse.json({ error: "Full account visibility is required to import." }, { status: 403 });
 
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
