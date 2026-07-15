@@ -3,9 +3,11 @@
  *
  * A10 — the canonical Investments Time Machine read path, proven end-to-end.
  * Membership-gated (ACTIVE member, any role) exactly like GET
- * /api/spaces/[id]/investments. Visibility is inherited: getInvestmentsTimeMachine
- * scopes to the Space's ACTIVE account links and reads through the canonical
- * A4/A8 read paths, which are already redaction- and provenance-aware.
+ * /api/spaces/[id]/investments. Visibility is enforced inside the read (KD-21a):
+ * getInvestmentsTimeMachine scopes positions AND period flows to the Space's
+ * detail-eligible (FULL) account links via the canonical TRANSACTION_DETAIL_VISIBILITY
+ * predicate, so a BALANCE_ONLY / SUMMARY_ONLY account never exposes its positions
+ * or investment events here.
  *
  * The Perspective Shell owns preset/asOf/compareTo and passes RESOLVED dates
  * here as query params; this route resolves no time state of its own. Returns the

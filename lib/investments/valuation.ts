@@ -34,6 +34,11 @@ import { createPriceService } from "@/lib/prices/service";
 import { PRICE_MAX_STALE_DAYS, minusDaysISO } from "@/lib/prices/config";
 import type { PriceArchiveReader } from "@/lib/prices/types";
 import {
+  resolveSpaceInvestmentAccountIds,
+  resolveSingleAccountScope,
+  type InvestmentVisibilityScope,
+} from "./account-scope";
+import {
   valueInstrumentAsOf,
   valuePortfolioAsOf,
   type InstrumentValuation,
@@ -74,6 +79,15 @@ export interface GetInvestmentValueArgs {
    * so point-in-time callers keep the strict "not held before it existed" answer.
    */
   holdConstantBeforeEarliest?: boolean;
+  /**
+   * KD-21a — which SpaceAccountLinks contribute positions when scoped by a Space.
+   * "all" (DEFAULT) values every ACTIVE linked account, so wealth-total callers
+   * (A9 snapshot regeneration) still count a BALANCE_ONLY-shared account's value
+   * toward Space wealth. "detailEligible" restricts to FULL-visibility links (the
+   * canonical detail predicate), so member-facing reads never expose the
+   * positions of a BALANCE_ONLY / SUMMARY_ONLY account. See account-scope.ts.
+   */
+  visibilityScope?: InvestmentVisibilityScope;
 }
 
 /**
@@ -87,24 +101,16 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
   const holdConstant = args.holdConstantBeforeEarliest === true;
   const asOfDate = new Date(`${asOf}T00:00:00.000Z`);
 
-  // ── Scope: the account set ────────────────────────────────────────────────
+  // ── Scope: the account set (visibility-filtered per KD-21a) ───────────────
+  const visibilityScope: InvestmentVisibilityScope = args.visibilityScope ?? "all";
   let accountIds: string[];
   let contextSpaceId: string | null = args.spaceId ?? null;
   if (args.financialAccountId) {
-    accountIds = [args.financialAccountId];
-    if (!contextSpaceId) {
-      const link = await client.spaceAccountLink.findFirst({
-        where: { financialAccountId: args.financialAccountId, status: "ACTIVE" },
-        select: { spaceId: true },
-      });
-      contextSpaceId = link?.spaceId ?? null;
-    }
+    const s = await resolveSingleAccountScope(client, args.financialAccountId, contextSpaceId, visibilityScope);
+    accountIds = s.accountIds;
+    contextSpaceId = s.spaceId;
   } else if (args.spaceId) {
-    const links = await client.spaceAccountLink.findMany({
-      where: { spaceId: args.spaceId, status: "ACTIVE", financialAccount: { deletedAt: null } },
-      select: { financialAccountId: true },
-    });
-    accountIds = [...new Set(links.map((l) => l.financialAccountId))];
+    accountIds = await resolveSpaceInvestmentAccountIds(client, args.spaceId, visibilityScope);
   } else {
     throw new Error("[valuation] getInvestmentValueAsOf requires spaceId or financialAccountId");
   }

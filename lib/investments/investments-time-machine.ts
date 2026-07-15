@@ -23,6 +23,7 @@ import { convertMoney, identityContext } from "@/lib/money/convert";
 import { buildSpaceConversionContextById } from "@/lib/money/server-context";
 import type { ConversionContext } from "@/lib/money/types";
 import { getInvestmentValueAsOf } from "./valuation";
+import { resolveSpaceInvestmentAccountIds, resolveSingleAccountScope } from "./account-scope";
 import { summarizePeriodFlows, type FlowEvent, type PeriodFlows } from "./investment-flows-core";
 import {
   assembleInvestmentsTimeMachine,
@@ -68,9 +69,15 @@ export async function getInvestmentsTimeMachine(
   }
 
   // ── Canonical valuation at each endpoint (the single valuation path) ───────
+  // Member-facing read (KD-21a): positions/holdings are scoped to detail-eligible
+  // (FULL) links only, so a BALANCE_ONLY / SUMMARY_ONLY account never exposes its
+  // positions or their value here. The wealth-total path (A9 regeneration) keeps
+  // the "all" default and is unaffected.
   const [view, compareView] = await Promise.all([
-    getInvestmentValueAsOf({ ...scope, asOf, client }),
-    compareTo ? getInvestmentValueAsOf({ ...scope, asOf: compareTo, client }) : Promise.resolve(null),
+    getInvestmentValueAsOf({ ...scope, asOf, client, visibilityScope: "detailEligible" }),
+    compareTo
+      ? getInvestmentValueAsOf({ ...scope, asOf: compareTo, client, visibilityScope: "detailEligible" })
+      : Promise.resolve(null),
   ]);
 
   // ── Period flows from canonical events (only when an interval is defined) ──
@@ -85,27 +92,21 @@ export async function getInvestmentsTimeMachine(
   return assembleInvestmentsTimeMachine({ asOf, compareTo, view, compareView, flows, display });
 }
 
-/** The (account, Space) scope for the event read + FX context. Mirrors valuation.ts. */
+/**
+ * The (account, Space) scope for the event read + FX context. Mirrors valuation.ts
+ * and shares its visibility filter: period flows are per-account transaction-level
+ * detail, so they are scoped to detail-eligible (FULL) links only (KD-21a) — a
+ * BALANCE_ONLY / SUMMARY_ONLY account never exposes its investment events here.
+ */
 async function resolveScope(
   client: Client,
   args: GetInvestmentsTimeMachineArgs,
 ): Promise<{ accountIds: string[]; spaceId: string | null }> {
   if (args.financialAccountId) {
-    let spaceId = args.spaceId ?? null;
-    if (!spaceId) {
-      const link = await client.spaceAccountLink.findFirst({
-        where: { financialAccountId: args.financialAccountId, status: "ACTIVE" },
-        select: { spaceId: true },
-      });
-      spaceId = link?.spaceId ?? null;
-    }
-    return { accountIds: [args.financialAccountId], spaceId };
+    return resolveSingleAccountScope(client, args.financialAccountId, args.spaceId ?? null, "detailEligible");
   }
-  const links = await client.spaceAccountLink.findMany({
-    where: { spaceId: args.spaceId!, status: "ACTIVE", financialAccount: { deletedAt: null } },
-    select: { financialAccountId: true },
-  });
-  return { accountIds: [...new Set(links.map((l) => l.financialAccountId))], spaceId: args.spaceId! };
+  const accountIds = await resolveSpaceInvestmentAccountIds(client, args.spaceId!, "detailEligible");
+  return { accountIds, spaceId: args.spaceId! };
 }
 
 /**
