@@ -6,10 +6,12 @@
  * Canonical Atlas Glass overlay primitive — the single surface that owns
  * modal *behaviour* for Fourth Meridian. Peer to GlassPanel and DataCard.
  *
- * Established by docs/design-system/ATLAS_GLASS_MODAL_DOCTRINE.md. This is
- * Phase 1 of that roadmap: the primitive is introduced ADDITIVELY and wired
- * to nothing. No existing modal imports it yet; migrating the current modal
- * family (AddWalletModal, TotpSection, …) onto it happens in later phases.
+ * Established by docs/design-system/ATLAS_GLASS_MODAL_DOCTRINE.md. Introduced
+ * additively in Phase 1; migration onto it is now well underway — ~15
+ * consumers as of this writing (CreateSpaceModal, AddWalletModal,
+ * ManageSpaceModal, TotpSection, NetWorthChartModal, FormModal, and others).
+ * Treat this as a shared, load-bearing primitive, not an experimental one —
+ * changes here ripple across every consumer above.
  *
  * What this primitive centralises — the concerns each of today's ~8 modal
  * recipes re-implements (and each gets slightly wrong):
@@ -271,6 +273,22 @@ export function OverlaySurface({
     ? "h-[100dvh] sm:h-auto"                 // full-screen form / workspace
     : "h-auto max-h-[92dvh] sm:max-h-none";  // content-sized bottom sheet
 
+  // GOTCHA (learned the hard way during browser-automation verification of
+  // the Rebuild History modal migration, 2026-07-14): under an automated /
+  // backgrounded / occluded browser tab, the compositor can starve mid-flight
+  // and this entrance opacity transition stalls for several SECONDS at a
+  // partial value (e.g. panel ~0.94, scrim ~0.99) even though `entered` (and
+  // the inline style) already says 1. Since `backdrop-filter` is disabled
+  // whenever opacity < 1, a stalled transition renders as a genuinely
+  // see-through, unfrosted panel — which looks exactly like a real
+  // nested-backdrop-filter bug (scrim blur wrapping a panel that also
+  // blurs) but ISN'T one. Before concluding OverlaySurface itself is broken
+  // from an automated screenshot: (1) compare against another OverlaySurface
+  // consumer in the same session — if it's equally see-through, it's this
+  // artifact, not a real regression; (2) wait ~200ms+ / let the tab hold
+  // foreground, or force `opacity: 1` to confirm the surface settles opaque.
+  // A real foreground tab settles in ~200ms; do not restructure this
+  // primitive off of an automation-only repro.
   const panelStyle: CSSProperties = {
     opacity: entered ? 1 : 0,
     transform:
