@@ -123,6 +123,8 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "growth_users", label: "Users", order: 2 },
       // OPS-6C User Activity — DAU/WAU/MAU + most-active Spaces (projection).
       { key: "growth_activity", label: "User Activity", order: 3 },
+      // OPS-6F Growth — beta conversion + activation funnel (projection).
+      { key: "growth_funnel", label: "Growth Funnel", order: 4 },
     ],
   },
   CUSTOMER_SUCCESS: {
