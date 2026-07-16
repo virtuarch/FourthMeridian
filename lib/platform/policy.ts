@@ -71,6 +71,9 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "ops_connection_health", label: "Connection Health", order: 4 },
       // OPS-5 S1 — content-aware resource freshness (FX rates, security prices).
       { key: "ops_resource_freshness", label: "Resource Freshness", order: 5 },
+      // OPS-5 S4 — manual operational controls (Run Now / Dry Run) over the
+      // command registry. Backfilled onto the live Space by ensurePlatformSections.
+      { key: "ops_manual_operations", label: "Manual Operations", order: 6 },
     ],
   },
   SECURITY_OPS: {

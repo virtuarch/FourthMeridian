@@ -44,6 +44,7 @@ import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
 import { OpsApiUsageWidget } from "./widgets/OpsApiUsageWidget";
 import { OpsConnectionHealthWidget } from "./widgets/OpsConnectionHealthWidget";
 import { OpsResourceFreshnessWidget } from "./widgets/OpsResourceFreshnessWidget";
+import { OpsManualOperationsWidget } from "./widgets/OpsManualOperationsWidget";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
 import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
 import { CsSyncIssuesWidget } from "./widgets/CsSyncIssuesWidget";
@@ -74,6 +75,8 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   ops_connection_health: OpsConnectionHealthWidget,
   // Platform Operations (OPS-5 S1)
   ops_resource_freshness: OpsResourceFreshnessWidget,
+  // Platform Operations (OPS-5 S4)
+  ops_manual_operations: OpsManualOperationsWidget,
   // Growth & Revenue (PO1.3 / Wave 1 S3)
   growth_signups:        GrowthSignupsWidget,
   growth_beta_requests:  GrowthBetaRequestsWidget,
@@ -102,6 +105,7 @@ const PLATFORM_SECTION_REGISTRY: Record<string, { note: string }> = {
   ops_api_usage:         { note: "Wave 2 S7 — API call/token volume over ApiUsageCounter (optional estimated spend)." },
   ops_connection_health: { note: "Wave 2 CH-1 — normalized provider-connection health over PlaidItem + Connection." },
   ops_resource_freshness: { note: "OPS-5 S1 — content-aware resource freshness over lib/platform/resource-freshness.ts (MAX archive date, not JobRun)." },
+  ops_manual_operations: { note: "OPS-5 S4 — manual operational controls (Run Now / Dry Run) over the command registry (lib/platform/operations)." },
   // Security Operations (PO1.1)
   sec_audit_feed:   { note: "Lands in PO1.1 — audit feed over the same query as /api/admin/audit." },
   sec_auth_posture: { note: "Lands in PO1.1 — TOTP/forced-2FA posture over /api/admin/security/*." },

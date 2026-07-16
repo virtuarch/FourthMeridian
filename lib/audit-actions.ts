@@ -170,6 +170,17 @@ export const AuditAction = {
   PLATFORM_GRANT_REVOKED:       "PLATFORM_GRANT_REVOKED",
   PLATFORM_GRANT_REINSTATED:    "PLATFORM_GRANT_REINSTATED",
 
+  // ── Platform manual operations (OPS-5 S4) ────────────────────────────────
+  // A grant-holder invoked a manual operation from the Platform Operations
+  // Manual Operations panel. EXECUTED is written for a mutating run-now (which
+  // also lands its own JobRun via runJob(trigger:"manual")); DRY_RUN is the
+  // non-mutating preflight (no JobRun). metadata carries { commandId, kind,
+  // targetJob, outcome, jobRunStatus? } — never job internals or values.
+  // performedByAdminId is always set (the acting grant-holder), the platform
+  // WRITE-surface convention.
+  PLATFORM_OPERATION_EXECUTED:  "PLATFORM_OPERATION_EXECUTED",
+  PLATFORM_OPERATION_DRY_RUN:   "PLATFORM_OPERATION_DRY_RUN",
+
   // ── Security Ops anomalies (Wave 3 ⑧) ────────────────────────────────────
   // Written once per open anomaly window by lib/security/anomaly-alerts.ts when
   // a threshold trips (failed-login burst per identifier/IP, recovery-code
