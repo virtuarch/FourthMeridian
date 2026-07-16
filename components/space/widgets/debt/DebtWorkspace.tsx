@@ -1,37 +1,44 @@
 "use client";
 
 /**
- * components/space/widgets/debt/DebtPerspective.tsx
+ * components/space/widgets/debt/DebtWorkspace.tsx
  *
- * The Debt Perspective workspace — a multi-panel composition of the SAME seven
- * mounted Debt widgets, relocated from the generic single-column SectionCard
- * stack into a 2D grid. Mirrors the landed Liquidity/Cash Flow mechanics
- * (grid-cols-1 lg:grid-cols-12, a local non-exported Panel helper reproducing
- * the SectionCard solid-lede treatment, adapter renderers reused, items-stretch).
- * NOT a new layout abstraction — no registry, no schema, no grid engine, no new
- * card primitive (plan §1.7, §3.1).
+ * The Debt WORKSPACE — SD-6A. Supersedes the CURRENT-STATE-ONLY DebtPerspective by
+ * activating the canonical DebtSpaceData time-composition contract
+ * (lib/debt-space-data.ts) end-to-end, closing the asOf/compareTo clipping gap:
  *
- * LIABILITIES ONLY — "What do I owe?": shape, cost, and risk of debt. No assets,
- * net worth, allocation, spending, or goals.
+ *   SpaceShell ──(asOf / compareTo / today)──▶ DebtWorkspace
+ *                                                │  owns useDebtSpaceData
+ *                                                ▼
+ *                                          DebtSpaceData
+ *                                   { lens@asOf, completeness, history[clipped], fico }
  *
- * CURRENT-STATE ONLY (decided, not open for reinterpretation): this workspace
- * consumes NO as-of / compare-to / historical ACCOUNT read. Every panel is
- * point-in-time EXCEPT Balance Over Time, which reads the SAME host `snapshots`
- * array it reads today — a snapshot read, not an account as-of read (plan §1.5).
- * The shell's As Of / Compare To have zero effect here; the as-of engine stays
- * kill-switched and unconsumed (stop condition 1, locked by the source-scan test).
+ * The workspace OWNS its data consumption (the useDebtSpaceData hook lives here,
+ * mirroring InvestmentsWorkspace). It consumes the contract for the TEMPORAL
+ * concerns only:
+ *   • lede         ← data.lens        (the verdict SENTENCE at asOf — prose only)
+ *   • Balance Over Time ← data.history (the window-clipped slice, [compareTo, asOf])
+ *   • completeness ← data.completeness (the as-of trust envelope, PRESENTED)
+ *   • FICO         ← data.fico         (passthrough)
  *
- * This component owns NO state — everything is pass-through from the host.
+ * DUAL-AUTHORITY (load-bearing, plan §1.4 / §3.5): every VISIBLE FIGURE stays
+ * PRESENTATION-DERIVED from the visibility-filtered `accounts` array (computeDebtKpis
+ * / computePayoffAggregate / renderDebtByAccount / buildDebtSignals) — the lens is
+ * NEVER the numeric authority. The lens (which may see DebtProfile terms the client
+ * array lacks) drives only the prose lede; the two can legitimately disagree, and the
+ * design keeps every number off the lens. LIABILITIES ONLY — "What do I owe?".
  *
- * Layout (plan §3.3) — desktop is a 12-column grid; mobile/tablet stacks in
- * source order Lede → KPI → Balance Over Time → Credit Utilization → Interest
- * Cost → Debt by Account → Payoff Planner → Credit Health → Complete Details:
- *   xl (≥1280): ⓪ 12 · ① 12 · ② 8 / ③ 4 · ④ 7 / ⑤ 5 · ⑥ 4 / ⑦ 8
- *   lg (1024):  ⓪ 12 · ① 12 · ② 7 / ③ 5 · ④ 6 / ⑤ 6 · ⑥ 5 / ⑦ 7
+ * This component owns NO time state — asOf / compareTo / today are shell props. The
+ * only local state is the hook's as-of lens fetch (loading/error for the retry
+ * affordance). Present day is byte-identical to the old render: no fetch, the host's
+ * present-day lens, and a full-history clip.
+ *
+ * Layout is unchanged from DebtPerspective — the same 12-col grid, span pairs, and
+ * source order (mobile stacking) the source-scan test locks.
  */
 
 import type { ReactNode } from "react";
-import { Check, AlertTriangle } from "lucide-react";
+import { Check, AlertTriangle, RefreshCw } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
@@ -51,6 +58,7 @@ import { DebtHistoryPanel } from "./DebtHistoryPanel";
 import { PayoffScenarioStrip } from "./PayoffScenarioStrip";
 import { computePayoffAggregate } from "./debt-kpis";
 import { buildDebtSignals } from "./debt-signals";
+import { useDebtSpaceData } from "./useDebtSpaceData";
 
 // The card language is exactly the SectionCard solid-lede treatment reproduced
 // by the Liquidity/Cash Flow Panel helpers. NOT a new card system.
@@ -65,44 +73,84 @@ function Panel({ title, subdued, children }: { title: string; subdued?: boolean;
   );
 }
 
-export function DebtPerspective({
+export function DebtWorkspace({
+  spaceId,
+  asOf,
+  compareTo,
+  today,
+  active,
   accounts,
   ctx,
   snapshots,
+  snapshotCurrency,
   ficoScore,
   ficoUpdatedAt,
-  lensResult,
+  presentLens,
+  targetCurrency,
 }: {
+  spaceId: string;
+  /** Resolved closing date (YYYY-MM-DD) from the shell. */
+  asOf: string;
+  /** Resolved opening date, or null; clips the Balance-Over-Time window's lower bound. */
+  compareTo: string | null;
+  /** The shell's "today"; asOf >= today ⇒ present-day (no fetch, full history). */
+  today: string;
+  /** Gate — only fetch the as-of lens while the Debt workspace is open. */
+  active: boolean;
   accounts: DebtPerspectiveAccount[];
   ctx?: ConversionContext;
-  /** SpaceSnapshot history for Balance Over Time (host fetches on debtWorkspaceActive). */
+  /** SpaceSnapshot history (host state) — the Balance-Over-Time source; the contract clips it. */
   snapshots?: Snapshot[] | null;
+  /** The currency the snapshot totals are stamped in (the history basis). */
+  snapshotCurrency: string;
   /** Manual FICO score (Personal host only; shared Spaces render the add-score state). */
   ficoScore?: number | null;
   ficoUpdatedAt?: string;
-  /** The already-fetched current-state LensResult (lensResults["debt"]). Absent /
-   *  empty / error ⇒ the lede strip is omitted entirely. NO new fetch, NO
-   *  point-in-time read — the same result the shell envelope already consumes. */
-  lensResult?: LensResult | null;
+  /** The host's already-fetched present-day debt lens (lensResults["debt"]). Used
+   *  as-is on the present-day branch; the as-of branch fetches its own. */
+  presentLens?: LensResult | null;
+  /** MC1 "view as" override — forwarded to the as-of lens fetch. */
+  targetCurrency?: string;
 }) {
+  // Activate the canonical contract: fetch lens@asOf when historical, compose the
+  // rest (clipped history, FICO, completeness pointer) purely from host inputs.
+  const { data, loading, error, reload } = useDebtSpaceData({
+    spaceId,
+    asOf,
+    compareTo,
+    today,
+    active,
+    presentLens: presentLens ?? null,
+    snapshots,
+    snapshotCurrency,
+    fico: { score: ficoScore ?? null, updatedAt: ficoUpdatedAt ?? null },
+    targetCurrency,
+  });
+
+  const lens = data.lens;
+
   // The blended aggregate the planner derives — computed ONCE and handed to the
   // scenario strip so the two can never disagree inside one panel (plan risk §5).
+  // FIGURES OF RECORD: from the client accounts array, never the lens.
   const payoffAgg = computePayoffAggregate(accounts, ctx);
-  const signals = buildDebtSignals({ accounts, ctx, lensResult });
+  const signals = buildDebtSignals({ accounts, ctx, lensResult: lens });
 
   // ⓪ Lens lede — the verdict SENTENCE only, never a competing figure of record
   // (plan §1.4, §3.5: the client widgets and the DebtProfile-merged lens can
   // legitimately disagree, so the lede is prose-only). Rendered only on
-  // status === "ok"; absent/empty/error ⇒ null.
+  // status === "ok"; absent/empty/error ⇒ null. When historical, the as-of trust
+  // envelope (data.completeness — a POINTER to lens.completeness, not recomputed)
+  // is PRESENTED beneath the sentence.
   function renderLede(): ReactNode {
-    if (!lensResult || lensResult.status !== "ok" || !lensResult.verdict) return null;
-    const freshnessLabel = lensResult.provenance.dataAsOf ? formatDate(lensResult.provenance.dataAsOf) : null;
-    const redactions = lensResult.provenance.redactions?.length ?? 0;
+    if (!lens || lens.status !== "ok" || !lens.verdict) return null;
+    const freshnessLabel = lens.provenance.dataAsOf ? formatDate(lens.provenance.dataAsOf) : null;
+    const redactions = lens.provenance.redactions?.length ?? 0;
+    const completeness = data.completeness;
     return (
       <div className="min-w-0 lg:col-span-12">
         <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4 min-w-0">
           <p className="text-sm text-[var(--text-primary)] leading-snug">
-            {lensResult.estimated ? "≈ " : ""}{lensResult.verdict}
+            {lens.estimated ? "≈ " : ""}{lens.verdict}
           </p>
           {(freshnessLabel || redactions > 0) && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1">
@@ -111,6 +159,11 @@ export function DebtPerspective({
                 <span className="text-[11px] text-[var(--text-faint)]">{redactions} account detail{redactions === 1 ? "" : "s"} withheld</span>
               )}
             </div>
+          )}
+          {/* As-of trust envelope — presented, never recomputed (data.completeness
+              re-surfaces lens.completeness). Present only on the as-of path. */}
+          {completeness && completeness.tier !== "observed" && (
+            <p className="text-[11px] text-[#f59e0b] mt-1 leading-snug">{completeness.reason}</p>
           )}
         </GlassPanel>
       </div>
@@ -140,15 +193,26 @@ export function DebtPerspective({
       {/* ⓪ Lens lede — slim strip, present only on an ok LensResult. */}
       {renderLede()}
 
-      {/* ① KPI strip — Total Debt · Est. Interest · Utilization · Min. Payments. */}
+      {/* ① KPI strip — Total Debt · Est. Interest · Utilization · Min. Payments.
+           FIGURES OF RECORD: sourced from the accounts array, NOT the lens. */}
       <div className="min-w-0 lg:col-span-12">
         <DebtKpiStrip accounts={accounts} ctx={ctx} />
       </div>
 
-      {/* ② Debt Balance Over Time — the visually dominant panel (snapshot read). */}
+      {/* ② Debt Balance Over Time — the visually dominant panel. Renders the
+           canonical DebtSpaceData.history slice, clipped to [compareTo, asOf]. */}
       <div className="min-w-0 lg:col-span-7 xl:col-span-8">
         <Panel title="Debt Balance Over Time">
-          <DebtHistoryPanel snapshots={snapshots} ctx={ctx} />
+          <DebtHistoryPanel history={data.history} loading={loading} ctx={ctx} />
+          {error && (
+            <button
+              type="button"
+              onClick={reload}
+              className="mt-2 inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+            >
+              <RefreshCw size={11} /> Couldn’t load as-of history — retry
+            </button>
+          )}
         </Panel>
       </div>
 
@@ -178,10 +242,11 @@ export function DebtPerspective({
         </Panel>
       </div>
 
-      {/* ⑥ Credit Health — the REAL manual FICO + S4 deterministic signal rows. */}
+      {/* ⑥ Credit Health — the REAL manual FICO (contract passthrough) + S4
+           deterministic signal rows. */}
       <div className="min-w-0 lg:col-span-5 xl:col-span-4">
         <Panel title="Credit Health">
-          {renderCreditScore(ficoScore, ficoUpdatedAt)}
+          {renderCreditScore(data.fico.score, data.fico.updatedAt ?? undefined)}
           {renderSignals()}
         </Panel>
       </div>

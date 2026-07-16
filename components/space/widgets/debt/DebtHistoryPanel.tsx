@@ -3,27 +3,27 @@
 /**
  * components/space/widgets/debt/DebtHistoryPanel.tsx
  *
- * S3 — the Balance Over Time presenter (plan §2, §3.3). A honest upgrade of the
- * generic-path renderDebtHistory over the SAME host `Snapshot[]` array:
- *   - full snapshot depth (lifts the generic renderer's 24-point cap);
- *   - `fxMiss` points dropped (the hero-chart guard — those sit at a native,
- *     unconverted magnitude and would distort the ramp; types/index.ts:95–100);
- *   - `isEstimated` (backfilled) points DIMMED and disclosed in a single
- *     estimated-segment note, never labelled as reconstructed loan truth
+ * S3 — the Balance Over Time presenter (plan §2, §3.3). SD-6A rewired it onto the
+ * canonical DebtSpaceData contract: it now renders the ALREADY-CLIPPED
+ * `DebtHistorySlice` (lib/debt-space-data.ts) instead of the raw host `Snapshot[]`.
+ * The window clip to [compareTo ?? start, asOf], the `fxMiss` drop, and the
+ * chronological sort all happen ONCE in the pure `assembleDebtSpaceData` — this
+ * presenter no longer owns any of that logic. It only:
+ *   - dims `isEstimated` (backfilled) points and discloses them in a single note
  *     (plan §1.5 — the flat-hold is a pre-existing condition, carried honestly);
- *   - headline current figure + signed delta since the series start.
+ *   - shows the headline current figure + signed delta since the window start.
  *
- * This is a SNAPSHOT read (SpaceSnapshot.totalDebt), NOT an as-of account read —
- * the one sanctioned history source in this current-state-only workspace
- * (plan §1.5, stop condition 1). The registry `renderDebtHistory` stays the
- * generic-path renderer, untouched (the LiquidityLadderTiers precedent).
+ * The series totals are pre-stamped in the SNAPSHOT currency (slice.currency — the
+ * Space reporting currency), a DISTINCT axis from the KPI/display currency. Labels
+ * reuse the existing ConversionContext formatting exactly as before (no new FX
+ * path, no reconversion of pre-stamped historical totals — DEC-safe).
  */
 
 import { CreditCard } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
-import type { Snapshot } from "@/types";
+import type { DebtHistorySlice } from "@/lib/debt-space-data";
 
 function fmtMoney(v: number, ctx?: ConversionContext): string {
   return ctx
@@ -32,20 +32,23 @@ function fmtMoney(v: number, ctx?: ConversionContext): string {
 }
 
 export function DebtHistoryPanel({
-  snapshots,
+  history,
+  loading,
   ctx,
 }: {
-  snapshots: Snapshot[] | null | undefined;
+  /** The window-clipped Balance-Over-Time slice (assembleDebtSpaceData). null ⇒ no usable in-window history. */
+  history: DebtHistorySlice | null;
+  /** True while the as-of lens fetch is in flight before the first result. */
+  loading?: boolean;
   ctx?: ConversionContext;
 }) {
-  if (snapshots == null) {
+  // Points are already clipped to [compareTo ?? start, asOf], fxMiss-dropped, and
+  // sorted ascending by the pure contract — no further filtering here.
+  const points = history?.points ?? [];
+
+  if (loading && points.length === 0) {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading history…</p>;
   }
-
-  // Full series (no 24-point cap), fxMiss points dropped, chronological.
-  const points = snapshots
-    .filter((s) => typeof s.totalDebt === "number" && s.fxMiss !== true)
-    .sort((a, b) => (a.date < b.date ? -1 : 1));
 
   if (points.length < 2 || points.every((p) => p.totalDebt === 0)) {
     return (
