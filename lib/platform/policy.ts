@@ -74,6 +74,9 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // OPS-5 S4 — manual operational controls (Run Now / Dry Run) over the
       // command registry. Backfilled onto the live Space by ensurePlatformSections.
       { key: "ops_manual_operations", label: "Manual Operations", order: 6 },
+      // OPS-5 S3 — provider health: external providers as first-class operational
+      // resources (freshness CONSUMED from OPS-5 S1). Backfilled by ensurePlatformSections.
+      { key: "ops_provider_health", label: "Provider Health", order: 7 },
     ],
   },
   SECURITY_OPS: {
