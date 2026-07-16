@@ -100,14 +100,13 @@ import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/pers
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { cashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import type { LiquidityTx } from "@/lib/transactions/liquidity";
-import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { WealthPerspective } from "@/components/space/widgets/wealth/WealthPerspective";
-import { CashFlowPerspective as CashFlowPerspectiveWorkspace } from "@/components/space/widgets/cashflow/CashFlowPerspective";
+import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
 import { LiquidityPerspective } from "@/components/space/widgets/liquidity/LiquidityPerspective";
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
-import { DebtPerspective } from "@/components/space/widgets/debt/DebtPerspective";
+import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
 import { AccountsPerspective } from "@/components/space/widgets/accounts/AccountsPerspective";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
@@ -2680,15 +2679,10 @@ export function SpaceDashboard({
     [wealthResult, wealthCurrency],
   );
   const [wealthEvidenceOpen, setWealthEvidenceOpen] = useState(false);
-  // CF-3 — the workspace-shared Cash Flow / Spending perspective + measure filter,
-  // driven by the Cash Flow History widget's selector and consumed by every Cash
-  // Flow widget so they never disagree.
-  const [cashFlowPerspective, setCashFlowPerspective] = useState<CashFlowPerspective>("liquidity");
-  const [cashFlowFilterId, setCashFlowFilterId] = useState<string>(DEFAULT_FILTER_ID);
-  const onCashFlowPerspectiveChange = (p: CashFlowPerspective, id: string) => {
-    setCashFlowPerspective(p);
-    setCashFlowFilterId(id);
-  };
+  // SD-6C — the Cash Flow / Spending perspective + measure filter is now OWNED by
+  // CashFlowWorkspace (workspace-local semantic slice), no longer host state. The
+  // host retains only the canonical-time seam (cashFlowPeriod) and the completeness
+  // stamp for the shell chip.
   const cashFlowActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "cashFlow";
   // SD-3 — declarative lazy activation. The host no longer hardcodes which
   // perspective needs which resource (the former debtWorkspaceActive /
@@ -2705,6 +2699,11 @@ export function SpaceDashboard({
   const perspectiveNeedsTransactions = openNeeds.has("transactions"); // ⇔ cashFlow | liquidity
   const perspectiveNeedsGoals = openNeeds.has("goals");               // ⇔ goals
   const perspectiveNeedsInvestments = openNeeds.has("investmentsHistory"); // ⇔ investments
+  // SD-6A — the Debt WORKSPACE owns its data consumption (the useDebtSpaceData
+  // fetch moved inside <DebtWorkspace>); this gates its as-of lens fetch to when
+  // the Debt perspective is open. compareTo is guarded to a strictly-earlier window.
+  const debtActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "debt";
+  const debtCompareTo = compareTo && compareTo < asOf ? compareTo : null;
   // SD-4D+ — the Investments WORKSPACE now OWNS its data consumption (the
   // useInvestmentsSpaceData fetch moved inside <InvestmentsWorkspace>). The host keeps
   // NO Investments fetch; it only relays the workspace's trust envelope to the shell
@@ -3341,15 +3340,12 @@ export function SpaceDashboard({
                 // single-column SectionCard stack for this Perspective only. Time
                 // stays host-owned via the existing period bridge; the exact same
                 // props the SectionCard path passed reach the same five widgets.
-                <CashFlowPerspectiveWorkspace
+                <CashFlowWorkspace
                   transactions={spaceTransactions}
                   txCtx={txConversionCtx}
                   accounts={accounts}
                   period={cashFlowPeriod}
                   onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
-                  perspective={cashFlowPerspective}
-                  filterId={cashFlowFilterId}
-                  onPerspectiveChange={onCashFlowPerspectiveChange}
                   stamp={cashFlowStampValue}
                 />
               ) : activePerspectiveId === "liquidity" ? (
@@ -3387,22 +3383,29 @@ export function SpaceDashboard({
                   onEnvelopeChange={setInvestmentsEnvelope}
                 />
               ) : activePerspectiveId === "debt" ? (
-                // Debt Perspective — the redesigned CURRENT-STATE-ONLY multi-panel
-                // composition (mirrors the Liquidity/Cash Flow grid pattern),
-                // replacing the generic SectionCard stack for this Perspective
-                // only. LIABILITIES ONLY. No as-of / history ACCOUNT read: the
-                // shell's As Of / Compare To have zero effect here. Balance Over
-                // Time reads the same `snapshots` array the old stack read (a
-                // snapshot read, not an account as-of read). The lens lede consumes
-                // the already-fetched lensResults["debt"] — no new fetch, no
-                // envelope change.
-                <DebtPerspective
+                // SD-6A — the extracted Debt WORKSPACE over the canonical
+                // DebtSpaceData contract. All composition lives inside it; the host
+                // only mounts it with shell dates + host inputs. It activates the
+                // as-of engine: the lede lens is computed AT asOf and the Balance
+                // Over Time series is CLIPPED to [compareTo, asOf] — date changes now
+                // visibly move the history window. Every VISIBLE FIGURE stays
+                // client-derived from `accounts` (dual authority). The host present-
+                // day lens (lensResults["debt"]) is reused on the today branch
+                // (byte-identical); historical fetches its own. LIABILITIES ONLY.
+                <DebtWorkspace
+                  spaceId={spaceId}
+                  asOf={asOf}
+                  compareTo={debtCompareTo}
+                  today={shellToday}
+                  active={debtActive}
                   accounts={accounts}
                   ctx={widgetCtx}
                   snapshots={snapshots}
+                  snapshotCurrency={snapshotCurrency ?? displayCurrency}
                   ficoScore={ficoScore}
                   ficoUpdatedAt={ficoUpdatedAt}
-                  lensResult={lensResults?.["debt"] ?? null}
+                  presentLens={lensResults?.["debt"] ?? null}
+                  targetCurrency={perspectiveTargetCurrency}
                 />
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
@@ -3421,9 +3424,6 @@ export function SpaceDashboard({
                     txCtx={txConversionCtx}
                     period={cashFlowPeriod}
                     onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
-                    perspective={cashFlowPerspective}
-                    filterId={cashFlowFilterId}
-                    onPerspectiveChange={onCashFlowPerspectiveChange}
                     ficoScore={ficoScore}
                     ficoUpdatedAt={ficoUpdatedAt}
                     goals={spaceGoals}

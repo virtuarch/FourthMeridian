@@ -34,7 +34,7 @@ import { TransactionSliceDrawer, type TransactionSlice } from "@/components/spac
 import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import {
   bucketDayFacts, netOfMeasures, rowsForMeasures,
-  type CalendarMeasureId, type CashFlowPerspective,
+  type CalendarMeasureId, type CashFlowPerspective, type DayFacts, type FactsBucket,
 } from "@/lib/transactions/cash-flow-projection";
 import { CashFlowFilterControls, CALENDAR_FILTERS, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import {
@@ -191,16 +191,20 @@ function labelFor(p: ExplicitCashFlowPeriod): string {
  *  bucket (day for month/week, week for quarter, month for year — granularity
  *  from bucketCashFlow), showing net + income + spending. */
 function CardsView({
-  rows, period, ctx, accounts, measures, onOpenBucket,
+  rows, period, ctx, accounts, measures, onOpenBucket, factsBuckets,
 }: {
   rows: Transaction[]; period: CashFlowPeriod; ctx?: ConversionContext;
   accounts: { id: string; type: string }[];
   measures: CalendarMeasureId[];
   onOpenBucket: (label: string, key: string) => void;
+  /** SD-6C — pre-folded per-bucket facts from CashFlowSpaceData; else fold here. */
+  factsBuckets?: FactsBucket[];
 }) {
   // CF-3 convergence — the SAME shared projection the Summary/Calendar use (per
-  // bucket), collapsed to the selected measures' in/out/net.
-  const buckets = bucketDayFacts(rows as LiquidityTx[], tierResolver(accounts), period, ctx)
+  // bucket), collapsed to the selected measures' in/out/net. `netOfMeasures` is a
+  // pure selection over the already-folded buckets — the measures live in workspace
+  // state, so they are applied here (not in the contract).
+  const buckets = (factsBuckets ?? bucketDayFacts(rows as LiquidityTx[], tierResolver(accounts), period, ctx))
     .map((b) => ({ key: b.key, label: b.label, ...netOfMeasures(b, measures) }));
   if (buckets.length === 0) return <EmptyCard sub="Cash-flow history appears as transactions accumulate." />;
 
@@ -254,10 +258,17 @@ interface Props {
   perspective?:         CashFlowPerspective;
   filterId?:            string;
   onPerspectiveChange?: (perspective: CashFlowPerspective, filterId: string) => void;
+  /** SD-6C — pre-computed slices from CashFlowSpaceData (the workspace composition
+   *  boundary). When supplied the widget consumes the window + folds instead of
+   *  re-running filterByPeriod / projectDailyFacts / bucketDayFacts — byte-identical
+   *  (same authority, same window). Absent ⇒ standalone/registry path computes here. */
+  windowRows?:          Transaction[];
+  daily?:               Map<string, DayFacts>;
+  buckets?:             FactsBucket[];
 }
 
 /** Multi-mode Cash Flow History (Calendar · Cards) with in-widget history. */
-export function CashFlowHistoryWidget({ transactions, period, ctx, accounts, onSelectPeriod, perspective: controlledPerspective, filterId: controlledFilterId, onPerspectiveChange }: Props) {
+export function CashFlowHistoryWidget({ transactions, period, ctx, accounts, onSelectPeriod, perspective: controlledPerspective, filterId: controlledFilterId, onPerspectiveChange, windowRows, daily, buckets }: Props) {
   const modes       = getCashFlowHistoryModes(period);
   const defaultMode = getDefaultCashFlowHistoryMode(period);
 
@@ -329,7 +340,7 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, accounts, onS
       </div>
     );
   }
-  const rows = filterByPeriod(transactions, period);
+  const rows = windowRows ?? filterByPeriod(transactions, period);
 
   // CF-3B — the drill-down surfaces ONLY the rows behind the selected measures, so
   // the drawer reconciles with the heat-map cell and never mixes, e.g., debt
@@ -362,10 +373,11 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, accounts, onS
                 transactions={rows} period={period} ctx={ctx} accounts={accounts}
                 measures={measures} onSelectDay={openDay}
                 viewYear={period === "ALL" ? effectiveViewYear ?? undefined : undefined}
+                daily={daily}
               />
             </div>
           )
-          : <CardsView rows={rows} period={period} ctx={ctx} accounts={accounts} measures={measures} onOpenBucket={openBucket} />}
+          : <CardsView rows={rows} period={period} ctx={ctx} accounts={accounts} measures={measures} onOpenBucket={openBucket} factsBuckets={buckets} />}
 
       {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}
     </div>

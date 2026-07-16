@@ -39,8 +39,8 @@ import {
   type LiquidityEffect,
 } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
-import { groupCashFlowContext } from "@/lib/transactions/cash-flow-context";
-import { aggregateDayFacts, economicSpend, type CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
+import { groupCashFlowContext, type CashFlowContext } from "@/lib/transactions/cash-flow-context";
+import { aggregateDayFacts, economicSpend, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import { CashFlowFilterControls, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { TransactionSliceDrawer, type TransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
@@ -66,6 +66,13 @@ interface Props {
    *  controlled (mirrors the History selector); otherwise it self-manages. */
   perspective?:         CashFlowPerspective;
   onPerspectiveChange?: (perspective: CashFlowPerspective, filterId: string) => void;
+  /** SD-6C — pre-computed slices from CashFlowSpaceData (the workspace composition
+   *  boundary). When supplied the widget consumes them instead of re-windowing +
+   *  re-folding from raw rows — byte-identical (same authority, same window). Absent
+   *  ⇒ the standalone/registry path computes them here, exactly as before. */
+  windowRows?:          Transaction[];
+  facts?:               DayFacts;
+  context?:             CashFlowContext;
 }
 
 /** One expandable side (Cash In or Cash Out) with its reason breakdown. Each
@@ -146,7 +153,7 @@ function ContextRow({ label, value, onOpen }: { label: string; value: string; on
   );
 }
 
-export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, perspective: controlledPerspective, onPerspectiveChange }: Props) {
+export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, perspective: controlledPerspective, onPerspectiveChange, windowRows, facts: factsProp, context: contextProp }: Props) {
   // CF-3 — perspective toggle (Cash Flow ⇄ Spending). Controlled by the shared
   // workspace perspective when provided; otherwise self-managed for standalone use.
   const [localPerspective, setLocalPerspective] = useState<CashFlowPerspective>("liquidity");
@@ -158,7 +165,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   if (transactions == null) {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;
   }
-  const rows = filterByPeriod(transactions, period) as LiquidityTx[];
+  const rows = (windowRows ?? filterByPeriod(transactions, period)) as LiquidityTx[];
   if (rows.length === 0) {
     return (
       <div className="text-center py-8">
@@ -172,8 +179,10 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   // CF-3 / P2-1 — the shared DayFacts projection is the SOLE fold: ONE pass over
   // the rows yields BOTH axes (liquidity cashIn/cashOut + economic income/spend/
   // subsets). Cash In / Cash Out / Net Cash read straight off `facts` — no second
-  // deriveCashFlowAxes pass (that was the removed production double-fold).
-  const facts = aggregateDayFacts(rows, liqCtx, ctx);
+  // deriveCashFlowAxes pass (that was the removed production double-fold). SD-6C —
+  // when the workspace supplies the CashFlowSpaceData slice, `facts` IS its
+  // canonical `summary`; else this standalone/registry path folds it here.
+  const facts = factsProp ?? aggregateDayFacts(rows, liqCtx, ctx);
   // Reason breakdown (effect-split) — a PURE PROJECTION over the same `facts`
   // (no second fold); its per-side totals equal facts.cashIn/out by construction.
   const breakdown = groupLiquidityByReason(facts);
@@ -182,7 +191,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   const econOther = Math.max(0, econSpendTotal - econCard);
   const econNet = facts.income - econSpendTotal;
   // CF-1 — human context projection (presentation only; never feeds Cash In/Out/Net).
-  const context = groupCashFlowContext(rows, liqCtx, ctx);
+  const context = contextProp ?? groupCashFlowContext(rows, liqCtx, ctx);
   // CF-1A — is any context bucket populated? Drives the populated rows vs the
   // discoverability empty state. Consumes the grouped output; computes nothing new.
   const hasContext = context.movedNotSpent.length > 0 || context.needsClassification.length > 0;

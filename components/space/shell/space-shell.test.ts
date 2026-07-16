@@ -45,8 +45,8 @@ check("shell exposes the slot API", /overlays\?:/.test(shellCode) && /toolbar\?:
 // Nothing in the shell's code (comments stripped) may name a workspace or its
 // composition primitives — it only knows "frame".
 for (const banned of [
-  "WealthPerspective", "InvestmentsWorkspace", "DebtPerspective",
-  "LiquidityPerspective", "CashFlowPerspective", "PerspectiveShell",
+  "WealthPerspective", "InvestmentsWorkspace", "DebtWorkspace",
+  "LiquidityPerspective", "CashFlowPerspective", "CashFlowWorkspace", "PerspectiveShell",
   "SectionCard", "SpaceTrendHero", "useInvestmentsSpaceData",
   "computeWealthTimeMachine", "cashFlowPeriod",
   // SD-2C: the shell may own a display-currency *slot* (a ReactNode the host
@@ -74,7 +74,7 @@ check("host feeds the rail (railOptions/activeTab/onSelectTab/railStatic)",
 // ── Workspaces still render INSIDE the slot (host keeps workspace ownership) ─────
 check("workspace render ladder still lives in the host (inside the slot)",
   /<WealthPerspective/.test(dashCode) && /<InvestmentsWorkspace/.test(dashCode) &&
-  /<CashFlowPerspectiveWorkspace/.test(dashCode) && /<DebtPerspective/.test(dashCode));
+  /<CashFlowWorkspace/.test(dashCode) && /<DebtWorkspace/.test(dashCode));
 
 // ── SD-0 authorities preserved in the host (SD-1 must not regress them) ─────────
 check("host still owns the URL authority (SD-0A)", /useSpaceUrl\(\)/.test(dashCode));

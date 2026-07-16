@@ -27,6 +27,11 @@ interface Props {
   period:       CashFlowPeriod;
   ctx?:         ConversionContext;
   accounts:     { id: string; type: string }[];
+  /** SD-6C — the period-windowed rows from CashFlowSpaceData (the workspace
+   *  composition boundary). When supplied the widget consumes it instead of
+   *  re-running `filterByPeriod` — the byte-identical slice. Absent ⇒ the
+   *  standalone/registry path windows here, exactly as before. */
+  windowRows?:  Transaction[];
 }
 
 function magnitude(t: Transaction, ctx?: ConversionContext): number {
@@ -39,11 +44,11 @@ function isDebtPaymentRow(t: LiquidityTx, liqCtx: ReturnType<typeof tierResolver
   return c.effect === "CASH_OUT" && c.reason === "DEBT_PAYMENT";
 }
 
-export function DebtPaymentsWidget({ transactions, period, ctx, accounts }: Props) {
+export function DebtPaymentsWidget({ transactions, period, ctx, accounts, windowRows }: Props) {
   if (transactions == null) {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;
   }
-  const rows = filterByPeriod(transactions, period) as LiquidityTx[];
+  const rows = (windowRows ?? filterByPeriod(transactions, period)) as LiquidityTx[];
   const liqCtx = tierResolver(accounts);
   // Canonical DEBT_PAYMENT liquidity rows (CASH_OUT/DEBT_PAYMENT) — the spendable-
   // cash leg that pays down a liability; the liability-side leg is NEUTRAL, so a

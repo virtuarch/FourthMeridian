@@ -38,7 +38,7 @@ import {
 import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import {
   projectDailyFacts, netOfMeasures, CALENDAR_MEASURES,
-  type CalendarMeasureId,
+  type CalendarMeasureId, type DayFacts,
 } from "@/lib/transactions/cash-flow-projection";
 import {
   CalendarHeatmapGrid,
@@ -59,9 +59,15 @@ interface Props {
    *  the period's range (whose sentinel 0000–9999 would emit garbage grids). The
    *  daily projection still runs over ALL passed rows; only this year is painted. */
   viewYear?:    number;
+  /** SD-6C — the pre-projected per-day facts from CashFlowSpaceData (the workspace
+   *  composition boundary). When supplied the Calendar consumes it instead of
+   *  re-running `projectDailyFacts` over `transactions` — the byte-identical map
+   *  (same authority, same rows), so the heatmap is unchanged. Absent ⇒ the
+   *  standalone/registry path projects it here, exactly as before. */
+  daily?:       Map<string, DayFacts>;
 }
 
-export function CashFlowCalendar({ transactions, period, ctx, accounts, measures, onSelectDay, viewYear }: Props) {
+export function CashFlowCalendar({ transactions, period, ctx, accounts, measures, onSelectDay, viewYear, daily: dailyProp }: Props) {
   // When viewYear is set (All Time), the visible span is exactly that one year;
   // otherwise it is the period's own range. The sentinel All-Time range is never
   // fed to monthsInRange — that is the whole reason for this prop.
@@ -69,7 +75,10 @@ export function CashFlowCalendar({ transactions, period, ctx, accounts, measures
     () => (viewYear != null ? { start: `${viewYear}-01-01`, end: `${viewYear}-12-31` } : periodRange(period)),
     [period, viewYear],
   );
-  const daily  = useMemo(() => projectDailyFacts(transactions as LiquidityTx[], tierResolver(accounts), ctx), [transactions, accounts, ctx]);
+  const daily  = useMemo(
+    () => dailyProp ?? projectDailyFacts(transactions as LiquidityTx[], tierResolver(accounts), ctx),
+    [dailyProp, transactions, accounts, ctx],
+  );
   const months = useMemo(() => monthsInRange(range.start, range.end), [range]);
 
   const currency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
