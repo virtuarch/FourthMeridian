@@ -21,6 +21,9 @@ const read = (p: string) => readFileSync(path.join(process.cwd(), p), "utf8");
 const shell   = read("components/space/shell/PerspectiveShell.tsx");
 const tabs    = read("components/space/shell/PerspectiveTabs.tsx");
 const dash    = read("components/dashboard/SpaceDashboard.tsx");
+// SD-1: the Space-level rail render logic moved out of SpaceDashboard into the
+// extracted SpaceShell frame; the host now only decides staticness via railStatic.
+const frame   = read("components/space/shell/SpaceShell.tsx");
 
 function main(): void {
   console.log("S2 — PerspectiveShell renders the lens tabs ABOVE the time/trust block");
@@ -35,20 +38,23 @@ function main(): void {
   console.log("S4 — the Perspective track floats; the rail floats only OFF the Perspectives tab");
   check("PerspectiveShell wraps the tabs in FloatingNavWrapper", /<FloatingNavWrapper[\s\S]*?<PerspectiveTabs/.test(shell));
   check("PerspectiveShell pins below the rail (PERSPECTIVE_PILL_TOP)", /PERSPECTIVE_PILL_TOP/.test(shell));
-  // Phase 2 scroll-follow swap: the rail's FloatingNavWrapper is gated on
-  // activeTab !== "PERSPECTIVES", and the rail renders BARE (no wrapper) on that
-  // tab — not shrinkOnScroll={false} (stop condition #3).
-  check("rail floating is conditional on the active tab",
-    /activeTab === "PERSPECTIVES"[\s\S]*?<FloatingNavWrapper top=\{RAIL_PILL_TOP\}/.test(dash));
-  check("rail is bare (no FloatingNavWrapper) on the Perspectives tab",
-    /activeTab === "PERSPECTIVES" \?\s*\(\s*[\s\S]{0,240}?<div className="mb-5">\{railControl\}/.test(dash));
+  // Phase 2 scroll-follow swap (SD-1: split across host + shell): the host feeds
+  // railStatic on the Perspectives tab, and the shell gates the rail's
+  // FloatingNavWrapper on railStatic, rendering BARE (no wrapper) when static —
+  // not shrinkOnScroll={false} (stop condition #3).
+  check("host makes the rail static on the Perspectives tab",
+    /railStatic=\{activeTab === "PERSPECTIVES"\}/.test(dash));
+  check("shell floats the rail only when NOT static",
+    /railStatic \?\s*\(\s*[\s\S]{0,200}?\)\s*:\s*\(\s*<FloatingNavWrapper top=\{RAIL_PILL_TOP\}/.test(frame));
+  check("shell renders the rail bare (no FloatingNavWrapper) when static",
+    /railStatic \?\s*\(\s*<div className="mb-5">\{rail\}/.test(frame));
   // Strip comments first — an explanatory comment legitimately mentions the
   // anti-pattern; the assertion is about actual CODE not using it.
-  const dashCode = dash.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const frameCode = frame.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
   check("scroll-follow swap does NOT use shrinkOnScroll={false} (stop condition #3)",
-    !/shrinkOnScroll=\{false\}/.test(dashCode));
+    !/shrinkOnScroll=\{false\}/.test(frameCode));
   check("rail no longer forces full width (w-full removed from its control)",
-    !/aria-label="Space section"[\s\S]{0,160}className="w-full/.test(dash));
+    !/aria-label="Space section"[\s\S]{0,160}className="w-full/.test(frame));
 
   console.log("S1/S3 — perspective tab icons are wired through and rendered");
   check("SpaceDashboard threads PerspectiveDef.icon into the tab items", /icon:\s*p\.icon/.test(dash));

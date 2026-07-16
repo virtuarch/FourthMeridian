@@ -91,6 +91,7 @@ import {
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
 import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiveShellState";
+import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { readSpaceParam } from "@/lib/space/space-url";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
@@ -111,8 +112,6 @@ import { AccountsPerspective } from "@/components/space/widgets/accounts/Account
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
-import { SegmentedControl } from "@/components/atlas/SegmentedControl";
-import { FloatingNavWrapper, RAIL_PILL_TOP } from "@/components/atlas/FloatingNavWrapper";
 import { SPACE_TAB_ICON_MAP, SPACE_TAB_ICON_FALLBACK } from "@/lib/space-nav-icons";
 import {
   railVisibleTabs,
@@ -3133,144 +3132,122 @@ export function SpaceDashboard({
     ) : null;
 
   return (
-    <>
-      {/* (Activity slice) — the Timeline modal is gone. Activity is now a
-          first-class rail tab rendering the recent_activity section inline
-          (TimelineWidget, which self-fetches + paginates), so there's no
-          modal to launch. */}
-
-      {showAddGoal && (
-        <AddGoalModal
-          spaceId={spaceId}
-          spaceCategory={category}
-          accounts={accounts}
-          onClose={() => setShowAddGoal(false)}
-          onCreated={() => {
-            setShowAddGoal(false);
-            setActiveTab("GOALS");
-          }}
-        />
-      )}
-
-      {showManage && (
-        <ManageSpaceModal
-          spaceId={spaceId}
-          spaceName={spaceName}
-          myRole={myRole}
-          currentUserId={currentUserId}
-          onClose={() => setShowManage(false)}
-          onRefresh={() => {
-            setShowManage(false);
-            loadSections();
-            loadAccounts();
-          }}
-        />
-      )}
-
-      {/* ── Leave space confirmation (Atlas ConfirmDialog, doctrine Phase 4) ── */}
-      {confirmLeave && (
-        <ConfirmDialog
-          onClose={() => setConfirmLeave(false)}
-          onConfirm={handleLeave}
-          icon={LogOut}
-          title={`Leave ${displaySpaceName(spaceName)}?`}
-          message={
-            <>
-              You&apos;ll lose access to this Space and all of its shared data.
-              To rejoin, an <span className="text-white font-medium">Owner</span> or{" "}
-              <span className="text-white font-medium">Admin</span> will need to manually
-              re-add you.
-            </>
-          }
-          confirmLabel="Leave Space"
-          confirmIcon={<LogOut size={14} />}
-          busy={leaveBusy}
-        />
-      )}
-
-      <div className="max-w-5xl mx-auto">
-        {/* Header */}
-        <div className="flex items-start justify-between mb-5">
-          <div>
-            <h1 className="text-xl font-bold text-white">{displaySpaceName(spaceName)}</h1>
-            <p className="text-sm text-[var(--text-muted)]">
-              {catLabel} Space{memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : ""}
-              {newestAccountUpdate ? ` · Updated ${formatRelativeTime(newestAccountUpdate)}` : ""}
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0 ml-3">
-            {/* Edit Layout toggle (UX-CUST-1A) — visible-surface reorder for the
-                active tab's section cards. Shown only where a reorderable stack
-                exists; while active it flips to Done. */}
-            {(canReorderTab || editingLayout) && (
-              <button
-                onClick={() => setEditingLayout((v) => !v)}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-colors border ${
-                  editingLayout
-                    ? "bg-[var(--accent-info)] text-white border-transparent"
-                    : "text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"
-                }`}
-              >
-                {savingLayout
-                  ? <Loader2 size={13} className="animate-spin" />
-                  : <GripVertical size={13} />}
-                {editingLayout ? "Done" : "Edit layout"}
-              </button>
-            )}
-
-            {canManage && (
-              <button
-                onClick={() => setShowManage(true)}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] transition-colors border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"
-              >
-                <Settings size={13} />
-                Manage
-              </button>
-            )}
-
-            {canLeave && (
-              <button
-                onClick={() => setConfirmLeave(true)}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--text-muted)] hover:text-[var(--accent-negative)] hover:bg-red-500/10 transition-colors border border-[var(--border-hairline)] hover:border-red-500/30"
-              >
-                <LogOut size={13} />
-                Leave
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Tab navigation — fixed Spaces rail (lib/space-nav.ts), shared
-            order across every Space type. Atlas SegmentedControl, not the
-            old hand-rolled gray pill row. SHELL_NAV §2.4: a centered floating
-            pill (sticky below the app header) rather than a full-width bar.
-
-            Phase 2 §2.3 — scroll-follow swap: on the Perspectives tab the rail
-            goes FULLY STATIC (rendered bare, no FloatingNavWrapper at all — not
-            shrinkOnScroll={false}, which would still float/position it) so the
-            Perspective track below becomes the one surface that floats + shrinks.
-            Every other tab keeps the floating/shrinking rail unchanged. */}
-        {(() => {
-          const railControl = (
-            <SegmentedControl
-              aria-label="Space section"
-              options={railOptions}
-              value={activeTab}
-              onChange={setActiveTab}
-              labelVisibility="activeOnly"
+    <SpaceShell
+      // Global shell overlays — the shell owns WHERE they mount (above the
+      // frame); the host owns their open state + what they do.
+      overlays={
+        <>
+          {/* (Activity slice) — the Timeline modal is gone. Activity is now a
+              first-class rail tab rendering the recent_activity section inline
+              (TimelineWidget, which self-fetches + paginates), so there's no
+              modal to launch. */}
+          {showAddGoal && (
+            <AddGoalModal
+              spaceId={spaceId}
+              spaceCategory={category}
+              accounts={accounts}
+              onClose={() => setShowAddGoal(false)}
+              onCreated={() => {
+                setShowAddGoal(false);
+                setActiveTab("GOALS");
+              }}
             />
-          );
-          return activeTab === "PERSPECTIVES" ? (
-            // Static + in-flow; the plain div only carries the bottom spacing the
-            // floating wrapper otherwise provides — no positioning/scroll of its own.
-            <div className="mb-5">{railControl}</div>
-          ) : (
-            <FloatingNavWrapper top={RAIL_PILL_TOP} className="mb-5">
-              {railControl}
-            </FloatingNavWrapper>
-          );
-        })()}
+          )}
+
+          {showManage && (
+            <ManageSpaceModal
+              spaceId={spaceId}
+              spaceName={spaceName}
+              myRole={myRole}
+              currentUserId={currentUserId}
+              onClose={() => setShowManage(false)}
+              onRefresh={() => {
+                setShowManage(false);
+                loadSections();
+                loadAccounts();
+              }}
+            />
+          )}
+
+          {/* ── Leave space confirmation (Atlas ConfirmDialog, doctrine Phase 4) ── */}
+          {confirmLeave && (
+            <ConfirmDialog
+              onClose={() => setConfirmLeave(false)}
+              onConfirm={handleLeave}
+              icon={LogOut}
+              title={`Leave ${displaySpaceName(spaceName)}?`}
+              message={
+                <>
+                  You&apos;ll lose access to this Space and all of its shared data.
+                  To rejoin, an <span className="text-white font-medium">Owner</span> or{" "}
+                  <span className="text-white font-medium">Admin</span> will need to manually
+                  re-add you.
+                </>
+              }
+              confirmLabel="Leave Space"
+              confirmIcon={<LogOut size={14} />}
+              busy={leaveBusy}
+            />
+          )}
+        </>
+      }
+      title={displaySpaceName(spaceName)}
+      subtitle={
+        <>
+          {catLabel} Space{memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : ""}
+          {newestAccountUpdate ? ` · Updated ${formatRelativeTime(newestAccountUpdate)}` : ""}
+        </>
+      }
+      toolbar={
+        <>
+          {/* Edit Layout toggle (UX-CUST-1A) — visible-surface reorder for the
+              active tab's section cards. Shown only where a reorderable stack
+              exists; while active it flips to Done. */}
+          {(canReorderTab || editingLayout) && (
+            <button
+              onClick={() => setEditingLayout((v) => !v)}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-colors border ${
+                editingLayout
+                  ? "bg-[var(--accent-info)] text-white border-transparent"
+                  : "text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"
+              }`}
+            >
+              {savingLayout
+                ? <Loader2 size={13} className="animate-spin" />
+                : <GripVertical size={13} />}
+              {editingLayout ? "Done" : "Edit layout"}
+            </button>
+          )}
+
+          {canManage && (
+            <button
+              onClick={() => setShowManage(true)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] transition-colors border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"
+            >
+              <Settings size={13} />
+              Manage
+            </button>
+          )}
+
+          {canLeave && (
+            <button
+              onClick={() => setConfirmLeave(true)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--text-muted)] hover:text-[var(--accent-negative)] hover:bg-red-500/10 transition-colors border border-[var(--border-hairline)] hover:border-red-500/30"
+            >
+              <LogOut size={13} />
+              Leave
+            </button>
+          )}
+        </>
+      }
+      // Space-level navigation rail — fixed Spaces rail (lib/space-nav.ts), shared
+      // order across every Space type. On PERSPECTIVES the rail goes fully static
+      // so the Perspective track below owns the float/shrink (SHELL_NAV §2.3).
+      railOptions={railOptions}
+      activeTab={activeTab}
+      onSelectTab={setActiveTab}
+      railStatic={activeTab === "PERSPECTIVES"}
+    >
 
         {/* Settings is no longer an in-space tab (UX-CUST-1A correction):
             section show/hide and layout controls moved to ManageSpaceModal →
@@ -3735,7 +3712,6 @@ export function SpaceDashboard({
             )}
           </div>
         )}
-      </div>
-    </>
+    </SpaceShell>
   );
 }
