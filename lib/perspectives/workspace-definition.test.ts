@@ -210,8 +210,14 @@ check("SPACE_TAB_ORDER unchanged (Space tabs ≠ workspaces)",
   for (const gone of ["PERSPECTIVE_TARGET_TAB", "PERSPECTIVE_ROUTED_TABS", "PERSPECTIVE_MODAL_META"]) {
     check(`host no longer declares/uses ${gone}`, !dashCode.includes(gone));
   }
+  // SD-7 extracted the routed-tab GlassModal into RoutedWorkspaceModal, so
+  // getWorkspaceModalMeta is now consumed there (still the registry, not a host map).
+  const routedCode = readFileSync(
+    path.join(ROOT, "components", "space", "workspaces", "RoutedWorkspaceModal.tsx"),
+    "utf8",
+  ).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
   check("host consumes the registry routing helpers",
-    /getWorkspaceTargetTab\(/.test(dashCode) && /isRoutedWorkspaceTab\(/.test(dashCode) && /getWorkspaceModalMeta\(/.test(dashCode));
+    /getWorkspaceTargetTab\(/.test(dashCode) && /isRoutedWorkspaceTab\(/.test(dashCode) && /getWorkspaceModalMeta\(/.test(routedCode));
 
   // SpaceShell stays workspace-agnostic — it must not reach into the registry.
   const shellCode = readFileSync(path.join(ROOT, "components", "space", "shell", "SpaceShell.tsx"), "utf8")
