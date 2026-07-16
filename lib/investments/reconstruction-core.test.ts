@@ -16,9 +16,12 @@ import {
   reconstructPositions,
   routeEvents,
   RECON_FAILURE,
+  detectCheckpointConflicts,
+  applyCheckpointConflicts,
   type ReconEventInput,
   type ReconAnchorInput,
   type InstrumentReconstruction,
+  type ImportedCheckpoint,
 } from "./reconstruction-core";
 
 let failures = 0;
@@ -255,6 +258,48 @@ console.log("determinism + order independence");
   const one = reconstructPositions({ runDate: "2026-07-11", anchors: [anchor({ quantity: 42.5 })], events });
   const two = reconstructPositions({ runDate: "2026-07-11", anchors: [anchor({ quantity: 42.5 })], events: [...events].reverse() });
   check("identical inputs (any input order) → byte-identical JSON", JSON.stringify(one) === JSON.stringify(two));
+}
+
+console.log("A7-7 corporate-action inversion (terms known) + statement checkpoints");
+{
+  // Merged from the retired reconstruction-corp-actions suite (TEST-2). The
+  // ratio-less SPLIT stop, terms-less MERGER stop, and SPLIT-ratio inversion it
+  // also carried are already covered above (see the SPLIT/MERGER STOP + APPLY
+  // blocks), so only the UNIQUE cases remain: MERGER/SPIN_OFF inversion WITH
+  // terms, the SPIN_OFF stop, and imported statement checkpoints. Its fixture
+  // anchors instrument "X" via csv:schwab events, so it keeps its own
+  // block-scoped builders rather than the module `ev()`/`only()`.
+  let cseq = 0;
+  const cev = (type: InvestmentEventType, date: string, over: Partial<ReconEventInput> = {}): ReconEventInput =>
+    ({ id: `c${cseq++}`, source: "csv:schwab", externalEventId: `cx${cseq}`, date, type, instrumentId: "X", quantity: null, amount: null, currency: "USD", ratio: null, ...over });
+  const cone = (anchorQty: number, events: ReconEventInput[]) =>
+    reconstructPositions({ anchors: [{ instrumentId: "X", quantity: anchorQty, isCash: false, date: "2026-07-11", observationId: "o1" }], events, runDate: "2026-07-11" })[0];
+
+  // MERGER inversion (terms known): acquired leg closed (anchor 0), BUY +5 then
+  // MERGER −5 with terms ⇒ fully explained.
+  const merged = cone(0, [cev(InvestmentEventType.BUY, "2026-05-01", { quantity: 5 }), cev(InvestmentEventType.MERGER, "2026-06-01", { quantity: -5, ratio: 1.5, relatedInstrumentId: "ACQ" })]);
+  check("stock MERGER with ratio+relatedInstrumentId inverts ⇒ COMPLETE", merged.status === "COMPLETE" && approx(merged.unexplainedOpeningQuantity, 0), JSON.stringify({ s: merged.status, u: merged.unexplainedOpeningQuantity }));
+  const cashMerger = cone(0, [cev(InvestmentEventType.BUY, "2026-05-01", { quantity: 5 }), cev(InvestmentEventType.MERGER, "2026-06-01", { quantity: -5, amount: 750 })]);
+  check("cash MERGER (cash leg + disposed shares) inverts ⇒ COMPLETE", cashMerger.status === "COMPLETE");
+
+  // SPIN_OFF inversion (terms known) vs stop.
+  const spun = cone(3, [cev(InvestmentEventType.SPIN_OFF, "2026-06-01", { quantity: 3, ratio: 0.5, relatedInstrumentId: "PARENT" })]);
+  check("SPIN_OFF with ratio+relatedInstrumentId inverts ⇒ COMPLETE (child created)", spun.status === "COMPLETE" && approx(spun.unexplainedOpeningQuantity, 0));
+  const spunStop = cone(3, [cev(InvestmentEventType.SPIN_OFF, "2026-06-01", { quantity: 3 })]);
+  check("SPIN_OFF without terms still STOPS", spunStop.status === "FAILED");
+
+  // Statement checkpoints: conflict surfaced, never averaged / re-anchoring.
+  const recon = [cone(10, [cev(InvestmentEventType.BUY, "2026-06-01", { quantity: 4 })])];
+  const agree: ImportedCheckpoint = { instrumentId: "X", date: "2026-06-01", quantity: 10, observationId: "obsA" };
+  const disagree: ImportedCheckpoint = { instrumentId: "X", date: "2026-06-01", quantity: 8, observationId: "obsB" };
+  const beyond: ImportedCheckpoint = { instrumentId: "X", date: "2026-05-01", quantity: 99, observationId: "obsC" };
+  check("agreeing checkpoint ⇒ no conflict", detectCheckpointConflicts(recon, [agree]).length === 0);
+  check("beyond-coverage checkpoint ⇒ no conflict (no claim)", detectCheckpointConflicts(recon, [beyond]).length === 0);
+  const conflicts = detectCheckpointConflicts(recon, [disagree]);
+  check("disagreeing checkpoint ⇒ one conflict with both quantities", conflicts.length === 1 && conflicts[0].walkQuantity === 10 && conflicts[0].anchorQuantity === 8);
+  const applied = applyCheckpointConflicts(recon, conflicts);
+  check("conflict marks the position conflicted + records checkpoint evidence, quantity untouched", applied[0].conflicted === true && applied[0].evidenceRefs.checkpointConflicts?.length === 1 && applied[0].unexplainedOpeningQuantity === recon[0].unexplainedOpeningQuantity);
+  check("no conflicts ⇒ reconstructions returned unchanged", applyCheckpointConflicts(recon, []) === recon);
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

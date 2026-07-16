@@ -94,6 +94,56 @@ const pureUsd: DebtPaymentTxnLike[] = [
   check("real: totalDebtPaid includes both (600 + 100)", totalDebtPaid(rows, realCtx) === 700);
 }
 
+// ── base rollup semantics (merged from lib/debt.test.ts, TEST-2) ──────────────
+// The equivalence gates above compare CODE PATHS (no-ctx vs identity-ctx). These
+// pin the literal base semantics that nothing else does: flow-predicate
+// exclusion, mixed-sign abs-sum, group-by-account, descending sort by total, and
+// per-account count. Block-scoped so its `tx`/`mixed` locals stay isolated.
+{
+  const tx = (accountId: string, amount: number, flowType: string | null): DebtPaymentTxnLike =>
+    ({ accountId, amount, flowType });
+
+  check("empty input → 0", totalDebtPaid([]) === 0);
+  check(
+    "non-DEBT_PAYMENT rows ignored",
+    totalDebtPaid([tx("a", -50, "SPENDING"), tx("a", 100, "INCOME"), tx("a", -35, "FEE")]) === 0,
+  );
+  check(
+    "null flowType excluded (legacy Payment rows not counted by flow predicate)",
+    totalDebtPaid([tx("a", -300, null)]) === 0,
+  );
+  check(
+    "abs-sums across mixed signs (INTERNAL negative + INFLOW positive legs)",
+    totalDebtPaid([tx("a", -300, "DEBT_PAYMENT"), tx("b", 200, "DEBT_PAYMENT")]) === 500,
+    `got ${totalDebtPaid([tx("a", -300, "DEBT_PAYMENT"), tx("b", 200, "DEBT_PAYMENT")])}`,
+  );
+
+  check("empty input → empty rollup", rollupDebtPaymentsByAccount([]).length === 0);
+  const mixedRows = [
+    tx("amex", -300, "DEBT_PAYMENT"),
+    tx("chase", 500, "DEBT_PAYMENT"),
+    tx("amex", -100, "DEBT_PAYMENT"),
+    tx("amex", -20, "SPENDING"), // purchase on the card — not a payment
+    tx("chase", -15, null), // unclassified — excluded
+  ];
+  const rollup = rollupDebtPaymentsByAccount(mixedRows);
+  check("groups by account id", rollup.length === 2, `got ${rollup.length} entries`);
+  check(
+    "sorted descending by total",
+    rollup[0]?.accountId === "chase" && rollup[0]?.total === 500,
+    `got [0]=${rollup[0]?.accountId}:${rollup[0]?.total}`,
+  );
+  check(
+    "per-account total + count (abs-summed)",
+    rollup[1]?.accountId === "amex" && rollup[1]?.total === 400 && rollup[1]?.count === 2,
+    `got [1]=${rollup[1]?.accountId}:${rollup[1]?.total} count=${rollup[1]?.count}`,
+  );
+  check(
+    "rollup totals reconcile to totalDebtPaid over the same rows",
+    rollup.reduce((s, e) => s + e.total, 0) === totalDebtPaid(mixedRows),
+  );
+}
+
 if (failures.length > 0) {
   console.error(`\nMC1 P3 debt equivalence gates: ${failures.length} FAILURE(S) (${passed} checks passed):`);
   for (const f of failures) console.error("  " + f);
