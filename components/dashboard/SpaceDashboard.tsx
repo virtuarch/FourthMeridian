@@ -37,6 +37,9 @@ import { InvestmentsWorkspace } from "@/components/space/widgets/investments/Inv
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
 import { MembersWorkspace } from "@/components/space/workspaces/MembersWorkspace";
 import { TransactionsWorkspace, TX_SCOPE_NOTE } from "@/components/space/workspaces/TransactionsWorkspace";
+import { AccountsWorkspace } from "@/components/space/workspaces/AccountsWorkspace";
+import { ActivityWorkspace } from "@/components/space/workspaces/ActivityWorkspace";
+import type { SectionCardBundle, SectionStackControls } from "@/components/space/workspaces/SpaceSectionStack";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { SPACE_TAB_ICON_MAP, SPACE_TAB_ICON_FALLBACK } from "@/lib/space-nav-icons";
 import { railVisibleTabs, SPACE_TAB_LABELS, SPACE_GOALS_CHANGED_EVENT, SPACE_ACCOUNTS_CHANGED_EVENT, SPACE_CURRENCY_CHANGED_EVENT, SPACE_DATA_REFRESHED_EVENT } from "@/lib/space-nav";
@@ -1441,6 +1444,27 @@ export function SpaceDashboard({
       </div>
     ) : null;
 
+  // SD-7 — the SectionCard prop bundle + host-owned Edit-Layout controls that the
+  // section-backed Workspaces (Accounts / Activity / Overview) thread through
+  // SpaceSectionStack. Byte-identical to the props the host's inline stack passed.
+  const sectionCardBundle: SectionCardBundle = {
+    accounts,
+    spaceId,
+    spaceType,
+    category,
+    canManage,
+    onAddGoal: () => setShowAddGoal(true),
+    ctx: widgetCtx,
+    snapshots,
+    snapshotCurrency: snapshotCurrency ?? displayCurrency,
+  };
+  const sectionStackControls: SectionStackControls = {
+    editingLayout,
+    canReorder: canReorderTab,
+    sensors: layoutSensors,
+    onDragEnd: handleSectionDragEnd,
+  };
+
   return (
     <SpaceShell
       // Global shell overlays — the shell owns WHERE they mount (above the
@@ -1881,14 +1905,35 @@ export function SpaceDashboard({
           />
         )}
 
-        {/* Section cards — section-backed tabs (Overview / Accounts / Activity).
-            Untouched rendering path; gated off the rail's custom-body ids
-            (NEW_SPACE_TABS), off Goals/Debt/Investments/Retirement (GlassModal
-            launches), and off Overview when a comingSoon composition is active.
-            ACTIVITY renders its recent_activity section here (Activity slice). */}
-        {activeTab !== "SETTINGS" && !NEW_SPACE_TABS.includes(activeTab) &&
-         !isRoutedWorkspaceTab(activeTab) &&
-         !(activeTab === "OVERVIEW" && composition !== "overview") && (
+        {/* Accounts — a section-backed tab (SD-7): the shared section stack + its
+            empty state, no hero/doorways. */}
+        {activeTab === "ACCOUNTS" && (
+          <AccountsWorkspace
+            sections={sectionsForTab}
+            canManage={canManage}
+            onManage={() => setShowManage(true)}
+            controls={sectionStackControls}
+            card={sectionCardBundle}
+          />
+        )}
+
+        {/* Activity — a first-class rail tab (SD-7): its recent_activity section
+            through the shared section stack. Never reorders. */}
+        {activeTab === "ACTIVITY" && (
+          <ActivityWorkspace
+            sections={sectionsForTab}
+            canManage={canManage}
+            onManage={() => setShowManage(true)}
+            controls={sectionStackControls}
+            card={sectionCardBundle}
+          />
+        )}
+
+        {/* Overview composition (Overview / Accounts / Activity formerly shared this
+            block; SD-7 routed Accounts/Activity to their own Workspaces, so this now
+            renders ONLY the Overview canvas — hero + section stack + doorways — and
+            only when the real "overview" composition is active). */}
+        {activeTab === "OVERVIEW" && composition === "overview" && (
           <div className="space-y-3">
             {/* SD-2C — the "view as" display-currency control moved OUT of this
                 Overview body to the SpaceShell header (a Space-level capability),
