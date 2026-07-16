@@ -101,15 +101,13 @@ import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projectio
 import { cashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import type { LiquidityTx } from "@/lib/transactions/liquidity";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
-import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
-import { WealthPerspective } from "@/components/space/widgets/wealth/WealthPerspective";
+import { WealthWorkspace } from "@/components/space/widgets/wealth/WealthWorkspace";
 import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
 import { LiquidityPerspective } from "@/components/space/widgets/liquidity/LiquidityPerspective";
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
 import { AccountsPerspective } from "@/components/space/widgets/accounts/AccountsPerspective";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
-import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SPACE_TAB_ICON_MAP, SPACE_TAB_ICON_FALLBACK } from "@/lib/space-nav-icons";
 import {
@@ -2626,21 +2624,11 @@ export function SpaceDashboard({
     setCashFlowExplicitPeriod(null);      // follow canonical
   };
 
-  // Wealth Time Machine read model (A6). Pure derivation over the already-fetched
-  // SpaceSnapshot series + the shared shell context — no new fetch, no historical
-  // computation in this component. Drives the Wealth workspace AND the shell's
-  // completeness/evidence surfaces when Wealth is the active Perspective. Cheap
-  // to keep memoized regardless of the active tab.
-  const wealthCurrency = snapshotCurrency ?? displayCurrency;
-  const wealthResult = useMemo(
-    () => computeWealthTimeMachine({
-      snapshots: snapshots ?? [],
-      asOf,
-      compareTo,
-      currency: wealthCurrency,
-    }),
-    [snapshots, asOf, compareTo, wealthCurrency],
-  );
+  // SD-5 — the Wealth Time Machine read model + its per-date display-currency FX now
+  // live INSIDE <WealthWorkspace> (the composition/render boundary), driven off the
+  // SHARED host-fetched snapshot series passed as a prop. The host no longer computes
+  // WealthResult; it only relays the workspace's trust envelope to the shell chip via
+  // `wealthEnvelope` state (the Investments onEnvelopeChange bridge, below).
 
   // Wealth chart metric (Net Worth default) — a wealth-only view toggle kept OUT
   // of the canonical time model. URL-synced with the same replaceState mechanism
@@ -2671,14 +2659,11 @@ export function SpaceDashboard({
   // (As Of / Compare To / preset) stays fixed (P1).
   const handleSwitchLens = (lensId: string) => setSelectedPerspectiveId(lensId);
 
-  // The Wealth Explanation card's "View explanation and evidence" opens the same
-  // Evidence drawer the shell chip does, built from the Wealth envelope's real
-  // snapshot rows. Host-owned so the perspective needs no drawer of its own.
-  const wealthEnvelope = useMemo(
-    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult, currency: wealthCurrency }),
-    [wealthResult, wealthCurrency],
-  );
-  const [wealthEvidenceOpen, setWealthEvidenceOpen] = useState(false);
+  // SD-5 — the Wealth WORKSPACE now OWNS its data composition, per-date FX, trust
+  // envelope resolution AND the Evidence drawer. Like Investments, it emits its
+  // envelope up (onEnvelopeChange) so the shell Completeness/Evidence chip renders a
+  // Workspace-derived envelope without the host recomputing WealthResult.
+  const [wealthEnvelope, setWealthEnvelope] = useState<PerspectiveEnvelope>({});
   // SD-6C — the Cash Flow / Spending perspective + measure filter is now OWNED by
   // CashFlowWorkspace (workspace-local semantic slice), no longer host state. The
   // host retains only the canonical-time seam (cashFlowPeriod) and the completeness
@@ -3272,16 +3257,17 @@ export function SpaceDashboard({
               onCompareToChange={handleCompareToChange}
               onSwap={shell.actions.swap}
               envelope={
-                // Investments emits its own envelope up (the Workspace owns the data);
-                // every other perspective resolves here as before. Shell chrome consumes
-                // a Workspace envelope without the host owning the Investments fetch.
-                activePerspectiveId === "investments"
+                // Wealth and Investments each emit their own envelope up (the Workspace
+                // owns the data + its FX-consistent currency); every other perspective
+                // resolves here as before. Shell chrome consumes a Workspace envelope
+                // without the host recomputing WealthResult / owning the Investments fetch.
+                activePerspectiveId === "wealth"
+                  ? wealthEnvelope
+                  : activePerspectiveId === "investments"
                   ? investmentsEnvelope
                   : resolvePerspectiveEnvelope({
                       perspectiveId: activePerspectiveId ?? "",
-                      wealthResult,
                       lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
-                      currency: wealthCurrency,
                       cashFlowStamp: cashFlowStampValue,
                     })
               }
@@ -3308,32 +3294,27 @@ export function SpaceDashboard({
               className="space-y-3"
             >
               {activePerspectiveId === "wealth" ? (
-                // Wealth Time Machine (A6) — the redesigned historical Wealth
-                // workspace, driven by the shared shell context via the
-                // wealthResult read model. Replaces the old current-state widget
-                // stack for this Perspective only; the pure logic lives in the
-                // read model, not here.
-                <>
-                  <WealthPerspective
-                    result={wealthResult}
-                    currency={wealthCurrency}
-                    onSelectAsOf={shell.actions.setAsOf}
-                    onSwitchLens={handleSwitchLens}
-                    onViewEvidence={wealthEnvelope.evidence?.rows?.length ? () => setWealthEvidenceOpen(true) : undefined}
-                    metric={chartMetric}
-                    onMetricChange={handleMetricChange}
-                    accounts={accounts}
-                    ctx={widgetCtx}
-                    backfillInProgress={snapshotsBackfilling}
-                  />
-                  {wealthEnvelope.evidence && (
-                    <EvidenceDrawer
-                      open={wealthEvidenceOpen}
-                      onClose={() => setWealthEvidenceOpen(false)}
-                      evidence={wealthEnvelope.evidence}
-                    />
-                  )}
-                </>
+                // SD-5 — the extracted Wealth WORKSPACE. All composition lives inside
+                // it: it derives WealthResult from the SHARED host-fetched snapshot
+                // series (computeWealthTimeMachine) AND converts that series per-date
+                // into the selected display currency (display-currency activation),
+                // then emits its trust envelope up (onEnvelopeChange) and owns its own
+                // Evidence drawer. The host only passes shared inputs + shell time.
+                // WealthResult remains the canonical Wealth boundary (no WealthSpaceData).
+                <WealthWorkspace
+                  snapshots={snapshots}
+                  snapshotCurrency={snapshotCurrency ?? displayCurrency}
+                  asOf={asOf}
+                  compareTo={compareTo}
+                  accounts={accounts}
+                  ctx={widgetCtx}
+                  metric={chartMetric}
+                  onMetricChange={handleMetricChange}
+                  onSelectAsOf={shell.actions.setAsOf}
+                  onSwitchLens={handleSwitchLens}
+                  onEnvelopeChange={setWealthEnvelope}
+                  backfillInProgress={snapshotsBackfilling}
+                />
               ) : activePerspectiveId === "cashFlow" ? (
                 // Cash Flow Perspective — the redesigned multi-panel composition
                 // (mirrors the Wealth grid pattern), replacing the generic
