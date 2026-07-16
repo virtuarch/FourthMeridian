@@ -104,11 +104,22 @@ function arrayLiteral(src: string, name: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Load route source (text only — never imported)
+// Load prompt-module sources (text only — never imported)
+//
+// AI-ARCH: the attribution guardrail was extracted out of the chat route into
+// focused pure modules. The disclosure/rule constants + ADVISOR_PRINCIPLES live
+// in lib/ai/prompts/doctrine.ts; the serialized context block in
+// lib/ai/prompts/context-serializer.ts; the two prompt builders in
+// lib/ai/prompts/system-prompt.ts; the deterministic per-card rollup (sourced
+// through getDebtTransactions + rollupDebtPaymentsByAccount) in
+// lib/ai/intelligence/debt-payments.ts. Each check reads the module that now
+// owns the pinned text; the assertions are otherwise unchanged.
 // ---------------------------------------------------------------------------
 
-const ROUTE_PATH = join(process.cwd(), 'app/api/ai/chat/route.ts');
-const src = readFileSync(ROUTE_PATH, 'utf8');
+const src     = readFileSync(join(process.cwd(), 'lib/ai/prompts/doctrine.ts'), 'utf8');
+const ctxSrc  = readFileSync(join(process.cwd(), 'lib/ai/prompts/context-serializer.ts'), 'utf8');
+const sysSrc  = readFileSync(join(process.cwd(), 'lib/ai/prompts/system-prompt.ts'), 'utf8');
+const debtSrc = readFileSync(join(process.cwd(), 'lib/ai/intelligence/debt-payments.ts'), 'utf8');
 
 // ---------------------------------------------------------------------------
 // 1. Disclosure exists
@@ -215,7 +226,7 @@ check(
 // 3a. Disclosure is pushed into the serialized context block, inside the
 //     transaction (`if (txn)`) guard.
 // Slice 6: signature carries the optional per-liability rollup parameter.
-const ctxBody = functionBody(src, 'function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtPaymentLine[]): string');
+const ctxBody = functionBody(ctxSrc, 'function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtPaymentLine[]): string');
 
 check(
   'disclosure is pushed into the context block',
@@ -244,11 +255,11 @@ check(
 // 3c. ADVISOR_PRINCIPLES is embedded in BOTH prompt builders, so the rule
 //     serializes into space AND master prompts.
 const spaceBody = functionBody(
-  src,
+  sysSrc,
   'function buildSpaceSystemPrompt(',
 );
 const masterBody = functionBody(
-  src,
+  sysSrc,
   'function buildMasterSystemPrompt(',
 );
 check(
@@ -320,15 +331,15 @@ check(
 
 check(
   'per-liability figures come from the deterministic Slice 3 rollup',
-  src.includes("import { rollupDebtPaymentsByAccount } from '@/lib/debt'") &&
-    src.includes('rollupDebtPaymentsByAccount('),
-  'route does not source per-card figures from lib/debt rollupDebtPaymentsByAccount',
+  debtSrc.includes("import { rollupDebtPaymentsByAccount } from '@/lib/debt'") &&
+    debtSrc.includes('rollupDebtPaymentsByAccount('),
+  'debt-payments module does not source per-card figures from lib/debt rollupDebtPaymentsByAccount',
 );
 
 check(
   'per-liability rows come through the KD-15 visibility-guarded data layer',
-  src.includes("import { getDebtTransactions } from '@/lib/data/transactions'"),
-  'route bypasses getDebtTransactions (visibility guards) for debt rows',
+  debtSrc.includes("import { getDebtTransactions } from '@/lib/data/transactions'"),
+  'debt-payments module bypasses getDebtTransactions (visibility guards) for debt rows',
 );
 
 check(

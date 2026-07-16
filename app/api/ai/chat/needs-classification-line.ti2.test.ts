@@ -9,7 +9,7 @@
  * Inline assertions, exit 0/1 (house pattern).
  */
 
-import { needsClassificationSummaryLine } from "./route";
+import { needsClassificationSummaryLine } from "@/lib/ai/prompts/context-serializer";
 
 type NC = NonNullable<Parameters<typeof needsClassificationSummaryLine>[0]>;
 

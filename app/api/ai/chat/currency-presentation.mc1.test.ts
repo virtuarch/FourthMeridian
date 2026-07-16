@@ -4,9 +4,13 @@
  * MC1 Phase 4 Slice 7 — pinned-wording tests for the serializer's currency
  * presentation (plan D-9), in the KD-18 source-tripwire style
  * (attribution-guardrail.kd18.test.ts precedent): the wording is pinned
- * against the route source so a rewrite/removal fails a test before it
+ * against the serializer source so a rewrite/removal fails a test before it
  * ships, and the single-insertion + conditional-emission structure is
  * asserted from the same source.
+ *
+ * AI-ARCH: serializeContextBlock was extracted from the chat route into
+ * lib/ai/prompts/context-serializer.ts; the currency-presentation wording moved
+ * with it verbatim, so this tripwire now reads the serializer module.
  *
  * Run from the repo root (source tripwires resolve paths from cwd).
  */
@@ -22,7 +26,7 @@ function check(name: string, cond: boolean, detail = ""): void {
   failures.push(`✗ ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
-const routeSrc   = readFileSync(join(process.cwd(), "app/api/ai/chat/route.ts"), "utf8");
+const routeSrc   = readFileSync(join(process.cwd(), "lib/ai/prompts/context-serializer.ts"), "utf8");
 const builderSrc = readFileSync(join(process.cwd(), "lib/ai/context-builder.ts"), "utf8");
 
 // ── the currency label: exact wording, single insertion, unconditional ───────
