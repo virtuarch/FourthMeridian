@@ -19,7 +19,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { SegmentedControl } from "@/components/atlas/SegmentedControl";
+import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { formatCurrency } from "@/lib/format";
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
 import type { ConcentrationClassification } from "@/lib/investments/concentration";
@@ -27,11 +27,11 @@ import { computeAllocation, type AllocationSlice } from "@/lib/investments/inves
 
 type Dimension = "assetClass" | "sector" | "account" | "currency";
 
-const DIMENSIONS: { id: Dimension; label: string }[] = [
-  { id: "assetClass", label: "Asset class" },
-  { id: "sector",     label: "Sector" },
-  { id: "account",    label: "Account" },
-  { id: "currency",   label: "Currency" },
+const DIMENSIONS: { id: Dimension; label: string; noun: string }[] = [
+  { id: "assetClass", label: "Asset class", noun: "asset class" },
+  { id: "sector",     label: "Sector",      noun: "sector" },
+  { id: "account",    label: "Account",     noun: "account" },
+  { id: "currency",   label: "Currency",    noun: "currency" },
 ];
 
 // Concentration classification → label + accent (INSUFFICIENT_DATA is never shown).
@@ -45,32 +45,10 @@ const CONCENTRATION_PRESENTATION: Record<
   HIGHLY_CONCENTRATED: { label: "Highly concentrated",   color: "var(--accent-negative)" },
 };
 
-function AllocationBars({ slices, currency }: { slices: AllocationSlice[]; currency: string }) {
-  if (slices.length === 0) {
-    return <p className="text-xs px-1 py-4 text-center" style={{ color: "var(--text-muted)" }}>Nothing to break down on this axis.</p>;
-  }
-  return (
-    <div className="space-y-2.5">
-      {slices.map((s) => {
-        const pct = Math.max(0, Math.min(100, s.share * 100));
-        return (
-          <div key={s.key} className="min-w-0">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>{s.label}</span>
-              <span className="text-xs shrink-0 tabular-nums" style={{ color: "var(--text-muted)" }}>
-                <span style={{ color: "var(--text-secondary)" }}>{formatCurrency(s.value, currency)}</span>
-                <span className="mx-1">·</span>
-                {pct.toFixed(1)}%
-              </span>
-            </div>
-            <div className="mt-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-inset)" }}>
-              <div className="h-full rounded-full" style={{ width: `${pct}%`, background: "var(--meridian-400)" }} />
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
+/** Map canonical allocation slices → the shared BreakdownWidget item contract.
+ *  `share` is scale-invariant so the widget re-derives percentages from `value`. */
+function toBreakdownItems(slices: AllocationSlice[]): BreakdownItem[] {
+  return slices.map((s) => ({ id: s.key, label: s.label, value: s.value }));
 }
 
 export function InvestmentAllocationPanel({
@@ -106,6 +84,7 @@ export function InvestmentAllocationPanel({
 
   const c = allocation.concentration;
   const conc = c.classification !== "INSUFFICIENT_DATA" ? CONCENTRATION_PRESENTATION[c.classification] : null;
+  const noun = DIMENSIONS.find((d) => d.id === dimension)?.noun ?? "slice";
 
   return (
     <div>
@@ -122,18 +101,30 @@ export function InvestmentAllocationPanel({
         </div>
       )}
 
-      {/* Dimension toggle. */}
-      <SegmentedControl
-        options={DIMENSIONS}
+      {/* Dimension selector — a dropdown (§10). No shared Select primitive exists,
+          so this mirrors the app's inline <select> token recipe (ViewCurrencyOverride). */}
+      <label className="sr-only" htmlFor="alloc-dim">Allocation dimension</label>
+      <select
+        id="alloc-dim"
         value={dimension}
-        onChange={setDimension}
-        aria-label="Allocation dimension"
-        className="mb-3"
+        onChange={(e) => setDimension(e.target.value as Dimension)}
+        className="mb-3 w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-lg px-2.5 py-1.5 text-xs text-[var(--text-secondary)] focus:border-[var(--meridian-400)] focus:outline-none"
+      >
+        {DIMENSIONS.map((d) => <option key={d.id} value={d.id}>By {d.label.toLowerCase()}</option>)}
+      </select>
+
+      {/* Canonical shared donut (BreakdownWidget) — the same primitive wealth +
+          liquidity use, so the Investments allocation reads as one system. */}
+      <BreakdownWidget
+        items={toBreakdownItems(slices)}
+        viewMode="donut"
+        itemNoun={noun}
+        formatValue={(v) => formatCurrency(v, reportingCurrency)}
+        emptyHeadline="Nothing to break down"
+        emptySubline="No valued holdings on this axis."
       />
 
-      <AllocationBars slices={slices} currency={reportingCurrency} />
-
-      {/* Honest unvalued remainder — disclosed, never folded into the bars. */}
+      {/* Honest unvalued remainder — disclosed, never folded into the shares. */}
       {allocation.unvaluedCount > 0 && (
         <p className="text-[11px] px-1 mt-3" style={{ color: "var(--text-faint)" }}>
           {allocation.unvaluedCount} position{allocation.unvaluedCount === 1 ? "" : "s"} couldn’t be valued and {allocation.unvaluedCount === 1 ? "is" : "are"} excluded from these shares.

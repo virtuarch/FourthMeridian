@@ -96,7 +96,7 @@ import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { readSpaceParam } from "@/lib/space/space-url";
 import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
-import { resolvePerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { cashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import type { LiquidityTx } from "@/lib/transactions/liquidity";
@@ -107,7 +107,6 @@ import { WealthPerspective } from "@/components/space/widgets/wealth/WealthPersp
 import { CashFlowPerspective as CashFlowPerspectiveWorkspace } from "@/components/space/widgets/cashflow/CashFlowPerspective";
 import { LiquidityPerspective } from "@/components/space/widgets/liquidity/LiquidityPerspective";
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
-import { useInvestmentsSpaceData } from "@/components/space/widgets/investments/useInvestmentsSpaceData";
 import { DebtPerspective } from "@/components/space/widgets/debt/DebtPerspective";
 import { AccountsPerspective } from "@/components/space/widgets/accounts/AccountsPerspective";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
@@ -2706,16 +2705,13 @@ export function SpaceDashboard({
   const perspectiveNeedsTransactions = openNeeds.has("transactions"); // ⇔ cashFlow | liquidity
   const perspectiveNeedsGoals = openNeeds.has("goals");               // ⇔ goals
   const perspectiveNeedsInvestments = openNeeds.has("investmentsHistory"); // ⇔ investments
-  // SD-4A — the canonical Investments workspace contract (InvestmentsSpaceData),
-  // finally activated end-to-end. This host fetch is transitional orchestration the
-  // Workspace still needs above it: the shell trust chip reads `data.historical`
-  // (the A10 slice) for its Investments envelope. All Investments COMPOSITION now
-  // lives in <InvestmentsWorkspace>. `current` (getCurrentPositions) is the canonical
-  // current view; `historical` (A10) drives as-of / compare / period change.
-  // compareTo is sent only when it defines a valid strictly-earlier window (the
-  // route 400s on compareTo >= asOf).
+  // SD-4D+ — the Investments WORKSPACE now OWNS its data consumption (the
+  // useInvestmentsSpaceData fetch moved inside <InvestmentsWorkspace>). The host keeps
+  // NO Investments fetch; it only relays the workspace's trust envelope to the shell
+  // Completeness chip via this state (the narrow bridge, §1). compareTo is guarded to a
+  // valid strictly-earlier window (the route 400s on compareTo >= asOf).
   const investmentsCompareTo = compareTo && compareTo < asOf ? compareTo : null;
-  const investments = useInvestmentsSpaceData(spaceId, asOf, investmentsCompareTo, perspectiveNeedsInvestments);
+  const [investmentsEnvelope, setInvestmentsEnvelope] = useState<PerspectiveEnvelope>({});
   const [spaceGoals, setSpaceGoals] = useState<SpaceGoal[] | null>(null);
   useEffect(() => {
     if (!perspectiveNeedsGoals || spaceGoals !== null) return;
@@ -3276,14 +3272,20 @@ export function SpaceDashboard({
               onAsOfChange={handleAsOfChange}
               onCompareToChange={handleCompareToChange}
               onSwap={shell.actions.swap}
-              envelope={resolvePerspectiveEnvelope({
-                perspectiveId: activePerspectiveId ?? "",
-                wealthResult,
-                lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
-                currency: wealthCurrency,
-                cashFlowStamp: cashFlowStampValue,
-                investmentsResult: investments.data?.historical ?? null,
-              })}
+              envelope={
+                // Investments emits its own envelope up (the Workspace owns the data);
+                // every other perspective resolves here as before. Shell chrome consumes
+                // a Workspace envelope without the host owning the Investments fetch.
+                activePerspectiveId === "investments"
+                  ? investmentsEnvelope
+                  : resolvePerspectiveEnvelope({
+                      perspectiveId: activePerspectiveId ?? "",
+                      wealthResult,
+                      lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
+                      currency: wealthCurrency,
+                      cashFlowStamp: cashFlowStampValue,
+                    })
+              }
               presetValue={timePreset === "CUSTOM" ? null : timePreset}
               onSelectPreset={handleSelectSlice}
               tabs={perspectiveItems.map((p) => ({
@@ -3375,14 +3377,14 @@ export function SpaceDashboard({
                 // `historical` (A10) drives as-of / compare — date changes visibly
                 // move the numbers. Props-in, render-out.
                 <InvestmentsWorkspace
-                  data={investments.data}
-                  loading={investments.loading}
-                  error={investments.error}
-                  onRetry={investments.reload}
-                  accounts={accounts}
                   spaceId={spaceId}
                   asOf={asOf}
+                  compareTo={investmentsCompareTo}
+                  active={perspectiveNeedsInvestments}
                   today={shellToday}
+                  accounts={accounts}
+                  ctx={widgetCtx}
+                  onEnvelopeChange={setInvestmentsEnvelope}
                 />
               ) : activePerspectiveId === "debt" ? (
                 // Debt Perspective — the redesigned CURRENT-STATE-ONLY multi-panel

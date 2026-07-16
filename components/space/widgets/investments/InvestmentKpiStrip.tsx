@@ -85,6 +85,7 @@ export function InvestmentKpiStrip({
   activity,
   reportingCurrency,
   figureLabel,
+  asOf,
 }: {
   portfolio:         InvestmentsPortfolio;
   reconciliation:    InvestmentsReconciliation | null;
@@ -92,6 +93,8 @@ export function InvestmentKpiStrip({
   reportingCurrency: string;
   /** Trust-derived honest label ("Portfolio value" | "Valued holdings"). */
   figureLabel:       string;
+  /** Resolved shell As Of — the point-in-time basis of the value card (§4). */
+  asOf:              string;
 }) {
   const ccy = reportingCurrency;
   // Value change since compareTo (a value DELTA, includes contributions — not a gain).
@@ -101,10 +104,10 @@ export function InvestmentKpiStrip({
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 min-w-0">
-      {/* ① Total Investment Value — always supported. */}
+      {/* ① Total Investment Value — value AT asOf (point-in-time, §4). */}
       <Kpi
         label={figureLabel}
-        caption="All accounts"
+        caption={`As of ${asOf} · all accounts`}
         value={formatCurrency(portfolio.valuedSubtotal, ccy)}
         valueColor="var(--text-primary)"
         sub={
@@ -131,7 +134,7 @@ export function InvestmentKpiStrip({
       {activity ? (
         <Kpi
           label="Net Contributions"
-          caption={`Money you moved in/out · since ${activity.from}`}
+          caption={`Capital moved in/out · ${activity.from} → ${activity.to}`}
           value={signed(activity.netExternalFlows, ccy)}
           valueColor={signColor(activity.netExternalFlows)}
           split={{
@@ -143,16 +146,16 @@ export function InvestmentKpiStrip({
         <Kpi label="Net Contributions" caption="Pick a Compare To date" value="—" valueColor="var(--text-muted)" />
       )}
 
-      {/* ③ Income Received — period-only, canonically COMBINED (no div/interest split). */}
+      {/* ③ Investment Income — period-only, canonically COMBINED (no div/interest split). */}
       {activity ? (
         <Kpi
-          label="Income Received"
-          caption={`Dividends, interest & distributions (combined) · since ${activity.from}`}
+          label="Investment Income"
+          caption={`Dividends, interest & distributions (combined) · ${activity.from} → ${activity.to}`}
           value={formatCurrency(activity.income, ccy)}
           valueColor={activity.income > 0 ? POS : "var(--text-primary)"}
         />
       ) : (
-        <Kpi label="Income Received" caption="Pick a Compare To date" value="—" valueColor="var(--text-muted)" />
+        <Kpi label="Investment Income" caption="Pick a Compare To date for the period" value="—" valueColor="var(--text-muted)" />
       )}
     </div>
   );
