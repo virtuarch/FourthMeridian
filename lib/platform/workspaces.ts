@@ -111,7 +111,7 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     { workspaceId: "platform-operations", sections: ["ops_manual_operations"] },
     { workspaceId: "platform-alerts", sections: ["ops_alerts"] },
     // OPS-5 Wave B intelligence layer (S7 → S9 → S10 add their sections here).
-    { workspaceId: "platform-trends", sections: ["ops_history"] },
+    { workspaceId: "platform-trends", sections: ["ops_history", "ops_convergence"] },
   ],
   SECURITY_OPS: [
     { workspaceId: "platform-overview", sections: ["sec_audit_feed", "sec_auth_posture", "sec_sessions", "sec_anomalies"] },

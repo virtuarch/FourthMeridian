@@ -82,6 +82,8 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "ops_alerts", label: "Alerts", order: 8 },
       // OPS-5 Wave B — S7 Operational History (content of the History workspace).
       { key: "ops_history", label: "Operational History", order: 9 },
+      // OPS-5 Wave B — S9 Off-ledger Convergence (the operational story).
+      { key: "ops_convergence", label: "Convergence", order: 10 },
     ],
   },
   SECURITY_OPS: {
