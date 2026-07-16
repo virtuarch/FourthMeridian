@@ -98,8 +98,6 @@ import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
-import { cashFlowStamp } from "@/lib/transactions/cash-flow-compare";
-import type { LiquidityTx } from "@/lib/transactions/liquidity";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { WealthWorkspace } from "@/components/space/widgets/wealth/WealthWorkspace";
 import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
@@ -2665,10 +2663,10 @@ export function SpaceDashboard({
   // Workspace-derived envelope without the host recomputing WealthResult.
   const [wealthEnvelope, setWealthEnvelope] = useState<PerspectiveEnvelope>({});
   // SD-6C — the Cash Flow / Spending perspective + measure filter is now OWNED by
-  // CashFlowWorkspace (workspace-local semantic slice), no longer host state. The
-  // host retains only the canonical-time seam (cashFlowPeriod) and the completeness
-  // stamp for the shell chip.
-  const cashFlowActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "cashFlow";
+  // CashFlowWorkspace (workspace-local semantic slice), no longer host state. SD-6
+  // gate — the completeness stamp AND its trust envelope are now workspace-owned too
+  // (emitted up via cashFlowEnvelope, below); the host retains only the canonical-time
+  // seam (cashFlowPeriod).
   // SD-3 — declarative lazy activation. The host no longer hardcodes which
   // perspective needs which resource (the former debtWorkspaceActive /
   // wealthWorkspaceActive / liquidityWorkspaceActive / goalsWorkspaceActive /
@@ -2704,6 +2702,11 @@ export function SpaceDashboard({
   const liquidityActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "liquidity";
   const liquidityCompareTo = compareTo && compareTo < asOf ? compareTo : null;
   const [liquidityEnvelope, setLiquidityEnvelope] = useState<PerspectiveEnvelope>({});
+  // SD-6 gate — Debt and Cash Flow now emit their OWN trust envelopes (like Wealth /
+  // Investments / Liquidity), so the shell chip is honest for the SELECTED date (Debt:
+  // as-of lens; Cash Flow: workspace-owned stamp) and the host merely relays them.
+  const [debtEnvelope, setDebtEnvelope] = useState<PerspectiveEnvelope>({});
+  const [cashFlowEnvelope, setCashFlowEnvelope] = useState<PerspectiveEnvelope>({});
   const [spaceGoals, setSpaceGoals] = useState<SpaceGoal[] | null>(null);
   useEffect(() => {
     if (!perspectiveNeedsGoals || spaceGoals !== null) return;
@@ -2718,19 +2721,6 @@ export function SpaceDashboard({
     const serialized = transactionsMoneyCtxOverride ?? spaceMoneyCtx;
     return serialized ? rehydrateContext(serialized) : undefined;
   }, [transactionsMoneyCtxOverride, spaceMoneyCtx]);
-
-  // S4 — the Cash Flow completeness stamp (cash-flow-compare.ts), computed once
-  // and shared: it drives the shell's Completeness chip (via
-  // resolvePerspectiveEnvelope) AND the Key Insights caveat, so the calendar and
-  // every Cash Flow panel sit under the SAME shell trust envelope. Only computed
-  // when the perspective is open with data (coverage is a property of the data,
-  // so the FULL history is passed, not a period slice).
-  const cashFlowStampValue = useMemo(
-    () => (cashFlowActive && spaceTransactions
-      ? cashFlowStamp({ transactions: spaceTransactions as unknown as LiquidityTx[], period: cashFlowPeriod, now: () => new Date() })
-      : null),
-    [cashFlowActive, spaceTransactions, cashFlowPeriod],
-  );
 
   async function handleLeave() {
     setLeaveBusy(true);
@@ -3265,20 +3255,23 @@ export function SpaceDashboard({
               onCompareToChange={handleCompareToChange}
               onSwap={shell.actions.swap}
               envelope={
-                // Wealth and Investments each emit their own envelope up (the Workspace
-                // owns the data + its FX-consistent currency); every other perspective
-                // resolves here as before. Shell chrome consumes a Workspace envelope
-                // without the host recomputing WealthResult / owning the Investments fetch.
+                // SD-6 gate — ALL FIVE financial workspaces now emit their own envelope
+                // up (each owns its data + FX-consistent currency + as-of trust); the
+                // host merely relays the matching state. Only non-workspace lenses (e.g.
+                // goals) fall through to the canonical resolver below.
                 activePerspectiveId === "wealth"
                   ? wealthEnvelope
                   : activePerspectiveId === "investments"
                   ? investmentsEnvelope
                   : activePerspectiveId === "liquidity"
                   ? liquidityEnvelope
+                  : activePerspectiveId === "debt"
+                  ? debtEnvelope
+                  : activePerspectiveId === "cashFlow"
+                  ? cashFlowEnvelope
                   : resolvePerspectiveEnvelope({
                       perspectiveId: activePerspectiveId ?? "",
                       lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
-                      cashFlowStamp: cashFlowStampValue,
                     })
               }
               presetValue={timePreset === "CUSTOM" ? null : timePreset}
@@ -3337,7 +3330,7 @@ export function SpaceDashboard({
                   accounts={accounts}
                   period={cashFlowPeriod}
                   onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
-                  stamp={cashFlowStampValue}
+                  onEnvelopeChange={setCashFlowEnvelope}
                 />
               ) : activePerspectiveId === "liquidity" ? (
                 // SD-6B — the extracted Liquidity WORKSPACE over the canonical
@@ -3406,6 +3399,7 @@ export function SpaceDashboard({
                   ficoUpdatedAt={ficoUpdatedAt}
                   presentLens={lensResults?.["debt"] ?? null}
                   targetCurrency={perspectiveTargetCurrency}
+                  onEnvelopeChange={setDebtEnvelope}
                 />
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (

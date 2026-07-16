@@ -15,6 +15,8 @@
  *   7. Calendar / Cards modes are workspace-owned (inside the History widget).
  *   8. Display currency (FX) is not regressed (txCtx threaded as moneyCtx + ctx).
  *   9. The old Cash Flow host composition is retired/reduced.
+ *  10. Trust OWNERSHIP (SD-6 gate): the workspace owns the completeness stamp AND
+ *      emits its own trust envelope; the host no longer computes cashFlowStampValue.
  *
  *   npx tsx components/space/widgets/cashflow/CashFlowWorkspace.test.ts
  */
@@ -118,9 +120,24 @@ console.log("9. Old Cash Flow host composition retired/reduced");
     const i = DASH.indexOf("<CashFlowWorkspace");
     const j = DASH.indexOf("/>", i);
     const jsx = i >= 0 && j >= 0 ? DASH.slice(i, j) : "";
-    return jsx.includes("transactions=") && jsx.includes("period=") && jsx.includes("onSelectPeriod=") && jsx.includes("stamp=")
+    return jsx.includes("transactions=") && jsx.includes("period=") && jsx.includes("onSelectPeriod=") && jsx.includes("onEnvelopeChange=")
       && !jsx.includes("perspective=") && !jsx.includes("filterId=") && !jsx.includes("onPerspectiveChange=");
   })());
+}
+
+console.log("10. Trust OWNERSHIP — workspace owns the stamp AND emits its own envelope (SD-6 gate)");
+{
+  // The completeness stamp moved OUT of the host and INTO the workspace: it has its own
+  // transactions + the canonical period, so it owns the ONE computation and feeds BOTH
+  // the Insights caveat and the shell chip envelope (emitted up) — which can never
+  // disagree. The host merely relays cashFlowEnvelope.
+  check("workspace computes its own cashFlowStamp", WS.includes("cashFlowStamp({ transactions:"));
+  check("stamp feeds the Insights caveat (stamp={stamp})", WS.includes("stamp={stamp}"));
+  check("workspace emits its trust envelope via onEnvelopeChange", WS.includes("onEnvelopeChange(") &&
+    WS.includes('resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", cashFlowStamp: stamp })'));
+  check("host no longer computes cashFlowStampValue", !DASH.includes("cashFlowStampValue"));
+  check("host no longer imports cashFlowStamp / LiquidityTx for the stamp", !DASH.includes("cash-flow-compare") && !DASH.includes("import type { LiquidityTx }"));
+  check("host declares + relays cashFlowEnvelope state", DASH.includes("setCashFlowEnvelope") && DASH.includes("? cashFlowEnvelope"));
 }
 
 if (failures > 0) { console.error(`\n${failures} CashFlowWorkspace check(s) failed`); process.exit(1); }

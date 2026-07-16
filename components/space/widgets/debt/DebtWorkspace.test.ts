@@ -17,10 +17,13 @@
  *      from the accounts array (KPIs / bars / payoff / signals), never the lens.
  *   7. Completeness PRESENTED, not recomputed (pointer to lens.completeness).
  *   8. FICO passthrough via the contract.
- *   9. FX not regressed: ctx threaded; no new FX path in the workspace.
+ *   9. FX ACTIVATED (SD-6 gate): the Balance-Over-Time slice is converted per-date via
+ *      the canonical convertDebtHistory (identity when display == reporting).
  *  10. Route serves the debt lens AT asOf (perspective:read gate, computePerspective).
  *  11. Host wiring: mounts <DebtWorkspace once with asOf/compareTo/today/presentLens;
  *      dropped <DebtPerspective.
+ *  12. Envelope OWNERSHIP (SD-6 gate): the workspace emits its own trust envelope
+ *      (on-screen lens, as-of OR present-day); the host merely relays debtEnvelope.
  *
  *   npx tsx components/space/widgets/debt/DebtWorkspace.test.ts
  */
@@ -129,8 +132,10 @@ console.log("4. WORKSPACE BOUNDARY — owns the data, consumes the contract, no 
 
 console.log("5. TEMPORAL activation — clipped history [compareTo, asOf], lens AT asOf");
 {
-  // The Balance-Over-Time panel renders the CLIPPED slice, not the raw snapshot array.
-  check("history panel is fed the clipped data.history slice", SRC.includes("history={data.history}"));
+  // The Balance-Over-Time panel renders the CLIPPED + FX-converted slice, not the raw
+  // snapshot array (the SD-6 gate added the per-date display-currency pass; §9).
+  check("history panel is fed the converted clipped slice", SRC.includes("history={history}"));
+  check("converted slice derives from data.history via convertDebtHistory", CODE.includes("convertDebtHistory(data.history"));
   check("history panel is NOT fed the raw snapshots array", !SRC.includes("snapshots={snapshots}") && !SRC.includes("<DebtHistoryPanel snapshots"));
   // The clip is the pure contract's job — the workspace never clips inline.
   check("workspace does not clip history itself (no inline fxMiss/filter)", !CODE.includes("fxMiss") && !CODE.includes(".filter("));
@@ -174,11 +179,17 @@ console.log("8. FICO passthrough via the contract");
   check("FICO rendered from the contract passthrough (data.fico)", CODE.includes("renderCreditScore(data.fico.score"));
 }
 
-console.log("9. FX not regressed — ctx threaded, no new FX path in the workspace");
+console.log("9. FX ACTIVATED — history converted per-date via the canonical transform (SD-6 gate)");
 {
-  check("ctx threaded into the panels", /ctx=\{ctx\}/.test(SRC) && CODE.includes("ConversionContext"));
-  check("workspace performs no bespoke FX (no convertMoney)", !CODE.includes("convertMoney"));
-  check("history presenter reuses existing ConversionContext formatting", PANEL.includes("formatCurrency") && !PANEL.includes("convertMoney"));
+  // The SD-6 integration gate closed the last symbol-only relabel: the Balance-Over-
+  // Time slice (snapshot-currency) is now converted per-date into the display currency
+  // through the ONE money authority, matching the KPI strip beside it. Identity when
+  // display == reporting (byte-unchanged).
+  check("history FX-converted via the canonical convertDebtHistory", CODE.includes("convertDebtHistory(data.history, ctx)"));
+  check("no bespoke inline FX in the workspace (delegates to convertDebtHistory)", !CODE.includes("convertMoney"));
+  check("convertDebtHistory itself uses the ONE money authority", strip(read("lib/debt/display-conversion.ts")).includes("convertMoney("));
+  check("ctx still threaded into the KPI/adapter panels", /ctx=\{ctx\}/.test(SRC) && CODE.includes("ConversionContext"));
+  check("history presenter formats via ConversionContext (no second convertMoney)", PANEL.includes("formatCurrency") && !PANEL.includes("convertMoney"));
 }
 
 console.log("10. Route serves the debt lens AT asOf");
@@ -199,11 +210,23 @@ console.log("11. Host wiring — mounts <DebtWorkspace, dropped <DebtPerspective
   const jsxStart = DASH.indexOf("<DebtWorkspace");
   const jsxEnd = DASH.indexOf("/>", jsxStart);
   const jsx = jsxStart >= 0 && jsxEnd >= 0 ? DASH.slice(jsxStart, jsxEnd) : "";
-  for (const prop of ["asOf=", "compareTo=", "today=", "active=", "accounts=", "ctx=", "snapshots=", "snapshotCurrency=", "presentLens="]) {
+  for (const prop of ["asOf=", "compareTo=", "today=", "active=", "accounts=", "ctx=", "snapshots=", "snapshotCurrency=", "presentLens=", "onEnvelopeChange="]) {
     check(`mount passes ${prop.replace("=", "")}`, jsx.includes(prop));
   }
   const genericIdx = DASH.indexOf("toVirtualSections(activePerspective.id");
   check("debt branch precedes the generic virtual-sections branch", jsxStart >= 0 && genericIdx > jsxStart);
+}
+
+console.log("12. Envelope OWNERSHIP — workspace emits its own trust envelope (SD-6 gate)");
+{
+  // The workspace resolves the on-screen lens (as-of when historical, else present-day)
+  // through the ONE canonical resolver and emits it up — so the shell chip is honest
+  // for the SELECTED date instead of stuck on present state. The host merely relays it.
+  check("workspace emits via onEnvelopeChange", CODE.includes("onEnvelopeChange("));
+  check("envelope resolved from the on-screen lens", CODE.includes('resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lens })'));
+  check("host declares + relays debtEnvelope state", DASH.includes("setDebtEnvelope") && DASH.includes("debtEnvelope"));
+  check("host no longer resolves debt's chip envelope inline (relays state)",
+    DASH.includes('activePerspectiveId === "debt"') && DASH.includes("? debtEnvelope"));
 }
 
 if (failures > 0) { console.error(`\n${failures} DebtWorkspace check(s) failed`); process.exit(1); }

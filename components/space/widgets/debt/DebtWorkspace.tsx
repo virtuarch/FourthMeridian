@@ -37,13 +37,15 @@
  * source order (mobile stacking) the source-scan test locks.
  */
 
-import type { ReactNode } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
 import { Check, AlertTriangle, RefreshCw } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
+import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { convertDebtHistory } from "@/lib/debt/display-conversion";
 import {
   renderDebtByAccount,
   renderDebtCost,
@@ -87,6 +89,7 @@ export function DebtWorkspace({
   ficoUpdatedAt,
   presentLens,
   targetCurrency,
+  onEnvelopeChange,
 }: {
   spaceId: string;
   /** Resolved closing date (YYYY-MM-DD) from the shell. */
@@ -111,6 +114,10 @@ export function DebtWorkspace({
   presentLens?: LensResult | null;
   /** MC1 "view as" override — forwarded to the as-of lens fetch. */
   targetCurrency?: string;
+  /** SD-6 gate — the workspace emits its OWN trust envelope (the on-screen lens,
+   *  present-day OR as-of) so the shell chip is honest for the SELECTED date; the
+   *  host merely relays it (mirrors Wealth/Investments/Liquidity). */
+  onEnvelopeChange: (env: PerspectiveEnvelope) => void;
 }) {
   // Activate the canonical contract: fetch lens@asOf when historical, compose the
   // rest (clipped history, FICO, completeness pointer) purely from host inputs.
@@ -128,6 +135,22 @@ export function DebtWorkspace({
   });
 
   const lens = data.lens;
+
+  // Display-currency pass (FX correctness — the Debt analogue of SD-5/SD-6B): the
+  // Balance-Over-Time slice is stamped in the SNAPSHOT currency; convert it per-date
+  // into the display currency BEFORE the panel formats it with the display symbol.
+  // Identity when display == reporting (the common case) — byte-unchanged. This
+  // forecloses the symbol-only relabel: the chart now reads CONVERTED magnitudes,
+  // consistent with the KPI strip beside it (which already converts via `ctx`).
+  const history = useMemo(() => convertDebtHistory(data.history, ctx), [data.history, ctx]);
+
+  // Emit the trust envelope from the on-screen lens (as-of when historical, else the
+  // host present-day lens — exactly what `data.lens` composes) through the ONE
+  // canonical resolver, so the shell chip is honest for the SELECTED date instead of
+  // stuck on present state. The host no longer owns Debt's chip envelope.
+  useEffect(() => {
+    onEnvelopeChange(resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lens }));
+  }, [lens, onEnvelopeChange]);
 
   // The blended aggregate the planner derives — computed ONCE and handed to the
   // scenario strip so the two can never disagree inside one panel (plan risk §5).
@@ -203,7 +226,7 @@ export function DebtWorkspace({
            canonical DebtSpaceData.history slice, clipped to [compareTo, asOf]. */}
       <div className="min-w-0 lg:col-span-7 xl:col-span-8">
         <Panel title="Debt Balance Over Time">
-          <DebtHistoryPanel history={data.history} loading={loading} ctx={ctx} />
+          <DebtHistoryPanel history={history} loading={loading} ctx={ctx} />
           {error && (
             <button
               type="button"

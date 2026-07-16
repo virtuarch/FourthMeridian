@@ -31,7 +31,7 @@
  * are untouched — the heatmap-usability invariant.
  */
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Waves } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import type { ConversionContext } from "@/lib/money/types";
@@ -41,8 +41,9 @@ import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicat
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { incomeSourceLabel } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective as CashFlowPerspectiveMode } from "@/lib/transactions/cash-flow-projection";
-import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
+import { cashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import { buildCashFlowSpaceData } from "@/lib/transactions/cash-flow-space-data";
+import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { CashFlowSummaryWidget } from "@/components/space/widgets/CashFlowSummaryWidget";
 import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";
@@ -85,16 +86,17 @@ export function CashFlowWorkspace({
   accounts,
   period,
   onSelectPeriod,
-  stamp,
+  onEnvelopeChange,
 }: {
   transactions?:   Transaction[] | null;
   txCtx?:          ConversionContext;
   accounts:        { id: string; type: string }[];
   period:          CashFlowPeriod;
   onSelectPeriod:  (period: CashFlowPeriod) => void;
-  /** Host-computed completeness stamp (also the shell chip's source). Absent ⇒ the
-   *  Insights caveat is simply omitted; never fabricated. */
-  stamp?:          CashFlowStamp | null;
+  /** SD-6 gate — the workspace now OWNS its completeness stamp (computed below from
+   *  its own transactions + period) and emits the resulting trust envelope; the host
+   *  merely relays it to the shell chip (mirrors Wealth/Investments/Liquidity). */
+  onEnvelopeChange: (env: PerspectiveEnvelope) => void;
 }) {
   // Workspace-local semantic slice — the perspective toggle + measure filter,
   // relocated here from the host. The Summary / History widgets host the selector
@@ -113,6 +115,22 @@ export function CashFlowWorkspace({
     () => (transactions ? buildCashFlowSpaceData({ transactions, accounts, period, moneyCtx: txCtx }) : null),
     [transactions, accounts, period, txCtx],
   );
+
+  // Completeness stamp — RELOCATED here from the host (SD-6 gate): the workspace has
+  // everything the stamp needs (its own transactions + the canonical period), so it
+  // owns the ONE computation and feeds it to BOTH the Insights caveat (below) and the
+  // shell chip envelope (emitted up), which therefore can never disagree. Coverage is
+  // a property of the data, so the FULL history is stamped, not a period slice. Null
+  // while transactions load ⇒ the caveat is omitted and the chip shows static text.
+  const stamp = useMemo(
+    () => (transactions
+      ? cashFlowStamp({ transactions: transactions as unknown as LiquidityTx[], period, now: () => new Date() })
+      : null),
+    [transactions, period],
+  );
+  useEffect(() => {
+    onEnvelopeChange(resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", cashFlowStamp: stamp }));
+  }, [stamp, onEnvelopeChange]);
 
   // Liquidity context for the income-panel drill filters (a pure selection over the
   // contract's already-windowed rows — never a re-window or re-classification fold).
