@@ -36,7 +36,7 @@ function episode(events: { kind: string; outcome: "failure" | "degraded" | "reco
     narrative: { happened: "x", caused: "y", recovered: "z" }, trust: "derived" };
 }
 function conv(episodes: ConvergenceEpisode[]): ConvergenceResult {
-  return { window: { from: "2026-07-01", to: "2026-07-17" }, episodes, eventCount: episodes.reduce((n, e) => n + e.events.length, 0), participants: ["jobRun", "alerts"], checkedAt: "2026-07-17T00:00:00Z" };
+  return { window: { from: "2026-07-01", to: "2026-07-17" }, episodes, events: episodes.flatMap((e) => e.events), eventCount: episodes.reduce((n, e) => n + e.events.length, 0), participants: ["jobRun", "alerts"], checkedAt: "2026-07-17T00:00:00Z" };
 }
 
 async function main() {

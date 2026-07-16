@@ -40,12 +40,21 @@ export interface ConvTransition {
   source: string;
 }
 
+/** One user/beta lifecycle AuditLog row (OPS-6E). */
+export interface ConvLifecycleEvent {
+  at: Date;
+  /** AuditAction (BETA_ACCESS_* / ACCOUNT_DEACTIVATED / ACCOUNT_REACTIVATED). */
+  action: string;
+}
+
 export interface ConvergenceReaders {
   now: Date;
   jobRuns(from: Date, to: Date): Promise<ConvJobRun[]>;
   alertRuns(limit: number): Promise<AlertRunSummary[]>;
   syncIssues(from: Date, to: Date): Promise<ConvSyncIssue[]>;
   statusTransitions(from: Date, to: Date): Promise<ConvTransition[]>;
+  /** OPS-6E — beta/account lifecycle AuditLog rows in the window. */
+  lifecycleEvents(from: Date, to: Date): Promise<ConvLifecycleEvent[]>;
 }
 
 export interface ConvergenceWindow { from: string; to: string; }
@@ -144,6 +153,29 @@ const auditTransitionParticipant: ConvergenceParticipant = {
   },
 };
 
+// ── lifecycle participant (OPS-6E) — beta + account lifecycle AuditLog rows ──────
+
+const LIFECYCLE_META: Record<string, { kind: string; outcome: ConvergenceEvent["outcome"]; detail: string }> = {
+  BETA_ACCESS_APPROVED: { kind: "beta-approved", outcome: "action", detail: "beta access approved — invite emailed" },
+  BETA_ACCESS_REDEEMED: { kind: "beta-redeemed", outcome: "info", detail: "beta invite redeemed — user registered" },
+  BETA_ACCESS_DENIED: { kind: "beta-denied", outcome: "info", detail: "beta access denied" },
+  ACCOUNT_DEACTIVATED: { kind: "account-deactivated", outcome: "action", detail: "user account deactivated" },
+  ACCOUNT_REACTIVATED: { kind: "account-reactivated", outcome: "recovery", detail: "user account reactivated" },
+};
+
+const lifecycleParticipant: ConvergenceParticipant = {
+  ledger: "lifecycle",
+  label: "User & Beta Lifecycle",
+  async project(readers, window) {
+    const rows = await readers.lifecycleEvents(startOfDay(window.from), endOfDay(window.to));
+    return rows.map((r) => {
+      const meta = LIFECYCLE_META[r.action] ?? { kind: r.action.toLowerCase(), outcome: "info" as const, detail: r.action };
+      // No PII in the timeline — the action, not the user.
+      return { at: r.at.toISOString(), ledger: "lifecycle", kind: meta.kind, subject: "-", outcome: meta.outcome, detail: meta.detail, tier: "observed" as const };
+    });
+  },
+};
+
 export const CONVERGENCE_PARTICIPANTS: readonly ConvergenceParticipant[] = [
-  jobRunParticipant, alertsParticipant, syncIssueParticipant, auditTransitionParticipant,
+  jobRunParticipant, alertsParticipant, syncIssueParticipant, auditTransitionParticipant, lifecycleParticipant,
 ];

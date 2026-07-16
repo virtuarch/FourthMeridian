@@ -126,8 +126,22 @@ function realReaders(now: Date): ConvergenceReaders {
         };
       });
     },
+    async lifecycleEvents(from, to) {
+      const rows = await db.auditLog.findMany({
+        where: {
+          action: { in: [AuditAction.BETA_ACCESS_APPROVED, AuditAction.BETA_ACCESS_DENIED, AuditAction.BETA_ACCESS_REDEEMED, AuditAction.ACCOUNT_DEACTIVATED, AuditAction.ACCOUNT_REACTIVATED] },
+          createdAt: { gte: from, lte: to },
+        },
+        orderBy: { createdAt: "asc" },
+        select: { action: true, createdAt: true },
+      });
+      return rows.map((r) => ({ at: r.createdAt, action: r.action }));
+    },
   };
 }
+
+/** Cap on the flat timeline feed (the episodes carry the full clustered detail). */
+const TIMELINE_CAP = 100;
 
 // ── The authority ─────────────────────────────────────────────────────────────────
 
@@ -153,9 +167,13 @@ export async function getConvergence(args: ConvergenceArgs = {}, deps: Convergen
     }
   }
 
+  // The flat timeline feed — the SAME events, un-clustered, newest-first, capped.
+  const timeline = [...events].sort((a, b) => b.at.localeCompare(a.at)).slice(0, TIMELINE_CAP);
+
   return {
     window,
     episodes: correlateEpisodes(events),
+    events: timeline,
     eventCount: events.length,
     participants: [...participated],
     checkedAt: now.toISOString(),

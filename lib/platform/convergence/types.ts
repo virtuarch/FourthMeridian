@@ -60,6 +60,10 @@ export interface ConvergenceEpisode {
 export interface ConvergenceResult {
   window: { from: string; to: string };
   episodes: readonly ConvergenceEpisode[];
+  /** OPS-6E — the flat chronological event feed (newest-first, capped): the
+   *  operational TIMELINE. The SAME projected events the episodes cluster — not a
+   *  second event system, just the un-clustered view. */
+  events: readonly ConvergenceEvent[];
   /** Total events projected (across ledgers) in the window. */
   eventCount: number;
   /** Ledgers that participated at all. */

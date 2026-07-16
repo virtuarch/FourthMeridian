@@ -38,13 +38,14 @@ function alertRun(fired: { ruleId: string; severity: "warning" | "critical"; h: 
     rules: [], fired: fired.map((f) => ({ ruleId: f.ruleId, kind: "resource-stale", dedupeKey: f.ruleId, severity: f.severity, summary: "x", deliveredAtISO: atISO(f.h) })),
   };
 }
-function fakeReaders(over: { jobRuns?: ConvJobRun[]; alertRuns?: AlertRunSummary[] }): ConvergenceReaders {
+function fakeReaders(over: { jobRuns?: ConvJobRun[]; alertRuns?: AlertRunSummary[]; lifecycle?: { at: Date; action: string }[] }): ConvergenceReaders {
   return {
     now: at(24),
     jobRuns: async () => over.jobRuns ?? [],
     alertRuns: async () => over.alertRuns ?? [],
     syncIssues: async () => [],
     statusTransitions: async () => [],
+    lifecycleEvents: async () => over.lifecycle ?? [],
   };
 }
 
@@ -66,6 +67,17 @@ async function main() {
     check("narrative: what recovered is present (the later success)", ep.narrative.recovered != null);
     check("episode trust is derived (correlation narrative)", ep.trust === "derived");
     check("eventCount counts every projected row", res.eventCount === 4);
+    check("flat timeline feed is populated (newest-first, same events)", res.events.length === 4 && res.events[0].at >= res.events[res.events.length - 1].at);
+  }
+
+  // ── OPS-6E lifecycle participant enriches the story (no second event system) ────
+  console.log("lifecycle participant · timeline");
+  {
+    const readers = fakeReaders({ lifecycle: [{ at: at(2), action: "BETA_ACCESS_APPROVED" }, { at: at(3), action: "ACCOUNT_DEACTIVATED" }] });
+    const res = await getConvergence({ asOf: "2026-07-16", from: "2026-07-16" }, { now: at(24), readers });
+    check("lifecycle ledger participates", res.participants.includes("lifecycle"));
+    check("beta/account events appear in the flat timeline", res.events.some((e) => e.kind === "beta-approved") && res.events.some((e) => e.kind === "account-deactivated"));
+    check("timeline carries no PII (subject is '-')", res.events.filter((e) => e.ledger === "lifecycle").every((e) => e.subject === "-"));
   }
 
   // ── time-gap clustering: distant events are separate episodes ───────────────────
