@@ -106,8 +106,8 @@ import { EvidenceDrawer } from "@/components/space/shell/EvidenceDrawer";
 import { WealthPerspective } from "@/components/space/widgets/wealth/WealthPerspective";
 import { CashFlowPerspective as CashFlowPerspectiveWorkspace } from "@/components/space/widgets/cashflow/CashFlowPerspective";
 import { LiquidityPerspective } from "@/components/space/widgets/liquidity/LiquidityPerspective";
-import { InvestmentsPerspective } from "@/components/space/widgets/investments/InvestmentsPerspective";
-import { useInvestmentsTimeMachine } from "@/components/space/widgets/investments/useInvestmentsTimeMachine";
+import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
+import { useInvestmentsSpaceData } from "@/components/space/widgets/investments/useInvestmentsSpaceData";
 import { DebtPerspective } from "@/components/space/widgets/debt/DebtPerspective";
 import { AccountsPerspective } from "@/components/space/widgets/accounts/AccountsPerspective";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
@@ -2706,15 +2706,16 @@ export function SpaceDashboard({
   const perspectiveNeedsTransactions = openNeeds.has("transactions"); // ⇔ cashFlow | liquidity
   const perspectiveNeedsGoals = openNeeds.has("goals");               // ⇔ goals
   const perspectiveNeedsInvestments = openNeeds.has("investmentsHistory"); // ⇔ investments
-  // Investments Time Machine (A10). Unlike Wealth (a pure host memo over the
-  // already-fetched snapshots), Investments' read model is server-side, so it is
-  // FETCHED — keyed on the shell's resolved (asOf, compareTo), gated on the tab
-  // being open via the declared `investmentsHistory` need.
+  // SD-4A — the canonical Investments workspace contract (InvestmentsSpaceData),
+  // finally activated end-to-end. This host fetch is transitional orchestration the
+  // Workspace still needs above it: the shell trust chip reads `data.historical`
+  // (the A10 slice) for its Investments envelope. All Investments COMPOSITION now
+  // lives in <InvestmentsWorkspace>. `current` (getCurrentPositions) is the canonical
+  // current view; `historical` (A10) drives as-of / compare / period change.
   // compareTo is sent only when it defines a valid strictly-earlier window (the
-  // route 400s on compareTo >= asOf); the same guarded value drives the header's
-  // "vs" label so it always matches the data actually fetched.
+  // route 400s on compareTo >= asOf).
   const investmentsCompareTo = compareTo && compareTo < asOf ? compareTo : null;
-  const investments = useInvestmentsTimeMachine(spaceId, asOf, investmentsCompareTo, perspectiveNeedsInvestments);
+  const investments = useInvestmentsSpaceData(spaceId, asOf, investmentsCompareTo, perspectiveNeedsInvestments);
   const [spaceGoals, setSpaceGoals] = useState<SpaceGoal[] | null>(null);
   useEffect(() => {
     if (!perspectiveNeedsGoals || spaceGoals !== null) return;
@@ -3281,7 +3282,7 @@ export function SpaceDashboard({
                 lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
                 currency: wealthCurrency,
                 cashFlowStamp: cashFlowStampValue,
-                investmentsResult: investments.result,
+                investmentsResult: investments.data?.historical ?? null,
               })}
               presetValue={timePreset === "CUSTOM" ? null : timePreset}
               onSelectPreset={handleSelectSlice}
@@ -3367,20 +3368,21 @@ export function SpaceDashboard({
                   onOpenCashFlow={() => setSelectedPerspectiveId("cashFlow")}
                 />
               ) : activePerspectiveId === "investments" ? (
-                // Investments Perspective (A10) — the redesigned composition over
-                // the Investments Time Machine. UNLIKE Liquidity (current-state
-                // only), this perspective consumes the shell's As Of / Compare To:
-                // its valuation is REAL historical pricing, so date changes
-                // visibly change the numbers. The host fetch (above) is keyed on
-                // the resolved dates; this branch is props-in, render-out.
-                <InvestmentsPerspective
-                  result={investments.result}
+                // SD-4 — the extracted Investments WORKSPACE over the canonical
+                // InvestmentsSpaceData contract. All composition lives inside it;
+                // the host only mounts it with the fetched contract + shell dates.
+                // `current` (getCurrentPositions) is the canonical current view;
+                // `historical` (A10) drives as-of / compare — date changes visibly
+                // move the numbers. Props-in, render-out.
+                <InvestmentsWorkspace
+                  data={investments.data}
                   loading={investments.loading}
                   error={investments.error}
                   onRetry={investments.reload}
                   accounts={accounts}
                   spaceId={spaceId}
-                  compareTo={investmentsCompareTo}
+                  asOf={asOf}
+                  today={shellToday}
                 />
               ) : activePerspectiveId === "debt" ? (
                 // Debt Perspective — the redesigned CURRENT-STATE-ONLY multi-panel

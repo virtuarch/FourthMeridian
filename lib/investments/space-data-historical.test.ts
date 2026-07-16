@@ -123,10 +123,18 @@ function main(): void {
   check("no non-today asOf is passed to getCurrentPositions",
     offenders.length === 0, offenders.join(", "));
 
-  console.log("6. The historical UI stays on A10 (current seam not smuggled in)");
+  console.log("6. The Investments UI reads the COMPOSED contract, never a raw seam (SD-4)");
+  // SD-4 activated InvestmentsSpaceData end-to-end: the UI now consumes CURRENT
+  // (getCurrentPositions) AND HISTORICAL (A10) — but ONLY through the composed
+  // InvestmentsSpaceData contract (server route + useInvestmentsSpaceData). No widget
+  // may call a raw loader directly; current↔historical stay non-cross-derived because
+  // the CONTRACT owns that split (type-level asserts above + assembler isolation §3).
+  // Comments are stripped first so prose naming a loader never trips the scan.
+  const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
   const widgets = collectSources("components/space/widgets/investments");
-  const leaks = widgets.filter((rel) => /from ["'][^"']*current-positions["']|getCurrentPositions/.test(read(rel)));
-  check("investments widgets read historical via A10 only (no current-seam import)",
+  const leaks = widgets.filter((rel) =>
+    /\bgetCurrentPositions\b|\bgetInvestmentsTimeMachine\b/.test(stripComments(read(rel))));
+  check("investments UI never calls a raw loader (reads the composed InvestmentsSpaceData)",
     leaks.length === 0, leaks.join(", "));
 
   // Reference the type-level asserts so they are unmistakably load-bearing.
