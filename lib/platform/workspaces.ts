@@ -78,6 +78,12 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
     id: "platform-ai", kind: "standard", domain: "platform",
     label: "AI", icon: "Sparkles",
   },
+  // OPS-6G — the unified cost console: operational cost (S10) + AI cost (6D).
+  // Composition only — no second spend engine; each metric keeps its truth tier.
+  "platform-costs": {
+    id: "platform-costs", kind: "standard", domain: "platform",
+    label: "Costs", icon: "Gauge",
+  },
 };
 
 // ── Composition: which workspaces each area exposes, and their section-widgets ───
@@ -109,7 +115,7 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       // detail (Manual Operations WRITE controls, connection + API-usage breakdowns)
       // deliberately leaves Overview for its dedicated workspace.
       sections: ["ops_alerts", "ops_job_health", "ops_provider_health", "ops_resource_freshness", "ops_rate_limits", "ops_env_status"],
-      doorways: ["platform-jobs", "platform-providers", "platform-operations", "platform-alerts", "platform-trends", "platform-ai"],
+      doorways: ["platform-jobs", "platform-providers", "platform-operations", "platform-alerts", "platform-trends", "platform-ai", "platform-costs"],
     },
     { workspaceId: "platform-jobs", sections: ["ops_job_health"] },
     { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_connection_health", "ops_resource_freshness", "ops_api_usage"] },
@@ -119,6 +125,9 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     { workspaceId: "platform-trends", sections: ["ops_history", "ops_convergence", "ops_timeline", "ops_cost"] },
     // OPS-6D AI operations — usage volume (existing) + usage trend (new).
     { workspaceId: "platform-ai", sections: ["ops_api_usage", "ops_ai_trend"] },
+    // OPS-6G unified cost console — operational cost (S10) + AI cost (6D), each
+    // carrying its own truth tier. Composition only, no second spend engine.
+    { workspaceId: "platform-costs", sections: ["ops_cost", "ops_ai_trend"] },
   ],
   SECURITY_OPS: [
     { workspaceId: "platform-overview", sections: ["sec_audit_feed", "sec_auth_posture", "sec_sessions", "sec_anomalies"] },
