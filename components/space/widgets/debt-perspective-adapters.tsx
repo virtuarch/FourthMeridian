@@ -9,22 +9,18 @@
  * risk of liabilities.
  *
  * Mirrors the wealth/liquidity/cash-flow adapters: pure presentational render
- * functions over the EXISTING BreakdownWidget / SummaryWidget presenters (no new
- * chart system). Reuses the existing `debtColor` scale and `simulatePayoff`
- * helper rather than reinventing them.
+ * functions over the EXISTING BreakdownWidget presenter (no new chart system).
+ * Reuses the existing `debtColor` scale rather than reinventing it.
  *
  * Exports:
  *   renderDebtByAccount       — ranked bars, highest-APR (else largest) first (hero)
  *   renderDebtCost            — estimated monthly interest per debt (APR × balance / 12)
  *   renderCreditUtilization   — balance / creditLimit for revolving lines
- *   renderDebtPayoffSnapshot  — total owed, minimums, highest-APR target, payoff estimate
  */
 
 import { useState } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
-import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
 import { debtColor } from "@/components/space/widgets/debt-adapters";
-import { simulatePayoff } from "@/components/space/sections/DebtPayoffSection";
 import { KnowledgeAcquisitionCard, type GapEntry } from "@/components/dashboard/KnowledgeAcquisitionCard";
 import { FicoCard } from "@/components/dashboard/FicoCard";
 import { creditUtilization } from "@/lib/accounts/credit-utilization";
@@ -69,16 +65,6 @@ function debtAccounts(accounts: DebtPerspectiveAccount[]): DebtPerspectiveAccoun
 }
 const NO_DEBT_HEADLINE = "No debt";
 const NO_DEBT_SUBLINE  = "Nothing owed in this Space — nice.";
-
-function emptyDebtSummary(): React.ReactElement {
-  return (
-    <SummaryWidget
-      emptyHeadline={NO_DEBT_HEADLINE}
-      emptySubline={NO_DEBT_SUBLINE}
-      emptyIcon={<CreditCard size={22} className="text-[var(--text-faint)]" />}
-    />
-  );
-}
 
 // ─── 1. Debt by Account (hero) ────────────────────────────────────────────────
 
@@ -278,60 +264,7 @@ export function CreditUtilizationWidget({
   );
 }
 
-// ─── 4. Payoff Snapshot ───────────────────────────────────────────────────────
-
-/** Total owed, minimum payments, the highest-APR target, and an honest payoff
- *  estimate (reuses simulatePayoff over the aggregate). No fake simulator — if
- *  minimums can't cover interest, we say so. */
-export function renderDebtPayoffSnapshot(
-  accounts: DebtPerspectiveAccount[],
-  ctx?:     ConversionContext,
-): React.ReactElement {
-  const debts = debtAccounts(accounts).map((a) => ({ a, bal: inDisp(a.balance, a.currency, ctx) })).filter((x) => x.bal > 0);
-  const totalBal = debts.reduce((s, x) => s + x.bal, 0);
-  if (totalBal <= 0) return emptyDebtSummary();
-
-  const totalMin = debts.reduce((s, x) => s + inDisp(x.a.minimumPayment ?? 0, x.a.currency, ctx), 0);
-  const rated    = debts.filter((x) => x.a.interestRate != null);
-  const topApr   = rated.reduce<{ a: DebtPerspectiveAccount; bal: number } | null>(
-    (m, x) => (m == null || (x.a.interestRate as number) > (m.a.interestRate as number) ? x : m), null);
-
-  // Payoff estimate over the blended rate (only meaningful with minimums + rates).
-  let payoffLabel = "Add minimum payments to estimate payoff";
-  if (totalMin > 0) {
-    const avgApr = rated.length
-      ? rated.reduce((s, x) => s + (x.a.interestRate as number) * x.bal, 0) / rated.reduce((s, x) => s + x.bal, 0)
-      : 0;
-    const result = simulatePayoff(totalBal, avgApr / 100 / 12, totalMin);
-    if (result) {
-      const yrs = Math.floor(result.months / 12);
-      const mos = result.months % 12;
-      payoffLabel = yrs > 0 && mos > 0 ? `${yrs}y ${mos}m at minimums`
-                  : yrs > 0            ? `${yrs}y at minimums`
-                  : `${mos}m at minimums`;
-    } else {
-      payoffLabel = "Minimums may not cover interest";
-    }
-  }
-
-  return (
-    <SummaryWidget
-      primary={{
-        value: fmtMoney(totalBal, ctx),
-        label: "total owed across all liabilities",
-        color: "red",
-        size:  "2xl",
-      }}
-      stats={[
-        { label: "Minimum payments", value: totalMin > 0 ? `${fmtMoney(totalMin, ctx)}/mo` : "—" },
-        { label: "Est. payoff",      value: payoffLabel },
-        ...(topApr ? [{ label: `Highest APR · ${topApr.a.name}`, value: `${(topApr.a.interestRate as number).toFixed(2)}%`, accent: "red" as const }] : []),
-      ]}
-    />
-  );
-}
-
-// ─── 5. Debt History (total debt over time, from snapshots) ───────────────────
+// ─── 4. Debt History (total debt over time, from snapshots) ───────────────────
 
 /** Total debt over time from SpaceSnapshot history (the `debt` series). Honest
  *  balance history — NOT reconstructed from transactions. Data-thin until enough

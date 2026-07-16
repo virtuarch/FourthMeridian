@@ -515,7 +515,11 @@ export const NOTIFICATION_REGISTRY = {
     pointerContract: ["adviceId", "agentId"],
     render: (d) => ({
       title: str(d, "summary", "An opportunity was found"),
-      href: "/dashboard/advice",
+      // CLEAN-0 — was "/dashboard/advice" (a standalone page that advertised a
+      // "Runs 2× daily" scheduler with no write path; deleted). The live AI
+      // surface is /dashboard/analyze, which renders the same cached AiAdvice
+      // via AdviceBanner.
+      href: "/dashboard/analyze",
     }),
   },
   UNUSUAL_SPENDING: {

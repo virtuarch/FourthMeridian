@@ -74,7 +74,6 @@ console.log("1. Composition — the seven mounted widgets/presenters + KPI band,
     check(`${label} mounted exactly once`, count(SRC, needle) === 1, `${count(SRC, needle)} occurrence(s)`);
   }
   check("registry renderDebtHistory is not remounted", count(SRC, "renderDebtHistory(") === 0);
-  check("renderDebtPayoffSnapshot is not remounted", count(SRC, "renderDebtPayoffSnapshot(") === 0);
   check("DebtKpiStrip mounted exactly once", count(SRC, "<DebtKpiStrip") === 1);
 }
 

@@ -685,7 +685,7 @@ function ContextualCard({ sectionKey, label }: { sectionKey: string; label: stri
 //     → WIDGET_REGISTRY entry  (lib/widget-registry.ts)
 //     → component              (entries below)
 //     → widget meta            (entry.meta)
-//     → data contract          (entry.meta.dataTier / entry.meta.requires)
+//     → data contract          (entry.meta.requires)
 //     → render
 //
 // Phase 1 (current): SectionRegistry maps key → render fn.

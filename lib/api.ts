@@ -133,23 +133,3 @@ export function withApiHandler<T extends unknown[]>(
     }
   };
 }
-
-// ── Response helpers ──────────────────────────────────────────────────────────
-// Thin wrappers for the most common success/client-error responses.
-// Note: unauthorized() and forbidden() live in lib/session.ts.
-
-/** 200 OK — generic success response. */
-export const ok = (data: unknown): NextResponse =>
-  NextResponse.json(data);
-
-/** 201 Created — use after successfully creating a resource. */
-export const created = (data: unknown): NextResponse =>
-  NextResponse.json(data, { status: 201 });
-
-/** 400 Bad Request — use for missing/invalid input. */
-export const badRequest = (error: string): NextResponse =>
-  NextResponse.json({ error }, { status: 400 });
-
-/** 404 Not Found — use when the requested resource does not exist. */
-export const notFound = (error = "Not found"): NextResponse =>
-  NextResponse.json({ error }, { status: 404 });

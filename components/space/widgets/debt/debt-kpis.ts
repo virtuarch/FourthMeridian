@@ -2,10 +2,10 @@
  * components/space/widgets/debt/debt-kpis.ts
  *
  * S2 — pure KPI math for the Debt Perspective workspace (plan §3.4). Restates the
- * sums the landed renderers already compute — `renderDebtPayoffSnapshot` (total
- * owed + minimum payments), `renderDebtCost` (Σ balance × APR/12 over rated
- * rows), and `creditUtilization` (revolving level thresholds) — in ONE pure
- * helper so the KPI strip agrees byte-for-byte with the panels beneath it.
+ * sums the landed renderers already compute — total owed + minimum payments,
+ * `renderDebtCost` (Σ balance × APR/12 over rated rows), and `creditUtilization`
+ * (revolving level thresholds) — in ONE pure helper so the KPI strip agrees
+ * byte-for-byte with the panels beneath it.
  *
  * Sourced STRICTLY from the client `accounts` array — the same rows every panel
  * renders — NEVER from the lens (plan §1.4: the lens may see DebtProfile-merged

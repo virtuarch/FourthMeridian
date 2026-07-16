@@ -1,12 +1,8 @@
 import { Suspense }                                   from "react";
 import { SpaceDashboard }                          from "@/components/dashboard/SpaceDashboard";
 import { PersonalDashboard }                       from "@/components/dashboard/PersonalDashboard";
-import { getAccounts, getFicoData }                    from "@/lib/data/accounts";
-import { getRecentSnapshots }                          from "@/lib/data/snapshots";
-import { getTransactions }                             from "@/lib/data/transactions";
+import { getFicoData }                                 from "@/lib/data/accounts";
 import { getSpaceContext }                         from "@/lib/space";
-import { serializeSpaceConversionContext }        from "@/lib/money/server-context";
-import { yesterdayUTCISO }                         from "@/lib/fx/config";
 import { DisplayCurrencyProvider }                 from "@/lib/currency-context";
 
 // Co-locate compute with the Singapore-region Supabase instance — see
@@ -73,39 +69,24 @@ export default async function DashboardPage({
   }
 
   // Personal space — SP-2A-4c: renders through the shared SpaceDashboard
-  // shell, with PersonalHero injected via the renderHero seam. Server fetches
-  // are trimmed to what the hero needs (accounts, snapshots, FICO,
-  // transactions + hero moneyCtx); the shell client-fetches sections, goals,
-  // accounts, etc. itself, exactly like every other Space.
+  // shell, with the "view as" currency control injected via PersonalDashboard's
+  // displayCurrencyControl seam. The shell client-fetches its own sections,
+  // goals, accounts, snapshots, transactions, etc. exactly like every other
+  // Space, so this page loads only what the shell cannot derive for itself:
+  // the user's FICO score (the Debt workspace's credit-health companion).
+  //
+  // CLEAN-0 — the former accounts / snapshots / transactions reads and the
+  // serialized FX context were fetch-and-discard: PersonalDashboard declared
+  // them as props but never consumed any of them (the shell re-fetches its
+  // own). They have been removed here and from PersonalDashboard's contract.
   //
   // Context is resolved exactly once above (and cache()-deduped even if it
-  // weren't — see lib/space.ts). Pass the already-resolved spaceId/userId
-  // into each helper below so this page makes zero redundant context lookups.
+  // weren't — see lib/space.ts). Pass the already-resolved userId into
+  // getFicoData so this page makes zero redundant context lookups.
   const sp = await searchParams;
   const rawTab = typeof sp?.tab === "string" ? sp.tab : undefined;
 
-  const [accounts, snapshots, ficoData, transactions] = await Promise.all([
-    getAccounts({ spaceId: ctx.spaceId }),
-    getRecentSnapshots(365, { spaceId: ctx.spaceId }),
-    getFicoData({ userId: ctx.userId }),
-    getTransactions({ spaceId: ctx.spaceId }),
-  ]);
-
-  // MC1 Phase 3 Slice 6 (F-1, D-6) — serialize the Space's conversion context
-  // for the hero's client-side classify/flow math. Currencies and dates cover
-  // everything the hero aggregates: account balances (latest close) plus every
-  // provided transaction row's own date. All-USD Spaces serialize an empty
-  // entry table (a few bytes; identical math).
-  const moneyCtx = await serializeSpaceConversionContext(ctx.space, {
-    currencies: [
-      ...accounts.map((a) => a.currency ?? null),
-      ...transactions.map((t) => t.currency ?? null),
-    ],
-    dates: [
-      yesterdayUTCISO(),
-      ...transactions.map((t) => t.date),
-    ],
-  });
+  const ficoData = await getFicoData({ userId: ctx.userId });
 
   return (
     <DisplayCurrencyProvider currency={ctx.space.reportingCurrency}>
@@ -119,11 +100,7 @@ export default async function DashboardPage({
           myRole={ctx.role}
           currentUserId={ctx.userId}
           initialTab={mapLegacyTabToShell(rawTab)}
-          accounts={accounts}
-          snapshots={snapshots}
-          transactions={transactions}
           ficoScore={ficoData.score}
-          moneyCtx={moneyCtx}
         />
       </Suspense>
     </DisplayCurrencyProvider>

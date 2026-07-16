@@ -12,7 +12,6 @@
  *   2. Missing APR / minimum    — the debt_complete_info gap logic
  *   3. Promotional rate ending  — lensResult.metrics "promoEnds" (debt.core.ts:275)
  *   4. Minimums cover interest? — simulatePayoff() returning null over the aggregate
- *                                 (the orphaned renderDebtPayoffSnapshot's own copy)
  *
  * Pure and DB-free. Nothing derivable (no debt accounts) ⇒ empty list, no filler.
  */
@@ -66,8 +65,8 @@ export function buildDebtSignals({
   }
 
   // 2. Minimums may not cover interest — simulatePayoff over the planner's SAME
-  //    aggregate returns null (the renderDebtPayoffSnapshot copy). No known rate
-  //    ⇒ simulatePayoff is never null, so no false alarm.
+  //    aggregate returns null. No known rate ⇒ simulatePayoff is never null, so
+  //    no false alarm.
   const agg = computePayoffAggregate(accounts, ctx);
   if (agg.total > 0 && agg.minPayment > 0 && simulatePayoff(agg.total, agg.monthlyRate, agg.minPayment) === null) {
     signals.push({ id: "min-coverage", tone: "warn", text: "Minimum payments may not cover interest" });

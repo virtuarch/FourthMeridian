@@ -26,8 +26,6 @@ import { useState } from "react";
 import { SpaceDashboard } from "@/components/dashboard/SpaceDashboard";
 import { DisplayCurrencyProvider, useDisplayCurrency } from "@/lib/currency-context";
 import { ViewCurrencyOverride, type ViewOverride } from "@/components/dashboard/widgets/ViewCurrencyOverride";
-import { type SerializedConversionContext } from "@/lib/money/convert";
-import type { Account, Snapshot, Transaction } from "@/types";
 
 interface Props {
   // Identity props forwarded to the shared shell.
@@ -40,16 +38,11 @@ interface Props {
   /** Mapped from the legacy `?tab=` deep link by page.tsx (unknown ⇒ OVERVIEW). */
   initialTab:    string;
 
-  // Server-fetched Personal data still passed by page.tsx. The shared shell now
-  // fetches its own accounts/snapshots for the section-backed Overview, so these
-  // are currently unused here (kept on the prop contract to avoid churning
-  // page.tsx; reserved for future Overview surfaces).
-  accounts:      Account[];
-  snapshots:     Snapshot[];
-  transactions:  Transaction[];
+  // The user's FICO score → the Debt workspace's credit-health companion.
+  // CLEAN-0 removed the former accounts/snapshots/transactions/moneyCtx props:
+  // the shared shell fetches its own section data, so page.tsx was passing
+  // (and this component was discarding) those reads. Only ficoScore is consumed.
   ficoScore:     number | null;
-  /** Serialized Space conversion context; reserved (shell fetches its own). */
-  moneyCtx?:     SerializedConversionContext;
 }
 
 export function PersonalDashboard({

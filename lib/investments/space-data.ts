@@ -66,11 +66,11 @@ export type {
 // ── HISTORICAL (PCS-1B) ──────────────────────────────────────────────────────
 // The canonical historical loader is the A10 Time Machine binding under its
 // contract name — a NAMED delegation, not a second authority (it computes no
-// value, price, FX, quantity, flow, or completeness math of its own). Returning
-// the A10 result VERBATIM keeps the /investments/time-machine route JSON — and so
-// the client hook — byte-identical. Args = getInvestmentsTimeMachine's resolved
+// value, price, FX, quantity, flow, or completeness math of its own). It returns
+// the A10 result VERBATIM. Args = getInvestmentsTimeMachine's resolved
 // { spaceId | financialAccountId, asOf, compareTo }, owned by the Perspective Shell.
-// The composition loader below reuses this SAME binding for the historical slice.
+// The composition loader below reuses this SAME binding for the historical slice,
+// so the /investments/space-data route serves the A10 result unchanged.
 export {
   getInvestmentsTimeMachine as loadInvestmentsHistory,
 } from "./investments-time-machine";

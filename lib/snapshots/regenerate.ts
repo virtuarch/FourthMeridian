@@ -5,8 +5,8 @@
  * FinancialAccount balances.
  *
  * Root cause this fixes: the Cash History / Banking History / Net Worth
- * charts (lib/data/snapshots.ts: getRecentSnapshots, getPortfolioHistory)
- * read exclusively from SpaceSnapshot. Before this file existed, the
+ * charts (lib/data/snapshots.ts: getRecentSnapshots) read exclusively from
+ * SpaceSnapshot. Before this file existed, the
  * only code path that ever wrote a SpaceSnapshot row was prisma/seed.ts
  * — there was no production writer, so real (non-seeded) spaces had no
  * rows and the charts rendered blank regardless of how fresh balances or

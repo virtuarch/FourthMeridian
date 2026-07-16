@@ -5,14 +5,14 @@
  *
  * SD-4A — client fetch hook for the canonical Investments workspace contract
  * (`InvestmentsSpaceData`, PCS-1D), served by GET /api/spaces/[id]/investments/
- * space-data. It replaces the raw A10 `useInvestmentsTimeMachine` as the Investments
- * Workspace's data source: the composed envelope carries `current` (getCurrentPositions,
+ * space-data. It is the Investments Workspace's sole data source (it superseded — and
+ * CLEAN-0 removed — the raw A10 `useInvestmentsTimeMachine` hook + its `/investments/
+ * time-machine` route): the composed envelope carries `current` (getCurrentPositions,
  * the canonical CURRENT path) AND `historical`/`activity`/`trust` (A10) in one read,
  * never cross-derived.
  *
  * It owns NO time state — the Perspective Shell owns preset / asOf / compareTo and
- * passes the ALREADY-RESOLVED dates in. Same two honesty guards as the A10 hook it
- * supersedes:
+ * passes the ALREADY-RESOLVED dates in. Two honesty guards:
  *   1. `compareTo` is sent only when non-null AND strictly < asOf (the route 400s on
  *      compareTo >= asOf) — an invalid ordering becomes an honest omission
  *      (null flows/reconciliation), never an error.

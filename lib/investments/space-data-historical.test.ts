@@ -12,9 +12,9 @@
  *     contract IS the A10 result exactly, and reuses NONE of the current-position
  *     DTOs. Compile-time equality asserts, erased at runtime.
  *   • SOURCE-SCAN (caught by this tsx run) — the historical loader is the A10
- *     binding, the route reads through the contract module, the current view is
- *     never back-filled from the Time Machine, and the current seam is never used
- *     as a historical portal (its `asOf` clock is only ever today).
+ *     binding, the current view is never back-filled from the Time Machine, and
+ *     the current seam is never used as a historical portal (its `asOf` clock is
+ *     only ever today).
  *
  * Pure: every import is `import type` (erased) — no DB, no prisma generate.
  */
@@ -63,7 +63,6 @@ function collectSources(dir: string): string[] {
 function main(): void {
   const spaceData = read("lib/investments/space-data.ts");
   const spaceDataCore = read("lib/investments/space-data-core.ts");
-  const route = read("app/api/spaces/[id]/investments/time-machine/route.ts");
 
   console.log("1. Historical loader IS the A10 binding, under its contract name");
   check("space-data.ts re-exports getInvestmentsTimeMachine as loadInvestmentsHistory",
@@ -95,15 +94,7 @@ function main(): void {
     asmBody.length > 0 &&
     !/InvestmentsTimeMachineResult|HistoricalPortfolio|getInvestmentsTimeMachine|\bhistorical\b/.test(asmBody));
 
-  console.log("4. The historical route reads through the SpaceData contract module");
-  check("route imports loadInvestmentsHistory from @/lib/investments/space-data",
-    /import\s*\{\s*loadInvestmentsHistory\s*\}\s*from\s*["']@\/lib\/investments\/space-data["']/.test(route));
-  check("route no longer imports getInvestmentsTimeMachine directly (comment mentions ok)",
-    !/import[^;]*getInvestmentsTimeMachine/.test(route));
-  check("route awaits loadInvestmentsHistory (byte-identical JSON to A10)",
-    /await loadInvestmentsHistory\(\{\s*spaceId,\s*asOf,\s*compareTo/.test(route));
-
-  console.log("5. The current seam is NEVER a historical portal (asOf = today only)");
+  console.log("4. The current seam is NEVER a historical portal (asOf = today only)");
   // Any production (non-test) caller that passes an `asOf` to getCurrentPositions
   // must bind it to todayIso() — the seam's injected clock, not a past date. A
   // genuine as-of read is an A10 caller. (The one caller today is the AI holdings
@@ -123,7 +114,7 @@ function main(): void {
   check("no non-today asOf is passed to getCurrentPositions",
     offenders.length === 0, offenders.join(", "));
 
-  console.log("6. The Investments UI reads the COMPOSED contract, never a raw seam (SD-4)");
+  console.log("5. The Investments UI reads the COMPOSED contract, never a raw seam (SD-4)");
   // SD-4 activated InvestmentsSpaceData end-to-end: the UI now consumes CURRENT
   // (getCurrentPositions) AND HISTORICAL (A10) — but ONLY through the composed
   // InvestmentsSpaceData contract (server route + useInvestmentsSpaceData). No widget

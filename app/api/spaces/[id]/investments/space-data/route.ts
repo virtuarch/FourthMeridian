@@ -18,8 +18,8 @@
  * bridge keep exactly today's behavior while the current view moves off A10-at-today.
  *
  * Membership-gated (ACTIVE member, any role) exactly like the sibling /investments
- * and /investments/time-machine routes. Visibility (KD-21a) is enforced INSIDE the
- * loaders (FULL links only); this route resolves no time state and computes nothing.
+ * route. Visibility (KD-21a) is enforced INSIDE the loaders (FULL links only);
+ * this route resolves no time state and computes nothing.
  */
 
 import { NextRequest, NextResponse } from "next/server";

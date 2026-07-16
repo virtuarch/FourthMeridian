@@ -18,7 +18,6 @@ import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
-import { fromISO } from "@/lib/snapshots/backfill-core";
 import type { ConversionContext } from "@/lib/money/types";
 import { Snapshot } from "@/types";
 
@@ -103,64 +102,6 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       ...(converted.missed ? { fxMiss: true as const } : {}),
     };
   });
-}
-
-/**
- * A5-S2 — the nearest persisted SpaceSnapshot at or before `asOf` (YYYY-MM-DD),
- * the point-in-time read the net-worth as-of lens (A5-S3) is built on. Returns
- * the same stamp-aware `Snapshot` shape as getRecentSnapshots (single row), or
- * null when the Space has no snapshot on or before `asOf` (the "no history
- * before …" / incomplete case the lens shapes downstream).
- *
- * SpaceSnapshot.date is a midnight-UTC @db.Date, so `lte: fromISO(asOf)` includes
- * the asOf-day row when one exists; ordering desc picks the nearest earlier one
- * (carry-forward) otherwise. Stored rows are never rewritten — off-stamp rows
- * convert at their OWN date exactly as the chart reads do; all-USD Spaces take
- * the homogeneous fast path and map byte-identically to the pre-MC1 shape.
- */
-export async function getSnapshotAsOf(
-  spaceId: string,
-  asOf:    string,
-): Promise<Snapshot | null> {
-  const row = await db.spaceSnapshot.findFirst({
-    where:   { spaceId, date: { lte: fromISO(asOf) } },
-    orderBy: { date: "desc" },
-  });
-  if (!row) return null;
-
-  const { target, ctx: stampCtx } = await resolveStampContext(spaceId, [row]);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const r = row as any;
-  const stamp = r.reportingCurrency ?? "USD";
-  const raw = {
-    netWorth:         r.netWorth,
-    totalAssets:      r.totalAssets,
-    totalDebt:        r.debt,
-    totalCash:        r.cash,
-    totalSavings:     r.savings,
-    totalInvestments: r.stocks,
-    totalCrypto:      r.crypto,
-    cashOnHand:       r.cashOnHand,
-  };
-
-  // Homogeneous fast path (stampCtx null) or on-stamp row → pre-MC1 mapping.
-  if (!stampCtx || stamp === target) {
-    return {
-      date: r.date.toISOString().split("T")[0],
-      ...raw,
-      isEstimated: r.isEstimated ?? false,
-    };
-  }
-
-  // Off-stamp: convert every total at THIS row's own date (historical FX).
-  const converted = convertStampedValues(raw, stamp, r.date.toISOString().slice(0, 10), stampCtx);
-  return {
-    date: r.date.toISOString().split("T")[0],
-    ...converted.values,
-    isEstimated: (r.isEstimated ?? false) || converted.estimated,
-    ...(converted.missed ? { fxMiss: true as const } : {}),
-  };
 }
 
 /**
@@ -256,55 +197,4 @@ export async function getSpaceNetWorthSummaries(
     };
   }
   return result;
-}
-
-/**
- * Full portfolio history — used by the area charts on Banking and Investments.
- * Returns all rows oldest-first. Stamp-aware per the module header; the
- * optional per-point `estimated` flag is present only on off-stamp points
- * (homogeneous histories emit exactly the pre-MC1 objects).
- */
-export async function getPortfolioHistory(): Promise<
-  {
-    date:      string;
-    stocks:    number;
-    crypto:    number;
-    total:     number;
-    cash:      number;
-    savings:   number;
-    debt:      number;
-    netLiquid: number;
-    /** MC1 P4 Slice 4 — off-stamp point converted at its own date (display estimation). */
-    estimated?: boolean;
-  }[]
-> {
-  const { spaceId } = await getSpaceContext();
-
-  const rows = await db.spaceSnapshot.findMany({
-    where:   { spaceId },
-    orderBy: { date: "asc" },
-  });
-
-  const { target, ctx: stampCtx } = await resolveStampContext(spaceId, rows);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rows.map((r: any) => {
-    const stamp = r.reportingCurrency ?? "USD";
-    const raw = {
-      stocks:    r.stocks,
-      crypto:    r.crypto,
-      total:     r.total,
-      cash:      r.cash,
-      savings:   r.savings,
-      debt:      r.debt,
-      netLiquid: r.netLiquid,
-    };
-
-    if (!stampCtx || stamp === target) {
-      return { date: r.date.toISOString().split("T")[0], ...raw };
-    }
-
-    const converted = convertStampedValues(raw, stamp, r.date.toISOString().slice(0, 10), stampCtx);
-    return { date: r.date.toISOString().split("T")[0], ...converted.values, estimated: converted.estimated };
-  });
 }
