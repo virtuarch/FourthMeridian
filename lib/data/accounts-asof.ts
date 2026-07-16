@@ -28,6 +28,7 @@ import {
   getAccountsWithVisibility,
 } from "@/lib/data/accounts";
 import {
+  isReconstructableCard,
   truncDateUTC,
   maxDate,
   isoDate,
@@ -119,7 +120,7 @@ export async function getAccountsAsOf(args: {
     .filter((a) => a.type === "checking" || a.type === "savings")
     .map((a) => a.id);
   const cardIds = accounts
-    .filter((a) => a.type === "debt" && (a.debtSubtype === "credit_card" || (a.debtSubtype === null && a.creditLimit != null)))
+    .filter(isReconstructableCard)
     .map((a) => a.id);
 
   const [cashDeltas, cardDeltas] = await Promise.all([

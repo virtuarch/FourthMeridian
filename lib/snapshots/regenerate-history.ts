@@ -41,6 +41,7 @@ import {
   reconstructDailyCashBalances,
   reconstructDailyLiabilityBalances,
   isHeldFlatBalanceAccount,
+  isReconstructableCard,
   truncDateUTC,
   maxDate,
   addDaysUTC,
@@ -57,18 +58,6 @@ type Client = PrismaClient | Prisma.TransactionClient;
 /** Kill switch — absent/false ⇒ no SpaceSnapshot writes from regeneration at all. */
 export function wealthRegenerationEnabled(): boolean {
   return process.env.WEALTH_REGENERATION_ENABLED === "true";
-}
-
-/**
- * Parity copy of backfill.ts#isReconstructableCard (private there, and importing
- * it would pull backfill's `server-only` chain into a plain script). Kept
- * identical so the as-of card walk here matches the backfill walk exactly.
- */
-function isReconstructableCard(a: { type: string; debtSubtype: string | null; creditLimit: number | null }): boolean {
-  if (a.type !== "debt") return false;
-  if (a.debtSubtype === "credit_card") return true;
-  if (a.debtSubtype === null && a.creditLimit != null) return true;
-  return false;
 }
 
 function todayUTC(now: Date): Date {

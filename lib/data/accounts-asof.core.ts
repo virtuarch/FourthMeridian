@@ -25,6 +25,7 @@ import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import {
   reconstructDailyCashBalances,
   reconstructDailyLiabilityBalances,
+  isReconstructableCard,
   truncDateUTC,
   isoDate,
   type CashAccountBalance,
@@ -54,23 +55,6 @@ export interface AsOfAccountInput {
   creditLimit: number | null;  // the only stored revolving-credit signal on null-subtype debt
   /** Earliest defensible date (YYYY-MM-DD): max(account.createdAt, link.createdAt). */
   floorISO:    string;
-}
-
-/**
- * Is this debt account a reconstructable revolving credit card? Parity copy of
- * lib/snapshots/backfill.ts#isReconstructableCard (which is private to that DB
- * orchestration module and cannot be imported without pulling `server-only`).
- * Kept deliberately identical so the as-of walk and the backfill walk agree on
- * exactly which debt accounts are transaction-driven:
- *   - explicit credit_card                     → yes
- *   - null subtype + a creditLimit (Plaid card) → yes
- *   - any explicit non-card subtype / no limit  → no (held flat)
- */
-function isReconstructableCard(a: AsOfAccountInput): boolean {
-  if (a.type !== "debt") return false;
-  if (a.debtSubtype === "credit_card") return true;
-  if (a.debtSubtype === null && a.creditLimit != null) return true;
-  return false;
 }
 
 /**

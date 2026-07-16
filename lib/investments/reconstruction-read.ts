@@ -23,6 +23,7 @@
 import { PositionOrigin, type Prisma, type PrismaClient, type ReconstructionStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
+import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -139,19 +140,15 @@ function tierForRow(row: PositionRow): CompletenessTier {
  * The position quantity as-of a date: the latest non-superseded row on or before
  * `asOf`, choosing the strongest origin on a tie (OBSERVED > IMPORTED > DERIVED >
  * USER_ASSERTED). No row ≤ asOf ⇒ incomplete (a gap, never a fabricated 0). Pure.
+ *
+ * The nearest-≤ scan is the shared HIST-1B primitive; the origin-precedence
+ * tie-break (strictly-stronger origin replaces on an equal date) is passed in,
+ * preserving the exact prior behavior.
  */
 export function resolvePositionAsOf(rows: PositionRow[], asOf: string): PositionAsOf {
-  let best: PositionRow | null = null;
-  for (const row of rows) {
-    if (row.date > asOf) continue;
-    if (
-      best === null ||
-      row.date > best.date ||
-      (row.date === best.date && ORIGIN_RANK[row.origin] < ORIGIN_RANK[best.origin])
-    ) {
-      best = row;
-    }
-  }
+  const best = nearestOnOrBefore(rows, asOf, (row) => row.date, {
+    preferOnTie: (candidate, incumbent) => ORIGIN_RANK[candidate.origin] < ORIGIN_RANK[incumbent.origin],
+  });
   if (!best) return { quantity: null, date: null, origin: null, tier: "incomplete" };
   return { quantity: best.quantity, date: best.date, origin: best.origin, tier: tierForRow(best) };
 }

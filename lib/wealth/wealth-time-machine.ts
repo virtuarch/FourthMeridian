@@ -26,6 +26,7 @@
  */
 
 import { formatCurrency } from "@/lib/format";
+import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 import type { Snapshot } from "@/types";
 
 // ── Result shapes ─────────────────────────────────────────────────────────────
@@ -197,13 +198,15 @@ function addDaysIso(iso: string, n: number): string {
   return new Date(Date.parse(`${iso}T00:00:00.000Z`) + n * MS_PER_DAY).toISOString().slice(0, 10);
 }
 
-/** Nearest snapshot on or before `date` (getSnapshotAsOf semantics, client-side). */
+/**
+ * Nearest snapshot on or before `date` (getSnapshotAsOf semantics, client-side)
+ * via the shared HIST-1B primitive. `sorted` is ascending with unique dates
+ * (one SpaceSnapshot per date), so the greatest-date-≤ pick equals the original
+ * last-match-wins scan; `preferOnTie: always-replace` reproduces that exactly
+ * even were two rows to share a date.
+ */
 function resolveState(sorted: Snapshot[], date: string): WealthState {
-  let picked: Snapshot | null = null;
-  for (const s of sorted) {
-    if (s.date <= date) picked = s; // sorted ascending ⇒ last match is the nearest ≤ date
-    else break;
-  }
+  const picked = nearestOnOrBefore(sorted, date, (s) => s.date, { preferOnTie: () => true });
   return picked ? { ...toState(picked), found: true } : EMPTY_STATE;
 }
 

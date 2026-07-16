@@ -42,6 +42,7 @@ import {
   reconstructDailyLiabilityBalances,
   computeSnapshotFields,
   isHeldFlatBalanceAccount,
+  isReconstructableCard,
   truncDateUTC,
   addDaysUTC,
   maxDate,
@@ -49,33 +50,6 @@ import {
   fromISO,
   type CashAccountBalance,
 } from "@/lib/snapshots/backfill-core";
-
-/**
- * D2.x Slice 4B — is this debt account a reconstructable revolving credit card?
- *
- * Plaid import never writes debtSubtype (exchangeToken.ts), so Plaid cards have
- * debtSubtype = null. We therefore accept an explicit credit_card OR a
- * null-subtype debt account that carries a creditLimit (the only stored
- * revolving-credit signal). Any account with an explicit NON-card subtype
- * (line_of_credit, heloc, mortgage, auto_loan, student_loan, personal_loan, …)
- * is excluded and stays flat.
- *
- * Known caveat: a Plaid line_of_credit / HELOC also has a null subtype + a
- * limit, so it would be included here — those are revolving and transaction-
- * driven, so the walk is still directionally correct, but to strictly exclude
- * one, set its FinancialAccount.debtSubtype to a non-"credit_card" value.
- * Installment loans (no limit) are naturally excluded. Never touches non-debt.
- */
-function isReconstructableCard(a: {
-  type:        string;
-  debtSubtype: string | null;
-  creditLimit: number | null;
-}): boolean {
-  if (a.type !== "debt") return false;
-  if (a.debtSubtype === "credit_card") return true;
-  if (a.debtSubtype === null && a.creditLimit != null) return true;
-  return false;
-}
 
 const BACKFILL_DAYS = 30;
 

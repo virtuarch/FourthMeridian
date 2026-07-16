@@ -123,6 +123,43 @@ export function reconstructDailyLiabilityBalances(
   return out;
 }
 
+// ── Reconstructable-card predicate ────────────────────────────────────────────
+
+/**
+ * Is this debt account a reconstructable revolving credit card?
+ *
+ * Plaid import never writes debtSubtype (exchangeToken.ts), so Plaid cards have
+ * debtSubtype = null. We therefore accept an explicit credit_card OR a
+ * null-subtype debt account that carries a creditLimit (the only stored
+ * revolving-credit signal). Any account with an explicit NON-card subtype
+ * (line_of_credit, heloc, mortgage, auto_loan, student_loan, personal_loan, …)
+ * is excluded and stays flat.
+ *
+ * Known caveat: a Plaid line_of_credit / HELOC also has a null subtype + a
+ * limit, so it would be included here — those are revolving and transaction-
+ * driven, so the walk is still directionally correct, but to strictly exclude
+ * one, set its FinancialAccount.debtSubtype to a non-"credit_card" value.
+ * Installment loans (no limit) are naturally excluded. Never touches non-debt.
+ *
+ * SINGLE AUTHORITY (HIST-1A). Formerly duplicated as four logic-identical copies
+ * — backfill.ts, regenerate-history.ts, accounts-asof.core.ts (named), and
+ * accounts-asof.ts (inline). backfill-core is the pure, `server-only`-free module
+ * every one of those already imports, so the historical card walk (backfill,
+ * regenerate-history) and the as-of card walk can never diverge on which debt
+ * accounts are transaction-driven. Structurally typed so richer inputs (e.g.
+ * AsOfAccountInput) satisfy it without an adapter.
+ */
+export function isReconstructableCard(a: {
+  type:        string;
+  debtSubtype: string | null;
+  creditLimit: number | null;
+}): boolean {
+  if (a.type !== "debt") return false;
+  if (a.debtSubtype === "credit_card") return true;
+  if (a.debtSubtype === null && a.creditLimit != null) return true;
+  return false;
+}
+
 // ── Derived snapshot fields (parity with lib/snapshots/regenerate.ts) ─────────
 
 export interface ClassifyTotals {
