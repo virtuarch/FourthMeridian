@@ -118,10 +118,19 @@ export function evaluateProviderUnhealthy(rule: AlertRuleDefinition, conn: Conne
 
 /** OPS-5 resource freshness → stale/empty signals (one per non-fresh, non-idle
  *  resource). `empty` (a cold archive — the incident shape) is critical; `stale`
- *  is a warning. `idle`/`fresh` never fire. */
+ *  is a warning. `idle`/`fresh` never fire.
+ *
+ *  BLOCKED-PIPELINE HONESTY (cross-slice contract with OPS-5 S1): S1 marks an
+ *  empty archive whose producing pipeline is known-blocked (e.g. security-prices
+ *  with no price vendor configured — A8-3B) as trust.level "unknown" — "honest,
+ *  not a false alarm". Alerting on it would page the operator about a gated no-op
+ *  they cannot fix (a false-red that would fire on every deployment with held
+ *  instruments and no price vendor). So `empty` fires ONLY when the empty is a
+ *  genuine failure (trust.level !== "unknown"); `stale` always has data and is
+ *  never blocked-relevant, so it always fires. */
 export function evaluateResourceStale(rule: AlertRuleDefinition, fresh: ResourceFreshnessResult): AlertSignal[] {
   return fresh.resources
-    .filter((r) => r.healthState === "stale" || r.healthState === "empty")
+    .filter((r) => r.healthState === "stale" || (r.healthState === "empty" && r.trust.level !== "unknown"))
     .map((r) => ({
       ruleId: rule.id,
       kind: rule.kind,

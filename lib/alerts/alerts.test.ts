@@ -63,11 +63,11 @@ function connHealth(counts: Partial<Record<HealthState, number>>): ConnectionHea
   const total = (Object.values(full) as number[]).reduce((a, b) => a + b, 0);
   return { total, counts: full, unhealthy: [] };
 }
-function resource(id: string, state: FreshnessHealthState): ResourceFreshnessReport {
+function resource(id: string, state: FreshnessHealthState, trustLevel: "high" | "medium" | "low" | "unknown" = "low"): ResourceFreshnessReport {
   return {
     resource: id, label: id, newestObservedDate: null, ageHours: state === "stale" ? 96 : null, ageDays: state === "stale" ? 4 : null,
     expectedCadenceHours: 24, cadenceLabel: "Daily", staleAfterHours: 48, healthState: state, completeness: null,
-    lastSuccessfulRefresh: null, lastAttemptedRefresh: null, lastAttemptStatus: null, trust: { level: "low", caveats: [] },
+    lastSuccessfulRefresh: null, lastAttemptedRefresh: null, lastAttemptStatus: null, trust: { level: trustLevel, caveats: [] },
   };
 }
 function freshness(resources: ResourceFreshnessReport[]): ResourceFreshnessResult {
@@ -135,6 +135,15 @@ console.log("engine · resource-stale");
   check("fires on stale + empty only (not fresh/idle)", sigs.length === 2);
   check("stale is a warning", sigs.find((s) => s.dedupeKey.endsWith(":fx-rates"))!.severity === "warning");
   check("empty (cold archive) is critical", sigs.find((s) => s.dedupeKey.endsWith(":prices"))!.severity === "critical");
+
+  // Blocked-pipeline honesty (S1 contract): an empty archive whose pipeline is
+  // known-blocked is trust "unknown" — must NOT false-red the operator.
+  const blocked = evaluateAlertRules(
+    outputs({ resourceFreshness: freshness([resource("security-prices", "empty", "unknown"), resource("fx-rates", "empty", "low")]) }),
+    ALL_ON,
+  ).filter((s) => s.kind === "resource-stale");
+  check("empty+blocked (trust unknown) does NOT fire (no false-red on a gated no-op)", !blocked.some((s) => s.dedupeKey.endsWith(":security-prices")));
+  check("empty+genuine (trust low) still fires", blocked.some((s) => s.dedupeKey.endsWith(":fx-rates")));
 }
 
 // ── Engine: gating + null authorities + dormancy ─────────────────────────────────
