@@ -17,6 +17,8 @@
 
 import { PriceBasis } from "@prisma/client";
 import { priceArchive } from "@/lib/prices/archive";
+import { minusDaysISO } from "@/lib/prices/config";
+import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 import { fetchBtcDailyClosesUsd, type CoinGeckoOptions } from "@/lib/prices/providers/coingecko";
 import { resolveCanonicalBtcInstrumentId } from "@/lib/investments/crypto-instrument";
 
@@ -69,11 +71,31 @@ export async function backfillBtcPrices(
 }
 
 /**
- * BTC/USD close as-of a date (walk-back within maxStaleDays), from the cache.
- * null when no priced row is within range (never fabricated).
+ * HIST-2C — BTC/USD close resolver for a whole window in ONE archive read. Loads
+ * the `[fromISO, toISO]` RAW_CLOSE window with a single `readRange` and returns a
+ * pure resolver that answers each date from memory, replacing one
+ * `readLatestOnOrBefore` point read per day (the last N×date read hot path in the
+ * historical writer, INVEST-1/HIST-2 §J/§M).
+ *
+ * Per-date semantics are the archive's own walk-back: the latest RAW_CLOSE row in
+ * `[date − maxStaleDays, date]`, else null (never fabricated) — reproduced exactly
+ * by the shared `nearestOnOrBefore` (HIST-1B) with a `maxStaleDays` ceiling. NOT a
+ * second price authority: same `priceArchive`, same canonical BTC Instrument, same
+ * RAW_CLOSE series, USD pass-through, 7-day staleness. The preloaded window is
+ * floored at `fromISO − maxStaleDays` so every date in `[fromISO, toISO]` sees its
+ * full walk-back window.
  */
-export async function readBtcUsdAsOf(dateISO: string, maxStaleDays = 7): Promise<number | null> {
+export async function readBtcUsdWindow(
+  fromISO:      string,
+  toISO:        string,
+  maxStaleDays: number = 7,
+): Promise<(dateISO: string) => number | null> {
   const instrumentId = await resolveBtcInstrumentId();
-  const row = await priceArchive.readLatestOnOrBefore(instrumentId, PriceBasis.RAW_CLOSE, dateISO, maxStaleDays);
-  return row?.price ?? null;
+  const floorISO = minusDaysISO(fromISO, maxStaleDays);
+  const rows =
+    (await priceArchive.readRange?.([instrumentId], PriceBasis.RAW_CLOSE, floorISO, toISO)) ?? [];
+  return (dateISO: string): number | null => {
+    const hit = nearestOnOrBefore(rows, dateISO, (r) => r.dateISO, { maxStaleDays });
+    return hit ? hit.price : null;
+  };
 }

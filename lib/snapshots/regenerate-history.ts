@@ -51,7 +51,7 @@ import {
   type CashAccountBalance,
 } from "@/lib/snapshots/backfill-core";
 import { regenerateDay, type DayRegenInput, type DayRegenResult } from "@/lib/snapshots/regenerate-history.core";
-import { backfillBtcPrices, readBtcUsdAsOf } from "@/lib/crypto/btc-price";
+import { backfillBtcPrices, readBtcUsdWindow } from "@/lib/crypto/btc-price";
 import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
 
 type Client = PrismaClient | Prisma.TransactionClient;
@@ -351,6 +351,16 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     console.warn(`[wealth-regen] ${spaceId}: batch A8 valuation failed (non-fatal): ${err instanceof Error ? err.message : err}`);
   }
 
+  // HIST-2C — resolve BTC/USD for the whole window in ONE archive read (built
+  // AFTER backfillBtcPrices above, so freshly-fetched closes are included), then
+  // answer each day from memory. Byte-identical to the former per-day
+  // readBtcUsdAsOf; only the D point reads collapse to one range read. Only built
+  // when there is crypto to value (else an all-null resolver, never queried).
+  const btcAt =
+    cryptoAccounts.length > 0
+      ? await readBtcUsdWindow(fromDate, toDate)
+      : (_dISO: string): number | null => null;
+
   const result: RegenerateWealthHistoryResult = { ...zero };
   const writes: Array<{ date: Date; isEstimated: boolean; fields: NonNullable<DayRegenResult["fields"]> }> = [];
 
@@ -406,7 +416,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     let digitalAssetValue = c.totalDigitalAssets;
     let hasDigitalAssetEvidence = false;
     if (cryptoAccounts.length > 0) {
-      const btcUsd = await readBtcUsdAsOf(dISO);
+      const btcUsd = btcAt(dISO); // HIST-2C — from the one-shot window read above
       if (btcUsd != null) {
         // Value each crypto account at its constant native quantity × the day's
         // BTC price (USD), then let classifyAccounts do the FX to the reporting
