@@ -65,6 +65,14 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
     id: "platform-alerts", kind: "standard", domain: "platform",
     label: "Alerts", icon: "BellRing",
   },
+  // OPS-5 Wave B — the operational INTELLIGENCE workspace: history (S7),
+  // convergence (S9), and cost/latency (S10) are Workspace CONTENT here, not a new
+  // dashboard. Still a standard Workspace (no fabricated Perspective); the
+  // as-of/compare-to time model is the finance shell contract, mirrored.
+  "platform-trends": {
+    id: "platform-trends", kind: "standard", domain: "platform",
+    label: "History", icon: "History",
+  },
 };
 
 // ── Composition: which workspaces each area exposes, and their section-widgets ───
@@ -96,12 +104,14 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       // detail (Manual Operations WRITE controls, connection + API-usage breakdowns)
       // deliberately leaves Overview for its dedicated workspace.
       sections: ["ops_alerts", "ops_job_health", "ops_provider_health", "ops_resource_freshness", "ops_rate_limits", "ops_env_status"],
-      doorways: ["platform-jobs", "platform-providers", "platform-operations", "platform-alerts"],
+      doorways: ["platform-jobs", "platform-providers", "platform-operations", "platform-alerts", "platform-trends"],
     },
     { workspaceId: "platform-jobs", sections: ["ops_job_health"] },
     { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_connection_health", "ops_resource_freshness", "ops_api_usage"] },
     { workspaceId: "platform-operations", sections: ["ops_manual_operations"] },
     { workspaceId: "platform-alerts", sections: ["ops_alerts"] },
+    // OPS-5 Wave B intelligence layer (S7 → S9 → S10 add their sections here).
+    { workspaceId: "platform-trends", sections: ["ops_history"] },
   ],
   SECURITY_OPS: [
     { workspaceId: "platform-overview", sections: ["sec_audit_feed", "sec_auth_posture", "sec_sessions", "sec_anomalies"] },

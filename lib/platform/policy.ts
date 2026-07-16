@@ -80,6 +80,8 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // OPS-5 S5 — alert rules + history (consumes the job-health / connection-health
       // / resource-freshness authorities; emails on breach). Backfilled by ensurePlatformSections.
       { key: "ops_alerts", label: "Alerts", order: 8 },
+      // OPS-5 Wave B — S7 Operational History (content of the History workspace).
+      { key: "ops_history", label: "Operational History", order: 9 },
     ],
   },
   SECURITY_OPS: {

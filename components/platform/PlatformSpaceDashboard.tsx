@@ -32,7 +32,7 @@
 
 import { useState, type ComponentType } from "react";
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, ArrowRight } from "lucide-react";
+import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, ArrowRight } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
 import { getPlatformAreaWorkspaces, getPlatformWorkspace } from "@/lib/platform/workspaces";
@@ -50,6 +50,7 @@ import { OpsResourceFreshnessWidget } from "./widgets/OpsResourceFreshnessWidget
 import { OpsManualOperationsWidget } from "./widgets/OpsManualOperationsWidget";
 import { OpsProviderHealthWidget } from "./widgets/OpsProviderHealthWidget";
 import { OpsAlertsWidget } from "./widgets/OpsAlertsWidget";
+import { OpsHistoryWidget } from "./widgets/OpsHistoryWidget";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
 import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
 import { CsSyncIssuesWidget } from "./widgets/CsSyncIssuesWidget";
@@ -78,6 +79,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   ops_manual_operations:  OpsManualOperationsWidget,
   ops_provider_health:    OpsProviderHealthWidget,
   ops_alerts:             OpsAlertsWidget,
+  ops_history:            OpsHistoryWidget,
   // Growth & Revenue
   growth_signups:       GrowthSignupsWidget,
   growth_beta_requests: GrowthBetaRequestsWidget,
@@ -87,7 +89,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
 
 /** Lucide icon-name → component, for the Platform workspace identities. */
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
-  LayoutDashboard, Timer, PlugZap, Wrench, BellRing,
+  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History,
 };
 
 interface Props {
