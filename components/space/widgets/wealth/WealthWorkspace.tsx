@@ -36,7 +36,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Info, Loader2 } from "lucide-react";
 import {
   computeWealthTimeMachine,
   type WealthResult,
@@ -158,6 +158,22 @@ export function WealthWorkspace({
 
   return (
     <>
+      {/* HIST-2E — today/history valuation-basis disclosure (from the read model;
+          transparency only, no number changes). Renders only when the view mixes an
+          observed today point with reconstructed history. */}
+      {result.basis && (
+        <div
+          className="mb-4 flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
+          style={{ background: "var(--surface-inset)", color: "var(--text-muted)" }}
+          role="note"
+        >
+          <Info size={13} className="mt-0.5 shrink-0" aria-hidden />
+          <span>
+            <span className="font-medium text-[var(--text-secondary)]">{result.basis.title}.</span>{" "}
+            {result.basis.note}
+          </span>
+        </div>
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start min-w-0">
         {/* ① Hero + ② Trend chart. */}
         <div className="min-w-0 lg:col-span-4">

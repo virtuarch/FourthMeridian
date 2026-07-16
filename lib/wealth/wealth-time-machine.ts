@@ -27,6 +27,7 @@
 
 import { formatCurrency } from "@/lib/format";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
+import { wealthBasisDisclosure, type WealthBasisDisclosure } from "@/lib/wealth/basis-disclosure";
 import type { Snapshot } from "@/types";
 
 // ── Result shapes ─────────────────────────────────────────────────────────────
@@ -143,6 +144,13 @@ export interface WealthResult {
   evidence:     { label: string } | null;
   /** Deterministic, template-based Wealth Explanation (Amendment 10). No LLM. */
   explanation:  string | null;
+  /**
+   * HIST-2E — today/history valuation-basis disclosure. Present ONLY when the
+   * visible chart mixes an observed (live today) point with reconstructed history,
+   * i.e. where the two bases can legitimately differ. Surfaces the WHY; changes no
+   * number. Null otherwise.
+   */
+  basis:        WealthBasisDisclosure | null;
 }
 
 export interface WealthTimeMachineInput {
@@ -314,10 +322,18 @@ export function computeWealthTimeMachine(input: WealthTimeMachineInput): WealthR
     explanation = parts.join(" ");
   }
 
+  // HIST-2E — basis disclosure, from the VISIBLE chart window: shown only when an
+  // observed (live today) point and a reconstructed point are both plotted, i.e.
+  // where the two valuation bases can legitimately differ.
+  const basis = wealthBasisDisclosure({
+    hasObserved:      points.some((p) => !p.isEstimated),
+    hasReconstructed: points.some((p) => p.isEstimated),
+  });
+
   return {
     asOf, compareTo, hasHistory, coverageFrom,
     asOfState, compareState, deltas, drivers,
     chart: { points, compareSeries, asOfDate: asOfState.date, compareDate: compareState?.date ?? null },
-    completeness, evidence, explanation,
+    completeness, evidence, explanation, basis,
   };
 }
