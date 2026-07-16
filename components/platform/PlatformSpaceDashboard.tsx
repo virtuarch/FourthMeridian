@@ -55,6 +55,7 @@ import { OpsConvergenceWidget } from "./widgets/OpsConvergenceWidget";
 import { OpsCostWidget } from "./widgets/OpsCostWidget";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
 import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
+import { OpsUsersWidget } from "./widgets/OpsUsersWidget";
 import { CsSyncIssuesWidget } from "./widgets/CsSyncIssuesWidget";
 
 type Section = PlatformSection;
@@ -87,6 +88,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   // Growth & Revenue
   growth_signups:       GrowthSignupsWidget,
   growth_beta_requests: GrowthBetaRequestsWidget,
+  growth_users:         OpsUsersWidget,
   // Customer Success
   cs_sync_issues: CsSyncIssuesWidget,
 };

@@ -115,6 +115,8 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "growth_signups", label: "Signups & Activation", order: 0 },
       // Wave 1 S3 — beta-access request queue (approve → mint + email invite).
       { key: "growth_beta_requests", label: "Beta Access Requests", order: 1 },
+      // OPS-6B Beta Operations — user search + operator deactivate/reactivate.
+      { key: "growth_users", label: "Users", order: 2 },
     ],
   },
   CUSTOMER_SUCCESS: {
