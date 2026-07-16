@@ -105,6 +105,8 @@ import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/Liquidi
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
 import { AccountsPerspective } from "@/components/space/widgets/accounts/AccountsPerspective";
+import { MembersWorkspace } from "@/components/space/workspaces/MembersWorkspace";
+import { TransactionsWorkspace, TX_SCOPE_NOTE } from "@/components/space/workspaces/TransactionsWorkspace";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
 import { SPACE_TAB_ICON_MAP, SPACE_TAB_ICON_FALLBACK } from "@/lib/space-nav-icons";
@@ -129,74 +131,21 @@ import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { PerspectiveSwitcher, COMPOSITION_ICON_MAP } from "@/components/dashboard/widgets/PerspectiveSwitcher";
 import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
-import { SpaceMembersWidget } from "@/components/dashboard/widgets/SpaceMembersWidget";
 import { SpaceComingSoonPanel } from "@/components/dashboard/widgets/SpaceComingSoonPanel";
 import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { SpaceTrendHero, type HeroPoint } from "@/components/dashboard/widgets/SpaceTrendHero";
 import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
-import { SpaceTransactionsPanel } from "@/components/dashboard/widgets/SpaceTransactionsPanel";
 import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { getSpaceHeroDef } from "@/lib/space-hero";
-import type { Snapshot, Transaction, Account as PersonalAccount } from "@/types";
+import type { Snapshot, Transaction } from "@/types";
+import type { DashboardSection, SpaceAccount, SpaceGoal } from "@/lib/space/dashboard-types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-type DashboardSection = {
-  id:          string;
-  key:         string;
-  label:       string;
-  tab:         string;
-  enabled:     boolean;
-  order:       number;
-  config:      Record<string, unknown> | null;
-};
-
-type SpaceAccount = {
-  id:             string;
-  name:           string;
-  type:           string;
-  institution:    string;
-  balance:        number;
-  currency:       string;
-  lastUpdated:    string;
-  creditLimit?:   number;
-  interestRate?:  number;  // APR, e.g. 19.99
-  minimumPayment?: number; // monthly minimum
-  earliestTxDate?: string | null; // YYYY-MM-DD earliest non-deleted tx (regen floor); FULL rows only
-};
-
-type SpaceGoal = {
-  id:                    string;
-  name:                  string;
-  description:           string | null;
-  category:              string;
-  goalType:              "FINANCIAL" | "HABIT" | "SPENDING_LIMIT" | "DEBT_REDUCTION";
-  status:                string;
-  targetAmount:          number | null;
-  currentAmount:         number;
-  targetDate:            string | null;
-  completedAt:           string | null;
-  archivedAt:            string | null;
-  deletedAt:             string | null;
-  // HABIT
-  habitFrequency:        string | null;
-  currentStreak:         number;
-  longestStreak:         number;
-  lastCheckIn:           string | null;
-  checkIns:              { id: string; checkedAt: string; note: string | null }[];
-  // SPENDING_LIMIT
-  spendingCategory:      string | null;
-  // DEBT_REDUCTION
-  linkedAccountId:       string | null;
-  targetReductionAmount: number | null;
-  targetReductionPct:    number | null;
-  snapshotBalance:       number | null;
-};
 
 interface Props {
   spaceId:   string;
@@ -350,7 +299,8 @@ const FLOW_TX_CATEGORIES = ["HOUSEHOLD", "FAMILY", "BUSINESS", "DEBT_PAYOFF"];
 
 /** Scope honesty label for shared-Space transaction lists — KD-15 filters
  *  rows to FULL-visibility shares, so the list is structurally partial. */
-const TX_SCOPE_NOTE = "From fully shared accounts only";
+// TX_SCOPE_NOTE now lives with its primary owner (TransactionsWorkspace) and is
+// re-imported here for the Overview doorway preview (below).
 
 const GOAL_CATEGORY_LABELS: Record<string, string> = {
   EMERGENCY_FUND:   "Emergency Fund",
@@ -3451,27 +3401,20 @@ export function SpaceDashboard({
             GET /api/spaces/[id]/transactions, KD-15-filtered server-side,
             hence the scope note. */}
         {activeTab === "TRANSACTIONS" && (
-          spaceTransactions === null ? (
-            <div className="flex items-center justify-center py-16">
-              <Loader2 size={18} className="animate-spin text-[var(--text-faint)]" />
-            </div>
-          ) : (
-            <SpaceTransactionsPanel
-              transactions={spaceTransactions}
-              accounts={accounts.map((a) => ({ ...a, type: a.type as PersonalAccount["type"] })) as PersonalAccount[]}
-              scopeNote={TX_SCOPE_NOTE}
-              // MC1 view-as: summary totals convert through the override context
-              // when active; the panel's rows stay native either way.
-              moneyCtx={transactionsMoneyCtxOverride ?? spaceMoneyCtx}
-              // Banking→Transactions retarget — deep-link account pre-filter.
-              initialAccountFilter={initialAccountFilter}
-            />
-          )
+          <TransactionsWorkspace
+            transactions={spaceTransactions}
+            accounts={accounts}
+            // MC1 view-as: summary totals convert through the override context when
+            // active; the panel's rows stay native either way.
+            moneyCtx={transactionsMoneyCtxOverride ?? spaceMoneyCtx}
+            // Banking→Transactions retarget — deep-link account pre-filter.
+            initialAccountFilter={initialAccountFilter}
+          />
         )}
 
         {/* Members tab — real data. */}
         {activeTab === "MEMBERS" && (
-          <SpaceMembersWidget spaceId={spaceId} onManage={() => setShowManage(true)} />
+          <MembersWorkspace spaceId={spaceId} onManage={() => setShowManage(true)} />
         )}
 
         {/* Goals/Debt/Investments/Retirement — Glass modal (IA refactor
