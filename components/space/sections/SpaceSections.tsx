@@ -32,7 +32,7 @@ import { NetWorthChartModal } from "@/components/charts/NetWorthChartModal";
 import { RebuildHistoryButton } from "@/components/dashboard/RebuildHistoryButton";
 import { AllocationChart } from "@/components/charts/AllocationChart";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatBalance } from "@/lib/currency";
 import { formatDate } from "@/lib/format";
 import { simulatePayoff } from "@/components/space/sections/DebtPayoffSection";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
@@ -53,21 +53,6 @@ import type { ConversionContext } from "@/lib/money/types";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import type { Snapshot, Transaction } from "@/types";
 import type { DashboardSection, SpaceAccount, SpaceGoal } from "@/lib/space/dashboard-types";
-
-export function formatBalance(amount: number, currency = DEFAULT_DISPLAY_CURRENCY) {
-  return new Intl.NumberFormat("en-US", {
-    style:                 "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
-
-// MC1 QA Q4b — the bare currency symbol for a form-toggle glyph (e.g. "$",
-// "€", "﷼"). USD ⇒ "$", so all-USD Spaces render the toggle unchanged.
-export function currencySymbol(currency: string): string {
-  const parts = new Intl.NumberFormat("en-US", { style: "currency", currency }).formatToParts(0);
-  return parts.find((p) => p.type === "currency")?.value ?? currency;
-}
 
 const ACCOUNT_TYPE_LABELS: Record<string, string> = {
   checking:   "Checking",

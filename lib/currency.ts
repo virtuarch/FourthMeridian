@@ -30,3 +30,30 @@ export function formatCurrency(
     maximumFractionDigits: compact ? 1 : 0,
   }).format(amount);
 }
+
+/**
+ * Whole-currency label (no fractional digits) — the canonical formatter for
+ * aggregate/balance figures. Identical to `formatCurrency(amount, currency)`;
+ * kept as a named export because it is the historical spelling used across the
+ * Space dashboard and section renderers. Consolidated here (SEC-3) so there is
+ * ONE implementation instead of the former per-module copies.
+ */
+export function formatBalance(amount: number, currency: string = DEFAULT_DISPLAY_CURRENCY): string {
+  return formatCurrency(amount, currency);
+}
+
+/**
+ * The bare currency symbol for a currency code (e.g. "$", "€", "﷼") — used for
+ * form-toggle glyphs, axis ticks, and slider bound labels. USD ⇒ "$", so
+ * all-USD surfaces render unchanged. For every valid ISO 4217 code `Intl`
+ * always yields a currency part; the `?? currency` fallback only matters for an
+ * invalid code (unreachable — currencies come from validated Space/account
+ * fields), so this is behavior-identical to the former per-module copies for
+ * all real inputs. Consolidated here (SEC-3).
+ */
+export function currencySymbol(currency: string): string {
+  const part = new Intl.NumberFormat("en-US", { style: "currency", currency })
+    .formatToParts(0)
+    .find((p) => p.type === "currency");
+  return part?.value ?? currency;
+}

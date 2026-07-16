@@ -54,7 +54,7 @@ console.log("1. Every focused panel + shared helper exists and exports its compo
     ["DangerZonePanel.tsx",           "export function DangerZonePanel"],
     ["UserSearchInput.tsx",           "export function UserSearchInput"],
     ["ShareExistingAccountsPanel.tsx","export function ShareExistingAccountsPanel"],
-    ["manage-shared.ts",              "export function formatBalance"],
+    ["manage-shared.ts",              "export const ROLE_LABELS"],
   ];
   for (const [file, exp] of files) {
     check(`${file} exists`, exists(file));

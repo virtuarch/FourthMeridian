@@ -17,7 +17,7 @@
 
 import { BreakdownWidget, type BreakdownItem, type BreakdownViewMode } from "@/components/space/widgets/BreakdownWidget";
 import { DebtPayoffSection, type DebtPayoffAccount } from "@/components/space/sections/DebtPayoffSection";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { formatBalance } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
@@ -41,14 +41,7 @@ export function debtColor(i: number, n: number): string {
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
-
-function formatBalance(amount: number, currency = DEFAULT_DISPLAY_CURRENCY) {
-  return new Intl.NumberFormat("en-US", {
-    style:                 "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
+// formatBalance now comes from the single lib/currency authority (SEC-3).
 
 // ─── Shared account shape ─────────────────────────────────────────────────────
 

@@ -28,7 +28,7 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "rec
 import { TrendingDown, TrendingUp, Loader2 } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { formatDate } from "@/lib/format";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { DEFAULT_DISPLAY_CURRENCY, currencySymbol } from "@/lib/currency";
 import type { HeroFraming } from "@/lib/space-hero";
 
 export interface HeroPoint {
@@ -49,13 +49,7 @@ function fmtCurrency(n: number, currency: string): string {
   }).format(n);
 }
 
-/** Currency symbol for compact axis ticks (USD → "$", so all-USD renders identically). */
-function currencySymbol(currency: string): string {
-  const part = new Intl.NumberFormat("en-US", { style: "currency", currency })
-    .formatToParts(0)
-    .find((p) => p.type === "currency");
-  return part?.value ?? "$";
-}
+// currencySymbol now comes from the single lib/currency authority (SEC-3).
 
 function fmtAxis(n: number, currency: string): string {
   const sym = currencySymbol(currency);

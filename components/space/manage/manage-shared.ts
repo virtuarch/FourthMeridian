@@ -16,7 +16,8 @@
  * single-file ManageSpaceModal declared inline.
  */
 
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+// formatBalance is re-exported from the single lib/currency authority (SEC-3).
+export { formatBalance } from "@/lib/currency";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -59,10 +60,3 @@ export const ROLE_LABELS: Record<string, string> = {
   OWNER: "Owner", ADMIN: "Admin", MEMBER: "Member", VIEWER: "Viewer",
 };
 
-// ─── Format ────────────────────────────────────────────────────────────────────
-
-export function formatBalance(amount: number, currency = DEFAULT_DISPLAY_CURRENCY) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency", currency, maximumFractionDigits: 0,
-  }).format(amount);
-}

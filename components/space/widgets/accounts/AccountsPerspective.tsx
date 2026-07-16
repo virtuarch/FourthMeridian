@@ -30,6 +30,7 @@ import {
   Landmark, CheckCircle2, AlertTriangle, Loader2, Pencil, X, ArrowUpRight, Cable,
 } from "lucide-react";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
+import { formatBalance } from "@/lib/currency";
 import type { SyncConnectionState } from "@/lib/sync/status";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 
@@ -44,13 +45,10 @@ export const ACCOUNT_TYPE_LABELS: Record<string, string> = {
   other:      "Other",
 };
 
-export function formatBalance(amount: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", {
-    style:                 "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
+// formatBalance now comes from the single lib/currency authority (SEC-3); the
+// former local copy defaulted to "USD" (≡ DEFAULT_DISPLAY_CURRENCY), so this is
+// byte-identical. Re-exported for any external consumer of the prior surface.
+export { formatBalance };
 
 export type HealthTone = "positive" | "warning" | "muted";
 export interface HealthChip {

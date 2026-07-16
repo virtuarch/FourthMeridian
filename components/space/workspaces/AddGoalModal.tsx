@@ -19,7 +19,7 @@ import { Loader2, X } from "lucide-react";
 import { SPACE_GOALS_CHANGED_EVENT } from "@/lib/space-nav";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import type { SpaceAccount } from "@/lib/space/dashboard-types";
-import { formatBalance, currencySymbol } from "@/components/space/sections/SpaceSections";
+import { formatBalance, currencySymbol } from "@/lib/currency";
 
 const GOAL_CATEGORY_LABELS: Record<string, string> = {
   EMERGENCY_FUND:   "Emergency Fund",

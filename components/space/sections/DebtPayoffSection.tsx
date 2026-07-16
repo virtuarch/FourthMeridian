@@ -11,7 +11,7 @@
 
 import { useState, useEffect } from "react";
 import { CreditCard, X } from "lucide-react";
-import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { DEFAULT_DISPLAY_CURRENCY, formatBalance, currencySymbol } from "@/lib/currency";
 import { formatMonthYear } from "@/lib/format";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
@@ -38,23 +38,8 @@ type PayFreq = "week" | "month" | "year";
 type PayoffResult = { months: number; totalPaid: number; totalInterest: number };
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
-
-function formatBalance(amount: number, currency = DEFAULT_DISPLAY_CURRENCY) {
-  return new Intl.NumberFormat("en-US", {
-    style:                 "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
-
-/** Currency symbol for the payment input / slider bound labels (USD → "$",
- *  so the all-USD planner renders byte-identically). MC1 QA Q4. */
-function currencySymbol(currency: string): string {
-  const part = new Intl.NumberFormat("en-US", { style: "currency", currency })
-    .formatToParts(0)
-    .find((p) => p.type === "currency");
-  return part?.value ?? "$";
-}
+// formatBalance + currencySymbol now come from the single lib/currency authority
+// (SEC-3) — the former local copies were byte-identical for all real inputs.
 
 // Debt-account viz palette: a red gradient that ranks accounts by balance.
 // This is data visualisation (per-account differentiation), not card chrome —
