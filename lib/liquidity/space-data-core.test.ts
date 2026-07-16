@@ -61,6 +61,16 @@ const ESTIMATED: Completeness = { tier: "estimated", conflict: false, reason: "e
   check("no delta without endpoints", data.delta === null);
   check("null trust on current-only read", data.trust === null);
   check("compareTo defaults null", data.compareTo === null);
+  check("reportingCurrency carried (defaulted when omitted)", typeof data.reportingCurrency === "string" && data.reportingCurrency.length > 0);
+}
+
+// ── reportingCurrency is carried through verbatim when supplied ───────────────
+{
+  const data = assembleLiquiditySpaceData({
+    asOf: "2026-07-16", reportingCurrency: "EUR",
+    current: lens({ cashNow: 1, marketable: 0, illiquid: 0 }),
+  });
+  check("reportingCurrency = supplied value", data.reportingCurrency === "EUR");
 }
 
 // ── asOf only: trust re-surfaced, still no delta ─────────────────────────────

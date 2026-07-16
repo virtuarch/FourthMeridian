@@ -103,7 +103,7 @@ import type { LiquidityTx } from "@/lib/transactions/liquidity";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { WealthWorkspace } from "@/components/space/widgets/wealth/WealthWorkspace";
 import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
-import { LiquidityPerspective } from "@/components/space/widgets/liquidity/LiquidityPerspective";
+import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/LiquidityWorkspace";
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
 import { AccountsPerspective } from "@/components/space/widgets/accounts/AccountsPerspective";
@@ -2696,6 +2696,14 @@ export function SpaceDashboard({
   // valid strictly-earlier window (the route 400s on compareTo >= asOf).
   const investmentsCompareTo = compareTo && compareTo < asOf ? compareTo : null;
   const [investmentsEnvelope, setInvestmentsEnvelope] = useState<PerspectiveEnvelope>({});
+  // SD-6B — the Liquidity WORKSPACE now OWNS its data consumption (the
+  // useLiquiditySpaceData fetch moved inside <LiquidityWorkspace>), activating the
+  // historical engine end-to-end. Like Investments, the host keeps NO Liquidity fetch;
+  // it only gates the workspace's historical read to when the perspective is open, and
+  // relays the workspace's trust envelope (present-day OR as-of) to the shell chip.
+  const liquidityActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "liquidity";
+  const liquidityCompareTo = compareTo && compareTo < asOf ? compareTo : null;
+  const [liquidityEnvelope, setLiquidityEnvelope] = useState<PerspectiveEnvelope>({});
   const [spaceGoals, setSpaceGoals] = useState<SpaceGoal[] | null>(null);
   useEffect(() => {
     if (!perspectiveNeedsGoals || spaceGoals !== null) return;
@@ -3265,6 +3273,8 @@ export function SpaceDashboard({
                   ? wealthEnvelope
                   : activePerspectiveId === "investments"
                   ? investmentsEnvelope
+                  : activePerspectiveId === "liquidity"
+                  ? liquidityEnvelope
                   : resolvePerspectiveEnvelope({
                       perspectiveId: activePerspectiveId ?? "",
                       lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
@@ -3330,21 +3340,30 @@ export function SpaceDashboard({
                   stamp={cashFlowStampValue}
                 />
               ) : activePerspectiveId === "liquidity" ? (
-                // Liquidity Perspective — the redesigned CURRENT-STATE-ONLY
-                // multi-panel composition (mirrors the Cash Flow grid pattern),
-                // replacing the generic SectionCard stack for this Perspective
-                // only. No as-of / history read: the shell's As Of / Compare To
-                // have zero effect here, exactly as the old stack. The lens lede
-                // consumes the already-fetched lensResults["liquidity"] — no new
-                // fetch, no envelope change.
-                <LiquidityPerspective
+                // SD-6B — the extracted Liquidity WORKSPACE over the canonical
+                // LiquiditySpaceData contract. All composition lives inside it; the
+                // host only mounts it with shell dates + host inputs. It activates the
+                // historical engine: the lede lens + the Liquidity Ladder are
+                // reconstructed AT asOf, and a compareTo yields a per-tier delta — date
+                // changes now visibly move the temporal panel. The per-account widgets
+                // (Accessible Cash / EFR / Reachability / Concentration / What Changed)
+                // stay the LIVE CURRENT ANCHOR from `accounts`. Present day reuses the
+                // host present-day lens (byte-identical); historical fetches its own.
+                // The workspace emits its trust envelope up (present-day or as-of).
+                <LiquidityWorkspace
+                  spaceId={spaceId}
+                  asOf={asOf}
+                  compareTo={liquidityCompareTo}
+                  today={shellToday}
+                  active={liquidityActive}
                   accounts={accounts}
                   ctx={widgetCtx}
-                  lensResult={lensResults?.["liquidity"] ?? null}
+                  presentLens={lensResults?.["liquidity"] ?? null}
                   transactions={spaceTransactions}
                   txCtx={txConversionCtx}
                   period={cashFlowPeriod}
                   onOpenCashFlow={() => setSelectedPerspectiveId("cashFlow")}
+                  onEnvelopeChange={setLiquidityEnvelope}
                 />
               ) : activePerspectiveId === "investments" ? (
                 // SD-4 — the extracted Investments WORKSPACE over the canonical

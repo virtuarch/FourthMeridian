@@ -32,6 +32,7 @@
 
 import { worstTier } from "@/lib/perspective-engine/completeness";
 import { liquidityReason } from "@/lib/perspective-engine/lenses/asof-completeness";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import type { Completeness, CompletenessTier, LensResult } from "@/lib/perspective-engine/types";
 
 /** Fail-closed envelope for the degenerate case where an ok endpoint carries no
@@ -67,6 +68,16 @@ export interface LiquidityDelta {
 export interface LiquiditySpaceData {
   asOf: string;
   compareTo: string | null;
+  /**
+   * The currency EVERY endpoint (current / atAsOf / atCompareTo / delta) is valued
+   * in — the Space's reporting currency (the server historical engine builds its
+   * ConversionContext with target = reportingCurrency, plan D-1). It is the `from`
+   * currency a display-conversion pass converts OUT of; see
+   * `convertLiquiditySpaceData` (lib/liquidity/display-conversion.ts). Carrying it
+   * on the contract is what lets the workspace display-convert historical values
+   * honestly instead of relabeling a reporting number with a display symbol.
+   */
+  reportingCurrency: string;
   /** Live liquidity @ today — the production current-state truth. Always present. */
   current: LensResult;
   /** Historical reconstruction @ asOf over spliced rows. null on a pure current read. */
@@ -133,6 +144,9 @@ export function worstOfCompleteness(a: Completeness, b: Completeness, asOf: stri
 export function assembleLiquiditySpaceData(args: {
   asOf: string;
   compareTo?: string | null;
+  /** The currency every endpoint is valued in (Space reporting currency). Optional
+   *  for pure fixtures/tests; the real loader always supplies it. */
+  reportingCurrency?: string;
   current: LensResult;
   atAsOf?: LensResult | null;
   atCompareTo?: LensResult | null;
@@ -166,6 +180,7 @@ export function assembleLiquiditySpaceData(args: {
   return {
     asOf: args.asOf,
     compareTo,
+    reportingCurrency: args.reportingCurrency ?? DEFAULT_DISPLAY_CURRENCY,
     current: args.current,
     atAsOf,
     atCompareTo,

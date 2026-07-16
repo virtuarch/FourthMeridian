@@ -46,7 +46,7 @@ check("shell exposes the slot API", /overlays\?:/.test(shellCode) && /toolbar\?:
 // composition primitives — it only knows "frame".
 for (const banned of [
   "WealthWorkspace", "InvestmentsWorkspace", "DebtWorkspace",
-  "LiquidityPerspective", "CashFlowPerspective", "CashFlowWorkspace", "PerspectiveShell",
+  "LiquidityPerspective", "LiquidityWorkspace", "CashFlowPerspective", "CashFlowWorkspace", "PerspectiveShell",
   "SectionCard", "SpaceTrendHero", "useInvestmentsSpaceData",
   "computeWealthTimeMachine", "cashFlowPeriod",
   // SD-2C: the shell may own a display-currency *slot* (a ReactNode the host

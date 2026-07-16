@@ -172,17 +172,22 @@ export async function loadLiquiditySpaceData(
   const client = options?.client ?? db;
   const deps = resolveDeps(options?.deps);
 
-  const [current, atAsOf, atCompareTo] = await Promise.all([
+  const [current, atAsOf, atCompareTo, baseCtx] = await Promise.all([
     deps.computeCurrent(scope, now),
     options?.asOf ? evaluateHistorical(scope, options.asOf, now, deps, client) : Promise.resolve(null),
     options?.compareTo
       ? evaluateHistorical(scope, options.compareTo, now, deps, client)
       : Promise.resolve(null),
+    // Resolve the Space reporting currency (the target buildCtx uses, plan D-1) so
+    // the contract can carry the `from` currency a display-conversion pass needs.
+    // Empty prefetch — this call only needs ctx.target, not any rate entry.
+    deps.buildCtx(scope.spaceId, { currencies: [], dates: [] }),
   ]);
 
   return assembleLiquiditySpaceData({
     asOf: options?.asOf ?? toISODateUTC(now()),
     compareTo: options?.compareTo ?? null,
+    reportingCurrency: baseCtx.target,
     current,
     atAsOf,
     atCompareTo,

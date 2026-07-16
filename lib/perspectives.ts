@@ -266,11 +266,11 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // purpose-built widgets (no Overview / Wealth widget reuse). Rendered
     // through the same SectionCard compositor as virtual sections.
     widgets: ["liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration"],
-    // A temporal Perspective by contract (consumesShellTime: true). RUNTIME GAP:
-    // the current Liquidity workspace is current-state only and does not yet honor
-    // asOf/compareTo. The registry encodes the intended contract, not the gap —
-    // the historical/as-of support is an activation task for the Liquidity
-    // workspace extraction (SD-4+), NOT a reclassification to a non-temporal kind.
+    // A temporal Perspective by contract (consumesShellTime: true) — and, as of
+    // SD-6B, temporal in RUNTIME too: LiquidityWorkspace activates the historical
+    // engine (LiquiditySpaceData) end-to-end, so asOf/compareTo reconstruct the
+    // Liquidity Ladder and yield a per-tier delta. The former current-state-only gap
+    // is closed; the per-account current-anchor widgets remain live-state readings.
     dataNeeds: ["accounts", "transactions", "lens"], consumesShellTime: true, envelope: "lens",
   },
   retirement: {

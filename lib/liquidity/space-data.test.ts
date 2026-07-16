@@ -110,6 +110,7 @@ async function main() {
     check("current-only: marketable 18000 (10000 + 8000)", metric(data.current, "marketable") === 18000);
     check("current-only: no atAsOf", data.atAsOf === null);
     check("current-only: asOf defaults to today", data.asOf === TODAY);
+    check("current-only: reportingCurrency stamped from buildCtx target", data.reportingCurrency === REPORTING);
   }
 
   // ── Reconstruct asOf + compareTo ────────────────────────────────────────────
