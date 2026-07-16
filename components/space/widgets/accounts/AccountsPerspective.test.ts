@@ -123,9 +123,10 @@ console.log("7. Detail route reuses established joins + pure state derivation");
 
 console.log("8. Section-registry wiring — one renderer swap, business_accounts untouched");
 {
-  // SD-7 moved the SectionRegistry (and its renderers) out of SpaceDashboard into
-  // components/space/sections/SpaceSections.tsx; the wiring assertions follow it there.
-  const SECTIONS = readFileSync(path.join(ROOT, "components/space/sections/SpaceSections.tsx"), "utf8");
+  // SD-7 moved the SectionRegistry (and its renderers) out of SpaceDashboard; SEC-2
+  // then split it into components/space/sections/SectionRegistry.tsx — the wiring
+  // assertions (incl. the AccountsCard renderer) follow it there.
+  const SECTIONS = readFileSync(path.join(ROOT, "components/space/sections/SectionRegistry.tsx"), "utf8");
   check("accounts_overview mounts AccountsPerspective",
     SECTIONS.includes('"accounts_overview":      (p) => <AccountsPerspective spaceId={p.spaceId} accounts={p.accounts} />'));
   check("business_accounts still on AccountsCard",

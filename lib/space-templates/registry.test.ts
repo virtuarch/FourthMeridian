@@ -151,13 +151,13 @@ for (const cat of Object.values(SpaceCategory)) {
 // now reads the registry from its new home. Source scan only; the code is never
 // imported or edited here.
 const sectionsSrc = readFileSync(
-  path.join(process.cwd(), "components", "space", "sections", "SpaceSections.tsx"),
+  path.join(process.cwd(), "components", "space", "sections", "SectionRegistry.tsx"),
   "utf8"
 );
 const registryBlockMatch = sectionsSrc.match(
   /const SectionRegistry[\s\S]*?\n};/
 );
-check("SectionRegistry literal found in SpaceSections.tsx", registryBlockMatch !== null);
+check("SectionRegistry literal found in SectionRegistry.tsx", registryBlockMatch !== null);
 if (registryBlockMatch) {
   const block = registryBlockMatch[0];
   const templateKeys = new Set(SPACE_TEMPLATES.flatMap((t) => t.sections.map((s) => s.key)));

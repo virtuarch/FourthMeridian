@@ -58,7 +58,8 @@ import { useDisplayCurrency } from "@/lib/currency-context";
 import { getSpaceHeroDef } from "@/lib/space-hero";
 import type { Snapshot, Transaction } from "@/types";
 import type { DashboardSection, SpaceAccount, SpaceGoal } from "@/lib/space/dashboard-types";
-import { SectionCard, SectionRegistry } from "@/components/space/sections/SpaceSections";
+import { SectionCard } from "@/components/space/sections/SectionCard";
+import { SectionRegistry } from "@/components/space/sections/SectionRegistry";
 import { formatBalance } from "@/lib/currency";
 
 // ─── Types ────────────────────────────────────────────────────────────────────

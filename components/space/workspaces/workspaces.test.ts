@@ -19,7 +19,10 @@ const read = (...seg: string[]) => readFileSync(path.join(ROOT, ...seg), "utf8")
 const WS = (f: string) => read("components", "space", "workspaces", f);
 const DASH = read("components", "dashboard", "SpaceDashboard.tsx");
 const DASHCODE = DASH.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ""); // strip comments (prose names moved decls)
-const SECTIONS = read("components", "space", "sections", "SpaceSections.tsx");
+// SEC-2 split the former SpaceSections.tsx into the card chrome (SectionCard.tsx)
+// and the renderer catalog (SectionRegistry.tsx).
+const SECTIONCARD     = read("components", "space", "sections", "SectionCard.tsx");
+const SECTIONREGISTRY = read("components", "space", "sections", "SectionRegistry.tsx");
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -74,10 +77,12 @@ console.log("2. Host no longer DEFINES the extracted composition (ownership left
 
 console.log("3. The section subsystem is the ONE home for SectionCard + the registry");
 {
-  check("SpaceSections defines SectionCard once", count(SECTIONS, "export function SectionCard(") === 1);
-  check("SpaceSections defines the SectionRegistry once", count(SECTIONS, "export const SectionRegistry") === 1);
-  check("host imports SectionCard/SortableSectionCard/SectionRegistry from the module",
-    DASH.includes('from "@/components/space/sections/SpaceSections"'));
+  check("SectionCard.tsx defines SectionCard once", count(SECTIONCARD, "export function SectionCard(") === 1);
+  check("SectionCard.tsx defines SortableSectionCard once", count(SECTIONCARD, "export function SortableSectionCard(") === 1);
+  check("SectionRegistry.tsx defines the SectionRegistry once", count(SECTIONREGISTRY, "export const SectionRegistry") === 1);
+  check("host imports SectionCard from the card module + SectionRegistry from the registry module",
+    DASH.includes('from "@/components/space/sections/SectionCard"') &&
+    DASH.includes('from "@/components/space/sections/SectionRegistry"'));
   check("Accounts/Activity/Overview compose the shared SpaceSectionStack",
     WS("AccountsWorkspace.tsx").includes("<SpaceSectionStack") &&
     WS("ActivityWorkspace.tsx").includes("<SpaceSectionStack") &&

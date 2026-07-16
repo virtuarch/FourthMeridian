@@ -16,7 +16,7 @@
 import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
 import { getWorkspaceModalMeta } from "@/lib/perspectives";
 import { PERSPECTIVE_ICON_MAP, PERSPECTIVE_ICON_FALLBACK } from "@/lib/perspective-icons";
-import { SectionCard } from "@/components/space/sections/SpaceSections";
+import { SectionCard } from "@/components/space/sections/SectionCard";
 import { NoSectionsCard } from "./SpaceSectionStack";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 import type { ConversionContext } from "@/lib/money/types";

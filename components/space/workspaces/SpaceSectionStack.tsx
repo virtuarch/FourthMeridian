@@ -21,7 +21,7 @@ import type { ReactNode, ComponentProps } from "react";
 import { DndContext, closestCenter, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { LayoutDashboard } from "lucide-react";
-import { SectionCard, SortableSectionCard } from "@/components/space/sections/SpaceSections";
+import { SectionCard, SortableSectionCard } from "@/components/space/sections/SectionCard";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";

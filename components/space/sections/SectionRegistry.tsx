@@ -1,29 +1,26 @@
 "use client";
 
 /**
- * components/space/sections/SpaceSections.tsx  (SD-7)
+ * components/space/sections/SectionRegistry.tsx  (SEC-2)
  *
- * The Space dashboard SECTION SUBSYSTEM, extracted verbatim from SpaceDashboard.
- * This is the shared composition machinery every section-backed destination mounts:
- *   • SectionCard / SortableSectionCard — the per-section card frame + drag wrapper
- *   • SectionRegistry — section key → renderer map (+ its renderers)
- *   • the section renderers (AccountsCard, ActivityCard, ContextualCard,
- *     NetWorthChartSection, AllocationSection) and their helpers/formatters
- * Moved so the host stops owning page composition and the standard Workspaces
- * (Overview / Accounts / Activity / Goals) can import ONE SectionCard/SectionRegistry
- * instead of the host owning them inline. Architecture-only: the code is byte-for-byte
- * the host's, only relocated. OverviewSetupCard + AddGoalModal stay with their own
- * destinations (Overview / Goals), not here — they are not section renderers.
+ * The section RENDERER CATALOG — the section-key → renderer dispatch map plus the
+ * renderers and helpers it wires. Split out of the former SpaceSections.tsx so
+ * the catalog (what draws inside a section; changes when section TYPES change) is
+ * a distinct module from the card chrome (./SectionCard.tsx, which changes when
+ * card PRESENTATION changes). One-way dependency: SectionCard imports
+ * SectionRegistry + ContextualCard + toDisplay from here; nothing here imports
+ * SectionCard.
  *
- * SEC-1: the Goals card (the `goals_progress` renderer) is a self-contained
- * feature, not section machinery — it now lives in ./goals/GoalsCard.tsx and is
- * imported into the registry entry below (single goal-list authority preserved).
+ * Contains: SectionRenderProps (the renderer contract), the config/money adapter
+ * helpers (cfgNum/cfgStr/toDisplay/sumAccounts/projectFV), the local renderers
+ * (AccountsCard, ActivityCard, ContextualCard, renderNetWorth/DebtSummary/
+ * InvestmentSummary, NetWorthChartSection, AllocationSection), and the
+ * SectionRegistry map. GoalsCard (goals_progress) lives in ./goals/ (SEC-1); most
+ * other renderers live in the per-domain *-adapters files and are wired here.
  */
 
 import React, { useState } from "react";
-import { LayoutDashboard, Landmark, CreditCard, TrendingUp, ChevronDown, ChevronUp, GripVertical, Maximize2 } from "lucide-react";
-import { useSortable } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { LayoutDashboard, Landmark, CreditCard, TrendingUp, Maximize2 } from "lucide-react";
 import { getWidgetMeta } from "@/lib/widget-registry";
 import { AssetValueWidget, type AssetValueConfig } from "@/components/space/widgets/AssetValueWidget";
 import { ProgressWidget, type ProgressStat } from "@/components/space/widgets/ProgressWidget";
@@ -37,7 +34,6 @@ import { RebuildHistoryButton } from "@/components/dashboard/RebuildHistoryButto
 import { AllocationChart } from "@/components/charts/AllocationChart";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { formatBalance } from "@/lib/currency";
-import { simulatePayoff } from "@/components/space/sections/DebtPayoffSection";
 import { GoalsCard } from "@/components/space/sections/goals/GoalsCard";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
 import { renderWealthAccountCards, renderInstitutionAllocation, renderWealthAllocationChart, renderWealthConcentration } from "@/components/space/widgets/wealth-adapters";
@@ -45,16 +41,15 @@ import { renderLiquidityLadder, renderAccessibleCash, renderEmergencyFundReadine
 import { renderCashFlowSummary, renderCashFlowHistory, renderIncomeVsSpending, renderCashFlowByCategory, renderIncomeBySource, renderDebtPayments } from "@/components/space/widgets/cash-flow-adapters";
 import { renderDebtByAccount, renderDebtCost, CreditUtilizationWidget, renderDebtHistory, renderCreditScore, renderDebtCompleteInfo } from "@/components/space/widgets/debt-perspective-adapters";
 import { renderGoalProgress, renderGoalOnTrack, renderGoalRequiredPace, renderGoalFundingGap } from "@/components/space/widgets/goals-perspective-adapters";
-import { DEFAULT_CASH_FLOW_PERIOD, periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import { DEFAULT_CASH_FLOW_PERIOD, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { AccountsPerspective } from "@/components/space/widgets/accounts/AccountsPerspective";
 import { TimelineWidget } from "@/components/space/widgets/TimelineWidget";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
-import type { DashboardSection, SpaceAccount, SpaceGoal } from "@/lib/space/dashboard-types";
+import type { SpaceAccount, SpaceGoal } from "@/lib/space/dashboard-types";
 
 const ACCOUNT_TYPE_LABELS: Record<string, string> = {
   checking:   "Checking",
@@ -120,7 +115,7 @@ function ActivityCard({ spaceId }: { spaceId: string }) {
  * meta.requires[0].reason) when available, with a hardcoded override table
  * for keys that need friendlier user-facing copy.
  */
-function ContextualCard({ sectionKey, label }: { sectionKey: string; label: string }) {
+export function ContextualCard({ sectionKey, label }: { sectionKey: string; label: string }) {
   // Friendly user-facing override messages (shown instead of raw registry description)
   const messages: Record<string, { body: string; hint: string }> = {
     cash_flow:               { body: "No cash flow data yet",          hint: "Connect your accounts to track income and expenses." },
@@ -184,7 +179,7 @@ function ContextualCard({ sectionKey, label }: { sectionKey: string; label: stri
 // Keys without an entry here fall back to ContextualCard.
 // Keys with implemented:false in WIDGET_REGISTRY also fall back to ContextualCard.
 
-type SectionRenderProps = {
+export type SectionRenderProps = {
   accounts:              SpaceAccount[];
   spaceId:           string;
   /** Wealth-timeline amendment (Phase 2) — "PERSONAL" | "SHARED"; gates the
@@ -272,7 +267,7 @@ function cfgStr(v: unknown): string | undefined {
  * Without a context this is the identity pass-through (kill switch); with one,
  * unresolvable rows keep their native amount and taint the sum (plan D-3).
  */
-function toDisplay(
+export function toDisplay(
   amount:   number,
   currency: string | null | undefined,
   ctx?:     ConversionContext,
@@ -786,285 +781,3 @@ export const SectionRegistry: Record<string, (p: SectionRenderProps) => React.Re
     );
   },
 };
-
-// ─── Section renderer ─────────────────────────────────────────────────────────
-
-// Solid/frosted, non-collapsible cards. Two families use this treatment:
-//  - the Overview lede widgets (formerly PersonalHero cards A/B/C), and
-//  - the Wealth Perspective's analytical widgets (UX-PER-3),
-// so the workspace reads as intentional analytical cards, not the faint
-// ~5%-opacity SectionCard surface. Keyed by section key; any Space rendering
-// these exact keys gets the treatment.
-const SOLID_LEDE_KEYS = new Set([
-  "net_worth", "net_worth_chart", "allocation",
-  "wealth_by_account", "institution_allocation", "asset_allocation", "wealth_concentration",
-  "liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration",
-  "cash_flow_summary", "cash_flow_history", "income_vs_spending", "cash_flow_by_category", "income_by_source", "debt_payments",
-  "debt_by_account", "debt_cost", "credit_utilization", "debt_payoff_snapshot",
-  "debt_history", "credit_score", "debt_complete_info", "debt_payoff_calculator",
-  "goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap",
-]);
-
-export function SectionCard({
-  section,
-  accounts,
-  spaceId,
-  spaceType,
-  category,
-  canManage,
-  onAddGoal,
-  ctx,
-  perspective,
-  filterId,
-  onPerspectiveChange,
-  snapshots,
-  snapshotCurrency,
-  transactions,
-  txCtx,
-  period,
-  onSelectPeriod,
-  ficoScore,
-  ficoUpdatedAt,
-  goals,
-}: {
-  section:     DashboardSection;
-  accounts:    SpaceAccount[];
-  spaceId: string;
-  spaceType:   string;
-  category:    string;
-  canManage:   boolean;
-  onAddGoal?:  () => void;
-  /** MC1 QA Q4 — see SectionRenderProps.ctx. */
-  ctx?:        ConversionContext;
-  /** Unified Space Widget Layout (slice 1) — see SectionRenderProps.snapshots. */
-  snapshots?:        Snapshot[] | null;
-  snapshotCurrency?: string;
-  /** UX-PER-3 Cash Flow — see SectionRenderProps.transactions/txCtx/period. */
-  transactions?:     Transaction[] | null;
-  txCtx?:            ConversionContext;
-  period?:           CashFlowPeriod;
-  onSelectPeriod?:   (period: CashFlowPeriod) => void;
-  perspective?:          CashFlowPerspective;
-  filterId?:             string;
-  onPerspectiveChange?:  (perspective: CashFlowPerspective, filterId: string) => void;
-  // (SectionRenderProps mirror — perspective threaded to Cash Flow widgets)
-  /** UX-PER-3 Debt — see SectionRenderProps.ficoScore/ficoUpdatedAt. */
-  ficoScore?:        number | null;
-  ficoUpdatedAt?:    string;
-  /** UX-PER-3 Goals — see SectionRenderProps.goals. */
-  goals?:            SpaceGoal[] | null;
-}) {
-  const [collapsed,        setCollapsed]        = useState(false);
-  const [payoffFullscreen, setPayoffFullscreen] = useState(false);
-  const isDebtSpace = category === "DEBT_PAYOFF";
-
-  // Scroll-position preservation now lives in DebtPayoffSection's shared
-  // useBodyScrollLock (doctrine §14), so the former manual scrollY save/restore
-  // workaround here is redundant and has been removed.
-  function openPayoffFullscreen() {
-    setPayoffFullscreen(true);
-  }
-
-  function closePayoffFullscreen() {
-    setPayoffFullscreen(false);
-  }
-
-  // Override stale section labels for existing seeded debt spaces
-  const displayLabel = isDebtSpace && section.key === "cash_flow"    ? "Debt Breakdown"
-                     : isDebtSpace && section.key === "savings_rate" ? "Payoff Planner"
-                     : section.label;
-
-  // Debt Breakdown and Activity feed are never collapsible
-  const isDebtBreakdown = (isDebtSpace && section.key === "cash_flow") || section.key === "debt_breakdown_chart" || section.key === "recent_activity";
-  // Payoff Planner shows a summary when collapsed
-  const isDebtPayoff    = (isDebtSpace && section.key === "savings_rate") || section.key === "debt_payoff_calculator";
-  // Overview lede widgets: solid/frosted card, not collapsible (see SOLID_LEDE_KEYS).
-  const isSolidLede     = SOLID_LEDE_KEYS.has(section.key);
-
-  // ── Payoff summary for collapsed state ─────────────────────────────────────
-  let payoffSummary: string | null = null;
-  if (isDebtPayoff) {
-    // MC1 QA Q4 — the collapsed summary simulates over aggregates, so the
-    // sums (and APR weights) use display-currency amounts; the resulting
-    // copy is time-only, so no label change is involved.
-    const debtAccs = accounts.filter((a) => a.type === "debt");
-    const balConv  = debtAccs.map((a) => toDisplay(a.balance, a.currency, ctx));
-    const totalBal = balConv.reduce((s, c) => s + c.amount, 0);
-    const totalMin = debtAccs
-      .map((a) => toDisplay(a.minimumPayment ?? 0, a.currency, ctx))
-      .reduce((s, c) => s + c.amount, 0);
-    if (totalBal > 0 && totalMin > 0) {
-      const avgApr      = debtAccs.reduce((s, a, i) => s + (a.interestRate ?? 0) * balConv[i].amount, 0) / totalBal;
-      const monthlyRate = avgApr / 100 / 12;
-      const result      = simulatePayoff(totalBal, monthlyRate, totalMin);
-      if (result) {
-        const yrs = Math.floor(result.months / 12);
-        const mos = result.months % 12;
-        const timeStr = yrs > 0 && mos > 0
-          ? `${yrs} year${yrs !== 1 ? "s" : ""} and ${mos} month${mos !== 1 ? "s" : ""}`
-          : yrs > 0
-          ? `${yrs} year${yrs !== 1 ? "s" : ""}`
-          : `${mos} month${mos !== 1 ? "s" : ""}`;
-        payoffSummary = `At your minimum monthly payments, you could be debt-free in approximately ${timeStr}. Expand to simulate different payoff timelines.`;
-      } else {
-        payoffSummary = "Your minimum payments may not be enough to cover the interest charges. Expand to build a realistic payoff plan.";
-      }
-    } else if (totalBal > 0) {
-      payoffSummary = "Expand to simulate your debt payoff timeline.";
-    }
-  }
-
-  function renderBody() {
-    // Legacy key overrides — DEBT_PAYOFF spaces seeded before v2 section keys were stable
-    // TODO: one-time migration to rename these rows to their canonical keys, then remove these guards
-    if (isDebtSpace && section.key === "cash_flow") {
-      // Legacy: DEBT_PAYOFF spaces seeded before v2 used "cash_flow" for the debt breakdown.
-      // TODO: one-time migration to rename these rows to debt_breakdown_chart, then remove this guard.
-      return renderDebtBreakdownChart(
-        accounts,
-        "donut",
-        "Share your debt accounts from Manage → Add Accounts to see your debt breakdown.",
-        ctx,
-      );
-    }
-    if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen, ctx);
-
-    const render = SectionRegistry[section.key];
-    if (render) return render({ accounts, spaceId, spaceType, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, onSelectPeriod, perspective, filterId, onPerspectiveChange, ficoScore, ficoUpdatedAt, goals });
-    return <ContextualCard sectionKey={section.key} label={section.label} />;
-  }
-
-  // ── Solid Overview lede (Net Worth / chart / allocation) — frosted card,
-  //    NOT collapsible. Preserves the pre-section-backed PersonalHero card
-  //    treatment (GlassPanel) so these never use the faint SectionCard fill,
-  //    and keeps the drag handle legible. Left padding leaves room for the
-  //    Edit-Layout grip that overlays the card's top-left corner. */
-  if (isSolidLede) {
-    // Phase 7 — the Cash Flow Summary header names the active analytical time
-    // slice, read from the SAME authoritative `period` every widget consumes
-    // (no separate period logic here). Other lede widgets keep their bare label.
-    const headerLabel = section.key === "cash_flow_summary" && period
-      ? `${displayLabel} · ${periodLabel(period)}`
-      : displayLabel;
-    return (
-      <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4">
-        <p className="text-sm font-semibold text-[var(--text-primary)] px-1 mb-2">{headerLabel}</p>
-        {renderBody()}
-      </GlassPanel>
-    );
-  }
-
-  // ── Non-collapsible header (Debt Breakdown) ─────────────────────────────────
-  if (isDebtBreakdown) {
-    return (
-      <div className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-2xl overflow-hidden">
-        <div className="px-4 py-3">
-          <p className="text-sm font-semibold text-white">{displayLabel}</p>
-        </div>
-        <div className="px-4 pb-4 pt-0">
-          {renderBody()}
-        </div>
-      </div>
-    );
-  }
-
-  // ── Collapsible header (all others) ────────────────────────────────────────
-  return (
-    <div className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-2xl overflow-hidden">
-      <div className="flex items-start px-4 py-3">
-        {/* Title + collapsed summary — clicking toggles collapse */}
-        <button
-          type="button"
-          onClick={() => setCollapsed((p) => !p)}
-          className="flex-1 text-left min-w-0 hover:opacity-80 transition-opacity"
-        >
-          <p className="text-sm font-semibold text-white">{displayLabel}</p>
-          {collapsed && payoffSummary && (
-            <p className="text-[11px] text-[var(--text-muted)] mt-0.5 leading-snug">{payoffSummary}</p>
-          )}
-        </button>
-
-        {/* Right-side controls */}
-        <div className="flex items-center gap-2 shrink-0 ml-3 mt-0.5">
-          {isDebtPayoff && !collapsed && (
-            <button
-              type="button"
-              onClick={openPayoffFullscreen}
-              className="text-[11px] font-medium text-[var(--accent-info)] hover:text-[var(--accent-info)] transition-colors"
-            >
-              Expand
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => setCollapsed((p) => !p)}
-            className="text-[var(--text-faint)] hover:text-[var(--text-secondary)] transition-colors"
-          >
-            {collapsed
-              ? <ChevronDown size={14} />
-              : <ChevronUp   size={14} />}
-          </button>
-        </div>
-      </div>
-
-      {!collapsed && (
-        <div className="px-4 pb-4 pt-0">
-          {renderBody()}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Visible-surface reorder (UX-CUST-1A) ───────────────────────────────────────
-
-/**
- * SortableSectionCard — wraps the *existing* SectionCard rendering path with a
- * drag handle so section cards can be reordered directly on the visible
- * dashboard while Edit Layout mode is active. It does not alter SectionCard;
- * the card renders unchanged as children.
- *
- * Layout: this only mounts inside the Edit-Layout SortableContext, so it always
- * insets the card into a left gutter (`pl-8`) and drops the grip into that
- * gutter (`left-0`). That way the handle never overlaps the card's title/content
- * for ANY section type, and reverts to full width the moment Edit Layout exits
- * (this wrapper is no longer rendered).
- *
- * Module-level (not created during render) so the React Compiler doesn't flag
- * it. Tab-scoping is structural: the single SortableContext that mounts this
- * only ever contains the active tab's visible cards, so a card can never be
- * dropped into another tab.
- */
-export function SortableSectionCard({
-  section,
-  children,
-}: {
-  section:  DashboardSection;
-  children: React.ReactNode;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: section.id });
-
-  const style: React.CSSProperties = {
-    transform:  CSS.Transform.toString(transform),
-    transition,
-    opacity:    isDragging ? 0.6 : 1,
-    zIndex:     isDragging ? 20 : undefined,
-    position:   "relative",
-  };
-
-  return (
-    <div ref={setNodeRef} style={style} className="relative pl-8 touch-none">
-      <button
-        type="button"
-        {...attributes}
-        {...listeners}
-        aria-label={`Reorder ${section.label}`}
-        className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--modal-surface)] border border-[var(--border-hairline-strong)] shadow-sm cursor-grab active:cursor-grabbing transition-colors touch-none"
-      >
-        <GripVertical size={14} />
-      </button>
-      {children}
-    </div>
-  );
-}
