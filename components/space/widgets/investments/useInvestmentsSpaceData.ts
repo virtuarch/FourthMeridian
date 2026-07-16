@@ -24,10 +24,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { InvestmentsSpaceData } from "@/lib/investments/space-data-core";
+import type { PortfolioValuePoint } from "@/lib/investments/portfolio-series";
+
+/** The /space-data response: the composed contract PLUS the Portfolio Value series. */
+type InvestmentsWorkspaceResponse = InvestmentsSpaceData & { series: PortfolioValuePoint[] };
 
 export interface UseInvestmentsSpaceData {
   /** The latest successfully-fetched contract; kept during refetch, null until first success. */
   data:    InvestmentsSpaceData | null;
+  /** The Portfolio Value Over Time series (empty until first success). */
+  series:  PortfolioValuePoint[];
   /** True while a fetch is in flight (only blanks the grid when data is still null). */
   loading: boolean;
   /** True when the most recent fetch failed (network / non-2xx). */
@@ -48,7 +54,7 @@ export function useInvestmentsSpaceData(
   compareTo: string | null,
   active:    boolean,
 ): UseInvestmentsSpaceData {
-  const [data, setData] = useState<InvestmentsSpaceData | null>(null);
+  const [data, setData] = useState<InvestmentsWorkspaceResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [nonce, setNonce] = useState(0);
@@ -71,9 +77,9 @@ export function useInvestmentsSpaceData(
 
     fetch(`/api/spaces/${spaceId}/investments/space-data?${params.toString()}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d: InvestmentsSpaceData) => {
+      .then((d: InvestmentsWorkspaceResponse) => {
         if (!alive) return;
-        setData(d);
+        setData({ ...d, series: Array.isArray(d.series) ? d.series : [] });
         setError(false);
         setLoading(false);
       })
@@ -86,5 +92,5 @@ export function useInvestmentsSpaceData(
     return () => { alive = false; };
   }, [spaceId, asOf, compareToForFetch, active, nonce]);
 
-  return { data, loading, error, reload };
+  return { data, series: data?.series ?? [], loading, error, reload };
 }

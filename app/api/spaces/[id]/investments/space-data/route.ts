@@ -26,10 +26,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { SpaceMemberRole } from "@prisma/client";
 import { requireSpaceRole } from "@/lib/session";
 import { loadInvestmentsSpaceData } from "@/lib/investments/space-data";
+import { getRecentSnapshots } from "@/lib/data/snapshots";
+import { buildPortfolioValueSeries } from "@/lib/investments/portfolio-series";
 
 export const dynamic = "force-dynamic";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+// Portfolio Value Over Time — how many trailing SpaceSnapshot rows to read for the
+// series (one query, at most one row/day). Generous enough for an "All Time" view of a
+// space's history; the chart clips to the shell window client-side.
+const SERIES_DAYS = 1100;
 
 export async function GET(
   req: NextRequest,
@@ -54,9 +60,14 @@ export async function GET(
 
   // Membership above is the gate; per-account visibility is enforced inside the loaders.
   void ctx;
-  const data = await loadInvestmentsSpaceData(
-    { spaceId },
-    { history: { asOf, compareTo: compareToRaw ?? null } },
-  );
-  return NextResponse.json(data);
+  // The composed contract AND the canonical Portfolio Value Over Time series, read in
+  // ONE pass. The series REUSES the persisted SpaceSnapshot window (getRecentSnapshots,
+  // a single query) — never an N×date getInvestmentValueAsOf sampler. Value per point =
+  // investments + crypto (two disjoint buckets, each asset once; no double-count).
+  const [data, snaps] = await Promise.all([
+    loadInvestmentsSpaceData({ spaceId }, { history: { asOf, compareTo: compareToRaw ?? null } }),
+    getRecentSnapshots(SERIES_DAYS, { spaceId }),
+  ]);
+  const series = buildPortfolioValueSeries(snaps, data.current.reportingCurrency);
+  return NextResponse.json({ ...data, series });
 }
