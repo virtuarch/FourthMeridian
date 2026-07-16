@@ -117,7 +117,7 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     { workspaceId: "platform-overview", sections: ["sec_audit_feed", "sec_auth_posture", "sec_sessions", "sec_anomalies"] },
   ],
   GROWTH_REVENUE: [
-    { workspaceId: "platform-overview", sections: ["growth_signups", "growth_beta_requests", "growth_users"] },
+    { workspaceId: "platform-overview", sections: ["growth_signups", "growth_beta_requests", "growth_users", "growth_activity"] },
   ],
   CUSTOMER_SUCCESS: [
     { workspaceId: "platform-overview", sections: ["cs_sync_issues"] },

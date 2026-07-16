@@ -117,6 +117,8 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "growth_beta_requests", label: "Beta Access Requests", order: 1 },
       // OPS-6B Beta Operations — user search + operator deactivate/reactivate.
       { key: "growth_users", label: "Users", order: 2 },
+      // OPS-6C User Activity — DAU/WAU/MAU + most-active Spaces (projection).
+      { key: "growth_activity", label: "User Activity", order: 3 },
     ],
   },
   CUSTOMER_SUCCESS: {
