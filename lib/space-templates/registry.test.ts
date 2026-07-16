@@ -144,18 +144,20 @@ for (const cat of Object.values(SpaceCategory)) {
 }
 
 // Optional drift guard (read-only): every template section key must have a
-// real renderer in SpaceDashboard's SectionRegistry literal — the exact
-// failure mode the Space Template Redesign eliminated ("no section whose key
-// lacks a SectionRegistry renderer"). Source scan only; dashboard code is
-// never imported or edited here.
-const dashboardSrc = readFileSync(
-  path.join(process.cwd(), "components", "dashboard", "SpaceDashboard.tsx"),
+// real renderer in the SectionRegistry literal — the exact failure mode the
+// Space Template Redesign eliminated ("no section whose key lacks a
+// SectionRegistry renderer"). SD-7 extracted the section subsystem out of
+// SpaceDashboard into components/space/sections/SpaceSections.tsx, so the scan
+// now reads the registry from its new home. Source scan only; the code is never
+// imported or edited here.
+const sectionsSrc = readFileSync(
+  path.join(process.cwd(), "components", "space", "sections", "SpaceSections.tsx"),
   "utf8"
 );
-const registryBlockMatch = dashboardSrc.match(
+const registryBlockMatch = sectionsSrc.match(
   /const SectionRegistry[\s\S]*?\n};/
 );
-check("SectionRegistry literal found in SpaceDashboard.tsx", registryBlockMatch !== null);
+check("SectionRegistry literal found in SpaceSections.tsx", registryBlockMatch !== null);
 if (registryBlockMatch) {
   const block = registryBlockMatch[0];
   const templateKeys = new Set(SPACE_TEMPLATES.flatMap((t) => t.sections.map((s) => s.key)));

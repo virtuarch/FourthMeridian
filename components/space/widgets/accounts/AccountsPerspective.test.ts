@@ -29,7 +29,6 @@ import path from "node:path";
 const ROOT = process.cwd();
 const SRC   = readFileSync(path.join(ROOT, "components/space/widgets/accounts/AccountsPerspective.tsx"), "utf8");
 const ROUTE = readFileSync(path.join(ROOT, "app/api/spaces/[id]/accounts/detail/route.ts"), "utf8");
-const DASH  = readFileSync(path.join(ROOT, "components/dashboard/SpaceDashboard.tsx"), "utf8");
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -122,14 +121,17 @@ console.log("7. Detail route reuses established joins + pure state derivation");
   check("membership-gated VIEWER+", ROUTE.includes("requireSpaceRole(spaceId, SpaceMemberRole.VIEWER)"));
 }
 
-console.log("8. Host wiring — one renderer swap, business_accounts untouched");
+console.log("8. Section-registry wiring — one renderer swap, business_accounts untouched");
 {
+  // SD-7 moved the SectionRegistry (and its renderers) out of SpaceDashboard into
+  // components/space/sections/SpaceSections.tsx; the wiring assertions follow it there.
+  const SECTIONS = readFileSync(path.join(ROOT, "components/space/sections/SpaceSections.tsx"), "utf8");
   check("accounts_overview mounts AccountsPerspective",
-    DASH.includes('"accounts_overview":      (p) => <AccountsPerspective spaceId={p.spaceId} accounts={p.accounts} />'));
+    SECTIONS.includes('"accounts_overview":      (p) => <AccountsPerspective spaceId={p.spaceId} accounts={p.accounts} />'));
   check("business_accounts still on AccountsCard",
-    DASH.includes('"business_accounts":      (p) => <AccountsCard accounts={p.accounts} />'));
-  check("AccountsCard still defined (serves business_accounts)", DASH.includes("function AccountsCard("));
-  check("AccountsPerspective imported", DASH.includes('from "@/components/space/widgets/accounts/AccountsPerspective"'));
+    SECTIONS.includes('"business_accounts":      (p) => <AccountsCard accounts={p.accounts} />'));
+  check("AccountsCard still defined (serves business_accounts)", SECTIONS.includes("function AccountsCard("));
+  check("AccountsPerspective imported", SECTIONS.includes('from "@/components/space/widgets/accounts/AccountsPerspective"'));
 }
 
 if (failures > 0) {
