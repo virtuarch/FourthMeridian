@@ -86,6 +86,8 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "ops_convergence", label: "Convergence", order: 10 },
       // OPS-6E — the operational timeline (S9 flat event feed).
       { key: "ops_timeline", label: "Operational Timeline", order: 12 },
+      // OPS-6D — AI usage trend over time (ApiUsageCounter projection).
+      { key: "ops_ai_trend", label: "AI Usage Trend", order: 13 },
       // OPS-5 Wave B — S10 Cost & Latency Intelligence (derived over S7 + S9).
       { key: "ops_cost", label: "Cost & Latency", order: 11 },
     ],
