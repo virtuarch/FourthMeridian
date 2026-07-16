@@ -128,8 +128,9 @@ console.log("5. Planner parity — embedded only, no new fullscreen trigger (pla
 
 console.log("6. SpaceDashboard debt branch threads accounts / ctx / snapshots / fico / lensResult, precedes generic branch");
 {
-  // The condition string itself appears twice (the debtWorkspaceActive fetch
-  // guard + the render branch), so uniqueness is asserted on the JSX MOUNT.
+  // Uniqueness is asserted on the JSX MOUNT (defensive): since SD-3 the snapshot
+  // fetch activates on the registry-derived `perspectiveNeedsSnapshots`, so the
+  // `activePerspectiveId === "debt"` render-branch condition is the only occurrence.
   check("debt render branch condition exists", DASH.includes('activePerspectiveId === "debt"'));
   check("DebtPerspective mounted exactly once in the host", count(DASH, "<DebtPerspective") === 1, `${count(DASH, "<DebtPerspective")}`);
   const jsxStart = DASH.indexOf("<DebtPerspective");

@@ -605,10 +605,17 @@ deliberate gaps, each a later-slice activation, not a category defect:
   `PLATFORM_AREAS[area].sections` (HQ). Seam preserved; activation is SP-2 (§D).
 - **Goals remains physically in `PERSPECTIVE_LIBRARY`** (tagged `kind:"standard"`);
   relocation to `STANDARD_WORKSPACES` is deferred to avoid navigation churn (SD-2B §5).
-- **`consumesShellTime`, `getWorkspaceForTab`, and the registry routing helpers are
-  declared/consumed for identity but the SD-3 declarative loader is not built** —
-  these describe the intended contract, not a shipped loader (consistent with the
-  Implemented/Planned reading contract).
+- **SD-3 landed the declarative *activation* seam** (`lib/space/workspace-resources.ts`):
+  the host's former per-perspective fetch booleans (`debtWorkspaceActive` /
+  `wealthWorkspaceActive` / `liquidityWorkspaceActive` / `goalsWorkspaceActive` /
+  `investmentsActive`) are gone — the open Perspective's lazy loads now activate from
+  its declared `WORKSPACE_REGISTRY[id].dataNeeds`, resolved by a pure, domain-agnostic
+  orchestrator. Still host-owned (SD-4+): the structural tabs' category-aware prefetch
+  (Overview's hero snapshots, flow-category transaction preview) — `dataNeeds` is a
+  resource *ceiling*, not yet a full fetch schedule for those tabs — and the eager base
+  resources (accounts, sections, the lens batch, member count) that load regardless of
+  the active workspace. `consumesShellTime` remains declared identity metadata with no
+  runtime reader yet.
 
 **Census evidence:** `prisma/schema.prisma` (`enum PlatformArea`, `Space.platformArea
 @unique`), `lib/platform/policy.ts` (`PLATFORM_AREAS`), `lib/platform/seed.ts`,

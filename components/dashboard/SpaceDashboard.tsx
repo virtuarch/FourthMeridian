@@ -94,6 +94,7 @@ import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiv
 import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { readSpaceParam } from "@/lib/space/space-url";
+import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import { resolvePerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
@@ -2690,39 +2691,40 @@ export function SpaceDashboard({
     setCashFlowFilterId(id);
   };
   const cashFlowActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "cashFlow";
-  // The Liquidity workspace's What Changed panel needs the same transaction
-  // history Cash Flow uses (windowed by cashFlowPeriod). Trigger the same lazy
-  // fetch when Liquidity opens first (below), and thread the rows into its branch.
-  const liquidityWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "liquidity";
-  // Debt workspace needs SpaceSnapshot history (the `debt` series) for its
-  // Debt History widget — trigger the snapshot fetch when it's open.
-  const debtWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "debt";
-  // Goals workspace needs the Space's goals ("Am I on track?"). Fetch once when
-  // it opens (mirrors the transactions/snapshots pattern).
-  const goalsWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "goals";
-  // Wealth workspace needs SpaceSnapshot history for its Time Machine — trigger
-  // the snapshot fetch when it's open (mirrors debtWorkspaceActive).
-  const wealthWorkspaceActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "wealth";
+  // SD-3 — declarative lazy activation. The host no longer hardcodes which
+  // perspective needs which resource (the former debtWorkspaceActive /
+  // wealthWorkspaceActive / liquidityWorkspaceActive / goalsWorkspaceActive /
+  // investmentsActive booleans). It asks the canonical registry what the OPEN
+  // perspective declared (WORKSPACE_REGISTRY[id].dataNeeds) and derives stable
+  // activation booleans from that. Behavior is identical: among perspectives, only
+  // {wealth,debt} declare `snapshots`, only {cashFlow,liquidity} declare
+  // `transactions`, only goals declares `goals`, only investments declares
+  // `investmentsHistory` — so each boolean below reduces to exactly the per-id
+  // check it replaced (ratcheted in lib/space/workspace-resources.test.ts).
+  const openNeeds = openPerspectiveDataNeeds(activeTab, activePerspectiveId);
+  const perspectiveNeedsSnapshots = openNeeds.has("snapshots");       // ⇔ wealth | debt
+  const perspectiveNeedsTransactions = openNeeds.has("transactions"); // ⇔ cashFlow | liquidity
+  const perspectiveNeedsGoals = openNeeds.has("goals");               // ⇔ goals
+  const perspectiveNeedsInvestments = openNeeds.has("investmentsHistory"); // ⇔ investments
   // Investments Time Machine (A10). Unlike Wealth (a pure host memo over the
   // already-fetched snapshots), Investments' read model is server-side, so it is
   // FETCHED — keyed on the shell's resolved (asOf, compareTo), gated on the tab
-  // being open (mirrors wealthWorkspaceActive / liquidityWorkspaceActive).
+  // being open via the declared `investmentsHistory` need.
   // compareTo is sent only when it defines a valid strictly-earlier window (the
   // route 400s on compareTo >= asOf); the same guarded value drives the header's
   // "vs" label so it always matches the data actually fetched.
-  const investmentsActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "investments";
   const investmentsCompareTo = compareTo && compareTo < asOf ? compareTo : null;
-  const investments = useInvestmentsTimeMachine(spaceId, asOf, investmentsCompareTo, investmentsActive);
+  const investments = useInvestmentsTimeMachine(spaceId, asOf, investmentsCompareTo, perspectiveNeedsInvestments);
   const [spaceGoals, setSpaceGoals] = useState<SpaceGoal[] | null>(null);
   useEffect(() => {
-    if (!goalsWorkspaceActive || spaceGoals !== null) return;
+    if (!perspectiveNeedsGoals || spaceGoals !== null) return;
     let active = true;
     fetch(`/api/spaces/${spaceId}/goals`)
       .then((r) => (r.ok ? r.json() : []))
       .then((data) => { if (active) setSpaceGoals(Array.isArray(data) ? data : []); })
       .catch(() => { if (active) setSpaceGoals([]); });
     return () => { active = false; };
-  }, [spaceId, goalsWorkspaceActive, spaceGoals]);
+  }, [spaceId, perspectiveNeedsGoals, spaceGoals]);
   const txConversionCtx = useMemo(() => {
     const serialized = transactionsMoneyCtxOverride ?? spaceMoneyCtx;
     return serialized ? rehydrateContext(serialized) : undefined;
@@ -2859,7 +2861,7 @@ export function SpaceDashboard({
     // Overview now includes the snapshot-backed `net_worth_chart` section, so
     // it still needs the snapshot fetch. Shared non-chartable categories skip
     // it as before. (Future: fetch when any snapshot-tier section is present.)
-    if (!heroDef && spaceType !== "PERSONAL" && !debtWorkspaceActive && !wealthWorkspaceActive) return;
+    if (!heroDef && spaceType !== "PERSONAL" && !perspectiveNeedsSnapshots) return;
     let active = true;
     fetch(`/api/spaces/${spaceId}/snapshots`)
       .then((r) => (r.ok ? r.json() : { snapshots: [] }))
@@ -2873,7 +2875,7 @@ export function SpaceDashboard({
   // currencyNonce (Q6): re-fetch the stamp-aware hero series after a currency change.
   // refreshNonce (Part-2): re-fetch after a manual Plaid sync so net worth updates.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, category, debtWorkspaceActive, wealthWorkspaceActive, currencyNonce, refreshNonce]);
+  }, [spaceId, category, perspectiveNeedsSnapshots, currencyNonce, refreshNonce]);
 
   // Part-6 — while a backfill is running, re-fetch snapshots on an interval so
   // the Wealth loading state clears AUTOMATICALLY once it finishes (no manual
@@ -2896,7 +2898,7 @@ export function SpaceDashboard({
     // Liquidity Perspective workspaces (both need transaction history regardless
     // of category — Liquidity for its What Changed panel). Guarded by
     // spaceTransactions === null so it runs once.
-    if (!isFlowCategory && activeTab !== "TRANSACTIONS" && !cashFlowActive && !liquidityWorkspaceActive) return;
+    if (!isFlowCategory && activeTab !== "TRANSACTIONS" && !perspectiveNeedsTransactions) return;
     if (spaceTransactions !== null) return;
     let active = true;
     fetch(`/api/spaces/${spaceId}/transactions`)
@@ -2912,7 +2914,7 @@ export function SpaceDashboard({
   // (the handler also nulls spaceTransactions to release the guard above).
   // refreshNonce (Part-2): same, after a manual Plaid sync.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, isFlowCategory, activeTab, cashFlowActive, liquidityWorkspaceActive, spaceTransactions === null, currencyNonce, refreshNonce]);
+  }, [spaceId, isFlowCategory, activeTab, perspectiveNeedsTransactions, spaceTransactions === null, currencyNonce, refreshNonce]);
 
   useEffect(() => {
     Promise.all([

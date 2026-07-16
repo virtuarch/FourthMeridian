@@ -19,6 +19,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
 
 const ROOT = process.cwd();
 const SRC = readFileSync(path.join(ROOT, "components/space/widgets/liquidity/LiquidityPerspective.tsx"), "utf8");
@@ -112,8 +113,16 @@ console.log("5. SpaceDashboard liquidity branch threads accounts / ctx / lensRes
   check("liquidity branch precedes the generic virtual-sections branch", branchIdx >= 0 && genericIdx > branchIdx);
   // The current-state constraint reaches the host branch too: no asOf threaded in.
   check("host branch threads no asOf into Liquidity", !jsx.includes("asOf"));
-  // The fetch-trigger extension (§3.2): Liquidity opening first must load tx rows.
-  check("transactions fetch guard includes liquidityWorkspaceActive", DASH.includes("!liquidityWorkspaceActive"));
+  // The fetch-trigger guarantee (§3.2): Liquidity opening first must load tx rows.
+  // SD-3 — this is now DECLARATIVE: Liquidity declares the `transactions` dataNeed in
+  // the canonical registry, and the host's tx fetch guard activates on the
+  // registry-derived `perspectiveNeedsTransactions` (openPerspectiveDataNeeds). So the
+  // former `!liquidityWorkspaceActive` literal is gone by design; the guarantee now
+  // lives in the registry + the orchestrator, and is pinned here instead.
+  check("Liquidity declares the `transactions` dataNeed (registry-driven activation)",
+    (PERSPECTIVE_LIBRARY.liquidity.dataNeeds ?? []).includes("transactions"));
+  check("host tx fetch guard activates on the declared need (perspectiveNeedsTransactions)",
+    DASH.includes("!perspectiveNeedsTransactions"));
 }
 
 if (failures > 0) { console.error(`\n${failures} LiquidityPerspective check(s) failed`); process.exit(1); }
