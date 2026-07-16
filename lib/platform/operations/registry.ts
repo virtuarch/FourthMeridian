@@ -182,6 +182,21 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
       "Sweep BTC wallet balances and regenerate affected wealth history. Idempotent; never-throws per wallet.",
     kinds: ["run-now", "dry-run"],
   },
+  {
+    // OPS-6A Connection Operations — the operator's fleet Plaid sync/retry. The
+    // fleet body syncs every active bank item, and EACH item runs under
+    // withPlaidItemSyncLock (F1): an item already in flight (cron/webhook/manual)
+    // is skipped-locked, not raced — so a manual sweep RESPECTS the same per-item
+    // locks, which is exactly the condition the OPS-4 exclusion required (it now
+    // leaves EXCLUDED_TARGETS consciously). Per-item failures are isolated; the
+    // daily cron runs this identical body. Re-running it retries previously-failed
+    // items. Skips deactivated users' items (billing honesty).
+    targetJob: "sync-banks",
+    label: "Bank Connections",
+    description:
+      "Sync transactions for every active Plaid bank connection (fleet). Each item runs under its per-item sync lock (skipped if a sync is already in flight), so this respects the same locks the cron and per-item refresh use; per-item failures are isolated. Idempotent; retries previously-failed connections.",
+    kinds: ["run-now", "dry-run"],
+  },
 ];
 
 /**
@@ -190,8 +205,9 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
  * OPERATION_TARGETS). A later hand adds a target here consciously, not by reflex.
  */
 export const EXCLUDED_TARGETS: Record<string, string> = {
-  "sync-banks":
-    "Per-item manual refresh already exists with a 60-min cooldown; a fleet-wide manual sweep must respect those locks — out of this slice (investigation §5 ⚠️).",
+  // sync-banks GRADUATED to an OPERATION_TARGET in OPS-6A: the fleet body runs
+  // every item under withPlaidItemSyncLock (F1), so a manual sweep respects the
+  // per-item locks the OPS-4 exclusion required. See OPERATION_TARGETS above.
   "process-deletions":
     "Destructive (executes pending account/data deletions). Automatic-only; if ever exposed, requires WRITE + explicit typed confirm (investigation §5).",
   "purge-trash":
