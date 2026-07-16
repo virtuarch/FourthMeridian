@@ -43,8 +43,10 @@
  * the optional A10 result) and hands them to the pure assemblers.
  */
 
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
+import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
+import { DIGITAL_ASSET_ACCOUNT_TYPES } from "@/lib/account-classifier";
 import {
   getCurrentPositions,
   type CurrentPositionsScope,
@@ -56,6 +58,7 @@ import {
   assembleInvestmentsSpaceData,
 } from "./space-data-core";
 import type { InvestmentsSpaceData } from "./space-data-core";
+import { investmentsScopeDivergence, type ScopeDivergenceDisclosure } from "./scope-divergence";
 
 export type {
   CurrentPortfolio,
@@ -102,6 +105,42 @@ async function resolveAccountNames(
 }
 
 /**
+ * HIST-1D — the shared-Space scope disclosure for an Investments read. Reads only
+ * the Space type + a COUNT of ACTIVE investment/digital-asset links whose
+ * visibility withholds per-item detail (the accounts counted in whole-Space wealth
+ * but excluded from the member-facing detailEligible scope), then delegates the
+ * copy to the pure `investmentsScopeDivergence`. Returns null when it cannot apply
+ * (single-account read, personal Space, or no reduced-visibility investment link),
+ * so the disclosure surfaces ONLY where the divergence is real. It reads no
+ * balances/positions and changes no visibility rule — a pure transparency read.
+ */
+async function resolveScopeDivergence(
+  client: Client,
+  scope:  CurrentPositionsScope,
+): Promise<ScopeDivergenceDisclosure | null> {
+  if (!("spaceId" in scope)) return null; // a single-account read has no cross-account divergence to explain
+  const spaceId = scope.spaceId;
+
+  const space = await client.space.findUnique({ where: { id: spaceId }, select: { type: true } });
+  if (!space || space.type !== SpaceType.SHARED) return null;
+
+  const redactedInvestmentAccountCount = await client.spaceAccountLink.count({
+    where: {
+      spaceId,
+      status: "ACTIVE",
+      // Investment + digital-asset accounts only — non-investment links carry no
+      // positions, so their visibility never causes an investments divergence.
+      financialAccount: { deletedAt: null, type: { in: ["investment", ...DIGITAL_ASSET_ACCOUNT_TYPES] } },
+      // Withholds per-item detail = NOT in the canonical detail-visibility set (the
+      // exact predicate account-scope.ts uses to build the detailEligible scope).
+      visibilityLevel: { notIn: TRANSACTION_DETAIL_VISIBILITY },
+    },
+  });
+
+  return investmentsScopeDivergence({ isSharedSpace: true, redactedInvestmentAccountCount });
+}
+
+/**
  * When set, the workspace read ALSO loads the A10 historical view and derives its
  * `activity` + `trust` slices from it. `asOf`/`compareTo` are the Perspective
  * Shell's resolved dates; omit this to get a current-only read. Kept separate from
@@ -139,7 +178,12 @@ export async function loadInvestmentsSpaceData(
 ): Promise<InvestmentsSpaceData> {
   const client = options?.client ?? db;
 
-  const positions = await getCurrentPositions(scope, options);
+  // The current positions read and the (independent) scope-divergence read run in
+  // parallel, so the disclosure adds no latency to the workspace load.
+  const [positions, scopeDivergence] = await Promise.all([
+    getCurrentPositions(scope, options),
+    resolveScopeDivergence(client, scope),
+  ]);
   const accountIds = [...new Set(positions.rows.map((r) => r.accountId))];
   const accountNames = await resolveAccountNames(client, accountIds);
   const current = assembleCurrentPortfolio(positions, accountNames);
@@ -155,5 +199,8 @@ export async function loadInvestmentsSpaceData(
       })
     : null;
 
-  return assembleInvestmentsSpaceData({ current, historical });
+  const data = assembleInvestmentsSpaceData({ current, historical });
+  // Attach the disclosure (HIST-1D) only when it applies — it is a currency-agnostic
+  // transparency note, not a slice the pure assembler computes.
+  return scopeDivergence ? { ...data, scopeDivergence } : data;
 }

@@ -35,7 +35,8 @@ import { db } from "@/lib/db";
 import { ShareStatus, SpaceType, type Prisma, type PrismaClient } from "@prisma/client";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
-import { getInvestmentValueAsOf } from "@/lib/investments/valuation";
+import { getInvestmentValueForWindow } from "@/lib/investments/valuation";
+import type { InvestmentValuationView } from "@/lib/investments/valuation-core";
 import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import {
   reconstructDailyCashBalances,
@@ -327,6 +328,29 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const candidateDates = [...dayList].filter((d) => d >= fromDate && d <= toDate && d < todayISO).sort();
   const ctx = await buildSpaceConversionContext(space, { currencies: accounts.map((a) => a.currency ?? null), dates: candidateDates });
 
+  // HIST-1C — value the whole window's investments in ONE position/price/FX read
+  // (getInvestmentValueForWindow) instead of an N×date getInvestmentValueAsOf call
+  // per day. Each date's view is byte-identical to the former per-day call; this
+  // changes only execution strategy. Best-effort: a failed batch leaves the
+  // window's investment component flat, exactly the non-fatal contract the former
+  // per-day try/catch gave (a per-date A8 failure was only ever a systemic read
+  // error that would have hit every day alike). excludeDigitalAssetAccounts — the
+  // valuedSubtotal becomes each day's totalInvestments; crypto is valued separately
+  // into totalDigitalAssets below, so it must NOT also count here or BTC is
+  // double-counted (the historical net-worth cliff). Mirrors the live writer.
+  let investmentByDate = new Map<string, InvestmentValuationView>();
+  try {
+    investmentByDate = await getInvestmentValueForWindow({
+      spaceId,
+      dates: candidateDates,
+      client,
+      holdConstantBeforeEarliest: true,
+      excludeDigitalAssetAccounts: true,
+    });
+  } catch (err) {
+    console.warn(`[wealth-regen] ${spaceId}: batch A8 valuation failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+  }
+
   const result: RegenerateWealthHistoryResult = { ...zero };
   const writes: Array<{ date: Date; isEstimated: boolean; fields: NonNullable<DayRegenResult["fields"]> }> = [];
 
@@ -356,26 +380,22 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
 
     const c = classifyAccounts(dayAccounts, ctx, dISO);
 
-    // A8 canonical historical investment valuation for the day (best-effort).
-    // holdConstantBeforeEarliest: a holdings-only investment account (no A4 event
-    // history) is valued at today's quantity held constant × the day's price.
+    // A8 canonical historical investment valuation for the day, from the batch
+    // window valued once above (HIST-1C). holdConstantBeforeEarliest: a holdings-
+    // only investment account (no A4 event history) is valued at today's quantity
+    // held constant × the day's price. The view is byte-identical to the former
+    // per-day getInvestmentValueAsOf; a missing entry (empty batch on failure)
+    // leaves the flat value, preserving the prior non-fatal behavior.
     let investmentValue = c.totalInvestments;
     let investmentTier: CompletenessTier = "incomplete";
     let hasInvestmentEvidence = false;
-    try {
-      // excludeDigitalAssetAccounts — this valuedSubtotal becomes the day's
-      // totalInvestments; crypto is valued separately into totalDigitalAssets
-      // (digitalAssetValue below), so it must NOT also count here or BTC is
-      // double-counted (the historical net-worth cliff). Mirrors the live writer,
-      // where classifyAccounts already partitions crypto out of totalInvestments.
-      const view = await getInvestmentValueAsOf({ spaceId, asOf: dISO, client, holdConstantBeforeEarliest: true, excludeDigitalAssetAccounts: true });
+    const view = investmentByDate.get(dISO);
+    if (view) {
       hasInvestmentEvidence = view.components.length > 0;
       if (hasInvestmentEvidence) {
         investmentValue = view.valuedSubtotal;
         investmentTier = view.completeness.tier;
       }
-    } catch (err) {
-      console.warn(`[wealth-regen] ${spaceId} ${dISO}: A8 valuation failed (non-fatal): ${err instanceof Error ? err.message : err}`);
     }
 
     // Part-A — historical crypto valuation for the day: Σ (constant native

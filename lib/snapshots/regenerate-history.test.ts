@@ -33,7 +33,13 @@ function main(): void {
 
   // ── 1. Investments come from the canonical A8 valuation ───────────────────
   console.log("1. Canonical A8 valuation (no duplicated calculation)");
-  check("consumes getInvestmentValueAsOf", /getInvestmentValueAsOf\s*\(/.test(code));
+  // HIST-1C — the window is valued in ONE batched A8 read (getInvestmentValueForWindow),
+  // still the single canonical valuation authority (lib/investments/valuation.ts), not a
+  // per-day loop and not a duplicated price/FX/quantity calculation here.
+  check("consumes the canonical batched A8 valuation (getInvestmentValueForWindow)",
+    /getInvestmentValueForWindow\s*\(/.test(code));
+  check("does NOT call the per-day A8 entry point (batched, not N×date)",
+    !/getInvestmentValueAsOf\s*\(/.test(code));
   check("uses the A8 valuedSubtotal as the investment component", /valuedSubtotal/.test(code));
   check("does NOT open a second historical price lookup (no lib/prices import)",
     !/from\s+["']@\/lib\/prices/.test(code));
@@ -82,7 +88,7 @@ function main(): void {
 
   // ── 7. BTC double-count fix — totalInvestments excludes digital assets ─────
   console.log("7. Investment component excludes crypto (no BTC double-count)");
-  check("A9 asks getInvestmentValueAsOf for the investment bucket only",
+  check("A9 asks the batched A8 valuation for the investment bucket only",
     /excludeDigitalAssetAccounts:\s*true/.test(code));
   check("crypto is still valued SEPARATELY into the digital-asset component",
     /digitalAssetValue/.test(code) && /totalDigitalAssets/.test(code));

@@ -22,7 +22,7 @@
  */
 
 import { useEffect, useMemo, type ReactNode } from "react";
-import { Loader2, TrendingUp } from "lucide-react";
+import { Info, Loader2, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import type { ConversionContext } from "@/lib/money/types";
@@ -92,6 +92,12 @@ export function InvestmentsWorkspace({
   const flows = data.historical?.flows ?? null;
   const figureLabel = data.trust?.figureLabel ?? (primary.portfolio.unvaluedCount > 0 ? "Valued holdings" : "Portfolio value");
 
+  // HIST-1D — shared-Space scope disclosure. Currency-agnostic, so read from the
+  // UNCONVERTED contract (like the trust envelope). Present only on a shared Space
+  // with a reduced-visibility investment account, so it renders only where the
+  // Wealth-vs-Investments divergence is real.
+  const scopeDivergence = raw?.scopeDivergence ?? null;
+
   const isEmpty = primary.holdings.length === 0 && primary.portfolio.unvaluedCount === 0;
   if (isEmpty) {
     return (
@@ -122,6 +128,21 @@ export function InvestmentsWorkspace({
       {/* ① KPI strip. */}
       <InvestmentKpiStrip portfolio={primary.portfolio} reconciliation={reconciliation} activity={data.activity}
         reportingCurrency={reportingCurrency} figureLabel={figureLabel} asOf={asOf} />
+
+      {/* HIST-1D — shared-Space scope disclosure (transparency only; no number changes). */}
+      {scopeDivergence && (
+        <div
+          className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
+          style={{ background: "var(--surface-inset)", color: "var(--text-muted)" }}
+          role="note"
+        >
+          <Info size={13} className="mt-0.5 shrink-0" aria-hidden />
+          <span>
+            <span className="font-medium text-[var(--text-secondary)]">{scopeDivergence.title}.</span>{" "}
+            {scopeDivergence.note}
+          </span>
+        </div>
+      )}
 
       {/* ② Portfolio Value Over Time — the dominant visual (§2). */}
       <Panel title="Portfolio Value Over Time">

@@ -34,6 +34,7 @@ import type { CurrentPositions, CurrentPositionRow } from "./current-positions-c
 import type { InvestmentsPortfolio, InvestmentsTimeMachineResult } from "./investments-time-machine-core";
 import { buildInvestmentsTrustSummary, type InvestmentsTrustSummary } from "./investments-trust";
 import type { PeriodFlows } from "./investment-flows-core";
+import type { ScopeDivergenceDisclosure } from "./scope-divergence";
 
 /**
  * THE canonical current-portfolio contract. Every field is either passed through
@@ -93,6 +94,14 @@ export interface InvestmentsSpaceData {
   activity?:   PeriodFlows;
   /** `buildInvestmentsTrustSummary(historical)` — present whenever `historical` is. */
   trust?:      InvestmentsTrustSummary;
+  /**
+   * HIST-1D — shared-Space scope disclosure: why this member-facing investments
+   * figure (detailEligible scope) can legitimately differ from whole-Space wealth
+   * (all-accounts scope) on the same date. Present ONLY on a shared Space that has
+   * a reduced-visibility investment account; absent otherwise. Currency-agnostic
+   * (like `trust`), so it is attached from the raw contract, not the converted one.
+   */
+  scopeDivergence?: ScopeDivergenceDisclosure;
 }
 
 /**

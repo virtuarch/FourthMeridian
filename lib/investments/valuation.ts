@@ -189,6 +189,81 @@ export async function getInvestmentValueAsOf(args: GetInvestmentValueArgs): Prom
   return valuePositionRows({ client, asOf, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows });
 }
 
+export interface GetInvestmentValueWindowArgs {
+  spaceId?: string;
+  financialAccountId?: string;
+  /** The exact set of dates to value (YYYY-MM-DD). Deduped + sorted internally. */
+  dates: readonly string[];
+  client?: Client;
+  holdConstantBeforeEarliest?: boolean;
+  visibilityScope?: InvestmentVisibilityScope;
+  excludeDigitalAssetAccounts?: boolean;
+}
+
+/**
+ * HIST-1C — batch point-in-time valuation across MANY dates from ONE position
+ * read + ONE price window + ONE FX context, returning dateISO → the same shaped
+ * view getInvestmentValueAsOf produces per date. This is a pure execution-strategy
+ * optimization: for each requested date the number is byte-identical to calling
+ * getInvestmentValueAsOf({ asOf: date, ...sameArgs }) — it collapses the N×date
+ * DB round-trips (position + price + instrument + FX per day) into O(1) reads,
+ * without a second valuation authority or any changed reconstruction/honesty
+ * semantics (every date flows through the same per-day core, valuePositionRows-
+ * OverDates). Digital-asset exclusion, hold-constant, and visibility scope carry
+ * through exactly as in the single-date entry point.
+ *
+ * The position window is read once (≤ max(dates), or ALL when holdConstant needs
+ * the earliest observation); resolvePositionAsOf clips each day to its own ≤-date
+ * subset, so the shared window cannot leak a later row into an earlier day.
+ */
+export async function getInvestmentValueForWindow(
+  args: GetInvestmentValueWindowArgs,
+): Promise<Map<string, InvestmentValuationView>> {
+  const client = args.client ?? db;
+  const holdConstant = args.holdConstantBeforeEarliest === true;
+  const visibilityScope: InvestmentVisibilityScope = args.visibilityScope ?? "all";
+
+  const dates = [...new Set(args.dates)].sort();
+  const out = new Map<string, InvestmentValuationView>();
+  if (dates.length === 0) return out;
+
+  const { accountIds, contextSpaceId, reportingCurrency } =
+    await resolveInvestmentScopeAndCurrency(client, args, visibilityScope);
+
+  // No in-scope accounts → each date is an empty portfolio view (parity with the
+  // single-date early return in getInvestmentValueAsOf).
+  if (accountIds.length === 0) {
+    for (const d of dates) out.set(d, valuePortfolioAsOf([], d, reportingCurrency));
+    return out;
+  }
+
+  const digitalAssetFilter = args.excludeDigitalAssetAccounts === true
+    ? { financialAccount: { type: { notIn: [...DIGITAL_ASSET_ACCOUNT_TYPES] } } }
+    : {};
+
+  // One historical WINDOW read for the whole date span (every observation ≤ the
+  // latest requested date; ALL observations when holdConstant needs the earliest).
+  const maxDateObj = new Date(`${dates[dates.length - 1]}T00:00:00.000Z`);
+  const [posRows, reconRows] = await Promise.all([
+    client.positionObservation.findMany({
+      where: {
+        financialAccountId: { in: accountIds },
+        supersededById: null,
+        deletedAt: null,
+        ...digitalAssetFilter,
+        ...(holdConstant ? {} : { date: { lte: maxDateObj } }),
+      },
+      select: POSITION_VALUATION_SELECT,
+    }),
+    client.positionReconstruction.findMany({
+      where: { financialAccountId: { in: accountIds } },
+      select: { financialAccountId: true, instrumentId: true, conflicted: true },
+    }),
+  ]);
+
+  return valuePositionRowsOverDates({ client, dates, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows });
+}
+
 /**
  * Resolve the scoped account set + reporting currency for an investment read.
  * Shared by getInvestmentValueAsOf (window) and getCurrentPositions (latest), so
@@ -215,13 +290,17 @@ export async function resolveInvestmentScopeAndCurrency(
 }
 
 /**
- * The valuation pipeline over ALREADY-FETCHED position rows: group by
- * (account, instrument), resolve each as-of (A4 origin precedence), attach the
+ * The valuation pipeline over ALREADY-FETCHED position rows for ONE date: group
+ * by (account, instrument), resolve each as-of (A4 origin precedence), attach the
  * price window + FX context, and value through valuation-core. This is THE
  * single valuation path — getInvestmentValueAsOf (historical window) and
  * getCurrentPositions (cheap latest-per-pair) both call it with the identical
  * `posRows` shape, so they can differ ONLY in how the rows were read, never in
  * how they are valued. Reuse, not a second engine.
+ *
+ * Thin wrapper over the multi-date core (valuePositionRowsOverDates) with a
+ * single-date list — the per-day valuation logic lives in exactly one place, so
+ * the window batch (HIST-1C) and the single read produce byte-identical views.
  */
 export async function valuePositionRows(args: {
   client:            Client;
@@ -232,8 +311,51 @@ export async function valuePositionRows(args: {
   posRows:           readonly ObservationValuationRow[];
   reconRows:         readonly ReconstructionConflictRow[];
 }): Promise<InvestmentValuationView> {
-  const { client, asOf, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows } = args;
+  const byDate = await valuePositionRowsOverDates({
+    client: args.client,
+    dates: [args.asOf],
+    contextSpaceId: args.contextSpaceId,
+    reportingCurrency: args.reportingCurrency,
+    holdConstant: args.holdConstant,
+    posRows: args.posRows,
+    reconRows: args.reconRows,
+  });
+  // valuePortfolioAsOf always returns a view for a requested date (empty when no
+  // holdings), so this is defined; the fallback keeps the function total-typed.
+  return byDate.get(args.asOf) ?? valuePortfolioAsOf([], args.asOf, args.reportingCurrency);
+}
 
+/**
+ * HIST-1C — the valuation pipeline over ALREADY-FETCHED position rows for a SET
+ * of dates, valuing every date from ONE shared prep: one grouping pass, one
+ * instrument read, one RAW_CLOSE price window ([min(dates)−staleness, max(dates)]),
+ * and one conversion context (all dates × currencies). Each date is then valued
+ * independently against that in-memory prep, so the produced view for any date D
+ * is byte-identical to a standalone single-date valuation of D:
+ *   - resolvePositionAsOf ignores rows dated after D (a wider row window cannot
+ *     change D's resolution);
+ *   - the price reader re-applies the per-day staleness floor, so a wider price
+ *     window returns the same nearest-≤-within-floor close for D;
+ *   - ConversionContext.resolve is a per-(currency,date) table lookup, so a
+ *     superset context returns the same rate for D.
+ * No second valuation authority — this is the single per-day core, hoisted once.
+ */
+export async function valuePositionRowsOverDates(args: {
+  client:            Client;
+  dates:             readonly string[];
+  contextSpaceId:    string | null;
+  reportingCurrency: string;
+  holdConstant:      boolean;
+  posRows:           readonly ObservationValuationRow[];
+  reconRows:         readonly ReconstructionConflictRow[];
+}): Promise<Map<string, InvestmentValuationView>> {
+  const { client, contextSpaceId, reportingCurrency, holdConstant, posRows, reconRows } = args;
+
+  const out = new Map<string, InvestmentValuationView>();
+  const dates = [...new Set(args.dates)].sort();
+  if (dates.length === 0) return out;
+
+  // ── Shared prep, built ONCE for every requested date ───────────────────────
   // Group full rows by (account|instrument).
   const byPair = new Map<string, FullPositionRow[]>();
   const instrumentIds = new Set<string>();
@@ -266,83 +388,97 @@ export async function valuePositionRows(args: {
   });
   const instrumentMeta = new Map(instruments.map((i) => [i.id, { currency: i.currency, isCash: i.isCashEquivalent === true }]));
 
-  // ── Price window (RAW_CLOSE), resolved in memory ──────────────────────────
-  const floorISO = minusDaysISO(asOf, PRICE_MAX_STALE_DAYS);
-  const priceWindow = (await priceArchive.readRange?.([...instrumentIds], PriceBasis.RAW_CLOSE, floorISO, asOf)) ?? [];
+  // ── Price window (RAW_CLOSE), resolved in memory over the WHOLE date span ──
+  // Floor from the earliest requested date; the price reader re-applies its own
+  // per-day staleness floor, so a wider preloaded window is a strict superset of
+  // any single day's [D−staleness, D] and yields identical resolutions.
+  const minDate = dates[0];
+  const maxDate = dates[dates.length - 1];
+  const floorISO = minusDaysISO(minDate, PRICE_MAX_STALE_DAYS);
+  const priceWindow = (await priceArchive.readRange?.([...instrumentIds], PriceBasis.RAW_CLOSE, floorISO, maxDate)) ?? [];
   const priceService = createPriceService(memoryPriceReader(priceWindow));
 
-  // ── Resolve each holding, then value ──────────────────────────────────────
-  const inputs: Array<{ input: InstrumentValuationInput; nonCash: boolean }> = [];
-  for (const [key, rows] of byPair) {
-    const [financialAccountId, instrumentId] = key.split("|");
-    const resolved = resolvePositionAsOf(rows, asOf);
-    let quantity      = resolved.quantity;
-    let quantityDate  = resolved.date;
-    let quantityTier  = resolved.tier;
-    let resolvedRow   = pickResolvedRow(rows, resolved.date, resolved.origin);
-    let heldConstant  = false;
+  // ── One conversion context spanning every date × every native currency ─────
+  // The currency union is derived from the position rows + instrument meta (a
+  // superset of any single day's resolved native currencies); resolve() is a
+  // per-(currency,date) lookup, so the superset never changes a per-date rate.
+  const currencySet = new Set<string>();
+  for (const rows of byPair.values()) for (const r of rows) if (r.currency) currencySet.add(r.currency);
+  for (const meta of instrumentMeta.values()) if (meta.currency) currencySet.add(meta.currency);
+  const ctx = contextSpaceId
+    ? await buildSpaceConversionContextById(contextSpaceId, { currencies: [...currencySet], dates })
+    : identityContext(reportingCurrency);
 
-    // Constant-quantity fallback (holdConstant): nothing covers asOf → hold the
-    // EARLIEST observed quantity backward as a labeled estimate (price is real).
-    if ((quantity == null || quantity === 0) && holdConstant && rows.length > 0) {
-      const earliest = rows.reduce((min, r) => (r.date < min.date ? r : min), rows[0]);
-      if (earliest.quantity > 0) {
-        quantity     = earliest.quantity;
-        quantityDate = earliest.date;
-        quantityTier = "estimated";
-        resolvedRow  = earliest;
-        heldConstant = true;
+  // ── Value each requested date independently against the shared prep ────────
+  for (const asOf of dates) {
+    const inputs: Array<{ input: InstrumentValuationInput; nonCash: boolean }> = [];
+    for (const [key, rows] of byPair) {
+      const [financialAccountId, instrumentId] = key.split("|");
+      const resolved = resolvePositionAsOf(rows, asOf);
+      let quantity      = resolved.quantity;
+      let quantityDate  = resolved.date;
+      let quantityTier  = resolved.tier;
+      let resolvedRow   = pickResolvedRow(rows, resolved.date, resolved.origin);
+      let heldConstant  = false;
+
+      // Constant-quantity fallback (holdConstant): nothing covers asOf → hold the
+      // EARLIEST observed quantity backward as a labeled estimate (price is real).
+      if ((quantity == null || quantity === 0) && holdConstant && rows.length > 0) {
+        const earliest = rows.reduce((min, r) => (r.date < min.date ? r : min), rows[0]);
+        if (earliest.quantity > 0) {
+          quantity     = earliest.quantity;
+          quantityDate = earliest.date;
+          quantityTier = "estimated";
+          resolvedRow  = earliest;
+          heldConstant = true;
+        }
+      }
+
+      // Not held at asOf (no covering row, or an explicit closed-zero) → excluded.
+      if (quantity == null || quantity === 0) continue;
+      const meta = instrumentMeta.get(instrumentId);
+      const isCash = resolvedRow?.isCash ?? meta?.isCash ?? false;
+      const nativeCurrency = resolvedRow?.currency ?? meta?.currency ?? null;
+
+      inputs.push({
+        nonCash: !isCash,
+        input: {
+          instrumentId,
+          accountId: financialAccountId,
+          quantity,
+          quantityDate,
+          quantityTier,
+          isCash,
+          nativeCurrency,
+          // When holding quantity constant BACKWARD (the fallback above fired, so
+          // asOf predates the earliest observation), that observation's institution
+          // price/value pertains to ITS date — carrying it here would short-circuit
+          // valueInstrumentAsOf's Precedence 1 and value every past day at the
+          // CURRENT value. Drop the institution anchor so non-cash positions fall
+          // through to the real RAW_CLOSE market price at asOf ("price is real",
+          // above); cash still resolves via its unit-price branch.
+          institutionValue: heldConstant ? null : (resolvedRow?.institutionValue ?? null),
+          institutionPrice: heldConstant ? null : (resolvedRow?.institutionPrice ?? null),
+          institutionPriceDate: heldConstant ? null : (resolvedRow?.institutionPriceDate ?? null),
+          price: null, // filled below for non-cash without an institution anchor
+          conflicted: conflictByPair.get(key) ?? false,
+        },
+      });
+    }
+
+    // Market-price lookups only where needed (non-cash, no institution anchor).
+    for (const item of inputs) {
+      const { input } = item;
+      if (item.nonCash && input.institutionValue == null && input.institutionPrice == null) {
+        input.price = await priceService.getPriceAsOf(input.instrumentId, asOf, PriceBasis.RAW_CLOSE);
       }
     }
 
-    // Not held at asOf (no covering row, or an explicit closed-zero) → excluded.
-    if (quantity == null || quantity === 0) continue;
-    const meta = instrumentMeta.get(instrumentId);
-    const isCash = resolvedRow?.isCash ?? meta?.isCash ?? false;
-    const nativeCurrency = resolvedRow?.currency ?? meta?.currency ?? null;
-
-    inputs.push({
-      nonCash: !isCash,
-      input: {
-        instrumentId,
-        accountId: financialAccountId,
-        quantity,
-        quantityDate,
-        quantityTier,
-        isCash,
-        nativeCurrency,
-        // When holding quantity constant BACKWARD (the fallback above fired, so
-        // asOf predates the earliest observation), that observation's institution
-        // price/value pertains to ITS date — carrying it here would short-circuit
-        // valueInstrumentAsOf's Precedence 1 and value every past day at the
-        // CURRENT value. Drop the institution anchor so non-cash positions fall
-        // through to the real RAW_CLOSE market price at asOf ("price is real",
-        // above); cash still resolves via its unit-price branch.
-        institutionValue: heldConstant ? null : (resolvedRow?.institutionValue ?? null),
-        institutionPrice: heldConstant ? null : (resolvedRow?.institutionPrice ?? null),
-        institutionPriceDate: heldConstant ? null : (resolvedRow?.institutionPriceDate ?? null),
-        price: null, // filled below for non-cash without an institution anchor
-        conflicted: conflictByPair.get(key) ?? false,
-      },
-    });
+    const components: InstrumentValuation[] = inputs.map(({ input }) => valueInstrumentAsOf(input, asOf, ctx));
+    out.set(asOf, valuePortfolioAsOf(components, asOf, ctx.target));
   }
 
-  // Market-price lookups only where needed (non-cash, no institution anchor).
-  for (const item of inputs) {
-    const { input } = item;
-    if (item.nonCash && input.institutionValue == null && input.institutionPrice == null) {
-      input.price = await priceService.getPriceAsOf(input.instrumentId, asOf, PriceBasis.RAW_CLOSE);
-    }
-  }
-
-  // ── FX context at the valuation date, then value ──────────────────────────
-  const currencies = [...new Set(inputs.map((i) => i.input.nativeCurrency).filter((c): c is string => !!c))];
-  const ctx = contextSpaceId
-    ? await buildSpaceConversionContextById(contextSpaceId, { currencies, dates: [asOf] })
-    : identityContext(reportingCurrency);
-
-  const components: InstrumentValuation[] = inputs.map(({ input }) => valueInstrumentAsOf(input, asOf, ctx));
-  return valuePortfolioAsOf(components, asOf, ctx.target);
+  return out;
 }
 
 /** The Space's reporting currency (context target), or the default when unscoped. */
