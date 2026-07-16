@@ -52,6 +52,7 @@ import { OpsProviderHealthWidget } from "./widgets/OpsProviderHealthWidget";
 import { OpsAlertsWidget } from "./widgets/OpsAlertsWidget";
 import { OpsHistoryWidget } from "./widgets/OpsHistoryWidget";
 import { OpsConvergenceWidget } from "./widgets/OpsConvergenceWidget";
+import { OpsCostWidget } from "./widgets/OpsCostWidget";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
 import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
 import { CsSyncIssuesWidget } from "./widgets/CsSyncIssuesWidget";
@@ -82,6 +83,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   ops_alerts:             OpsAlertsWidget,
   ops_history:            OpsHistoryWidget,
   ops_convergence:        OpsConvergenceWidget,
+  ops_cost:               OpsCostWidget,
   // Growth & Revenue
   growth_signups:       GrowthSignupsWidget,
   growth_beta_requests: GrowthBetaRequestsWidget,

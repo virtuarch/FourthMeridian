@@ -84,6 +84,8 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "ops_history", label: "Operational History", order: 9 },
       // OPS-5 Wave B — S9 Off-ledger Convergence (the operational story).
       { key: "ops_convergence", label: "Convergence", order: 10 },
+      // OPS-5 Wave B — S10 Cost & Latency Intelligence (derived over S7 + S9).
+      { key: "ops_cost", label: "Cost & Latency", order: 11 },
     ],
   },
   SECURITY_OPS: {
