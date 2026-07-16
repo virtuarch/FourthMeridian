@@ -210,6 +210,50 @@ export function isHeldFlatBalanceAccount(a: { type: string; balance: number }, h
   return a.balance !== 0;
 }
 
+// ── Per-account reconstruction floors ─────────────────────────────────────────
+
+/** The epoch — a floor of "no lower bound" (account spans the whole window). */
+const FLOOR_EPOCH = new Date(0);
+
+/**
+ * The earliest date each account may appear on a reconstructed day — the SINGLE
+ * authority for the floor rule, imported by BOTH historical writers (backfill.ts
+ * = M2, regenerate-history.ts = M3) so "from when can this account be
+ * reconstructed" can never drift between them (HIST-2A; same anti-drift rationale
+ * as the shared [[isReconstructableCard]]).
+ *
+ * Per account:
+ *   - account-level floor = its earliest real (non-deleted) Transaction; NO
+ *     transactions ⇒ `today` (genuinely zero reconstructable days) EXCEPT a
+ *     held-flat balance-bearing cash/debt account (REG-2), which floors to EPOCH
+ *     so it spans the window held flat at its current balance;
+ *   - SECONDARY floor (SHARED spaces only) = the SpaceAccountLink.createdAt — this
+ *     Space's history cannot predate when the account was shared into it; a
+ *     PERSONAL space (the account's home) has no such bound (it would re-collapse
+ *     the window to connect day);
+ *   - the floor is the LATER (maxDate) of the two.
+ *
+ * `ignoreFloors` (dev-seed only, backfill's `--ignore-floors`) collapses every
+ * floor to EPOCH. Pure: `today` is passed in, EPOCH is a constant.
+ */
+export function computeAccountFloors(
+  entries:             readonly { id: string; linkCreatedAt: Date }[],
+  earliestTxByAccount: ReadonlyMap<string, Date>,
+  heldFlatIds:         ReadonlySet<string>,
+  isSharedSpace:       boolean,
+  today:               Date,
+  ignoreFloors = false,
+): Map<string, Date> {
+  return new Map(
+    entries.map(({ id, linkCreatedAt }): [string, Date] => {
+      if (ignoreFloors) return [id, FLOOR_EPOCH];
+      const txFloor = earliestTxByAccount.get(id) ?? (heldFlatIds.has(id) ? FLOOR_EPOCH : today);
+      const linkFloor = isSharedSpace ? truncDateUTC(linkCreatedAt) : FLOOR_EPOCH;
+      return [id, maxDate(txFloor, linkFloor)];
+    }),
+  );
+}
+
 /**
  * Exact same arithmetic as regenerateSpaceSnapshot (lib/snapshots/regenerate.ts)
  * so a backfilled row is internally consistent with the live "today" row.

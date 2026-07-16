@@ -41,6 +41,7 @@ import {
   reconstructDailyCashBalances,
   reconstructDailyLiabilityBalances,
   computeSnapshotFields,
+  computeAccountFloors,
   isHeldFlatBalanceAccount,
   isReconstructableCard,
   truncDateUTC,
@@ -165,26 +166,12 @@ export async function backfillSpaceSnapshots(
   );
 
   // Floors — an account cannot appear in a day before its earliest real
-  // transaction. opts.ignoreFloors (dev-seed only) collapses every floor to the
-  // epoch so the full 30-day window reconstructs regardless. Never on the app path.
-  const EPOCH = new Date(0);
-  const floorByAccount = new Map<string, Date>(
-    linkRows.map((l) => {
-      const acctId = l.financialAccount.id;
-      if (opts?.ignoreFloors) return [acctId, EPOCH];
-      // Account-level floor: earliest real transaction. No transactions at all ⇒
-      // today ⇒ genuinely zero reconstructable days (correct, NOT the old bug),
-      // EXCEPT a held-flat balance-bearing cash/debt account (REG-2), which floors
-      // to EPOCH so it spans the window held flat at its current balance.
-      const txFloor = earliestTxByAccount.get(acctId) ?? (heldFlatIds.has(acctId) ? EPOCH : today);
-      // SECONDARY floor (SHARED spaces only): don't reconstruct this Space's
-      // history before the account was shared into it (its older history predates
-      // membership here). The account's HOME (PERSONAL) space has no such bound —
-      // using link.createdAt there would re-collapse the window to connect day —
-      // so it is kept as a secondary bound only where it's semantically real.
-      const linkFloor = isSharedSpace ? truncDateUTC(l.createdAt) : EPOCH;
-      return [acctId, maxDate(txFloor, linkFloor)];
-    }),
+  // transaction (+ the shared-space link floor). opts.ignoreFloors (dev-seed only)
+  // collapses every floor to the epoch. SINGLE authority in backfill-core
+  // (HIST-2A), shared byte-for-byte with regenerate-history.ts.
+  const floorByAccount = computeAccountFloors(
+    linkRows.map((l) => ({ id: l.financialAccount.id, linkCreatedAt: l.createdAt })),
+    earliestTxByAccount, heldFlatIds, isSharedSpace, today, opts?.ignoreFloors,
   );
 
   const minFloor = [...floorByAccount.values()].reduce((m, d) => (d.getTime() < m.getTime() ? d : m), today);

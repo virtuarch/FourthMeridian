@@ -43,6 +43,7 @@ import {
   reconstructDailyLiabilityBalances,
   isHeldFlatBalanceAccount,
   isReconstructableCard,
+  computeAccountFloors,
   truncDateUTC,
   maxDate,
   addDaysUTC,
@@ -257,22 +258,12 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   );
   const hasFlatHeld = heldFlatIds.size > 0;
 
-  const EPOCH = new Date(0);
-  const floorByAccount = new Map<string, Date>(
-    linkRows.map((l) => {
-      const acctId = l.financialAccount.id;
-      // Account-level floor: earliest real Transaction. No transactions ⇒ floor =
-      // today (genuinely zero reconstructable days) EXCEPT a held-flat balance-
-      // bearing cash/debt account, which floors to EPOCH so it spans the window
-      // held flat (REG-2) — its current balance is an honest flat estimate, not a
-      // fabricated reconstruction.
-      const txFloor = earliestTxByAccount.get(acctId) ?? (heldFlatIds.has(acctId) ? EPOCH : today);
-      // SECONDARY floor (SHARED spaces only) — mirrors backfill.ts: don't
-      // reconstruct this Space's history before the account was shared into it.
-      // The account's HOME (PERSONAL) space has no such bound.
-      const linkFloor = isSharedSpace ? truncDateUTC(l.createdAt) : EPOCH;
-      return [acctId, maxDate(txFloor, linkFloor)];
-    }),
+  // Per-account reconstruction floors — SINGLE authority in backfill-core
+  // (HIST-2A), shared byte-for-byte with backfill.ts so M2 and M3 can never drift
+  // on "from when can this account be reconstructed". (M3 never sets ignoreFloors.)
+  const floorByAccount = computeAccountFloors(
+    linkRows.map((l) => ({ id: l.financialAccount.id, linkCreatedAt: l.createdAt })),
+    earliestTxByAccount, heldFlatIds, isSharedSpace, today,
   );
 
   // Walk anchor is today's current balances; walk back only as far as fromDate.

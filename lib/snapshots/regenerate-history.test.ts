@@ -79,12 +79,18 @@ function main(): void {
   console.log("6. REG-2 held-flat inclusion (symmetric with the live writer)");
   check("uses the shared held-flat predicate (single authority, no local reimpl)",
     /isHeldFlatBalanceAccount\s*\(/.test(code));
-  check("held-flat accounts floor to EPOCH (span the window), not today",
-    /heldFlatIds\.has\([^)]*\)\s*\?\s*EPOCH\s*:\s*today/.test(code));
-  check("held-flat spans the full window like holdings",
-    /hasHoldings\s*\|\|\s*hasFlatHeld/.test(code));
+  // Seam checks, not source-spelling. The floor rule itself (heldFlatIds.has ?
+  // EPOCH : today, plus the shared-space link floor) is now the SINGLE authority
+  // computeAccountFloors in backfill-core (HIST-2A) — pinned byte-for-byte in
+  // backfill-core.test.ts — so this writer must DELEGATE to it, not reimplement it
+  // (both writers share one floor rule; neither can drift). The remaining span/tier
+  // shapes still live here and are pinned by co-occurrence of load-bearing terms.
+  check("delegates the per-account floor rule to the shared computeAccountFloors authority",
+    /computeAccountFloors\s*\(/.test(code) && /heldFlatIds/.test(code));
+  check("held-flat participates in the span gate alongside holdings",
+    /hasFlatHeld/.test(code) && /hasHoldings/.test(code));
   check("a held-flat day degrades the cash/card tier to estimated (not derived)",
-    /dayHasHeldFlat\s*\?\s*["']estimated["']\s*:\s*["']derived["']/.test(code));
+    /dayHasHeldFlat/.test(code) && /["']estimated["']/.test(code) && /["']derived["']/.test(code));
 
   // ── 7. BTC double-count fix — totalInvestments excludes digital assets ─────
   console.log("7. Investment component excludes crypto (no BTC double-count)");
@@ -92,6 +98,13 @@ function main(): void {
     /excludeDigitalAssetAccounts:\s*true/.test(code));
   check("crypto is still valued SEPARATELY into the digital-asset component",
     /digitalAssetValue/.test(code) && /totalDigitalAssets/.test(code));
+
+  // HIST-2C — the BTC/USD series is read ONCE for the window (readBtcUsdWindow),
+  // not one readBtcUsdAsOf point read per day (the last N×date read hot path).
+  check("crypto reads BTC via the batched window (readBtcUsdWindow), built once",
+    /readBtcUsdWindow\s*\(/.test(code));
+  check("crypto does NOT read BTC per day (no readBtcUsdAsOf in the day loop)",
+    !/readBtcUsdAsOf\s*\(/.test(code));
 
   if (failures > 0) {
     console.error(`\n${failures} check(s) FAILED`);

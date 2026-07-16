@@ -14,6 +14,7 @@ import {
   reconstructDailyCashBalances,
   reconstructDailyLiabilityBalances,
   computeSnapshotFields,
+  computeAccountFloors,
   isHeldFlatBalanceAccount,
   isoDate,
   addDaysUTC,
@@ -210,6 +211,35 @@ console.log("Invariant #7 — a crypto balance cannot inflate BOTH investments a
   check("raising crypto leaves totalInvestments UNCHANGED (never both)", more.totalInvestments === base.totalInvestments);
   check("totalAssets rises by exactly the crypto delta (counted once)",
     Math.abs((more.totalAssets - base.totalAssets) - 15000) < 0.001);
+}
+
+console.log("HIST-2A — computeAccountFloors (single floor authority shared by M2 + M3)");
+{
+  const link = fromISO("2026-06-15"); // shared-space link floor
+  const entries = [
+    { id: "tx",    linkCreatedAt: link }, // has an earliest tx
+    { id: "notx",  linkCreatedAt: link }, // no tx, not held-flat
+    { id: "flat",  linkCreatedAt: link }, // no tx, held-flat (REG-2)
+  ];
+  const earliestTx = new Map([["tx", fromISO("2026-06-01")]]);
+  const heldFlat = new Set(["flat"]);
+  const EPOCH_MS = new Date(0).getTime();
+
+  // PERSONAL space — no link floor; tx floor wins, no-tx → today, held-flat → EPOCH.
+  const personal = computeAccountFloors(entries, earliestTx, heldFlat, false, today);
+  check("tx account floors to its earliest transaction", isoDate(personal.get("tx")!) === "2026-06-01");
+  check("no-tx, non-held-flat account floors to today", personal.get("notx")!.getTime() === today.getTime());
+  check("no-tx held-flat account floors to EPOCH (spans window, REG-2)", personal.get("flat")!.getTime() === EPOCH_MS);
+
+  // SHARED space — the link floor (2026-06-15) is the LATER bound for the tx account.
+  const shared = computeAccountFloors(entries, earliestTx, heldFlat, true, today);
+  check("shared space takes max(txFloor, linkFloor) — link 06-15 beats tx 06-01", isoDate(shared.get("tx")!) === "2026-06-15");
+  check("shared space: no-tx account still floors to max(today, link)=today", shared.get("notx")!.getTime() === today.getTime());
+  check("shared space: held-flat floors to max(EPOCH, link)=link", isoDate(shared.get("flat")!) === "2026-06-15");
+
+  // ignoreFloors (dev-seed) collapses every floor to EPOCH.
+  const ignored = computeAccountFloors(entries, earliestTx, heldFlat, true, today, true);
+  check("ignoreFloors collapses every floor to EPOCH", [...ignored.values()].every((d) => d.getTime() === EPOCH_MS));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
