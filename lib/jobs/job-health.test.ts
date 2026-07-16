@@ -18,12 +18,14 @@
 
 import { readFileSync } from "node:fs";
 import {
+  DEAD_CADENCE_MULTIPLE,
   DEFAULT_CADENCE_HOURS,
   FAILURE_STREAK_THRESHOLD,
   GRACE_HOURS,
   STALE_RUNNING_HOURS,
   checkScheduledJobHealth,
   classifyJobHealth,
+  nextExpectedRun,
   type JobRunHealthRow,
   type JobRunReadClient,
 } from "@/lib/jobs/health";
@@ -51,6 +53,16 @@ const NOW = new Date("2026-07-09T12:00:00Z");
 const HOUR = 60 * 60 * 1000;
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * HOUR);
 const run = (h: number, status: string): JobRunHealthRow => ({ startedAt: hoursAgo(h), status });
+/** Richer row for the metric tests (duration / trigger / error summary). */
+const richRun = (h: number, status: string, extra: Partial<JobRunHealthRow> = {}): JobRunHealthRow => ({
+  startedAt: hoursAgo(h),
+  status,
+  completedAt: status === "running" ? null : hoursAgo(h - 0.01),
+  durationMs: status === "running" ? null : 1000,
+  trigger: "cron",
+  errorSummary: status === "failed" ? "boom" : null,
+  ...extra,
+});
 
 async function main(): Promise<void> {
   console.log("dead-job detector (OPS-4 S5)");
@@ -79,8 +91,8 @@ async function main(): Promise<void> {
       classifyJobHealth(j, [run(1, "failed"), run(25, "failed"), run(49, "succeeded")], NOW).status === "healthy");
     check("success resets the streak",
       classifyJobHealth(j, [run(1, "succeeded"), ...threeFails], NOW).status === "healthy");
-    check("recent in-flight run breaks the streak (may yet succeed)",
-      classifyJobHealth(j, [run(0.5, "running"), run(25, "failed"), run(49, "failed"), run(73, "failed")], NOW).status === "healthy");
+    check("recent in-flight run → running, and breaks the streak (may yet succeed)",
+      classifyJobHealth(j, [run(0.5, "running"), run(25, "failed"), run(49, "failed"), run(73, "failed")], NOW).status === "running");
     check("stale running row counts as a crashed run in the streak",
       classifyJobHealth(
         j,
@@ -99,6 +111,75 @@ async function main(): Promise<void> {
       classifyJobHealth({ name: "t" }, [run(1, "succeeded")], NOW).expectedEveryHours === DEFAULT_CADENCE_HOURS);
     check("precedence: overdue beats failing (absence dominates brokenness)",
       classifyJobHealth({ name: "t" }, [run(30, "failed"), run(54, "failed"), run(78, "failed")], NOW).status === "overdue");
+  }
+
+  // ── 3b. New states: running + dead (OPS-5 S2) ──────────────────────────────
+  {
+    const j = { name: "t" };
+    check("running: newest run is a fresh in-flight row",
+      classifyJobHealth(j, [run(0.5, "running"), run(24, "succeeded")], NOW).status === "running");
+    check("stale running is NOT 'running' (crashed run, not in flight)",
+      classifyJobHealth(j, [run(STALE_RUNNING_HOURS + 1, "running")], NOW).status !== "running");
+    check("dead: newest run older than cadence × DEAD_CADENCE_MULTIPLE",
+      classifyJobHealth(j, [run(DEFAULT_CADENCE_HOURS * DEAD_CADENCE_MULTIPLE + 1, "succeeded")], NOW).status === "dead");
+    check("precedence: dead beats overdue (many missed cycles, not one)",
+      classifyJobHealth(j, [run(DEFAULT_CADENCE_HOURS * DEAD_CADENCE_MULTIPLE + 1, "failed"), run(100, "failed"), run(124, "failed")], NOW).status === "dead");
+    check("just under the dead threshold is still overdue, not dead",
+      classifyJobHealth(j, [run(DEFAULT_CADENCE_HOURS * DEAD_CADENCE_MULTIPLE - 1, "succeeded")], NOW).status === "overdue");
+    check("per-job cadence honored for dead (6h job, 20h-old run → dead)",
+      classifyJobHealth({ name: "t", expectedEveryHours: 6 }, [run(20, "succeeded")], NOW).status === "dead");
+  }
+
+  // ── 3c. Rich metrics — all derived from the same window ────────────────────
+  {
+    const j = { name: "t" };
+    const rows = [
+      richRun(1, "succeeded", { durationMs: 2000 }),
+      richRun(25, "failed", { errorSummary: "timeout" }),
+      richRun(49, "succeeded", { durationMs: 4000 }),
+      richRun(73, "succeeded", { durationMs: 6000, trigger: "manual" }),
+    ];
+    const r = classifyJobHealth(j, rows, NOW);
+    check("totalRuns counts the whole window", r.totalRuns === 4);
+    check("succeeded / failed tallied", r.succeededRuns === 3 && r.failedRuns === 1);
+    check("successRate = succeeded / completed (3/4)", r.successRate === 0.75);
+    check("avgRuntimeMs averages succeeded durations only ((2000+4000+6000)/3)",
+      r.avgRuntimeMs === 4000);
+    check("lastRuntimeMs is the newest run with a duration", r.lastRuntimeMs === 2000);
+    check("lastFailureAt/Summary point at the most recent failed run",
+      r.lastFailureAt?.getTime() === hoursAgo(25).getTime() && r.lastFailureSummary === "timeout");
+    check("manualRuns counts trigger === 'manual' (honest ledger read)", r.manualRuns === 1);
+
+    const noRuns = classifyJobHealth(j, [], NOW);
+    check("never-ran leaves metrics null/zero (no fabrication)",
+      noRuns.successRate === null && noRuns.avgRuntimeMs === null && noRuns.lastRuntimeMs === null &&
+      noRuns.manualRuns === 0 && noRuns.totalRuns === 0 && noRuns.lastFailureAt === null);
+
+    const running = classifyJobHealth(j, [richRun(0.2, "running"), richRun(24, "succeeded", { durationMs: 3000 })], NOW);
+    check("in-flight run: successRate over completed only, lastRuntime from last completed",
+      running.successRate === 1 && running.lastRuntimeMs === 3000 && running.status === "running");
+  }
+
+  // ── 3d. nextExpectedRun — schedule projection (pure) ───────────────────────
+  {
+    const AT_0530 = new Date("2026-07-09T05:30:00Z"); // before the 06:00 daily slot
+    const daily6 = nextExpectedRun(6, 0, AT_0530);
+    check("daily slot: next run is today's 06:00 when now is before it",
+      daily6?.toISOString() === "2026-07-09T06:00:00.000Z");
+    const AT_0700 = new Date("2026-07-09T07:00:00Z"); // after the 06:00 slot → tomorrow
+    const daily6b = nextExpectedRun(6, 0, AT_0700);
+    check("daily slot: rolls to tomorrow once today's slot has passed",
+      daily6b?.toISOString() === "2026-07-10T06:00:00.000Z");
+    const intraday = nextExpectedRun([0, 6, 12, 18], 0, new Date("2026-07-09T07:00:00Z"));
+    check("intraday array: picks the next fire hour (12:00)",
+      intraday?.toISOString() === "2026-07-09T12:00:00.000Z");
+    const wrap = nextExpectedRun([0, 6, 12, 18], 0, new Date("2026-07-09T19:00:00Z"));
+    check("intraday array: wraps past the last slot to tomorrow's first",
+      wrap?.toISOString() === "2026-07-10T00:00:00.000Z");
+    check("half-hour minute honored", nextExpectedRun(6, 30, AT_0530)?.toISOString() === "2026-07-09T06:30:00.000Z");
+    check("unknown slot → null (bare job in a unit test)", nextExpectedRun(undefined, undefined, NOW) === null);
+    check("real registry jobs all resolve a next expected run",
+      SCHEDULED_JOBS.every((jb) => classifyJobHealth(jb, [run(1, "succeeded")], NOW).nextExpectedAt instanceof Date));
   }
 
   // ── 4. Detector over an injected ledger ────────────────────────────────────
@@ -137,12 +218,16 @@ async function main(): Promise<void> {
       NOW,
     );
     check("overall healthy = true when every job is healthy", allHealthy.healthy === true);
-    check("structured output (job/status/cadence/last/failures per row)",
+    check("structured output (job/status/cadence/last/failures + rich metrics per row)",
       health.jobs.every((r) =>
         typeof r.job === "string" &&
         typeof r.expectedEveryHours === "number" &&
-        "lastStartedAt" in r && "lastRunStatus" in r &&
-        typeof r.consecutiveFailures === "number"));
+        "lastStartedAt" in r && "lastRunStatus" in r && "lastCompletedAt" in r &&
+        typeof r.consecutiveFailures === "number" &&
+        typeof r.totalRuns === "number" && typeof r.succeededRuns === "number" &&
+        typeof r.failedRuns === "number" && typeof r.manualRuns === "number" &&
+        "lastRuntimeMs" in r && "avgRuntimeMs" in r && "successRate" in r &&
+        "lastFailureAt" in r && "lastFailureSummary" in r && "nextExpectedAt" in r));
   }
 
   // ── 5. Dispatcher compatibility ────────────────────────────────────────────
