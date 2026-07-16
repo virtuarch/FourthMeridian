@@ -69,6 +69,8 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "ops_api_usage",        label: "API Usage",        order: 3 },
       // Wave 2 CH-1 — provider connection health (Part B).
       { key: "ops_connection_health", label: "Connection Health", order: 4 },
+      // OPS-5 S1 — content-aware resource freshness (FX rates, security prices).
+      { key: "ops_resource_freshness", label: "Resource Freshness", order: 5 },
     ],
   },
   SECURITY_OPS: {
