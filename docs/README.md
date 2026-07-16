@@ -1,26 +1,28 @@
 # Fourth Meridian — Documentation
 
-Index of everything under `docs/`. For current project status, roadmap, initiative ledger, and known defects, see [`/STATUS.md`](../STATUS.md) — the only document allowed to describe current state.
+Index of everything under `docs/`. For what is happening **right now** (version, active work, blockers, next steps), see [`/STATUS.md`](../STATUS.md). `docs/` holds the durable intent; the code is the source of truth.
 
-## Documentation layers
+## The documentation lifecycle
 
-| Layer | Location | Mutability | Authority |
-|---|---|---|---|
-| Canonical operational | `/STATUS.md` | Living — updated by any behavior-changing PR | Current state, roadmap, defects, initiative status |
-| Decision records | `architecture/` | Immutable — superseded, never edited | What was decided and why, as of their date |
-| Initiative history | `initiatives/<id>/` | Immutable once the initiative closes | How something was built |
-| Cross-cutting investigations | `investigations/` | Immutable | Design reasoning not owned by one initiative |
-| Operational references | `operations/` | Living | How to deploy and operate |
-| Archive | `archive/` | Immutable | Superseded material kept for history |
+Investigations and initiatives are **temporary decision inputs**, not permanent documentation:
+
+> **Investigation → Decision → Knowledge extraction → Deletion.**
+
+When work closes, its durable conclusions are merged into `doctrine/` / `systems/` / `architecture/`, a release note is updated, and the working artifacts are deleted. **Git preserves the process; the working tree keeps only the conclusions.**
 
 ## Folders
 
-- `architecture/` — Governing design records: Phase 2 architecture freeze, decision matrix, database architecture review, D2 connection/provider architecture. The Decision Matrix is the sole authority for D-numbers D1–D14.
-- `initiatives/<id>/` — One folder per initiative, holding its investigations, checklists, validations, and closeout. Folders stay flat under 15 docs; past that they split into `investigations/`, `implementation/`, `validation/`, `closeout/` with an `INDEX.md` (see `initiatives/d2/`).
-- `investigations/` — Cross-cutting or alias-mapped investigations (see STATUS.md §4 for D-number aliasing).
-- `bugfixes/` — Closed point-in-time bug writeups. Never edited after the fix ships.
-- `releases/` — Per-version release notes.
-- `operations/` — Deployment process and hydration rules.
-- `design-system/` — Design language reference and assets.
-- `images/` — Shared screenshots and diagrams.
-- `archive/` — Retired or superseded docs. Never edit archived docs; copy forward instead.
+| Folder | What it holds | Nature |
+|---|---|---|
+| [`doctrine/`](doctrine/) | The **rules that bind the code** — financial-semantics, money-and-fx, historical-data, spaces, platform-and-security, intelligence | Durable, evolving |
+| [`systems/`](systems/) | **Why each subsystem exists** + its authority, contracts, invariants — investments, wealth, cash-flow, liquidity, debt, transactions, spaces, connections, platform-ops, ai | Durable, evolving |
+| [`architecture/`](architecture/) | **Decision records** — PHASE_2_DECISION_MATRIX (sole D1–D14 authority), PHASE_2_DOCTRINE, PHASE_2_ARCHITECTURE_FREEZE, `decisions/DEC-0`, `initiative-naming` | Immutable decisions |
+| [`plans/`](plans/) | **Active** roadmap, plans, and parked ideas | Living, active-only |
+| [`operations/`](operations/) | Runbooks (jobs, keys, incident), deployment, release + security checklists | Living |
+| [`releases/`](releases/) | Honest per-version release notes (what shipped · gaps · migration · readiness) | One per version |
+| [`audits/`](audits/) | The living audits — architecture, security, production-readiness. Category expires at first production release | Point-in-time |
+| [`design/`](design/) & [`design-system/`](design-system/) | Design language, Atlas material doctrines, product language, assets | Durable |
+| [`bugfixes/`](bugfixes/) | Remaining closed bug writeups (operational lessons folded into runbooks) | Historical |
+| [`images/`](images/) | Shared screenshots and diagrams | — |
+
+There is no permanent `initiatives/` or `investigations/` home: an initiative gets one active plan in `plans/` while open, and its durable rules land in `doctrine/` / `systems/` at close.

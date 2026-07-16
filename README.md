@@ -1,12 +1,15 @@
 # Fourth Meridian
 
-A local-first personal finance intelligence platform. Runs on your laptop via Docker Compose, accessible from any device via a Cloudflare tunnel, and installable as a PWA from your iPhone home screen.
+A multi-tenant personal-finance intelligence platform built on Next.js 16 / Prisma / PostgreSQL, deployed to **Vercel** with a **Supabase** Postgres database. Members organize accounts into collaborative **Spaces**, and a deterministic-first AI analyst narrates pre-computed, provenance-carrying facts (it never calculates figures itself).
 
 ---
 
-## Project Status
+## Project Status & Documentation
 
-Current status, roadmap, initiative ledger, and known defects live in [`STATUS.md`](STATUS.md) — the project's single canonical operational document. Features, APIs, and schemas evolve between versions.
+- **[`STATUS.md`](STATUS.md)** — the current-state snapshot (version, active work, blockers, next steps, production readiness).
+- **[`docs/`](docs/README.md)** — the durable documentation set: `doctrine/` (the rules that bind the code), `systems/` (why each subsystem exists + its contracts), `architecture/` (decision records), `plans/` (roadmap + parked ideas), `operations/`, `releases/`, `audits/`, `design/`.
+
+Features, APIs, and schemas evolve between versions. `docs/` is the source of intent; the code is the source of truth.
 
 ---
 
@@ -57,17 +60,20 @@ Available at `/admin` to system admin accounts. Covers user management, space ov
 | Encryption | AES-256-GCM (`lib/plaid/encryption.ts`) |
 | Bank data | Plaid |
 | Crypto data | Public blockchain APIs |
-| Hosting | Docker Compose (local) |
-| External access | Cloudflare Tunnel |
+| Hosting | Vercel (production); Docker Compose Postgres for local dev |
+| Database (prod) | Supabase Postgres |
+| Background jobs | Vercel Cron → typed job registry + dispatcher (`lib/jobs/`) |
 
 ---
 
 ## Local Setup
 
+Production runs on Vercel + Supabase; the steps below spin up a local Postgres (via Docker) for development. For staging/production, set `DATABASE_URL` / `DIRECT_URL` to the Supabase connection strings (see `.env.example`) instead of running the local db.
+
 ### Prerequisites
 
 - Node.js 20+
-- Docker + Docker Compose
+- Docker + Docker Compose (local Postgres only)
 - A [Plaid](https://plaid.com) developer account (sandbox is free)
 
 ### 1. Clone and install
@@ -167,7 +173,7 @@ npm run db:reset      # Reset DB and re-run migrations (destroys data)
 
 ## Roadmap
 
-See [`STATUS.md`](STATUS.md) §5 for the current roadmap with phase exit criteria.
+See [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) for the current roadmap with phase exit criteria, and [`STATUS.md`](STATUS.md) for what's active right now.
 
 ---
 
