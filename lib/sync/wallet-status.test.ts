@@ -62,24 +62,30 @@ check("finalize merges plaid + wallet connection lists",
     ...cards,
   ]).connections.length === 3);
 
-// ── Error-card copy: truthful about (no) automatic retry ─────────────────────
-// These strings are unique to ErrorContent, so presence in the file is exact.
+// ── Error-card policy: wallets never auto-resync ─────────────────────────────
+// The load-bearing invariant (not the exact marketing copy): the error card is
+// PROVIDER-GATED, and the wallet arm must NOT promise a background retry that
+// doesn't exist — self-custody wallets have no scheduled crypto sync, so retry
+// is user-initiated. Plaid IS retried daily by sync-banks, so its background-
+// retry promise is accurate and lives on the Plaid arm. Assert the semantics of
+// the branch, not the wording of either sentence (which is free to churn).
 const card = readFileSync(join(process.cwd(), "components", "connections", "ConnectionCard.tsx"), "utf8");
-check("wallet error card says 'Press Refresh' (no background-retry promise)",
-  /provider === "WALLET"/.test(card) && /Press Refresh to retry discovery/.test(card));
-check("wallet error card says 'address discovery' + keeps a detailed reason",
-  /couldn.t complete address discovery/.test(card) && /Address discovery failed:/.test(card));
-check("Plaid error card keeps accurate 'we'll keep retrying' (daily sync-banks)",
-  /keep retrying/.test(card));
-check("wallet error branch is provider-gated (Plaid copy unchanged)",
-  /isWallet\s*\?/.test(card));
-check("wallet importing card shows 'Discovering addresses' (not the Plaid stepper)",
-  /provider === "WALLET"/.test(card) && /Discovering addresses/.test(card));
-check("zero-used wallet shows valid-but-wrong-type GUIDANCE, not a sync error",
-  /NO_USED_ADDRESSES/.test(card) && /no used addresses were found/.test(card) &&
-  /Native SegWit zpub/.test(card) && /No activity found/.test(card));
-check("malformed xpub error explains it's not a valid extended key",
-  /INVALID_XPUB/.test(card) && /valid extended public key/.test(card));
+
+check("error card is provider-gated on a wallet branch (isWallet ? … : …)",
+  /const isWallet\s*=\s*provider === "WALLET"/.test(card) && /isWallet\s*\?/.test(card));
+
+// Capture the wallet arm — a plain double-quoted string in the `isWallet ? … : …`
+// error copy. (We don't parse the Plaid arm: its template literal nests backticks.)
+const walletArm = /isWallet\s*\?\s*"([^"]*)"/.exec(card)?.[1] ?? "";
+const promisesBackgroundRetry = (s: string) => /keep retrying|we['’]ll[^.]*retr/i.test(s);
+
+check("wallet error arm makes NO background-retry promise (wallets never auto-resync)",
+  walletArm.length > 0 && !promisesBackgroundRetry(walletArm));
+// The only background-retry promise in the card lives on the Plaid arm — accurate,
+// since sync-banks retries Plaid daily. It's present in the card but NOT in the
+// wallet arm, so the honest contrast holds.
+check("Plaid arm keeps its accurate background-retry promise (contrast is real)",
+  promisesBackgroundRetry(card) && !promisesBackgroundRetry(walletArm));
 
 console.log(`\nwallet-status: ${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

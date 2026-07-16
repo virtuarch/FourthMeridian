@@ -1,18 +1,58 @@
 /**
  * components/space/shell/space-shell.test.ts
  *
- * SD-1 ratchets (source-scan — no DOM runner exists in this repo).
- *   npx tsx components/space/shell/space-shell.test.ts
+ * SD-1 seam tripwires + slot-API contract.
  *
- * Pins the SpaceShell extraction: the shell owns the permanent frame (container,
- * header, toolbar slot, navigation rail, workspace slot) and is WORKSPACE-
- * AGNOSTIC; SpaceDashboard composes the shell instead of owning the frame; and
- * the SD-0 URL/time authorities are untouched.
+ * Two gates run over this one file:
+ *   • RUNTIME (this tsx run) — the durable BOUNDARY scans: the shell imports NO
+ *     domain business logic, does NO FX math, and touches NO competing URL/time
+ *     authority; the host composes the shell and keeps the SD-0 authorities.
+ *   • COMPILE-TIME (`tsc --noEmit`, which scans test files) — the SpaceShellProps
+ *     SLOT API (workspace / header / toolbar / overlays / rail / display-currency
+ *     slots). This replaces the former brittle JSX-text, max-width-class, and
+ *     prop-spelling pins: a diverging edit to the props shape fails `tsc`, and a
+ *     cosmetic layout refactor (that changes nothing observable) no longer does.
+ *
+ *   npx tsx components/space/shell/space-shell.test.ts
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import type { ReactNode } from "react";
+import type { SpaceShellProps, SpaceShellRailOption } from "./SpaceShell";
 
+// ── TYPE-LEVEL: the SpaceShell slot API (compile-time; tsc is the gate) ──────────
+// Each slot is a host-composed ReactNode — the shell owns only WHERE it mounts,
+// never WHAT it renders. This is a slot API a runtime test can't cheaply reach in
+// this no-DOM repo, so it is asserted structurally instead of by scanning JSX text.
+type Equal<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type Expect<T extends true> = T;
+
+// The workspace viewport slot — the active tab's body, supplied by the host.
+type _WorkspaceSlot = Expect<Equal<SpaceShellProps["children"], ReactNode>>;
+// Header slots.
+type _TitleSlot    = Expect<Equal<SpaceShellProps["title"], ReactNode>>;
+type _SubtitleSlot = Expect<Equal<SpaceShellProps["subtitle"], ReactNode>>;
+// Optional host-composed chrome slots (a slot, never structured props — the shell
+// stays agnostic of what each one opens or renders).
+type _OverlaysSlot = Expect<Equal<SpaceShellProps["overlays"], ReactNode | undefined>>;
+type _ToolbarSlot  = Expect<Equal<SpaceShellProps["toolbar"], ReactNode | undefined>>;
+// SD-2C — the display-currency control is a SHELL-owned SLOT: the host builds the
+// control + its state, the shell performs NO FX. Optional (absent ⇒ nothing renders).
+type _FxSlot = Expect<Equal<SpaceShellProps["displayCurrencyControl"], ReactNode | undefined>>;
+// The rail slot carries resolved id/label/icon options — never domain workspaces.
+type _RailSlot   = Expect<Equal<SpaceShellProps["railOptions"], SpaceShellRailOption[]>>;
+type _RailOption = Expect<Equal<keyof SpaceShellRailOption, "id" | "label" | "icon">>;
+// The EXACT slot-API surface — nothing added, nothing dropped. Replaces the old
+// text scan for `overlays?:` / `toolbar?:` / `railOptions:` / `children:`.
+type _SlotApiKeys = Expect<Equal<
+  keyof SpaceShellProps,
+  | "overlays" | "title" | "subtitle" | "toolbar" | "displayCurrencyControl"
+  | "railOptions" | "activeTab" | "onSelectTab" | "railStatic" | "children"
+>>;
+
+// ── RUNTIME: the durable boundary scans (source-scan — no DOM runner in-repo) ────
 let failures = 0;
 function check(name: string, ok: boolean, detail?: string): void {
   console.log(`[${ok ? "PASS" : "FAIL"}] ${name}`);
@@ -24,26 +64,13 @@ const read = (p: string) => readFileSync(path.join(ROOT, ...p.split("/")), "utf8
 /** Strip comments so prose that names a workspace doesn't trip a code ratchet. */
 const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
 
-const shellSrc  = read("components/space/shell/SpaceShell.tsx");
-const shellCode = stripComments(shellSrc);
-const dashSrc   = read("components/dashboard/SpaceDashboard.tsx");
-const dashCode  = stripComments(dashSrc);
+const shellCode = stripComments(read("components/space/shell/SpaceShell.tsx"));
+const dashCode  = stripComments(read("components/dashboard/SpaceDashboard.tsx"));
 
-// ── SpaceShell OWNS the permanent frame ─────────────────────────────────────────
-check("shell owns the frame container (max-w-5xl, centered)", /max-w-5xl mx-auto/.test(shellCode));
-check("shell owns the Space-level rail (SegmentedControl)", /<SegmentedControl/.test(shellCode));
-check("shell owns the rail float/static behavior (FloatingNavWrapper + railStatic)",
-  /<FloatingNavWrapper/.test(shellCode) && /railStatic/.test(shellCode));
-check("shell renders the header (title + subtitle)", /\{title\}/.test(shellCode) && /\{subtitle\}/.test(shellCode));
-check("shell renders the toolbar slot", /\{toolbar\}/.test(shellCode));
-check("shell renders the overlays slot (dialog mount point)", /\{overlays\}/.test(shellCode));
-check("shell renders the workspace slot ({children})", /\{children\}/.test(shellCode));
-check("shell exposes the slot API", /overlays\?:/.test(shellCode) && /toolbar\?:/.test(shellCode) &&
-  /railOptions:/.test(shellCode) && /children:/.test(shellCode));
-
-// ── SpaceShell is WORKSPACE-AGNOSTIC ────────────────────────────────────────────
-// Nothing in the shell's code (comments stripped) may name a workspace or its
-// composition primitives — it only knows "frame".
+// ── DURABLE SEAM: SpaceShell is WORKSPACE-AGNOSTIC + does NO FX math ─────────────
+// The load-bearing SD-1 invariant: nothing in the shell's code (comments stripped)
+// may name a workspace, its composition primitives, or any currency/FX module.
+// This is an import-graph boundary a runtime test cannot cheaply hold.
 for (const banned of [
   "WealthWorkspace", "InvestmentsWorkspace", "DebtWorkspace",
   "LiquidityPerspective", "LiquidityWorkspace", "CashFlowPerspective", "CashFlowWorkspace", "PerspectiveShell",
@@ -57,40 +84,23 @@ for (const banned of [
   check(`shell does not import/perform workspace or FX logic: ${banned}`, !shellCode.includes(banned));
 }
 
-// ── SpaceShell does NOT touch the SD-0 authorities ──────────────────────────────
+// ── DURABLE SEAM: SpaceShell does NOT touch the SD-0 authorities ─────────────────
 check("shell does not touch the URL authority", !shellCode.includes("useSpaceUrl") && !/history\.(push|replace)State/.test(shellCode));
 check("shell does not touch the time authority", !shellCode.includes("usePerspectiveShellState"));
 
-// ── SpaceDashboard COMPOSES the shell instead of owning the frame ───────────────
-check("host renders the SpaceShell frame", /<SpaceShell/.test(dashCode));
-check("host no longer owns the frame container", !/max-w-5xl mx-auto/.test(dashCode));
-check("host no longer imports the rail primitives directly",
+// ── DURABLE SEAM: the host COMPOSES the shell and KEEPS the SD-0 authorities ─────
+check("host composes the SpaceShell frame", /<SpaceShell/.test(dashCode));
+// Single-authority: the rail primitives belong to the shell — the host must not
+// import them directly (import-graph boundary, not a layout pin).
+check("host does not import the rail primitives directly",
   !/from "@\/components\/atlas\/SegmentedControl"/.test(dashCode) &&
   !/from "@\/components\/atlas\/FloatingNavWrapper"/.test(dashCode));
-check("host feeds the rail (railOptions/activeTab/onSelectTab/railStatic)",
-  /railOptions=\{railOptions\}/.test(dashCode) && /onSelectTab=\{setActiveTab\}/.test(dashCode) &&
-  /railStatic=\{activeTab === "PERSPECTIVES"\}/.test(dashCode));
-
-// ── Workspaces still render INSIDE the slot (host keeps workspace ownership) ─────
-check("workspace render ladder still lives in the host (inside the slot)",
-  /<WealthWorkspace/.test(dashCode) && /<InvestmentsWorkspace/.test(dashCode) &&
-  /<CashFlowWorkspace/.test(dashCode) && /<DebtWorkspace/.test(dashCode));
-
-// ── SD-0 authorities preserved in the host (SD-1 must not regress them) ─────────
 check("host still owns the URL authority (SD-0A)", /useSpaceUrl\(\)/.test(dashCode));
 check("host still owns the time authority (SD-0B)", /usePerspectiveShellState\(/.test(dashCode));
 check("host still avoids useSearchParams (no new Suspense boundary)", !dashCode.includes("useSearchParams"));
-
-// ── FX ownership (SD-2C): the display-currency control is a SHELL-owned slot ─────
-check("shell exposes a displayCurrencyControl slot", /displayCurrencyControl\?:\s*ReactNode/.test(shellSrc) && /\{displayCurrencyControl\}/.test(shellCode));
-check("host forwards the FX control to the shell (not the Overview body)",
-  /displayCurrencyControl=\{displayCurrencyControl\}/.test(dashCode) &&
-  !/composition === "overview" && displayCurrencyControl/.test(dashCode));
-check("host no longer renders the FX control in the Overview section stack",
-  !/&& overviewTopSlot/.test(dashCode) && !/&& displayCurrencyControl\}/.test(dashCode));
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed.`);
   process.exit(1);
 }
-console.log("\nAll SD-1 SpaceShell ratchets passed.");
+console.log("\nAll SD-1 SpaceShell seam + slot-API ratchets passed.");

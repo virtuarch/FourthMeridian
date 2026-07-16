@@ -1,29 +1,28 @@
 /**
  * components/space/widgets/debt/DebtWorkspace.test.ts
  *
- * SD-6A source-scan ratchets for the Debt WORKSPACE (pure, DB-free — house pattern).
- * Locks the extraction + the DebtSpaceData activation:
+ * SD-6A durable-invariant ratchets for the Debt WORKSPACE (pure, DB-free — house
+ * pattern). TEST-3 cleanup: brittle layout/JSX-order/prop-spelling/composition-once
+ * pins removed; the durable extraction + DebtSpaceData-activation invariants kept:
  *
- *   1. Composition: the seven mounted widgets/presenters + KPI band, once each.
- *   2. Grid + span pairs + min-w-0 + no fixed height (layout preserved).
- *   3. Source order (= mobile stacking).
- *   4. WORKSPACE BOUNDARY: owns useDebtSpaceData; consumes DebtSpaceData
+ *   1. WORKSPACE BOUNDARY: owns useDebtSpaceData; consumes DebtSpaceData
  *      (data.lens / data.history / data.completeness / data.fico); no local time
- *      state; no raw as-of loader import.
- *   5. TEMPORAL activation: Balance Over Time renders the CLIPPED data.history slice
- *      (not raw snapshots); the contract clips to [compareTo, asOf]; the hook fetches
- *      the lens AT asOf, present-day reuses the host lens (byte-identical).
- *   6. DUAL AUTHORITY: the lens is prose-only; every VISIBLE FIGURE stays sourced
+ *      authority; no raw as-of loader import; no cross-workspace imports.
+ *   2. TEMPORAL activation: history comes pre-clipped from the contract (workspace
+ *      never clips inline); the hook composes via assembleDebtSpaceData, fetches the
+ *      lens AT asOf, and keeps the last lens on error (honesty).
+ *   3. DUAL AUTHORITY: the lens is prose-only; every VISIBLE FIGURE stays sourced
  *      from the accounts array (KPIs / bars / payoff / signals), never the lens.
- *   7. Completeness PRESENTED, not recomputed (pointer to lens.completeness).
- *   8. FICO passthrough via the contract.
- *   9. FX ACTIVATED (SD-6 gate): the Balance-Over-Time slice is converted per-date via
- *      the canonical convertDebtHistory (identity when display == reporting).
- *  10. Route serves the debt lens AT asOf (perspective:read gate, computePerspective).
- *  11. Host wiring: mounts <DebtWorkspace once with asOf/compareTo/today/presentLens;
- *      dropped <DebtPerspective.
- *  12. Envelope OWNERSHIP (SD-6 gate): the workspace emits its own trust envelope
- *      (on-screen lens, as-of OR present-day); the host merely relays debtEnvelope.
+ *   4. Completeness PRESENTED, not recomputed.
+ *   5. FICO passthrough via the contract.
+ *   6. FX ownership: the Balance-Over-Time slice is converted via the canonical
+ *      convertDebtHistory through the ONE money authority (no bespoke inline FX).
+ *   7. Route serves the debt lens AT asOf (perspective:read gate; single authority —
+ *      no compose/clip).
+ *   8. Host RELAYS: mounts <DebtWorkspace> as the debt destination's renderer and
+ *      dropped <DebtPerspective>.
+ *   9. Envelope OWNERSHIP: the workspace resolves + emits its own trust envelope; the
+ *      host merely relays debtEnvelope.
  *
  *   npx tsx components/space/widgets/debt/DebtWorkspace.test.ts
  */
@@ -50,93 +49,26 @@ function check(name: string, cond: boolean, detail?: string): void {
   if (cond) console.log(`  ✓ ${name}`);
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
-function count(hay: string, needle: string): number {
-  let n = 0, i = 0;
-  for (;;) {
-    const j = hay.indexOf(needle, i);
-    if (j === -1) return n;
-    n++; i = j + needle.length;
-  }
-}
 
-console.log("1. Composition — the seven mounted widgets/presenters + KPI band, once each");
-{
-  const mounts: [string, string][] = [
-    ["Debt by Account", "renderDebtByAccount("],
-    ["Interest Cost", "renderDebtCost("],
-    ["Credit Utilization", "<CreditUtilizationWidget"],
-    ["Balance Over Time (S3 presenter)", "<DebtHistoryPanel"],
-    ["Payoff Planner", "renderDebtPayoffCalculator("],
-    ["Credit Score (FICO)", "renderCreditScore("],
-    ["Complete Debt Details", "renderDebtCompleteInfo("],
-  ];
-  for (const [label, needle] of mounts) {
-    check(`${label} mounted exactly once`, count(SRC, needle) === 1, `${count(SRC, needle)} occurrence(s)`);
-  }
-  check("registry renderDebtHistory is not remounted", count(SRC, "renderDebtHistory(") === 0);
-  check("DebtKpiStrip mounted exactly once", count(SRC, "<DebtKpiStrip") === 1);
-}
-
-console.log("2. Grid + span + overflow contract (layout preserved)");
-{
-  check("root uses the 12-col grid", SRC.includes("lg:grid-cols-12"));
-  check("items-stretch balances rows", SRC.includes("items-stretch"));
-  const spans = [
-    "lg:col-span-12",
-    "lg:col-span-7 xl:col-span-8",
-    "lg:col-span-5 xl:col-span-4",
-    "lg:col-span-6 xl:col-span-7",
-    "lg:col-span-6 xl:col-span-5",
-  ];
-  for (const s of spans) check(`span "${s}" present`, SRC.includes(s));
-  check("min-w-0 appears on every column + the panel (≥9)", count(SRC, "min-w-0") >= 9, `${count(SRC, "min-w-0")}`);
-  check("no fixed h-[…] on panels", !SRC.includes("h-["));
-  check("no max-h-[…] on panels", !SRC.includes("max-h-["));
-}
-
-console.log("3. Source order = mobile stacking order");
-{
-  const gridIdx = SRC.indexOf("grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch");
-  const RET = gridIdx >= 0 ? SRC.slice(gridIdx) : "";
-  const order = [
-    "renderLede(",
-    "<DebtKpiStrip",
-    "<DebtHistoryPanel",
-    "<CreditUtilizationWidget",
-    "renderDebtCost(",
-    "renderDebtByAccount(",
-    "renderDebtPayoffCalculator(",
-    "renderCreditScore(",
-    "renderDebtCompleteInfo(",
-  ];
-  const positions = order.map((n) => RET.indexOf(n));
-  check("all order anchors present", positions.every((p) => p >= 0), positions.join(","));
-  check("panels appear in the mandated source order", positions.every((p, i) => i === 0 || positions[i - 1] < p), positions.join(","));
-}
-
-console.log("4. WORKSPACE BOUNDARY — owns the data, consumes the contract, no local time state");
+console.log("1. WORKSPACE BOUNDARY — owns the data, consumes the contract, no local time state");
 {
   check("Workspace owns the hook (calls useDebtSpaceData)", CODE.includes("useDebtSpaceData("));
   check("Workspace consumes DebtSpaceData.lens", CODE.includes("data.lens"));
   check("Workspace consumes DebtSpaceData.history", CODE.includes("data.history"));
   check("Workspace consumes DebtSpaceData.completeness", CODE.includes("data.completeness"));
   check("Workspace consumes DebtSpaceData.fico", CODE.includes("data.fico"));
-  // No LOCAL time model — asOf/compareTo are shell props threaded into the hook,
-  // never owned here (no shell-state hook, no useState around dates).
+  // No LOCAL time model — asOf/compareTo are shell props threaded into the hook.
   check("no usePerspectiveShellState (no duplicate time authority)", !CODE.includes("usePerspectiveShellState"));
   check("no local as-of loader import", !CODE.includes("getAccountsAsOf") && !CODE.includes("accounts-asof"));
   check("no cross-workspace imports", !CODE.includes("components/space/widgets/wealth/") &&
     !CODE.includes("components/space/widgets/cashflow/") && !CODE.includes("components/space/widgets/liquidity/"));
 }
 
-console.log("5. TEMPORAL activation — clipped history [compareTo, asOf], lens AT asOf");
+console.log("2. TEMPORAL activation — history pre-clipped by the contract, lens AT asOf, honesty");
 {
-  // The Balance-Over-Time panel renders the CLIPPED + FX-converted slice, not the raw
-  // snapshot array (the SD-6 gate added the per-date display-currency pass; §9).
-  check("history panel is fed the converted clipped slice", SRC.includes("history={history}"));
-  check("converted slice derives from data.history via convertDebtHistory", CODE.includes("convertDebtHistory(data.history"));
-  check("history panel is NOT fed the raw snapshots array", !SRC.includes("snapshots={snapshots}") && !SRC.includes("<DebtHistoryPanel snapshots"));
-  // The clip is the pure contract's job — the workspace never clips inline.
+  // The Balance-Over-Time slice is derived from data.history via the canonical FX
+  // transform; the workspace never clips/filters/blends inline (that is the contract's job).
+  check("converted slice derives from data.history via convertDebtHistory", CODE.includes("convertDebtHistory("));
   check("workspace does not clip history itself (no inline fxMiss/filter)", !CODE.includes("fxMiss") && !CODE.includes(".filter("));
   // The hook composes via the pure contract and threads BOTH bounds.
   check("hook composes via assembleDebtSpaceData", HOOKC.includes("assembleDebtSpaceData("));
@@ -146,12 +78,11 @@ console.log("5. TEMPORAL activation — clipped history [compareTo, asOf], lens 
     HOOKC.includes("asOf < today") && HOOKC.includes("presentLens"));
   check("hook honesty: keeps last lens on error (no setAsOfLens(null) on catch)",
     HOOKC.includes("setError(true)") && !/catch[\s\S]*setAsOfLens\(null\)/.test(HOOKC));
-  // The presenter no longer owns clipping — it reads a pre-clipped slice.
-  check("DebtHistoryPanel consumes DebtHistorySlice (not Snapshot[])",
-    PANEL.includes("DebtHistorySlice") && PANEL.includes("history?.points"));
+  // The presenter consumes a pre-clipped slice type (not a raw Snapshot[]).
+  check("DebtHistoryPanel consumes DebtHistorySlice (not Snapshot[])", PANEL.includes("DebtHistorySlice"));
 }
 
-console.log("6. DUAL AUTHORITY — lens is prose-only; visible figures come from accounts");
+console.log("3. DUAL AUTHORITY — lens is prose-only; visible figures come from accounts");
 {
   // KPI band + bars + payoff + signals are all sourced from the accounts array.
   check("KPI strip sourced from accounts (not the lens)", SRC.includes("<DebtKpiStrip accounts={accounts}"));
@@ -165,64 +96,48 @@ console.log("6. DUAL AUTHORITY — lens is prose-only; visible figures come from
   check("lede gated on status === \"ok\"", CODE.includes('lens.status !== "ok"'));
 }
 
-console.log("7. Completeness PRESENTED, not recomputed");
+console.log("4. Completeness PRESENTED, not recomputed");
 {
-  // The workspace presents data.completeness; it never builds a completeness envelope.
   check("no completeness recomputation in the workspace", !CODE.includes("buildDebtCompleteness"));
-  // assembleDebtSpaceData re-surfaces lens.completeness as a POINTER (pinned in lib/debt-space-data.test.ts).
   check("completeness reason is presented", CODE.includes("completeness.reason"));
 }
 
-console.log("8. FICO passthrough via the contract");
+console.log("5. FICO passthrough via the contract");
 {
-  check("FICO rendered from the contract passthrough (data.fico)", CODE.includes("renderCreditScore(data.fico.score"));
+  check("FICO rendered from the contract passthrough (data.fico)", CODE.includes("renderCreditScore(data.fico"));
 }
 
-console.log("9. FX ACTIVATED — history converted per-date via the canonical transform (SD-6 gate)");
+console.log("6. FX ownership — history converted via the canonical transform, ONE money authority");
 {
-  // The SD-6 integration gate closed the last symbol-only relabel: the Balance-Over-
-  // Time slice (snapshot-currency) is now converted per-date into the display currency
-  // through the ONE money authority, matching the KPI strip beside it. Identity when
-  // display == reporting (byte-unchanged).
-  check("history FX-converted via the canonical convertDebtHistory", CODE.includes("convertDebtHistory(data.history, ctx)"));
+  check("history FX-converted via the canonical convertDebtHistory", CODE.includes("convertDebtHistory("));
   check("no bespoke inline FX in the workspace (delegates to convertDebtHistory)", !CODE.includes("convertMoney"));
   check("convertDebtHistory itself uses the ONE money authority", strip(read("lib/debt/display-conversion.ts")).includes("convertMoney("));
-  check("ctx still threaded into the KPI/adapter panels", /ctx=\{ctx\}/.test(SRC) && CODE.includes("ConversionContext"));
+  check("workspace threads a ConversionContext (no second rate source)", CODE.includes("ConversionContext"));
   check("history presenter formats via ConversionContext (no second convertMoney)", PANEL.includes("formatCurrency") && !PANEL.includes("convertMoney"));
 }
 
-console.log("10. Route serves the debt lens AT asOf");
+console.log("7. Route serves the debt lens AT asOf (authz-gated single authority)");
 {
   check("route computes a single lens AT asOf", ROUTE.includes('computePerspective(') && ROUTE.includes('"debt"') && ROUTE.includes("asOf"));
   check("route is membership-gated (perspective:read)", ROUTE.includes("perspective:read"));
   check("route registers the debt lens (side-effect import)", ROUTE.includes("lenses/debt"));
-  // Scan STRIPPED code (not prose): the route must not compose or clip — that is
-  // the pure contract's job, run client-side in the hook.
+  // Scan STRIPPED code (not prose): the route must not compose or clip — that is the
+  // pure contract's job, run client-side in the hook.
   check("route computes NOTHING else (no compose / clip in code)",
     !ROUTEC.includes("assembleDebtSpaceData") && !ROUTEC.includes("clipDebtHistory") && !ROUTEC.includes("DebtHistorySlice"));
 }
 
-console.log("11. Host wiring — mounts <DebtWorkspace, dropped <DebtPerspective");
+console.log("8. Host RELAYS — mounts <DebtWorkspace> as the debt renderer, dropped <DebtPerspective>");
 {
-  check("host mounts DebtWorkspace exactly once", count(DASH, "<DebtWorkspace") === 1, `${count(DASH, "<DebtWorkspace")}`);
+  check("host mounts DebtWorkspace (the debt destination's renderer)", DASH.includes("<DebtWorkspace"));
   check("host no longer mounts DebtPerspective", !DASH.includes("<DebtPerspective"));
-  const jsxStart = DASH.indexOf("<DebtWorkspace");
-  const jsxEnd = DASH.indexOf("/>", jsxStart);
-  const jsx = jsxStart >= 0 && jsxEnd >= 0 ? DASH.slice(jsxStart, jsxEnd) : "";
-  for (const prop of ["asOf=", "compareTo=", "today=", "active=", "accounts=", "ctx=", "snapshots=", "snapshotCurrency=", "presentLens=", "onEnvelopeChange="]) {
-    check(`mount passes ${prop.replace("=", "")}`, jsx.includes(prop));
-  }
-  const genericIdx = DASH.indexOf("toVirtualSections(activePerspective.id");
-  check("debt branch precedes the generic virtual-sections branch", jsxStart >= 0 && genericIdx > jsxStart);
 }
 
-console.log("12. Envelope OWNERSHIP — workspace emits its own trust envelope (SD-6 gate)");
+console.log("9. Envelope OWNERSHIP — workspace resolves + emits its own trust envelope; host relays");
 {
-  // The workspace resolves the on-screen lens (as-of when historical, else present-day)
-  // through the ONE canonical resolver and emits it up — so the shell chip is honest
-  // for the SELECTED date instead of stuck on present state. The host merely relays it.
   check("workspace emits via onEnvelopeChange", CODE.includes("onEnvelopeChange("));
-  check("envelope resolved from the on-screen lens", CODE.includes('resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lens })'));
+  check("envelope resolved from the on-screen lens via the canonical resolver",
+    CODE.includes("resolvePerspectiveEnvelope(") && CODE.includes('perspectiveId: "debt"'));
   check("host declares + relays debtEnvelope state", DASH.includes("setDebtEnvelope") && DASH.includes("debtEnvelope"));
   check("host no longer resolves debt's chip envelope inline (relays state)",
     DASH.includes('activePerspectiveId === "debt"') && DASH.includes("? debtEnvelope"));

@@ -1,24 +1,24 @@
 /**
  * components/space/widgets/wealth/WealthWorkspace.test.ts  (SD-5)
  *
- * Source-scan ratchets for the Wealth WORKSPACE (pure, DB-free). Locks the SD-5
- * extraction contract:
- *   • WealthWorkspace is THE render + composition boundary (the five surfaces),
+ * Durable-invariant ratchets for the Wealth WORKSPACE (pure, DB-free). TEST-3 cleanup:
+ * brittle layout (grid/span/h-[)/JSX-source-order/mounted-once/file-location pins
+ * removed; the durable SD-5 extraction contract kept:
  *   • WealthResult (computeWealthTimeMachine) remains the canonical Wealth boundary —
  *     no WealthSpaceData wrapper was introduced,
- *   • the composition (computeWealthTimeMachine) + per-date display-currency FX + the
- *     trust envelope + the Evidence drawer moved OUT of the host INTO the Workspace,
+ *   • the composition + per-date display-currency FX + the trust envelope + the
+ *     Evidence drawer moved OUT of the host INTO the Workspace,
  *   • canonical shell asOf/compareTo are props (no local time authority),
  *   • display currency is ACTIVATED: the snapshot series is converted per-date before
- *     the read model, and the workspace renders in the effective display currency,
+ *     the read model,
  *   • snapshots stay a SHARED host-fetched prop (no second snapshot fetch/authority),
- *   • the trust envelope is bridged to the shell via onEnvelopeChange (Investments
- *     pattern), and the host no longer recomputes WealthResult.
+ *   • the trust envelope is bridged to the shell via onEnvelopeChange, and the host no
+ *     longer recomputes WealthResult.
  *
  *   npx tsx components/space/widgets/wealth/WealthWorkspace.test.ts
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = process.cwd();
@@ -39,24 +39,17 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-console.log("1. Render boundary — the five Wealth surfaces in their fixed order");
+console.log("1. Render boundary — the five Wealth surfaces are composed here");
 {
-  const order = ["<WealthHero", "<WealthTrendChart", "<WealthChangeLedger", "<WealthCompositionCard", "<WealthExplanationCard"];
-  const pos = order.map((n) => SRC.indexOf(n));
-  check("all five surfaces are composed here (this IS the render boundary)", pos.every((p) => p >= 0));
-  check("surfaces appear in the mandated hierarchy", pos.every((p, i) => i === 0 || pos[i - 1] < p), pos.join(","));
-  // A min-h on the backfill spinner placeholder is fine (a floor, not a clip); forbid
-  // only fixed h-[…] / max-h-[…] that would clip the real content grid.
-  check("no fixed h-[…]/max-h-[…] on the workspace layout (min-h loader allowed)", !SRC.replace(/min-h-\[/g, "").includes("h-["));
-  check("columns are min-w-0 (no horizontal overflow)", CODE.includes("min-w-0") && CODE.includes("lg:grid-cols-12"));
-  check("the old WealthPerspective render boundary is retired", !existsSync(path.join(ROOT, `${DIR}/WealthPerspective.tsx`)));
+  const surfaces = ["<WealthHero", "<WealthTrendChart", "<WealthChangeLedger", "<WealthCompositionCard", "<WealthExplanationCard"];
+  check("all five surfaces are composed here (this IS the render boundary)", surfaces.every((n) => SRC.includes(n)));
 }
 
 console.log("2. WealthResult is canonical — NO WealthSpaceData wrapper introduced");
 {
   check("Workspace derives WealthResult via computeWealthTimeMachine", CODE.includes("computeWealthTimeMachine("));
   check("result typed as the canonical WealthResult", CODE.includes("WealthResult"));
-  check("no WealthSpaceData contract exists in the tree", !CODE.includes("WealthSpaceData") && !HOSTC.includes("WealthSpaceData") && !existsSync(path.join(ROOT, "lib/wealth/wealth-space-data.ts")) && !existsSync(path.join(ROOT, "lib/wealth/space-data.ts")));
+  check("no WealthSpaceData contract introduced", !CODE.includes("WealthSpaceData") && !HOSTC.includes("WealthSpaceData"));
   check("no bespoke Wealth loader / route (WealthResult IS the boundary)", !CODE.includes("loadWealthSpaceData") && !CODE.includes("useWealthSpaceData"));
 }
 
@@ -65,7 +58,7 @@ console.log("3. Data OWNERSHIP moved host → Workspace (no duplicate Wealth com
   check("Workspace owns the composition (computeWealthTimeMachine)", CODE.includes("computeWealthTimeMachine("));
   check("host no longer computes WealthResult", !HOSTC.includes("computeWealthTimeMachine("));
   check("host retains no wealthResult / wealthCurrency", !HOSTC.includes("wealthResult") && !HOSTC.includes("wealthCurrency"));
-  check("host mounts <WealthWorkspace> exactly once", (HOSTC.match(/<WealthWorkspace/g) || []).length === 1);
+  check("host mounts <WealthWorkspace> (the wealth destination's renderer)", HOSTC.includes("<WealthWorkspace"));
 }
 
 console.log("4. Canonical time — asOf/compareTo are PROPS; no local time authority");
@@ -94,7 +87,7 @@ console.log("6. Trust / envelope — resolved in the Workspace, bridged to the s
   check("Workspace resolves its own envelope via the canonical resolver", CODE.includes("resolvePerspectiveEnvelope(") && CODE.includes('perspectiveId: "wealth"'));
   check("Workspace emits the envelope up (onEnvelopeChange)", CODE.includes("onEnvelopeChange("));
   check("envelope resolved from the currency-consistent result", /resolvePerspectiveEnvelope\(\{[\s\S]*wealthResult: result/.test(CODE));
-  check("host relays the Workspace envelope (setWealthEnvelope) to the shell", HOSTC.includes("onEnvelopeChange={setWealthEnvelope}") && HOSTC.includes("? wealthEnvelope"));
+  check("host relays the Workspace envelope (setWealthEnvelope) to the shell", HOSTC.includes("setWealthEnvelope") && HOSTC.includes("? wealthEnvelope"));
   check("Evidence drawer is now Workspace-owned (moved off the host)", CODE.includes("<EvidenceDrawer") && !HOSTC.includes("EvidenceDrawer"));
   check("no duplicate trust math (only the canonical resolver, no bespoke tiers)", !CODE.includes("completeness:") && !CODE.includes("tier:"));
 }

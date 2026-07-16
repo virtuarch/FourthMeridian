@@ -46,12 +46,14 @@ test('drawer handles loading / notfound / error / success and aborts', () => {
   assert.match(drawer, /ac\.abort\(\)/);
 });
 
-test('opening pushes the param (Back closes); close pops it', () => {
+test('opening navigates via the shared Space URL authority (Back closes); close pops it', () => {
   // SD-0A: the opener serializes through the shared Space URL core so it
   // PRESERVES the active tab/perspective/time params instead of clobbering them
-  // with a pathname-only push. Still push (not replace) so Back closes it.
-  assert.match(hook, /router\.push\(buildSpaceUrl\(pathname, search, \{ \[PARAM\]: id \}\)\)/);
+  // with a pathname-only push. Durable contract: it delegates to buildSpaceUrl
+  // (the one URL authority) and pushes (not replaces) so Back closes it — not the
+  // exact argument spelling, which is free to change.
   assert.match(hook, /from "@\/lib\/space\/space-url"/);
+  assert.match(hook, /router\.push\(buildSpaceUrl\(/);
   assert.match(hook, /router\.back\(\)/);
 });
 

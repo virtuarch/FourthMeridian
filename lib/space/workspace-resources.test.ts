@@ -11,8 +11,6 @@
  * refactor is behavior-preserving (no eager-loading regression, no lazy-loading loss).
  */
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import {
   workspaceDataNeeds,
   openPerspectiveDataNeeds,
@@ -92,23 +90,12 @@ function check(name: string, cond: boolean, detail?: string): void {
   }
 }
 
-// ── Source-scan: the host's per-perspective fetch booleans are gone; it uses the orchestrator
-{
-  const ROOT = process.cwd();
-  const src = readFileSync(path.join(ROOT, "components", "dashboard", "SpaceDashboard.tsx"), "utf8");
-  const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ""); // strip comments (they name the removed booleans)
-  for (const gone of [
-    "debtWorkspaceActive", "wealthWorkspaceActive",
-    "liquidityWorkspaceActive", "goalsWorkspaceActive", "investmentsActive",
-  ]) {
-    check(`host no longer declares/uses ${gone}`, !code.includes(gone));
-  }
-  check("host consumes openPerspectiveDataNeeds (registry-driven activation)",
-    /openPerspectiveDataNeeds\(/.test(code));
-  check("host derives activation from declared needs (perspectiveNeeds*)",
-    /perspectiveNeedsSnapshots/.test(code) && /perspectiveNeedsTransactions/.test(code) &&
-    /perspectiveNeedsGoals/.test(code) && /perspectiveNeedsInvestments/.test(code));
-}
+// NOTE (TEST-3): the former source-scan tail — which pinned the host's now-removed
+// per-perspective fetch booleans (debtWorkspaceActive, …) and the host-internal
+// `perspectiveNeeds*` identifier spellings — was removed. It pinned deleted host
+// symbols and internal variable names (pure implementation churn) rather than any
+// observable contract. The registry-derivation + EXACT-EQUIVALENCE proof above is
+// the durable, behavior-level guarantee that SD-3 is regression-free.
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed.`);

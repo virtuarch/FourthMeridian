@@ -1,22 +1,23 @@
 /**
  * components/space/widgets/cashflow/CashFlowWorkspace.test.ts  (SD-6C)
  *
- * Source-scan tests for the Cash Flow Workspace extraction (house pattern — pure,
- * DB-free, no live services). These lock the SD-6C contract without rendering React:
+ * Durable-invariant ratchets for the Cash Flow Workspace extraction (house pattern —
+ * pure, DB-free). TEST-3 cleanup: brittle import-path/prop-spelling/mount-seam/branch-
+ * order/composed-once pins removed; the durable SD-6C contract kept:
  *
  *   1. CashFlowWorkspace is the render boundary (host mounts it; old Perspective gone).
- *   2. CashFlowSpaceData is the composition boundary (buildCashFlowSpaceData, once).
- *   3. The workspace duplicates NO projection (no filterByPeriod / aggregate / project /
- *      bucket in the workspace — those come from the contract).
- *   4. Canonical time is preserved (period + onSelectPeriod props; no local date
- *      authority; the host still derives cashFlowPeriod).
+ *   2. CashFlowSpaceData is the composition boundary (buildCashFlowSpaceData); panels
+ *      consume the contract slices, not raw re-projection.
+ *   3. The workspace duplicates NO canonical projection.
+ *   4. Canonical time is preserved (period as prop; no local date authority; host still
+ *      derives cashFlowPeriod).
  *   5. The Calendar Heatmap is retained via the metric-agnostic CalendarHeatmapGrid.
  *   6. Semantic slice controls (perspective/filter) are workspace-owned (relocated).
  *   7. Calendar / Cards modes are workspace-owned (inside the History widget).
- *   8. Display currency (FX) is not regressed (txCtx threaded as moneyCtx + ctx).
+ *   8. Display currency (FX) is not regressed.
  *   9. The old Cash Flow host composition is retired/reduced.
- *  10. Trust OWNERSHIP (SD-6 gate): the workspace owns the completeness stamp AND
- *      emits its own trust envelope; the host no longer computes cashFlowStampValue.
+ *  10. Trust OWNERSHIP: the workspace owns the completeness stamp AND emits its own
+ *      trust envelope; the host merely relays cashFlowEnvelope.
  *
  *   npx tsx components/space/widgets/cashflow/CashFlowWorkspace.test.ts
  */
@@ -36,32 +37,26 @@ function check(name: string, cond: boolean, detail?: string): void {
   if (cond) console.log(`  ✓ ${name}`);
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
-function count(hay: string, needle: string): number {
-  let n = 0, i = 0;
-  for (;;) { const j = hay.indexOf(needle, i); if (j === -1) return n; n++; i = j + needle.length; }
-}
 
 console.log("1. CashFlowWorkspace is the render boundary");
 {
-  check("host imports CashFlowWorkspace", DASH.includes('import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace"'));
-  check("host mounts <CashFlowWorkspace", DASH.includes("<CashFlowWorkspace"));
+  check("host mounts <CashFlowWorkspace (the cashFlow destination's renderer)", DASH.includes("<CashFlowWorkspace"));
   check("host no longer imports the old cashflow/CashFlowPerspective", !DASH.includes("cashflow/CashFlowPerspective"));
   check("host no longer references CashFlowPerspectiveWorkspace", !DASH.includes("CashFlowPerspectiveWorkspace"));
-  const branchIdx  = DASH.indexOf('activePerspectiveId === "cashFlow"');
-  const genericIdx = DASH.indexOf("toVirtualSections(activePerspective.id");
-  check("cashFlow branch exists and precedes the generic virtual-sections branch", branchIdx >= 0 && genericIdx > branchIdx);
+  check("cashFlow branch exists", DASH.indexOf('activePerspectiveId === "cashFlow"') >= 0);
 }
 
 console.log("2. CashFlowSpaceData is the composition boundary");
 {
-  check("imports buildCashFlowSpaceData", WS.includes('from "@/lib/transactions/cash-flow-space-data"') && WS.includes("buildCashFlowSpaceData"));
-  check("builds the contract exactly once", count(WS, "buildCashFlowSpaceData(") === 1);
+  check("imports buildCashFlowSpaceData from the canonical contract module",
+    WS.includes('from "@/lib/transactions/cash-flow-space-data"') && WS.includes("buildCashFlowSpaceData"));
+  check("composes via the contract", WS.includes("buildCashFlowSpaceData("));
   // Every panel is fed from the contract slices — not raw re-projection.
-  check("Summary fed data.summary + data.context", WS.includes("facts={data?.summary}") && WS.includes("context={data?.context}"));
-  check("History fed data.daily + data.buckets", WS.includes("daily={data?.daily}") && WS.includes("buckets={data?.buckets}"));
-  check("windowed rows threaded from the contract", WS.includes("windowRows={data?.rows}"));
-  check("Spending fed data.outflowByCategory", WS.includes("items={data.outflowByCategory}"));
-  check("Income fed data.cashInByReason / data.incomeBySource", WS.includes("data.cashInByReason") && WS.includes("items={data.incomeBySource}"));
+  check("panels consume the contract's summary/context slices", WS.includes("data?.summary") && WS.includes("data?.context"));
+  check("panels consume the contract's daily/buckets slices", WS.includes("data?.daily") && WS.includes("data?.buckets"));
+  check("windowed rows come from the contract", WS.includes("data?.rows"));
+  check("spending consumes data.outflowByCategory", WS.includes("data.outflowByCategory"));
+  check("income consumes data.cashInByReason / data.incomeBySource", WS.includes("data.cashInByReason") && WS.includes("data.incomeBySource"));
 }
 
 console.log("3. The workspace duplicates NO canonical projection");
@@ -73,11 +68,11 @@ console.log("3. The workspace duplicates NO canonical projection");
 
 console.log("4. Canonical time is preserved (no duplicate date authority)");
 {
-  check("workspace receives period as a prop", WS.includes("period:") && WS.includes("period={period}"));
+  check("workspace receives period as a prop", WS.includes("period:"));
   check("workspace receives onSelectPeriod as a prop", WS.includes("onSelectPeriod:"));
   check("workspace does NOT own a local period/date authority", !WS.includes("useState<CashFlowPeriod") && !WS.includes("usePerspectiveShellState") && !WS.includes("cashFlowExplicitPeriod"));
   check("host still derives the canonical cashFlowPeriod", DASH.includes("const cashFlowPeriod"));
-  check("workspace passes canonical period to buildCashFlowSpaceData", WS.includes("period,") && WS.includes("buildCashFlowSpaceData({ transactions, accounts, period"));
+  check("workspace passes the canonical period into the contract", WS.includes("buildCashFlowSpaceData(") && WS.includes("period,"));
 }
 
 console.log("5. Calendar Heatmap retained via metric-agnostic CalendarHeatmapGrid");
@@ -91,9 +86,9 @@ console.log("5. Calendar Heatmap retained via metric-agnostic CalendarHeatmapGri
 
 console.log("6. Semantic slice controls are workspace-owned (relocated from host)");
 {
-  check("workspace owns the perspective state", WS.includes('useState<CashFlowPerspectiveMode>("liquidity")'));
+  check("workspace owns the perspective state", WS.includes("useState<CashFlowPerspectiveMode>"));
   check("workspace owns the filter state", WS.includes("useState<string>(DEFAULT_FILTER_ID)"));
-  check("workspace exposes changePerspective to its widgets", WS.includes("changePerspective") && WS.includes("onPerspectiveChange={changePerspective}"));
+  check("workspace exposes changePerspective to its widgets", WS.includes("changePerspective"));
   check("host no longer owns the perspective slice state", !DASH.includes("setCashFlowPerspective") && !DASH.includes("onCashFlowPerspectiveChange"));
 }
 
@@ -108,7 +103,7 @@ console.log("7. Calendar / Cards modes are workspace-owned (inside the History w
 console.log("8. Display currency (FX) is not regressed");
 {
   check("workspace threads txCtx into the contract as moneyCtx", WS.includes("moneyCtx: txCtx"));
-  check("workspace passes ctx={txCtx} to its panels", WS.includes("ctx={txCtx}"));
+  check("workspace passes the tx conversion context to its panels", WS.includes("ctx={txCtx}"));
   check("host still passes the tx conversion context to the workspace", DASH.includes("txCtx={txConversionCtx}"));
 }
 
@@ -116,25 +111,24 @@ console.log("9. Old Cash Flow host composition retired/reduced");
 {
   check("host removed the cashFlowPerspective/filterId state block", !DASH.includes("const [cashFlowPerspective") && !DASH.includes("const [cashFlowFilterId"));
   check("host dropped the now-unused DEFAULT_FILTER_ID import", !DASH.includes("DEFAULT_FILTER_ID"));
-  check("host mount seam is minimal (no perspective/filterId/onPerspectiveChange props on the workspace)", (() => {
+  // The relocated slice controls are no longer passed down from the host.
+  check("host no longer passes the relocated slice controls to the workspace", (() => {
     const i = DASH.indexOf("<CashFlowWorkspace");
     const j = DASH.indexOf("/>", i);
     const jsx = i >= 0 && j >= 0 ? DASH.slice(i, j) : "";
-    return jsx.includes("transactions=") && jsx.includes("period=") && jsx.includes("onSelectPeriod=") && jsx.includes("onEnvelopeChange=")
-      && !jsx.includes("perspective=") && !jsx.includes("filterId=") && !jsx.includes("onPerspectiveChange=");
+    return !jsx.includes("perspective=") && !jsx.includes("filterId=") && !jsx.includes("onPerspectiveChange=");
   })());
 }
 
 console.log("10. Trust OWNERSHIP — workspace owns the stamp AND emits its own envelope (SD-6 gate)");
 {
-  // The completeness stamp moved OUT of the host and INTO the workspace: it has its own
-  // transactions + the canonical period, so it owns the ONE computation and feeds BOTH
-  // the Insights caveat and the shell chip envelope (emitted up) — which can never
-  // disagree. The host merely relays cashFlowEnvelope.
-  check("workspace computes its own cashFlowStamp", WS.includes("cashFlowStamp({ transactions:"));
-  check("stamp feeds the Insights caveat (stamp={stamp})", WS.includes("stamp={stamp}"));
-  check("workspace emits its trust envelope via onEnvelopeChange", WS.includes("onEnvelopeChange(") &&
-    WS.includes('resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", cashFlowStamp: stamp })'));
+  // The completeness stamp moved OUT of the host and INTO the workspace: it owns the ONE
+  // computation and feeds BOTH the Insights caveat and the shell chip envelope (emitted
+  // up) — which can never disagree. The host merely relays cashFlowEnvelope.
+  check("workspace computes its own cashFlowStamp", WS.includes("cashFlowStamp("));
+  check("stamp feeds the Insights caveat", WS.includes("stamp={stamp}"));
+  check("workspace emits its trust envelope via the canonical resolver",
+    WS.includes("onEnvelopeChange(") && WS.includes("resolvePerspectiveEnvelope(") && WS.includes('perspectiveId: "cashFlow"'));
   check("host no longer computes cashFlowStampValue", !DASH.includes("cashFlowStampValue"));
   check("host no longer imports cashFlowStamp / LiquidityTx for the stamp", !DASH.includes("cash-flow-compare") && !DASH.includes("import type { LiquidityTx }"));
   check("host declares + relays cashFlowEnvelope state", DASH.includes("setCashFlowEnvelope") && DASH.includes("? cashFlowEnvelope"));

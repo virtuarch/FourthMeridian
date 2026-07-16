@@ -1,15 +1,17 @@
 /**
  * components/space/workspaces/workspaces.test.ts  (SD-7)
  *
- * Source-scan ratchets for the Standard Workspace extraction (house pattern — pure,
- * DB-free). Locks the SD-7 architecture: SpaceDashboard stops owning page composition
- * and only MOUNTS each destination's Workspace; the section subsystem + section stack
- * are shared modules. Behavior is byte-identical — these pin ownership, not markup.
+ * Durable-invariant ratchets for the Standard Workspace extraction (house pattern —
+ * pure, DB-free). TEST-3 cleanup: brittle existsSync/file-location + composed-once
+ * count pins removed; the durable SD-7 ownership invariants kept: every primary
+ * destination RESOLVES to its Workspace (host gates + mounts it per activeTab); the
+ * host no longer DEFINES the extracted composition; the section subsystem + shared
+ * dashboard types each have ONE home.
  *
  *   npx tsx components/space/workspaces/workspaces.test.ts
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = process.cwd();
@@ -29,27 +31,10 @@ function count(hay: string, needle: string): number {
   for (;;) { const j = hay.indexOf(needle, i); if (j === -1) return n; n++; i = j + needle.length; }
 }
 
-console.log("1. Every standard Workspace file exists + exports its component");
+console.log("1. Every primary destination RESOLVES to its Workspace (host gates + mounts it)");
 {
-  const files: [string, string][] = [
-    ["MembersWorkspace.tsx", "export function MembersWorkspace"],
-    ["TransactionsWorkspace.tsx", "export function TransactionsWorkspace"],
-    ["AccountsWorkspace.tsx", "export function AccountsWorkspace"],
-    ["ActivityWorkspace.tsx", "export function ActivityWorkspace"],
-    ["OverviewWorkspace.tsx", "export function OverviewWorkspace"],
-    ["AddGoalModal.tsx", "export function AddGoalModal"],
-    ["RoutedWorkspaceModal.tsx", "export function RoutedWorkspaceModal"],
-    ["SpaceSectionStack.tsx", "export function SpaceSectionStack"],
-  ];
-  for (const [file, exp] of files) {
-    check(`${file} exists`, existsSync(path.join(ROOT, "components", "space", "workspaces", file)));
-    check(`${file} exports its component`, WS(file).includes(exp));
-  }
-  check("SpaceSectionStack exports the shared NoSectionsCard", WS("SpaceSectionStack.tsx").includes("export function NoSectionsCard"));
-}
-
-console.log("2. Host MOUNTS each destination's Workspace (once each), per activeTab");
-{
+  // The durable renderer-registration invariant: for each destination the host both
+  // gates on activeTab AND mounts that destination's Workspace component.
   const mounts: [string, string][] = [
     ['activeTab === "MEMBERS"', "<MembersWorkspace"],
     ['activeTab === "TRANSACTIONS"', "<TransactionsWorkspace"],
@@ -59,12 +44,12 @@ console.log("2. Host MOUNTS each destination's Workspace (once each), per active
     ["isRoutedWorkspaceTab(activeTab)", "<RoutedWorkspaceModal"],
   ];
   for (const [gate, mount] of mounts) {
-    check(`host gates + mounts ${mount}`, DASHCODE.includes(gate) && count(DASHCODE, mount) === 1);
+    check(`host gates + mounts ${mount}`, DASHCODE.includes(gate) && DASHCODE.includes(mount));
   }
-  check("host mounts <AddGoalModal (overlay, once)", count(DASHCODE, "<AddGoalModal") === 1);
+  check("host mounts <AddGoalModal (overlay)", DASHCODE.includes("<AddGoalModal"));
 }
 
-console.log("3. Host no longer DEFINES the extracted composition (ownership left the host)");
+console.log("2. Host no longer DEFINES the extracted composition (ownership left the host)");
 {
   // Section subsystem, section renderers, the Overview setup card, the goal modal —
   // none are declared in the host anymore (they live in their extracted modules).
@@ -87,7 +72,7 @@ console.log("3. Host no longer DEFINES the extracted composition (ownership left
   check("host no longer owns composition switcher state", !DASHCODE.includes("const [composition"));
 }
 
-console.log("4. The section subsystem is the ONE home for SectionCard + the registry");
+console.log("3. The section subsystem is the ONE home for SectionCard + the registry");
 {
   check("SpaceSections defines SectionCard once", count(SECTIONS, "export function SectionCard(") === 1);
   check("SpaceSections defines the SectionRegistry once", count(SECTIONS, "export const SectionRegistry") === 1);
@@ -99,7 +84,7 @@ console.log("4. The section subsystem is the ONE home for SectionCard + the regi
     WS("OverviewWorkspace.tsx").includes("<SpaceSectionStack"));
 }
 
-console.log("5. Shared dashboard types have ONE home (no host-inline re-declaration)");
+console.log("4. Shared dashboard types have ONE home (no host-inline re-declaration)");
 {
   check("host imports the shared dashboard types",
     DASH.includes('from "@/lib/space/dashboard-types"'));

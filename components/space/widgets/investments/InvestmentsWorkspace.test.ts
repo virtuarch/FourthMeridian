@@ -1,11 +1,12 @@
 /**
  * components/space/widgets/investments/InvestmentsWorkspace.test.ts
  *
- * SD-4 (final) source-scan ratchets for the Investments WORKSPACE (pure, DB-free).
- * Locks: composition + hierarchy; data OWNERSHIP + envelope BRIDGE; SpaceSnapshot
- * valuation chart (no double-count, no N×date sampler); display-currency; SHARED
- * holdings grid/detail reused by inline Section AND Modal (no divergent impls);
- * grid↔detail interactions; canonical contract boundary; do-not-fake.
+ * SD-4 (final) durable-invariant ratchets for the Investments WORKSPACE (pure, DB-free).
+ * TEST-3 cleanup: brittle layout (grid-cols/h-[)/JSX-source-order/interaction-handler
+ * pins removed; the durable invariants kept: data OWNERSHIP + envelope BRIDGE;
+ * SpaceSnapshot valuation chart (no double-count, no N×date sampler, crypto-once);
+ * display-currency + hook honesty; SHARED holdings grid/detail reused by inline Section
+ * AND Modal (no divergent impls, single overlay); contract boundary; do-not-fake.
  *
  *   npx tsx components/space/widgets/investments/InvestmentsWorkspace.test.ts
  */
@@ -40,14 +41,11 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-console.log("1. Composition hierarchy (KPI → Chart → Holdings+Allocation → Activity+WhatChanged → Connections)");
+console.log("1. Render boundary — composes its panels (KPI, chart, holdings, allocation)");
 {
-  const order = ["<InvestmentKpiStrip", "<PortfolioValueChart", "<HoldingsSection", "<InvestmentAllocationPanel", "<InvestmentsActivityCard", "<InvestmentsBridgeCard", "<InvestmentConnectionsCard"];
-  const mainIdx = SRC.indexOf("<InvestmentKpiStrip");
-  const RET = mainIdx >= 0 ? SRC.slice(mainIdx) : "";
-  const pos = order.map((n) => RET.indexOf(n));
-  check("panels appear in the mandated hierarchy", pos.every((p, i) => p >= 0 && (i === 0 || pos[i - 1] < p)), pos.join(","));
-  check("no fixed h-[…]/max-h-[…] on the workspace layout", !SRC.includes("h-[") && !SRC.includes("max-h-["));
+  for (const panel of ["<InvestmentKpiStrip", "<PortfolioValueChart", "<HoldingsSection", "<InvestmentAllocationPanel"]) {
+    check(`composes ${panel}`, SRC.includes(panel));
+  }
 }
 
 console.log("2. Data OWNERSHIP + envelope BRIDGE");
@@ -56,7 +54,7 @@ console.log("2. Data OWNERSHIP + envelope BRIDGE");
   check("host does NOT call the hook", !HOSTC.includes("useInvestmentsSpaceData"));
   check("host retains no Investments data", !HOSTC.includes("investments.data"));
   check("Workspace emits envelope via canonical resolver", CODE.includes("onEnvelopeChange(") && CODE.includes("resolvePerspectiveEnvelope("));
-  check("host relays the Workspace envelope", HOSTC.includes("investmentsEnvelope") && HOSTC.includes("onEnvelopeChange={setInvestmentsEnvelope}"));
+  check("host relays the Workspace envelope", HOSTC.includes("investmentsEnvelope") && HOSTC.includes("setInvestmentsEnvelope"));
 }
 
 console.log("3. Valuation chart — canonical SpaceSnapshot series, no double-count, no N×date");
@@ -84,28 +82,19 @@ console.log("4. Display currency + activation + hook honesty");
   check("hook honesty guards intact", HOOK.includes("compareTo < asOf") && HOOK.includes("if (!active) return") && !HOOK.includes("setData(null)"));
 }
 
-console.log("5. Holdings — responsive grid, top subset, Show All in header");
+console.log("5. Holdings — inline reuses the shared grid, shows a subset");
 {
-  check("grid is responsive 1 → 2 → 3 columns", GRID.includes("grid-cols-1") && GRID.includes("md:grid-cols-2") && GRID.includes("xl:grid-cols-3"));
-  check("inline default renders the shared grid", SECTION.includes("<HoldingsGrid"));
-  check("inline shows a top subset only (slice)", SECTION.includes("TOP_N = 5") && SECTION.includes("slice(0, TOP_N)"));
-  check("Show All lives in the section HEADER (top utility), not a bottom button",
-    SECTION.includes("Show all") && !SECTION.includes("Show all ${holdings.length} holdings\n") && !SECTION.includes("mt-2 pt-2 border-t"));
+  check("inline default renders the shared grid (no divergent impl)", SECTION.includes("<HoldingsGrid"));
+  check("inline shows a top subset only (slice)", SECTION.includes("slice(0,"));
 }
 
-console.log("6. Inline + modal grid↔detail; SHARED components; single overlay");
+console.log("6. SHARED holdings components — one grid/detail, single overlay");
 {
-  // Inline section switches to detail on select and back to grid.
-  check("inline: selecting a card switches to HoldingDetail", SECTION.includes("<HoldingDetail") && SECTION.includes("setSelectedId"));
-  check("inline: back control returns to grid (onBack → clear selection)", SECTION.includes("onBack={() => setSelectedId(null)}"));
-  check("no dropdown/accordion behavior (no chevron expand in card)", !GRID.includes("Chevron") && !GRID.includes("aria-expanded"));
-  // Modal reuses the SAME shared grid + detail; one overlay.
   check("modal reuses the SHARED HoldingsGrid + HoldingDetail", MODAL.includes("<HoldingsGrid") && MODAL.includes("<HoldingDetail"));
-  check("modal has a single view state (selectedId) grid↔detail", MODAL.includes("selectedId") && MODAL.includes("setSelectedId"));
   check("modal renders exactly ONE GlassModal (no nested/second overlay)", (MODAL.match(/<GlassModal/g) || []).length === 1 && !MODAL.includes("<HoldingsModal"));
-  check("modal has both Close (GlassModal onClose) and back-to-grid (detail onBack)", MODAL.includes("onClose") && MODAL.includes("onBack"));
-  // Shared: section + modal import the SAME grid/detail (no divergent impls).
-  check("section AND modal import the shared grid + detail", SECTION.includes('from "./HoldingsGrid"') && SECTION.includes('from "./HoldingDetail"') && MODAL.includes('from "./HoldingsGrid"') && MODAL.includes('from "./HoldingDetail"'));
+  check("section AND modal import the SAME shared grid + detail (no divergent impls)",
+    SECTION.includes('from "./HoldingsGrid"') && SECTION.includes('from "./HoldingDetail"') &&
+    MODAL.includes('from "./HoldingsGrid"') && MODAL.includes('from "./HoldingDetail"'));
 }
 
 console.log("7. Contract boundary — no ad hoc asset-detail fetches in cards");

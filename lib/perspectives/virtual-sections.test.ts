@@ -24,6 +24,10 @@ function check(name: string, ok: boolean, detail?: string): void {
   if (ok) { passes++; }
   else { failures++; console.log(`[FAIL] ${name}`); if (detail) console.log(`        ${detail}`); }
 }
+/** Order-independent set equality — a workspace's widget MEMBERSHIP is the
+ *  invariant; presentation order is a free UX knob and must not fail the ratchet. */
+const sameSet = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && [...a].sort().join("|") === [...b].sort().join("|");
 
 // ── 1. Registry parity — every PerspectiveDef.widgets[] key exists in
 //      WIDGET_REGISTRY and is a real (implemented, non-deprecated) widget. ──
@@ -40,8 +44,8 @@ const DEDICATED_BRANCH_MARKERS = new Set(["investments_workspace"]);
 // Compensating assertions so a typo/rename can't silently slip through the
 // exemption: investments must use exactly this marker, and the marker must be
 // absent from the registry (proving no dead `investment_accounts` entry lingers).
-check("investments perspective uses the dedicated-branch affordance marker",
-  JSON.stringify(PERSPECTIVE_LIBRARY.investments.widgets) === JSON.stringify(["investments_workspace"]));
+check("investments perspective uses exactly the dedicated-branch affordance marker",
+  sameSet(PERSPECTIVE_LIBRARY.investments.widgets ?? [], ["investments_workspace"]));
 check("the affordance marker is intentionally NOT a registry widget",
   !WIDGET_REGISTRY.has("investments_workspace"));
 check("the retired investment_accounts widget is gone from the registry",
@@ -65,20 +69,20 @@ for (const p of withWidgets) {
 }
 
 // ── 2. Wealth workspace uses its purpose-built, assets-only widgets. ──
-// UX experiment: asset_allocation is ordered first so the multi-mode allocation
-// chart sits above the Wealth by Account cards. Set unchanged, order swapped.
-check("wealth workspace = [asset_allocation, wealth_by_account, institution_allocation, wealth_concentration]",
-  JSON.stringify(PERSPECTIVE_LIBRARY.wealth.widgets) ===
-    JSON.stringify(["asset_allocation", "wealth_by_account", "institution_allocation", "wealth_concentration"]));
+// MEMBERSHIP is the doctrine (these four assets-only widgets, no Overview reuse);
+// presentation order is a free UX knob (e.g. asset_allocation first) and is NOT pinned.
+check("wealth workspace set === {asset_allocation, wealth_by_account, institution_allocation, wealth_concentration}",
+  sameSet(PERSPECTIVE_LIBRARY.wealth.widgets ?? [],
+    ["asset_allocation", "wealth_by_account", "institution_allocation", "wealth_concentration"]));
 // Doctrine: Wealth must NOT reuse the Overview widgets.
 check("wealth workspace excludes Overview widgets (net_worth / net_worth_chart / allocation)",
   !(PERSPECTIVE_LIBRARY.wealth.widgets ?? []).some((k) =>
     k === "net_worth" || k === "net_worth_chart" || k === "allocation"));
 
 // ── 2b. Liquidity workspace uses its purpose-built access/readiness widgets. ──
-check("liquidity workspace = [liquidity_ladder, accessible_cash, emergency_fund_readiness, liquidity_concentration]",
-  JSON.stringify(PERSPECTIVE_LIBRARY.liquidity.widgets) ===
-    JSON.stringify(["liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration"]));
+check("liquidity workspace set === {liquidity_ladder, accessible_cash, emergency_fund_readiness, liquidity_concentration}",
+  sameSet(PERSPECTIVE_LIBRARY.liquidity.widgets ?? [],
+    ["liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration"]));
 // Doctrine: Liquidity must NOT reuse Overview or Wealth widgets.
 check("liquidity workspace excludes Overview/Wealth widgets",
   !(PERSPECTIVE_LIBRARY.liquidity.widgets ?? []).some((k) =>
@@ -89,9 +93,9 @@ check("liquidity workspace excludes Overview/Wealth widgets",
 // "Refine Cash Flow experience": income_vs_spending retired from the active
 // list (Cash Flow History carries that read), income_by_source added beneath
 // Spending by Category, and CF-2C debt_payments (the liquidity-axis twin).
-check("cashFlow workspace = [cash_flow_summary, cash_flow_history, cash_flow_by_category, income_by_source, debt_payments]",
-  JSON.stringify(PERSPECTIVE_LIBRARY.cashFlow.widgets) ===
-    JSON.stringify(["cash_flow_summary", "cash_flow_history", "cash_flow_by_category", "income_by_source", "debt_payments"]));
+check("cashFlow workspace set === {cash_flow_summary, cash_flow_history, cash_flow_by_category, income_by_source, debt_payments}",
+  sameSet(PERSPECTIVE_LIBRARY.cashFlow.widgets ?? [],
+    ["cash_flow_summary", "cash_flow_history", "cash_flow_by_category", "income_by_source", "debt_payments"]));
 // Doctrine: Cash Flow must NOT reuse Overview / Wealth / Liquidity widgets.
 check("cashFlow workspace excludes Overview/Wealth/Liquidity widgets",
   !(PERSPECTIVE_LIBRARY.cashFlow.widgets ?? []).some((k) =>
@@ -99,9 +103,9 @@ check("cashFlow workspace excludes Overview/Wealth/Liquidity widgets",
     k === "wealth_by_account" || k === "liquidity_ladder"));
 
 // ── 2d. Debt workspace uses its liabilities-only widgets (incl. reused ones). ──
-check("debt workspace = [debt_by_account, debt_cost, credit_utilization, debt_history, debt_payoff_calculator, credit_score, debt_complete_info]",
-  JSON.stringify(PERSPECTIVE_LIBRARY.debt.widgets) ===
-    JSON.stringify([
+check("debt workspace set === {debt_by_account, debt_cost, credit_utilization, debt_history, debt_payoff_calculator, credit_score, debt_complete_info}",
+  sameSet(PERSPECTIVE_LIBRARY.debt.widgets ?? [],
+    [
       "debt_by_account", "debt_cost", "credit_utilization", "debt_history",
       "debt_payoff_calculator", "credit_score", "debt_complete_info",
     ]));
@@ -113,9 +117,9 @@ check("debt workspace excludes asset/overview/cashflow widgets",
     k === "asset_allocation" || k === "cash_flow_summary" || k === "cash_flow_by_category"));
 
 // ── 2e. Goals workspace uses its trajectory-vs-target widgets. ──
-check("goals workspace = [goal_progress, goal_on_track, goal_required_pace, goal_funding_gap]",
-  JSON.stringify(PERSPECTIVE_LIBRARY.goals.widgets) ===
-    JSON.stringify(["goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap"]));
+check("goals workspace set === {goal_progress, goal_on_track, goal_required_pace, goal_funding_gap}",
+  sameSet(PERSPECTIVE_LIBRARY.goals.widgets ?? [],
+    ["goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap"]));
 // Doctrine: Goals must NOT reuse net-worth/allocation/debt/spending/investment widgets.
 check("goals workspace excludes balance/debt/spending widgets",
   !(PERSPECTIVE_LIBRARY.goals.widgets ?? []).some((k) =>
