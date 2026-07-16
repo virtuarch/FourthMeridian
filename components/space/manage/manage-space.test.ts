@@ -144,8 +144,10 @@ console.log("5. The divergent GoalsTab duplicate is GONE (no Goals authority und
   // The canonical goal capability still lives where it belongs (untouched).
   check("canonical AddGoalModal still owns goal creation",
     read("components", "space", "workspaces", "AddGoalModal.tsx").includes("export function AddGoalModal"));
+  // SEC-1 relocated the goal-list authority to its own module (still the single
+  // authority — the registry imports it; MSM only cares that it exists once).
   check("canonical GoalsCard still owns the goal list/lifecycle",
-    read("components", "space", "sections", "SpaceSections.tsx").includes("GoalsCard"));
+    read("components", "space", "sections", "goals", "GoalsCard.tsx").includes("export function GoalsCard"));
 }
 
 console.log("6. Canonical capabilities REUSED, not re-implemented");
