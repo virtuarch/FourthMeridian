@@ -45,6 +45,10 @@ export const SENDER_IDENTITIES: Record<SenderPurpose, SenderIdentity> = {
 
   // Beta program → beta@.
   "beta-invite":          { from: "Fourth Meridian Beta <beta@fourthmeridian.com>" },
+
+  // Platform Operations alerts (OPS-5 S5) → support@, the operational catch-all
+  // (same identity smoke/self-test uses). Operator-facing, not account-holder.
+  "platform-ops":         { from: "Fourth Meridian <support@fourthmeridian.com>" },
 };
 
 /** Resolve the sender identity for a purpose. */

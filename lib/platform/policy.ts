@@ -77,6 +77,9 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // OPS-5 S3 — provider health: external providers as first-class operational
       // resources (freshness CONSUMED from OPS-5 S1). Backfilled by ensurePlatformSections.
       { key: "ops_provider_health", label: "Provider Health", order: 7 },
+      // OPS-5 S5 — alert rules + history (consumes the job-health / connection-health
+      // / resource-freshness authorities; emails on breach). Backfilled by ensurePlatformSections.
+      { key: "ops_alerts", label: "Alerts", order: 8 },
     ],
   },
   SECURITY_OPS: {

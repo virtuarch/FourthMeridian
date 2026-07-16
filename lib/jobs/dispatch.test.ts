@@ -80,8 +80,8 @@ async function main(): Promise<void> {
   // ── 2. Registry integrity — pre-S2 jobs at their slots + S3 maintenance ───
   {
     const byName = new Map(SCHEDULED_JOBS.map((j) => [j.name, j]));
-    check("registry holds the eight S2+S3+S4 jobs + A8-3 price fetch + CH-3 sync-crypto",
-      SCHEDULED_JOBS.length === 9, `got ${SCHEDULED_JOBS.length}`);
+    check("registry holds the eight S2+S3+S4 jobs + A8-3 price fetch + CH-3 sync-crypto + OPS-5 S5 alert evaluator",
+      SCHEDULED_JOBS.length === 10, `got ${SCHEDULED_JOBS.length}`);
     check("names unique", byName.size === SCHEDULED_JOBS.length);
     check("sync-banks keeps its 06:00 UTC slot",
       byName.get("sync-banks")?.hourUTC === 6 && byName.get("sync-banks")?.minuteUTC === 0);
@@ -98,6 +98,10 @@ async function main(): Promise<void> {
     check("notification-retry sequenced AFTER notification-cleanup (never re-mail aged-out rows)",
       SCHEDULED_JOBS.findIndex((j) => j.name === "notification-retry") >
         SCHEDULED_JOBS.findIndex((j) => j.name === "notification-cleanup"));
+    check("OPS-5 S5 evaluate-alerts rides the 07:30 slot (no new cron entry needed)",
+      byName.get("evaluate-alerts")?.hourUTC === 7 && byName.get("evaluate-alerts")?.minuteUTC === 30);
+    check("evaluate-alerts sequenced LAST (reads the freshest state after the sync/fx jobs)",
+      SCHEDULED_JOBS.findIndex((j) => j.name === "evaluate-alerts") === SCHEDULED_JOBS.length - 1);
     check("all slots on half-hour boundaries", SCHEDULED_JOBS.every((j) => j.minuteUTC === 0 || j.minuteUTC === 30));
     check("deferred work stays deferred (no digest / quiet-hours jobs)",
       !SCHEDULED_JOBS.some((j) => /digest|quiet/i.test(j.name)));

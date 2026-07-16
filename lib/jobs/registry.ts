@@ -173,4 +173,17 @@ export const SCHEDULED_JOBS: readonly ScheduledJob[] = [
     minuteUTC: 30,
     run: async () => (await import("@/jobs/sweep-rate-limits")).sweepRateLimits(),
   },
+  // OPS-5 S5 — the alert-evaluation pass. Rides the 07:30 slot (already covered
+  // by the single dispatcher cron — no vercel.json change), sequenced LAST so it
+  // reads the freshest state after the 06:00/06:30 sync/fx jobs. Consumes the
+  // existing job-health / connection-health / resource-freshness authorities and
+  // emails the operator (OPS-1) on any breach; its own JobRun row is the alert
+  // history + suppression store. Never throws (evaluatePlatformAlerts is
+  // best-effort), so the alerter can never itself become a failing job.
+  {
+    name: "evaluate-alerts",
+    hourUTC: 7,
+    minuteUTC: 30,
+    run: async () => (await import("@/jobs/evaluate-alerts")).evaluateAlerts(),
+  },
 ];

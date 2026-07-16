@@ -54,6 +54,13 @@ const _e = {
   // when unset (still env-gated by RESEND_API_KEY like all mail).
   SECURITY_ALERTS_EMAIL: process.env.SECURITY_ALERTS_EMAIL,
 
+  // Platform Ops alert destination (OPS-5 S5). Optional — the alert evaluator
+  // emails the operator here on any breach. When UNSET there is no destination:
+  // alerts are still evaluated and recorded, but no mail is sent (an honest
+  // "skipped", surfaced in the Alerts widget) rather than sent to a guessed
+  // mailbox that might bounce. Still env-gated by RESEND_API_KEY like all mail.
+  PLATFORM_ALERTS_EMAIL: process.env.PLATFORM_ALERTS_EMAIL,
+
   // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Both optional — absent means
   // CAPTCHA is DISABLED (verifyCaptchaToken skips → true; widgets don't
   // render). The secret gates server-side verification (lib/captcha.ts reads
@@ -311,6 +318,9 @@ export const env = {
   /** Inbox for direct security-anomaly alert emails. Defaults to
    *  security@fourthmeridian.com when unset. */
   get SECURITY_ALERTS_EMAIL() { return _e.SECURITY_ALERTS_EMAIL ?? "security@fourthmeridian.com"; },
+  /** Platform Ops alert destination (OPS-5 S5). null when unset — no destination,
+   *  no send (honest skip); the operator sets this to activate email alerting. */
+  get PLATFORM_ALERTS_EMAIL(): string | null { return _e.PLATFORM_ALERTS_EMAIL ?? null; },
 
   // ── CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥) ────────────────────────────────
   // NOTE: lib/captcha.ts (the single server-side verify site) reads

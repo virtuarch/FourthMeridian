@@ -17,6 +17,7 @@ import { securityAlertTemplate } from "@/lib/email/templates/security-alert";
 import { emailChangeTemplate } from "@/lib/email/templates/email-change";
 import { notificationTemplate } from "@/lib/email/templates/notification";
 import { betaInviteTemplate } from "@/lib/email/templates/beta-invite";
+import { platformAlertTemplate } from "@/lib/email/templates/platform-alert";
 
 /**
  * name -> template. Typed so `send.ts` can look up a template by name and get a
@@ -32,6 +33,7 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateName, EmailTemplate<never>> = 
   "email-change":       emailChangeTemplate as EmailTemplate<never>,
   "notification":       notificationTemplate as EmailTemplate<never>,
   "beta-invite":        betaInviteTemplate as EmailTemplate<never>,
+  "platform-alert":     platformAlertTemplate as EmailTemplate<never>,
 };
 
 export function getTemplate(name: EmailTemplateName): EmailTemplate<never> {
