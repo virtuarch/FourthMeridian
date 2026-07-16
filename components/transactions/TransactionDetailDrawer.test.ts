@@ -47,7 +47,11 @@ test('drawer handles loading / notfound / error / success and aborts', () => {
 });
 
 test('opening pushes the param (Back closes); close pops it', () => {
-  assert.match(hook, /router\.push\(`\$\{pathname\}\?\$\{PARAM\}=/);
+  // SD-0A: the opener serializes through the shared Space URL core so it
+  // PRESERVES the active tab/perspective/time params instead of clobbering them
+  // with a pathname-only push. Still push (not replace) so Back closes it.
+  assert.match(hook, /router\.push\(buildSpaceUrl\(pathname, search, \{ \[PARAM\]: id \}\)\)/);
+  assert.match(hook, /from "@\/lib\/space\/space-url"/);
   assert.match(hook, /router\.back\(\)/);
 });
 

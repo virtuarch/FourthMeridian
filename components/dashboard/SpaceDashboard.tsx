@@ -91,6 +91,8 @@ import {
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
 import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiveShellState";
+import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
+import { readSpaceParam } from "@/lib/space/space-url";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import { resolvePerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
@@ -2519,78 +2521,72 @@ export function SpaceDashboard({
     [perspectiveItems],
   );
 
+  // ── Canonical Space URL authority (SD-0A) ───────────────────────────────────
+  // The ONE serializer + the ONE Back/Forward listener. tab/perspective and the
+  // Wealth ?metric= both write through `spaceUrl.commit` (never window.history)
+  // and re-hydrate through `spaceUrl.subscribe` (one shared popstate path). The
+  // shell time hook (?asof/?compareto/?preset) uses the same authority. Every
+  // commit preserves unrelated params, so no two writers can clobber each other.
+  const spaceUrl = useSpaceUrl();
+
   // ── URL-backed tab state (write) ────────────────────────────────────────────
-  // Mirror activeTab (+ selected Perspective) into ?tab=…&perspective=… via
-  // window.history — no server re-run, no reload. First sync canonicalizes with
-  // replaceState; later user changes pushState so browser back/forward works.
-  // Any tab in URL_SYNCED_TABS is mirrored — including the modal-routed
-  // GOALS/DEBT/INVESTMENTS/RETIREMENT — so refreshing inside one restores it
-  // instead of falling back to OVERVIEW. The perspective param is written only
-  // on PERSPECTIVES (else deleted), so a modal tab yields a clean ?tab=<name>.
+  // Mirror activeTab (+ selected Perspective) into ?tab=…&perspective=… — no
+  // server re-run, no reload. First sync canonicalizes with replace; later user
+  // changes push so browser back/forward works. Any tab in URL_SYNCED_TABS is
+  // mirrored — including the modal-routed GOALS/DEBT/INVESTMENTS/RETIREMENT — so
+  // refreshing inside one restores it instead of falling back to OVERVIEW. The
+  // perspective param is written only on PERSPECTIVES (else deleted), so a modal
+  // tab yields a clean ?tab=<name>.
   const urlInitDone = useRef(false);
   useEffect(() => {
-    if (!activeTab || typeof window === "undefined") return;
-    if (!URL_SYNCED_TABS.has(activeTab)) return;
-    const params = new URLSearchParams(window.location.search);
-    params.set("tab", activeTab.toLowerCase());
-    if (activeTab === "PERSPECTIVES" && activePerspectiveId) {
-      params.set("perspective", perspectiveIdToSlug(activePerspectiveId));
-    } else {
-      params.delete("perspective");
-    }
-    const next = `${window.location.pathname}?${params.toString()}`;
-    const current = `${window.location.pathname}${window.location.search}`;
-    if (next === current) return;                 // already in sync (incl. after popstate)
-    if (!urlInitDone.current) {
-      urlInitDone.current = true;
-      window.history.replaceState(window.history.state, "", next);
-    } else {
-      window.history.pushState(window.history.state, "", next);
-    }
-  }, [activeTab, activePerspectiveId]);
+    if (!activeTab || !URL_SYNCED_TABS.has(activeTab)) return;
+    const wrote = spaceUrl.commit(
+      {
+        tab: activeTab.toLowerCase(),
+        perspective:
+          activeTab === "PERSPECTIVES" && activePerspectiveId
+            ? perspectiveIdToSlug(activePerspectiveId)
+            : null,
+      },
+      { history: urlInitDone.current ? "push" : "replace" },
+    );
+    if (wrote) urlInitDone.current = true;
+  }, [activeTab, activePerspectiveId, spaceUrl]);
 
   // ── URL-backed tab state (read: browser back/forward) ───────────────────────
-  useEffect(() => {
-    function onPopState() {
-      const { tab, perspective } = readUrlTabState();
-      if (perspective) setSelectedPerspectiveId(perspective);
-      if (tab) setActiveTab(tab);
-    }
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  useEffect(
+    () =>
+      spaceUrl.subscribe(() => {
+        const { tab, perspective } = readUrlTabState();
+        if (perspective) setSelectedPerspectiveId(perspective);
+        if (tab) setActiveTab(tab);
+      }),
+    [spaceUrl],
+  );
 
   // ── Account deep-link (Banking→Transactions retarget) ───────────────────────
   // `?account=<id>` seeds the Transactions tab's account filter — the target of
   // AccountsPerspective's "View transactions" row action, which navigates to
-  // /dashboard?tab=transactions&account=<id>. Read once on mount from
-  // window.location (the shell's window.history URL convention — deliberately
-  // the same channel readUrlTabState uses, not the search-params hook, which
-  // would force a Suspense boundary; see the space-shell-seams contract). The
-  // paired ?tab=transactions drives the tab via the initial-tab logic below;
-  // this only carries the filter seed.
+  // /dashboard?tab=transactions&account=<id>. Read once on mount through the
+  // canonical authority (the same window.location channel readUrlTabState uses,
+  // not the search-params hook, which would force a Suspense boundary; see the
+  // space-shell-seams contract). The paired ?tab=transactions drives the tab via
+  // the initial-tab logic below; this only carries the filter seed.
   const [initialAccountFilter, setInitialAccountFilter] = useState<string | null>(null);
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const account = new URLSearchParams(window.location.search).get("account");
+    // One-time read of an external system (the URL) into state — SSR-safe (never
+    // read during render), so the seed can't cause a hydration mismatch.
+    const account = readSpaceParam(spaceUrl.getSearch(), "account");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (account) setInitialAccountFilter(account);
-  }, []);
-
-  // ── Cash Flow workspace (UX-PER-3) ─────────────────────────────────────────
-  // Workspace-local period state shared by every Cash Flow widget, and the
-  // transactions conversion context (rehydrated F-6 / "view as" override) that
-  // converts each row at its own date. `cashFlowActive` also triggers the
-  // transaction fetch below when the workspace is open in a non-flow Space.
-  const [cashFlowPeriod, setCashFlowPeriod] = useState<CashFlowPeriod>(DEFAULT_CASH_FLOW_PERIOD);
+  }, [spaceUrl]);
 
   // Shared Perspective shell TIME state — the ONE canonical {preset, asOf,
   // compareTo} triple, owned by usePerspectiveShellState (the lib/perspectives/
-  // time-range.ts reducer + URL sync). Defaults to MTD (As Of today, Compare To
-  // the first of this month). `cashFlowPeriod` (above) follows the shell slice
-  // via the sync effect below, while the Cash Flow history widget can still drill
-  // to explicit calendar periods through onSelectPeriod without disturbing the
-  // shell. earliestDefensibleDate = the oldest non-fxMiss snapshot (Space-level,
-  // lens-independent) → powers the ALL slice's Compare To; null ⇒ never fabricated.
+  // time-range.ts reducer + the SD-0A URL authority). Defaults to MTD (As Of
+  // today, Compare To the first of this month). earliestDefensibleDate = the
+  // oldest non-fxMiss snapshot (Space-level, lens-independent) → powers the ALL
+  // slice's Compare To; null ⇒ never fabricated.
   const shellToday = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const earliestDefensibleDate = useMemo(
     () => snapshots?.find((s) => !s.fxMiss)?.date ?? null,
@@ -2599,21 +2595,44 @@ export function SpaceDashboard({
   const shell = usePerspectiveShellState({ spaceId, today: shellToday, earliestDefensibleDate });
   const { asOf, compareTo, preset: timePreset } = shell.state;
 
-  // Cash Flow follows the shell slice — synced event-driven (not via a render
-  // effect): selecting a slice, or a manual Compare To that infers a preset, maps
-  // to Cash Flow's relative period. The Cash Flow history widget's own explicit-
-  // period drill sets cashFlowPeriod directly; under CUSTOM nothing overrides it,
-  // so Cash Flow HOLDS its last period (§3.5).
+  // ── Cash Flow period (SD-0B) ────────────────────────────────────────────────
+  // Cash Flow's active period is DERIVED from the canonical shell slice — there
+  // is no second mutable time state. The shell already exposes the relative
+  // period its slice implies (shell.derived.cashFlowPeriod: the preset, or null
+  // under CUSTOM). The ONLY independently-mutable piece here is the Cash-Flow-
+  // local drill to an EXPLICIT calendar period (a Month/Quarter/Year the relative
+  // canonical model can't express); that override wins until the user picks a
+  // relative slice again. Under CUSTOM the canonical slice implies no period, so
+  // Cash Flow holds its last relative one (§3.5) — captured in a ref that only
+  // ever mirrors canonical, never an independent authority.
+  const [cashFlowExplicitPeriod, setCashFlowExplicitPeriod] = useState<CashFlowPeriod | null>(null);
+  // Cache of the last relative slice the canonical shell showed — NOT an
+  // independent time authority: it only ever mirrors canonical state, so Cash
+  // Flow can hold its last relative period while the shell sits on CUSTOM (§3.5).
+  // Kept in state (not a ref) so the derived cashFlowPeriod below never reads a
+  // ref during render; the sync only fires when the canonical slice is relative.
+  const [lastRelativePeriod, setLastRelativePeriod] = useState<CashFlowPeriod>(DEFAULT_CASH_FLOW_PERIOD);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (shell.derived.cashFlowPeriod) setLastRelativePeriod(shell.derived.cashFlowPeriod);
+  }, [shell.derived.cashFlowPeriod]);
+  const cashFlowPeriod: CashFlowPeriod =
+    cashFlowExplicitPeriod ?? shell.derived.cashFlowPeriod ?? lastRelativePeriod;
+
+  // Cash Flow follows the shell slice: the canonical reducer is the single master
+  // for the relative slice, so these handlers only clear the Cash-Flow-local
+  // explicit override when a relative slice is (re)established — they never keep
+  // a shadow copy of the shared time state.
   const handleAsOfChange      = (next: string)        => shell.actions.setAsOf(next);
   const handleCompareToChange = (next: string | null) => {
     shell.actions.setCompareTo(next);
     const inferred = inferPerspectiveTimePreset({ asOf, compareTo: next, coverageFrom: earliestDefensibleDate, currentPreset: timePreset });
-    if (inferred !== "CUSTOM") setCashFlowPeriod(inferred);
+    if (inferred !== "CUSTOM") setCashFlowExplicitPeriod(null); // snaps onto a preset ⇒ follow canonical
   };
   const handleSelectSlice = (slice: CashFlowPeriod) => {
-    if (isExplicitPeriod(slice)) { setCashFlowPeriod(slice); return; } // defensive; Row 2 emits relative ids
-    shell.actions.selectPreset(slice);
-    setCashFlowPeriod(slice);
+    if (isExplicitPeriod(slice)) { setCashFlowExplicitPeriod(slice); return; } // explicit drill — CF-local
+    shell.actions.selectPreset(slice);   // relative slice ⇒ canonical is the master
+    setCashFlowExplicitPeriod(null);      // follow canonical
   };
 
   // Wealth Time Machine read model (A6). Pure derivation over the already-fetched
@@ -2639,24 +2658,21 @@ export function SpaceDashboard({
   const WEALTH_METRICS: WealthMetricKey[] = ["netWorth", "totalAssets", "totalLiabilities", "liquidNetWorth"];
   const [chartMetric, setChartMetric] = useState<WealthMetricKey>("netWorth");
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    // Read on mount and re-read on back/forward — a subscription to the URL as an
-    // external system (mirrors the shell hook's popstate hydration).
+    // Read on mount and re-read on back/forward through the canonical authority —
+    // a subscription to the URL as an external system (the ONE popstate path).
     const syncFromUrl = () => {
-      const m = new URLSearchParams(window.location.search).get("metric");
+      const m = readSpaceParam(spaceUrl.getSearch(), "metric");
       setChartMetric(m && (WEALTH_METRICS as string[]).includes(m) ? (m as WealthMetricKey) : "netWorth");
     };
     syncFromUrl();
-    window.addEventListener("popstate", syncFromUrl);
-    return () => window.removeEventListener("popstate", syncFromUrl);
+    return spaceUrl.subscribe(syncFromUrl);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [spaceUrl]);
   const handleMetricChange = (m: WealthMetricKey) => {
     setChartMetric(m);
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    if (m === "netWorth") params.delete("metric"); else params.set("metric", m);
-    window.history.replaceState(window.history.state, "", `${window.location.pathname}?${params.toString()}`);
+    // metric is a wealth-only view toggle → always replace (never a history
+    // entry), and netWorth (the default) clears the param.
+    spaceUrl.commit({ metric: m === "netWorth" ? null : m }, { history: "replace" });
   };
 
   // Switching lens from within a workspace (e.g. Wealth's Liquid Net Worth →
@@ -3352,7 +3368,7 @@ export function SpaceDashboard({
                   txCtx={txConversionCtx}
                   accounts={accounts}
                   period={cashFlowPeriod}
-                  onSelectPeriod={setCashFlowPeriod}
+                  onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
                   perspective={cashFlowPerspective}
                   filterId={cashFlowFilterId}
                   onPerspectiveChange={onCashFlowPerspectiveChange}
@@ -3425,7 +3441,7 @@ export function SpaceDashboard({
                     transactions={spaceTransactions}
                     txCtx={txConversionCtx}
                     period={cashFlowPeriod}
-                    onSelectPeriod={setCashFlowPeriod}
+                    onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
                     perspective={cashFlowPerspective}
                     filterId={cashFlowFilterId}
                     onPerspectiveChange={onCashFlowPerspectiveChange}

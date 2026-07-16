@@ -19,6 +19,7 @@
 
 import { useCallback } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { buildSpaceUrl } from "@/lib/space/space-url";
 
 const PARAM = "transaction";
 
@@ -28,8 +29,11 @@ export function useOpenTransaction() {
   const pathname = usePathname();
   return useCallback(
     (id: string) => {
-      // push (not replace) so the browser Back button naturally closes the drawer.
-      router.push(`${pathname}?${PARAM}=${encodeURIComponent(id)}`);
+      // SD-0A: serialize through the shared Space URL core so opening the drawer
+      // PRESERVES the active tab/perspective/time params (it can no longer clobber
+      // them). push (not replace) so the browser Back button naturally closes it.
+      const search = typeof window === "undefined" ? "" : window.location.search;
+      router.push(buildSpaceUrl(pathname, search, { [PARAM]: id }));
     },
     [router, pathname],
   );
@@ -45,15 +49,14 @@ export function useTransactionDrawer() {
 
   const close = useCallback(() => {
     // Symmetric with browser Back: pop the entry opening pushed. Fall back to a
-    // param-stripping replace if there is no in-app history to pop (deep link).
+    // param-stripping replace if there is no in-app history to pop (deep link) —
+    // serialized through the shared core so it preserves every unrelated param.
     if (typeof window !== "undefined" && window.history.length > 1) {
       router.back();
       return;
     }
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete(PARAM);
-    const qs = params.toString();
-    router.replace(qs ? `${pathname}?${qs}` : pathname);
+    const search = typeof window === "undefined" ? searchParams.toString() : window.location.search;
+    router.replace(buildSpaceUrl(pathname, search, { [PARAM]: null }));
   }, [router, pathname, searchParams]);
 
   return { transactionId, openTransaction, close };

@@ -13,11 +13,19 @@
  * SSR-safe: initial state is the deterministic MTD default (identical on server
  * and client — no hydration mismatch); URL hydration runs post-mount in an
  * effect, exactly like the existing tab-URL sync. All date arithmetic lives in
- * the pure reducer; this hook owns only React state + the browser History write.
+ * the pure reducer; this hook owns only React state.
+ *
+ * SD-0A: the hook no longer writes browser History or registers its own popstate
+ * listener. It serializes {preset, asOf, compareTo} into the canonical Space URL
+ * authority (useSpaceUrl → the pure lib/space/space-url.ts core) and re-hydrates
+ * from it on Back/Forward through that authority's single listener. The reducer
+ * still owns time semantics; the authority owns serialization.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
+import { readSpaceParam } from "@/lib/space/space-url";
 import {
   defaultPerspectiveTimeState,
   hydrateShellTimeState,
@@ -52,9 +60,12 @@ export interface PerspectiveShellState {
   };
 }
 
-function readTimeParams(): { asOf: string | null; compareTo: string | null; preset: string | null } {
-  const p = new URLSearchParams(window.location.search);
-  return { asOf: p.get("asof"), compareTo: p.get("compareto"), preset: p.get("preset") };
+function readTimeParams(search: string): { asOf: string | null; compareTo: string | null; preset: string | null } {
+  return {
+    asOf:      readSpaceParam(search, "asof"),
+    compareTo: readSpaceParam(search, "compareto"),
+    preset:    readSpaceParam(search, "preset"),
+  };
 }
 
 export function usePerspectiveShellState(args: {
@@ -63,6 +74,10 @@ export function usePerspectiveShellState(args: {
   earliestDefensibleDate: string | null;
 }): PerspectiveShellState {
   const { today, earliestDefensibleDate } = args;
+
+  // The canonical Space URL authority (SD-0A) — the single serializer + the
+  // single Back/Forward listener. This hook never touches window.history.
+  const spaceUrl = useSpaceUrl();
 
   // Reducer context (today + coverage) lives in a ref so dispatch reads the
   // latest at event time without re-creating callbacks. Written in an effect
@@ -96,35 +111,32 @@ export function usePerspectiveShellState(args: {
   }, [earliestDefensibleDate]);
 
   // Hydrate from the URL once, post-mount (client only) — avoids SSR mismatch.
+  // Back/Forward re-hydration comes through the canonical authority's single
+  // popstate listener (SD-0A), not a listener of our own.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const raw = readTimeParams();
-      if (raw.asOf || raw.compareTo || raw.preset) setState(hydrateShellTimeState(raw, ctxRef.current));
-    }
+    const raw = readTimeParams(spaceUrl.getSearch());
+    if (raw.asOf || raw.compareTo || raw.preset) setState(hydrateShellTimeState(raw, ctxRef.current));
     setHydrated(true);
-    // Back/forward: re-hydrate from the URL.
-    function onPop() { if (typeof window !== "undefined") setState(hydrateShellTimeState(readTimeParams(), ctxRef.current)); }
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, []);
+    return spaceUrl.subscribe(() => {
+      setState(hydrateShellTimeState(readTimeParams(spaceUrl.getSearch()), ctxRef.current));
+    });
+  }, [spaceUrl]);
 
-  // Mirror state → URL (only after hydration, so we never clobber the incoming
-  // params with the default before hydration commits). replaceState first
-  // (canonicalize), pushState after (back/forward works).
+  // Mirror state → URL through the canonical authority (only after hydration, so
+  // we never clobber the incoming params with the default before hydration
+  // commits). The authority replaces on the first real write (canonicalize) and
+  // pushes after, so Back/Forward works; it preserves every unrelated param.
   const urlInit = useRef(false);
   useEffect(() => {
-    if (!hydrated || typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
+    if (!hydrated) return;
     const ser = serializeShellTimeState(state);
-    params.set("asof", ser.asOf);
-    if (ser.compareTo) params.set("compareto", ser.compareTo); else params.delete("compareto");
-    params.set("preset", ser.preset);
-    const next = `${window.location.pathname}?${params.toString()}`;
-    if (next === `${window.location.pathname}${window.location.search}`) return;
-    if (!urlInit.current) { urlInit.current = true; window.history.replaceState(window.history.state, "", next); }
-    else window.history.pushState(window.history.state, "", next);
-  }, [state, hydrated]);
+    const wrote = spaceUrl.commit(
+      { asof: ser.asOf, compareto: ser.compareTo, preset: ser.preset },
+      { history: urlInit.current ? "push" : "replace" },
+    );
+    if (wrote) urlInit.current = true;
+  }, [state, hydrated, spaceUrl]);
 
   return {
     state,
