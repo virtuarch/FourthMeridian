@@ -39,6 +39,13 @@ const dashSrc = readFileSync(
 /** dashSrc with comments stripped — for checks that must match real code, not
  *  prose (e.g. "renderHero" still appears in explanatory comments). */
 const dashCode = dashSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+// SD-7 extracted the Overview canvas (hero + day-zero setup + stack + doorways) into
+// components/space/workspaces/OverviewWorkspace.tsx; the Overview-render seam checks
+// follow it there. Behavior is byte-identical — the gating is the same.
+const overviewSrc = readFileSync(
+  path.join(ROOT, "components", "space", "workspaces", "OverviewWorkspace.tsx"),
+  "utf8",
+);
 const pageSrc = readFileSync(
   path.join(ROOT, "app", "(shell)", "dashboard", "page.tsx"),
   "utf8"
@@ -67,11 +74,11 @@ check(
 // net_worth_chart SECTION, not a duplicated SpaceTrendHero.
 check(
   "SpaceTrendHero path is gated on heroDef only (no renderHero)",
-  /composition === "overview" &&\s*\n\s*accounts\.length > 0 && heroDef &&/.test(dashSrc)
+  /accounts\.length > 0 && heroDef &&/.test(overviewSrc) && !/renderHero/.test(overviewSrc)
 );
 check(
   "day-zero OverviewSetupCard shows for accounts.length === 0 (Personal included)",
-  /accounts\.length === 0 \?/.test(dashSrc) && !/accounts\.length === 0 && !renderHero/.test(dashSrc)
+  /accounts\.length === 0 \?/.test(overviewSrc) && /<OverviewSetupCard/.test(overviewSrc)
 );
 check(
   "snapshots are fetched for PERSONAL (net_worth_chart) or a heroDef (plus the Debt + Wealth workspaces)",

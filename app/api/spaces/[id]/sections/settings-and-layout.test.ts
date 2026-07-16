@@ -34,6 +34,9 @@ function code(src: string): string {
 
 const dash   = code(read("components", "dashboard", "SpaceDashboard.tsx"));
 const manage = code(read("components", "dashboard", "ManageSpaceModal.tsx"));
+// SD-7 moved the shared section stack (its drag-reorder wrapper) into
+// components/space/workspaces/SpaceSectionStack.tsx; the drag-wrap check follows it.
+const stack  = code(read("components", "space", "workspaces", "SpaceSectionStack.tsx"));
 
 // ── 1. Settings removed from the in-space rail ───────────────────────────────
 check("rail unconditionally filters out SETTINGS (no manager-gated button)",
@@ -49,8 +52,8 @@ check("empty-state 'Manage sections' opens the Manage modal",
   /setShowManage\(\s*true\s*\)/.test(dash));
 
 // ── 2. Overview keeps section-backed drag; Perspectives left fixed ───────────
-check("Overview section stack is drag-wrapped (DndContext + SortableContext)",
-  /<DndContext[\s\S]*?<SortableContext[\s\S]*?SortableSectionCard/.test(dash));
+check("section stack is drag-wrapped (DndContext + SortableContext)",
+  /<DndContext[\s\S]*?<SortableContext[\s\S]*?SortableSectionCard/.test(stack));
 check("reorder persists via the batch reorder endpoint",
   /\/sections\/reorder/.test(dash));
 check("Perspectives grid is NOT wrapped in a DndContext (left fixed)",

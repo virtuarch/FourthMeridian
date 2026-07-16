@@ -13,9 +13,9 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, LayoutDashboard, Target, Landmark, Settings, Plus, X, LogOut, Compass, GripVertical } from "lucide-react";
-import { DndContext, closestCenter, PointerSensor, KeyboardSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { SortableContext, verticalListSortingStrategy, arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { Loader2, LayoutDashboard, Settings, X, LogOut, GripVertical } from "lucide-react";
+import { PointerSensor, KeyboardSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
 // Unified Space Widget Layout (slice 1) — Personal Overview lede widgets, now
 // section-backed (net_worth_chart + allocation).
@@ -39,28 +39,26 @@ import { MembersWorkspace } from "@/components/space/workspaces/MembersWorkspace
 import { TransactionsWorkspace, TX_SCOPE_NOTE } from "@/components/space/workspaces/TransactionsWorkspace";
 import { AccountsWorkspace } from "@/components/space/workspaces/AccountsWorkspace";
 import { ActivityWorkspace } from "@/components/space/workspaces/ActivityWorkspace";
+import { OverviewWorkspace } from "@/components/space/workspaces/OverviewWorkspace";
 import type { SectionCardBundle, SectionStackControls } from "@/components/space/workspaces/SpaceSectionStack";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { SPACE_TAB_ICON_MAP, SPACE_TAB_ICON_FALLBACK } from "@/lib/space-nav-icons";
 import { railVisibleTabs, SPACE_TAB_LABELS, SPACE_GOALS_CHANGED_EVENT, SPACE_ACCOUNTS_CHANGED_EVENT, SPACE_CURRENCY_CHANGED_EVENT, SPACE_DATA_REFRESHED_EVENT } from "@/lib/space-nav";
-import { getPerspectivesForCategory, getCompositionSwitcherItems, PERSPECTIVE_LIBRARY, getWorkspaceTargetTab, isRoutedWorkspaceTab, getWorkspaceModalMeta } from "@/lib/perspectives";
+import { getPerspectivesForCategory, PERSPECTIVE_LIBRARY, getWorkspaceTargetTab, isRoutedWorkspaceTab, getWorkspaceModalMeta } from "@/lib/perspectives";
 import { PERSPECTIVE_ICON_MAP, PERSPECTIVE_ICON_FALLBACK } from "@/lib/perspective-icons";
 import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
 import type { LensResult } from "@/lib/perspective-engine/types";
-import { PerspectiveSwitcher, COMPOSITION_ICON_MAP } from "@/components/dashboard/widgets/PerspectiveSwitcher";
 import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
-import { SpaceComingSoonPanel } from "@/components/dashboard/widgets/SpaceComingSoonPanel";
 import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
-import { SpaceTrendHero, type HeroPoint } from "@/components/dashboard/widgets/SpaceTrendHero";
+import { type HeroPoint } from "@/components/dashboard/widgets/SpaceTrendHero";
 import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
 import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { getSpaceHeroDef } from "@/lib/space-hero";
 import type { Snapshot, Transaction } from "@/types";
 import type { DashboardSection, SpaceAccount, SpaceGoal } from "@/lib/space/dashboard-types";
-import { SectionCard, SortableSectionCard, SectionRegistry, formatBalance, currencySymbol } from "@/components/space/sections/SpaceSections";
+import { SectionCard, SectionRegistry, formatBalance, currencySymbol } from "@/components/space/sections/SpaceSections";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -235,53 +233,8 @@ const GOAL_CATEGORY_LABELS: Record<string, string> = {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
-/**
- * Day-zero Overview state (v2.5 honesty slice) — shown INSTEAD of the
- * section-card stack when the Space has no shared accounts yet. Without
- * this, a fresh Space renders a column of per-widget "share accounts to
- * see X" cards that all say the same thing; one calm setup card is more
- * honest and less inventory-like. Uses only existing affordances:
- * ManageSpaceModal for adding accounts, AddGoalModal for goals.
- */
-function OverviewSetupCard({
-  canManage,
-  onAddAccounts,
-  onAddGoal,
-}: {
-  canManage:     boolean;
-  onAddAccounts: () => void;
-  onAddGoal:     () => void;
-}) {
-  return (
-    <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-8 text-center">
-      <Landmark size={24} className="text-[var(--text-muted)] mx-auto mb-3" />
-      <p className="text-base font-semibold text-[var(--text-primary)]">No accounts shared yet</p>
-      <p className="text-sm text-[var(--text-secondary)] mt-1 max-w-md mx-auto leading-relaxed">
-        {canManage
-          ? "Share accounts with this Space to see balances, net worth, and activity here. Everything on this dashboard is computed from real data — sections appear as their data exists."
-          : "Once an Owner or Admin shares accounts with this Space, balances and activity appear here."}
-      </p>
-      {canManage && (
-        <div className="flex items-center justify-center gap-2 mt-5">
-          <button
-            onClick={onAddAccounts}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-[var(--accent-info)] text-white transition-colors"
-          >
-            <Plus size={13} /> Add accounts
-          </button>
-          <button
-            onClick={onAddGoal}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] transition-colors"
-          >
-            <Target size={13} /> Add a goal
-          </button>
-        </div>
-      )}
-    </GlassPanel>
-  );
-}
-
-
+// OverviewSetupCard (the day-zero Overview state) moved to
+// components/space/workspaces/OverviewWorkspace.tsx (SD-7).
 
 // ─── Settings tab (REMOVED — UX-CUST-1A correction) ─────────────────────────────
 //
@@ -749,12 +702,9 @@ export function SpaceDashboard({
     return () => window.removeEventListener(SPACE_CURRENCY_CHANGED_EVENT, onCurrencyChanged);
   }, [spaceId]);
 
-  // Overview composition switcher (IA refactor point 2/3) — which
-  // full-canvas Overview composition is shown. "overview" is the default,
-  // real, always-available composition; any other value is a comingSoon
-  // "Financial"-group lens (Wealth, Cash Flow) with no real composition
-  // built yet, so the host shows a calm SpaceComingSoonPanel instead.
-  const [composition, setComposition] = useState<string>("overview");
+  // SD-7 — the Overview composition switcher state (composition / compositionItems /
+  // activeComposition) is now OWNED by <OverviewWorkspace> (Overview-only state); the
+  // host no longer holds it.
 
   const canManage = ["OWNER", "ADMIN"].includes(myRole);
   const canLeave  = !canManage; // MEMBER and VIEWER can leave
@@ -809,11 +759,6 @@ export function SpaceDashboard({
         }),
     [category, lensResults]
   );
-
-  // Overview composition switcher options (IA refactor point 2/3) — see
-  // getCompositionSwitcherItems' doc comment for the inclusion rule.
-  const compositionItems = useMemo(() => getCompositionSwitcherItems(category), [category]);
-  const activeComposition = compositionItems.find((p) => p.id === composition);
 
   // ── Perspective Workspace (UX-PER-3) ───────────────────────────────────────
   // The Perspectives TAB is selector-driven (free-form tabs, not cards). The
@@ -1879,29 +1824,30 @@ export function SpaceDashboard({
           );
         })()}
 
-        {/* Composition switcher (IA refactor point 2/3) — Overview only;
-            swaps the canvas below in place. v2.5 honesty slice: only
-            renders once there's a second REAL composition to switch to
-            (status "available"), matching Personal's disabled
-            COMPOSITION_SWITCHING_ENABLED flag — a switcher whose only
-            other options are coming-soon panels is an invitation to a
-            dead end. Re-enables itself the moment a Wealth or Cash Flow
-            composition ships as "available" in lib/perspectives.ts. */}
-        {activeTab === "OVERVIEW" &&
-         compositionItems.filter((p) => p.status === "available").length > 1 && (
-          <div className="flex items-center px-1 mb-3">
-            <PerspectiveSwitcher items={compositionItems} value={composition} onChange={setComposition} />
-          </div>
-        )}
-
-        {activeTab === "OVERVIEW" && composition !== "overview" && activeComposition && (
-          <SpaceComingSoonPanel
-            icon={(() => {
-              const Icon = COMPOSITION_ICON_MAP[activeComposition.icon] ?? Compass;
-              return <Icon size={20} />;
-            })()}
-            title={activeComposition.label}
-            description={activeComposition.description}
+        {/* Overview — the Space's primary canvas (SD-7). OverviewWorkspace owns the
+            composition switcher + coming-soon panel + the canvas (hero → day-zero
+            setup / section stack → doorways). Host passes shared data + host-derived
+            hero values + the Edit-Layout controls + the fetched doorway nodes. */}
+        {activeTab === "OVERVIEW" && (
+          <OverviewWorkspace
+            category={category}
+            spaceType={spaceType}
+            accounts={accounts}
+            loading={loading}
+            canManage={canManage}
+            onManage={() => setShowManage(true)}
+            onAddGoal={() => setShowAddGoal(true)}
+            heroDef={heroDef ?? null}
+            heroPoints={heroPoints}
+            heroHeadlineOverride={heroHeadlineOverride}
+            heroSublineNote={heroSublineNote}
+            heroCurrency={displayCurrency}
+            snapshotsLoading={snapshots === null}
+            sectionsForTab={sectionsForTab}
+            controls={sectionStackControls}
+            card={sectionCardBundle}
+            recentTransactionsDoorway={recentTransactionsDoorway}
+            perspectivesDoorway={perspectivesDoorway}
           />
         )}
 
@@ -1927,153 +1873,6 @@ export function SpaceDashboard({
             controls={sectionStackControls}
             card={sectionCardBundle}
           />
-        )}
-
-        {/* Overview composition (Overview / Accounts / Activity formerly shared this
-            block; SD-7 routed Accounts/Activity to their own Workspaces, so this now
-            renders ONLY the Overview canvas — hero + section stack + doorways — and
-            only when the real "overview" composition is active). */}
-        {activeTab === "OVERVIEW" && composition === "overview" && (
-          <div className="space-y-3">
-            {/* SD-2C — the "view as" display-currency control moved OUT of this
-                Overview body to the SpaceShell header (a Space-level capability),
-                so Overview no longer owns a shell-wide control. */}
-
-            {/* Hero — the template contract's slot 1 (One Space, One Lede):
-                headline + delta + this Space's primary trend, from its own
-                SpaceSnapshot history. Only chartable categories have a
-                heroDef; day-zero Spaces show the setup card instead.
-
-                Shared chartable Spaces (heroDef) render SpaceTrendHero at the
-                top, then their section cards. Personal has no heroDef (its
-                trend is the `net_worth_chart` SECTION now), so this is inert
-                for Personal — no duplicate chart. */}
-            {activeTab === "OVERVIEW" && composition === "overview" &&
-             accounts.length > 0 && heroDef && (
-              <SpaceTrendHero
-                title={heroDef.title}
-                points={heroPoints}
-                framing={heroDef.framing}
-                chartType={heroDef.chartType}
-                scopeLabel={heroDef.scopeLabel}
-                loading={snapshots === null}
-                headlineOverride={heroHeadlineOverride}
-                sublineNote={heroSublineNote}
-                // MC1 QA Q4 — SpaceSnapshot values are stamped in this Space's
-                // reportingCurrency (P3 flip); the label follows the value.
-                currency={displayCurrency}
-              />
-            )}
-
-            {activeTab === "OVERVIEW" && !loading && accounts.length === 0 ? (
-              /* Day-zero Overview (v2.5 honesty slice): one consolidated
-                 setup card instead of a stack of per-widget empty states
-                 that all ask for the same thing. Personal day-zero now flows
-                 through here too (the hero no longer owns it). */
-              <OverviewSetupCard
-                canManage={canManage}
-                onAddAccounts={() => setShowManage(true)}
-                onAddGoal={() => setShowAddGoal(true)}
-              />
-            ) : sectionsForTab.length === 0 ? (
-              // Template polish (D2): when the trend hero is rendering, hero +
-              // change preview + doorways IS the Overview composition — an
-              // empty-state card under the lede reads as breakage. Hero-less
-              // categories keep the honest empty state.
-              activeTab === "OVERVIEW" && (heroDef && accounts.length > 0) ? null : (
-              <div className="text-center py-12">
-                <LayoutDashboard size={30} className="text-[var(--text-faint)] mx-auto mb-3" />
-                <p className="text-sm text-[var(--text-muted)]">No sections on this tab</p>
-                {canManage && (
-                  <button
-                    onClick={() => setShowManage(true)}
-                    className="mt-2 text-xs text-[var(--accent-info)] hover:text-[var(--accent-info)] transition-colors"
-                  >
-                    Manage sections →
-                  </button>
-                )}
-              </div>
-              )
-            ) : editingLayout && canReorderTab ? (
-              /* Edit Layout (UX-CUST-1A): the same SectionCard stack, wrapped
-                 for drag reorder. Single SortableContext = active tab only, so
-                 reorder is tab-scoped and no card can cross tabs. Each drop
-                 persists via handleSectionDragEnd. */
-              <DndContext
-                sensors={layoutSensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleSectionDragEnd}
-              >
-                <SortableContext
-                  items={sectionsForTab.map((s) => s.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  {sectionsForTab.map((s) => (
-                    <SortableSectionCard key={s.id} section={s}>
-                      <SectionCard
-                        section={s}
-                        accounts={accounts}
-                        spaceId={spaceId}
-                        spaceType={spaceType}
-                        category={category}
-                        canManage={canManage}
-                        onAddGoal={() => setShowAddGoal(true)}
-                        ctx={widgetCtx}
-                        snapshots={snapshots}
-                        snapshotCurrency={snapshotCurrency ?? displayCurrency}
-                      />
-                    </SortableSectionCard>
-                  ))}
-                </SortableContext>
-              </DndContext>
-            ) : (
-              sectionsForTab.map((s) => (
-                <SectionCard
-                  key={s.id}
-                  section={s}
-                  accounts={accounts}
-                  spaceId={spaceId}
-                  spaceType={spaceType}
-                  category={category}
-                  canManage={canManage}
-                  onAddGoal={() => setShowAddGoal(true)}
-                  ctx={widgetCtx}
-                  snapshots={snapshots}
-                  snapshotCurrency={snapshotCurrency ?? displayCurrency}
-                />
-              ))
-            )}
-
-            {/* (Unified Space Widget Layout slice 1) — the former renderHero
-                custom-hero seam is deleted. Personal's Net Worth / chart /
-                allocation are now ordinary OVERVIEW sections rendered by the
-                stack above. */}
-
-            {/* Template contract slots 4 & 5 — change preview (Recent
-                activity + Recent transactions on flow templates) and the
-                Perspectives doorway. Composition, not duplication: everything
-                reads data already fetched for the dedicated tabs.
-
-                Order depends on the host: Personal puts Perspectives (E) above
-                Recent Activity (F) per the canonical Personal Overview; shared
-                Spaces keep the original Recent-Activity-then-Perspectives order
-                (byte-identical). Both blocks are defined once above. */}
-            {activeTab === "OVERVIEW" && composition === "overview" && (
-              <div className="space-y-3 pt-2">
-                {spaceType === "PERSONAL" ? (
-                  <>
-                    {perspectivesDoorway}
-                    {recentTransactionsDoorway}
-                  </>
-                ) : (
-                  <>
-                    {recentTransactionsDoorway}
-                    {perspectivesDoorway}
-                  </>
-                )}
-              </div>
-            )}
-          </div>
         )}
 
         {/* No sections at all — only meaningful for the legacy data-driven
