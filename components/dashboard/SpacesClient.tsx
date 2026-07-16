@@ -69,7 +69,7 @@ import {
 // Manage Space (deep settings) is only opened from a card's hover action —
 // split out of the initial bundle for this route.
 const ManageSpaceModal = dynamic(
-  () => import("@/components/dashboard/ManageSpaceModal").then((m) => m.ManageSpaceModal),
+  () => import("@/components/space/manage/ManageSpaceModal").then((m) => m.ManageSpaceModal),
   { ssr: false }
 );
 

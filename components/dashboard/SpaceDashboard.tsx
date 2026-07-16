@@ -20,7 +20,7 @@ import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
 // Unified Space Widget Layout (slice 1) — Personal Overview lede widgets, now
 // section-backed (net_worth_chart + allocation).
 import { formatRelativeTime, displaySpaceName } from "@/lib/format";
-import { ManageSpaceModal } from "@/components/dashboard/ManageSpaceModal";
+import { ManageSpaceModal } from "@/components/space/manage/ManageSpaceModal";
 import { DEFAULT_CASH_FLOW_PERIOD, isExplicitPeriod, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiveShellState";
 import { SpaceShell } from "@/components/space/shell/SpaceShell";

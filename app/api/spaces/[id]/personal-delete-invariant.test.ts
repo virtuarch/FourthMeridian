@@ -65,7 +65,7 @@ check("permanent-delete PERSONAL guard precedes db.space.delete (guard is upstre
     permaDelete.indexOf("db.space.delete"));
 
 // ── 3. UI — ManageSpaceModal hides the danger/delete tab for PERSONAL ────────
-const manage = code(read("components", "dashboard", "ManageSpaceModal.tsx"));
+const manage = code(read("components", "space", "manage", "ManageSpaceModal.tsx"));
 
 check("Manage modal danger tab is NOT unconditionally shown",
   !/id:\s*["']danger["'][^}]*show:\s*true\b/.test(manage));

@@ -80,11 +80,12 @@ const scrunch = (s: string) => s.replace(/\s+/g, " ");
   check("members role route returns a 400 rejection", /status:\s*400/.test(scrunch(src)) && /members to manage/i.test(src));
 }
 
-// -- UI: ManageSpaceModal hides the invite affordance for personal spaces --
+// -- UI: the Members panel hides the invite affordance for personal spaces --
+// (MSM decomposition — the isPersonal/canInvite gate lives in MembersPanel now.)
 {
-  const src = read("components", "dashboard", "ManageSpaceModal.tsx");
-  check("ManageSpaceModal derives isPersonal from space.type", /isPersonal\s*=\s*space\.type\s*===\s*"PERSONAL"/.test(scrunch(src)));
-  check("ManageSpaceModal gates canInvite on !isPersonal", /canInvite\s*=\s*!isPersonal/.test(scrunch(src)));
+  const src = read("components", "space", "manage", "MembersPanel.tsx");
+  check("MembersPanel derives isPersonal from space.type", /isPersonal\s*=\s*space\.type\s*===\s*"PERSONAL"/.test(scrunch(src)));
+  check("MembersPanel gates canInvite on !isPersonal", /canInvite\s*=\s*!isPersonal/.test(scrunch(src)));
 }
 
 // ── Report ────────────────────────────────────────────────────────────────────

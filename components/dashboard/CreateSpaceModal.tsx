@@ -84,10 +84,8 @@ import { getLiveTemplates } from "@/lib/space-templates/registry";
 import { CategoryIcon } from "@/components/dashboard/SpacesClient";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
-import {
-  UserSearchInput, userDisplayName, type UserResult,
-  ShareExistingAccountsPanel,
-} from "@/components/dashboard/ManageSpaceModal";
+import { UserSearchInput, userDisplayName, type UserResult } from "@/components/space/manage/UserSearchInput";
+import { ShareExistingAccountsPanel } from "@/components/space/manage/ShareExistingAccountsPanel";
 import {
   SPACE_LIST_CHANGED_EVENT,
   SPACE_ACCOUNTS_CHANGED_EVENT,
