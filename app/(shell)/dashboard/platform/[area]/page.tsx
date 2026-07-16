@@ -79,6 +79,7 @@ export default async function PlatformSpacePage({
 
   return (
     <PlatformSpaceDashboard
+      area={area}
       areaLabel={PLATFORM_AREAS[area].label}
       spaceName={space.name}
       accessLevel={grant.level}

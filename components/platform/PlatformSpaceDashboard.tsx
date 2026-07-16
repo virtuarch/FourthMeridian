@@ -1,38 +1,41 @@
 "use client";
 
 /**
- * components/platform/PlatformSpaceDashboard.tsx
+ * components/platform/PlatformSpaceDashboard.tsx  (OPS-5 S6 — Workspace Decomposition)
  *
- * PO1.0 — the placeholder render surface for a platform Space. One card per
- * enabled SpaceDashboardSection, resolved through a LOCAL section registry
- * (PLATFORM_SECTION_REGISTRY) keyed by section key — the widget-registry
- * adapter *pattern* ("add one entry, no switch/case") in a platform-local map,
- * deliberately separate from the customer WIDGET_REGISTRY (untouched).
+ * The Platform Space render surface. It renders through the SHARED, universal
+ * SpaceShell frame (the same primitive customer Spaces use) and now composes
+ * MULTIPLE Workspaces into the shell's workspace slot — no longer one flat
+ * Overview grid.
  *
- * In PO1.0 every entry renders an HONEST placeholder card naming where its real
- * adapter lands, so the gate → listing → host chain is fully exercisable
- * end-to-end before any data plumbing exists. Real widgets replace card bodies
- * one entry at a time in PO1.1+.
+ * Architecture reuse (NOT a parallel framework):
+ *   • Identity  — each rail destination is a universal `WorkspaceDefinition`
+ *     registered in the ONE `WORKSPACE_REGISTRY` (lib/platform/workspaces.ts →
+ *     lib/perspectives.ts), domain:"platform".
+ *   • Composition — which Workspaces an area exposes, and which section-widgets
+ *     each renders, comes from the SINGLE composition owner
+ *     `PLATFORM_AREA_WORKSPACES` (lib/platform/workspaces.ts).
+ *   • Frame — SpaceShell owns chrome + the rail (Atlas SegmentedControl); this
+ *     host only supplies title/subtitle/toolbar/rail + the active workspace body.
+ *   • Data — Platform widgets SELF-FETCH (OPS-5 S6 dataNeeds decision A); this
+ *     host passes each its enabled DB `SpaceDashboardSection` row and nothing more.
  *
- * No customer tab rail (SPACE_TAB_ORDER), no entry into SpaceDashboard.tsx, no
- * WIDGET_REGISTRY entries — the customer surface stays untouched.
+ * Overview is a SUMMARY surface (top alerts + high-level job/provider/freshness
+ * summaries + config posture) with DOORWAYS into the detailed Workspaces — not the
+ * home of every capability. The heavy detail (Manual Operations WRITE controls,
+ * connection + API-usage breakdowns) lives in its own Workspace.
  *
- * SD-2E — render-layer convergence. The section/widget grid now renders INSIDE the
- * universal `SpaceShell` frame (the same one customer Spaces use), as a single
- * Overview Workspace occupying the shell's workspace slot. This makes the Platform
- * Space the SECOND real consumer of the universal Space architecture — same frame,
- * same navigation primitive — WITHOUT any Platform redesign: the widgets, APIs,
- * self-fetching, sections, grant authorization, and the platform-local registries
- * below are all unchanged. Only the outer chrome is now shared, not forked. The
- * Overview Workspace's identity/composition still lives platform-locally
- * (PLATFORM_AREAS + these local registries); registering it in the canonical
- * Workspace Registry is a later composition slice — see SPACE_CONTRACT_DOCTRINE
- * Addendum II §C/§H.
+ * The PO1.0 placeholder subsystem (PlaceholderCard / section-note registry) is
+ * gone: every composed section resolves to a real widget (a key without one is
+ * simply skipped), so the placeholder branch was dead (OPS-5 integration gate §12).
  */
 
-import type { ComponentType } from "react";
-import { Wrench, LayoutDashboard } from "lucide-react";
-import { SpaceShell } from "@/components/space/shell/SpaceShell";
+import { useState, type ComponentType } from "react";
+import type { LucideIcon } from "lucide-react";
+import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, ArrowRight } from "lucide-react";
+import type { PlatformArea } from "@prisma/client";
+import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
+import { getPlatformAreaWorkspaces, getPlatformWorkspace } from "@/lib/platform/workspaces";
 import type { PlatformSection } from "./widget-kit";
 import { SecAuditFeedWidget } from "./widgets/SecAuditFeedWidget";
 import { SecAuthPostureWidget } from "./widgets/SecAuthPostureWidget";
@@ -54,79 +57,46 @@ import { CsSyncIssuesWidget } from "./widgets/CsSyncIssuesWidget";
 type Section = PlatformSection;
 
 /**
- * Platform-local widget registry: section key → the real widget component that
- * replaces its placeholder card. Mirrors the customer WIDGET_REGISTRY adapter
- * pattern ("add one entry, no switch/case") but is a SEPARATE, platform-scoped
- * map per this file's doctrine. A key with no entry here falls back to
- * PlaceholderCard unchanged — so growth_signups / cs_sync_issues (PO1.3/PO1.4)
- * stay placeholders until their slice adds an entry.
+ * Platform-local widget registry: section key → its widget. A SEPARATE,
+ * platform-scoped map (the customer WIDGET_REGISTRY is untouched) — justified: the
+ * two domains render different widget families through the same "one entry, no
+ * switch/case" pattern.
  */
 const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section }>> = {
-  // Security Operations (PO1.1)
+  // Security Operations
   sec_audit_feed:   SecAuditFeedWidget,
   sec_auth_posture: SecAuthPostureWidget,
   sec_sessions:     SecSessionsWidget,
-  // Security Operations (Wave 3 ⑧)
   sec_anomalies:    SecAnomaliesWidget,
-  // Platform Operations (PO1.2)
-  ops_job_health:   OpsJobHealthWidget,
-  ops_rate_limits:  OpsRateLimitsWidget,
-  ops_env_status:   OpsEnvStatusWidget,
-  // Platform Operations (Wave 2 S7 / CH-1)
-  ops_api_usage:         OpsApiUsageWidget,
-  ops_connection_health: OpsConnectionHealthWidget,
-  // Platform Operations (OPS-5 S1)
+  // Platform Operations
+  ops_job_health:         OpsJobHealthWidget,
+  ops_rate_limits:        OpsRateLimitsWidget,
+  ops_env_status:         OpsEnvStatusWidget,
+  ops_api_usage:          OpsApiUsageWidget,
+  ops_connection_health:  OpsConnectionHealthWidget,
   ops_resource_freshness: OpsResourceFreshnessWidget,
-  // Platform Operations (OPS-5 S4)
-  ops_manual_operations: OpsManualOperationsWidget,
-  // Platform Operations (OPS-5 S3)
-  ops_provider_health: OpsProviderHealthWidget,
-  // Platform Operations (OPS-5 S5)
-  ops_alerts: OpsAlertsWidget,
-  // Growth & Revenue (PO1.3 / Wave 1 S3)
-  growth_signups:        GrowthSignupsWidget,
-  growth_beta_requests:  GrowthBetaRequestsWidget,
-  // Customer Success (PO1.4)
-  cs_sync_issues:   CsSyncIssuesWidget,
+  ops_manual_operations:  OpsManualOperationsWidget,
+  ops_provider_health:    OpsProviderHealthWidget,
+  ops_alerts:             OpsAlertsWidget,
+  // Growth & Revenue
+  growth_signups:       GrowthSignupsWidget,
+  growth_beta_requests: GrowthBetaRequestsWidget,
+  // Customer Success
+  cs_sync_issues: CsSyncIssuesWidget,
+};
+
+/** Lucide icon-name → component, for the Platform workspace identities. */
+const WORKSPACE_ICONS: Record<string, LucideIcon> = {
+  LayoutDashboard, Timer, PlugZap, Wrench, BellRing,
 };
 
 interface Props {
+  area:        PlatformArea;
   areaLabel:   string;
   spaceName:   string;
   accessLevel: string; // READ | WRITE
+  /** Enabled SpaceDashboardSection rows for this area's Space (DB, ordered). */
   sections:    Section[];
-}
-
-/**
- * Local section registry: section key → the honest "what lands here, and when"
- * note shown in its placeholder card. A key with no entry falls back to a
- * generic placeholder (below) — adding a real widget later is one entry, no
- * switch/case.
- */
-const PLATFORM_SECTION_REGISTRY: Record<string, { note: string }> = {
-  // Platform Operations (PO1.2)
-  ops_job_health:  { note: "Rich job health (OPS-5 S2) over lib/jobs/health.ts (checkScheduledJobHealth)." },
-  ops_rate_limits: { note: "Lands in PO1.2 — rate-limit status over the RateLimit table." },
-  ops_env_status:  { note: "Lands in PO1.2 — environment report over a validateEnv() report-shape refactor." },
-  ops_api_usage:         { note: "Wave 2 S7 — API call/token volume over ApiUsageCounter (optional estimated spend)." },
-  ops_connection_health: { note: "Wave 2 CH-1 — normalized provider-connection health over PlaidItem + Connection." },
-  ops_resource_freshness: { note: "OPS-5 S1 — content-aware resource freshness over lib/platform/resource-freshness.ts (MAX archive date, not JobRun)." },
-  ops_manual_operations: { note: "OPS-5 S4 — manual operational controls (Run Now / Dry Run) over the command registry (lib/platform/operations)." },
-  ops_provider_health: { note: "OPS-5 S3 — external providers as first-class resources over lib/platform/provider-health.ts (freshness consumed from OPS-5 S1)." },
-  ops_alerts: { note: "OPS-5 S5 — alert rules + history over lib/alerts (consumes job-health / connection-health / resource-freshness; emails on breach)." },
-  // Security Operations (PO1.1)
-  sec_audit_feed:   { note: "Lands in PO1.1 — audit feed over the same query as /api/admin/audit." },
-  sec_auth_posture: { note: "Lands in PO1.1 — TOTP/forced-2FA posture over /api/admin/security/*." },
-  sec_sessions:     { note: "Lands in PO1.1 — active-session activity over UserSession." },
-  // Growth & Revenue (PO1.3) — revenue has no data source until billing (v3.0).
-  growth_signups:   { note: "Lands in PO1.3 — signups/activation from User.createdAt / emailVerifiedAt / UserSession. Revenue has no data source until billing (v3.0)." },
-  growth_beta_requests: { note: "Wave 1 S3 — beta-access request queue over BetaAccessRequest (approve mints & emails a single-use invite)." },
-  // Customer Success (PO1.4) — no CS primitives exist yet.
-  cs_sync_issues:   { note: "Lands in PO1.4 — sync-issue triage over SyncIssue. No customer-success primitives exist yet." },
-};
-
-function sectionNote(key: string): string {
-  return PLATFORM_SECTION_REGISTRY[key]?.note ?? "Placeholder — a real widget lands in a later PO1.x slice.";
 }
 
 function AccessBadge({ level }: { level: string }) {
@@ -145,71 +115,107 @@ function AccessBadge({ level }: { level: string }) {
   );
 }
 
-function PlaceholderCard({ section }: { section: Section }) {
+/** A summary→detail doorway button (Overview only). */
+function WorkspaceDoorway({ targetId, onOpen }: { targetId: string; onOpen: (id: string) => void }) {
+  const def = getPlatformWorkspace(targetId);
+  if (!def) return null;
+  const Icon = WORKSPACE_ICONS[def.icon] ?? ArrowRight;
   return (
-    <div
-      className="relative overflow-hidden rounded-[var(--radius-lg)] border p-5 flex flex-col gap-3"
+    <button
+      onClick={() => onOpen(targetId)}
+      className="flex items-center justify-between gap-2 rounded-[var(--radius-lg)] border p-4 text-left transition-colors hover:bg-[var(--glass-ultrathin)]"
       style={{ background: "var(--surface-muted)", borderColor: "var(--border-hairline)" }}
     >
-      <div className="flex items-center gap-2">
-        <div
+      <span className="flex items-center gap-2">
+        <span
           className="w-7 h-7 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0"
           style={{ background: "var(--glass-ultrathin)", color: "var(--text-muted)" }}
         >
-          <Wrench size={14} />
-        </div>
-        <p className="font-semibold text-[var(--text-primary)] text-sm">{section.label}</p>
-      </div>
-      <p className="text-xs text-[var(--text-secondary)] leading-relaxed">{sectionNote(section.key)}</p>
-      <span
-        className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full self-start"
-        style={{ background: "var(--surface-muted)", color: "var(--text-muted)", border: "1px solid var(--border-hairline)" }}
-      >
-        Placeholder
+          <Icon size={14} />
+        </span>
+        <span className="text-sm font-semibold text-[var(--text-primary)]">Open {def.label}</span>
       </span>
-    </div>
+      <ArrowRight size={14} className="text-[var(--text-muted)]" />
+    </button>
   );
 }
 
-/**
- * The Overview Workspace body — the existing self-fetching section/widget grid.
- * Unchanged from PO1.x; only its enclosing frame moved (SD-2E).
- */
-function PlatformOverviewWorkspace({ sections }: { sections: Section[] }) {
-  if (sections.length === 0) {
-    return <p className="text-sm text-[var(--text-secondary)]">No sections configured for this area yet.</p>;
-  }
+/** One workspace body — its composed section widgets (+ Overview doorways). */
+function PlatformWorkspaceBody({
+  sectionKeys,
+  doorways,
+  dbByKey,
+  onOpen,
+}: {
+  sectionKeys: readonly string[];
+  doorways?:   readonly string[];
+  dbByKey:     Map<string, Section>;
+  onOpen:      (id: string) => void;
+}) {
+  const rows = sectionKeys
+    .map((key) => dbByKey.get(key))
+    .filter((row): row is Section => row != null && PLATFORM_WIDGET_REGISTRY[row.key] != null);
+
   return (
-    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-4 md:gap-5 pb-16">
-      {sections.map((s) => {
-        const Widget = PLATFORM_WIDGET_REGISTRY[s.key];
-        return Widget ? <Widget key={s.id} section={s} /> : <PlaceholderCard key={s.id} section={s} />;
-      })}
+    <div className="pb-16 flex flex-col gap-4 md:gap-5">
+      {rows.length === 0 ? (
+        <p className="text-sm text-[var(--text-secondary)]">No sections enabled for this workspace.</p>
+      ) : (
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-4 md:gap-5">
+          {rows.map((row) => {
+            const Widget = PLATFORM_WIDGET_REGISTRY[row.key];
+            return <Widget key={row.id} section={row} />;
+          })}
+        </div>
+      )}
+
+      {doorways && doorways.length > 0 && (
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-2">Explore</p>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(220px,100%),1fr))] gap-3">
+            {doorways.map((id) => (
+              <WorkspaceDoorway key={id} targetId={id} onOpen={onOpen} />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-export function PlatformSpaceDashboard({ areaLabel, spaceName, accessLevel, sections }: Props) {
-  // SD-2E — the Platform Space renders through the universal SpaceShell frame, the
-  // same primitive customer Spaces use (DashboardChrome → SpaceShell → Workspace).
-  // A Platform Space today exposes a SINGLE Overview Workspace (the section grid);
-  // the rail therefore shows one destination. `onSelectTab` is a no-op because that
-  // sole destination is always active — richer Platform composition (more Workspaces,
-  // operational Perspectives) is a later slice, deliberately not built here.
+export function PlatformSpaceDashboard({ area, areaLabel, spaceName, accessLevel, sections }: Props) {
+  const workspaces = getPlatformAreaWorkspaces(area);
+  const [activeTab, setActiveTab] = useState<string>(workspaces[0]?.workspaceId ?? "platform-overview");
+
+  const dbByKey = new Map(sections.map((s) => [s.key, s] as const));
+
+  const railOptions: SpaceShellRailOption[] = workspaces.map((w) => {
+    const def = getPlatformWorkspace(w.workspaceId);
+    const Icon = (def && WORKSPACE_ICONS[def.icon]) ?? LayoutDashboard;
+    return { id: w.workspaceId, label: def?.label ?? w.workspaceId, icon: <Icon size={14} aria-hidden /> };
+  });
+
+  const active = workspaces.find((w) => w.workspaceId === activeTab) ?? workspaces[0];
+
   return (
     <SpaceShell
       title={spaceName}
       subtitle={`Platform · ${areaLabel}`}
-      // The access-level indicator is a frame-level affordance, not workspace body.
       toolbar={<AccessBadge level={accessLevel} />}
-      railOptions={[{ id: "overview", label: "Overview", icon: <LayoutDashboard size={14} aria-hidden /> }]}
-      activeTab="overview"
-      onSelectTab={NOOP_SELECT}
+      railOptions={railOptions}
+      activeTab={active?.workspaceId ?? activeTab}
+      onSelectTab={setActiveTab}
     >
-      <PlatformOverviewWorkspace sections={sections} />
+      {active ? (
+        <PlatformWorkspaceBody
+          sectionKeys={active.sections}
+          doorways={active.doorways}
+          dbByKey={dbByKey}
+          onOpen={setActiveTab}
+        />
+      ) : (
+        <p className="text-sm text-[var(--text-secondary)]">No workspaces configured for this area.</p>
+      )}
     </SpaceShell>
   );
 }
-
-/** Stable no-op: a single-Workspace Space has nothing to switch to (SD-2E). */
-const NOOP_SELECT = (_tab: string): void => {};

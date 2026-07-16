@@ -31,6 +31,10 @@
 // pulls no engine (server) code into any bundle. The engine itself never
 // imports this file; the coupling is one-directional and nominal.
 import type { LensId } from "@/lib/perspective-engine/types";
+// OPS-5 S6 — Platform Operations workspace identities, owned by their own domain
+// module and unioned into the universal registry below (value import; the module is
+// a client-safe config file with no engine/server code, exactly like this one).
+import { PLATFORM_WORKSPACES } from "@/lib/platform/workspaces";
 
 export type PerspectiveStatus = "available" | "comingSoon";
 
@@ -113,6 +117,19 @@ export interface WorkspaceDefinition {
   /** Lucide icon NAME (string) — the consuming surface resolves it to a component. */
   icon: string;
   kind: WorkspaceKind;
+  /**
+   * OPS-5 S6 — which DOMAIN owns this workspace. Absent ⇒ "finance" (the original
+   * and only domain until Platform Operations became the second real consumer).
+   * The finance-scoped metadata below (routing/dataNeeds/consumesShellTime/envelope)
+   * uses finance VOCABULARIES (WorkspaceDataNeed / WorkspaceEnvelopeSource /
+   * RoutedWorkspaceTab); a "platform" workspace declares NONE of them (Platform
+   * widgets self-fetch, have no finance envelope, and route via the platform rail,
+   * not the finance modal tabs). This discriminator + the guard in
+   * lib/platform/workspaces.test.ts is what keeps finance vocabularies from
+   * polluting Platform definitions — WITHOUT a base/PersonalFinance type split
+   * (which SD-3 forbids: dataNeeds is universal orchestration metadata by design).
+   */
+  domain?: "finance" | "platform";
   /** Routing/navigation identity — the ONE answer to "which top-level tab owns
    *  this workspace, and how is it presented?" (replaces the host-side
    *  PERSPECTIVE_TARGET_TAB / PERSPECTIVE_ROUTED_TABS / PERSPECTIVE_MODAL_META). */
@@ -411,11 +428,20 @@ export const STANDARD_WORKSPACES: Record<string, WorkspaceDefinition> = {
   },
 };
 
-/** The ONE canonical workspace registry — standard destinations + perspectives,
- *  keyed by id (disjoint id sets, so no identity is duplicated). */
+/** The ONE canonical workspace registry — the UNIVERSAL identity authority over
+ *  every primary Space destination, across domains: finance standard destinations
+ *  + finance perspectives + (OPS-5 S6) Platform Operations workspaces. Keyed by id
+ *  with disjoint id sets (Platform ids are "platform-*"-namespaced), so no identity
+ *  is duplicated and no finance helper (getPerspectivesForCategory, ROUTED_WORKSPACE_
+ *  TABS, …) ever sees a Platform entry: those read PERSPECTIVE_LIBRARY or filter on
+ *  finance-only fields the Platform defs deliberately omit. This is the SD-2/SD-3
+ *  "second real consumer" convergence — Platform reuses the universal registry, NOT
+ *  a parallel identity system. PLATFORM_WORKSPACES lives in its own domain module
+ *  (lib/platform/workspaces.ts); the finance file only unions it in here. */
 export const WORKSPACE_REGISTRY: Record<string, WorkspaceDefinition> = {
   ...STANDARD_WORKSPACES,
   ...PERSPECTIVE_LIBRARY,
+  ...PLATFORM_WORKSPACES,
 };
 
 /** Deterministic lookup by workspace id; undefined for unknown ids (fails safe). */
