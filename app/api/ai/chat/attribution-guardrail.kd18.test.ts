@@ -1,360 +1,195 @@
 /**
  * app/api/ai/chat/attribution-guardrail.kd18.test.ts
  *
- * KD-18 regression tests — attribution honesty guardrail (pure, no DB, no import
- * of the route module).
- *
- * The project has no test runner (no jest/vitest). This file is a standalone,
- * dependency-free script runnable with the already-installed `tsx`, mirroring
- * lib/ai/assemblers/transactions.kd17.test.ts:
+ * KD-18 — attribution-honesty guardrail, asserted at RUNTIME (pure, no DB, no LLM).
  *
  *     npx tsx app/api/ai/chat/attribution-guardrail.kd18.test.ts
  *
- * Run from the repo root (source tripwires resolve paths from cwd).
- * Exits 0 when all cases pass and 1 on failure.
- *
- * Why source tripwires rather than calling the builder:
- * app/api/ai/chat/route.ts is a Next.js route module. Next's route-type check
- * forbids exporting arbitrary symbols from it, so the two guardrail constants
- * and the two prompt builders cannot be exported for a runtime assertion without
- * failing `tsc`. These tests therefore pin the guardrail structurally against the
- * route source — the same technique the KD-17 serializer tripwires use.
+ * TEST-3 PART 5 modernization: this used to `readFileSync` the prompt modules and
+ * snapshot ~20 verbatim prompt phrases, because the guardrail lived inside the
+ * un-exportable Next route. AI-ARCH extracted it into pure, exportable modules
+ * (lib/ai/prompts/{doctrine,context-serializer,system-prompt}.ts), so we now
+ * IMPORT the real constants/builders and assert their SEMANTIC HONESTY and their
+ * BEHAVIOR — the disclosure fires only inside the transaction path; the rule is
+ * embedded in the advisor principles; per-card figures render only when supplied.
+ * A behavior test is strictly stronger than a wording snapshot: a paraphrase that
+ * preserves the honesty still passes, while a real regression (disclosure leaking
+ * into non-transaction prompts, an invented per-account split, a refusal-first
+ * rule) fails. Only the deterministic-provenance seam — that per-card figures
+ * come through the KD-15 visibility-guarded data layer, which reads the DB and so
+ * cannot run under a bare tsx script — stays a minimal source check.
  *
  * Defect under test (docs/investigations/DEBT_PAYMENT_ATTRIBUTION_INVESTIGATION.md
  * + STATUS.md KD-18): deterministic context carries exact flow TOTALS but not the
- * account/card/source/destination dimension of those flows, and the prompt
- * presented monthly totals next to named liabilities with no attribution
- * disclaimer — so a per-card question yielded an invented allocation the
- * membership validator structurally cannot catch (attribution, not figures).
- *
- * KD-18 (generalized per the approved refinement) adds honesty, not capability:
- *   1. Disclosure exists — a named ATTRIBUTION_DISCLOSURE constant stating the
- *      totals are not attributed to specific accounts/destinations.
- *   2. Rule exists — a named ATTRIBUTION_RULE forbidding any invented per-account
- *      breakdown along ANY missing dimension, not only debt payments.
- *   3. Prompt serialization includes both — the disclosure is pushed into the
- *      serialized context block (inside the transaction guard); the rule is part
- *      of ADVISOR_PRINCIPLES, which both prompt builders embed.
- *   4. Ordinary prompts remain unchanged — the disclosure is emitted exactly once
- *      and only inside the `if (txn)` transaction guard, and the rule appears
- *      exactly once, in ADVISOR_PRINCIPLES between the debt-payment and financial
- *      -assessment doctrines. No other prompt text is touched.
+ * account/card/source/destination dimension, so a per-card question could yield an
+ * invented allocation the membership validator structurally cannot catch. KD-18
+ * adds honesty, not capability.
  */
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
-
-// ---------------------------------------------------------------------------
-// Tiny harness (mirrors transactions.kd17.test.ts)
-// ---------------------------------------------------------------------------
+import { ATTRIBUTION_DISCLOSURE, ATTRIBUTION_RULE, ADVISOR_PRINCIPLES } from '@/lib/ai/prompts/doctrine';
+import { serializeContextBlock, type DebtPaymentLine } from '@/lib/ai/prompts/context-serializer';
+import { buildSpaceSystemPrompt } from '@/lib/ai/prompts/system-prompt';
+import { computeAssessment } from '@/lib/ai/intelligence';
+import { classifyFinancialIntent } from '@/lib/ai/intent';
+import { FinanceDomains } from '@/lib/ai/types';
+import type {
+  SpaceContext_AI, AccountsSectionData, AccountSummaryItem, TransactionsSummaryData,
+} from '@/lib/ai/types';
 
 let failures = 0;
-
-function check(name: string, cond: boolean, detail?: string): void {
-  if (cond) {
-    console.log(`[PASS] ${name}`);
-  } else {
-    failures += 1;
-    console.error(`[FAIL] ${name}${detail ? ` — ${detail}` : ''}`);
-  }
+function check(name: string, cond: boolean, detail = ''): void {
+  if (cond) { console.log(`[PASS] ${name}`); }
+  else { failures += 1; console.error(`[FAIL] ${name}${detail ? ` — ${detail}` : ''}`); }
 }
-
 function countOccurrences(haystack: string, needle: string): number {
-  let n = 0;
-  let i = haystack.indexOf(needle);
-  while (i !== -1) {
-    n += 1;
-    i = haystack.indexOf(needle, i + needle.length);
-  }
+  let n = 0, i = haystack.indexOf(needle);
+  while (i !== -1) { n += 1; i = haystack.indexOf(needle, i + needle.length); }
   return n;
 }
 
-/** Return the body of a top-level function by brace matching from its signature. */
-function functionBody(src: string, signature: string): string {
-  const start = src.indexOf(signature);
-  if (start === -1) throw new Error(`signature not found: ${signature}`);
-  const braceOpen = src.indexOf('{', start);
-  let depth = 0;
-  for (let i = braceOpen; i < src.length; i += 1) {
-    const ch = src[i];
-    if (ch === '{') depth += 1;
-    else if (ch === '}') {
-      depth -= 1;
-      if (depth === 0) return src.slice(braceOpen, i + 1);
-    }
+// ── Fixtures (pure; accounts from the AI-ARCH runtime test, transactions from ──
+// the annotations.ti2 fixture). makeCtx assembles an accounts domain always and
+// a transactions-summary domain only when `withTxn`, so the `if (txn)` path in
+// the serializer can be exercised from both sides.
+function debtAcct(id: string, name: string, balance: number, apr: number): AccountSummaryItem {
+  return {
+    id, name, type: 'debt', balance, currency: 'USD', reportingBalance: balance,
+    lastUpdated: '2026-07-15T00:00:00.000Z', needsReauth: false, visibilityLevel: 'FULL',
+    apr, rateSource: 'user', minimumPayment: null,
+  };
+}
+function accountsData(): AccountsSectionData {
+  const accounts = [debtAcct('A', 'Card A', 10000, 10), debtAcct('B', 'Card B', 5000, 20)];
+  return {
+    totalCount: accounts.length, totalAssets: 0, totalLiabilities: 15000, netWorth: -15000,
+    totalLiquid: 0, totalInvestments: 0, totalDigitalAssets: 0, totalRealAssets: 0, totalsEstimated: false,
+    counts: { liquid: 0, investments: 0, digitalAssets: 0, realAssets: 0, liabilities: accounts.length },
+    health: { errorCount: 0, staleCount: 0, needsReauthCount: 0, errorAccountNames: [], staleAccountNames: [], needsReauthAccountNames: [] },
+    knowledgeGaps: [], accounts,
+  };
+}
+function txnData(): TransactionsSummaryData {
+  return {
+    windowDays: 90, startDate: '2026-04-01', endDate: '2026-06-30',
+    transactionCount: 30, truncated: false, coverageStartDate: '2026-04-01', fetchLimit: 5000,
+    incomeTotal: 1000, expenseTotal: 500, refundTotal: 0, debtPaymentTotal: 800,
+    transferTotal: 0, netCashFlow: 500, estimated: false,
+    pendingCreditCount: 0, pendingCreditTotal: 0, pendingDebitCount: 0, pendingDebitTotal: 0,
+    unclassifiedCount: 0, adjustmentCount: 0,
+    needsClassification: {
+      count: 0, unknownInflowCount: 0, unknownInflowTotal: 0,
+      unknownPaymentAppCount: 0, unknownPaymentAppTotal: 0,
+      counterpartyResolution: 'PERSISTED_AND_READ_TIME',
+    },
+    byCategory: [{ category: 'Income', total: 0, count: 3 }],
+    monthlyBreakdown: [], largestIncome: null, largestExpense: null,
+  } as unknown as TransactionsSummaryData;
+}
+function makeCtx(withTxn: boolean): SpaceContext_AI {
+  const domains: SpaceContext_AI['domains'] = {
+    [FinanceDomains.ACCOUNTS]: { domain: 'accounts', assembledAt: '2026-07-15T00:00:00.000Z', data: accountsData() },
+  };
+  if (withTxn) {
+    domains[FinanceDomains.TRANSACTIONS_SUMMARY] =
+      { domain: FinanceDomains.TRANSACTIONS_SUMMARY, assembledAt: '2026-07-15T00:00:00.000Z', data: txnData() };
   }
-  throw new Error(`unbalanced braces for: ${signature}`);
+  return {
+    requestedAt: '2026-07-15T00:00:00.000Z', spaceId: 's1', userId: 'u1',
+    role: 'OWNER' as SpaceContext_AI['role'], agentId: 'agent1',
+    resolvedDomains: withTxn ? ['accounts', 'transactions'] : ['accounts'],
+    space: { id: 's1', name: 'Test', type: 'personal', category: 'personal', reportingCurrency: 'USD' },
+    domains, signals: [], auditLogId: 'log1',
+  };
 }
 
-/** Return the array-literal body of `const NAME = [ ... ]`. */
-function arrayLiteral(src: string, name: string): string {
-  const decl = src.indexOf(`const ${name} = [`);
-  if (decl === -1) throw new Error(`array const not found: ${name}`);
-  const open = src.indexOf('[', decl);
-  let depth = 0;
-  for (let i = open; i < src.length; i += 1) {
-    const ch = src[i];
-    if (ch === '[') depth += 1;
-    else if (ch === ']') {
-      depth -= 1;
-      if (depth === 0) return src.slice(open, i + 1);
-    }
-  }
-  throw new Error(`unbalanced brackets for: ${name}`);
+const ctxNoTxn = makeCtx(false);
+const ctxTxn = makeCtx(true);
+const route = classifyFinancialIntent('how much did I pay on each card', new Date());
+const DEBT_LINES: DebtPaymentLine[] = [{ name: 'Card A', total: 500, count: 2 }];
+
+// ── 1. Disclosure states the limit honestly (semantic anchors, not a snapshot) ─
+check('disclosure names the ATTRIBUTION LIMIT', ATTRIBUTION_DISCLOSURE.includes('ATTRIBUTION LIMIT'));
+check('disclosure says totals are NOT attributed to specific accounts/cards',
+  ATTRIBUTION_DISCLOSURE.includes('NOT attributed to specific accounts'));
+check('disclosure names the ONE exception (per-card debt payments)',
+  /ONE exception[\s\S]*per-card debt payments/.test(ATTRIBUTION_DISCLOSURE));
+check('disclosure warns any other split would be invented',
+  ATTRIBUTION_DISCLOSURE.includes('would be invented'));
+
+// ── 2. Rule is answer-first, generalized, and never licenses fabrication ───────
+check('rule is answer-honesty, not refuse-the-question',
+  ATTRIBUTION_RULE.includes('refuse only the missing dimension, never the whole question'));
+{
+  const answerIdx = ATTRIBUTION_RULE.indexOf('FIRST, answer every deterministic portion');
+  const discloseIdx = ATTRIBUTION_RULE.indexOf('attribution is not available in this data');
+  const altIdx = ATTRIBUTION_RULE.indexOf('Offer the nearest truthful alternative');
+  check('rule answers the deterministic portion BEFORE disclosing the gap (not refusal-first)',
+    answerIdx !== -1 && discloseIdx !== -1 && answerIdx < discloseIdx, `answer@${answerIdx} disclose@${discloseIdx}`);
+  check('rule offers a truthful alternative AFTER the disclosure',
+    altIdx !== -1 && altIdx > discloseIdx, `alt@${altIdx}`);
+}
+check('rule stays generalized to every unattributed dimension',
+  ATTRIBUTION_RULE.includes('spending per card') &&
+  ATTRIBUTION_RULE.includes('transfers per account') &&
+  ATTRIBUTION_RULE.includes('income/interest/spending'));
+check('rule forbids inventing a split (no unsupported certainty)',
+  ATTRIBUTION_RULE.includes('any such split would be invented'));
+
+// ── 3. Rule is embedded in the advisor principles (runtime membership) ─────────
+check('ADVISOR_PRINCIPLES embeds the attribution rule verbatim',
+  ADVISOR_PRINCIPLES.includes(ATTRIBUTION_RULE));
+
+// ── 4. BEHAVIOR: the disclosure fires only inside the transaction path ─────────
+check('no transactions → disclosure is NOT emitted (ordinary prompts unchanged)',
+  !serializeContextBlock(ctxNoTxn).includes('ATTRIBUTION LIMIT'));
+check('with transactions → disclosure IS emitted',
+  serializeContextBlock(ctxTxn).includes(ATTRIBUTION_DISCLOSURE));
+check('disclosure is emitted exactly once (single insertion)',
+  countOccurrences(serializeContextBlock(ctxTxn), 'ATTRIBUTION LIMIT') === 1);
+
+// ── 5. BEHAVIOR: per-card figures render only when supplied, with the honesty ──
+// caveat, and never displace the still-unattributed dimensions.
+{
+  const withoutLines = serializeContextBlock(ctxTxn);
+  const withLines = serializeContextBlock(ctxTxn, DEBT_LINES);
+  // Anchor on text unique to the rendered block — the phrase "PER-LIABILITY DEBT
+  // PAYMENTS" also appears inside the disclosure ("…line when present"), so it is
+  // not a reliable presence marker for the block itself.
+  const BLOCK_ANCHOR = 'settled debt-payment legs';
+  check('no per-liability rollup → no PER-LIABILITY block',
+    !withoutLines.includes(BLOCK_ANCHOR));
+  check('per-liability rollup supplied → PER-LIABILITY block with the exact figures',
+    withLines.includes(BLOCK_ANCHOR) && withLines.includes('Card A: '));
+  check('per-liability block keeps the source/destination non-reconciliation honesty',
+    withLines.includes('do not force them to reconcile'));
+  check('per-liability block re-scopes the limit to the OTHER dimensions (still unattributed)',
+    /remains unattributed|attribution\s+limit above still applies/.test(withLines));
 }
 
-// ---------------------------------------------------------------------------
-// Load prompt-module sources (text only — never imported)
-//
-// AI-ARCH: the attribution guardrail was extracted out of the chat route into
-// focused pure modules. The disclosure/rule constants + ADVISOR_PRINCIPLES live
-// in lib/ai/prompts/doctrine.ts; the serialized context block in
-// lib/ai/prompts/context-serializer.ts; the two prompt builders in
-// lib/ai/prompts/system-prompt.ts; the deterministic per-card rollup (sourced
-// through getDebtTransactions + rollupDebtPaymentsByAccount) in
-// lib/ai/intelligence/debt-payments.ts. Each check reads the module that now
-// owns the pinned text; the assertions are otherwise unchanged.
-// ---------------------------------------------------------------------------
-
-const src     = readFileSync(join(process.cwd(), 'lib/ai/prompts/doctrine.ts'), 'utf8');
-const ctxSrc  = readFileSync(join(process.cwd(), 'lib/ai/prompts/context-serializer.ts'), 'utf8');
-const sysSrc  = readFileSync(join(process.cwd(), 'lib/ai/prompts/system-prompt.ts'), 'utf8');
-const debtSrc = readFileSync(join(process.cwd(), 'lib/ai/intelligence/debt-payments.ts'), 'utf8');
-
-// ---------------------------------------------------------------------------
-// 1. Disclosure exists
-// ---------------------------------------------------------------------------
-
-check(
-  'disclosure constant is declared',
-  /const\s+ATTRIBUTION_DISCLOSURE\s*=/.test(src),
-  'ATTRIBUTION_DISCLOSURE const missing from route.ts',
-);
-
-// Wording snapshot — exact phrases that must survive verbatim so the disclosure
-// cannot silently drift into a weaker or capability-implying statement.
-// FlowType P5 Slice 6: the per-liability DEBT-PAYMENT dimension is relaxed —
-// it is now deterministic (Slice 3 rollup, serialized as the PER-LIABILITY
-// DEBT PAYMENTS line). The disclosure must name that ONE exception and keep
-// every other dimension fully disclosed.
-const DISCLOSURE_PHRASES = [
-  'ATTRIBUTION LIMIT',
-  'NOT attributed to specific accounts, cards, sources, ',
-  'or destinations, with ONE exception: per-card debt payments',
-  'PER-LIABILITY DEBT PAYMENTS line when present',
-  'which account a transfer came from or ',
-  'produced a given income, interest, or spending total.',
-  'any split of these totals ',
-  'across individual accounts or cards would be invented.',
-];
-for (const phrase of DISCLOSURE_PHRASES) {
-  check(
-    `disclosure wording pinned: "${phrase.slice(0, 40)}…"`,
-    src.includes(phrase),
-    `disclosure lost expected phrase: ${phrase}`,
-  );
+// ── 6. BEHAVIOR: the assembled system prompt carries the rule always and the ───
+// disclosure only when a transaction context is present.
+{
+  const promptTxn = buildSpaceSystemPrompt(ctxTxn, computeAssessment(ctxTxn), route, DEBT_LINES);
+  const promptNoTxn = buildSpaceSystemPrompt(ctxNoTxn, computeAssessment(ctxNoTxn), route);
+  check('system prompt always carries the attribution rule',
+    promptTxn.includes(ATTRIBUTION_RULE) && promptNoTxn.includes(ATTRIBUTION_RULE));
+  check('system prompt carries the disclosure only with a transaction context',
+    promptTxn.includes('ATTRIBUTION LIMIT') && !promptNoTxn.includes('ATTRIBUTION LIMIT'));
 }
 
-// ---------------------------------------------------------------------------
-// 2. Rule exists — and is GENERALIZED (not debt-payment-specific)
-// ---------------------------------------------------------------------------
-
-check(
-  'rule constant is declared',
-  /const\s+ATTRIBUTION_RULE\s*=\s*\[/.test(src),
-  'ATTRIBUTION_RULE const missing from route.ts',
-);
-
-// Doctrine (refined): refuse only the missing dimension, not the whole question —
-// answer every deterministic portion FIRST, disclose the missing dimension SECOND,
-// offer the nearest truthful alternative, and never fabricate a split. These
-// phrases pin that wording so the answer-first behavior cannot silently regress
-// back to a refusal-first rule.
-const RULE_PHRASES = [
-  'Attribution honesty — refuse only the missing dimension, never the whole question:',
-  // Slice 6: the rule now leads with the ONE deterministically backed dimension.
-  'Per-card debt payments ARE available',
-  'never extrapolate beyond them',
-  'Do not lead with a refusal',
-  'FIRST, answer every deterministic portion the context DOES contain',
-  'Never withhold a correct total because one requested dimension is missing.',
-  'THEN disclose, plainly and once, that per-account',
-  'attribution is not available in this data.',
-  'Offer the nearest truthful alternative you can answer',
-  'Never infer, allocate, or distribute a total across accounts or cards',
-  'any such split would be invented',
-  'This applies to every dimension the context does not deterministically break down.',
-];
-for (const phrase of RULE_PHRASES) {
-  check(
-    `rule wording pinned: "${phrase.slice(0, 40)}…"`,
-    src.includes(phrase),
-    `rule lost expected phrase: ${phrase}`,
-  );
+// ── 7. Provenance seam (DB-coupled → minimal source check) ─────────────────────
+// The ONE attributed dimension must be sourced from the deterministic Slice-3
+// rollup THROUGH the KD-15 visibility-guarded data layer — never computed ad hoc.
+// debt-payments.ts reads the DB, so this stays a source assertion (not runtime).
+{
+  const debtSrc = readFileSync(join(process.cwd(), 'lib/ai/intelligence/debt-payments.ts'), 'utf8');
+  check('per-card figures come from lib/debt rollupDebtPaymentsByAccount (deterministic Slice-3)',
+    debtSrc.includes('rollupDebtPaymentsByAccount('));
+  check('per-card rows come through the KD-15 visibility-guarded getDebtTransactions',
+    debtSrc.includes("import { getDebtTransactions } from '@/lib/data/transactions'"));
 }
-
-check(
-  'rule stays generalized (names the still-unattributed dimensions)',
-  src.includes('income/interest/spending') &&
-    src.includes('transfers per account') &&
-    src.includes('spending per card'),
-  'rule lost its still-unattributed dimensions (over-relaxed beyond debt payments)',
-);
-
-// Answer-first doctrine: the instruction to answer the deterministic portion must
-// come BEFORE the instruction to disclose the missing dimension. This is the whole
-// point of the refinement — refuse the dimension, not the question.
-const ruleArr = arrayLiteral(src, 'ATTRIBUTION_RULE');
-const answerFirstIdx = ruleArr.indexOf('FIRST, answer every deterministic portion');
-const discloseIdx = ruleArr.indexOf('attribution is not available in this data');
-const alternativeIdx = ruleArr.indexOf('Offer the nearest truthful alternative');
-check(
-  'rule answers the deterministic portion BEFORE disclosing the missing dimension',
-  answerFirstIdx !== -1 && discloseIdx !== -1 && answerFirstIdx < discloseIdx,
-  'rule discloses the missing dimension before answering what is known (refusal-first)',
-);
-check(
-  'rule offers the nearest truthful alternative after the disclosure',
-  alternativeIdx !== -1 && alternativeIdx > discloseIdx,
-  'rule does not offer a truthful alternative after the disclosure',
-);
-
-// ---------------------------------------------------------------------------
-// 3. Prompt serialization includes BOTH
-// ---------------------------------------------------------------------------
-
-// 3a. Disclosure is pushed into the serialized context block, inside the
-//     transaction (`if (txn)`) guard.
-// Slice 6: signature carries the optional per-liability rollup parameter.
-const ctxBody = functionBody(ctxSrc, 'function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtPaymentLine[]): string');
-
-check(
-  'disclosure is pushed into the context block',
-  /lines\.push\(\s*`\s*\$\{ATTRIBUTION_DISCLOSURE\}`\s*\)/.test(ctxBody),
-  'ATTRIBUTION_DISCLOSURE is not pushed into `lines` in serializeContextBlock',
-);
-
-// Gating: the push must sit after `if (txn) {` so contexts without a transaction
-// summary never receive it (ordinary non-transaction prompts unchanged).
-const txnGuardIdx = ctxBody.indexOf('if (txn) {');
-const disclosurePushIdx = ctxBody.indexOf('${ATTRIBUTION_DISCLOSURE}');
-check(
-  'disclosure push is gated inside the `if (txn)` transaction guard',
-  txnGuardIdx !== -1 && disclosurePushIdx > txnGuardIdx,
-  'disclosure is not gated by the transaction guard',
-);
-
-// 3b. Rule is a member of ADVISOR_PRINCIPLES.
-const advisorArr = arrayLiteral(src, 'ADVISOR_PRINCIPLES');
-check(
-  'rule is included in ADVISOR_PRINCIPLES',
-  /(^|[\s,[])ATTRIBUTION_RULE([\s,\]])/.test(advisorArr),
-  'ATTRIBUTION_RULE is not a member of ADVISOR_PRINCIPLES',
-);
-
-// 3c. ADVISOR_PRINCIPLES is embedded in BOTH prompt builders, so the rule
-//     serializes into space AND master prompts.
-const spaceBody = functionBody(
-  sysSrc,
-  'function buildSpaceSystemPrompt(',
-);
-const masterBody = functionBody(
-  sysSrc,
-  'function buildMasterSystemPrompt(',
-);
-check(
-  'space prompt embeds ADVISOR_PRINCIPLES (carries the rule)',
-  spaceBody.includes('ADVISOR_PRINCIPLES'),
-  'buildSpaceSystemPrompt does not embed ADVISOR_PRINCIPLES',
-);
-check(
-  'master prompt embeds ADVISOR_PRINCIPLES (carries the rule)',
-  masterBody.includes('ADVISOR_PRINCIPLES'),
-  'buildMasterSystemPrompt does not embed ADVISOR_PRINCIPLES',
-);
-check(
-  'both prompt builders embed serializeContextBlock (carries the disclosure)',
-  spaceBody.includes('serializeContextBlock(') &&
-    masterBody.includes('serializeContextBlock('),
-  'a prompt builder does not embed serializeContextBlock',
-);
-
-// ---------------------------------------------------------------------------
-// 4. Ordinary prompts remain unchanged (no scattering / single insertion)
-// ---------------------------------------------------------------------------
-
-check(
-  'disclosure is emitted exactly once',
-  countOccurrences(ctxBody, 'lines.push(`  ${ATTRIBUTION_DISCLOSURE}`)') === 1,
-  'disclosure pushed zero or multiple times',
-);
-
-check(
-  'rule is referenced exactly once in the module',
-  // one declaration + one membership reference in ADVISOR_PRINCIPLES = 2 total.
-  countOccurrences(src, 'ATTRIBUTION_RULE') === 2,
-  'ATTRIBUTION_RULE referenced an unexpected number of times',
-);
-
-// Rule sits between the debt-payment and financial-assessment doctrines — it
-// augments existing doctrine in place rather than displacing other prompt text.
-const debtDoctrineIdx = advisorArr.indexOf('Debt payment doctrine:');
-const ruleMemberIdx = advisorArr.indexOf('ATTRIBUTION_RULE');
-const finAssessIdx = advisorArr.indexOf('Financial Assessment doctrine:');
-check(
-  'rule is inserted between existing doctrines (no reordering of other text)',
-  debtDoctrineIdx !== -1 &&
-    finAssessIdx !== -1 &&
-    ruleMemberIdx > debtDoctrineIdx &&
-    ruleMemberIdx < finAssessIdx,
-  'rule is not positioned between the debt-payment and financial-assessment doctrines',
-);
-
-// ---------------------------------------------------------------------------
-// 5. Per-liability debt payments (FlowType P5 Slice 6 — the relaxed dimension)
-// ---------------------------------------------------------------------------
-// The ONE dimension KD-18 may treat as attributed must be backed by the
-// deterministic Slice 3 rollup — never computed ad hoc in the route, never
-// left for the model to infer.
-
-check(
-  'per-liability block is serialized in the context',
-  ctxBody.includes('PER-LIABILITY DEBT PAYMENTS'),
-  'PER-LIABILITY DEBT PAYMENTS line missing from serializeContextBlock',
-);
-
-check(
-  'per-liability block is gated inside the `if (txn)` transaction guard',
-  ctxBody.indexOf('PER-LIABILITY DEBT PAYMENTS') > txnGuardIdx,
-  'per-liability block is not gated by the transaction guard',
-);
-
-check(
-  'per-liability figures come from the deterministic Slice 3 rollup',
-  debtSrc.includes("import { rollupDebtPaymentsByAccount } from '@/lib/debt'") &&
-    debtSrc.includes('rollupDebtPaymentsByAccount('),
-  'debt-payments module does not source per-card figures from lib/debt rollupDebtPaymentsByAccount',
-);
-
-check(
-  'per-liability rows come through the KD-15 visibility-guarded data layer',
-  debtSrc.includes("import { getDebtTransactions } from '@/lib/data/transactions'"),
-  'debt-payments module bypasses getDebtTransactions (visibility guards) for debt rows',
-);
-
-check(
-  'source/destination non-reconciliation honesty is pinned',
-  ctxBody.includes('do not force them to reconcile '),
-  'serializer no longer warns that per-card (destination) and debtPaymentTotal (source) may differ',
-);
-
-check(
-  'other dimensions remain disclosed next to the per-liability block',
-  ctxBody.includes('remains unattributed'),
-  'per-liability block no longer re-scopes the attribution limit to the other dimensions',
-);
-
-// ---------------------------------------------------------------------------
 
 if (failures > 0) {
   console.error(`\n${failures} KD-18 check(s) failed.`);

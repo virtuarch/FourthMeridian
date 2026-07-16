@@ -1,84 +1,144 @@
 /**
  * app/api/ai/chat/currency-presentation.mc1.test.ts
  *
- * MC1 Phase 4 Slice 7 — pinned-wording tests for the serializer's currency
- * presentation (plan D-9), in the KD-18 source-tripwire style
- * (attribution-guardrail.kd18.test.ts precedent): the wording is pinned
- * against the serializer source so a rewrite/removal fails a test before it
- * ships, and the single-insertion + conditional-emission structure is
- * asserted from the same source.
+ * MC1 Phase 4 Slice 7 — currency presentation, asserted at RUNTIME (pure, no DB).
  *
- * AI-ARCH: serializeContextBlock was extracted from the chat route into
- * lib/ai/prompts/context-serializer.ts; the currency-presentation wording moved
- * with it verbatim, so this tripwire now reads the serializer module.
+ *     npx tsx app/api/ai/chat/currency-presentation.mc1.test.ts
  *
- * Run from the repo root (source tripwires resolve paths from cwd).
+ * TEST-3 PART 5 modernization: this used to `readFileSync` context-serializer.ts
+ * and snapshot the exact currency wording + guard structure. serializeContextBlock
+ * is now a pure exported function (AI-ARCH), so we IMPORT it and assert the actual
+ * BEHAVIOR: the reporting-currency label is always present and DYNAMIC (not a
+ * hardcoded USD), and the estimation disclosure is emitted once and only when a
+ * section's totals are estimated. A behavior test proves the currency actually
+ * flows through to the prompt, which a source snapshot never could. Only the
+ * builder→context threading (context-builder.ts reads the DB, so it can't run
+ * under a bare tsx script) stays a minimal source check.
  */
 
-import { readFileSync } from "fs";
-import { join } from "path";
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { serializeContextBlock } from '@/lib/ai/prompts/context-serializer';
+import { FinanceDomains } from '@/lib/ai/types';
+import type {
+  SpaceContext_AI, AccountsSectionData, TransactionsSummaryData,
+} from '@/lib/ai/types';
 
 let passed = 0;
 const failures: string[] = [];
-
-function check(name: string, cond: boolean, detail = ""): void {
+function check(name: string, cond: boolean, detail = ''): void {
   if (cond) { passed++; return; }
-  failures.push(`✗ ${name}${detail ? ` — ${detail}` : ""}`);
+  failures.push(`✗ ${name}${detail ? ` — ${detail}` : ''}`);
+}
+function countOccurrences(haystack: string, needle: string): number {
+  let n = 0, i = haystack.indexOf(needle);
+  while (i !== -1) { n += 1; i = haystack.indexOf(needle, i + needle.length); }
+  return n;
 }
 
-const routeSrc   = readFileSync(join(process.cwd(), "lib/ai/prompts/context-serializer.ts"), "utf8");
-const builderSrc = readFileSync(join(process.cwd(), "lib/ai/context-builder.ts"), "utf8");
-
-// ── the currency label: exact wording, single insertion, unconditional ───────
-{
-  const LABEL_A = "(this Space's reporting currency); ";
-  const LABEL_B = "per-account values are shown in their native currency.";
-  check("label: pinned wording present", routeSrc.includes(LABEL_A) && routeSrc.includes(LABEL_B));
-  check("label: single insertion (exactly one emission site)",
-    routeSrc.split(LABEL_B).length - 1 === 1);
-  check("label: dynamic currency, not hardcoded USD",
-    routeSrc.includes("All totals are in ${reportingCur}"));
-  check("label: USD fallback for legacy/fixture contexts",
-    routeSrc.includes("ctx.space.reportingCurrency ?? 'USD'"));
+// ── Fixtures ──────────────────────────────────────────────────────────────────
+function accountsData(estimated: boolean): AccountsSectionData {
+  return {
+    totalCount: 1, totalAssets: 100, totalLiabilities: 0, netWorth: 100,
+    totalLiquid: 100, totalInvestments: 0, totalDigitalAssets: 0, totalRealAssets: 0,
+    totalsEstimated: estimated,
+    counts: { liquid: 1, investments: 0, digitalAssets: 0, realAssets: 0, liabilities: 0 },
+    health: { errorCount: 0, staleCount: 0, needsReauthCount: 0, errorAccountNames: [], staleAccountNames: [], needsReauthAccountNames: [] },
+    knowledgeGaps: [],
+    accounts: [{
+      id: 'A', name: 'Checking', type: 'checking', balance: 100, currency: 'USD',
+      reportingBalance: 100, lastUpdated: '2026-07-15T00:00:00.000Z', needsReauth: false,
+      visibilityLevel: 'FULL', apr: null, rateSource: null, minimumPayment: null,
+    }],
+  };
+}
+function txnData(estimated: boolean): TransactionsSummaryData {
+  return {
+    windowDays: 90, startDate: '2026-04-01', endDate: '2026-06-30',
+    transactionCount: 30, truncated: false, coverageStartDate: '2026-04-01', fetchLimit: 5000,
+    incomeTotal: 1000, expenseTotal: 500, refundTotal: 0, debtPaymentTotal: 0,
+    transferTotal: 0, netCashFlow: 500, estimated,
+    pendingCreditCount: 0, pendingCreditTotal: 0, pendingDebitCount: 0, pendingDebitTotal: 0,
+    unclassifiedCount: 0, adjustmentCount: 0,
+    needsClassification: {
+      count: 0, unknownInflowCount: 0, unknownInflowTotal: 0,
+      unknownPaymentAppCount: 0, unknownPaymentAppTotal: 0,
+      counterpartyResolution: 'PERSISTED_AND_READ_TIME',
+    },
+    byCategory: [], monthlyBreakdown: [], largestIncome: null, largestExpense: null,
+  } as unknown as TransactionsSummaryData;
+}
+function makeCtx(opts: {
+  currency?: string | undefined;
+  accountsEstimated?: boolean;
+  txnEstimated?: boolean;
+  holdingsEstimated?: boolean;
+}): SpaceContext_AI {
+  const domains: SpaceContext_AI['domains'] = {
+    [FinanceDomains.ACCOUNTS]: { domain: 'accounts', assembledAt: 'x', data: accountsData(opts.accountsEstimated ?? false) },
+  };
+  if (opts.txnEstimated !== undefined) {
+    domains[FinanceDomains.TRANSACTIONS_SUMMARY] =
+      { domain: FinanceDomains.TRANSACTIONS_SUMMARY, assembledAt: 'x', data: txnData(opts.txnEstimated) };
+  }
+  if (opts.holdingsEstimated !== undefined) {
+    domains[FinanceDomains.HOLDINGS_SUMMARY] =
+      { domain: FinanceDomains.HOLDINGS_SUMMARY, assembledAt: 'x', data: { totalsEstimated: opts.holdingsEstimated } as never };
+  }
+  return {
+    requestedAt: 'x', spaceId: 's1', userId: 'u1', role: 'OWNER' as SpaceContext_AI['role'],
+    agentId: 'a1', resolvedDomains: ['accounts'],
+    space: { id: 's1', name: 'Test', type: 'personal', category: 'personal', reportingCurrency: opts.currency },
+    domains, signals: [], auditLogId: 'log1',
+  };
 }
 
-// ── the estimation disclosure: exact wording, single site, conditional ───────
+// ── the reporting-currency label: always present, dynamic, single insertion ────
 {
-  const DISCLOSURE =
-    "Some converted totals are approximate (missing or dated exchange rates); " ;
-  const DISCLOSURE_TAIL = "treat affected figures as estimates.";
-  check("disclosure: pinned wording present",
-    routeSrc.includes(DISCLOSURE) && routeSrc.includes(DISCLOSURE_TAIL));
-  check("disclosure: single emission site", routeSrc.split(DISCLOSURE_TAIL).length - 1 === 1);
-
-  // Conditional emission: the push must sit inside the flag check — assert the
-  // guard exists and the disclosure follows it before any other lines.push.
-  const guardIdx = routeSrc.indexOf("if (accountsEstimated || txnEstimated || holdingsEstimated)");
-  const discIdx  = routeSrc.indexOf(DISCLOSURE_TAIL);
-  check("disclosure: emitted ONLY behind the estimated-flags guard",
-    guardIdx !== -1 && discIdx > guardIdx && discIdx - guardIdx < 300);
-
-  // All three section flags participate (accounts, transactions summary, holdings).
-  check("disclosure: accounts flag consulted", routeSrc.includes("?.totalsEstimated === true"));
-  check("disclosure: transactions summary flag consulted", routeSrc.includes("getTransactionsSummary(ctx)?.estimated === true"));
-  check("disclosure: holdings flag consulted", routeSrc.includes("HOLDINGS_SUMMARY"));
+  const usd = serializeContextBlock(makeCtx({ currency: 'USD' }));
+  const eur = serializeContextBlock(makeCtx({ currency: 'EUR' }));
+  const none = serializeContextBlock(makeCtx({ currency: undefined }));
+  check("label present: names the reporting currency + native-currency caveat",
+    usd.includes("reporting currency") && usd.includes("native currency"));
+  check("label is DYNAMIC — reflects the actual reporting currency (USD)", usd.includes('in USD'));
+  check("label is DYNAMIC — reflects a non-USD reporting currency (EUR), not hardcoded USD",
+    eur.includes('in EUR') && !eur.includes('in USD'));
+  check("label falls back to USD when the Space has no reporting currency", none.includes('in USD'));
+  check("label is a single insertion (emitted exactly once)",
+    countOccurrences(usd, "reporting currency") === 1);
 }
 
-// ── no per-number disclaimers: the disclosure phrase appears nowhere else ────
+// ── the estimation disclosure: emitted once and only when a section is estimated ─
 {
-  check("no repetition: 'treat affected figures' never used per-number/elsewhere",
-    routeSrc.split("treat affected figures").length - 1 === 1);
+  const TAIL = 'treat affected figures as estimates.';
+  check("not estimated → NO estimation disclosure",
+    !serializeContextBlock(makeCtx({ accountsEstimated: false })).includes(TAIL));
+  check("accounts estimated → estimation disclosure emitted",
+    serializeContextBlock(makeCtx({ accountsEstimated: true })).includes(TAIL));
+  check("transactions-summary estimated → estimation disclosure emitted",
+    serializeContextBlock(makeCtx({ txnEstimated: true })).includes(TAIL));
+  check("holdings estimated → estimation disclosure emitted",
+    serializeContextBlock(makeCtx({ holdingsEstimated: true })).includes(TAIL));
+  check("disclosure is a single emission even when multiple sections are estimated",
+    countOccurrences(
+      serializeContextBlock(makeCtx({ accountsEstimated: true, txnEstimated: true, holdingsEstimated: true })),
+      TAIL,
+    ) === 1);
 }
 
-// ── envelope plumbing: the builder threads the Space's currency ──────────────
+// ── envelope plumbing (DB-coupled builder → minimal source check) ──────────────
+// context-builder.ts assembles the context from the DB, so it can't run under a
+// bare tsx script; assert it threads the Space's reporting currency into the
+// context the serializer above consumes.
 {
-  check("builder: reportingCurrency threaded into SpaceContext_AI.space",
-    builderSrc.includes("reportingCurrency: spaceCtx.space.reportingCurrency"));
+  const builderSrc = readFileSync(join(process.cwd(), 'lib/ai/context-builder.ts'), 'utf8');
+  check('builder threads reportingCurrency into SpaceContext_AI.space',
+    builderSrc.includes('reportingCurrency: spaceCtx.space.reportingCurrency'));
 }
 
 if (failures.length > 0) {
-  console.error(`\nMC1 P4 currency presentation: ${failures.length} FAILURE(S) (${passed} checks passed):`);
-  for (const f of failures) console.error("  " + f);
+  console.error(`\nMC1 P4 currency presentation: ${failures.length} FAILURE(S) (${passed} passed):`);
+  for (const f of failures) console.error('  ' + f);
   process.exit(1);
 }
 console.log(`MC1 P4 currency presentation: all ${passed} checks passed.`);
