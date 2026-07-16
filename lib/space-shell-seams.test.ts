@@ -7,7 +7,8 @@
  * Pins the shell-seam contract on SpaceDashboard. Updated for the Unified
  * Space Widget Layout (slice 1), which DELETES the renderHero seam and makes
  * Personal Overview section-backed:
- *  - renderHero seam is removed; overviewTopSlot (currency control) is retained;
+ *  - renderHero seam is removed; the display-currency control seam is retained
+ *    (SD-2C: renamed overviewTopSlot → displayCurrencyControl, now shell-mounted);
  *  - initialTab remains an OPTIONAL prop;
  *  - the rail host is derived, not hardcoded "shared";
  *  - the SpaceTrendHero path is gated on heroDef only (Personal has none, so its
@@ -45,9 +46,10 @@ const pageSrc = readFileSync(
 
 // Unified Space Widget Layout (slice 1): the renderHero seam is DELETED —
 // Personal Overview is now section-backed (net_worth / net_worth_chart /
-// allocation), not a custom-hero body. overviewTopSlot (currency control) stays.
+// allocation), not a custom-hero body. The display-currency control seam stays
+// (SD-2C renamed it overviewTopSlot → displayCurrencyControl, now shell-mounted).
 check("renderHero seam is removed", !/renderHero/.test(dashCode));
-check("overviewTopSlot seam is retained", /overviewTopSlot\?:\s*React\.ReactNode/.test(dashSrc));
+check("display-currency control seam is retained", /displayCurrencyControl\?:\s*React\.ReactNode/.test(dashSrc));
 check("initialTab is an optional prop", /initialTab\?:\s*string/.test(dashSrc));
 
 // Rail host is derived from spaceType, never hardcoded.

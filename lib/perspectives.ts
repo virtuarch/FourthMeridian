@@ -44,13 +44,100 @@ export const PERSPECTIVE_GROUPS = [
 ] as const;
 export type PerspectiveGroup = Exclude<(typeof PERSPECTIVE_GROUPS)[number], "All">;
 
-export interface PerspectiveDef {
-  /** Stable id — also the key into PERSPECTIVE_LIBRARY. */
+// ── SD-2 / SD-2B WorkspaceDefinition metadata ──────────────────────────────────
+// The UNIVERSAL, shell-facing identity of every primary Space destination lives in
+// `WorkspaceDefinition` (below). PerspectiveDef EXTENDS it — a Perspective is a
+// specialization of Workspace (every Perspective is a Workspace; not every
+// Workspace is a Perspective). WORKSPACE_REGISTRY (foot of file) is the ONE
+// registry over both kinds. "Perspective" stays the user-facing lens label;
+// "Workspace" is the architectural runtime unit. These fields consolidate metadata
+// that used to be scattered across host-side maps (PERSPECTIVE_TARGET_TAB /
+// PERSPECTIVE_ROUTED_TABS / PERSPECTIVE_MODAL_META) and per-workspace fetch/time
+// booleans, so SD-3 (declarative data loading) reads one owner.
+
+/** The data primitives a workspace reads at runtime. SD-3 consumes this to own
+ *  fetch gating; declared now purely as the contract (no fetch behavior changes
+ *  in SD-2). A closed union — not free strings — so needs stay deterministic. */
+export type WorkspaceDataNeed =
+  | "accounts"
+  | "snapshots"
+  | "transactions"
+  | "lens"
+  | "investmentsHistory"
+  | "goals"
+  | "sections"
+  | "fico";
+
+/** Which trust-envelope source resolvePerspectiveEnvelope (lib/perspectives/
+ *  envelope.ts) uses for a workspace. A metadata POINTER only — the resolver
+ *  still owns the calculation; this makes the association discoverable (P10). */
+export type WorkspaceEnvelopeSource =
+  | "wealth"
+  | "cashFlow"
+  | "investments"
+  | "lens"
+  | "none";
+
+/** Legacy data-tab ids a workspace can route to — each presented as a GlassModal
+ *  launched from the Overview doorway. The union of every routing.targetTab;
+ *  ROUTED_WORKSPACE_TABS is derived from it. NOTE: these are the host's internal
+ *  activeTab ids, deliberately NOT lib/space-nav SpaceTabIds — a Space TAB may
+ *  host one or more workspaces (SD-2 P5), so the two identity spaces stay separate. */
+export type RoutedWorkspaceTab = "GOALS" | "DEBT" | "INVESTMENTS" | "RETIREMENT";
+
+export interface WorkspaceRouting {
+  /** The top-level tab this workspace routes to from the Overview doorway (the
+   *  legacy modal tabs). Absent ⇒ reachable only as a Perspectives-tab workspace. */
+  targetTab?: RoutedWorkspaceTab;
+}
+
+/**
+ * A workspace's KIND. "standard" = a structural primary destination that renders
+ * directly in the SpaceShell workspace slot (Overview, Transactions, Accounts,
+ * Activity, Members). "perspective" = a financial lens (Wealth, Cash Flow,
+ * Investments, Debt, Liquidity, Goals, …). Every Perspective is a Workspace; not
+ * every Workspace is a Perspective.
+ */
+export type WorkspaceKind = "standard" | "perspective";
+
+/**
+ * SD-2B — the UNIVERSAL, shell-facing identity of every primary Space destination.
+ * PerspectiveDef extends this (below). WORKSPACE_REGISTRY (foot of file) is the ONE
+ * registry keyed by `id` over both kinds; standard destinations declare only these
+ * base fields, Perspectives add lens/card metadata.
+ */
+export interface WorkspaceDefinition {
+  /** Stable id — also the key into WORKSPACE_REGISTRY. */
   id: string;
   label: string;
-  description: string;
-  /** Lucide icon name (string) — see icon-name convention in lib/widget-registry.ts and lib/timeline-types.ts. */
+  /** Lucide icon NAME (string) — the consuming surface resolves it to a component. */
   icon: string;
+  kind: WorkspaceKind;
+  /** Routing/navigation identity — the ONE answer to "which top-level tab owns
+   *  this workspace, and how is it presented?" (replaces the host-side
+   *  PERSPECTIVE_TARGET_TAB / PERSPECTIVE_ROUTED_TABS / PERSPECTIVE_MODAL_META). */
+  routing?: WorkspaceRouting;
+  /** The data primitives this workspace consumes at runtime — declared for SD-3
+   *  (no fetch behavior changes here). Empty ⇒ the workspace self-fetches. */
+  dataNeeds?: readonly WorkspaceDataNeed[];
+  /**
+   * Whether this workspace participates in the SD-0B CANONICAL shell time model
+   * (asOf / compareTo). Named `consumesShellTime`, NOT `consumesTime`, on purpose:
+   * Cash Flow has its own period/calendar semantics but does NOT read the
+   * canonical asOf/compareTo, so it is false. Only Wealth + Investments are true.
+   */
+  consumesShellTime?: boolean;
+  /** The trust-envelope source for this workspace (see WorkspaceEnvelopeSource). */
+  envelope?: WorkspaceEnvelopeSource;
+}
+
+/**
+ * A Perspective — a financial-lens specialization of WorkspaceDefinition. Adds the
+ * lens/card/sub-nav metadata the Perspectives surfaces need; identity/routing/
+ * dataNeeds/time/envelope are inherited from the base.
+ */
+export interface PerspectiveDef extends WorkspaceDefinition {
+  description: string;
   status: PerspectiveStatus;
   /** Sub-nav bucket on the full Perspectives tab — see PERSPECTIVE_GROUPS. */
   group: PerspectiveGroup;
@@ -87,11 +174,13 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
    * PerspectiveSwitcher's host-side filtering of this id out of card grids.
    */
   overview: {
-    id: "overview", label: "Atlas", icon: "Compass", status: "available", group: "Financial",
+    id: "overview", kind: "standard", label: "Atlas", icon: "Compass", status: "available", group: "Financial",
     description: "Your full financial picture — net worth, cash flow, and recent activity in one view.",
+    // The default landing composition (section stack + trend hero + doorways).
+    dataNeeds: ["accounts", "sections", "snapshots", "transactions", "lens"], consumesShellTime: false, envelope: "none",
   },
   wealth: {
-    id: "wealth", label: "Wealth", icon: "Gem", status: "available", group: "Financial",
+    id: "wealth", kind: "perspective", label: "Wealth", icon: "Gem", status: "available", group: "Financial",
     description: "Where your money is — assets by account, institution, and class.",
     // UX-PER-3 Wealth workspace. Doctrine: Wealth answers "Where is my money?"
     // and is ASSETS ONLY. It deliberately does NOT reuse the Overview widgets
@@ -101,9 +190,10 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // EXPERIMENT (UX): asset_allocation is placed first so the richer multi-mode
     // allocation chart sits ABOVE the Wealth by Account cards. Reversible.
     widgets: ["asset_allocation", "wealth_by_account", "institution_allocation", "wealth_concentration"],
+    dataNeeds: ["accounts", "snapshots"], consumesShellTime: true, envelope: "wealth",
   },
   cashFlow: {
-    id: "cashFlow", label: "Cash Flow", icon: "Waves", status: "available", group: "Financial",
+    id: "cashFlow", kind: "perspective", label: "Cash Flow", icon: "Waves", status: "available", group: "Financial",
     description: "Income versus spending over time.",
     // UX-PER-3 Cash Flow workspace. Doctrine: Cash Flow answers "Where does my
     // money move?" — movement over time from transaction history, FlowType-aware
@@ -113,9 +203,14 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     //  bucket cards now surface income/spending/net; renderer kept for reuse.)
     //  Order: History → Spending by Category → Income/Cash In by Source → Debt Payments.
     widgets: ["cash_flow_summary", "cash_flow_history", "cash_flow_by_category", "income_by_source", "debt_payments"],
+    // A temporal Perspective: it consumes the canonical time model via the SD-0B
+    // preset dimension (shell.derived.cashFlowPeriod → the workspace period), i.e.
+    // its historical window follows the shared slice. (It reads the preset, not
+    // asOf/compareTo directly; that is participation in canonical time.)
+    dataNeeds: ["accounts", "transactions"], consumesShellTime: true, envelope: "cashFlow",
   },
   investments: {
-    id: "investments", label: "Investments", icon: "TrendingUp", status: "available", group: "Financial",
+    id: "investments", kind: "perspective", label: "Investments", icon: "TrendingUp", status: "available", group: "Financial",
     description: "What you own and what happened to it — holdings, weights, and the period's activity, valued as of any date.",
     // A10 Investments workspace. Doctrine: "What do I own, and what happened to
     // it?" — a real shell-driven time machine over the A10 Investments Time
@@ -133,9 +228,11 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // registry widget was retired (P1 closeout); this marker is not a registry
     // key (toVirtualSections would fall back to the raw string, but never runs).
     widgets: ["investments_workspace"],
+    routing: { targetTab: "INVESTMENTS" },
+    dataNeeds: ["accounts", "investmentsHistory"], consumesShellTime: true, envelope: "investments",
   },
   debt: {
-    id: "debt", label: "Debt", icon: "CreditCard", status: "available", group: "Financial",
+    id: "debt", kind: "perspective", label: "Debt", icon: "CreditCard", status: "available", group: "Financial",
     description: "Balances, payoff pace, and credit health.",
     lensId: "debt",
     // UX-PER-3 Debt workspace. Doctrine: Debt answers "What do I owe?" and is
@@ -146,6 +243,13 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
       "debt_by_account", "debt_cost", "credit_utilization", "debt_history",
       "debt_payoff_calculator", "credit_score", "debt_complete_info",
     ],
+    routing: { targetTab: "DEBT" },
+    // A temporal Perspective: current-state KPIs plus a historical Balance-Over-
+    // Time view over the snapshot series. consumesShellTime is the intended
+    // contract (asOf/compareTo windowing of that history); today the chart shows
+    // the full series rather than clipping to the shell window — a runtime gap to
+    // close during Debt workspace extraction, NOT a different category.
+    dataNeeds: ["accounts", "snapshots", "lens", "fico"], consumesShellTime: true, envelope: "lens",
   },
   /**
    * First library entry born lens-backed: no host tab behind it, no
@@ -154,7 +258,7 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
    * render lens results, the card falls back to this static description.
    */
   liquidity: {
-    id: "liquidity", label: "Liquidity", icon: "Droplets", status: "available", group: "Financial",
+    id: "liquidity", kind: "perspective", label: "Liquidity", icon: "Droplets", status: "available", group: "Financial",
     description: "How much you could get at, and how fast.",
     lensId: "liquidity",
     // UX-PER-3 Liquidity workspace. Doctrine: Liquidity answers "How accessible
@@ -162,30 +266,48 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // purpose-built widgets (no Overview / Wealth widget reuse). Rendered
     // through the same SectionCard compositor as virtual sections.
     widgets: ["liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration"],
+    // A temporal Perspective by contract (consumesShellTime: true). RUNTIME GAP:
+    // the current Liquidity workspace is current-state only and does not yet honor
+    // asOf/compareTo. The registry encodes the intended contract, not the gap —
+    // the historical/as-of support is an activation task for the Liquidity
+    // workspace extraction (SD-4+), NOT a reclassification to a non-temporal kind.
+    dataNeeds: ["accounts", "transactions", "lens"], consumesShellTime: true, envelope: "lens",
   },
   retirement: {
-    id: "retirement", label: "Retirement", icon: "PiggyBank", status: "available", group: "Retirement",
+    id: "retirement", kind: "perspective", label: "Retirement", icon: "PiggyBank", status: "available", group: "Retirement",
     description: "Progress toward retirement targets.",
+    // Routes to the legacy RETIREMENT tab (GlassModal); no Perspectives workspace
+    // of its own (no widgets[]), so no dataNeeds/consumesShellTime/envelope.
+    routing: { targetTab: "RETIREMENT" },
   },
   goals: {
-    id: "goals", label: "Goals", icon: "Target", status: "available", group: "Goals",
+    // SD-2B doctrine correction: Goals is a STANDARD (domain) Workspace, NOT a
+    // Perspective. A Perspective is a temporal financial LENS over the canonical
+    // financial knowledge (participates in asOf/compareTo); Goals is goal
+    // management — its own domain (progress, forecasting, projections, guidance
+    // may come later, but that does not make it a temporal lens). It is kept in
+    // PERSPECTIVE_LIBRARY (so today's Perspectives sub-nav card + workspace render
+    // are byte-unchanged) but tagged kind:"standard"; consumesShellTime is false.
+    // Physical relocation to STANDARD_WORKSPACES (and out of the sub-nav) is a
+    // functionality change deferred to the Goals workspace slice.
+    id: "goals", kind: "standard", label: "Goals", icon: "Target", status: "available", group: "Goals",
     description: "Savings and habit goals tied to this Space.",
-    // UX-PER-3 Goals workspace. Doctrine: Goals answers "Am I on track?" —
-    // trajectory vs target, not current balances (no net worth / allocation /
-    // debt / spending / investment widgets). Rendered through the same
-    // SectionCard compositor.
+    routing: { targetTab: "GOALS" },
+    dataNeeds: ["accounts", "goals"], consumesShellTime: false, envelope: "none",
+    // Doctrine: Goals answers "Am I on track?" — trajectory vs target, not current
+    // balances. Rendered through the same SectionCard compositor.
     widgets: ["goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap"],
   },
   tax: {
-    id: "tax", label: "Tax", icon: "FileText", status: "comingSoon", group: "Tax",
+    id: "tax", kind: "perspective", label: "Tax", icon: "FileText", status: "comingSoon", group: "Tax",
     description: "Tax-relevant activity and documents.",
   },
   property: {
-    id: "property", label: "Property", icon: "Home", status: "comingSoon", group: "Property",
+    id: "property", kind: "perspective", label: "Property", icon: "Home", status: "comingSoon", group: "Property",
     description: "Equity, mortgage, and value over time.",
   },
   businessHealth: {
-    id: "businessHealth", label: "Business Health", icon: "Briefcase", status: "comingSoon", group: "Business",
+    id: "businessHealth", kind: "perspective", label: "Business Health", icon: "Briefcase", status: "comingSoon", group: "Business",
     description: "Revenue, runway, and payroll at a glance.",
   },
 };
@@ -243,4 +365,103 @@ export function getCompositionSwitcherItems(category: string): PerspectiveDef[] 
   return getPerspectivesForCategory(category).filter(
     (p) => p.group === "Financial" && (p.id === "overview" || p.status === "comingSoon")
   );
+}
+
+// ── SD-2B canonical UNIVERSAL workspace registry ───────────────────────────────
+// WORKSPACE_REGISTRY is the ONE identity authority over every primary Space
+// destination — both "standard" structural workspaces (Overview, Transactions,
+// Accounts, Activity, Members) and "perspective" financial lenses. It is composed
+// from two DISJOINT-id sources so there is no duplicate identity:
+//   • STANDARD_WORKSPACES — the structural destinations that have no perspective
+//     card/lens metadata (Transactions/Accounts/Activity/Members). "overview"
+//     lives in PERSPECTIVE_LIBRARY already (it powers the composition switcher),
+//     tagged kind:"standard", so it is NOT re-declared here.
+//   • PERSPECTIVE_LIBRARY — the financial lenses (+ the overview composition).
+// PERSPECTIVE_LIBRARY remains the narrower perspective-only view that the
+// Perspectives sub-nav / cards / composition switcher read (getPerspectivesFor-
+// Category etc. are unchanged). Routing helpers below answer "which tab owns this
+// workspace / is it modal-routed / what chrome does the modal show?".
+
+/**
+ * The structural (non-Perspective) primary destinations that render directly in
+ * the SpaceShell workspace slot. Base WorkspaceDefinitions — no lens/card
+ * metadata. Icons mirror lib/space-nav-icons SPACE_TAB_ICON_MAP (the rail still
+ * renders from that map; these are the canonical identity + SD-3 dataNeeds).
+ * ACTIVITY/MEMBERS self-fetch (TimelineWidget / SpaceMembersWidget), so their
+ * host-provided dataNeeds are minimal.
+ */
+export const STANDARD_WORKSPACES: Record<string, WorkspaceDefinition> = {
+  transactions: {
+    id: "transactions", kind: "standard", label: "Transactions", icon: "ArrowLeftRight",
+    dataNeeds: ["accounts", "transactions"], consumesShellTime: false, envelope: "none",
+  },
+  accounts: {
+    id: "accounts", kind: "standard", label: "Accounts", icon: "Landmark",
+    dataNeeds: ["accounts", "sections", "snapshots"], consumesShellTime: false, envelope: "none",
+  },
+  activity: {
+    id: "activity", kind: "standard", label: "Activity", icon: "Activity",
+    // The recent_activity SECTION renders here; TimelineWidget self-fetches its rows.
+    dataNeeds: ["sections"], consumesShellTime: false, envelope: "none",
+  },
+  members: {
+    id: "members", kind: "standard", label: "Members", icon: "Users",
+    // SpaceMembersWidget self-fetches; the host provides no primitives.
+    dataNeeds: [], consumesShellTime: false, envelope: "none",
+  },
+};
+
+/** The ONE canonical workspace registry — standard destinations + perspectives,
+ *  keyed by id (disjoint id sets, so no identity is duplicated). */
+export const WORKSPACE_REGISTRY: Record<string, WorkspaceDefinition> = {
+  ...STANDARD_WORKSPACES,
+  ...PERSPECTIVE_LIBRARY,
+};
+
+/** Deterministic lookup by workspace id; undefined for unknown ids (fails safe). */
+export function getWorkspaceDefinition(id: string): WorkspaceDefinition | undefined {
+  return WORKSPACE_REGISTRY[id];
+}
+
+/**
+ * The Workspace a top-level Space tab id resolves to (the tab's lowercased id is
+ * the workspace id): OVERVIEW→overview, TRANSACTIONS→transactions, GOALS→goals,
+ * DEBT→debt, … . Container/non-workspace tabs (PERSPECTIVES, FINANCES, DOCUMENTS,
+ * SETTINGS) resolve to undefined. Lets SD-3 look up any primary destination's
+ * dataNeeds uniformly, without a Transactions/Accounts exception path.
+ */
+export function getWorkspaceForTab(tab: string): WorkspaceDefinition | undefined {
+  return getWorkspaceDefinition(tab.toLowerCase());
+}
+
+/** The legacy tab a workspace routes to from the Overview doorway (→ GlassModal),
+ *  or undefined. Replaces the host-side PERSPECTIVE_TARGET_TAB map. */
+export function getWorkspaceTargetTab(id: string): RoutedWorkspaceTab | undefined {
+  return WORKSPACE_REGISTRY[id]?.routing?.targetTab;
+}
+
+/** Every distinct routed (modal) tab, derived from the registry. Replaces the
+ *  host-side PERSPECTIVE_ROUTED_TABS array. */
+export const ROUTED_WORKSPACE_TABS: readonly RoutedWorkspaceTab[] = Array.from(
+  new Set(
+    Object.values(WORKSPACE_REGISTRY)
+      .map((d) => d.routing?.targetTab)
+      .filter((t): t is RoutedWorkspaceTab => t != null),
+  ),
+);
+
+/** Is this activeTab id a routed (modal-presented) workspace tab? */
+export function isRoutedWorkspaceTab(tab: string): boolean {
+  return (ROUTED_WORKSPACE_TABS as readonly string[]).includes(tab);
+}
+
+/**
+ * Modal chrome for a routed tab, derived from the owning workspace's own label +
+ * icon — replaces the host-side PERSPECTIVE_MODAL_META map. `icon` is the Lucide
+ * icon NAME (resolve via lib/perspective-icons PERSPECTIVE_ICON_MAP, the same
+ * resolver the tabs/cards use). Undefined for a non-routed tab.
+ */
+export function getWorkspaceModalMeta(tab: string): { title: string; icon: string } | undefined {
+  const def = Object.values(WORKSPACE_REGISTRY).find((d) => d.routing?.targetTab === tab);
+  return def ? { title: def.label, icon: def.icon } : undefined;
 }

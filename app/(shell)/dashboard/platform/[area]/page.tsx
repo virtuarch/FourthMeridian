@@ -11,10 +11,17 @@
  * SYSTEM_ADMIN never reaches this page — proxy.ts redirects them off
  * /dashboard/* to /admin; they administer grants from there.
  *
- * This page deliberately uses NO customer-Space machinery: no resolveSpace-
- * Context, no ACTIVE_SPACE_COOKIE, no SpaceMember lookup, no can()/require-
- * SpaceRole, no SPACE_TAB_ORDER rail, no WIDGET_REGISTRY. Visibility and gating
- * are grant-derived only (tripwired in lib/platform-surface.test.ts).
+ * This page deliberately uses NO customer-Space DATA/AUTH machinery: no
+ * resolveSpaceContext, no ACTIVE_SPACE_COOKIE, no SpaceMember lookup, no
+ * can()/requireSpaceRole, no SPACE_TAB_ORDER rail, no WIDGET_REGISTRY. Visibility
+ * and gating are grant-derived only (tripwired in lib/platform-surface.test.ts).
+ *
+ * SD-2E: the render surface (PlatformSpaceDashboard) now composes the SHARED,
+ * domain-agnostic SpaceShell FRAME — the same primitive customer Spaces use — so
+ * Platform Spaces no longer require a fork of the shell architecture. That is a
+ * frame convergence only; the grant-derived gating and self-fetching platform
+ * widgets above/below are unchanged, and none of the customer data/authz machinery
+ * listed above is introduced.
  */
 
 import { getServerSession } from "next-auth";

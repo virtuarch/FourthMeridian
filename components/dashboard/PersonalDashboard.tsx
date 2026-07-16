@@ -11,7 +11,7 @@
  *   - wraps the shared SpaceDashboard in DisplayCurrencyProvider(effective…) so
  *     the override re-scopes EVERY widget (Net Worth, chart, allocation,
  *     Perspectives) — not a bespoke Personal hero,
- *   - renders the "view as" control into the shell's `overviewTopSlot` seam
+ *   - renders the "view as" control into the shell's `displayCurrencyControl` seam
  *     (the only fixed Personal Overview control), above the section stack, and
  *   - forwards the Space's reporting currency as `snapshotCurrency` (the "from"
  *     side for the Net Worth chart section's snapshot conversion).
@@ -91,14 +91,15 @@ export function PersonalDashboard({
         // view-as: convert the Transactions summary (Spend / In) through the
         // override context when active; rows stay native either way.
         transactionsMoneyCtxOverride={viewOverride?.moneyCtx}
-        overviewTopSlot={
-          <div className="flex justify-end">
-            <ViewCurrencyOverride
-              spaceCurrency={displayCurrency}
-              override={viewOverride}
-              onChange={setViewOverride}
-            />
-          </div>
+        // SD-2C — the "view as" control now mounts in the SpaceShell header (a
+        // Space-level capability); the shell positions it, so no alignment
+        // wrapper here. State + conversion are unchanged (owned here).
+        displayCurrencyControl={
+          <ViewCurrencyOverride
+            spaceCurrency={displayCurrency}
+            override={viewOverride}
+            onChange={setViewOverride}
+          />
         }
       />
     </DisplayCurrencyProvider>

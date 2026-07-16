@@ -55,6 +55,16 @@ export interface SpaceShellProps {
    */
   toolbar?: ReactNode;
 
+  /**
+   * SD-2C — the Space-level display-currency ("view as" / FX) control. Display
+   * currency governs the WHOLE Space, so its mount point is a shell capability,
+   * not an Overview-workspace one. This is a pure ReactNode SLOT: the host builds
+   * the control and its state; the shell owns only WHERE it mounts (the header)
+   * and performs NO currency conversion or FX math. Absent (e.g. shared Spaces)
+   * ⇒ nothing renders.
+   */
+  displayCurrencyControl?: ReactNode;
+
   /** The Space-level navigation rail. */
   railOptions: SpaceShellRailOption[];
   activeTab:   string;
@@ -77,6 +87,7 @@ export function SpaceShell({
   title,
   subtitle,
   toolbar,
+  displayCurrencyControl,
   railOptions,
   activeTab,
   onSelectTab,
@@ -107,7 +118,13 @@ export function SpaceShell({
             <p className="text-sm text-[var(--text-muted)]">{subtitle}</p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0 ml-3">{toolbar}</div>
+          {/* Shell-owned Space capabilities + frame actions. Display currency is
+              a Space-level control (mounted here, not in Overview); the shell
+              performs no FX math — it only renders the host-provided control. */}
+          <div className="flex items-center gap-2 shrink-0 ml-3">
+            {displayCurrencyControl}
+            {toolbar}
+          </div>
         </div>
 
         {/* Navigation rail — a centered floating pill (sticky below the app

@@ -19,7 +19,7 @@ import {
   ChevronDown, ChevronUp,
   CheckCircle2, Circle, Calendar, AlertCircle,
   X, MoreHorizontal, Archive, Trash2, RotateCcw, LogOut,
-  Compass, PiggyBank, GripVertical, Maximize2,
+  Compass, GripVertical, Maximize2,
 } from "lucide-react";
 import {
   DndContext, closestCenter, PointerSensor, KeyboardSensor,
@@ -121,7 +121,15 @@ import {
   SPACE_CURRENCY_CHANGED_EVENT,
   SPACE_DATA_REFRESHED_EVENT,
 } from "@/lib/space-nav";
-import { getPerspectivesForCategory, getCompositionSwitcherItems, PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
+import {
+  getPerspectivesForCategory,
+  getCompositionSwitcherItems,
+  PERSPECTIVE_LIBRARY,
+  getWorkspaceTargetTab,
+  isRoutedWorkspaceTab,
+  getWorkspaceModalMeta,
+} from "@/lib/perspectives";
+import { PERSPECTIVE_ICON_MAP, PERSPECTIVE_ICON_FALLBACK } from "@/lib/perspective-icons";
 import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { PerspectiveSwitcher, COMPOSITION_ICON_MAP } from "@/components/dashboard/widgets/PerspectiveSwitcher";
@@ -210,12 +218,13 @@ interface Props {
    */
   initialTab?: string;
   /**
-   * SP Overview refinement — additive slot rendered at the very top of the
-   * OVERVIEW tab, above the section cards / custom hero. The Personal host uses
-   * it for the "view as" currency control (which must sit above the Net Worth
-   * card). Omitted ⇒ nothing rendered ⇒ shared Spaces unchanged.
+   * SD-2C — the Space-level display-currency ("view as" / FX) control. The
+   * Personal host builds it (ViewCurrencyOverride) and its state; this host
+   * forwards it to the SpaceShell header slot (display currency governs the whole
+   * Space, so it is a shell capability, not an Overview one). Omitted ⇒ nothing
+   * rendered ⇒ shared Spaces unchanged.
    */
-  overviewTopSlot?: React.ReactNode;
+  displayCurrencyControl?: React.ReactNode;
   /**
    * Unified Space Widget Layout (slice 1) — the currency the Space's
    * SpaceSnapshot totals are stamped in (its reporting currency), forwarded to
@@ -326,27 +335,11 @@ function RailTabIcon({ id }: { id: string }) {
   return <Icon size={14} aria-hidden />;
 }
 
-/** Perspective id -> the existing, unmodified data-tab it routes to. */
-const PERSPECTIVE_TARGET_TAB: Partial<Record<string, string>> = {
-  investments: "INVESTMENTS",
-  debt:        "DEBT",
-  retirement:  "RETIREMENT",
-  goals:       "GOALS",
-};
-
-/** Legacy data-tabs with no button of their own on the fixed rail anymore —
- *  still fully real, just one click behind the Perspectives tab now, and
- *  (IA refactor point 5) rendered as a GlassModal instead of a tab swap. */
-const PERSPECTIVE_ROUTED_TABS = ["GOALS", "DEBT", "INVESTMENTS", "RETIREMENT"];
-
-/** Title + icon for each PERSPECTIVE_ROUTED_TABS modal — mirrors the label/
- *  icon each already has as a Perspective card (lib/perspectives.ts). */
-const PERSPECTIVE_MODAL_META: Record<string, { title: string; icon: React.ElementType }> = {
-  GOALS:       { title: "Goals",       icon: Target },
-  DEBT:        { title: "Debt",        icon: CreditCard },
-  INVESTMENTS: { title: "Investments", icon: TrendingUp },
-  RETIREMENT:  { title: "Retirement",  icon: PiggyBank },
-};
+// SD-2: workspace routing identity (target tab, modal-routed set, modal chrome)
+// is now owned by the canonical registry (lib/perspectives.ts) via
+// getWorkspaceTargetTab / isRoutedWorkspaceTab / getWorkspaceModalMeta — the
+// former host-side PERSPECTIVE_TARGET_TAB / PERSPECTIVE_ROUTED_TABS /
+// PERSPECTIVE_MODAL_META maps were removed to keep one source of truth.
 
 /** New tab ids that live entirely on the fixed rail (not section-driven).
  *  ACTIVITY is NOT here: it renders its recent_activity section inline through
@@ -2328,7 +2321,7 @@ export function SpaceDashboard({
   myRole,
   currentUserId = "",
   initialTab,
-  overviewTopSlot,
+  displayCurrencyControl,
   snapshotCurrency,
   ficoScore,
   ficoUpdatedAt,
@@ -2470,7 +2463,7 @@ export function SpaceDashboard({
       getPerspectivesForCategory(category)
         .filter((p) => p.id !== "overview")
         .map((p) => {
-          const target = PERSPECTIVE_TARGET_TAB[p.id];
+          const target = getWorkspaceTargetTab(p.id);
           // Engine answer for lens-backed cards (liquidity, debt). Missing
           // key (fetch pending/failed, or a lens that errored server-side
           // returns status "error") → undefined → the widget renders the
@@ -2956,7 +2949,7 @@ export function SpaceDashboard({
         // Perspective-routed tab: those render as GlassModals now, and landing
         // inside a modal is disorienting.
         const firstTab = TAB_ORDER.find(
-          (t) => t !== "ACTIVITY" && !PERSPECTIVE_ROUTED_TABS.includes(t) && enabledTabs.has(t)
+          (t) => t !== "ACTIVITY" && !isRoutedWorkspaceTab(t) && enabledTabs.has(t)
         );
         if (firstTab) {
           setActiveTab(firstTab);
@@ -3020,7 +3013,7 @@ export function SpaceDashboard({
     sectionsForTab.length > 1 &&
     activeTab !== "SETTINGS" && activeTab !== "ACTIVITY" &&
     !NEW_SPACE_TABS.includes(activeTab) &&
-    !PERSPECTIVE_ROUTED_TABS.includes(activeTab);
+    !isRoutedWorkspaceTab(activeTab);
 
   async function handleSectionDragEnd(e: DragEndEvent) {
     const { active, over } = e;
@@ -3247,6 +3240,9 @@ export function SpaceDashboard({
       activeTab={activeTab}
       onSelectTab={setActiveTab}
       railStatic={activeTab === "PERSPECTIVES"}
+      // SD-2C — the Space-level display-currency control mounts in the shell
+      // header (a Space capability), not the Overview body.
+      displayCurrencyControl={displayCurrencyControl}
     >
 
         {/* Settings is no longer an in-space tab (UX-CUST-1A correction):
@@ -3483,10 +3479,16 @@ export function SpaceDashboard({
             Same sectionsForTab/SectionCard rendering each tab always had —
             no widget/business-logic changes, just shown in a floating
             sheet instead of swapping the whole rail tab. */}
-        {PERSPECTIVE_ROUTED_TABS.includes(activeTab) && (
+        {isRoutedWorkspaceTab(activeTab) && (() => {
+          // SD-2: modal chrome is derived from the canonical registry (the owning
+          // workspace's own label + icon NAME), resolved to a component via the
+          // shared perspective-icon map — no host-side PERSPECTIVE_MODAL_META.
+          const modalMeta = getWorkspaceModalMeta(activeTab);
+          const ModalIcon = modalMeta ? (PERSPECTIVE_ICON_MAP[modalMeta.icon] ?? PERSPECTIVE_ICON_FALLBACK) : undefined;
+          return (
           <GlassModal
-            title={PERSPECTIVE_MODAL_META[activeTab]?.title ?? activeTab}
-            icon={PERSPECTIVE_MODAL_META[activeTab]?.icon}
+            title={modalMeta?.title ?? activeTab}
+            icon={ModalIcon}
             size="xl"
             onClose={() => setActiveTab("OVERVIEW")}
           >
@@ -3521,7 +3523,8 @@ export function SpaceDashboard({
               )}
             </div>
           </GlassModal>
-        )}
+          );
+        })()}
 
         {/* Composition switcher (IA refactor point 2/3) — Overview only;
             swaps the canvas below in place. v2.5 honesty slice: only
@@ -3555,13 +3558,12 @@ export function SpaceDashboard({
             launches), and off Overview when a comingSoon composition is active.
             ACTIVITY renders its recent_activity section here (Activity slice). */}
         {activeTab !== "SETTINGS" && !NEW_SPACE_TABS.includes(activeTab) &&
-         !PERSPECTIVE_ROUTED_TABS.includes(activeTab) &&
+         !isRoutedWorkspaceTab(activeTab) &&
          !(activeTab === "OVERVIEW" && composition !== "overview") && (
           <div className="space-y-3">
-            {/* SP Overview refinement — additive top slot (Personal: the
-                "view as" currency control), pinned above everything else on
-                the OVERVIEW tab. Shared Spaces pass nothing ⇒ inert. */}
-            {activeTab === "OVERVIEW" && composition === "overview" && overviewTopSlot}
+            {/* SD-2C — the "view as" display-currency control moved OUT of this
+                Overview body to the SpaceShell header (a Space-level capability),
+                so Overview no longer owns a shell-wide control. */}
 
             {/* Hero — the template contract's slot 1 (One Space, One Lede):
                 headline + delta + this Space's primary trend, from its own
@@ -3703,7 +3705,7 @@ export function SpaceDashboard({
         {/* No sections at all — only meaningful for the legacy data-driven
             tabs above; the fixed-rail tabs always have their own content. */}
         {tabs.length === 0 && !loading && activeTab !== "SETTINGS" && activeTab !== "ACTIVITY" &&
-         !NEW_SPACE_TABS.includes(activeTab) && !PERSPECTIVE_ROUTED_TABS.includes(activeTab) && (
+         !NEW_SPACE_TABS.includes(activeTab) && !isRoutedWorkspaceTab(activeTab) && (
           <div className="text-center py-12">
             <LayoutDashboard size={30} className="text-[var(--text-faint)] mx-auto mb-3" />
             <p className="text-sm text-[var(--text-muted)]">No dashboard sections configured</p>

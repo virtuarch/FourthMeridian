@@ -16,10 +16,23 @@
  *
  * No customer tab rail (SPACE_TAB_ORDER), no entry into SpaceDashboard.tsx, no
  * WIDGET_REGISTRY entries — the customer surface stays untouched.
+ *
+ * SD-2E — render-layer convergence. The section/widget grid now renders INSIDE the
+ * universal `SpaceShell` frame (the same one customer Spaces use), as a single
+ * Overview Workspace occupying the shell's workspace slot. This makes the Platform
+ * Space the SECOND real consumer of the universal Space architecture — same frame,
+ * same navigation primitive — WITHOUT any Platform redesign: the widgets, APIs,
+ * self-fetching, sections, grant authorization, and the platform-local registries
+ * below are all unchanged. Only the outer chrome is now shared, not forked. The
+ * Overview Workspace's identity/composition still lives platform-locally
+ * (PLATFORM_AREAS + these local registries); registering it in the canonical
+ * Workspace Registry is a later composition slice — see SPACE_CONTRACT_DOCTRINE
+ * Addendum II §C/§H.
  */
 
 import type { ComponentType } from "react";
-import { Wrench } from "lucide-react";
+import { Wrench, LayoutDashboard } from "lucide-react";
+import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import type { PlatformSection } from "./widget-kit";
 import { SecAuditFeedWidget } from "./widgets/SecAuditFeedWidget";
 import { SecAuthPostureWidget } from "./widgets/SecAuthPostureWidget";
@@ -142,32 +155,45 @@ function PlaceholderCard({ section }: { section: Section }) {
   );
 }
 
-export function PlatformSpaceDashboard({ areaLabel, spaceName, accessLevel, sections }: Props) {
+/**
+ * The Overview Workspace body — the existing self-fetching section/widget grid.
+ * Unchanged from PO1.x; only its enclosing frame moved (SD-2E).
+ */
+function PlatformOverviewWorkspace({ sections }: { sections: Section[] }) {
+  if (sections.length === 0) {
+    return <p className="text-sm text-[var(--text-secondary)]">No sections configured for this area yet.</p>;
+  }
   return (
-    <div className="min-h-[70vh] max-w-[1400px] mx-auto pb-16">
-      {/* Header — Space name + access-level badge. No customer tab rail. */}
-      <div className="pt-2 pb-8 md:pb-10">
-        <p className="text-xs font-medium uppercase tracking-wide text-[var(--text-secondary)]">
-          Platform · {areaLabel}
-        </p>
-        <div className="flex flex-wrap items-center gap-3 mt-1">
-          <h1 className="text-3xl md:text-[2.5rem] font-semibold tracking-tight text-[var(--text-primary)]">
-            {spaceName}
-          </h1>
-          <AccessBadge level={accessLevel} />
-        </div>
-      </div>
-
-      {sections.length === 0 ? (
-        <p className="text-sm text-[var(--text-secondary)]">No sections configured for this area yet.</p>
-      ) : (
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-4 md:gap-5">
-          {sections.map((s) => {
-            const Widget = PLATFORM_WIDGET_REGISTRY[s.key];
-            return Widget ? <Widget key={s.id} section={s} /> : <PlaceholderCard key={s.id} section={s} />;
-          })}
-        </div>
-      )}
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-4 md:gap-5 pb-16">
+      {sections.map((s) => {
+        const Widget = PLATFORM_WIDGET_REGISTRY[s.key];
+        return Widget ? <Widget key={s.id} section={s} /> : <PlaceholderCard key={s.id} section={s} />;
+      })}
     </div>
   );
 }
+
+export function PlatformSpaceDashboard({ areaLabel, spaceName, accessLevel, sections }: Props) {
+  // SD-2E — the Platform Space renders through the universal SpaceShell frame, the
+  // same primitive customer Spaces use (DashboardChrome → SpaceShell → Workspace).
+  // A Platform Space today exposes a SINGLE Overview Workspace (the section grid);
+  // the rail therefore shows one destination. `onSelectTab` is a no-op because that
+  // sole destination is always active — richer Platform composition (more Workspaces,
+  // operational Perspectives) is a later slice, deliberately not built here.
+  return (
+    <SpaceShell
+      title={spaceName}
+      subtitle={`Platform · ${areaLabel}`}
+      // The access-level indicator is a frame-level affordance, not workspace body.
+      toolbar={<AccessBadge level={accessLevel} />}
+      railOptions={[{ id: "overview", label: "Overview", icon: <LayoutDashboard size={14} aria-hidden /> }]}
+      activeTab="overview"
+      onSelectTab={NOOP_SELECT}
+    >
+      <PlatformOverviewWorkspace sections={sections} />
+    </SpaceShell>
+  );
+}
+
+/** Stable no-op: a single-Workspace Space has nothing to switch to (SD-2E). */
+const NOOP_SELECT = (_tab: string): void => {};

@@ -48,9 +48,13 @@ for (const banned of [
   "WealthPerspective", "InvestmentsPerspective", "DebtPerspective",
   "LiquidityPerspective", "CashFlowPerspective", "PerspectiveShell",
   "SectionCard", "SpaceTrendHero", "useInvestmentsTimeMachine",
-  "computeWealthTimeMachine", "cashFlowPeriod", "currency", "ViewCurrencyOverride",
+  "computeWealthTimeMachine", "cashFlowPeriod",
+  // SD-2C: the shell may own a display-currency *slot* (a ReactNode the host
+  // supplies), but it must never build the control or do FX math itself.
+  "ViewCurrencyOverride", "convertMoney", "formatCurrency",
+  "@/lib/money", "@/lib/currency", "@/lib/fx", "DisplayCurrencyProvider",
 ]) {
-  check(`shell does not know workspace concern: ${banned}`, !shellCode.includes(banned));
+  check(`shell does not import/perform workspace or FX logic: ${banned}`, !shellCode.includes(banned));
 }
 
 // ── SpaceShell does NOT touch the SD-0 authorities ──────────────────────────────
@@ -77,9 +81,13 @@ check("host still owns the URL authority (SD-0A)", /useSpaceUrl\(\)/.test(dashCo
 check("host still owns the time authority (SD-0B)", /usePerspectiveShellState\(/.test(dashCode));
 check("host still avoids useSearchParams (no new Suspense boundary)", !dashCode.includes("useSearchParams"));
 
-// ── FX ownership: the 'view as' control stays a host-provided body slot ─────────
-check("FX control remains a host-threaded slot (overviewTopSlot)", /overviewTopSlot/.test(dashCode));
-check("shell owns no FX/currency logic", !shellCode.includes("overviewTopSlot"));
+// ── FX ownership (SD-2C): the display-currency control is a SHELL-owned slot ─────
+check("shell exposes a displayCurrencyControl slot", /displayCurrencyControl\?:\s*ReactNode/.test(shellSrc) && /\{displayCurrencyControl\}/.test(shellCode));
+check("host forwards the FX control to the shell (not the Overview body)",
+  /displayCurrencyControl=\{displayCurrencyControl\}/.test(dashCode) &&
+  !/composition === "overview" && displayCurrencyControl/.test(dashCode));
+check("host no longer renders the FX control in the Overview section stack",
+  !/&& overviewTopSlot/.test(dashCode) && !/&& displayCurrencyControl\}/.test(dashCode));
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed.`);
