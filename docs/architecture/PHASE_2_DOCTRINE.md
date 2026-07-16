@@ -5,7 +5,7 @@
 parallel semantic authorities · Doctrine Oracle green 255/255 · High confidence).
 
 This document records the contract future work must not break. It is intentionally
-short. The full authority-by-authority map is `FINANCIAL_SEMANTIC_AUTHORITIES.md`.
+short. The full authority-by-authority map is `../doctrine/financial-semantics.md`.
 
 ---
 
@@ -59,7 +59,7 @@ residues — all compatibility / cleanliness / documentation, none a rival autho
 - **Cleanup (C):** the account-tier / credit-card partition duplicated (consistently) across balance-reconstruction consumers instead of calling `accountTier`.
 - **Presentation / future (D/E):** the Daily Brief savings-rate as a deliberately distinct metric; dictionary/doc enrichment.
 
-These are tracked in `FINANCIAL_SEMANTIC_AUTHORITIES.md` §11. They may be paid down
+These are tracked in `../doctrine/financial-semantics.md` §11. They may be paid down
 opportunistically; none reopens the convergence contract.
 
 ---

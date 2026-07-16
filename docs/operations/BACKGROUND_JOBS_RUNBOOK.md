@@ -78,4 +78,4 @@ Because most slots don't auto-fire, `check-job-health` (§5) will report those j
 
 1. **Paid Vercel plan** — set `vercel.json` back to `0,30 6-7 * * *` (or finer). No code change; §1/§2 become literal again and this section reverts to documentation. Simplest path once off Hobby.
 2. **External pinger** — any scheduler that can issue an authenticated HTTP GET (GitHub Actions `schedule:`, cron-job.org, an uptime monitor) hits `/api/jobs/dispatch` with the CRON_SECRET bearer at each half-hour slot (06:00/06:30/07:00/07:30 UTC). Keeps the free tier; moves the schedule off Vercel. Store CRON_SECRET as the runner's secret; never commit it.
-3. **Platform Operations scheduler** — the eventual in-house PlatOps cadence layer (`docs/initiatives/platops/PLATOPS_ARCHITECTURE_ROADMAP.md`) owns scheduling directly, retiring the dependence on Vercel cron entirely. Longest-horizon option.
+3. **Platform Operations scheduler** — the eventual in-house PlatOps cadence layer (`docs/plans/platform-ops-roadmap.md`) owns scheduling directly, retiring the dependence on Vercel cron entirely. Longest-horizon option.
