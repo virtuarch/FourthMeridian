@@ -23,6 +23,15 @@
  *
  * Run:
  *   npx tsx scripts/backfill-flowtype.ts [--verbose] [--batch=N] [--limit=N] [--exclude-deleted]
+ *                                        [--only-version=N]
+ *
+ * Ownership scoping (CCPAY-2F):
+ *   --only-version=N  selects EXACTLY `classifierVersion = N` instead of the
+ *   default predicate. Use this for a version migration: it targets the rows a
+ *   known prior classifier wrote, and refuses to adopt null-version rows that
+ *   another authority (lib/crypto/btc-sync.ts) or nothing at all produced. See
+ *   the flag's own comment and docs/doctrine/financial-semantics.md (§ Liability payment classification).
+ *     v2 → v3 convergence:  --only-version=2 --apply --exclude-deleted
  *
  * Diagnostic mode (read-only):
  *   npx tsx scripts/backfill-flowtype.ts --diagnose
@@ -75,6 +84,30 @@ const EXCLUDE_DELETED = argv.includes("--exclude-deleted");
 const BATCH           = intFlag("--batch", 500);
 const LIMIT           = intFlag("--limit", Number.POSITIVE_INFINITY);
 
+/**
+ * CCPAY-2F — `--only-version=N`: restrict the migration to the population an
+ * EXACT prior classifier version wrote (`classifierVersion = N`), instead of the
+ * default "anything not at the current version" predicate.
+ *
+ * WHY this exists — classifierVersion is OWNERSHIP metadata, not merely staleness
+ * metadata. The default predicate's `classifierVersion: null` arm assumes null
+ * means "an older classifier wrote this, safe to recompute". At the v3 migration
+ * that was false for two distinct populations:
+ *   • lib/crypto/btc-sync.ts authors its own flowType/classificationReason by
+ *     hand (a separate authority) and never stamps a version. Recomputing its 25
+ *     live Bitcoin rows would have retired an unknown-inflow honesty signal
+ *     (needs-classification.ts clause B keys on SIGN_DEFAULT_INFLOW) and raised
+ *     confidence 0.5 → 1.0 on a circular derivation — btc-sync writes `category`
+ *     FROM flowType, so "the category told us" is not evidence.
+ *   • 352 seed/demo rows nothing has ever classified — a separate backlog.
+ * Neither belongs to a v2→v3 migration merely because their version is null.
+ *
+ * The default predicate is UNCHANGED and remains correct for its original P4 job
+ * (adopting the never-classified backlog). This flag is how a version migration
+ * says "only the rows my predecessor owned".
+ */
+const ONLY_VERSION    = intFlag("--only-version", 0) || null;
+
 // Dry-run is the DEFAULT. Writing requires --apply AND not --diagnose
 // (--diagnose is always a read-only report and never writes).
 const WILL_WRITE      = APPLY && !DIAGNOSE;
@@ -99,22 +132,31 @@ async function main(): Promise<void> {
   }
 
   // §1 selection predicate — rows not yet classified at the current version.
-  const versionWhere: Prisma.TransactionWhereInput = {
-    OR: [
-      { flowType: null },
-      { flowDirection: null },
-      { classifierVersion: null },
-      { classifierVersion: { lt: FLOW_CLASSIFIER_VERSION } },
-    ],
-  };
+  // CCPAY-2F: --only-version=N narrows this to the population version N wrote
+  // (ownership), instead of everything the broad predicate happens to match.
+  const versionWhere: Prisma.TransactionWhereInput = ONLY_VERSION !== null
+    ? { classifierVersion: ONLY_VERSION }
+    : {
+        OR: [
+          { flowType: null },
+          { flowDirection: null },
+          { classifierVersion: null },
+          { classifierVersion: { lt: FLOW_CLASSIFIER_VERSION } },
+        ],
+      };
   const baseWhere: Prisma.TransactionWhereInput = EXCLUDE_DELETED
     ? { AND: [versionWhere, { deletedAt: null }] }
     : versionWhere;
 
   console.log(`\n${WILL_WRITE ? "[APPLY] FlowType backfill — WRITING flow columns" : "[DRY RUN] FlowType backfill — READ-ONLY, no writes"}`);
   console.log(
-    `Selection: flowType/flowDirection/classifierVersion null OR classifierVersion < ${FLOW_CLASSIFIER_VERSION}` +
-    `${EXCLUDE_DELETED ? " (excluding soft-deleted)" : " (including soft-deleted)"}`,
+    ONLY_VERSION !== null
+      ? `Selection: classifierVersion = ${ONLY_VERSION} ONLY (ownership-scoped: the population v${ONLY_VERSION} wrote; ` +
+        `null-version rows are NOT adopted)`
+      : `Selection: flowType/flowDirection/classifierVersion null OR classifierVersion < ${FLOW_CLASSIFIER_VERSION}`,
+  );
+  console.log(
+    `           ${EXCLUDE_DELETED ? "excluding" : "including"} soft-deleted   → writing classifierVersion = ${FLOW_CLASSIFIER_VERSION}`,
   );
   console.log(`Batch: ${BATCH}${Number.isFinite(LIMIT) ? `   Limit: ${LIMIT}` : ""}\n`);
 
@@ -137,8 +179,9 @@ async function main(): Promise<void> {
         id:                 true,
         category:           true,
         amount:             true,
-        merchant:           true,
-        description:        true,
+        // merchant/description deliberately NOT selected (CCPAY-2C-5): the
+        // classifier is descriptor-blind and this script prints no PII, so
+        // fetching them would read descriptor text for no consumer at all.
         pfcPrimary:         true,
         pfcDetailed:        true,
         pfcConfidenceLevel: true,
@@ -154,12 +197,13 @@ async function main(): Promise<void> {
         debtSubtype: r.financialAccount?.debtSubtype ?? null,
       };
 
+      // CCPAY-2C-5 — no merchant/description: the classifier is descriptor-blind
+      // by contract, and this script reads nothing else off them (its output is
+      // non-PII by design, see the header), so the select no longer fetches them.
       const { input, captured } = buildFlowInputFromRow(
         {
           category:           r.category,
           amount:             r.amount,
-          merchant:           r.merchant,
-          description:        r.description,
           pfcPrimary:         r.pfcPrimary,
           pfcDetailed:        r.pfcDetailed,
           pfcConfidenceLevel: r.pfcConfidenceLevel,

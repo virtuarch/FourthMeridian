@@ -740,10 +740,13 @@ async function main() {
     tx(jCreditCard,  1, "Adobe Creative Cloud", Subscriptions, -54.99),
     tx(jCreditCard, 31, "Adobe Creative Cloud", Subscriptions, -54.99),
     tx(jCreditCard, 61, "Adobe Creative Cloud", Subscriptions, -54.99),
-    // CC payments ×3
-    tx(jCreditCard, 28, "CC Payment", Payment, -800),
-    tx(jCreditCard, 60, "CC Payment", Payment, -600),
-    tx(jCreditCard, 90, "CC Payment", Payment, -700),
+    // CC payments ×3 — POSITIVE: a payment is money INTO the liability (FM sign
+    // convention, syncTransactions.ts; all 109 real card payments are positive).
+    // Negative here (CCPAY-2F) contradicted the convention and would seed a
+    // liability OUTFLOW that the CCPAY-2B veto correctly reads as SPENDING.
+    tx(jCreditCard, 28, "CC Payment", Payment, 800),
+    tx(jCreditCard, 60, "CC Payment", Payment, 600),
+    tx(jCreditCard, 90, "CC Payment", Payment, 700),
     // Groceries on CC ×3
     tx(jCreditCard, 11, "Whole Foods Local",    Groceries,  -88.40, true),
     tx(jCreditCard, 55, "Trader Joe's",         Groceries,  -67.20),
@@ -1158,11 +1161,12 @@ async function main() {
     tx(jnCreditCard, 65, "Fuel Express",         Other,  -69.50),
     tx(jnCreditCard, 83, "Fuel Express",         Other,  -71.90),
     tx(jnCreditCard,103, "Fuel Express",         Other,  -66.30),
-    // CC payments ×4
-    tx(jnCreditCard, 28, "CC Payment", Payment, -1200),
-    tx(jnCreditCard, 58, "CC Payment", Payment,  -800),
-    tx(jnCreditCard, 88, "CC Payment", Payment, -1000),
-    tx(jnCreditCard,118, "CC Payment", Payment,  -900),
+    // CC payments ×4 — POSITIVE (money into the liability); see the CCPAY-2F
+    // note on the other CC Payment block above.
+    tx(jnCreditCard, 28, "CC Payment", Payment, 1200),
+    tx(jnCreditCard, 58, "CC Payment", Payment,  800),
+    tx(jnCreditCard, 88, "CC Payment", Payment, 1000),
+    tx(jnCreditCard,118, "CC Payment", Payment,  900),
   ]});
 
   await prisma.transaction.createMany({ data: [

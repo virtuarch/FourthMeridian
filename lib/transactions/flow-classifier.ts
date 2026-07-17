@@ -21,8 +21,9 @@
  *    TransactionCategory / AccountType enum values, which are already strings.
  *  - EXISTING FIELDS ONLY: category, amount (FM sign convention: + = into the
  *    row's own account, − = out of it), account type / debtSubtype where the
- *    caller has them, merchant/description if needed, and Plaid PFC fields ONLY
- *    if already in memory (the sync path) — never a new fetch.
+ *    caller has them, and Plaid PFC fields ONLY if already in memory (the sync
+ *    path) — never a new fetch. DESCRIPTOR-BLIND since CCPAY-2C-5: merchant and
+ *    description are deliberately not accepted — see FlowClassificationInput.
  *  - NEVER THROWS: an unmappable row returns a defined classification
  *    (UNKNOWN / ADJUSTMENT), never an exception — mirroring the "never block a
  *    row" contract of mapPlaidCategory() and mapCategory().
@@ -37,6 +38,10 @@
 // TI1 — the spend-ledger membership definition lives in the single-authority
 // predicate module. Value-only import from a zero-import pure module: no cycle.
 import { isSpendLedgerFlow } from './flow-predicates';
+// CCPAY-2A/2B — liability structure (what counts as a liability account, and the
+// negative-liability veto) lives in ONE authority. Also a zero-import pure
+// module, so this stays Prisma-free and tsx-runnable: no cycle.
+import { isLiabilityAccount, isLiabilityOutflow } from './liability-payment';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Enums (TypeScript-only in P1 — no Prisma enum is created this phase)
@@ -46,15 +51,41 @@ import { isSpendLedgerFlow } from './flow-predicates';
 /**
  * Version of the classification LOGIC below. Persisted on each classified row
  * (Transaction.classifierVersion) so a later, improved classifier can re-run
- * over only stale rows (`WHERE classifierVersion < FLOW_CLASSIFIER_VERSION`)
- * without disturbing higher-confidence ones. Bump this whenever the
- * classification rules change. Additive constant — no logic depends on it here.
+ * over the rows an EARLIER version wrote. Bump this whenever the classification
+ * rules change. Additive constant — no logic depends on it here.
  *   1 = P1 / P3 Phase B ruleset.
  *   2 = CF-4: a liability-account TRANSFER_OUT_ACCOUNT_TRANSFER outflow is a
  *       purchase (SPENDING), not a transfer — a credit card has no owned cash to
- *       transfer out. Re-run over classifierVersion < 2 to correct stale rows.
+ *       transfer out.
+ *   3 = CCPAY-2B/2C/2E — the accumulated liability-payment semantics:
+ *         • 2B  a liability OUTFLOW can never be DEBT_PAYMENT, whatever PFC or a
+ *               descriptor claims (debtPaymentUnlessLiabilityOutflow). Generalizes
+ *               CF-4's argument to the LOAN_PAYMENTS and Payment-category paths.
+ *         • 2C  the card-payment category rescue is normalized + word-boundary
+ *               matched and shared by every ingesting path, so a liability payment
+ *               leg reaches this classifier as `Payment`, not `Other`. (The rescue
+ *               itself lives one layer up, in liability-payment.ts — this
+ *               classifier stays descriptor-blind.)
+ *         • 2E  the six MI1 M1 spend categories are known, so they classify
+ *               SPENDING/REFUND instead of falling through to UNKNOWN.
+ *
+ * ── OWNERSHIP, not merely staleness (CCPAY-2F) ──────────────────────────────
+ * This number records WHICH AUTHORITY produced a row's persisted flow facts, and
+ * only secondarily how stale they are. A convergence backfill must therefore
+ * target the population a PRIOR VERSION OF THIS CLASSIFIER wrote — i.e. an exact
+ * `classifierVersion = N` — never the broadest predicate that happens to match.
+ *
+ * In particular `classifierVersion IS NULL` does NOT mean "an old classifier
+ * wrote this, safe to recompute". At the v3 migration it meant at least two
+ * unrelated things: rows lib/crypto/btc-sync.ts authored with its own
+ * hand-written flowType/classificationReason (a separate authority the classifier
+ * does not own), and rows nothing has ever classified. Sweeping either into a
+ * version migration because their version is null destroys facts this classifier
+ * never produced — for the btc-sync rows it would have silently retired an
+ * unknown-inflow honesty signal and raised confidence on a circular derivation.
+ * See docs/doctrine/financial-semantics.md (§ Liability payment classification).
  */
-export const FLOW_CLASSIFIER_VERSION = 2;
+export const FLOW_CLASSIFIER_VERSION = 3;
 
 export type FlowType =
   | 'SPENDING'      // discretionary/non-discretionary consumption (a real cost)
@@ -86,6 +117,33 @@ export type FlowReason =
   | 'SIGN_DEFAULT_INFLOW'       // positive amount, no stronger signal → REFUND/inflow
   | 'AMBIGUOUS_UNKNOWN';        // below confidence threshold → UNKNOWN, never forced
 
+/**
+ * ── No descriptor fields, deliberately (CCPAY-2C-5) ──────────────────────────
+ * This interface carried `merchant` and `description` from the P1 foundation
+ * commit until CCPAY-2C-5. The classifier NEVER read either. They were removed
+ * rather than wired up, because a descriptor rule does not belong here — twice
+ * over:
+ *
+ *  1. It would silently no-op on the live path. The two builders populated them
+ *     INCONSISTENTLY: buildPlaidFlowInput set merchant but not description,
+ *     while buildFlowInputFromRow set both. A descriptor rule added here would
+ *     have worked on the CSV/corrections/backfill paths and done nothing on
+ *     Plaid — the one path that matters. Nobody would have noticed, because a
+ *     miss looks like "no rescue needed".
+ *
+ *  2. It would desync category from flowType. A card-payment descriptor means
+ *     "this category is Payment"; flowType follows FROM category. Resolving it
+ *     here would leave category='Other' beside flowType='DEBT_PAYMENT', and new
+ *     rows would render as "Other" against the historical rows that say
+ *     "Payment". One decision must produce both columns, so it has to happen
+ *     BEFORE this function.
+ *
+ * The layering is therefore: descriptor → category (lib/transactions/
+ * liability-payment.ts, called by every ingesting path) → flowType (here).
+ * This classifier is descriptor-BLIND by contract. If you find yourself wanting
+ * a merchant string in this function, the rule you are writing belongs in the
+ * category layer instead.
+ */
 export interface FlowClassificationInput {
   /** TransactionCategory value (string-typed to avoid a Prisma import cycle). */
   category:     string;
@@ -95,8 +153,6 @@ export interface FlowClassificationInput {
   accountType?: string | null;
   /** FinancialAccount.debtSubtype where available (e.g. "credit_card"). */
   debtSubtype?: string | null;
-  merchant?:    string | null;
-  description?: string | null;
   /** Plaid personal_finance_category.primary — ONLY if already in memory. */
   pfcPrimary?:  string | null;
   /** Plaid personal_finance_category.detailed — ONLY if already in memory. */
@@ -115,8 +171,37 @@ export interface FlowClassification {
 // Known category sets (mirror prisma/schema.prisma TransactionCategory)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Every TransactionCategory whose meaning comes from the SIGN (negative = a cost,
+ * positive = its reversal). Must stay a 1:1 mirror of the schema's spend values —
+ * a category missing here does NOT fall back to spend, it falls through to rule 5
+ * and classifies UNKNOWN, which removes the row from the spend ledger
+ * (isSpendLedgerFlow), from expenseTotal (isCostFlow), and from AI context
+ * entirely (isNonEconomicResidue → skipped). A missing entry is a silent
+ * disappearance, not a degradation.
+ *
+ * CCPAY-2E — the six MI1 M1 values (Medical … Education) were absent. They are
+ * "committed spend categories that rescue PFC spend primaries currently
+ * collapsing to Other" (prisma/schema.prisma), written by MI M2's resolution
+ * stack. Nothing writes them yet — merchant-rules.ts:24-25 records merchants
+ * "blocked by a MISSING category" — so this changed ZERO rows when landed. But on
+ * the day M2 shipped, every Medical/Transport/Education row would have classified
+ * UNKNOWN and vanished from every economic surface: the exact opposite of the
+ * rescue those categories exist to perform.
+ *
+ * This is the same defect lib/data/transactions.ts:96-99 already retired once —
+ * a hand-listed category allow-list "silently omitting rows whose category fell
+ * outside 11 hand-listed values (e.g. newer/merchant PFC categories)". The
+ * classifier kept its own copy of that mistake.
+ *
+ * flow-category-coverage.test.ts now pins the mirror against the real Prisma
+ * enum, so the next category added to the schema fails the build here rather
+ * than silently deleting money from the ledger.
+ */
 const SPEND_CATEGORIES = new Set<string>([
   'Groceries', 'Dining', 'Shopping', 'Travel', 'Subscriptions', 'Utilities', 'Other',
+  // MI1 M1 — expanded spend vocabulary (nothing writes these until MI M2).
+  'Medical', 'Entertainment', 'Transport', 'PersonalCare', 'Services', 'Education',
 ]);
 
 const INVESTMENT_ACTIVITY_CATEGORIES = new Set<string>([
@@ -133,8 +218,48 @@ function directionFromSign(amount: number): FlowDirection {
   return 'UNKNOWN';
 }
 
+/**
+ * CCPAY-2A — delegates to the ONE liability definition. Previously this module
+ * carried its own copy of the same expression; it agreed with
+ * plaid-category.ts's copy by luck, not by construction. Kept as a local alias
+ * because `isDebtAccount(input)` reads naturally at the call sites below and
+ * FlowClassificationInput is structurally a LiabilityAccountContext.
+ */
 function isDebtAccount(input: FlowClassificationInput): boolean {
-  return input.accountType === 'debt' || (input.debtSubtype != null && input.debtSubtype !== '');
+  return isLiabilityAccount(input);
+}
+
+/**
+ * CCPAY-2B — the ONLY constructor of DEBT_PAYMENT in this module, so the
+ * structural veto cannot be bypassed by adding a branch that forgets it.
+ *
+ * Money leaving a liability account raises what you owe. That is a charge, never
+ * a debt payment — regardless of what PFC, the descriptor, or the provider
+ * claims. When the veto fires the row is a purchase: SPENDING/OUTFLOW at 0.7
+ * with ACCOUNT_TYPE_CONTEXT, byte-identical to the shape CF-4 already returns
+ * for the analogous liability TRANSFER_OUT case (see classifyFromPfc), because
+ * it is the same argument applied to a path CF-4 never covered.
+ *
+ * NOTE this deliberately narrows the previously-unconditional
+ * `Payment category → DEBT_PAYMENT` contract that
+ * lib/transactions/flow-desync-invariant.test.ts and
+ * scripts/audit-flow-desync.ts encode. The contract is now "unconditional EXCEPT
+ * on a liability outflow"; the invariant test pins the exception explicitly.
+ */
+function debtPaymentUnlessLiabilityOutflow(
+  input: FlowClassificationInput,
+  confidence: number,
+  reason: FlowReason,
+): FlowClassification {
+  if (isLiabilityOutflow(input)) {
+    return { flowType: 'SPENDING', flowDirection: 'OUTFLOW', confidence: 0.7, reason: 'ACCOUNT_TYPE_CONTEXT' };
+  }
+  return {
+    flowType:      'DEBT_PAYMENT',
+    flowDirection: input.amount < 0 ? 'INTERNAL' : 'INFLOW',
+    confidence,
+    reason,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -175,7 +300,12 @@ function classifyFromPfc(input: FlowClassificationInput): FlowClassification | n
       }
       return { flowType: 'TRANSFER', flowDirection: 'OUTFLOW', confidence: 0.8, reason: 'PLAID_PFC_PRIMARY' };
     case 'LOAN_PAYMENTS':
-      return { flowType: 'DEBT_PAYMENT', flowDirection: input.amount < 0 ? 'INTERNAL' : 'INFLOW', confidence: 0.8, reason: 'PLAID_PFC_PRIMARY' };
+      // CCPAY-2B — Plaid routinely mislabels ordinary card purchases as
+      // LOAN_PAYMENTS (observed: a restaurant bill-split app tagged
+      // LOAN_PAYMENTS_CAR_PAYMENT; an Amex Travel booking tagged
+      // LOAN_PAYMENTS_CREDIT_CARD_PAYMENT because the brand string matched).
+      // The veto is what makes account context outrank the provider tag.
+      return debtPaymentUnlessLiabilityOutflow(input, 0.8, 'PLAID_PFC_PRIMARY');
     case 'BANK_FEES':
       return { flowType: 'FEE', flowDirection: 'OUTFLOW', confidence: 0.8, reason: 'PLAID_PFC_PRIMARY' };
     case 'FOOD_AND_DRINK':
@@ -224,7 +354,13 @@ export function classifyFlow(input: FlowClassificationInput): FlowClassification
       // A payment ROW is a debt payment regardless of leg. Source leg (amount<0,
       // paid FROM an owned account) is INTERNAL; destination leg (amount>0,
       // received BY the liability) is an inflow to that liability.
-      return { flowType: 'DEBT_PAYMENT', flowDirection: amount < 0 ? 'INTERNAL' : 'INFLOW', confidence: 1.0, reason: 'CATEGORY_FLOW_VALUE' };
+      //
+      // CCPAY-2B — EXCEPT on a liability outflow, which is structurally a charge.
+      // This path is reachable because mapPlaidCategory maps PFC LOAN_PAYMENTS →
+      // "Payment" account-blind, so a mislabelled card purchase arrives here
+      // carrying category "Payment". The veto is applied on BOTH DEBT_PAYMENT
+      // paths so the answer cannot depend on whether PFC happened to be present.
+      return debtPaymentUnlessLiabilityOutflow(input, 1.0, 'CATEGORY_FLOW_VALUE');
 
     case 'Interest': {
       const debt = isDebtAccount(input);

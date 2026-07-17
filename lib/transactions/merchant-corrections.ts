@@ -105,12 +105,13 @@ export function planMerchantIdentityCorrection(input: MerchantIdentityInput): Me
 
 /** Re-derive the flow write-columns for a row's (possibly new) category. Pure. */
 export function recomputeFlowFields(row: CorrectionRow, acct: CorrectionAcct, category: TransactionCategory) {
+  // CCPAY-2C-5 — no merchant/description: the classifier is descriptor-blind by
+  // contract. CorrectionRow still carries them for the merchant-identity work
+  // below; they simply never reach the flow layer.
   const { input, captured } = buildFlowInputFromRow(
     {
       category,
       amount: row.amount,
-      merchant: row.merchant,
-      description: row.description,
       pfcPrimary: row.pfcPrimary,
       pfcDetailed: row.pfcDetailed,
       pfcConfidenceLevel: row.pfcConfidenceLevel,

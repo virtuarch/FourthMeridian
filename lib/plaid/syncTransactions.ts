@@ -74,7 +74,10 @@ import { findByFingerprint } from "@/lib/transactions/fingerprint";
 // it is unit-testable in isolation (lib/transactions/plaid-category.test.ts).
 // Re-exported below to preserve the historical `@/lib/plaid/syncTransactions`
 // import path for mapPlaidCategory.
-import { mapPlaidCategory, isLiabilityCardPaymentLeg } from "@/lib/transactions/plaid-category";
+import { mapPlaidCategory } from "@/lib/transactions/plaid-category";
+// CCPAY-2C-3 — the card-payment category rescue is one shared decision, owned by
+// the liability-payment authority; this path supplies evidence, not logic.
+import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
 export { mapPlaidCategory } from "@/lib/transactions/plaid-category";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 // FlowType P2 (import fidelity) — shadow classification only. Nothing below is
@@ -281,18 +284,28 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         currency = currency ?? meta.currency;
 
         // CC-1 — rescue the destination (card-side) leg of a credit-card payment
-        // that Plaid filed under Other. Guarded by isLiabilityCardPaymentLeg:
-        // liability account (debtSubtype != null) + amount > 0 + a generalized,
-        // institution-agnostic card-payment descriptor. Scoped to Other only, so
-        // it can NEVER reclassify a purchase (amount < 0) or a row Plaid tagged
-        // with a confident category. Applied BEFORE classifyFlow so the flow
-        // classifier sees Payment → DEBT_PAYMENT (no classifier change needed).
-        if (
-          category === "Other" &&
-          isLiabilityCardPaymentLeg({ accountType: meta.type, debtSubtype: meta.debtSubtype, amount, merchant, name: description })
-        ) {
-          category = "Payment";
-        }
+        // that Plaid filed under Other. Guarded: liability account + amount > 0 +
+        // a generalized, institution-agnostic card-payment descriptor. Scoped to
+        // Other only, so it can NEVER reclassify a purchase (amount < 0) or a row
+        // Plaid tagged with a confident category. Applied BEFORE classifyFlow so
+        // the flow classifier sees Payment → DEBT_PAYMENT (no classifier change
+        // needed) AND the persisted category stays in sync with the persisted
+        // flowType — one decision, two coherent columns.
+        //
+        // CCPAY-2C-3 — the decision itself now lives in the single authority
+        // (lib/transactions/liability-payment.ts). This seam only supplies the
+        // provider's evidence and the enum value. `description` is passed
+        // explicitly and is REQUIRED by the evidence type: it is the RAW issuer
+        // descriptor (txn.name), while `merchant` is Plaid's ENRICHED name — they
+        // differ on 50% of rows, and an enriched payment row can carry the
+        // descriptor in description ONLY.
+        category = resolveLiabilityPaymentCategory(category, "Payment", {
+          accountType: meta.type,
+          debtSubtype: meta.debtSubtype,
+          amount,
+          merchant,
+          description,
+        });
 
         const { input, captured } = buildPlaidFlowInput(txn, {
           category,

@@ -60,7 +60,9 @@ const NO_META: CapturedPlaidMetadata = {
   check("flowDirection wired", w.flowDirection === classification.flowDirection);
   check("confidence wired", w.classificationConfidence === classification.confidence);
   check("reason wired", w.classificationReason === classification.reason);
-  check("classifierVersion wired", w.classifierVersion === FLOW_CLASSIFIER_VERSION && w.classifierVersion === 2);
+  // Asserts the constant is WIRED THROUGH, not a specific integer — pinning the
+  // literal here just made every version bump edit two files (CCPAY-2F drift).
+  check("classifierVersion wired", w.classifierVersion === FLOW_CLASSIFIER_VERSION);
   check("counterpartyAccountId is null (Phase B)", w.counterpartyAccountId === null);
   check("pfcPrimary pass-through", w.pfcPrimary === "LOAN_PAYMENTS");
   check("pfcDetailed pass-through", w.pfcDetailed === "LOAN_PAYMENTS_CREDIT_CARD");

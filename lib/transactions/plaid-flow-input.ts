@@ -106,12 +106,18 @@ export function buildPlaidFlowInput(
 ): PlaidFlowInputResult {
   const pfc = txn.personal_finance_category ?? null;
 
+  // CCPAY-2C-5 — no descriptor fields. This builder previously set `merchant`
+  // (and never `description`, unlike buildFlowInputFromRow below) into a
+  // classifier that read neither. That silent asymmetry is exactly why the
+  // classifier is now descriptor-blind by contract — see FlowClassificationInput.
+  // The descriptor's classification role lives one layer up, in the category
+  // rescue (lib/transactions/liability-payment.ts), which the sync path calls
+  // before it calls this builder.
   const input: FlowClassificationInput = {
     category:    ctx.category,
     amount:      ctx.amount,
     accountType: ctx.accountType ?? null,
     debtSubtype: ctx.debtSubtype ?? null,
-    merchant:    txn.merchant_name ?? txn.name ?? null,
     pfcPrimary:  pfc?.primary ?? null,
     pfcDetailed: pfc?.detailed ?? null,
   };
@@ -355,12 +361,20 @@ export function buildFlowWriteFields(
 // docs/initiatives/flowtype/P4_BACKFILL_CHECKLIST.md §2.2.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The Transaction columns the classifier consumes, as stored on the row. */
+/**
+ * The Transaction columns the classifier consumes, as stored on the row.
+ *
+ * CCPAY-2C-5 — `merchant`/`description` were removed alongside the classifier's.
+ * They existed here for exactly one reason: to feed
+ * FlowClassificationInput.merchant/description, which nothing read. Keeping them
+ * after that removal would have left callers dutifully passing descriptor text
+ * into a builder that ignores it — the same trap, one layer down. Callers that
+ * need the descriptor for other work (they all still select it) simply no longer
+ * hand it to this adapter.
+ */
 export interface FlowRowInput {
   category:           string;
   amount:             number;
-  merchant:           string | null;
-  description:        string | null;
   pfcPrimary:         string | null;
   pfcDetailed:        string | null;
   pfcConfidenceLevel: string | null;
@@ -389,8 +403,6 @@ export function buildFlowInputFromRow(
     amount:      row.amount,
     accountType: acct.accountType ?? null,
     debtSubtype: acct.debtSubtype ?? null,
-    merchant:    row.merchant ?? null,
-    description: row.description ?? null,
     pfcPrimary:  row.pfcPrimary ?? null,
     pfcDetailed: row.pfcDetailed ?? null,
   };

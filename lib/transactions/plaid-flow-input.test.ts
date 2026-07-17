@@ -69,14 +69,14 @@ function plaidTxn(over: Record<string, any> = {}): any {
   check("category passed through", input.category === "Dining");
   check("amount passed through (not re-flipped)", input.amount === -4.5, `got ${input.amount}`);
   check("accountType passed", input.accountType === "checking");
-  check("merchant = merchant_name", input.merchant === "Blue Bottle Coffee");
 }
 
-// merchant fallback to name when merchant_name is null
-{
-  const { input } = buildPlaidFlowInput(plaidTxn({ merchant_name: null }), { category: "Other", amount: -10 });
-  check("merchant falls back to name", input.merchant === "RAW BANK DESCRIPTOR");
-}
+// CCPAY-2C-5 — the "merchant = merchant_name, falling back to name" assertions
+// that lived here are gone with the field. buildPlaidFlowInput no longer reads
+// merchant_name/name at all: the classifier is descriptor-blind by contract, and
+// the descriptor's classification role is spent one layer up in the category
+// rescue (lib/transactions/liability-payment.ts). A sparse txn with no
+// merchant_name must still build cleanly, which the null-safety block below pins.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Deny-list: account_numbers must never survive capture

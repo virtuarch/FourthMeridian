@@ -135,6 +135,9 @@ import { getImportProviderCapabilities } from "@/lib/imports/provider-capabiliti
 // FlowType P5 Slice 0 — same classification contract as the Plaid sync write path.
 import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
 import { buildFlowInputFromRow, buildFlowWriteFields } from "@/lib/transactions/plaid-flow-input";
+// CCPAY-2C-4 — the ONE card-payment category rescue, shared with the Plaid sync
+// seam. File imports supply evidence; the authority owns the decision.
+import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
 // TI2-5 — stamp durable TI facts beside FlowType on the import write paths.
 // Imports carry no provider metadata, so only the honestly-derivable facts are
 // non-null (settlementState from pending=false; fxApplied from the single
@@ -335,11 +338,15 @@ export const POST = withApiHandler(async (
     accountType: (flowAcct?.type as string | null) ?? null,
     debtSubtype: flowAcct?.debtSubtype ?? null,
   };
+  // CCPAY-2C-5 — merchant/description removed: the classifier is descriptor-blind
+  // by contract, and the descriptor's classification role is already spent one
+  // layer up, in resolveLiabilityPaymentCategory. This signature is a hand-written
+  // mirror of FlowRowInput, so tsc's excess-property check does NOT catch drift
+  // here (rowLike is a named parameter, not an object literal) — it must be kept
+  // in step by hand.
   function computeFlowFields(rowLike: {
     category:           string;
     amount:             number;
-    merchant:           string | null;
-    description:        string | null;
     pfcPrimary:         string | null;
     pfcDetailed:        string | null;
     pfcConfidenceLevel: string | null;
@@ -376,6 +383,34 @@ export const POST = withApiHandler(async (
       continue;
     }
 
+    // CCPAY-2C-4 — file imports now participate in the ONE card-payment rescue
+    // (lib/transactions/liability-payment.ts), the same authority the Plaid sync
+    // seam calls. Until this slice the rescue existed ONLY on the Plaid path, so
+    // a CSV-imported card-payment leg ("PAYMENT THANK YOU", +5000, on a credit
+    // card) persisted as category=Other → flowType=REFUND, with no self-healing
+    // path: unlike a Plaid row it is never re-synced, so it stayed wrong forever.
+    //
+    // Rescued ONCE per row, above the CREATE/UPDATE fork, and consumed by BOTH.
+    // Computing it per-branch would let the two disagree — precisely the split
+    // authority CCPAY-2A exists to eliminate.
+    //
+    // Files carry no provider taxonomy: csv.ts's mapCategory only reads an
+    // optional Category/Type column and otherwise yields Other, so the descriptor
+    // is the ONLY payment evidence a file import ever has. Both descriptor fields
+    // are passed — a Payee-only file leaves description null, a Description-only
+    // file duplicates it into both (csv.ts:473-474).
+    //
+    // Sign convention is safe here: csv.ts normalizes to FM's (amount = credit −
+    // debit, so a payment credit is positive). A file imported under the wrong
+    // signConvention flips payments negative, which the liability+inflow guard
+    // rejects — a MISS, never a false DEBT_PAYMENT.
+    const rescuedCategory = resolveLiabilityPaymentCategory(row.category, "Payment", {
+      ...flowAccountContext,
+      amount:      row.amount,
+      merchant:    row.merchant,
+      description: row.description,
+    });
+
     try {
       const result = await resolveFingerprintOutcome(
         financialAccountId,
@@ -387,12 +422,10 @@ export const POST = withApiHandler(async (
 
       if (result.outcome === "CREATE") {
         // FlowType P5 Slice 0 — classify from the incoming row (no Plaid PFC).
-        let finalCategory: typeof row.category = row.category;
+        let finalCategory: typeof row.category = rescuedCategory;
         let finalFlow = computeFlowFields({
-          category:           row.category,
+          category:           rescuedCategory,
           amount:             row.amount,
-          merchant:           row.merchant,
-          description:        row.description,
           pfcPrimary:         null,
           pfcDetailed:        null,
           pfcConfidenceLevel: null,
@@ -408,14 +441,20 @@ export const POST = withApiHandler(async (
           const miResult = await resolveMerchantWrite(db, {
             merchant:        row.merchant,
             description:     row.description,
-            currentCategory: row.category,
+            // CCPAY-2C-4 — the RESCUED category, matching what this path actually
+            // persists and mirroring the Plaid seam (syncTransactions passes its
+            // post-rescue `category` here too). MI reads currentCategory to decide
+            // whether the global catalog CONFIRMS the category as provenance;
+            // handing it a value we are not writing would compare against a
+            // category that never reaches the row.
+            currentCategory: rescuedCategory,
             ownerUserId:     user.id,
           });
           if (miResult.setMerchantId && miResult.merchantId) mi.merchantId = miResult.merchantId;
           if (miResult.category) {
             finalCategory = miResult.category;
             finalFlow = computeFlowFields({
-              category: finalCategory, amount: row.amount, merchant: row.merchant, description: row.description,
+              category: finalCategory, amount: row.amount,
               pfcPrimary: null, pfcDetailed: null, pfcConfidenceLevel: null, merchantEntityId: null,
             });
             mi.categorySource = "USER_RULE";
@@ -466,12 +505,25 @@ export const POST = withApiHandler(async (
             },
           });
           if (existing) {
+            // CCPAY-2C-4 — the RESCUED category, so update-on-match and CREATE
+            // cannot disagree about the same file row. Feeding the raw category
+            // here while the flow below classified the rescued one would persist
+            // category=Other alongside flowType=DEBT_PAYMENT — a desync produced
+            // by this route itself.
+            //
+            // Consequence, deliberate: the rescue can now TRIGGER an update when
+            // it disagrees with a stored category. That is a correction (a row
+            // imported before this slice as Other becomes Payment on re-import),
+            // and it converges — the second re-import diffs clean. This differs
+            // from `currency` below, which is excluded from the diff precisely so
+            // it can never trigger one; currency is an opportunistic backfill,
+            // whereas category is a value this route authoritatively writes.
             const diff = computeQuickBooksUpdateDiff(existing, {
               date:        row.date,
               amount:      row.amount,
               merchant:    row.merchant,
               description: row.description,
-              category:    row.category,
+              category:    rescuedCategory,
             });
             if (diff) {
               // FlowType P5 Slice 0 — re-classify from the incoming values so a
@@ -479,10 +531,8 @@ export const POST = withApiHandler(async (
               // backfill would not re-select a current-version row). Existing
               // provider hints are re-fed and preserved.
               const flowFields = computeFlowFields({
-                category:           row.category,
+                category:           rescuedCategory,
                 amount:             row.amount,
-                merchant:           row.merchant,
-                description:        row.description,
                 pfcPrimary:         existing.pfcPrimary,
                 pfcDetailed:        existing.pfcDetailed,
                 pfcConfidenceLevel: existing.pfcConfidenceLevel,

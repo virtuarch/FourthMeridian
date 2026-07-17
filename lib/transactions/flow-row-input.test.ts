@@ -7,7 +7,7 @@
  *     npx tsx lib/transactions/flow-row-input.test.ts
  *
  * Verifies the row→classifier-input marshalling used by the (future) backfill:
- * field pass-through, pfc/merchant preservation, empty counterparties (no
+ * field pass-through, pfc/merchantEntityId preservation, empty counterparties (no
  * inference, nothing persisted), legacy-vs-FinancialAccount debtSubtype, and the
  * composed helper→classifyFlow→buildFlowWriteFields path (counterparty null,
  * classifierVersion set, determinism). No classification logic is exercised
@@ -33,8 +33,6 @@ function row(over: Partial<FlowRowInput> = {}): FlowRowInput {
   return {
     category:           "Dining",
     amount:             -42.5,
-    merchant:           "Blue Bottle Coffee",
-    description:        "BLUE BOTTLE #123",
     pfcPrimary:         null,
     pfcDetailed:        null,
     pfcConfidenceLevel: null,
@@ -54,8 +52,9 @@ function row(over: Partial<FlowRowInput> = {}): FlowRowInput {
   );
   check("category", input.category === "Dining");
   check("amount (not re-flipped)", input.amount === -42.5, `${input.amount}`);
-  check("merchant", input.merchant === "Blue Bottle Coffee");
-  check("description", input.description === "BLUE BOTTLE #123");
+  // CCPAY-2C-5 — merchant/description are gone from both FlowRowInput and
+  // FlowClassificationInput: the classifier is descriptor-blind by contract.
+  // The passthrough this once asserted no longer exists to assert.
   check("accountType", input.accountType === "checking");
   check("debtSubtype null", input.debtSubtype === null);
   check("captured counterparties empty", Array.isArray(captured.counterparties) && captured.counterparties.length === 0);
@@ -119,7 +118,7 @@ function row(over: Partial<FlowRowInput> = {}): FlowRowInput {
 // ─────────────────────────────────────────────────────────────────────────────
 
 for (const over of [
-  { merchant: null, description: null },
+  { pfcPrimary: null, pfcDetailed: null },
   { category: "", amount: 0 },
 ] as Partial<FlowRowInput>[]) {
   let threw = false;
@@ -139,7 +138,9 @@ for (const over of [
   const w = buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
   check("composed flowType", w.flowType === "DEBT_PAYMENT");
   check("composed counterparty NULL (no inference)", w.counterpartyAccountId === null);
-  check("composed classifierVersion set", w.classifierVersion === FLOW_CLASSIFIER_VERSION && w.classifierVersion === 2);
+  // The constant is wired through; do NOT re-pin its integer value (CCPAY-2F: a
+  // literal here forces a second edit on every version bump for no added coverage).
+  check("composed classifierVersion set", w.classifierVersion === FLOW_CLASSIFIER_VERSION);
   check("composed 10 columns", Object.keys(w).length === 10);
 }
 
