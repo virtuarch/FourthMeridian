@@ -5,9 +5,9 @@
 | | |
 |---|---|
 | **Version** | `2.4.5` (tagged; `package.json`) |
-| **Active branch** | `feature/v2.5-spaces-completion` (28 commits ahead of origin, unpushed) |
+| **Active branch** | `feature/v2.5-spaces-completion` (pushed; in sync with origin) |
 | **Deployed** | Vercel (sin1) + Supabase Postgres |
-| **Recently landed** | **OPS-5 platform observability** (S1–S5: resource-freshness, rich job health, provider health, manual operations, alerting — [systems/platform-ops.md](docs/systems/platform-ops.md)). **SpaceDashboard decomposition** is substantially complete — the host is down to ~1,480 LOC (from ~3,731) with the SD-7 standard-workspace extraction landed and the SD-8 census concluding the decomposition clean. |
+| **Recently landed** | **CCPAY-2 liability-payment classifier v3** — one canonical liability-payment authority + structural negative-liability veto, descriptor-blind classifier with a provider-neutral card-payment rescue shared by every ingestion path, category-coverage tripwire, and a synchronized v2→v3 backfill certified by the rewritten desync audit ([doctrine/financial-semantics.md § Liability payment classification](docs/doctrine/financial-semantics.md); [initiative](docs/initiatives/ccpay/)). **OPS-5 platform observability** (S1–S5 — [systems/platform-ops.md](docs/systems/platform-ops.md)). **SpaceDashboard decomposition** substantially complete (host ~1,480 LOC from ~3,731; SD-7 landed, SD-8 census clean). |
 | **Active initiative** | **v2.5 closure + OPS-1 beta-readiness**, running with early zero-schema **AI-5** foundation work in parallel (neither is convergence-gated). |
 
 ## Production readiness
@@ -23,11 +23,10 @@
 
 ## Next 3–5 steps
 
-1. **Push the branch** — 28 unpushed commits (OPS-5 wave + this docs cleanup) sit ahead of origin.
-2. **OPS-1 consent capture + LLM disclosure** (C-S1/C-S2) — smallest code closing the largest gate.
-3. **OPS-1 ops floor + production config flips** (C-S3) — verify `invite_only` first, then Sentry, uptime, backup drill, Turnstile, Plaid.
-4. **AI5-0 / AI5-1** in a parallel worktree — failure-corpus reconstruction + window-characterization suite, bounds-not-dollars.
-5. **v2.5.5 convergence** — DayFacts sole-fold, classifier v3, named net measures (data-semantics only; see [ROADMAP](docs/plans/ROADMAP.md)).
+1. **OPS-1 consent capture + LLM disclosure** (C-S1/C-S2) — smallest code closing the largest gate.
+2. **OPS-1 ops floor + production config flips** (C-S3) — verify `invite_only` first, then Sentry, uptime, backup drill, Turnstile, Plaid.
+3. **AI5-0 / AI5-1** in a parallel worktree — failure-corpus reconstruction + window-characterization suite, bounds-not-dollars.
+4. **v2.5.5 convergence** — DayFacts sole-fold + named net measures (data-semantics only; see [ROADMAP](docs/plans/ROADMAP.md)). *Classifier v3 landed (CCPAY-2); the remaining CCPAY debt is the [recorded follow-ups](docs/initiatives/ccpay/CCPAY_FOLLOW_UPS.md) — btc-sync flow-authority convergence + the never-classified seed backlog.*
 
 ## Where things stand
 
