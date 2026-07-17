@@ -1,6 +1,6 @@
 # PROV — Provider Orchestration Consolidation (Implementation Plan)
 
-**Status:** **PLANNED** — not started. Design record derived from the PROV-1 audit; no implementation yet.
+**Status:** **PROV-2/3/4/5A LANDED** (see git history). PROV-5B (typed `ProviderAdapter`) and PROV-6 (`ProviderIngestionPayload` universal ingestion contract) remain **DEFERRED** by design — Plaid + Wallet prove only the account-spine writer, not a universal ingestion contract (CCPAY-2G doctrine: abstract from the second proven implementation, not the first). Durable outcome doctrine now lives in [`docs/systems/connections.md`](../systems/connections.md) (Canonical contracts + Extension points). Original design record below, derived from the PROV-1 audit.
 **Date:** 2026-07-17
 **Source of truth:** `docs/audits/PROV1_PROVIDER_ORCHESTRATION_DUPLICATION_AUDIT_2026-07-17.md` (read-only investigation).
 **Flagged by:** COMPLEX-0 complexity audit (exchangeToken + refresh spine, A-class).

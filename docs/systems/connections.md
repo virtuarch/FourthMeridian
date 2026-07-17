@@ -72,6 +72,30 @@ user.
   implement this same lifecycle and ride the shared spine
   (`Connection → ProviderAccountIdentity → FinancialAccount → Holding/Transaction`).
 
+- **One writer for the shared spine middle (PROV-4).** `persistAccountSpine`
+  (`lib/accounts/persist-account-spine.ts`) is the SINGLE writer of the
+  per-account `AccountConnection` + `SpaceAccountLink` pair, committed atomically.
+  The Plaid exchange loop and the Wallet add route both consume it — the two real
+  producers that earned the abstraction. What it deliberately does NOT own,
+  because it genuinely diverges between those two producers (and folding it would
+  be designing a neutral shape from providers that don't share it): the
+  `FinancialAccount` RESOLUTION strategy (Plaid: provider-identity → legacy →
+  fingerprint via `resolveAccountByFingerprint`; Wallet: `walletAddress`), the
+  `ProviderAccountIdentity` mirror (`dualWriteProviderAccountIdentity` vs
+  `alignWalletProviderSpine`), and the `Connection` write (per-Plaid-item vs
+  wallet-align). A new provider resolves/creates its own `FinancialAccount`,
+  writes its own identity mirror + `Connection`, and calls `persistAccountSpine`
+  for the shared middle.
+
+- **Dedupe stages, not entrypoints (PROV doctrine).** The Plaid exchange and
+  refresh paths keep INDEPENDENT orchestration envelopes — retry, locking,
+  health reporting, fatality, atomicity — because they are genuinely different
+  operations (create/reconcile vs update-only). Only the shared STAGES are
+  shared: `mapAccountType` (`lib/plaid/account-type.ts`),
+  `resolvePlaidAccountByExternalId` (`lib/accounts/reconcile.ts`), and
+  `syncInvestmentsForItem` (`lib/plaid/sync-investments.ts`). Merging the
+  entrypoints themselves would collapse their distinct failure semantics.
+
 ## Persistence
 
 - `PlaidItem` holds the Plaid credential (`encryptedToken`, AES-256-GCM — never
@@ -139,7 +163,17 @@ user.
   `connect → automatic initial sync → ready` lifecycle, write `Connection` as
   the sync-truth record, and ride the shared spine. Emit accounts keyed by
   connection id so they unify into `accountsByConnectionId` with no loader
-  change.
+  change. Concretely: resolve/create your `FinancialAccount`, write your
+  `ProviderAccountIdentity` mirror + `Connection`, then call `persistAccountSpine`
+  for the `AccountConnection` + `SpaceAccountLink`. Begin from the proven
+  duplication a third provider surfaces — do NOT pre-build a generic
+  `ProviderAdapter` / `ProviderIngestionPayload` interface. Plaid + Wallet prove
+  only the account-spine writer; they do NOT yet prove a universal ingestion
+  contract (PROV-5B / PROV-6 are deferred for exactly this reason, per the
+  CCPAY-2G doctrine: introduce a provider-neutral abstraction from the SECOND
+  proven implementation, not the first). The dead `plaidAdapter` re-export was
+  deleted (PROV-5A) precisely because it was a zero-importer abstraction built
+  ahead of that proof.
 - **New sync-state signal:** add it in `lib/sync/status.ts` so both the loader
   and the poller pick it up.
 - **Provider health / Ops needs:** extend the separate `lib/connections/health.ts`

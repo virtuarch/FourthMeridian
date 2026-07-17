@@ -46,6 +46,8 @@ async function regenWalletWealthHistory(financialAccountId: string): Promise<voi
   }
 }
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
+// PROV-4 — canonical per-account conn+SAL spine writer, shared with Plaid exchange.
+import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
 import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
 import { isExtendedKey, normalizeExtendedKeyInput } from "@/lib/crypto/btc-address-derivation";
@@ -257,32 +259,18 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // AccountConnection (manual, no PlaidItem)
-    await tx.accountConnection.create({
-      data: {
-        financialAccountId: created.id,
-        connectedByUserId:  userId,
-        syncStatus:         "pending",
-        isCanonical:        true,
-      },
-    });
-
-    // D3 Stage B3 — SpaceAccountLink is the sole write target
-    await dualWriteSpaceAccountLink({
-      spaceId,
+    // PROV-4 — AccountConnection (manual, no PlaidItem) + SpaceAccountLink via
+    // the canonical spine writer shared with the Plaid exchange path. Passed
+    // `tx` so the whole FA + spine commit stays in ONE transaction, exactly as
+    // before. The WALLET Connection + ProviderAccountIdentity are written
+    // separately by alignWalletProviderSpine below (provider-specific).
+    await persistAccountSpine({
       financialAccountId: created.id,
-      creatorUserId:       created.createdByUserId ?? created.ownerUserId,
-      client:              tx,
-      create: {
-        addedByUserId:   userId,
-        visibilityLevel: VisibilityLevel.FULL,
-        status:          ShareStatus.ACTIVE,
-      },
-      update: {
-        status:          ShareStatus.ACTIVE,
-        revokedAt:       null,
-        revokedByUserId: null,
-      },
+      spaceId,
+      addedByUserId:      userId,
+      creatorUserId:      created.createdByUserId ?? created.ownerUserId,
+      connection: { connectedByUserId: userId, syncStatus: "pending" },
+      client:             tx,
     });
 
     return created;

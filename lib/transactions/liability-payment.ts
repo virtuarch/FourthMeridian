@@ -40,7 +40,7 @@ export interface LiabilityAccountContext {
   /**
    * FinancialAccount.type (AccountType value). `"debt"` is the PRIMARY liability
    * signal — Plaid `type: "credit"`/`"loan"` maps to AccountType.debt at import
-   * (lib/plaid/exchangeToken.ts mapAccountType). This is the field actually
+   * (lib/plaid/account-type.ts mapAccountType). This is the field actually
    * populated for Plaid-synced credit cards.
    */
   accountType?: string | null;

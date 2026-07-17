@@ -15,10 +15,12 @@
  *     app/api/plaid/exchange-token/route.ts + lib/accounts/reconcile.ts —
  *     refresh never touches that path.
  *  2. Investment holdings (investmentsHoldingsGet), for items with any
- *     investment-type accounts — same delete-then-recreate approach as
- *     exchange-token's initial import, cross-referenced via
- *     FinancialAccount.plaidAccountId (D11: Holding is now FK'd to
- *     FinancialAccount directly). Consent-gated: skipped (and
+ *     investment-type accounts — reconciled through syncCurrentHoldings
+ *     (insert new / update-in-place / remove-stale, in one transaction), NOT
+ *     the old destructive deleteMany→recreate; cross-referenced via
+ *     ProviderAccountIdentity with the legacy FinancialAccount.plaidAccountId
+ *     fallback (D11: Holding is now FK'd to FinancialAccount directly).
+ *     Consent-gated: skipped (and
  *     PlaidItem.investmentsConsent maintained) when the Item lacks
  *     Investments consent, so ADDITIONAL_CONSENT_REQUIRED is never hit
  *     repeatedly — see lib/plaid/investmentsConsent.ts.
@@ -37,42 +39,23 @@
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
-import { AccountType, PlaidInvestmentsConsent, PlaidItemStatus, ProviderType, ShareStatus } from "@prisma/client";
+// PROV-2 — shared owners: Plaid type→AccountType mapping and the identity→legacy
+// account resolver (was a private mapAccountType copy + two inline lookups here).
+import { mapAccountType } from "@/lib/plaid/account-type";
+// PROV-3 — the shared investments-ingest orchestration (was inline here).
+import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
+import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
+import { AccountType, PlaidItemStatus, ShareStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { regenerateSnapshotsForAccounts, regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 import { emitDomainEvent } from "@/lib/events/emit";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
-import { classifyPlaidErrorForHealth, getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
+import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { withPlaidRetry } from "@/lib/plaid/retry";
-import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
-import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
-import { syncCurrentHoldings } from "@/lib/investments/sync-current-holdings";
-import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
-
-// Mirrors app/api/plaid/exchange-token/route.ts's mapAccountType — kept as a
-// private copy here (not exported/shared) since refresh only needs it to
-// decide which accounts are investment-type for the holdings step.
-function mapAccountType(type: string, subtype: string | null | undefined): AccountType {
-  switch (type) {
-    case "depository":
-      return subtype === "savings" || subtype === "money market" || subtype === "cd"
-        ? AccountType.savings
-        : AccountType.checking;
-    case "investment":
-      return subtype === "crypto exchange"
-        ? AccountType.crypto
-        : AccountType.investment;
-    case "credit":
-    case "loan":
-      return AccountType.debt;
-    default:
-      return AccountType.other;
-  }
-}
 
 // ── M2 — balance↔transaction reconciliation helpers ──────────────────────────
 
@@ -140,8 +123,8 @@ export interface RefreshItemResult {
 /**
  * Refreshes a single PlaidItem: balances, then holdings, then transactions.
  * Safe to call repeatedly — every step is idempotent (update-only balance
- * writes against existing accounts, delete+recreate holdings, cursor-based
- * transaction upsert).
+ * writes against existing accounts, syncCurrentHoldings insert/update/remove-stale
+ * holdings reconciliation, cursor-based transaction upsert).
  *
  * @param plaidItemDbId  Our internal PlaidItem.id (primary key), not Plaid's item_id.
  */
@@ -168,35 +151,11 @@ export async function refreshPlaidItem(
   const plaidAccounts = accountsRes.data.accounts;
 
   for (const acct of plaidAccounts) {
-    // D2 Step 3E — resolved primarily via ProviderAccountIdentity (provider=
-    // PLAID, externalAccountId=acct.account_id) rather than
-    // FinancialAccount.plaidAccountId directly, with a fallback to the
-    // legacy lookup if no identity row exists yet. Fallback-first, not a
-    // hard replacement — mirrors Steps 3C/3D. See
-    // docs/initiatives/d2/investigations/D2_STEP3A_PROVIDER_ACCOUNT_IDENTITY_READ_CUTOVER_INVESTIGATION.md.
-    // D2 Step 1D — findFirst, not findUnique: see lib/accounts/reconcile.ts
-    // for why (provider, externalAccountId) is no longer a named unique key).
-    const plaidIdentity = await db.providerAccountIdentity.findFirst({
-      where: { provider: ProviderType.PLAID, externalAccountId: acct.account_id },
-      include: { financialAccount: true },
-    });
-
-    let fa = plaidIdentity?.financialAccount ?? null;
-    if (!fa) {
-      fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
-      // Only warn for accounts still in active use — an archived (deletedAt
-      // set) account hitting the legacy fallback is expected, not a coverage
-      // gap worth investigating: it's the same account skipped two lines
-      // below by the `if (!fa || fa.deletedAt) continue;` guard.
-      if (fa && !fa.deletedAt) {
-        console.warn(
-          `[plaid][D2-3E] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${acct.account_id}. Coverage gap; investigate before removing fallback.`
-        );
-      }
-    }
-
-    // No match, or soft-deleted (removed by the user) — never restore or
-    // create during a refresh. That only happens via relink (exchange-token).
+    // PROV-2 — canonical identity→legacy resolve (returns soft-deleted rows too;
+    // the warn is gated to active-only inside the resolver). Refresh then SKIPS
+    // any soft-deleted match: never restore or create during a refresh — that
+    // only happens via relink (exchange-token).
+    const fa = await resolvePlaidAccountByExternalId(acct.account_id);
     if (!fa || fa.deletedAt) continue;
 
     const availableBalance = acct.balances.available ?? undefined;
@@ -243,170 +202,23 @@ export async function refreshPlaidItem(
   // ── 2. Investment holdings ──────────────────────────────────────────────
   // Best-effort/non-fatal — an institution with no investment accounts, or a
   // transient Plaid error here, should never block balances/transactions.
-  let holdingsUpdated = 0;
+  // PROV-3: identical ingest to exchangeToken via syncInvestmentsForItem. The
+  // primitive derives + change-detects consent (self-heals to ENABLED after the
+  // user grants consent via Link update mode), and skips the holdings call when
+  // the item is known to lack consent so ADDITIONAL_CONSENT_REQUIRED is never
+  // hit repeatedly.
   const investmentPlaidAccounts = plaidAccounts.filter(
     (a) => mapAccountType(a.type, a.subtype) === AccountType.investment
   );
-
-  // Consent gate — derive from the accountsGet payload just fetched (free;
-  // authoritative for DTM Items), falling back to the stored state for
-  // pre-DTM Items whose metadata is inconclusive. Persisted on change, so
-  // once an Item is known to lack consent the holdings call is skipped on
-  // every later refresh instead of failing with ADDITIONAL_CONSENT_REQUIRED
-  // each time. Re-derived every refresh → self-heals to ENABLED after the
-  // user grants consent via Link update mode.
-  let investmentsConsent: PlaidInvestmentsConsent | null = item.investmentsConsent;
-  if (investmentPlaidAccounts.length > 0) {
-    const derived = deriveInvestmentsConsent(accountsRes.data.item);
-    if (derived !== null) {
-      if (derived !== item.investmentsConsent) {
-        await db.plaidItem.update({
-          where: { id: plaidItemDbId },
-          data:  { investmentsConsent: derived },
-        });
-        console.log(
-          `[refreshPlaidItem] investmentsConsent ${item.investmentsConsent ?? "unknown"} → ${derived} for item ${plaidItemDbId} ("${item.institutionName}")`
-        );
-      }
-      investmentsConsent = derived;
-    }
-  }
-  // null = still unknown (pre-DTM Item, never probed) — attempt once below;
-  // the outcome is persisted either way, so the probe never repeats.
-  const holdingsCallable =
-    investmentsConsent === null || investmentsConsent === PlaidInvestmentsConsent.ENABLED;
-
-  if (investmentPlaidAccounts.length > 0 && holdingsCallable) {
-    try {
-      const holdingsRes      = await withPlaidRetry(
-        () => plaidClient.investmentsHoldingsGet({ access_token: accessToken }),
-        "investmentsHoldingsGet"
-      );
-      const { holdings, securities } = holdingsRes.data;
-      const secById           = Object.fromEntries(securities.map((s) => [s.security_id, s]));
-
-      for (const plaidAcct of investmentPlaidAccounts) {
-        const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
-        if (!acctHoldings.length) continue;
-
-        // D11 — Holding is now FK'd to FinancialAccount directly; cross-
-        // reference via provider identity (D2 Step 3E), same pattern as the
-        // balance lookup above, falling back to plaidAccountId if no
-        // identity row exists yet — same as exchange-token's initial import.
-        // D2 Step 1D — findFirst, not findUnique: see
-        // lib/accounts/reconcile.ts for why (provider, externalAccountId) is
-        // no longer a named unique key.
-        // currency in both selects: MC1 Phase 0 Slice 2 — account-level
-        // fallback for the per-holding currency stamp below.
-        const holdingPlaidIdentity = await db.providerAccountIdentity.findFirst({
-          where: { provider: ProviderType.PLAID, externalAccountId: plaidAcct.account_id },
-          select: { financialAccount: { select: { id: true, currency: true } } },
-        });
-
-        let fa = holdingPlaidIdentity?.financialAccount ?? null;
-        if (!fa) {
-          // Selected via a separate variable (not assigned straight into
-          // `fa`) so `deletedAt` is available to gate the warning below
-          // without widening `fa`'s declared type beyond `{ id, currency }`.
-          const legacyFa = await db.financialAccount.findUnique({
-            where:  { plaidAccountId: plaidAcct.account_id },
-            select: { id: true, currency: true, deletedAt: true },
-          });
-          // Only warn for accounts still in active use — an archived
-          // account hitting the legacy fallback is expected, not a coverage
-          // gap worth investigating.
-          if (legacyFa && !legacyFa.deletedAt) {
-            console.warn(
-              `[plaid][D2-3E] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${legacyFa.id} externalAccountId=${plaidAcct.account_id}. Coverage gap; investigate before removing fallback.`
-            );
-          }
-          fa = legacyFa;
-        }
-        if (!fa) continue; // never create — refresh only updates known accounts
-
-        // A1 — dark-write append-only observation capture from the RAW payload
-        // (incl. cash / no-ticker securities the Holding writer skips below).
-        // Runs BEFORE the destructive Holding delete+recreate, gated behind the
-        // kill switch, best-effort/non-fatal (writeBtcHolding precedent): a
-        // capture failure must never affect balances/holdings/transactions.
-        if (investmentObservationsEnabled()) {
-          try {
-            await capturePositionObservations({
-              financialAccountId: fa.id,
-              plaidHoldings:      acctHoldings,
-              securitiesById:     secById,
-              date:               new Date(),
-              // Derived brokerage-cash reconciliation from the SAME refresh
-              // payload (contemporaneous balance + holdings). Balance from the
-              // investment account's own accountsGet balances.
-              accountBalance:     plaidAcct.balances.current ?? null,
-              accountCurrency:    plaidAcct.balances.iso_currency_code ?? null,
-              balanceAsOf:        plaidAcct.balances.last_updated_datetime ? new Date(plaidAcct.balances.last_updated_datetime) : null,
-              payloadComplete:    holdingsRes.data.is_investments_fallback_item !== true,
-            });
-          } catch (obsErr) {
-            console.warn(
-              `[refreshPlaidItem] position observation capture failed for account ${fa.id} (non-fatal): ${obsErr instanceof Error ? obsErr.message : obsErr}`
-            );
-          }
-        }
-
-        // A2 — stable per-holding sync (update-in-place / insert / remove-stale)
-        // replaces the prior deleteMany+create. Runs AFTER observation capture
-        // above; keeps Holding symbol-keyed and cash/no-ticker filtered. Removal
-        // is gated on a complete payload.
-        const syncCounts = await syncCurrentHoldings({
-          financialAccountId: fa.id,
-          plaidHoldings:      acctHoldings,
-          securitiesById:     secById,
-          accountCurrency:    fa.currency,
-          payloadComplete:    holdingsRes.data.is_investments_fallback_item !== true,
-        });
-        holdingsUpdated += syncCounts.inserted + syncCounts.updated + syncCounts.unchanged;
-      }
-
-      // A3 — canonical investment event ingestion (once per Item; separate
-      // investmentsTransactionsGet call). Runs AFTER holdings capture / cash
-      // reconciliation / Holding sync, gated behind INVESTMENT_EVENTS_ENABLED,
-      // isolated best-effort: a failure here never affects the holdings refresh
-      // just completed. Consent is known good (holdings succeeded above).
-      if (investmentEventsEnabled()) {
-        try {
-          await ingestInvestmentEvents({ accessToken, plaidItemId: plaidItemDbId, now: new Date() });
-        } catch (evErr) {
-          console.warn(
-            `[refreshPlaidItem] investment event ingestion failed for item ${plaidItemDbId} (non-fatal): ${evErr instanceof Error ? evErr.message : evErr}`
-          );
-        }
-      }
-
-      // Unknown (pre-DTM) probe succeeded — remember it so the derivation
-      // fallback above resolves without ambiguity on every later refresh.
-      if (investmentsConsent === null) {
-        await db.plaidItem.update({
-          where: { id: plaidItemDbId },
-          data:  { investmentsConsent: PlaidInvestmentsConsent.ENABLED },
-        });
-      }
-    } catch (holdingsErr) {
-      if (getPlaidErrorCode(holdingsErr) === "ADDITIONAL_CONSENT_REQUIRED") {
-        // Expected for Items linked without Investments consent — not an
-        // application error. Remember it so this call is skipped from now on
-        // (until the user re-consents via Link update mode).
-        await db.plaidItem.update({
-          where: { id: plaidItemDbId },
-          data:  { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED },
-        });
-        console.log(
-          `[refreshPlaidItem] item ${plaidItemDbId} ("${item.institutionName}") lacks Investments consent — holdings skipped until granted via Link update mode`
-        );
-      } else {
-        console.warn(
-          `[refreshPlaidItem] investmentsHoldingsGet failed for item ${plaidItemDbId} (non-fatal): ${plaidErrorSummary(holdingsErr)}`
-        );
-      }
-    }
-  }
+  const investmentsResult = await syncInvestmentsForItem({
+    accessToken,
+    plaidItemId:     plaidItemDbId,
+    institutionName: item.institutionName,
+    investmentAccounts: investmentPlaidAccounts,
+    item:            accountsRes.data.item,
+    storedConsent:   item.investmentsConsent,
+  });
+  const holdingsUpdated = investmentsResult.holdingsSynced;
 
   // ── 3. Transactions ──────────────────────────────────────────────────────
   // Reuses the existing cursor-based sync as-is — no duplicated logic.

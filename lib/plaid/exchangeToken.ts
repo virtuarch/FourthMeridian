@@ -31,11 +31,8 @@ import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import {
   AccountType,
-  PlaidInvestmentsConsent,
   PlaidItemStatus,
   AccountOwnerType,
-  ShareStatus,
-  VisibilityLevel,
   ProviderType,
   ConnectionStatus,
 } from "@prisma/client";
@@ -44,14 +41,14 @@ import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { AuditAction } from "@/lib/audit-actions";
-import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
-import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
+import { resolveAccountByFingerprint, resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
+// PROV-2 — the ONE owner of Plaid type/subtype → AccountType (was defined + exported here).
+import { mapAccountType } from "@/lib/plaid/account-type";
+// PROV-3 — the shared investments-ingest orchestration (was inline here).
+import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
+// PROV-4 — the canonical per-account conn+SAL spine writer (was inline here).
+import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
-import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
-import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
-import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
-import { syncCurrentHoldings } from "@/lib/investments/sync-current-holdings";
-import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -95,26 +92,6 @@ export interface ExchangeTokenResult {
    * are unaffected.
    */
   historyPending?:    boolean;
-}
-
-// ── Plaid type → AccountType ──────────────────────────────────────────────────
-
-export function mapAccountType(type: string, subtype: string | null | undefined): AccountType {
-  switch (type) {
-    case "depository":
-      return subtype === "savings" || subtype === "money market" || subtype === "cd"
-        ? AccountType.savings
-        : AccountType.checking;
-    case "investment":
-      return subtype === "crypto exchange"
-        ? AccountType.crypto
-        : AccountType.investment;
-    case "credit":
-    case "loan":
-      return AccountType.debt;
-    default:
-      return AccountType.other;
-  }
 }
 
 /**
@@ -263,25 +240,11 @@ export async function performPlaidTokenExchange(
     const creditLimit      = acct.balances.limit ?? undefined;
 
     // ── Resolve FinancialAccount ──────────────────────────────────────────────
-    // 1. Exact match via ProviderAccountIdentity (D2 Step 3C) with legacy
-    //    plaidAccountId fallback (D2 Step 3C coverage gap handling).
+    // 1. PROV-2 — identity→legacy resolve via the canonical resolver (returns
+    //    soft-deleted rows too, so the restore branch below can revive them).
     // 2. Fingerprint match against archived accounts.
     // 3. Create new row if neither lookup finds anything.
-    const plaidIdentity = await db.providerAccountIdentity.findFirst({
-      where:   { provider: ProviderType.PLAID, externalAccountId: acct.account_id },
-      include: { financialAccount: true },
-    });
-
-    let fa = plaidIdentity?.financialAccount ?? null;
-
-    if (!fa) {
-      fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
-      if (fa) {
-        console.warn(
-          `[plaid][D2-3C] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${acct.account_id}. Coverage gap; investigate before removing fallback.`,
-        );
-      }
-    }
+    let fa = await resolvePlaidAccountByExternalId(acct.account_id);
 
     if (fa) {
       fa = await db.financialAccount.update({
@@ -361,209 +324,50 @@ export async function performPlaidTokenExchange(
     // all three resolution branches above. Best-effort / non-fatal.
     await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
 
-    // ── KD-4 Phase 3 — AccountConnection upsert + SAL link commit atomically.
-    //    The FinancialAccount resolve/create/update above stays OUTSIDE this
-    //    transaction: resolveAccountByFingerprint() self-manages its own
-    //    interactive transaction (Phase 2) and must never be nested, and each
-    //    fa write there is a single atomic statement. The ProviderAccountIdentity
-    //    mirror write (above) is idempotent/non-fatal and also stays outside.
-    //    Fields are captured into locals so the closure doesn't rely on
-    //    control-flow narrowing of the `let fa`.
-    const faId = fa.id;
-    const faCreatorUserId = fa.createdByUserId ?? fa.ownerUserId;
-    await db.$transaction(async (tx) => {
-      const existingConn = await tx.accountConnection.findFirst({
-        where: {
-          financialAccountId: faId,
-          connectedByUserId:  userId,
-          plaidItemDbId:      plaidItem.id,
-        },
-      });
-
-      if (!existingConn) {
-        await tx.accountConnection.create({
-          data: {
-            financialAccountId: faId,
-            connectedByUserId:  userId,
-            plaidItemDbId:      plaidItem.id,
-            connectionId:       connectionId,
-            syncStatus:         "synced",
-            isCanonical:        true,
-          },
-        });
-      } else {
-        await tx.accountConnection.update({
-          where: { id: existingConn.id },
-          data: {
-            syncStatus:   "synced",
-            lastSyncedAt: new Date(),
-            deletedAt:    null,
-            ...(connectionId && !existingConn.connectionId && { connectionId }),
-          },
-        });
-      }
-
-      // D3 Stage B3 — SpaceAccountLink is the sole write target
-      await dualWriteSpaceAccountLink({
-        spaceId,
-        financialAccountId: faId,
-        creatorUserId:      faCreatorUserId,
-        client:             tx,
-        create: {
-          addedByUserId:   userId,
-          visibilityLevel: VisibilityLevel.FULL,
-          status:          ShareStatus.ACTIVE,
-        },
-        update: {
-          status:          ShareStatus.ACTIVE,
-          revokedAt:       null,
-          revokedByUserId: null,
-        },
-      });
+    // PROV-4 — AccountConnection + SpaceAccountLink, committed atomically per
+    // account, through the canonical spine writer shared with the Wallet route.
+    // The FinancialAccount resolve/create/update above stays OUTSIDE this
+    // transaction (resolveAccountByFingerprint self-manages its own; each fa
+    // write is a single atomic statement), and the ProviderAccountIdentity mirror
+    // (above) is idempotent/non-fatal and also stays outside — the boundary is
+    // unchanged from the hand-written version this replaces.
+    await persistAccountSpine({
+      financialAccountId: fa.id,
+      spaceId,
+      addedByUserId:      userId,
+      creatorUserId:      fa.createdByUserId ?? fa.ownerUserId,
+      connection: {
+        connectedByUserId: userId,
+        plaidItemDbId:     plaidItem.id,
+        connectionId,
+        syncStatus:        "synced",
+      },
     });
 
     importedIds.push(fa.id);
     imported++;
   }
 
-  // 8. Investment holdings — consent-gated (lib/plaid/investmentsConsent.ts).
-  // Link tokens request transactions only (see app/api/plaid/link-token/
-  // route.ts), so DTM Items arrive here without Investments consent: derive
-  // the state from the accountsGet payload already fetched above, seed
-  // PlaidItem.investmentsConsent (read by refresh + the future "Enable
-  // Investment Holdings" UI), and skip the guaranteed
-  // ADDITIONAL_CONSENT_REQUIRED call instead of making it.
+  // 8. Investment holdings — consent-gated. PROV-3: the whole ingest (consent
+  // derive+persist, holdings call, per-account observation→holdings→events,
+  // consent-error catch) is the shared syncInvestmentsForItem primitive, also
+  // used by refresh. At initial link storedConsent is the just-upserted item's
+  // value (null for a brand-new item → the primitive seeds it; a stored value on
+  // a re-link → the primitive change-detects). Link tokens request transactions
+  // only, so DTM items arrive without Investments consent and the primitive
+  // skips the guaranteed ADDITIONAL_CONSENT_REQUIRED call.
   const investmentAccounts = plaidAccounts.filter(
     (a) => mapAccountType(a.type, a.subtype) === AccountType.investment,
   );
-  let holdingsImported = 0;
-
-  let investmentsConsent: PlaidInvestmentsConsent | null = null;
-  if (investmentAccounts.length > 0) {
-    investmentsConsent = deriveInvestmentsConsent(accountsRes.data.item);
-    if (investmentsConsent !== null) {
-      await db.plaidItem.update({
-        where: { id: plaidItem.id },
-        data:  { investmentsConsent },
-      });
-      if (investmentsConsent !== PlaidInvestmentsConsent.ENABLED) {
-        console.log(
-          `[plaid] institution "${institution_name}" — Investments consent ${investmentsConsent}; skipping holdings import`,
-        );
-      }
-    }
-  }
-  const holdingsCallable =
-    investmentsConsent === null || investmentsConsent === PlaidInvestmentsConsent.ENABLED;
-
-  if (investmentAccounts.length > 0 && holdingsCallable) {
-    try {
-      const holdingsRes = await plaidClient.investmentsHoldingsGet({ access_token });
-      const { holdings, securities } = holdingsRes.data;
-      const secById = Object.fromEntries(securities.map((s) => [s.security_id, s]));
-
-      for (const plaidAcct of investmentAccounts) {
-        const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
-        if (!acctHoldings.length) continue;
-
-        // currency in both selects: MC1 Phase 0 Slice 2 — account-level
-        // fallback for the per-holding currency stamp below.
-        const holdingPlaidIdentity = await db.providerAccountIdentity.findFirst({
-          where:  { provider: ProviderType.PLAID, externalAccountId: plaidAcct.account_id },
-          select: { financialAccount: { select: { id: true, currency: true } } },
-        });
-
-        let fa = holdingPlaidIdentity?.financialAccount ?? null;
-        if (!fa) {
-          fa = await db.financialAccount.findUnique({
-            where:  { plaidAccountId: plaidAcct.account_id },
-            select: { id: true, currency: true },
-          });
-          if (fa) {
-            console.warn(
-              `[plaid][D2-3F] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${plaidAcct.account_id}. Coverage gap; investigate before removing fallback.`,
-            );
-          }
-        }
-        if (!fa) continue;
-
-        // A1 — dark-write append-only observation capture from the RAW payload
-        // (incl. cash / no-ticker securities the Holding writer skips below), so
-        // an initial connection's day-one positions are observed. Runs BEFORE
-        // the Holding write, gated behind the kill switch, best-effort/non-fatal:
-        // a capture failure must never fail account import.
-        if (investmentObservationsEnabled()) {
-          try {
-            await capturePositionObservations({
-              financialAccountId: fa.id,
-              plaidHoldings:      acctHoldings,
-              securitiesById:     secById,
-              date:               new Date(),
-              // Derived brokerage-cash reconciliation from the SAME import
-              // payload (contemporaneous balance + holdings).
-              accountBalance:     plaidAcct.balances.current ?? null,
-              accountCurrency:    plaidAcct.balances.iso_currency_code ?? null,
-              balanceAsOf:        plaidAcct.balances.last_updated_datetime ? new Date(plaidAcct.balances.last_updated_datetime) : null,
-              payloadComplete:    holdingsRes.data.is_investments_fallback_item !== true,
-            });
-          } catch (obsErr) {
-            console.warn(
-              `[plaid] position observation capture failed for account ${fa.id} (non-fatal): ${obsErr instanceof Error ? obsErr.message : obsErr}`,
-            );
-          }
-        }
-
-        // A2 — stable per-holding sync (update-in-place / insert / remove-stale)
-        // replaces the prior deleteMany+create, via the shared writer used by
-        // refresh.ts. Runs AFTER observation capture; cash/no-ticker stay
-        // filtered from the Holding projection.
-        const syncCounts = await syncCurrentHoldings({
-          financialAccountId: fa.id,
-          plaidHoldings:      acctHoldings,
-          securitiesById:     secById,
-          accountCurrency:    fa.currency,
-          payloadComplete:    holdingsRes.data.is_investments_fallback_item !== true,
-        });
-        holdingsImported += syncCounts.inserted + syncCounts.updated + syncCounts.unchanged;
-      }
-
-      // A3 — canonical investment event ingestion at initial link (once per
-      // Item; separate investmentsTransactionsGet call). Gated behind
-      // INVESTMENT_EVENTS_ENABLED, isolated best-effort: a failure never fails
-      // account import. Uses the shared ingestion — no duplicated mapping.
-      if (investmentEventsEnabled()) {
-        try {
-          await ingestInvestmentEvents({ accessToken: access_token, plaidItemId: plaidItem.id, now: new Date() });
-        } catch (evErr) {
-          console.warn(
-            `[plaid] investment event ingestion failed for item ${plaidItem.id} (non-fatal): ${evErr instanceof Error ? evErr.message : evErr}`,
-          );
-        }
-      }
-
-      // Unknown (pre-DTM) probe succeeded — remember it.
-      if (investmentsConsent === null) {
-        await db.plaidItem.update({
-          where: { id: plaidItem.id },
-          data:  { investmentsConsent: PlaidInvestmentsConsent.ENABLED },
-        });
-      }
-    } catch (holdingsErr) {
-      if (getPlaidErrorCode(holdingsErr) === "ADDITIONAL_CONSENT_REQUIRED") {
-        // Expected for Items linked without Investments consent — remember it
-        // so refresh never re-attempts until consent is granted.
-        await db.plaidItem.update({
-          where: { id: plaidItem.id },
-          data:  { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED },
-        });
-        console.log(
-          `[plaid] institution "${institution_name}" lacks Investments consent — holdings skipped until granted via Link update mode`,
-        );
-      } else {
-        console.warn(`[plaid] investmentsHoldingsGet failed (non-fatal): ${plaidErrorSummary(holdingsErr)}`);
-      }
-    }
-  }
+  const investmentsResult = await syncInvestmentsForItem({
+    accessToken:        access_token,
+    plaidItemId:        plaidItem.id,
+    institutionName:    institution_name,
+    investmentAccounts,
+    item:               accountsRes.data.item,
+    storedConsent:      plaidItem.investmentsConsent,
+  });
+  const holdingsImported = investmentsResult.holdingsSynced;
 
   // 9. Initial transaction sync.
   //

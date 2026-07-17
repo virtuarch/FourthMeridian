@@ -181,6 +181,54 @@ export async function findActiveAccountByIdentity(identity: ProviderIdentity, ex
   });
 }
 
+/**
+ * PROV-2 — the canonical identity→legacy resolver for the Plaid HOT PATHS
+ * (exchangeToken create, refresh update-only, and both holdings loops). It
+ * replaces four byte-identical inline copies. Resolves a Plaid external account
+ * id to its FinancialAccount, primarily via ProviderAccountIdentity, falling
+ * back to the legacy `plaidAccountId` column when no identity row exists yet.
+ *
+ * Returns the row INCLUDING soft-deleted, on purpose: the caller owns the
+ * `deletedAt` decision. exchangeToken RESTORES a soft-deleted match (updates it
+ * with `deletedAt: null`); refresh SKIPS it (`if (!fa || fa.deletedAt) continue`).
+ * That is why this is NOT `findActiveAccountByIdentity` above — that helper
+ * filters `deletedAt` for its restore-route callers, which must never touch an
+ * archived row. Two different operations over the same lookup; folding them would
+ * break one side. (Both share the D2 read-cutover posture: PAI first, legacy
+ * fallback, warn so coverage gaps are visible before the fallback is removed.)
+ *
+ * ── Warn-gating: the PROV-2 canonical decision ──────────────────────────────
+ * The coverage-gap warning fires ONLY when the legacy fallback hits an ACTIVE
+ * account. This resolves a documented drift: exchange warned UNCONDITIONALLY
+ * (tags D2-3C / D2-3F) — firing on every restore-on-reconnect of a
+ * previously-removed account — while refresh warned only on active accounts
+ * (D2-3E), reasoning that "an archived account hitting the legacy fallback is
+ * expected, not a coverage gap worth investigating." The refresh gating is the
+ * considered behavior and is adopted here: a soft-deleted fallback hit is
+ * expected (the account is archived; its identity row may have been cleaned up
+ * or predate the PAI dual-write), so warning on it is noise that trains
+ * operators to ignore the signal. Adopting it changes ONLY console output on the
+ * exchange path (one fewer warning per restored account) — never data or flow.
+ * The consolidated tag `[D2-3G]` supersedes D2-3C/3E/3F.
+ */
+export async function resolvePlaidAccountByExternalId(externalAccountId: string) {
+  const identity = await db.providerAccountIdentity.findFirst({
+    where:   { provider: ProviderType.PLAID, externalAccountId },
+    include: { financialAccount: true },
+  });
+  if (identity?.financialAccount) return identity.financialAccount;
+
+  const legacy = await db.financialAccount.findUnique({ where: { plaidAccountId: externalAccountId } });
+  if (legacy && legacy.deletedAt === null) {
+    console.warn(
+      `[plaid][D2-3G] ProviderAccountIdentity miss, legacy plaidAccountId hit — ` +
+      `financialAccountId=${legacy.id} externalAccountId=${externalAccountId}. ` +
+      `Coverage gap; investigate before removing fallback. (consolidates D2-3C/3E/3F)`,
+    );
+  }
+  return legacy;
+}
+
 export type AccountFingerprint = {
   ownerUserId:    string | null;
   institutionId?: string | null;
