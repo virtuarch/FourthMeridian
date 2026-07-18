@@ -42,8 +42,9 @@ function targetLabel(metadata: unknown, subjectUsername: string | null): string 
   if (subjectUsername) return subjectUsername;
   if (metadata && typeof metadata === "object") {
     const m = metadata as Record<string, unknown>;
-    // Non-PII tokens only: an operation's command/target, or a grant's area — never email.
-    for (const key of ["commandId", "targetJob", "area", "level"]) {
+    // Non-PII tokens only: an operation's command/target, a grant's area, or a
+    // connection's institution label — never email.
+    for (const key of ["institution", "commandId", "targetJob", "area", "level"]) {
       const v = m[key];
       if (typeof v === "string" && v.length > 0) return v;
     }

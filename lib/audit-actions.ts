@@ -173,6 +173,14 @@ export const AuditAction = {
   BETA_INVITATION_REVOKED:  "BETA_INVITATION_REVOKED",
   // PO-3C — the LAUNCH axis (development/beta/live), separate from the signup gate.
   PRODUCT_STATUS_CHANGED:   "PRODUCT_STATUS_CHANGED",
+  // PO-4A — Platform Operations per-connection controls. An operator triggered a
+  // resync of ONE customer connection (reuses the per-item sync body + lock +
+  // cooldown), or asked the customer to reauthorize (marks NEEDS_REAUTH, lights
+  // the existing owner reconnect prompt — NEVER itemRemove). Both carry
+  // performedByAdminId and only operational metadata (connectionId, provider,
+  // institution, outcome) — never financial content.
+  CONNECTION_RESYNC_TRIGGERED: "CONNECTION_RESYNC_TRIGGERED",
+  CONNECTION_REAUTH_REQUESTED: "CONNECTION_REAUTH_REQUESTED",
 
   // ── Platform access (PO1.0) ─────────────────────────────────────────────
   // Grant lifecycle on a platform area (user × area × level). Never free
@@ -291,6 +299,8 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.BETA_INVITATION_RESENT,
   AuditAction.BETA_INVITATION_REVOKED,
   AuditAction.PRODUCT_STATUS_CHANGED,
+  AuditAction.CONNECTION_RESYNC_TRIGGERED,
+  AuditAction.CONNECTION_REAUTH_REQUESTED,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
 ];

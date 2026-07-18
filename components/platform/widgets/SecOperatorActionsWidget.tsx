@@ -36,6 +36,8 @@ const ACTION_LABEL: Record<string, string> = {
   BETA_INVITATION_RESENT:       "Resent an invitation",
   BETA_INVITATION_REVOKED:      "Revoked an invitation",
   PRODUCT_STATUS_CHANGED:       "Changed product status",
+  CONNECTION_RESYNC_TRIGGERED:  "Resynced a connection",
+  CONNECTION_REAUTH_REQUESTED:  "Requested reauthorization",
   ACCOUNT_DEACTIVATED:          "Deactivated an account",
   ACCOUNT_REACTIVATED:          "Reactivated an account",
 };
