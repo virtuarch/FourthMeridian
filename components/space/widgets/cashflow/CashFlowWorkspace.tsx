@@ -1,71 +1,73 @@
 "use client";
 
 /**
- * components/space/widgets/cashflow/CashFlowWorkspace.tsx  (SD-6C)
+ * components/space/widgets/cashflow/CashFlowWorkspace.tsx  (SD-6C · editorial convergence)
  *
  * The Cash Flow Workspace — the SpaceShell → CashFlowWorkspace boundary. It
- * replaces the former stateless CashFlowPerspective composition with a real
- * workspace that:
+ * consumes the canonical composition contract and fans ONE windowed projection
+ * (buildCashFlowSpaceData, "composes, computes none") into every panel. That
+ * contract, the canonical As-of clock, the workspace-owned semantic-slice state
+ * (perspective + measure filter), the trust stamp/envelope, and every drill-down
+ * are UNCHANGED from the SD-6C extraction.
  *
- *   1. CONSUMES the canonical composition contract — it builds `CashFlowSpaceData`
- *      ONCE (buildCashFlowSpaceData, "composes, computes none") and feeds the SAME
- *      windowed projection into every panel: summary, history (calendar/cards),
- *      spending by category, income, debt payments, context, and trust. No panel
- *      re-windows or re-folds from raw transactions — the contract is the source.
- *   2. OWNS the workspace-local semantic-slice state — the perspective toggle
- *      (Cash Flow ⇄ Spending) and the measure filter — RELOCATED here from the
- *      host. Calendar/Cards mode, the All-Time year cursor, and every day/bucket
- *      drill live inside the child widgets (part of this workspace boundary).
+ * What changed here is PRESENTATION ONLY — the former 12-column GlassPanel grid is
+ * rebuilt in the Net Worth / prototype EDITORIAL idiom (the Debt & Investments
+ * redesigns): a stacked, generously-spaced read surface rather than a KPI card
+ * grid, with sidebar section anchors published like the other workspaces.
  *
- * Canonical TIME stays host-owned: `period` (derived from the SD-0B shell preset
- * + the explicit-drill bridge) and `onSelectPeriod` come in as props; this
- * workspace never owns a second date authority. `stamp` is the host-computed
- * completeness stamp (also the shell chip's source), passed straight to Insights
- * so the caveat and the chip can never disagree.
+ *   ① Summary   CashFlowHero (Net lede + trust + delta + perspective toggle) over
+ *               the headless CashFlowSummaryWidget breakdown (Cash In/Out tiles,
+ *               credit-card context, moved-not-spent / needs-classification).
+ *   ② Activity  The Cash Flow History widget (Calendar heatmap + Cards) — the
+ *               operational centerpiece, given a full-width Activity Block. Its
+ *               control cluster (mode toggle, Month/Quarter/Year, All-Time nav)
+ *               is UNTOUCHED.
+ *   ③ Spending  Spending by Category + its liquidity twin, Debt Payments.
+ *   ④ Income    Income by Source (perspective-aware).
+ *   ⑤ What changed  Deterministic Key Insights (no AI).
  *
- * Layout is byte-identical to the prior CashFlowPerspective grid (the 12-column
- * pattern, the same spans, mobile source order Summary → History → Spending →
- * Debt → Income → Insights); only the panel DATA SOURCE changed (contract slices
- * instead of per-widget re-projection). The calendar and every in-widget control
- * (perspective/measure chips, Calendar/Cards toggle, M/Q/Y selects, drill-downs)
- * are untouched — the heatmap-usability invariant.
+ * The calendar, the contract, DayFacts, the aggregation authorities, and the
+ * canonical time behaviour are all untouched — the heatmap-usability invariant.
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Waves } from "lucide-react";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
-import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import {
+  periodLabel,
+  periodRange,
+  isExplicitPeriod,
+  incomeSourceLabel,
+  type CashFlowPeriod,
+} from "@/lib/transactions/cash-flow";
+import { formatDate } from "@/lib/format";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
-import { incomeSourceLabel } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective as CashFlowPerspectiveMode } from "@/lib/transactions/cash-flow-projection";
-import { cashFlowStamp } from "@/lib/transactions/cash-flow-compare";
+import { cashFlowStamp, compareCashFlow } from "@/lib/transactions/cash-flow-compare";
 import { buildCashFlowSpaceData } from "@/lib/transactions/cash-flow-space-data";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
+import { Surface, Block } from "@/components/atlas/Surface";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { CashFlowSummaryWidget } from "@/components/space/widgets/CashFlowSummaryWidget";
 import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";
-import { CashFlowCategoryBreakdown } from "@/components/space/widgets/CashFlowCategoryBreakdown";
 import { DebtPaymentsWidget } from "@/components/space/widgets/DebtPaymentsWidget";
 import { CashFlowInsightsCard } from "./CashFlowInsightsCard";
+import { CashFlowCategoryLedger } from "./CashFlowCategoryLedger";
+import { CashFlowHero, type CashFlowHeroChange } from "./CashFlowHero";
+import { previousEquivalentPeriod } from "./cash-flow-insights";
 
-// The card language is exactly the SectionCard solid-lede treatment — GlassPanel
-// depth="thin" elevation="e2" radius="lg" p-4 with a text-sm font-semibold header.
-// `h-full min-w-0` lets items-stretch balance rows without fixed heights. This is
-// NOT a new card system — it reproduces the existing one so the panels read
-// identically to the prior CashFlowPerspective.
-function Panel({ title, subdued, children }: { title: string; subdued?: boolean; children: ReactNode }) {
-  return (
-    <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4 h-full min-w-0">
-      <p className={`text-sm font-semibold px-1 mb-2 ${subdued ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
-        {title}
-      </p>
-      {children}
-    </GlassPanel>
-  );
-}
+/** The Cash Flow workspace's section anchors — the sidebar's "what's inside". */
+const CASHFLOW_SECTIONS: SpaceChromeSection[] = [
+  { label: "Summary",      anchor: "cashflow-summary" },
+  { label: "Activity",     anchor: "cashflow-activity" },
+  { label: "Spending",     anchor: "cashflow-spending" },
+  { label: "Income",       anchor: "cashflow-income" },
+  { label: "What changed", anchor: "cashflow-insights" },
+];
 
 function LoadingCard() {
   return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;
@@ -78,6 +80,11 @@ function EmptyCard({ headline, sub }: { headline: string; sub: string }) {
       <p className="text-xs text-[var(--text-faint)] mt-1">{sub}</p>
     </div>
   );
+}
+
+/** The quiet in-Surface heading (Block owns the section label; this labels a sub-panel). */
+function SubHeading({ children }: { children: ReactNode }) {
+  return <p className="mb-2 px-1 text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">{children}</p>;
 }
 
 export function CashFlowWorkspace({
@@ -100,13 +107,13 @@ export function CashFlowWorkspace({
   /** Canonical compareTo (strictly-earlier) — anchors the then-vs-now comparison. */
   compareTo?:      string | null;
   onSelectPeriod:  (period: CashFlowPeriod) => void;
-  /** SD-6 gate — the workspace now OWNS its completeness stamp (computed below from
-   *  its own transactions + period) and emits the resulting trust envelope; the host
+  /** SD-6 gate — the workspace OWNS its completeness stamp (computed below from its
+   *  own transactions + period) and emits the resulting trust envelope; the host
    *  merely relays it to the shell chip (mirrors Wealth/Investments/Liquidity). */
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
 }) {
   // Workspace-local semantic slice — the perspective toggle + measure filter,
-  // relocated here from the host. The Summary / History widgets host the selector
+  // relocated here from the host. The Hero / History widgets host the selector
   // controls and drive this state through `changePerspective`.
   const [perspective, setPerspective] = useState<CashFlowPerspectiveMode>("liquidity");
   const [filterId, setFilterId] = useState<string>(DEFAULT_FILTER_ID);
@@ -117,50 +124,103 @@ export function CashFlowWorkspace({
 
   // The canonical As-of clock — the ONE anchor for every period→range resolution in
   // this workspace (the contract fold, the stamp, the calendar grid, the insights
-  // comparison). Replacing the former implicit `new Date()` (today) makes the whole
-  // Cash Flow window travel with asOf: periodRange(period, asOf).
+  // comparison, the hero delta). Replacing the former implicit `new Date()` (today)
+  // makes the whole Cash Flow window travel with asOf: periodRange(period, asOf).
   const asOfClock = useMemo(() => () => new Date(`${asOf}T00:00:00`), [asOf]);
 
   // THE composition boundary — one canonical projection of the selected window,
-  // fanned out to every panel. Null while transactions load (widgets show their own
-  // loading state via the null-transactions guard).
+  // fanned out to every panel. Null while transactions load.
   const data = useMemo(
     () => (transactions ? buildCashFlowSpaceData({ transactions, accounts, period, moneyCtx: txCtx, now: asOfClock }) : null),
     [transactions, accounts, period, txCtx, asOfClock],
   );
 
-  // Completeness stamp — RELOCATED here from the host (SD-6 gate): the workspace has
-  // everything the stamp needs (its own transactions + the canonical period), so it
-  // owns the ONE computation and feeds it to BOTH the Insights caveat (below) and the
-  // shell chip envelope (emitted up), which therefore can never disagree. Coverage is
-  // a property of the data, so the FULL history is stamped, not a period slice. Null
-  // while transactions load ⇒ the caveat is omitted and the chip shows static text.
+  // Completeness stamp — the workspace owns the ONE computation and feeds it to BOTH
+  // the Insights caveat and the shell chip envelope (emitted up), which therefore can
+  // never disagree. Coverage is a property of the data, so the FULL history is stamped.
   const stamp = useMemo(
     () => (transactions
       ? cashFlowStamp({ transactions: transactions as unknown as LiquidityTx[], period, now: asOfClock })
       : null),
     [transactions, period, asOfClock],
   );
-  useEffect(() => {
-    onEnvelopeChange(resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", cashFlowStamp: stamp }));
-  }, [stamp, onEnvelopeChange]);
+  // ONE trust envelope from the stamp — shared by the shell (onEnvelopeChange) and the
+  // hero's TrustIndicator, so the two can never disagree.
+  const envelope = useMemo(
+    () => resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", cashFlowStamp: stamp }),
+    [stamp],
+  );
+  useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
 
-  // Liquidity context for the income-panel drill filters (a pure selection over the
-  // contract's already-windowed rows — never a re-window or re-classification fold).
+  // Liquidity context for the income-panel drill filters + the hero delta (a pure
+  // selection / comparison over already-windowed rows — never a re-window or fold).
   const liqCtx = useMemo(() => tierResolver(accounts), [accounts]);
 
-  // ── Spending by Category — contract `outflowByCategory`, drilled over `rows`. ──
+  // Hero window delta — the perspective net change vs the comparison window, computed
+  // over the shared projection via compareCashFlow (the SAME then-vs-now authority the
+  // Insights "compare-net" bullet uses, so the two reconcile). The comparison window is
+  // canonical compareTo (SAME period at the compareTo anchor) when it is a DISTINCT prior
+  // baseline, else the sequential previous-equivalent period; null when neither is
+  // honestly derivable (e.g. WTD / rolling / All Time with no compareTo). Never invented.
+  const change = useMemo<CashFlowHeroChange | null>(() => {
+    if (!transactions || !data || data.rows.length === 0) return null;
+    const clock = asOfClock;
+    const primaryStart = (period === "ALL" || isExplicitPeriod(period)) ? null : periodRange(period, clock()).start;
+    const compareToClock =
+      compareTo && primaryStart && compareTo < primaryStart
+        ? () => new Date(`${compareTo}T00:00:00`)
+        : null;
+    const then = compareToClock ? period : previousEquivalentPeriod(period, clock());
+    if (!then) return null;
+    const cmp = compareCashFlow({
+      transactions: transactions as LiquidityTx[],
+      liqCtx,
+      then,
+      now: period,
+      perspective,
+      clock,
+      thenClock: compareToClock ?? undefined,
+      moneyCtx: txCtx,
+    });
+    const abs = cmp.delta.totals.net;
+    const fromNet = cmp.then.totals.net;
+    const pct = fromNet !== 0 ? (abs / Math.abs(fromNet)) * 100 : null;
+    const cmpRange = compareToClock ? periodRange(period, compareToClock()) : null;
+    const fromLabel = cmpRange
+      ? `${formatDate(cmpRange.start)} – ${formatDate(cmpRange.end)}`
+      : periodLabel(then);
+    return { abs, pct, fromLabel };
+  }, [transactions, data, period, compareTo, perspective, liqCtx, txCtx, asOfClock]);
+
+  const displayCurrency = txCtx?.target ?? DEFAULT_DISPLAY_CURRENCY;
+
+  // Publish section anchors to the sidebar (cleared on unmount).
+  const publishSections = useSpaceSectionsPublisher();
+  useEffect(() => {
+    publishSections(CASHFLOW_SECTIONS);
+    return () => publishSections([]);
+  }, [publishSections]);
+
+  // ── Spending by Category — contract `outflowByCategory`, drilled over `rows`.
+  //    CF-4: exploration via the Preview → LeftPanel → RightPanel ledger. ──
   function renderSpending(): ReactNode {
     if (data == null) return <LoadingCard />;
     if (data.rows.length === 0) {
       return <EmptyCard headline="No money moved in this period" sub="Spending by category appears once you have outflows." />;
     }
     return (
-      <CashFlowCategoryBreakdown
+      <CashFlowCategoryLedger
         items={data.outflowByCategory}
         ctx={txCtx}
-        cardGridClassName="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-2"
+        totalLabel="Total spending"
+        browserTitle="Spending categories"
+        browserEyebrow="Spending"
+        noun="categories"
+        detailEyebrow="Spending category"
+        shareLabel="Share of spending"
         sliceSubtitle="Spending in this category"
+        emptyHeadline="No spending in this period"
+        emptySubline="Spending by category appears once you have outflows."
         sliceFor={(item) => data.rows.filter((t) => t.category === item.id && (isCostFlow(t.flowType) || isRefund(t.flowType)))}
       />
     );
@@ -168,53 +228,67 @@ export function CashFlowWorkspace({
 
   // ── Income by Source — perspective-aware, from the contract's canonical slices
   //    (cashInByReason on the liquidity axis, incomeBySource on the economic axis).
-  //    Reproduces renderIncomeBySource exactly; the only computation is the pure
-  //    drill filter over the contract's windowed rows. ──
+  //    CF-4: same exploration ledger as Spending (consistency). ──
   function renderIncome(): ReactNode {
     if (data == null) return <LoadingCard />;
     if (perspective === "liquidity") {
       if (data.rows.length === 0) return <EmptyCard headline="No money moved in this period" sub="Cash in by source appears once cash arrives." />;
       return (
-        <div className="space-y-2">
-          <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Cash in by source</p>
-          <CashFlowCategoryBreakdown
-            items={data.cashInByReason.map((l) => ({ id: l.reason, label: l.label, value: l.amount }))}
-            ctx={txCtx}
-            totalLabel="Total cash in"
-            emptyHeadline="No cash arrived in this period"
-            emptySubline="Cash in by source appears once cash arrives."
-            sliceSubtitle="Cash in from this source"
-            sliceFor={(item) => (data.rows as LiquidityTx[]).filter((t) => {
-              const c = classifyLiquidity(t, liqCtx);
-              return c.effect === "CASH_IN" && c.reason === item.id;
-            })}
-          />
-        </div>
+        <CashFlowCategoryLedger
+          items={data.cashInByReason.map((l) => ({ id: l.reason, label: l.label, value: l.amount }))}
+          ctx={txCtx}
+          totalLabel="Total cash in"
+          browserTitle="Cash in by source"
+          browserEyebrow="Cash in"
+          noun="sources"
+          detailEyebrow="Cash in source"
+          shareLabel="Share of cash in"
+          sliceSubtitle="Cash in from this source"
+          emptyHeadline="No cash arrived in this period"
+          emptySubline="Cash in by source appears once cash arrives."
+          sliceFor={(item) => (data.rows as LiquidityTx[]).filter((t) => {
+            const c = classifyLiquidity(t, liqCtx);
+            return c.effect === "CASH_IN" && c.reason === item.id;
+          })}
+        />
       );
     }
     if (data.rows.length === 0) return <EmptyCard headline="No money moved in this period" sub="Income by source appears once you have inflows." />;
     return (
-      <div className="space-y-2">
-        <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Income by source</p>
-        <CashFlowCategoryBreakdown
-          items={data.incomeBySource}
-          ctx={txCtx}
-          totalLabel="Total income"
-          emptyHeadline="No income in this period"
-          emptySubline="Income by source appears once you have inflows."
-          sliceSubtitle="Income from this source"
-          sliceFor={(item) => data.rows.filter((t) => isIncome(t.flowType) && incomeSourceLabel(t) === item.id)}
-        />
-      </div>
+      <CashFlowCategoryLedger
+        items={data.incomeBySource}
+        ctx={txCtx}
+        totalLabel="Total income"
+        browserTitle="Income sources"
+        browserEyebrow="Income"
+        noun="sources"
+        detailEyebrow="Income source"
+        shareLabel="Share of income"
+        sliceSubtitle="Income from this source"
+        emptyHeadline="No income in this period"
+        emptySubline="Income by source appears once you have inflows."
+        sliceFor={(item) => data.rows.filter((t) => isIncome(t.flowType) && incomeSourceLabel(t) === item.id)}
+      />
     );
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch min-w-0">
-      {/* ① Cash Flow Summary — header names the active period. Fed the contract's
-           `summary` facts + `context` + windowed `rows`. */}
-      <div className="min-w-0 lg:col-span-5 xl:col-span-4">
-        <Panel title={`Cash Flow Summary · ${periodLabel(period)}`}>
+    <div className="space-y-8 sm:space-y-10 min-w-0">
+      {/* ① Summary — the editorial lede (Net + trust + delta + perspective toggle)
+           over the headless breakdown body (Cash In/Out tiles + movement context). */}
+      <section id="cashflow-summary" className="scroll-mt-20">
+        <CashFlowHero
+          facts={data?.summary}
+          perspective={perspective}
+          filterId={filterId}
+          onPerspectiveChange={changePerspective}
+          currency={displayCurrency}
+          period={period}
+          asOf={asOf}
+          change={change}
+          envelope={envelope}
+        />
+        <div className="mt-5">
           <CashFlowSummaryWidget
             transactions={transactions}
             period={period}
@@ -225,61 +299,73 @@ export function CashFlowWorkspace({
             windowRows={data?.rows}
             facts={data?.summary}
             context={data?.context}
+            hideHeadline
           />
-        </Panel>
-      </div>
+        </div>
+      </section>
 
-      {/* ② Cash Flow History — the calendar + its whole control cluster live inside,
-           byte-identical. Fed the contract's windowed `rows`, `daily` (calendar) and
-           `buckets` (cards). */}
-      <div className="min-w-0 lg:col-span-7 xl:col-span-5">
-        <Panel title="Cash Flow History">
-          <CashFlowHistoryWidget
-            transactions={transactions}
-            period={period}
-            now={asOfClock}
-            ctx={txCtx}
-            accounts={accounts}
-            onSelectPeriod={onSelectPeriod}
-            perspective={perspective}
-            filterId={filterId}
-            onPerspectiveChange={changePerspective}
-            windowRows={data?.rows}
-            daily={data?.daily}
-            buckets={data?.buckets}
-          />
-        </Panel>
-      </div>
+      {/* ② Activity — the Cash Flow History widget (Calendar heatmap + Cards), the
+           operational centerpiece. Its whole control cluster lives inside, untouched;
+           the Block supplies only the editorial header. Fed the contract's windowed
+           `rows`, `daily` (calendar) and `buckets` (cards). */}
+      <Block
+        id="cashflow-activity"
+        label="Activity"
+        action={<span className="text-[11px] text-[var(--text-faint)]">Daily net · click a day to inspect</span>}
+      >
+        <CashFlowHistoryWidget
+          transactions={transactions}
+          period={period}
+          now={asOfClock}
+          ctx={txCtx}
+          accounts={accounts}
+          onSelectPeriod={onSelectPeriod}
+          perspective={perspective}
+          filterId={filterId}
+          onPerspectiveChange={changePerspective}
+          windowRows={data?.rows}
+          daily={data?.daily}
+          buckets={data?.buckets}
+        />
+      </Block>
 
-      {/* ③ Right column — Spending by Category over its de-emphasized liquidity twin,
-           Debt Payments. */}
-      <div className="min-w-0 lg:col-span-6 xl:col-span-3 flex flex-col gap-4">
-        <Panel title="Spending by Category">
-          {renderSpending()}
-        </Panel>
-        <Panel title="Debt Payments" subdued>
-          <DebtPaymentsWidget
-            transactions={transactions}
-            period={period}
-            ctx={txCtx}
-            accounts={accounts}
-            windowRows={data?.rows}
-          />
-        </Panel>
-      </div>
+      {/* ③ Spending — Spending by Category over its de-emphasized liquidity twin,
+           Debt Payments. (CF-4 will fold the category list into a "View all →" panel;
+           for now the full-width Block + multi-column grid keeps it bounded.) */}
+      <Block
+        id="cashflow-spending"
+        label="Spending"
+        action={<span className="text-[11px] text-[var(--text-faint)]">Bar shows share of spend</span>}
+      >
+        <div className="grid gap-4 lg:grid-cols-2 items-start min-w-0">
+          <Surface className="p-4 min-w-0">
+            {renderSpending()}
+          </Surface>
+          <Surface className="p-4 min-w-0" tone="sunken">
+            <SubHeading>Debt payments</SubHeading>
+            <DebtPaymentsWidget
+              transactions={transactions}
+              period={period}
+              ctx={txCtx}
+              accounts={accounts}
+              windowRows={data?.rows}
+            />
+          </Surface>
+        </div>
+      </Block>
 
       {/* ④ Income by Source — perspective-aware (cash-in by reason / income by source). */}
-      <div className="min-w-0 lg:col-span-6 xl:col-span-7">
-        <Panel title="Income by Source">
+      <Block id="cashflow-income" label="Income by source">
+        <Surface className="p-4 min-w-0">
           {renderIncome()}
-        </Panel>
-      </div>
+        </Surface>
+      </Block>
 
-      {/* ⑤ Key Insights — deterministic then-vs-now observations (compareCashFlow),
+      {/* ⑤ What changed — deterministic then-vs-now observations (compareCashFlow),
            a separate two-window comparison the single-window contract does not own;
-           fed the host completeness `stamp`. */}
-      <div className="min-w-0 lg:col-span-12 xl:col-span-5">
-        <Panel title="Key Insights">
+           fed the completeness `stamp`. No AI. */}
+      <Block id="cashflow-insights" label="What changed">
+        <Surface className="p-4 min-w-0">
           <CashFlowInsightsCard
             transactions={transactions}
             accounts={accounts}
@@ -290,8 +376,8 @@ export function CashFlowWorkspace({
             txCtx={txCtx}
             stamp={stamp}
           />
-        </Panel>
-      </div>
+        </Surface>
+      </Block>
     </div>
   );
 }

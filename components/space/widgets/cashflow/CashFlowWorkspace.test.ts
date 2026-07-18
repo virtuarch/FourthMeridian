@@ -155,5 +155,51 @@ console.log("10. Trust OWNERSHIP — workspace owns the stamp AND emits its own 
     REND.includes("<CashFlowWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && DASH.includes("useActiveEnvelope"));
 }
 
+console.log("11. CF-4 — category exploration via Preview → LeftPanel → RightPanel");
+{
+  const LEDGER = read("components/space/widgets/cashflow/CashFlowCategoryLedger.tsx");
+  const DETAIL = read("components/space/widgets/cashflow/CashFlowCategoryDetail.tsx");
+
+  // The workspace mounts the exploration LEDGER for BOTH spending and income; the old
+  // always-expanded card grid (CashFlowCategoryBreakdown) is gone from the workspace.
+  check("workspace mounts CashFlowCategoryLedger for exploration", WS.includes("<CashFlowCategoryLedger"));
+  check("workspace no longer mounts the always-expanded CashFlowCategoryBreakdown", !WS.includes("CashFlowCategoryBreakdown"));
+  // Category data still flows from the contract slices (fed as props, not re-derived).
+  check("ledger is fed the contract's outflowByCategory / incomeBySource / cashInByReason",
+    WS.includes("items={data.outflowByCategory}") && WS.includes("items={data.incomeBySource}") && WS.includes("data.cashInByReason"));
+
+  // The ledger COMPOSES the Atlas panel primitives — it is NOT a bespoke CashFlow panel.
+  check("ledger composes Atlas panel primitives (no CashFlowPanel primitive)",
+    LEDGER.includes('from "@/components/atlas/panels"') && LEDGER.includes("<LeftPanel") && LEDGER.includes("<RightPanel"));
+  check("ledger uses the PanelHeader + PanelContent slots", LEDGER.includes("<PanelHeader") && LEDGER.includes("<PanelContent"));
+  check("no bespoke CashFlow*Panel primitive was created", !LEDGER.includes("CashFlowCategoryPanel") && !WS.includes("CashFlowCategoryPanel"));
+
+  // Preview cap + a "View all" affordance — no unbounded desktop list.
+  check("ledger caps the preview to top-N with a View-all affordance",
+    /topN/.test(LEDGER) && /View all/.test(LEDGER));
+
+  // NO new data path / NO new cash-flow calculation: the ledger + detail consume `items`
+  // and the caller's `sliceFor` rows — they never re-fold, re-window, or open a fetch/DB.
+  for (const banned of ["buildCashFlowSpaceData", "aggregateDayFacts(", "outflowByCategory(", "incomeBySource(", "filterByPeriod(", "projectDailyFacts("]) {
+    check(`ledger does not call ${banned} (data flows in as props)`, !LEDGER.includes(banned));
+    check(`detail does not call ${banned}`, !DETAIL.includes(banned));
+  }
+  for (const src of [LEDGER, DETAIL]) {
+    check("no fetch/DB path in the CF-4 surfaces", !/\bfetch\(/.test(src) && !src.includes("/api/") && !src.includes("prisma") && !/@\/lib\/(db|prisma)/.test(src));
+  }
+
+  // Deeper exploration reuses the EXISTING drill surface, not a new transaction list.
+  check("ledger composes the existing TransactionSliceDrawer for deep drill", LEDGER.includes("TransactionSliceDrawer"));
+
+  // Detail shows only existing data — no fabricated AI / forecast / merchant insight /
+  // per-category trend; the share is a ratio over figures already on screen. Scan the
+  // comment-stripped body so the doc comment's own "no AI, no forecast" disclaimer
+  // (which negates these very words) doesn't trip the guard.
+  const detailBody = DETAIL.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check("category detail invents no AI/forecast/merchant/trend surface",
+    !/forecast|prediction|\bAI\b|merchant insight|category trend/i.test(detailBody));
+  check("category detail derives share from the parent total (no new calc)", DETAIL.includes("total") && /value \/ total/.test(DETAIL));
+}
+
 if (failures > 0) { console.error(`\n${failures} CashFlowWorkspace check(s) failed`); process.exit(1); }
 console.log("\nAll CashFlowWorkspace checks passed");

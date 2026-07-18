@@ -73,6 +73,12 @@ interface Props {
   windowRows?:          Transaction[];
   facts?:               DayFacts;
   context?:             CashFlowContext;
+  /** CF-1 — when the editorial CashFlowHero owns the lede (headline Net + the
+   *  perspective toggle), this widget renders only its BREAKDOWN body — the Cash
+   *  In / Cash Out (or Income / Spending) tiles, the credit-card context, and the
+   *  moved-not-spent / needs-classification sections. Default false ⇒ the full
+   *  standalone widget (the SectionRegistry `cash_flow_summary` path is unchanged). */
+  hideHeadline?:        boolean;
 }
 
 /** One expandable side (Cash In or Cash Out) with its reason breakdown. Each
@@ -99,15 +105,18 @@ function AxisTile({
         disabled={!canExpand}
         onClick={() => setOpen((v) => !v)}
         onPointerDown={(e) => e.stopPropagation()}
-        className={`w-full flex items-center justify-between gap-2 ${canExpand ? "cursor-pointer" : "cursor-default"}`}
+        className={`w-full flex items-center justify-between gap-2 min-w-0 ${canExpand ? "cursor-pointer" : "cursor-default"}`}
       >
-        <span className="flex items-center gap-1 text-xs" style={{ color: "var(--text-muted)" }}>
+        {/* CF-5 — responsive number discipline: the label may truncate (it never
+            carries meaning past its first word) so the figure keeps its full digits;
+            the figure shrinks a step on narrow widths and never wraps or overflows. */}
+        <span className="flex items-center gap-1 text-xs min-w-0" style={{ color: "var(--text-muted)" }}>
           {canExpand && (open
-            ? <ChevronDown size={12} className="text-[var(--text-faint)]" />
-            : <ChevronRight size={12} className="text-[var(--text-faint)]" />)}
-          {label}
+            ? <ChevronDown size={12} className="shrink-0 text-[var(--text-faint)]" />
+            : <ChevronRight size={12} className="shrink-0 text-[var(--text-faint)]" />)}
+          <span className="truncate">{label}</span>
         </span>
-        <span className="text-lg font-semibold tabular-nums" style={{ color }}>{sign}{fmt(total, ctx)}</span>
+        <span className="shrink-0 text-base sm:text-lg font-semibold tabular-nums" style={{ color }} title={`${sign}${fmt(total, ctx)}`}>{sign}{fmt(total, ctx)}</span>
       </button>
 
       {open && canExpand && (
@@ -153,7 +162,7 @@ function ContextRow({ label, value, onOpen }: { label: string; value: string; on
   );
 }
 
-export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, perspective: controlledPerspective, onPerspectiveChange, windowRows, facts: factsProp, context: contextProp }: Props) {
+export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, perspective: controlledPerspective, onPerspectiveChange, windowRows, facts: factsProp, context: contextProp, hideHeadline = false }: Props) {
   // CF-3 — perspective toggle (Cash Flow ⇄ Spending). Controlled by the shared
   // workspace perspective when provided; otherwise self-managed for standalone use.
   const [localPerspective, setLocalPerspective] = useState<CashFlowPerspective>("liquidity");
@@ -237,20 +246,28 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
 
   return (
     <div className="space-y-3">
-      {/* CF-3 — perspective toggle (the small reused control; no measure dropdown here). */}
-      <div className="flex items-center justify-end">
-        <CashFlowFilterControls perspective={perspective} filterId={DEFAULT_FILTER_ID} onChange={(p, id) => changePerspective(p, id)} compact />
-      </div>
+      {/* CF-1 — the lede (perspective toggle + the Net headline) is rendered here
+          ONLY in the standalone (SectionRegistry) path. In the workspace the
+          editorial CashFlowHero owns both, and this widget renders only the
+          breakdown body below (hideHeadline). */}
+      {!hideHeadline && (
+        <>
+          {/* CF-3 — perspective toggle (the small reused control; no measure dropdown here). */}
+          <div className="flex items-center justify-end">
+            <CashFlowFilterControls perspective={perspective} filterId={DEFAULT_FILTER_ID} onChange={(p, id) => changePerspective(p, id)} compact />
+          </div>
 
-      {/* Primary: Net (perspective-dependent) */}
-      <div>
-        <p className="text-3xl font-bold" style={{ color: net >= 0 ? "var(--accent-positive)" : "var(--accent-negative)" }}>
-          {net >= 0 ? "+" : "−"}{fmt(Math.abs(net), ctx)}
-        </p>
-        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-          {economic ? "net spending this period (incl. credit-card purchases)" : "net cash this period"}
-        </p>
-      </div>
+          {/* Primary: Net (perspective-dependent) */}
+          <div className="min-w-0">
+            <p className="text-3xl font-bold tabular-nums" style={{ color: net >= 0 ? "var(--accent-positive)" : "var(--accent-negative)" }}>
+              {net >= 0 ? "+" : "−"}{fmt(Math.abs(net), ctx)}
+            </p>
+            <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+              {economic ? "net spending this period (incl. credit-card purchases)" : "net cash this period"}
+            </p>
+          </div>
+        </>
+      )}
 
       {economic ? (
         /* Economic: Income vs All spending — includes credit-card purchases. */
