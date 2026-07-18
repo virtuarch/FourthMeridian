@@ -59,6 +59,8 @@ interface SegmentedControlProps<T extends string> {
    * (see the per-button aria-label below).
    */
   labelVisibility?: "always" | "activeOnly";
+  /** Opt-in customer-mobile ergonomics: 40px targets and selected-item auto-scroll. */
+  touchOptimized?: boolean;
   "aria-label"?: string;
 }
 
@@ -68,6 +70,7 @@ export function SegmentedControl<T extends string>({
   onChange,
   className = "",
   labelVisibility = "always",
+  touchOptimized = false,
   ...rest
 }: SegmentedControlProps<T>) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -94,8 +97,9 @@ export function SegmentedControl<T extends string>({
   // the option set) changes, so the highlight never flashes at a stale rect.
   useLayoutEffect(() => {
     measure();
+    if (touchOptimized) itemRefs.current.get(value)?.scrollIntoView({ inline: "nearest", block: "nearest" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, options.length]);
+  }, [value, options.length, touchOptimized]);
 
   useEffect(() => {
     window.addEventListener("resize", measure);
@@ -184,6 +188,7 @@ export function SegmentedControl<T extends string>({
             onClick={() => onChange(opt.id)}
             className={[
               "relative z-10 shrink-0 whitespace-nowrap rounded-[var(--radius-full)] px-4 py-1.5 text-xs font-medium",
+              touchOptimized ? "min-h-10 lg:min-h-0" : "",
               "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-hairline-strong)]",
               // M3-Reset — prototype treatment: active = full-white text on the

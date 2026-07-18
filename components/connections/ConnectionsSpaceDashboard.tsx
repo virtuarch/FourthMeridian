@@ -43,6 +43,7 @@ export function ConnectionsSpaceDashboard({ status, accountsByConnectionId }: Co
 
   return (
     <SpaceShell
+      mobileOptimized
       variant="utility"
       title="Connections"
       subtitle="Manage the institutions and providers connected to Fourth Meridian."

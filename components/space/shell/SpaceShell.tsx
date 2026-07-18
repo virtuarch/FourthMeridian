@@ -80,6 +80,9 @@ export interface SpaceShellProps {
    *  (e.g. Connections' Connect / Add-wallet controls). Ignored in `"space"`. */
   headerActions?: ReactNode;
 
+  /** Customer surfaces opt into phone-sized rail targets without changing Platform frames. */
+  mobileOptimized?: boolean;
+
   /** The workspace viewport — the active tab's content. Owned by the host. */
   children: ReactNode;
 }
@@ -95,6 +98,7 @@ export function SpaceShell({
   onSelectTab,
   variant = "space",
   headerActions,
+  mobileOptimized = false,
   children,
 }: SpaceShellProps) {
   const isUtility = variant === "utility";
@@ -111,6 +115,7 @@ export function SpaceShell({
       value={activeTab}
       onChange={onSelectTab}
       labelVisibility="always"
+      touchOptimized={mobileOptimized}
     />
   );
 
@@ -137,7 +142,7 @@ export function SpaceShell({
           <div className="lg:hidden mb-5 flex items-start justify-between gap-3">
             <div className="min-w-0">
               <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
-              <p className="truncate text-[13px] text-[var(--text-muted)]">{subtitle}</p>
+              <p className={mobileOptimized ? "line-clamp-2 text-[13px] text-[var(--text-muted)]" : "truncate text-[13px] text-[var(--text-muted)]"}>{subtitle}</p>
             </div>
             <div className="shrink-0">
               <SpaceControls currencyControl={currencyControl} onManage={onManage} />

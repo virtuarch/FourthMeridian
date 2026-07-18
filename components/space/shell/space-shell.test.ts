@@ -59,7 +59,7 @@ type _RailOption = Expect<Equal<keyof SpaceShellRailOption, "id" | "label" | "ic
 type _SlotApiKeys = Expect<Equal<
   keyof SpaceShellProps,
   | "overlays" | "title" | "subtitle" | "currencyControl" | "onManage"
-  | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "children"
+  | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "mobileOptimized" | "children"
 >>;
 // The variant discriminator + its optional header-actions slot.
 type _Variant       = Expect<Equal<SpaceShellProps["variant"], "space" | "utility" | undefined>>;

@@ -115,7 +115,7 @@ export function ManageSpaceModal({
             <button
               key={t.id}
               onClick={() => setActiveTab(t.id)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs font-medium whitespace-nowrap transition-colors shrink-0 ${
+              className={`flex min-h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-sm)] px-3 text-xs font-medium transition-colors lg:min-h-0 lg:px-2.5 lg:py-1.5 ${
                 activeTab === t.id
                   ? t.id === "danger"
                     ? "bg-[rgba(237,82,71,.16)] text-[var(--coral-400)]"

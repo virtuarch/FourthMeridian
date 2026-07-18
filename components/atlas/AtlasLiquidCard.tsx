@@ -39,7 +39,7 @@ const DEFAULT_BG = "/oval-world.png";
 const SETTINGS = { refraction: 0.5, chromaticAberration: 0.12, radius: 20 };
 
 const SHELL =
-  "atlas-liquid-card group block w-full no-underline rounded-[20px] " +
+  "atlas-liquid-card group block w-full min-w-0 overflow-hidden no-underline rounded-[20px] " +
   "transition-transform duration-[var(--dur-base)] ease-[var(--ease-standard)] " +
   "motion-safe:hover:-translate-y-[1px] motion-safe:active:translate-y-0 " +
   "motion-safe:active:scale-[0.99] active:duration-[var(--dur-instant)] " +

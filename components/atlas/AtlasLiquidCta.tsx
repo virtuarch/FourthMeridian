@@ -42,7 +42,7 @@ const GEOMETRY_CSS =
   ".atlas-liquid-cta--auto .lg-card { width: auto; }";
 
 const INTERACTION =
-  "no-underline rounded-[10px] " +
+  "min-w-0 overflow-hidden no-underline rounded-[10px] " +
   "transition-transform duration-[var(--dur-base)] ease-[var(--ease-standard)] " +
   "motion-safe:hover:-translate-y-[1px] " +
   "motion-safe:active:translate-y-0 motion-safe:active:scale-[0.97] active:duration-[var(--dur-instant)] " +

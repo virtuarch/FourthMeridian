@@ -61,22 +61,22 @@ function Kpi({
 }) {
   return (
     <DataCard padding="var(--space-4)" className="min-w-0">
-      <div className="flex items-start gap-3 min-w-0">
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2.5 min-w-0 sm:flex sm:gap-3">
         <div
-          className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+          className="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center shrink-0"
           style={{ background: tint, color: valueColor ?? "var(--text-secondary)" }}
           aria-hidden
         >
           {icon}
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 contents sm:block">
           <p className="text-[11px] font-semibold uppercase tracking-widest truncate" style={{ color: "var(--text-muted)" }}>
             {title}
           </p>
-          <p className="text-lg font-bold tabular-nums leading-tight truncate" style={{ color: valueColor ?? "var(--text-primary)" }}>
+          <p className="col-span-2 mt-2 text-base sm:mt-0 sm:text-lg font-bold tabular-nums leading-tight whitespace-nowrap" style={{ color: valueColor ?? "var(--text-primary)" }}>
             {value}
           </p>
-          <p className="text-[11px] truncate" style={{ color: "var(--text-faint)" }}>{subtitle}</p>
+          <p className="col-span-2 text-[11px] truncate" style={{ color: "var(--text-faint)" }}>{subtitle}</p>
         </div>
       </div>
     </DataCard>

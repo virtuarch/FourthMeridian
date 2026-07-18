@@ -104,7 +104,7 @@ export function InlineField({
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="flex items-center gap-1.5 text-xs font-semibold text-white disabled:opacity-50 px-2.5 py-1 rounded-lg transition-colors"
+                className="flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-white transition-colors disabled:opacity-50 lg:min-h-0 lg:py-1"
                 style={{ background: "var(--accent-info)" }}
               >
                 {saving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
@@ -112,7 +112,7 @@ export function InlineField({
               </button>
               <button
                 onClick={handleCancel}
-                className="flex items-center gap-1.5 text-xs font-medium hover:text-[var(--text-primary)] px-2.5 py-1 rounded-lg transition-colors"
+                className="flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs font-medium transition-colors hover:text-[var(--text-primary)] lg:min-h-0 lg:py-1"
                 style={{ color: "var(--text-secondary)" }}
               >
                 <X size={11} /> Cancel
@@ -131,8 +131,9 @@ export function InlineField({
 
       {!editing && !readOnly && (
         <button
+          aria-label={`Edit ${label}`}
           onClick={() => { setDraft(current); setEditing(true); }}
-          className="mt-4 p-1.5 rounded-lg hover:text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] transition-colors shrink-0"
+          className="mt-2 grid size-10 shrink-0 place-items-center rounded-lg transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-secondary)] lg:mt-4 lg:size-auto lg:p-1.5"
           style={{ color: "var(--text-faint)" }}
         >
           <Pencil size={13} />

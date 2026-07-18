@@ -687,6 +687,7 @@ export function SpaceDashboard({
 
   return (
     <SpaceShell
+      mobileOptimized
       // Global shell overlays — the shell owns WHERE they mount (above the
       // frame); the host owns their open state + what they do.
       overlays={
