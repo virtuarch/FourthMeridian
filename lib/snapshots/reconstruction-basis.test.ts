@@ -15,7 +15,7 @@
  * excluded pending "to match posted balance"; cash now matches.
  */
 
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import {
   reconstructDailyCashBalances,
@@ -205,6 +205,41 @@ console.log("6. Reconstruction is deterministic / idempotent");
   const ser = (m: Map<string, Map<string, number>>) =>
     [...m.entries()].map(([d, inner]) => `${d}:${[...inner.entries()].join(",")}`).join("|");
   check("two runs over identical inputs are byte-identical (idempotent rebuild)", ser(run1) === ser(run2));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. ONE AUTHORITY, KNOWN CONSUMERS — the balance walk-back primitives
+//    (reconstructDailyCashBalances / reconstructDailyLiabilityBalances) may be
+//    imported ONLY by the authorized reconstruction paths. A new file importing
+//    them is a NEW mini-authority that would bypass this posted-only basis — this
+//    guard fails the build so it is caught at review, not rediscovered in prod.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("7. Walk-back primitives have an allowlisted importer set (no hidden mini-authority)");
+{
+  const WALK = /reconstructDaily(Cash|Liability)Balances/;
+  // Where the walk primitives are DEFINED, its own tests/fixtures, and the three
+  // sanctioned reconstruction paths (M2 backfill, M3 regen, the as-of resolver core).
+  const ALLOWED = new Set([
+    "lib/snapshots/backfill-core.ts",          // the definition
+    "lib/snapshots/backfill.ts",               // M2
+    "lib/snapshots/regenerate-history.ts",     // M3 + amendments
+    "lib/data/accounts-asof.core.ts",          // as-of resolver → debt/liquidity lenses + splice
+  ]);
+  const walk = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(dir)) {
+      const p = join(dir, e);
+      if (statSync(p).isDirectory()) walk(p, out);
+      else if (p.endsWith(".ts") && !p.endsWith(".test.ts") && !p.includes(".fixtures.")) out.push(p);
+    }
+    return out;
+  };
+  const offenders = walk(join(process.cwd(), "lib"))
+    .filter((abs) => WALK.test(readFileSync(abs, "utf8")))
+    .map((abs) => abs.slice(process.cwd().length + 1))
+    .filter((rel) => !ALLOWED.has(rel));
+  check("no unauthorized file references the cash/liability walk primitives",
+    offenders.length === 0,
+    offenders.length ? `NEW reconstruction path(s): ${offenders.join(", ")} — route through getAccountsAsOf or add to the allowlist deliberately` : "");
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
