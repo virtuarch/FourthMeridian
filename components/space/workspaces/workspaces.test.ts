@@ -89,9 +89,17 @@ console.log("3. The section subsystem is the ONE home for SectionCard + the regi
   check("host imports SectionCard from the card module + SectionRegistry from the registry module",
     DASH.includes('from "@/components/space/sections/SectionCard"') &&
     DASH.includes('from "@/components/space/sections/SectionRegistry"'));
-  check("Accounts/Overview compose the shared SpaceSectionStack",
-    WS("AccountsWorkspace.tsx").includes("<SpaceSectionStack") &&
+  check("Overview composes the shared SpaceSectionStack",
     WS("OverviewWorkspace.tsx").includes("<SpaceSectionStack"));
+  // Accounts migrated OUT of the generic section stack into the editorial ledger
+  // idiom — the tab mounts AccountsLedger (summary + grouped ledger + LeftPanel/
+  // RightPanel exploration over the Space's accounts), no longer a section stack.
+  check("Accounts is the editorial ledger (AccountsLedger), not a section stack",
+    WS("AccountsWorkspace.tsx").includes("<AccountsLedger") &&
+    !WS("AccountsWorkspace.tsx").includes("<SpaceSectionStack"));
+  check("the Accounts ledger composes the Atlas exploration panels",
+    read("components", "space", "widgets", "accounts", "AccountsLedger.tsx").includes("<LeftPanel") &&
+    read("components", "space", "widgets", "accounts", "AccountsLedger.tsx").includes("<RightPanel"));
   // Activity migrated OUT of the generic section stack into the editorial timeline
   // idiom — it composes the hero + rail feed + RightPanel over the canonical feed,
   // and no longer renders a section stack.

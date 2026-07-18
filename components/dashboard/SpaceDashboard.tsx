@@ -981,15 +981,11 @@ export function SpaceDashboard({
           </div>
         )}
 
-        {/* Accounts — a section-backed tab (SD-7): the shared section stack + its
-            empty state, no hero/doorways. */}
+        {/* Accounts — a fixed rail tab, now the editorial AccountsLedger (ground-truth
+            list of the Space's financial objects). Consumes the SAME shared data +
+            conversion context the section cards use, via the card bundle. */}
         {activeTab === "ACCOUNTS" && (
-          <AccountsWorkspace
-            sections={sectionsForTab}
-            canManage={canManage}
-            onManage={() => setShowManage(true)}
-            card={sectionCardBundle}
-          />
+          <AccountsWorkspace card={sectionCardBundle} />
         )}
 
         {/* Activity — a first-class rail tab: the editorial Activity timeline
