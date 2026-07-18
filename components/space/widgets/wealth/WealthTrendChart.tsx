@@ -3,53 +3,53 @@
 /**
  * components/space/widgets/wealth/WealthTrendChart.tsx
  *
- * Surface ② — the dominant historical chart (upgraded from WealthNetWorthChart).
- * A metric trajectory across the shared range, marking As Of and Compare To. It
- * owns NO time state: the range is the shell's; clicking a point sets the shared
- * As Of through the injected callback.
+ * The honesty chart — recreated 1:1 from the prototype's TrendChart
+ * (prototype components/charts/TrendChart.tsx) over production's WealthResult
+ * data. It is the dominant surface of the Net Worth body and sits near the top.
  *
- * Honesty (regression-critical, preserved):
- *   - points ONLY at real snapshot dates — never interpolated;
- *   - real gaps stay visible: the line AND the area fill break at genuine gaps
- *     (contiguous daily history renders as one unbroken run, so this is a no-op
- *     for dense data and an honest break for sparse data);
- *   - estimated snapshots read as hollow dashed markers;
- *   - As Of solid guide + Compare To dashed guide;
- *   - honest legend + "gaps are real" note; non-scaling strokes.
+ * Prototype plotting, preserved exactly:
+ *   - MEASURED width (ResizeObserver) + fixed pixel height — never a stretched
+ *     viewBox, so markers stay circular and labels keep correct metrics;
+ *   - the line BREAKS at real gaps AND at a basis change (observed↔reconstructed);
+ *   - reconstructed runs are dashed + faint with HOLLOW markers — visibly a
+ *     different kind of fact, no legend needed to read it;
+ *   - the unknown is drawn as a hatched "NO DATA" band, not as nothing;
+ *   - y-scale computed ONLY from real points — no interpolation across the hole;
+ *   - three axis labels (shape is the message, dates are orientation);
+ *   - HTML tooltip that will not snap across a gap.
  *
- * Added (S7): responsive dominant height; low-alpha Meridian area fill under the
- * PRIMARY series only; minimal y-ticks + gridlines + month x-labels; a pointer/
- * touch-scrub tooltip (replacing title-attr tooltips; aria-labels kept); the
- * Compare-period overlay (result.chart.compareSeries) mapped by offset onto the
- * primary x-range so the two shapes superimpose; and a metric switcher whose
- * choice is surfaced via onMetricChange so the host can URL-sync it.
+ * Production capabilities kept intact (the widget's own behaviour), restyled onto
+ * this aesthetic: the metric switcher (Net Worth / Assets / Liabilities / Liquid),
+ * the As-Of solid guide + Compare-To dashed guide + compare-period overlay, and
+ * clickable snapshot dots that set the shared As-Of via onSelectAsOf. The chart
+ * owns no time state — the range/asOf/compare are the shell's.
  */
 
-import { useState } from "react";
-import { formatCurrency, formatCompactCurrency } from "@/lib/format";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { formatCompactCurrency } from "@/lib/format";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
-import { SegmentedControl } from "@/components/atlas/SegmentedControl";
-import { WealthCard, WealthUnavailable } from "./wealth-ui";
-
-const PAD_X = 5;   // % horizontal padding
-const TOP = 10;    // % top padding
-const BOT = 84;    // % baseline (x-labels live below in the overlay)
+import { Chips } from "@/components/atlas/Chips";
+import { WealthUnavailable } from "./wealth-ui";
 
 export type WealthMetricKey = "netWorth" | "totalAssets" | "totalLiabilities" | "liquidNetWorth";
 
-const METRICS: { key: WealthMetricKey; label: string; title: string; good: "up" | "down" }[] = [
-  { key: "netWorth",         label: "Net Worth",   title: "net worth",       good: "up" },
-  { key: "totalAssets",      label: "Assets",      title: "total assets",    good: "up" },
-  { key: "totalLiabilities", label: "Liabilities", title: "total liabilities", good: "down" },
-  { key: "liquidNetWorth",   label: "Liquid NW",   title: "liquid net worth", good: "up" },
+const METRICS: { key: WealthMetricKey; label: string; title: string }[] = [
+  { key: "netWorth",         label: "Net Worth",   title: "net worth" },
+  { key: "totalAssets",      label: "Assets",      title: "total assets" },
+  { key: "totalLiabilities", label: "Liabilities", title: "total liabilities" },
+  { key: "liquidNetWorth",   label: "Liquid NW",   title: "liquid net worth" },
 ];
+
+const H = 264;
+const PAD_T = 16;
+const PAD_B = 26;
 
 function ts(date: string): number {
   return Date.parse(`${date}T00:00:00.000Z`);
 }
 
-/** Median day-spacing across consecutive points (robust gap scale). */
+/** Median day-spacing across consecutive points — a robust gap scale. */
 function medianSpacingDays(times: number[]): number {
   if (times.length < 2) return 1;
   const diffs = times.slice(1).map((t, i) => (t - times[i]) / 86_400_000).sort((a, b) => a - b);
@@ -57,58 +57,124 @@ function medianSpacingDays(times: number[]): number {
   return diffs.length % 2 ? diffs[mid] : (diffs[mid - 1] + diffs[mid]) / 2;
 }
 
-/** Contiguous runs of point indices; a new run starts at a genuine time gap. */
-function detectRuns(times: number[]): number[][] {
-  if (times.length === 0) return [];
-  const median = medianSpacingDays(times);
-  const gapDays = Math.max(median * 3, median + 2);
-  const runs: number[][] = [[0]];
-  for (let i = 1; i < times.length; i++) {
-    const spanDays = (times[i] - times[i - 1]) / 86_400_000;
-    if (spanDays > gapDays) runs.push([i]);
-    else runs[runs.length - 1].push(i);
+interface Pt { date: string; t: number; value: number; estimated: boolean }
+interface Run { points: Pt[]; basis: "observed" | "reconstructed" }
+
+/**
+ * Split into contiguous runs, breaking on (a) a real date hole and (b) a change
+ * of basis. Adjacent runs SHARE the boundary point across a basis change (so the
+ * line stays connected where knowledge is connected, only its character changes)
+ * but NEVER across a hole (there is nothing to connect). The transition segment
+ * belongs to the INCOMING basis — the segment leading into reconstructed
+ * territory is itself reconstructed and should look it.
+ */
+function toRuns(pts: Pt[], gapDays: number): Run[] {
+  const runs: Run[] = [];
+  let cur: Run | null = null;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const prev = pts[i - 1];
+    const hole = prev ? (p.t - prev.t) / 86_400_000 > gapDays : false;
+    const basis: Run["basis"] = p.estimated ? "reconstructed" : "observed";
+    const basisChanged = prev ? (prev.estimated ? "reconstructed" : "observed") !== basis : false;
+    if (!cur || hole || basisChanged) {
+      cur = { points: [p], basis };
+      runs.push(cur);
+      if (basisChanged && !hole && prev) cur.points.unshift(prev);
+    } else {
+      cur.points.push(p);
+    }
   }
-  return runs;
+  return runs.filter((r) => r.points.length > 0);
 }
 
 export function WealthTrendChart({
   result,
   currency,
-  onSelectAsOf,
   metric: controlledMetric,
   onMetricChange,
 }: {
-  result:         WealthResult;
-  currency:       string;
-  onSelectAsOf?:  (date: string) => void;
-  /** Controlled metric (host URL-syncs it in S8); falls back to internal state. */
-  metric?:        WealthMetricKey;
+  result:          WealthResult;
+  currency:        string;
+  metric?:         WealthMetricKey;
   onMetricChange?: (m: WealthMetricKey) => void;
 }) {
   const [internalMetric, setInternalMetric] = useState<WealthMetricKey>("netWorth");
+  const wrap = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState(640);
   const [hover, setHover] = useState<number | null>(null);
 
   const metric = controlledMetric ?? internalMetric;
   const metricDef = METRICS.find((m) => m.key === metric) ?? METRICS[0];
-  const setMetric = (m: WealthMetricKey) => {
-    setInternalMetric(m);
-    onMetricChange?.(m);
-  };
-  // Both WealthChartPoint and WealthState carry the four metric fields.
-  const sel = (p: Record<WealthMetricKey, number>) => p[metric];
-
-  const pts = result.chart.points;
-  const compareSeries = result.chart.compareSeries;
+  const setMetric = (m: WealthMetricKey) => { setInternalMetric(m); onMetricChange?.(m); };
 
   const switcher = (
-    <SegmentedControl<WealthMetricKey>
+    <Chips
       options={METRICS.map((m) => ({ id: m.key, label: m.label }))}
       value={metric}
       onChange={setMetric}
-      aria-label="Chart metric"
-      className="max-w-full"
+      ariaLabel="Chart metric"
     />
   );
+
+  // Measure rather than stretch — non-uniform scaling warps markers into ovals.
+  useLayoutEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setW(entry.contentRect.width));
+    ro.observe(el);
+    setW(el.getBoundingClientRect().width);
+    return () => ro.disconnect();
+  }, []);
+
+  const rawPts = result.chart.points;
+
+  const geom = useMemo(() => {
+    const pts: Pt[] = rawPts.map((p) => ({
+      date: p.date,
+      t: ts(p.date),
+      value: p[metric],
+      estimated: p.isEstimated,
+    }));
+    if (pts.length === 0) return null;
+
+    const times = pts.map((p) => p.t);
+    const tMin = times[0];
+    const tMax = times[times.length - 1];
+    const tSpan = tMax - tMin || 1;
+
+    // Y-scale from real points ONLY — no interpolation across the unknown, and
+    // padded so the line never kisses the frame.
+    const values = pts.map((p) => p.value);
+    const lo = Math.min(...values);
+    const hi = Math.max(...values);
+    const span = hi - lo || 1;
+    const yLo = lo - span * 0.18;
+    const yHi = hi + span * 0.14;
+
+    const x = (t: number) => (pts.length === 1 ? w / 2 : ((t - tMin) / tSpan) * w);
+    const y = (v: number) => PAD_T + (1 - (v - yLo) / (yHi - yLo)) * (H - PAD_T - PAD_B);
+
+    const gapDays = Math.max(medianSpacingDays(times) * 3, medianSpacingDays(times) + 2);
+    const runs = toRuns(pts, gapDays);
+
+    const line = (run: Run) =>
+      run.points.map((p, i) => `${i === 0 ? "M" : "L"}${x(p.t).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
+    const area = (run: Run) => {
+      if (run.points.length < 2) return "";
+      const first = run.points[0];
+      const last = run.points[run.points.length - 1];
+      return `${line(run)} L${x(last.t).toFixed(1)},${H - PAD_B} L${x(first.t).toFixed(1)},${H - PAD_B} Z`;
+    };
+
+    // The hole as a region rather than an absence — derived from the data.
+    const gaps: Array<{ x0: number; x1: number }> = [];
+    for (let i = 1; i < pts.length; i++) {
+      if ((pts[i].t - pts[i - 1].t) / 86_400_000 > gapDays) gaps.push({ x0: x(pts[i - 1].t), x1: x(pts[i].t) });
+    }
+
+    return { pts, x, y, runs, line, area, gaps, last: pts[pts.length - 1] };
+  }, [rawPts, metric, w]);
 
   const subtitle =
     result.chart.compareDate
@@ -117,242 +183,158 @@ export function WealthTrendChart({
         ? `As of ${formatWealthDate(result.chart.asOfDate)}`
         : `${metricDef.title} over time`;
 
-  if (pts.length === 0) {
+  function onMove(e: React.PointerEvent) {
+    if (!geom) return;
+    const rect = wrap.current?.getBoundingClientRect();
+    if (!rect) return;
+    const px = e.clientX - rect.left;
+    let best: number | null = null;
+    let bestD = Infinity;
+    geom.pts.forEach((p, i) => {
+      const d = Math.abs(geom.x(p.t) - px);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    // Don't snap across the hole — inside a gap the honest answer is "nothing".
+    setHover(bestD < 20 ? best : null);
+  }
+
+  const header = (
+    <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
+      <div className="min-w-0">
+        <h2 className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">Balance history</h2>
+        <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{subtitle}</p>
+      </div>
+      {switcher}
+    </div>
+  );
+
+  if (!geom) {
     return (
-      <WealthCard title={`How has my ${metricDef.title} changed?`} subtitle={subtitle} right={switcher}>
+      <section>
+        {header}
         <WealthUnavailable message="No snapshot history in this range yet. Widen the range or connect accounts to build history." />
-      </WealthCard>
+      </section>
     );
   }
 
-  const times = pts.map((p) => ts(p.date));
-  const tMin = times[0];
-  const tMax = times[times.length - 1];
-  const tSpan = tMax - tMin || 1;
-
-  // Shared y-scale across BOTH series so the overlay's shape is comparable.
-  const allVals = [...pts.map(sel), ...compareSeries.map(sel)];
-  const vMin = Math.min(...allVals);
-  const vMax = Math.max(...allVals);
-  const vSpan = vMax - vMin || 1;
-
-  const xPct = (t: number) => (pts.length === 1 ? 50 : PAD_X + ((100 - 2 * PAD_X) * (t - tMin)) / tSpan);
-  const yPct = (v: number) => BOT - ((BOT - TOP) * (v - vMin)) / vSpan;
-
-  // Compare overlay: map its own window onto the primary x-range (offset align).
-  const cTimes = compareSeries.map((p) => ts(p.date));
-  const cMin = cTimes[0];
-  const cMax = cTimes[cTimes.length - 1];
-  const cSpan = (cMax ?? 0) - (cMin ?? 0) || 1;
-  const xPctCompare = (t: number) =>
-    compareSeries.length === 1 ? 50 : PAD_X + ((100 - 2 * PAD_X) * (t - cMin)) / cSpan;
-
-  const runs = detectRuns(times);
-
-  const asOfX    = result.chart.asOfDate ? xPct(ts(result.chart.asOfDate)) : null;
-  const compareX = result.chart.compareDate ? xPct(ts(result.chart.compareDate)) : null;
-
-  // Minimal axes — 4 y-ticks + month x-labels (first point of each new month).
-  const yTicks = Array.from({ length: 4 }, (_, i) => vMin + (vSpan * i) / 3);
-  const monthLabels: { x: number; label: string }[] = [];
-  let lastMonth = "";
-  for (const p of pts) {
-    const ym = p.date.slice(0, 7);
-    if (ym !== lastMonth) {
-      lastMonth = ym;
-      const d = new Date(`${p.date}T00:00:00.000Z`);
-      const label = d.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }) +
-        (times.length && (tMax - tMin) / 86_400_000 > 400 ? ` '${String(d.getUTCFullYear()).slice(2)}` : "");
-      monthLabels.push({ x: xPct(ts(p.date)), label });
-    }
-  }
-  const thinnedLabels = monthLabels.length > 7
-    ? monthLabels.filter((_, i) => i % Math.ceil(monthLabels.length / 7) === 0)
-    : monthLabels;
-
-  const asOfValue    = result.asOfState.found ? sel(result.asOfState) : null;
-  const compareValue = result.compareState?.found ? sel(result.compareState) : null;
-
-  const hoverPt = hover !== null ? pts[hover] : null;
-
-  function handlePointer(e: React.PointerEvent<HTMLDivElement>) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    if (rect.width === 0) return;
-    const xTarget = ((e.clientX - rect.left) / rect.width) * 100;
-    let best = 0, bestD = Infinity;
-    pts.forEach((p, i) => {
-      const d = Math.abs(xPct(ts(p.date)) - xTarget);
-      if (d < bestD) { bestD = d; best = i; }
-    });
-    setHover(best);
-  }
+  const hoverPt = hover !== null ? geom.pts[hover] : null;
 
   return (
-    <WealthCard
-      title={`How has my ${metricDef.title} changed?`}
-      subtitle={subtitle}
-      right={switcher}
-    >
-      {/* Compact readout — the As Of value and, when present, the "was" value. */}
-      <div className="flex items-baseline justify-end gap-2 mb-2 min-h-[1.25rem]">
-        {asOfValue !== null && (
-          <span className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">
-            {formatCurrency(asOfValue, currency)}
-          </span>
-        )}
-        {compareValue !== null && (
-          <span className="text-[11px] tabular-nums text-[var(--text-faint)]">
-            was {formatCurrency(compareValue, currency)}
-          </span>
-        )}
-      </div>
+    <section>
+      {header}
 
-      <div
-        className="relative w-full h-[260px] sm:h-[380px]"
-        onPointerMove={handlePointer}
-        onPointerLeave={() => setHover(null)}
-        style={{ touchAction: "pan-y" }}
-      >
-        {/* Gridlines + line + fill + guides (stretched viewBox; strokes stay crisp). */}
-        <svg className="absolute inset-0 w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
-          {/* Hairline gridlines at each y-tick. */}
-          {yTicks.map((v, i) => (
-            <line key={i} x1={PAD_X} x2={100 - PAD_X} y1={yPct(v)} y2={yPct(v)}
-              stroke="var(--border-hairline)" strokeWidth={1} vectorEffect="non-scaling-stroke" />
-          ))}
+      <div className="relative">
+        <div ref={wrap} className="relative touch-pan-y" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+          <svg width="100%" height={H} className="block overflow-visible" role="img" aria-label={`${metricDef.title} over time`}>
+            <defs>
+              <linearGradient id="wtc-fill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="var(--meridian-400)" stopOpacity="0.18" />
+                <stop offset="100%" stopColor="var(--meridian-400)" stopOpacity="0" />
+              </linearGradient>
+              <linearGradient id="wtc-fill-recon" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="var(--meridian-400)" stopOpacity="0.10" />
+                <stop offset="100%" stopColor="var(--meridian-400)" stopOpacity="0" />
+              </linearGradient>
+              <pattern id="wtc-hatch" width="5" height="5" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+                <line x1="0" y1="0" x2="0" y2="5" stroke="var(--text-muted)" strokeWidth="1" strokeOpacity="0.30" />
+              </pattern>
+            </defs>
 
-          {/* Compare-period overlay — dashed, faint, no fill (only when honest). */}
-          {compareSeries.length >= 2 && (
-            <polyline
-              points={compareSeries.map((p) => `${xPctCompare(ts(p.date)).toFixed(2)},${yPct(sel(p)).toFixed(2)}`).join(" ")}
-              fill="none" stroke="var(--text-faint)" strokeWidth={1.25} strokeDasharray="3 3"
-              strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke"
-            />
+            {/* The unknown, drawn as a thing rather than as nothing. */}
+            {geom.gaps.map((g, i) => (
+              <g key={i}>
+                <rect x={g.x0} y={PAD_T - 4} width={g.x1 - g.x0} height={H - PAD_T - PAD_B + 4} fill="url(#wtc-hatch)" />
+                <line x1={g.x0} y1={PAD_T - 4} x2={g.x0} y2={H - PAD_B} stroke="var(--border-hairline-strong)" strokeWidth="1" strokeDasharray="2 3" />
+                <line x1={g.x1} y1={PAD_T - 4} x2={g.x1} y2={H - PAD_B} stroke="var(--border-hairline-strong)" strokeWidth="1" strokeDasharray="2 3" />
+                <text x={(g.x0 + g.x1) / 2} y={H - PAD_B - 8} textAnchor="middle" className="fill-[var(--text-muted)] text-[9px] uppercase" style={{ letterSpacing: "0.08em" }}>
+                  no data
+                </text>
+              </g>
+            ))}
+
+            {/* Baseline */}
+            <line x1="0" y1={H - PAD_B} x2={w} y2={H - PAD_B} stroke="var(--border-hairline)" strokeWidth="1" />
+
+            {geom.runs.map((run, i) => (
+              <g key={i}>
+                {run.points.length > 1 && (
+                  <path d={geom.area(run)} fill={run.basis === "observed" ? "url(#wtc-fill)" : "url(#wtc-fill-recon)"} />
+                )}
+                <path
+                  d={geom.line(run)}
+                  fill="none"
+                  stroke="var(--meridian-400)"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeOpacity={run.basis === "observed" ? 1 : 0.6}
+                  strokeDasharray={run.basis === "reconstructed" ? "4 3" : undefined}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </g>
+            ))}
+
+            {/* Reconstructed points get hollow markers. */}
+            {geom.pts.filter((p) => p.estimated).map((p) => (
+              <circle key={p.date} cx={geom.x(p.t)} cy={geom.y(p.value)} r="2.5" fill="var(--bg-base)" stroke="var(--meridian-400)" strokeWidth="1.25" strokeOpacity="0.7" />
+            ))}
+
+            {/* The last point — the always-on marker. */}
+            <circle cx={geom.x(geom.last.t)} cy={geom.y(geom.last.value)} r="3.5" fill="var(--meridian-400)" />
+            <circle cx={geom.x(geom.last.t)} cy={geom.y(geom.last.value)} r="7" fill="var(--meridian-400)" fillOpacity="0.16" />
+
+            {hover !== null && hoverPt && (
+              <g pointerEvents="none">
+                <line x1={geom.x(hoverPt.t)} y1={PAD_T - 4} x2={geom.x(hoverPt.t)} y2={H - PAD_B} stroke="var(--border-hairline-strong)" strokeWidth="1" />
+                <circle cx={geom.x(hoverPt.t)} cy={geom.y(hoverPt.value)} r="4" fill={hoverPt.estimated ? "var(--bg-base)" : "var(--meridian-400)"} stroke="var(--meridian-400)" strokeWidth="1.5" />
+              </g>
+            )}
+          </svg>
+
+          {/* HTML tooltip — real text, can sit outside the SVG clip. */}
+          {hoverPt && (
+            <div className="pointer-events-none absolute top-0 z-10 -translate-x-1/2" style={{ left: Math.min(Math.max(geom.x(hoverPt.t), 62), w - 62) }}>
+              <div className="rounded-[var(--radius-sm)] border border-[var(--border-hairline-strong)] px-2.5 py-1.5 shadow-[var(--shadow-e3)]" style={{ background: "var(--glass-thick)" }}>
+                <p className="text-sm font-medium tabular-nums text-[var(--text-primary)]">
+                  {formatCompactCurrency(hoverPt.value, currency)}
+                </p>
+                <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                  {formatWealthDate(hoverPt.date)}
+                  {hoverPt.estimated && <span className="text-[var(--text-secondary)]">· rebuilt</span>}
+                </p>
+              </div>
+            </div>
           )}
-
-          {/* Primary series — per-run area fill (never bridges a real gap). */}
-          {runs.map((run, ri) => {
-            if (run.length < 2) return null;
-            const first = pts[run[0]], last = pts[run[run.length - 1]];
-            const d = [
-              `M ${xPct(ts(first.date)).toFixed(2)},${yPct(sel(first)).toFixed(2)}`,
-              ...run.slice(1).map((idx) => `L ${xPct(ts(pts[idx].date)).toFixed(2)},${yPct(sel(pts[idx])).toFixed(2)}`),
-              `L ${xPct(ts(last.date)).toFixed(2)},${BOT}`,
-              `L ${xPct(ts(first.date)).toFixed(2)},${BOT}`,
-              "Z",
-            ].join(" ");
-            return <path key={`fill-${ri}`} d={d} fill="var(--meridian-400)" fillOpacity={0.1} stroke="none" />;
-          })}
-
-          {/* Primary series — per-run line (breaks at genuine gaps). */}
-          {runs.map((run, ri) =>
-            run.length >= 2 ? (
-              <polyline key={`line-${ri}`}
-                points={run.map((idx) => `${xPct(ts(pts[idx].date)).toFixed(2)},${yPct(sel(pts[idx])).toFixed(2)}`).join(" ")}
-                fill="none" stroke="var(--meridian-400)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round"
-                vectorEffect="non-scaling-stroke" />
-            ) : null
-          )}
-
-          {/* Compare To dashed guide + As Of solid guide. */}
-          {compareX !== null && (
-            <line x1={compareX} x2={compareX} y1={TOP - 2} y2={BOT + 2} stroke="var(--text-faint)"
-              strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
-          )}
-          {asOfX !== null && (
-            <line x1={asOfX} x2={asOfX} y1={TOP - 2} y2={BOT + 2} stroke="var(--accent-info)"
-              strokeWidth={1.25} vectorEffect="non-scaling-stroke" />
-          )}
-        </svg>
-
-        {/* y-tick labels (compact currency), top-anchored to each gridline. */}
-        <div className="absolute inset-0 pointer-events-none">
-          {yTicks.map((v, i) => (
-            <span key={i} className="absolute left-0 -translate-y-1/2 text-[10px] tabular-nums text-[var(--text-faint)]"
-              style={{ top: `${yPct(v)}%` }}>
-              {formatCompactCurrency(v, currency)}
-            </span>
-          ))}
-          {/* month x-labels along the baseline. */}
-          {thinnedLabels.map((m, i) => (
-            <span key={i} className="absolute -translate-x-1/2 text-[10px] text-[var(--text-faint)]"
-              style={{ left: `${m.x}%`, top: `${BOT + 4}%` }}>
-              {m.label}
-            </span>
-          ))}
         </div>
 
-        {/* Clickable snapshot dots (round; aria-labels only — no title tooltips). */}
-        <div className="absolute inset-0">
-          {pts.map((p, i) => {
-            const left = xPct(ts(p.date));
-            const top = yPct(sel(p));
-            const isAsOf = p.date === result.chart.asOfDate;
-            const isCompare = p.date === result.chart.compareDate;
-            const isHover = i === hover;
-            const dot = (
-              <span
-                className="block rounded-full"
-                style={{
-                  width: isAsOf || isHover ? 11 : 7,
-                  height: isAsOf || isHover ? 11 : 7,
-                  background: p.isEstimated ? "transparent" : isAsOf ? "var(--accent-info)" : isCompare ? "var(--text-secondary)" : "var(--meridian-400)",
-                  border: p.isEstimated
-                    ? "1.5px dashed var(--meridian-400)"
-                    : isAsOf ? "2px solid var(--surface-inset)" : "none",
-                  boxShadow: isAsOf ? "0 0 0 2px var(--accent-info)" : isHover ? "0 0 0 2px var(--meridian-400)" : "none",
-                }}
-              />
-            );
-            const commonStyle: React.CSSProperties = { left: `${left}%`, top: `${top}%`, transform: "translate(-50%, -50%)" };
-            const label = `${formatWealthDate(p.date)} · ${formatCurrency(sel(p), currency)}${p.isEstimated ? " · reconstructed" : ""}`;
-            return onSelectAsOf ? (
-              <button key={p.date} type="button" onClick={() => onSelectAsOf(p.date)}
-                aria-label={`Set As Of to ${label}`}
-                className="absolute p-1 -m-1 rounded-full hover:scale-110 transition-transform"
-                style={commonStyle}>
-                {dot}
-              </button>
-            ) : (
-              <span key={p.date} className="absolute" style={commonStyle} aria-label={label}>{dot}</span>
-            );
-          })}
+        {/* Axis — three labels; the shape is the message, dates are orientation. */}
+        <div className="mt-1 flex justify-between text-[11px] text-[var(--text-muted)]">
+          <span>{formatWealthDate(geom.pts[0].date)}</span>
+          <span>{formatWealthDate(geom.pts[Math.floor(geom.pts.length / 2)].date)}</span>
+          <span>{formatWealthDate(geom.last.date)}</span>
         </div>
 
-        {/* Pointer/touch tooltip — date · value · Reconstructed. */}
-        {hoverPt && (
-          <div
-            className="absolute z-10 pointer-events-none -translate-x-1/2 -translate-y-full rounded-lg border px-2 py-1 text-[11px] whitespace-nowrap shadow-lg"
-            style={{
-              left: `${xPct(ts(hoverPt.date))}%`,
-              top: `${yPct(sel(hoverPt)) - 3}%`,
-              background: "var(--surface-raised, var(--surface-inset))",
-              borderColor: "var(--border-hairline-strong)",
-            }}
-          >
-            <span className="text-[var(--text-muted)]">{formatWealthDate(hoverPt.date)}</span>
-            <span className="mx-1.5 font-semibold tabular-nums text-[var(--text-primary)]">
-              {formatCurrency(sel(hoverPt), currency)}
+        {/* Legend — honest markers only (Observed / Reconstructed / Never observed),
+            matching the prototype. Shows a run type only when it's present. */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--text-muted)]">
+          <span className="inline-flex items-center gap-1.5">
+            <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" /></svg>
+            Observed
+          </span>
+          {geom.pts.some((p) => p.estimated) && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" stroke="var(--meridian-400)" strokeWidth="1.75" strokeOpacity="0.6" strokeDasharray="4 3" /></svg>
+              Reconstructed
             </span>
-            {hoverPt.isEstimated && <span className="text-[var(--accent-warning)]">Reconstructed</span>}
-          </div>
-        )}
+          )}
+          {geom.gaps.length > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <svg width="16" height="8" aria-hidden><rect width="16" height="8" fill="url(#wtc-hatch)" /></svg>
+              Never observed
+            </span>
+          )}
+        </div>
       </div>
-
-      {/* Legend — honest markers + gap note. */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-[11px] text-[var(--text-faint)]">
-        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--accent-info)" }} /> As of</span>
-        {result.chart.compareDate && (
-          <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--text-secondary)" }} /> Compare to</span>
-        )}
-        {compareSeries.length >= 2 && (
-          <span className="inline-flex items-center gap-1.5"><span className="inline-block h-0 w-4 border-t border-dashed" style={{ borderColor: "var(--text-faint)" }} /> Compare period</span>
-        )}
-        {pts.some((p) => p.isEstimated) && (
-          <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full border border-dashed" style={{ borderColor: "var(--meridian-400)" }} /> Reconstructed</span>
-        )}
-        <span>Gaps between points are real — history isn&apos;t interpolated.</span>
-      </div>
-    </WealthCard>
+    </section>
   );
 }

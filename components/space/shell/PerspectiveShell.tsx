@@ -81,7 +81,6 @@ export function PerspectiveShell(props: Props) {
           today={props.today}
           envelope={props.envelope}
         />
-        <div className="border-t" style={{ borderColor: "var(--border-hairline)" }} aria-hidden />
         <CashFlowPeriodSelector value={props.presetValue} onChange={props.onSelectPreset} />
       </div>
     </div>

@@ -12,36 +12,9 @@
 
 import { formatCurrency } from "@/lib/format";
 
-/** Question-led card shell matching the app's rounded-2xl / surface-inset cards. */
-export function WealthCard({
-  title,
-  subtitle,
-  right,
-  className = "",
-  children,
-}: {
-  title:     string;
-  subtitle?: React.ReactNode;
-  right?:    React.ReactNode;
-  className?: string;
-  children:  React.ReactNode;
-}) {
-  return (
-    <section
-      className={["rounded-2xl border p-4 sm:p-5", className].join(" ")}
-      style={{ background: "var(--surface-inset)", borderColor: "var(--border-hairline)" }}
-    >
-      <header className="flex items-start justify-between gap-3 mb-3">
-        <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h3>
-          {subtitle && <p className="text-[11px] text-[var(--text-faint)] mt-0.5">{subtitle}</p>}
-        </div>
-        {right}
-      </header>
-      {children}
-    </section>
-  );
-}
+// WealthCard (the old rounded-2xl glass-ish card shell) was retired in the Net
+// Worth design-language migration — every wealth surface now composes the
+// prototype's Surface/Block/Figure kit (components/atlas/Surface.tsx) directly.
 
 /** Signed money string, e.g. "+$24,130" / "−$5,730". */
 export function formatSigned(value: number, currency: string): string {

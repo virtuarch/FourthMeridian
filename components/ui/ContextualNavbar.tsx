@@ -40,7 +40,7 @@ import {
   LogOut,
   type LucideIcon,
 } from "lucide-react";
-import { useSpaceChrome, type SpaceChromeSpace } from "@/lib/space/space-chrome-context";
+import { useSpaceChrome, type SpaceChromeSpace, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { SpaceControls } from "@/components/space/shell/SpaceControls";
 import {
   GLOBAL_NAV,
@@ -63,13 +63,19 @@ const NAV_ICONS: Record<GlobalDestId, LucideIcon> = {
 type PlatformItem = { id: string; name: string; platformArea: string };
 
 export function ContextualNavbar() {
-  const { space, currencyControl } = useSpaceChrome();
+  const { space, currencyControl, sections, activeSection, setActiveSection } = useSpaceChrome();
 
   return (
     <aside className="hidden w-[212px] shrink-0 lg:block">
       <div className="sticky top-12 flex max-h-[calc(100dvh-3rem)] flex-col gap-5 overflow-y-auto py-6 pr-5">
         {space ? (
-          <SpaceMode space={space} currencyControl={currencyControl} />
+          <SpaceMode
+            space={space}
+            currencyControl={currencyControl}
+            sections={sections}
+            activeSection={activeSection}
+            onSelectSection={setActiveSection}
+          />
         ) : (
           <GlobalMode />
         )}
@@ -237,11 +243,17 @@ function GlobalMode() {
 function SpaceMode({
   space,
   currencyControl,
+  sections,
+  activeSection,
+  onSelectSection,
 }: {
   space: SpaceChromeSpace;
   currencyControl: React.ReactNode;
+  sections: SpaceChromeSection[];
+  activeSection: string;
+  onSelectSection: (label: string) => void;
 }) {
-  const { identity, sections, activeSection, onSelectSection, onManage, onLeave, onLeaveSpace } = space;
+  const { identity, onManage, onLeave, onLeaveSpace } = space;
 
   return (
     <>

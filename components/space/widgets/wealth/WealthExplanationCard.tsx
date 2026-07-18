@@ -15,7 +15,8 @@
 
 import { FileSearch } from "lucide-react";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
-import { WealthCard, WealthUnavailable, formatSigned } from "./wealth-ui";
+import { Surface, Block } from "@/components/atlas/Surface";
+import { WealthUnavailable, formatSigned } from "./wealth-ui";
 
 export function WealthExplanationCard({
   result,
@@ -31,9 +32,9 @@ export function WealthExplanationCard({
 
   if (!explanation) {
     return (
-      <WealthCard title="Explanation">
+      <Block label="Explanation">
         <WealthUnavailable message="Add a Compare To date above to see a plain-language explanation of the change." />
-      </WealthCard>
+      </Block>
     );
   }
 
@@ -50,19 +51,21 @@ export function WealthExplanationCard({
   }
 
   return (
-    <WealthCard title="Explanation">
-      <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
-        {explanation}{dominant}
-      </p>
-      {onViewEvidence && (
-        <button
-          type="button"
-          onClick={onViewEvidence}
-          className="mt-3 inline-flex items-center gap-1.5 text-[11px] text-[var(--accent-info)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] rounded"
-        >
-          <FileSearch size={12} aria-hidden /> View explanation and evidence
-        </button>
-      )}
-    </WealthCard>
+    <Block label="Explanation">
+      <Surface tone="sunken" className="px-4 py-4">
+        <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
+          {explanation}{dominant}
+        </p>
+        {onViewEvidence && (
+          <button
+            type="button"
+            onClick={onViewEvidence}
+            className="mt-3 inline-flex items-center gap-1.5 text-[11px] text-[var(--accent-info)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] rounded"
+          >
+            <FileSearch size={12} aria-hidden /> View explanation and evidence
+          </button>
+        )}
+      </Surface>
+    </Block>
   );
 }

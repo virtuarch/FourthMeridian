@@ -211,9 +211,6 @@ export function PlatformSpaceDashboard({ area, areaLabel, spaceName, accessLevel
     publishCurrencyControl(null);
     publishSpace({
       identity: { name: spaceName, subtitle: chromeSubtitle },
-      sections: [],
-      activeSection: "",
-      onSelectSection: () => {},
       onLeave: () => router.push("/dashboard/spaces"),
     });
     return () => publishSpace(null);

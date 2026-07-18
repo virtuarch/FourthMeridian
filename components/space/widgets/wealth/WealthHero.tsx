@@ -15,19 +15,11 @@
  * Presentation only — every number comes from the WealthResult.
  */
 
-import { ArrowUpRight } from "lucide-react";
 import { formatCurrency } from "@/lib/format";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
-import { WealthCard, WealthUnavailable, DeltaBadge } from "./wealth-ui";
-
-type SecondaryKey = "totalAssets" | "totalLiabilities" | "liquidNetWorth";
-
-const SECONDARY: { key: SecondaryKey; label: string; good: "up" | "down" }[] = [
-  { key: "totalAssets",      label: "Total Assets",      good: "up" },
-  { key: "totalLiabilities", label: "Total Liabilities", good: "down" },
-  { key: "liquidNetWorth",   label: "Liquid Net Worth",  good: "up" },
-];
+import { Figure } from "@/components/atlas/Surface";
+import { WealthUnavailable, DeltaBadge } from "./wealth-ui";
 
 function toneColor(tone: "neutral" | "positive" | "warning"): string {
   return tone === "positive"
@@ -40,12 +32,9 @@ function toneColor(tone: "neutral" | "positive" | "warning"): string {
 export function WealthHero({
   result,
   currency,
-  onSwitchLens,
 }: {
-  result:        WealthResult;
-  currency:      string;
-  /** Switch the active perspective (shell time context stays fixed — P1). */
-  onSwitchLens?: (lensId: string) => void;
+  result:   WealthResult;
+  currency: string;
 }) {
   const { asOfState, deltas, compareState, completeness } = result;
   const compareLabel =
@@ -66,21 +55,31 @@ export function WealthHero({
     </span>
   );
 
+  // Eyebrow + confidence — the quiet label above the figure (prototype hero).
+  const eyebrow = (
+    <div className="flex items-center justify-between gap-3">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Net worth</p>
+      {confidenceChip}
+    </div>
+  );
+
   if (!asOfState.found) {
     return (
-      <WealthCard title="Net worth" subtitle={asOfLabel} right={confidenceChip}>
+      <section>
+        {eyebrow}
         <WealthUnavailable message="No history for this date. Pick a later As Of, or connect accounts to build history." />
-      </WealthCard>
+      </section>
     );
   }
 
   return (
-    <WealthCard title="Net worth" subtitle={asOfLabel} right={confidenceChip}>
-      {/* The single net-worth headline. */}
-      <div className="space-y-1">
-        <div className="text-3xl sm:text-4xl font-semibold tabular-nums text-[var(--text-primary)] leading-none">
-          {formatCurrency(asOfState.netWorth, currency)}
-        </div>
+    // The hero — no card, no border. The most important figure doesn't need a
+    // container to be found (prototype: solid surfaces are for the rows below).
+    <section>
+      {eyebrow}
+
+      <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
+        <Figure value={formatCurrency(asOfState.netWorth, currency)} size="hero" className="sm:text-5xl leading-none" />
         {deltas ? (
           <DeltaBadge
             abs={deltas.netWorth.abs}
@@ -91,45 +90,10 @@ export function WealthHero({
             className="!text-xs"
           />
         ) : (
-          <span className="text-[11px] text-[var(--text-faint)]">
-            Add a Compare To date above to see the change.
-          </span>
+          <span className="text-[11px] text-[var(--text-muted)]">Add a Compare To date above to see the change.</span>
         )}
       </div>
-
-      {/* Secondary rows — label (+ Liquidity link) left, value over delta right.
-          Stacking the value/delta keeps every row legible even in the hero's
-          narrow 4-column desktop slot (no truncated labels, no overlap). */}
-      <div className="mt-4 divide-y" style={{ borderColor: "var(--border-hairline)" }}>
-        {SECONDARY.map(({ key, label, good }) => {
-          const value = asOfState[key];
-          const d = deltas ? deltas[key] : null;
-          const isLiquid = key === "liquidNetWorth";
-          return (
-            <div key={key} className="flex items-start justify-between gap-3 py-2">
-              <div className="min-w-0">
-                <div className="text-xs text-[var(--text-secondary)] truncate">{label}</div>
-                {isLiquid && onSwitchLens && (
-                  <button
-                    type="button"
-                    onClick={() => onSwitchLens("liquidity")}
-                    className="mt-0.5 inline-flex items-center gap-0.5 text-[11px] text-[var(--accent-info)] hover:underline"
-                    title="Open the Liquidity perspective (keeps this date)"
-                  >
-                    Liquidity <ArrowUpRight size={11} aria-hidden />
-                  </button>
-                )}
-              </div>
-              <div className="flex flex-col items-end shrink-0">
-                <span className="text-sm font-semibold tabular-nums text-[var(--text-primary)]">
-                  {formatCurrency(value, currency)}
-                </span>
-                {d && <DeltaBadge abs={d.abs} pct={d.pct} currency={currency} goodDirection={good} />}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </WealthCard>
+      {asOfLabel && <p className="mt-2.5 text-sm text-[var(--text-secondary)]">{asOfLabel}</p>}
+    </section>
   );
 }

@@ -980,9 +980,6 @@ export function SpaceDashboard({
         updatedLabel: chromeUpdated,
         shared: spaceType !== "PERSONAL",
       },
-      sections: [],
-      activeSection: "",
-      onSelectSection: () => {},
       onManage: canManage ? () => setShowManage(true) : undefined,
       onLeave: () => router.push("/dashboard/spaces"),
       onLeaveSpace: canLeave ? () => setConfirmLeave(true) : undefined,
@@ -1338,7 +1335,6 @@ export function SpaceDashboard({
                   ctx={widgetCtx}
                   metric={chartMetric}
                   onMetricChange={handleMetricChange}
-                  onSelectAsOf={shell.actions.setAsOf}
                   onSwitchLens={handleSwitchLens}
                   onEnvelopeChange={setWealthEnvelope}
                   backfillInProgress={snapshotsBackfilling}

@@ -36,13 +36,14 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Info, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import {
   computeWealthTimeMachine,
   type WealthResult,
 } from "@/lib/wealth/wealth-time-machine";
 import { convertWealthSnapshots } from "@/lib/wealth/display-conversion";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";
 import type { WealthAdapterAccount } from "@/components/space/widgets/wealth-adapters";
@@ -54,6 +55,18 @@ import { WealthCompositionCard } from "./WealthCompositionCard";
 import { WealthExplanationCard } from "./WealthExplanationCard";
 import { WealthUnavailable } from "./wealth-ui";
 
+/** The Net Worth workspace's own section anchors — what the sidebar shows as
+ *  "what's inside" this workspace (each maps to a slot id below). This is the
+ *  per-workspace declaration the sections nav reads; every perspective gets its
+ *  own list as its body is designed. */
+const WEALTH_SECTIONS: SpaceChromeSection[] = [
+  { label: "Summary",         anchor: "wealth-summary" },
+  { label: "Balance history", anchor: "wealth-trend" },
+  { label: "Composition",     anchor: "wealth-composition" },
+  { label: "What moved it",   anchor: "wealth-ledger" },
+  { label: "Explanation",     anchor: "wealth-explanation" },
+];
+
 export function WealthWorkspace({
   snapshots,
   snapshotCurrency,
@@ -63,8 +76,6 @@ export function WealthWorkspace({
   ctx,
   metric,
   onMetricChange,
-  onSelectAsOf,
-  onSwitchLens,
   onEnvelopeChange,
   backfillInProgress,
 }: {
@@ -78,7 +89,6 @@ export function WealthWorkspace({
   ctx?:             ConversionContext;
   metric?:          WealthMetricKey;
   onMetricChange?:  (m: WealthMetricKey) => void;
-  onSelectAsOf?:    (date: string) => void;
   onSwitchLens?:    (lensId: string) => void;
   /** Bridge the workspace's trust envelope up to the shell Completeness/Evidence chip. */
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
@@ -117,6 +127,16 @@ export function WealthWorkspace({
     [result, displayCurrency],
   );
   useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
+
+  // Publish this workspace's section anchors UP to the sidebar (the prototype's
+  // "what's inside" Sections list) — only once the real slots exist (has history,
+  // not mid-backfill); cleared on unmount / when the slots aren't shown.
+  const publishSections = useSpaceSectionsPublisher();
+  const showSections = !backfillInProgress && result.hasHistory;
+  useEffect(() => {
+    publishSections(showSections ? WEALTH_SECTIONS : []);
+    return () => publishSections([]);
+  }, [publishSections, showSections]);
 
   // Evidence drawer — now workspace-owned (was host-owned). Opened from the
   // Explanation card's "View evidence" affordance; rows come from the same envelope.
@@ -158,47 +178,40 @@ export function WealthWorkspace({
 
   return (
     <>
-      {/* HIST-2E — today/history valuation-basis disclosure (from the read model;
-          transparency only, no number changes). Renders only when the view mixes an
-          observed today point with reconstructed history. */}
-      {result.basis && (
-        <div
-          className="mb-4 flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
-          style={{ background: "var(--surface-inset)", color: "var(--text-muted)" }}
-          role="note"
-        >
-          <Info size={13} className="mt-0.5 shrink-0" aria-hidden />
-          <span>
-            <span className="font-medium text-[var(--text-secondary)]">{result.basis.title}.</span>{" "}
-            {result.basis.note}
-          </span>
+      {/* Prototype slot order — the same instruments, stacked, re-aimed at Wealth:
+          hero (the scalar) → trend (the shape over time, near the top) →
+          composition + change ledger (the decomposition + what moved it) →
+          explanation. The Basis/coverage slot is intentionally not duplicated
+          here — the shell's Completeness/Evidence chips already carry it. */}
+      <div className="space-y-8 sm:space-y-10 min-w-0">
+        {/* ① Hero — the one net-worth headline (bare, no card). */}
+        <div id="wealth-summary" className="scroll-mt-20">
+          <WealthHero result={result} currency={displayCurrency} />
         </div>
-      )}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start min-w-0">
-        {/* ① Hero + ② Trend chart. */}
-        <div className="min-w-0 lg:col-span-4">
-          <WealthHero result={result} currency={displayCurrency} onSwitchLens={onSwitchLens} />
-        </div>
-        <div className="min-w-0 lg:col-span-8">
+
+        {/* ② Trend — the dominant honesty chart, near the top, full width. */}
+        <div id="wealth-trend" className="scroll-mt-20">
           <WealthTrendChart
             result={result}
             currency={displayCurrency}
-            onSelectAsOf={onSelectAsOf}
             metric={metric}
             onMetricChange={onMetricChange}
           />
         </div>
 
-        {/* ③ Change ledger + ④ Composition. */}
-        <div className="min-w-0 lg:col-span-6">
-          <WealthChangeLedger result={result} currency={displayCurrency} />
-        </div>
-        <div className="min-w-0 lg:col-span-6">
-          <WealthCompositionCard result={result} currency={displayCurrency} accounts={accounts} ctx={ctx} />
+        {/* ③ Composition (7) + ④ Change ledger / what-moved-it (5). Top-aligned so
+            the two Blocks' headers line up when they sit side by side. */}
+        <div className="grid gap-6 lg:grid-cols-12 lg:gap-8 items-start">
+          <div id="wealth-composition" className="scroll-mt-20 min-w-0 lg:col-span-7">
+            <WealthCompositionCard result={result} currency={displayCurrency} accounts={accounts} ctx={ctx} />
+          </div>
+          <div id="wealth-ledger" className="scroll-mt-20 min-w-0 lg:col-span-5">
+            <WealthChangeLedger result={result} currency={displayCurrency} />
+          </div>
         </div>
 
         {/* ⑤ Explanation. */}
-        <div className="min-w-0 lg:col-span-12">
+        <div id="wealth-explanation" className="scroll-mt-20">
           <WealthExplanationCard
             result={result}
             currency={displayCurrency}
