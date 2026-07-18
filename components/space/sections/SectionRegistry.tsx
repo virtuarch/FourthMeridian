@@ -40,7 +40,7 @@ import { renderWealthAccountCards, renderInstitutionAllocation, renderWealthAllo
 import { renderLiquidityLadder, renderAccessibleCash, renderEmergencyFundReadiness, renderLiquidityConcentration } from "@/components/space/widgets/liquidity-adapters";
 import { renderCashFlowSummary, renderCashFlowHistory, renderIncomeVsSpending, renderCashFlowByCategory, renderIncomeBySource, renderDebtPayments } from "@/components/space/widgets/cash-flow-adapters";
 import { renderDebtByAccount, renderDebtCost, CreditUtilizationWidget, renderDebtHistory, renderCreditScore, renderDebtCompleteInfo } from "@/components/space/widgets/debt-perspective-adapters";
-import { renderGoalProgress, renderGoalOnTrack, renderGoalRequiredPace, renderGoalFundingGap } from "@/components/space/widgets/goals-perspective-adapters";
+import { renderGoalProgress, renderGoalOnTrack, renderGoalRequiredPace, renderGoalFundingGap, GoalPerspectiveWidget } from "@/components/space/widgets/goals-perspective-adapters";
 import { DEFAULT_CASH_FLOW_PERIOD, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import { AccountsPerspective } from "@/components/space/widgets/accounts/AccountsPerspective";
@@ -49,7 +49,7 @@ import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
-import type { SpaceAccount, SpaceGoal } from "@/lib/space/dashboard-types";
+import type { SpaceAccount } from "@/lib/space/dashboard-types";
 
 const ACCOUNT_TYPE_LABELS: Record<string, string> = {
   checking:   "Checking",
@@ -237,12 +237,6 @@ export type SectionRenderProps = {
    */
   ficoScore?:            number | null;
   ficoUpdatedAt?:        string;
-  /**
-   * UX-PER-3 Goals — the Space's goals for the Goals workspace ("Am I on
-   * track?"). Host-fetched when the workspace opens; null = loading. Only the
-   * Goals widgets read this.
-   */
-  goals?:                SpaceGoal[] | null;
 };
 
 // ─── ProgressWidget adapter helpers ──────────────────────────────────────────
@@ -535,10 +529,13 @@ export const SectionRegistry: Record<string, (p: SectionRenderProps) => React.Re
   "debt_complete_info":      (p) => renderDebtCompleteInfo(p.accounts),
   // debt_payoff_calculator is already registered above (reused from the Debt tab).
   // ── Goals Perspective (UX-PER-3) — trajectory vs target ─────────────────────
-  "goal_progress":           (p) => renderGoalProgress(p.goals, p.ctx),
-  "goal_on_track":           (p) => renderGoalOnTrack(p.goals),
-  "goal_required_pace":      (p) => renderGoalRequiredPace(p.goals, p.ctx),
-  "goal_funding_gap":        (p) => renderGoalFundingGap(p.goals, p.ctx),
+  // SD-7a — each Goals widget owns its data via the self-fetching wrapper (the
+  // host no longer fetches or threads goals). The pure render fn still does the
+  // rendering; the wrapper just supplies the goals it fetches by spaceId.
+  "goal_progress":           (p) => <GoalPerspectiveWidget spaceId={p.spaceId} ctx={p.ctx} render={renderGoalProgress} />,
+  "goal_on_track":           (p) => <GoalPerspectiveWidget spaceId={p.spaceId} render={renderGoalOnTrack} />,
+  "goal_required_pace":      (p) => <GoalPerspectiveWidget spaceId={p.spaceId} ctx={p.ctx} render={renderGoalRequiredPace} />,
+  "goal_funding_gap":        (p) => <GoalPerspectiveWidget spaceId={p.spaceId} ctx={p.ctx} render={renderGoalFundingGap} />,
   "net_worth_section":      renderNetWorth,       // deprecated alias — seeded pre-v2
   "accounts_overview":      (p) => <AccountsPerspective spaceId={p.spaceId} accounts={p.accounts} />,
   "business_accounts":      (p) => <AccountsCard accounts={p.accounts} />,

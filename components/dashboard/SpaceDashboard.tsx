@@ -11,7 +11,7 @@
  * - OWNER/ADMIN can toggle sections via the Settings tab
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, LayoutDashboard, LogOut } from "lucide-react";
 import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
@@ -25,6 +25,7 @@ import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { readSpaceParam, legacyTabPerspective } from "@/lib/space/space-url";
 import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
+import { useSpaceData } from "@/lib/space/use-space-data";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
@@ -43,7 +44,7 @@ import { AddGoalModal } from "@/components/space/workspaces/AddGoalModal";
 import { RoutedWorkspaceModal } from "@/components/space/workspaces/RoutedWorkspaceModal";
 import type { SectionCardBundle } from "@/components/space/workspaces/SpaceSectionStack";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
-import { railVisibleTabs, SPACE_TAB_LABELS, SPACE_ACCOUNTS_CHANGED_EVENT, SPACE_CURRENCY_CHANGED_EVENT, SPACE_DATA_REFRESHED_EVENT } from "@/lib/space-nav";
+import { railVisibleTabs, SPACE_TAB_LABELS, SPACE_CURRENCY_CHANGED_EVENT } from "@/lib/space-nav";
 import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
 import { getPerspectivesForCategory, PERSPECTIVE_LIBRARY, getWorkspaceTargetTab, isRoutedWorkspaceTab } from "@/lib/perspectives";
 import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
@@ -55,8 +56,7 @@ import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTr
 import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
 import { useDisplayCurrency } from "@/lib/currency-context";
 import { getSpaceHeroDef } from "@/lib/space-hero";
-import type { Snapshot, Transaction } from "@/types";
-import type { DashboardSection, SpaceAccount, SpaceGoal } from "@/lib/space/dashboard-types";
+import type { Transaction } from "@/types";
 import { SectionCard } from "@/components/space/sections/SectionCard";
 import { SectionRegistry } from "@/components/space/sections/SectionRegistry";
 import { formatBalance } from "@/lib/currency";
@@ -264,9 +264,6 @@ export function SpaceDashboard({
 }: Props) {
   const router = useRouter();
 
-  const [sections,      setSections]      = useState<DashboardSection[]>([]);
-  const [accounts,      setAccounts]      = useState<SpaceAccount[]>([]);
-  const [loading,       setLoading]       = useState(true);
   const [activeTab,     setActiveTab]     = useState("");
   const [showAddGoal,   setShowAddGoal]   = useState(false);
   const [showManage,    setShowManage]    = useState(false);
@@ -275,79 +272,22 @@ export function SpaceDashboard({
   // Track whether we've set the initial tab from real data
   const initialTabSet = useRef(false);
 
-  // Header member count — read-only fetch against an existing endpoint.
-  const [memberCount,    setMemberCount]    = useState<number | null>(null);
-
   // Perspective Engine results (commit 7) — keyed by lensId, fetched once
   // per Space from the batch route. null = not loaded / fetch failed; the
   // cards then render their static description (graceful fallback is the
   // widget's contract, not this host's job).
   const [lensResults, setLensResults] = useState<Record<string, LensResult> | null>(null);
 
-  // ── Space Template Redesign state ─────────────────────────────────────────
-  // SpaceSnapshot history for the trend hero (chartable categories only)
-  // and the KD-15-filtered transaction list (flow categories' Overview
-  // preview + every shared Space's Transactions tab doorway).
-  const [snapshots,         setSnapshots]         = useState<Snapshot[] | null>(null);
-  // Part-6 — a snapshot backfill is actively running for this Space (derived
-  // server-side from PlaidItem.syncIncompleteAt). Drives the Wealth loading state.
-  const [snapshotsBackfilling, setSnapshotsBackfilling] = useState(false);
-  const [spaceTransactions, setSpaceTransactions] = useState<Transaction[] | null>(null);
-  // MC1 P4 Slice 6 (F-6) — serialized conversion context from the same fetch;
-  // undefined => the panel's context-less native sums (kill switch).
-  const [spaceMoneyCtx, setSpaceMoneyCtx] = useState<SerializedConversionContext | undefined>(undefined);
-
-  // ── MC1 QA Q4 — widget/planner conversion context ──────────────────────────
   // The dashboard layout mounts DisplayCurrencyProvider with this Space's
   // reportingCurrency (this component only renders as the active Space), so
-  // the hook IS the Space's currency. The view-context route covers exactly
-  // what the section widgets aggregate: account balances at the latest close.
-  // Fetch failure ⇒ undefined ⇒ every consumer's kill switch (today's render).
+  // useDisplayCurrency() IS the Space's currency.
   const displayCurrency = useDisplayCurrency();
-  const [widgetMoneyCtx, setWidgetMoneyCtx] = useState<SerializedConversionContext | undefined>(undefined);
-  useEffect(() => {
-    let active = true;
-    fetch(`/api/money/view-context?target=${encodeURIComponent(displayCurrency)}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => { if (active) setWidgetMoneyCtx(data?.moneyCtx ?? undefined); })
-      .catch(() => { if (active) setWidgetMoneyCtx(undefined); });
-    return () => { active = false; };
-  }, [displayCurrency]);
-  const widgetCtx = useMemo(
-    () => (widgetMoneyCtx ? rehydrateContext(widgetMoneyCtx) : undefined),
-    [widgetMoneyCtx],
-  );
 
-  // ── MC1 QA Q6 — live-update after a reporting-currency change ───────────────
-  // The dashboard layout's DisplayCurrencyProvider and the /view-context fetch
-  // above already follow `displayCurrency` (updated by the modal's
-  // router.refresh()). But this host's OWN fetched data — snapshots (hero),
-  // perspectives (converted lens metrics) and space transactions (F-6 context)
-  // — keys on spaceId and would keep the old currency's values. A bump of this
-  // nonce re-runs those three fetches; the tx fetch also needs its cached list
-  // cleared so its "already loaded" guard lets it re-run. All server routes
-  // read the Space's now-persisted reportingCurrency, so the refetch is
-  // currency-correct regardless of refresh timing. All-USD: the event never
-  // fires (currencyChanged is false), so nothing here ever runs.
-  const [currencyNonce, setCurrencyNonce] = useState(0);
-  // Part-2 fix — bumped by SPACE_DATA_REFRESHED_EVENT (a manual Plaid sync
-  // finished) so the host's OWN client-fetched accounts/snapshots/transactions
-  // re-run. router.refresh() alone can't do this: it merges the server RSC
-  // payload but never re-runs these client effects, so one refresh otherwise
-  // left the balances stale until a full reload.
-  const [refreshNonce, setRefreshNonce] = useState(0);
-  useEffect(() => {
-    function onCurrencyChanged(e: Event) {
-      const detail = (e as CustomEvent<{ spaceId?: string }>).detail;
-      // Ignore currency changes for other Spaces (e.g. edited from the Spaces list).
-      if (detail?.spaceId && detail.spaceId !== spaceId) return;
-      setSpaceTransactions(null);       // clear the tx fetch's "already loaded" guard
-      setSpaceMoneyCtx(undefined);
-      setCurrencyNonce((n) => n + 1);
-    }
-    window.addEventListener(SPACE_CURRENCY_CHANGED_EVENT, onCurrencyChanged);
-    return () => window.removeEventListener(SPACE_CURRENCY_CHANGED_EVENT, onCurrencyChanged);
-  }, [spaceId]);
+  // SD-7b — the shared structural data lifecycle (sections / accounts / snapshots /
+  // transactions / view-context / member count) + its refresh orchestration
+  // (currency-change · manual-sync · shared-account listeners, re-fetch nonces,
+  // backfill poll) moved to useSpaceData. The host CONSUMES this data; the call
+  // itself is a few lines below, once the nav-derived activation gates are known.
 
   // SD-7 — the Overview composition switcher state (composition / compositionItems /
   // activeComposition) is now OWNED by <OverviewWorkspace> (Overview-only state); the
@@ -355,16 +295,6 @@ export function SpaceDashboard({
 
   const canManage = ["OWNER", "ADMIN"].includes(myRole);
   const canLeave  = !canManage; // MEMBER and VIEWER can leave
-
-  // Data freshness — newest lastUpdated across this Space's shared accounts
-  // (existing field, no new fetch). Surfaced in the header subtitle so no
-  // balance is ever read without knowing how old it is (v2.5 honesty
-  // slice). Client-only by construction: `accounts` starts [] and is
-  // populated by a post-mount fetch, so formatRelativeTime (not SSR-safe,
-  // see its doc comment in lib/format.ts) never runs during SSR.
-  const newestAccountUpdate = accounts.length
-    ? accounts.reduce((best, a) => (a.lastUpdated > best ? a.lastUpdated : best), accounts[0].lastUpdated)
-    : null;
 
   // Fixed rail options — starts from railVisibleTabs(railHost) (v2.5
   // honesty slice: placeholder tabs — Finances/Documents — get no rail control
@@ -439,6 +369,46 @@ export function SpaceDashboard({
   // always true for finance Spaces. Stock-category Spaces without a Wealth
   // perspective resolve null and keep the summary fallback.
   const perspectiveEngaged = activeTab === "OVERVIEW" && activePerspective != null;
+
+  // ── SD-3 — declarative lazy activation. The host asks the canonical registry
+  //    what the OPEN perspective declared (WORKSPACE_REGISTRY[id].dataNeeds):
+  //    among perspectives only {wealth,debt} declare `snapshots`, only
+  //    {cashFlow,liquidity} declare `transactions`, only investments declares
+  //    `investmentsHistory` (ratcheted in lib/space/workspace-resources.test.ts).
+  const openNeeds = openPerspectiveDataNeeds(activeTab, activePerspectiveId);
+  const perspectiveNeedsSnapshots = openNeeds.has("snapshots");       // ⇔ wealth | debt
+  const perspectiveNeedsTransactions = openNeeds.has("transactions"); // ⇔ cashFlow | liquidity
+  const perspectiveNeedsInvestments = openNeeds.has("investmentsHistory"); // ⇔ investments
+
+  // ── SD-7b — shared structural data lifecycle (useSpaceData) ─────────────────
+  // Fold the nav-derived lazy-activation gates into two booleans and hand the
+  // whole data lifecycle to the hook (it stays nav-agnostic). heroDef /
+  // isFlowCategory are pure category helpers, also used for rendering below.
+  const heroDef = getSpaceHeroDef(category);
+  const isFlowCategory = FLOW_TX_CATEGORIES.includes(category);
+  const wantSnapshots = Boolean(heroDef) || spaceType === "PERSONAL" || perspectiveNeedsSnapshots;
+  const wantTransactions = isFlowCategory || activeTab === "TRANSACTIONS" || perspectiveNeedsTransactions;
+  const {
+    sections,
+    accounts,
+    loading,
+    snapshots,
+    backfilling: snapshotsBackfilling,
+    transactions: spaceTransactions,
+    moneyCtx: spaceMoneyCtx,
+    widgetCtx,
+    memberCount,
+    reloadSections,
+    reloadAccounts,
+  } = useSpaceData({ spaceId, displayCurrency, wantSnapshots, wantTransactions });
+
+  // Data freshness — newest lastUpdated across this Space's shared accounts (no
+  // new fetch). Surfaced in the header subtitle so no balance is read without
+  // knowing how old it is. Client-only: `accounts` starts [] and populates
+  // post-mount, so formatRelativeTime (not SSR-safe) never runs during SSR.
+  const newestAccountUpdate = accounts.length
+    ? accounts.reduce((best, a) => (a.lastUpdated > best ? a.lastUpdated : best), accounts[0].lastUpdated)
+    : null;
 
   // M3-Reset — the Overview LENS row, reconciled to the Design Lab's set + feel.
   //
@@ -654,21 +624,6 @@ export function SpaceDashboard({
   // gate — the completeness stamp AND its trust envelope are now workspace-owned too
   // (emitted up via cashFlowEnvelope, below); the host retains only the canonical-time
   // seam (cashFlowPeriod).
-  // SD-3 — declarative lazy activation. The host no longer hardcodes which
-  // perspective needs which resource (the former debtWorkspaceActive /
-  // wealthWorkspaceActive / liquidityWorkspaceActive / goalsWorkspaceActive /
-  // investmentsActive booleans). It asks the canonical registry what the OPEN
-  // perspective declared (WORKSPACE_REGISTRY[id].dataNeeds) and derives stable
-  // activation booleans from that. Behavior is identical: among perspectives, only
-  // {wealth,debt} declare `snapshots`, only {cashFlow,liquidity} declare
-  // `transactions`, only goals declares `goals`, only investments declares
-  // `investmentsHistory` — so each boolean below reduces to exactly the per-id
-  // check it replaced (ratcheted in lib/space/workspace-resources.test.ts).
-  const openNeeds = openPerspectiveDataNeeds(activeTab, activePerspectiveId);
-  const perspectiveNeedsSnapshots = openNeeds.has("snapshots");       // ⇔ wealth | debt
-  const perspectiveNeedsTransactions = openNeeds.has("transactions"); // ⇔ cashFlow | liquidity
-  const perspectiveNeedsGoals = openNeeds.has("goals");               // ⇔ goals
-  const perspectiveNeedsInvestments = openNeeds.has("investmentsHistory"); // ⇔ investments
   // SD-6A — the Debt WORKSPACE owns its data consumption (the useDebtSpaceData
   // fetch moved inside <DebtWorkspace>); this gates its as-of lens fetch to when
   // the Debt perspective is open. compareTo is guarded to a strictly-earlier window.
@@ -687,16 +642,9 @@ export function SpaceDashboard({
   // relays the workspace's trust envelope (present-day OR as-of) to the shell chip.
   const liquidityActive = activeTab === "OVERVIEW" && activePerspectiveId === "liquidity";
   const liquidityCompareTo = compareTo && compareTo < asOf ? compareTo : null;
-  const [spaceGoals, setSpaceGoals] = useState<SpaceGoal[] | null>(null);
-  useEffect(() => {
-    if (!perspectiveNeedsGoals || spaceGoals !== null) return;
-    let active = true;
-    fetch(`/api/spaces/${spaceId}/goals`)
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data) => { if (active) setSpaceGoals(Array.isArray(data) ? data : []); })
-      .catch(() => { if (active) setSpaceGoals([]); });
-    return () => { active = false; };
-  }, [spaceId, perspectiveNeedsGoals, spaceGoals]);
+  // SD-7a — Goals data ownership moved OUT of the host: each Goals Perspective
+  // widget self-fetches via GoalPerspectiveWidget (mirroring GoalsCard). The host
+  // no longer fetches goals, holds `spaceGoals`, or threads it through SectionCard.
   const txConversionCtx = useMemo(() => {
     const serialized = transactionsMoneyCtxOverride ?? spaceMoneyCtx;
     return serialized ? rehydrateContext(serialized) : undefined;
@@ -716,49 +664,25 @@ export function SpaceDashboard({
     }
   }
 
-  const loadSections = useCallback(async () => {
-    const res = await fetch(`/api/spaces/${spaceId}/sections`);
-    if (res.ok) {
-      const secs: DashboardSection[] = await res.json();
-      setSections(secs);
-      return secs;
-    }
-    return sections;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId]);
-
-  const loadAccounts = useCallback(async () => {
-    const res = await fetch(`/api/spaces/${spaceId}/accounts`);
-    if (res.ok) setAccounts(await res.json());
-  }, [spaceId]);
-
-  // Refetch accounts whenever another component (e.g. ManageSpaceModal Finances tab) signals a change
-  useEffect(() => {
-    function handleAccountsChanged() { loadAccounts(); }
-    window.addEventListener(SPACE_ACCOUNTS_CHANGED_EVENT, handleAccountsChanged);
-    return () => window.removeEventListener(SPACE_ACCOUNTS_CHANGED_EVENT, handleAccountsChanged);
-  }, [loadAccounts]);
-
-  // Part-2 fix — a manual Plaid sync finished (SPACE_DATA_REFRESHED_EVENT). Re-run
-  // ALL of this host's self-fetched data so a single refresh reflects the true DB
-  // state: accounts (balances), snapshots (net-worth hero) and transactions.
-  // Nulling spaceTransactions releases the tx effect's "already loaded" guard;
-  // bumping refreshNonce re-runs the snapshot + tx effects.
-  useEffect(() => {
-    function onDataRefreshed(e: Event) {
-      const detail = (e as CustomEvent<{ spaceId?: string }>).detail;
-      if (detail?.spaceId && detail.spaceId !== spaceId) return; // ignore other Spaces
-      loadAccounts();
-      setSpaceTransactions(null);
-      setRefreshNonce((n) => n + 1);
-    }
-    window.addEventListener(SPACE_DATA_REFRESHED_EVENT, onDataRefreshed);
-    return () => window.removeEventListener(SPACE_DATA_REFRESHED_EVENT, onDataRefreshed);
-  }, [spaceId, loadAccounts]);
-
   // (Activity slice) — the host no longer pre-fetches the activity feed for an
   // Overview doorway/modal. The recent_activity SECTION (TimelineWidget) self-
   // fetches /api/spaces/[id]/activity and paginates, so Activity owns its data.
+
+  // SD-7b — lensResults is a PERSPECTIVE-ENGINE loader (out of the useSpaceData
+  // extraction). It keeps its own currency-refresh: a reporting-currency change
+  // bumps this local nonce so the converted lens metrics re-fetch, exactly as the
+  // former shared currencyNonce did. (Same spaceId-scoped SPACE_CURRENCY_CHANGED
+  // signal useSpaceData listens to for its own data.)
+  const [perspectivesCurrencyNonce, setPerspectivesCurrencyNonce] = useState(0);
+  useEffect(() => {
+    function onCurrencyChanged(e: Event) {
+      const detail = (e as CustomEvent<{ spaceId?: string }>).detail;
+      if (detail?.spaceId && detail.spaceId !== spaceId) return;
+      setPerspectivesCurrencyNonce((n) => n + 1);
+    }
+    window.addEventListener(SPACE_CURRENCY_CHANGED_EVENT, onCurrencyChanged);
+    return () => window.removeEventListener(SPACE_CURRENCY_CHANGED_EVENT, onCurrencyChanged);
+  }, [spaceId]);
 
   // Perspective Engine results — one batch fetch against the membership-
   // gated route (mirrors the activity fetch above). Failure of any kind
@@ -784,134 +708,41 @@ export function SpaceDashboard({
       })
       .catch(() => { if (active) setLensResults(null); });
     return () => { active = false; };
-    // currencyNonce (Q6): refetch converted lens metrics after a currency change.
+    // perspectivesCurrencyNonce (Q6): refetch converted lens metrics after a currency change.
     // perspectiveTargetCurrency: refetch when the "view as" override changes.
-  }, [spaceId, currencyNonce, perspectiveTargetCurrency]);
+  }, [spaceId, perspectivesCurrencyNonce, perspectiveTargetCurrency]);
 
-  // Header member count — same endpoint SpaceMembersWidget/ManageSpaceModal use.
+  // ── Initial-tab selection (NAVIGATION) ──────────────────────────────────────
+  // SD-7b — the sections/accounts DATA fetch moved to useSpaceData; picking the
+  // default tab is NAVIGATION and stays here. Runs once, when the hook's first
+  // load lands (loading flips false), reading the hook's `sections`. URL
+  // (?tab=…&perspective=…) wins, then the caller's mapped legacy initialTab, then
+  // the section-derived default — identical order + rules to the former inline
+  // block. The render early-return waits on `activeTab` too (below), so there is
+  // no frame of resolved-but-untabbed content.
   useEffect(() => {
-    let active = true;
-    fetch(`/api/spaces/${spaceId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => { if (active) setMemberCount(data?.members?.length ?? null); })
-      .catch(() => { if (active) setMemberCount(null); });
-    return () => { active = false; };
-  }, [spaceId]);
-
-  // ── Trend hero data (Space Template Redesign) ─────────────────────────────
-  // Only chartable categories (lib/space-hero.ts) fetch snapshot history.
-  const heroDef = getSpaceHeroDef(category);
-  useEffect(() => {
-    // Unified Space Widget Layout (slice 1): Personal has no heroDef but its
-    // Overview now includes the snapshot-backed `net_worth_chart` section, so
-    // it still needs the snapshot fetch. Shared non-chartable categories skip
-    // it as before. (Future: fetch when any snapshot-tier section is present.)
-    if (!heroDef && spaceType !== "PERSONAL" && !perspectiveNeedsSnapshots) return;
-    let active = true;
-    fetch(`/api/spaces/${spaceId}/snapshots`)
-      .then((r) => (r.ok ? r.json() : { snapshots: [] }))
-      .then((data) => {
-        if (!active) return;
-        setSnapshots(data?.snapshots ?? []);
-        setSnapshotsBackfilling(!!data?.backfillInProgress); // Part-6
-      })
-      .catch(() => { if (active) { setSnapshots([]); setSnapshotsBackfilling(false); } });
-    return () => { active = false; };
-  // currencyNonce (Q6): re-fetch the stamp-aware hero series after a currency change.
-  // refreshNonce (Part-2): re-fetch after a manual Plaid sync so net worth updates.
+    if (loading || initialTabSet.current) return;
+    initialTabSet.current = true;
+    const url = readUrlTabState();
+    const enabledTabs = new Set(sections.filter((s) => s.enabled).map((s) => s.tab));
+    // URL wins, then the mapped legacy initialTab, then the section-derived default:
+    // a trend-hero Space opens on Overview; else the first non-Activity, non-routed
+    // enabled tab; else Activity if enabled; else Overview (e.g. CUSTOM, no sections).
+    const nextTab =
+      url.tab ??
+      (initialTab || null) ??
+      (getSpaceHeroDef(category)
+        ? "OVERVIEW"
+        : TAB_ORDER.find((t) => t !== "ACTIVITY" && !isRoutedWorkspaceTab(t) && enabledTabs.has(t)) ??
+          (enabledTabs.has("ACTIVITY") ? "ACTIVITY" : "OVERVIEW"));
+    // One-shot init from the URL + section data on first load (parity with the
+    // former fetch-callback init).
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (url.perspective) setSelectedPerspectiveId(url.perspective);
+    setActiveTab(nextTab);
+    /* eslint-enable react-hooks/set-state-in-effect */
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, category, perspectiveNeedsSnapshots, currencyNonce, refreshNonce]);
-
-  // Part-6 — while a backfill is running, re-fetch snapshots on an interval so
-  // the Wealth loading state clears AUTOMATICALLY once it finishes (no manual
-  // refresh). Bumping refreshNonce re-runs the snapshot fetch above, which
-  // updates snapshotsBackfilling; when it flips false this effect stops. Same
-  // syncIncompleteAt-derived signal Parts 4/5 use — not a fourth "done" detector.
-  useEffect(() => {
-    if (!snapshotsBackfilling) return;
-    const iv = setInterval(() => setRefreshNonce((n) => n + 1), 12000);
-    return () => clearInterval(iv);
-  }, [snapshotsBackfilling]);
-
-  // ── Space transactions (KD-15-filtered on the server) ────────────────────
-  // Flow-identified templates show an Overview preview, so they fetch up
-  // front; every other category fetches lazily when the Transactions tab
-  // (doorway) is opened.
-  const isFlowCategory = FLOW_TX_CATEGORIES.includes(category);
-  useEffect(() => {
-    // Fetch for flow categories, the Transactions doorway, OR the Cash Flow /
-    // Liquidity Perspective workspaces (both need transaction history regardless
-    // of category — Liquidity for its What Changed panel). Guarded by
-    // spaceTransactions === null so it runs once.
-    if (!isFlowCategory && activeTab !== "TRANSACTIONS" && !perspectiveNeedsTransactions) return;
-    if (spaceTransactions !== null) return;
-    let active = true;
-    fetch(`/api/spaces/${spaceId}/transactions`)
-      .then((r) => (r.ok ? r.json() : { transactions: [] }))
-      .then((data) => {
-        if (!active) return;
-        setSpaceTransactions(data?.transactions ?? []);
-        setSpaceMoneyCtx(data?.moneyCtx ?? undefined); // MC1 P4 Slice 6 (F-6)
-      })
-      .catch(() => { if (active) setSpaceTransactions([]); });
-    return () => { active = false; };
-  // currencyNonce (Q6): re-fetch tx rows + F-6 context after a currency change
-  // (the handler also nulls spaceTransactions to release the guard above).
-  // refreshNonce (Part-2): same, after a manual Plaid sync.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, isFlowCategory, activeTab, perspectiveNeedsTransactions, spaceTransactions === null, currencyNonce, refreshNonce]);
-
-  useEffect(() => {
-    Promise.all([
-      fetch(`/api/spaces/${spaceId}/sections`).then((r) => r.ok ? r.json() : []),
-      fetch(`/api/spaces/${spaceId}/accounts`).then((r)  => r.ok ? r.json() : []),
-    ]).then(([secs, accs]: [DashboardSection[], SpaceAccount[]]) => {
-      setSections(secs);
-      setAccounts(accs);
-      setLoading(false);
-
-      // Set default tab from real section data — never default to SETTINGS
-      if (!initialTabSet.current) {
-        initialTabSet.current = true;
-        // URL-backed tab state: the query string (?tab=…&perspective=…) is the
-        // source of truth on load/refresh, then the caller's mapped legacy
-        // initialTab, then the section-derived default below.
-        const url = readUrlTabState();
-        if (url.perspective) setSelectedPerspectiveId(url.perspective);
-        const urlTab = url.tab ?? (initialTab || null);
-        if (urlTab) {
-          setActiveTab(urlTab);
-          return;
-        }
-        const enabledTabs = new Set(secs.filter((s) => s.enabled).map((s) => s.tab));
-        // Template polish: a Space with a trend hero has a real Overview
-        // even when its signature modules live on other tabs (post-
-        // curation Household/Business/Investment/Retirement) — open on it.
-        if (getSpaceHeroDef(category)) {
-          setActiveTab("OVERVIEW");
-          return;
-        }
-        // Don't auto-default into ACTIVITY (prefer a content tab like
-        // Overview/Accounts), and never open a Space directly into a
-        // Perspective-routed tab: those render as GlassModals now, and landing
-        // inside a modal is disorienting.
-        const firstTab = TAB_ORDER.find(
-          (t) => t !== "ACTIVITY" && !isRoutedWorkspaceTab(t) && enabledTabs.has(t)
-        );
-        if (firstTab) {
-          setActiveTab(firstTab);
-        } else if (enabledTabs.has("ACTIVITY")) {
-          // ACTIVITY is a real rail tab now — land on it directly (no modal).
-          setActiveTab("ACTIVITY");
-        } else {
-          // No section tabs (e.g. CUSTOM space with no sections) — land on
-          // Overview. Settings is no longer a tab; manage via ManageSpaceModal.
-          setActiveTab("OVERVIEW");
-        }
-      }
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId]);
+  }, [loading, sections]);
 
   // Template redesign: seeded section rows whose key has no SectionRegistry
   // renderer (and no debt-space legacy override) previously fell through to
@@ -967,7 +798,11 @@ export function SpaceDashboard({
     return () => publishCurrencyControl(null);
   }, [publishCurrencyControl, displayCurrencyControl]);
 
-  if (loading) {
+  // SD-7b — wait on the data load AND the initial-tab selection. The tab is now
+  // picked in a follow-up effect (once `loading` flips false), so guarding on
+  // `activeTab` too keeps the spinner up for that extra tick instead of flashing
+  // an untabbed frame — preserving the former "spinner until ready" behavior.
+  if (loading || !activeTab) {
     return (
       <div className="flex items-center justify-center py-24">
         <Loader2 size={20} className="animate-spin text-[var(--text-faint)]" />
@@ -1188,8 +1023,8 @@ export function SpaceDashboard({
               onClose={() => setShowManage(false)}
               onRefresh={() => {
                 setShowManage(false);
-                loadSections();
-                loadAccounts();
+                reloadSections();
+                reloadAccounts();
               }}
             />
           )}
@@ -1333,7 +1168,6 @@ export function SpaceDashboard({
                     onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
                     ficoScore={ficoScore}
                     ficoUpdatedAt={ficoUpdatedAt}
-                    goals={spaceGoals}
                   />
                 ))
               ) : activePerspective ? (

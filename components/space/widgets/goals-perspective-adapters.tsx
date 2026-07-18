@@ -20,6 +20,7 @@
  * history.
  */
 
+import React, { useState, useEffect } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
@@ -214,4 +215,41 @@ export function renderGoalFundingGap(
       {...valueFormatterProps(ctx)}
     />
   );
+}
+
+// ─── Self-fetching wrapper (SD-7a) ──────────────────────────────────────────────
+
+/**
+ * GoalPerspectiveWidget — owns the goals data dependency for the four render*
+ * widgets above. Each `goal_*` SectionRegistry entry mounts this thin wrapper,
+ * which fetches the Space's goals by id and hands them to the pure render fn
+ * (whose `goals == null` branch already IS the loading state).
+ *
+ * This is the ownership move (SD-7a): SpaceDashboard no longer fetches goals or
+ * threads them down through SectionCard — the goals CONSUMER owns its own data,
+ * mirroring GoalsCard's self-fetch. Lazy by construction: the wrapper only mounts
+ * when a `goal_*` widget renders (i.e. the Goals Perspective is engaged), so the
+ * fetch fires exactly where the host's former lazy `perspectiveNeedsGoals` fetch
+ * did. Fetch semantics are byte-identical to the host's prior effect
+ * (`r.ok ? json : []`, `Array.isArray` guard, `[]` on error).
+ */
+export function GoalPerspectiveWidget({
+  spaceId,
+  ctx,
+  render,
+}: {
+  spaceId: string;
+  ctx?:    ConversionContext;
+  render:  (goals: TrajectoryGoal[] | null | undefined, ctx?: ConversionContext) => React.ReactElement;
+}): React.ReactElement {
+  const [goals, setGoals] = useState<TrajectoryGoal[] | null>(null);
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/spaces/${spaceId}/goals`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => { if (active) setGoals(Array.isArray(data) ? data : []); })
+      .catch(() => { if (active) setGoals([]); });
+    return () => { active = false; };
+  }, [spaceId]);
+  return render(goals, ctx);
 }

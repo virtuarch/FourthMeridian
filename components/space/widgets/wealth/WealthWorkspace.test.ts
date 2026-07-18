@@ -100,7 +100,10 @@ console.log("7. No second snapshot authority — snapshots are a SHARED inbound 
   check("Workspace does NOT fetch (snapshots passed in as a prop)", !CODE.includes("fetch("));
   check("no ad hoc snapshot / DB read in the Workspace", !/prisma|@\/lib\/db|getRecentSnapshots|getSnapshots/.test(CODE));
   check("snapshots + snapshotCurrency are inbound props", CODE.includes("snapshots") && CODE.includes("snapshotCurrency"));
-  check("host still fetches snapshots ONCE and shares them (Overview/Debt/Wealth)", HOSTC.includes("/snapshots") && HOSTC.includes("snapshots={snapshots}"));
+  // SD-7b — the single snapshot fetch authority moved from the host to useSpaceData;
+  // the host still shares the ONE snapshot series to Wealth/Debt/Overview as a prop.
+  check("snapshots have ONE fetch authority (useSpaceData) and are shared as a prop (Overview/Debt/Wealth)",
+    read("lib/space/use-space-data.ts").includes("/snapshots") && HOSTC.includes("snapshots={snapshots}"));
 }
 
 if (failures > 0) { console.error(`\n${failures} WealthWorkspace check(s) failed`); process.exit(1); }

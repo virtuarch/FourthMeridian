@@ -22,7 +22,7 @@ import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
-import type { DashboardSection, SpaceAccount, SpaceGoal } from "@/lib/space/dashboard-types";
+import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 import { SectionRegistry, ContextualCard, toDisplay } from "./SectionRegistry";
 
 // Solid/frosted, non-collapsible cards. Two families use this treatment:
@@ -61,7 +61,6 @@ export function SectionCard({
   onSelectPeriod,
   ficoScore,
   ficoUpdatedAt,
-  goals,
 }: {
   section:     DashboardSection;
   accounts:    SpaceAccount[];
@@ -87,8 +86,6 @@ export function SectionCard({
   /** UX-PER-3 Debt — see SectionRenderProps.ficoScore/ficoUpdatedAt. */
   ficoScore?:        number | null;
   ficoUpdatedAt?:    string;
-  /** UX-PER-3 Goals — see SectionRenderProps.goals. */
-  goals?:            SpaceGoal[] | null;
 }) {
   const [collapsed,        setCollapsed]        = useState(false);
   const [payoffFullscreen, setPayoffFullscreen] = useState(false);
@@ -174,7 +171,7 @@ export function SectionCard({
     if (isDebtSpace && section.key === "savings_rate") return renderDebtPayoffCalculator(accounts, payoffFullscreen, closePayoffFullscreen, ctx);
 
     const render = SectionRegistry[section.key];
-    if (render) return render({ accounts, spaceId, spaceType, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, onSelectPeriod, perspective, filterId, onPerspectiveChange, ficoScore, ficoUpdatedAt, goals });
+    if (render) return render({ accounts, spaceId, spaceType, canManage, onAddGoal, payoffFullscreen, closePayoffFullscreen, config: section.config, ctx, snapshots, snapshotCurrency, transactions, txCtx, period, onSelectPeriod, perspective, filterId, onPerspectiveChange, ficoScore, ficoUpdatedAt });
     return <ContextualCard sectionKey={section.key} label={section.label} />;
   }
 

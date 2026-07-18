@@ -80,9 +80,12 @@ check(
   "day-zero OverviewSetupCard shows for accounts.length === 0 (Personal included)",
   /accounts\.length === 0 \?/.test(overviewSrc) && /<OverviewSetupCard/.test(overviewSrc)
 );
+// SD-7b — the snapshot FETCH moved to useSpaceData; the host folds the same
+// activation gate (PERSONAL or a heroDef, or a snapshot-tier perspective) into
+// the `wantSnapshots` flag it hands the hook. Pin that gate semantics here.
 check(
-  "snapshots are fetched for PERSONAL (net_worth_chart) or a heroDef (plus the Debt + Wealth workspaces)",
-  /if \(!heroDef && spaceType !== "PERSONAL"[\s\S]{0,90}\) return;/.test(dashSrc)
+  "snapshots activation still gates on PERSONAL or a heroDef (folded into wantSnapshots)",
+  /wantSnapshots = Boolean\(heroDef\) \|\| spaceType === "PERSONAL"/.test(dashSrc)
 );
 check(
   "initial tab is applied once — from the URL (?tab=), then the initialTab fallback",

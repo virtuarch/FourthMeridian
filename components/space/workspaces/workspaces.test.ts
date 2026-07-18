@@ -23,6 +23,11 @@ const DASHCODE = DASH.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ""); // strip comments
 // and the renderer catalog (SectionRegistry.tsx).
 const SECTIONCARD     = read("components", "space", "sections", "SectionCard.tsx");
 const SECTIONREGISTRY = read("components", "space", "sections", "SectionRegistry.tsx");
+// SD-7a — Goals data ownership moved OUT of the host into the Goals consumers.
+const GOALS_ADAPTERS  = read("components", "space", "widgets", "goals-perspective-adapters.tsx");
+const GOALS_CARD      = read("components", "space", "sections", "goals", "GoalsCard.tsx");
+// SD-7b — the shared structural data lifecycle moved OUT of the host into useSpaceData.
+const USE_SPACE_DATA  = read("lib", "space", "use-space-data.ts");
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -90,10 +95,91 @@ console.log("3. The section subsystem is the ONE home for SectionCard + the regi
 
 console.log("4. Shared dashboard types have ONE home (no host-inline re-declaration)");
 {
-  check("host imports the shared dashboard types",
-    DASH.includes('from "@/lib/space/dashboard-types"'));
+  // SD-7b — the host stopped importing the shared view types (it consumes them via
+  // useSpaceData's typed return); the ONE-home invariant now lives at the hook.
+  check("the shared dashboard types have ONE home, imported (now by useSpaceData) not re-declared",
+    USE_SPACE_DATA.includes('from "@/lib/space/dashboard-types"'));
   check("host no longer declares the view types inline",
     !DASHCODE.includes("type SpaceAccount =") && !DASHCODE.includes("type DashboardSection ="));
+}
+
+console.log("5. Goals data ownership left the host (SD-7a) — the consumer self-fetches");
+{
+  // (a) The host no longer fetches or holds Goals data. `DASHCODE` is
+  // comment-stripped, so an explanatory comment mentioning the old name does not
+  // trip these — only real code would.
+  check("host no longer fetches the goals endpoint", !DASHCODE.includes("/goals"));
+  check("host no longer holds spaceGoals state", !DASHCODE.includes("spaceGoals"));
+  check("host no longer derives perspectiveNeedsGoals", !DASHCODE.includes("perspectiveNeedsGoals"));
+  check("host no longer threads a goals prop", !DASHCODE.includes("goals={"));
+  check("host no longer imports the SpaceGoal type", !DASHCODE.includes("SpaceGoal"));
+
+  // (b) The Goals CONSUMER owns its own data dependency (the self-fetching
+  // wrapper), and the four perspective widgets render through it.
+  check("goals adapters export the self-fetching GoalPerspectiveWidget",
+    count(GOALS_ADAPTERS, "export function GoalPerspectiveWidget(") === 1);
+  check("GoalPerspectiveWidget fetches goals by spaceId",
+    GOALS_ADAPTERS.includes("/goals") && GOALS_ADAPTERS.includes("fetch("));
+  check("all four goal_* registry entries render through GoalPerspectiveWidget",
+    count(SECTIONREGISTRY, "<GoalPerspectiveWidget") === 4);
+  // GoalsCard (the goals_progress list surface) already owned its data — unchanged.
+  check("GoalsCard still self-fetches its goals", GOALS_CARD.includes("/goals") && GOALS_CARD.includes("fetch("));
+
+  // (c) Existing Goals rendering is unchanged — the four pure render fns and their
+  // registry keys still exist; only their DATA SOURCE moved.
+  for (const key of ['"goal_progress"', '"goal_on_track"', '"goal_required_pace"', '"goal_funding_gap"']) {
+    check(`registry still maps ${key}`, SECTIONREGISTRY.includes(key));
+  }
+  for (const fn of ["renderGoalProgress", "renderGoalOnTrack", "renderGoalRequiredPace", "renderGoalFundingGap"]) {
+    check(`goals adapters still define ${fn}`, GOALS_ADAPTERS.includes(`export function ${fn}(`));
+  }
+
+  // (d) No other consumer relied on the old prop — the section subsystem no longer
+  // declares/threads a goals prop at all.
+  check("SectionRenderProps no longer declares a goals field", !SECTIONREGISTRY.includes("goals?:"));
+  check("SectionCard no longer threads a goals prop", !SECTIONCARD.includes("goals?:") && !SECTIONCARD.includes("SpaceGoal"));
+}
+
+console.log("6. Shared Space data ownership left the host (SD-7b) — useSpaceData owns the lifecycle");
+{
+  // (a) The host no longer OWNS the shared-data fetch effects or their refresh
+  // orchestration. `DASHCODE` is comment-stripped, so the SD-7b explanatory
+  // comments don't trip these — only real code would.
+  check("host no longer fetches snapshots",      !DASHCODE.includes("/snapshots"));
+  check("host no longer fetches the view-context",!DASHCODE.includes("/view-context"));
+  for (const setter of ["setSections", "setAccounts", "setLoading", "setSnapshots", "setSpaceTransactions", "setSpaceMoneyCtx", "setWidgetMoneyCtx", "setMemberCount"]) {
+    check(`host no longer holds ${setter}`, !DASHCODE.includes(setter));
+  }
+  check("host no longer owns the refresh nonce",      !DASHCODE.includes("refreshNonce"));
+  check("host no longer owns the shared-account listener", !DASHCODE.includes("SPACE_ACCOUNTS_CHANGED_EVENT"));
+  check("host no longer owns the manual-sync listener",    !DASHCODE.includes("SPACE_DATA_REFRESHED_EVENT"));
+
+  // (b) The host CONSUMES the hook — imports it and destructures its data.
+  check("host imports useSpaceData", DASH.includes('from "@/lib/space/use-space-data"'));
+  check("host calls useSpaceData", DASHCODE.includes("useSpaceData({"));
+  check("host destructures the hook's transactions + money context",
+    DASHCODE.includes("transactions: spaceTransactions") && DASHCODE.includes("moneyCtx: spaceMoneyCtx"));
+
+  // (c) useSpaceData OWNS the whole lifecycle: every moved fetch, every listener,
+  // and the backfill poll now live in the hook.
+  check("useSpaceData is a hook", USE_SPACE_DATA.includes("export function useSpaceData("));
+  for (const url of ["/sections", "/accounts", "/snapshots", "/transactions", "/view-context"]) {
+    check(`useSpaceData fetches ${url}`, USE_SPACE_DATA.includes(url));
+  }
+  // Currency change + manual sync + shared-account refresh all live in the hook.
+  for (const ev of ["SPACE_CURRENCY_CHANGED_EVENT", "SPACE_DATA_REFRESHED_EVENT", "SPACE_ACCOUNTS_CHANGED_EVENT"]) {
+    check(`useSpaceData owns the ${ev} listener`, USE_SPACE_DATA.includes(ev));
+  }
+  check("useSpaceData owns the currency + refresh nonces",
+    USE_SPACE_DATA.includes("currencyNonce") && USE_SPACE_DATA.includes("refreshNonce"));
+  check("useSpaceData owns the 12s backfill poll",
+    USE_SPACE_DATA.includes("setInterval") && USE_SPACE_DATA.includes("12000"));
+
+  // (d) The PERSPECTIVE-engine loader (lensResults) is out of scope and stays
+  // host-owned — with its own currency-refresh, so currency changes still update it.
+  check("host keeps the perspective-engine loader (lensResults)", DASHCODE.includes("setLensResults"));
+  check("host keeps a currency-refresh for the perspective loader",
+    DASHCODE.includes("perspectivesCurrencyNonce") && DASHCODE.includes("SPACE_CURRENCY_CHANGED_EVENT"));
 }
 
 if (failures > 0) { console.error(`\n${failures} workspaces check(s) failed`); process.exit(1); }
