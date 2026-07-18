@@ -210,22 +210,35 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
     }
   }
 
-  // Shell control visibility derives from the capability (product-correctness).
+  // EXPLICIT point-in-time control visibility derives from the capability. The
+  // universal preset/time slicer is NOT part of this — see the source-scan below.
   const vis = (id: string) => temporalControlVisibility(WORKSPACE_REGISTRY[id].temporalCapability);
-  check("Wealth shell shows As-of + Compare-to, hides Period",
-    vis("wealth").asOf && vis("wealth").compareTo && !vis("wealth").period);
-  check("Investments shell shows As-of + Compare-to, hides Period",
-    vis("investments").asOf && vis("investments").compareTo && !vis("investments").period);
-  check("Cash Flow shell HIDES As-of + Compare-to, shows Period (dead-control fix)",
-    !vis("cashFlow").asOf && !vis("cashFlow").compareTo && vis("cashFlow").period);
-  check("Debt shell shows As-of + Compare-to (partial still renders)",
+  check("Wealth shell shows As-of + Compare-to inputs",
+    vis("wealth").asOf && vis("wealth").compareTo);
+  check("Investments shell shows As-of + Compare-to inputs",
+    vis("investments").asOf && vis("investments").compareTo);
+  check("Cash Flow shell HIDES the As-of + Compare-to inputs (no explicit point-in-time)",
+    !vis("cashFlow").asOf && !vis("cashFlow").compareTo);
+  check("Debt shell shows As-of + Compare-to inputs (partial still renders)",
     vis("debt").asOf && vis("debt").compareTo);
-  check("Liquidity shell shows As-of + Compare-to (partial still renders)",
+  check("Liquidity shell shows As-of + Compare-to inputs (partial still renders)",
     vis("liquidity").asOf && vis("liquidity").compareTo);
-  // Undeclared capability ⇒ all controls (pre-declaration default; nothing changes).
-  check("undeclared capability renders all controls", (() => {
-    const d = temporalControlVisibility(undefined); return d.asOf && d.compareTo && d.period;
+  // Undeclared capability ⇒ both explicit inputs shown (pre-declaration default).
+  check("undeclared capability shows both explicit inputs", (() => {
+    const d = temporalControlVisibility(undefined); return d.asOf && d.compareTo;
   })());
+
+  // UNIVERSAL SLICER (correction to SD-2C): the WTD/MTD/QTD/YTD/1W/… preset strip
+  // is how EVERY Perspective selects canonical time — PerspectiveShell renders it
+  // unconditionally, never behind a temporalCapability / vis.period gate.
+  const shellSrc = readFileSync(
+    path.join(process.cwd(), "components", "space", "shell", "PerspectiveShell.tsx"), "utf8",
+  );
+  check("PerspectiveShell renders the CashFlowPeriodSelector slicer", shellSrc.includes("<CashFlowPeriodSelector"));
+  check("the slicer is NOT gated by capability (no vis.period gate remains)",
+    !shellSrc.includes("vis.period") && !/\{vis\.period\s*&&/.test(shellSrc));
+  check("temporalControlVisibility governs only the explicit inputs (no period key)",
+    !("period" in temporalControlVisibility(WORKSPACE_REGISTRY.cashFlow.temporalCapability)));
 }
 
 // ── envelope source matches resolvePerspectiveEnvelope's switch ──────────────────

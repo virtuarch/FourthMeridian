@@ -83,22 +83,37 @@ export type WorkspaceEnvelopeSource =
   | "none";
 
 /**
- * How much of a workspace HONORS a given axis of canonical Space time.
+ * How much of a workspace INTERPRETS a given axis of canonical Space time.
  *   "full"    — the whole workspace reflects this axis.
  *   "partial" — the workspace PARTICIPATES in this axis, but only part of the
  *               current implementation reflects it (a capability GAP to close,
  *               NOT permanent non-participation — e.g. Liquidity's historical
  *               Ladder is temporal while its per-account panels stay current).
  *   "none"    — this axis is not part of the workspace's temporal model.
- * "partial" still RENDERS the control (it is valid for the temporal portions);
- * the full/partial distinction is semantic metadata for future trust treatment.
+ * For the point-in-time axes (asOf/compareTo) the shell renders the EXPLICIT date
+ * input iff the axis !== "none" ("partial" still renders — valid for the temporal
+ * portions). The full/partial distinction is semantic metadata for future trust.
  */
 export type TemporalCapabilityLevel = "full" | "partial" | "none";
 
-/** Per-workspace declaration of which canonical time axes it consumes. Replaces
- *  the coarse (and stale) `consumesShellTime` boolean — see workspaceConsumesShellTime.
- *  `asOf`/`compareTo` are the point-in-time axes; `period` is the relative-period
- *  axis (Cash Flow's native model). The shell renders a control iff its axis !== "none". */
+/**
+ * Per-workspace declaration of HOW a workspace interprets canonical Space time —
+ * NOT whether the user may select it. The universal preset/time slicer
+ * (WTD/MTD/QTD/YTD/1W/1M/…) is how EVERY Perspective selects canonical
+ * {preset, asOf, compareTo}; it is always available and is NOT gated by this.
+ *
+ *   asOf / compareTo — does the workspace expose an EXPLICIT point-in-time date
+ *                      input? (gates only that input — see temporalControlVisibility)
+ *   period           — does the workspace interpret the selected canonical RANGE as
+ *                      a period-native analytical window (Cash Flow's model)? Cash
+ *                      Flow is `full` here and `none` on the explicit axes: it
+ *                      participates in canonical time (via period) yet exposes no
+ *                      literal As-of/Compare-to inputs. `period` does NOT gate the
+ *                      slicer — it is a semantic descriptor of interpretation.
+ *
+ * Replaces the coarse (and stale) `consumesShellTime` boolean — that is now DERIVED
+ * from any axis !== "none" (workspaceConsumesShellTime).
+ */
 export interface TemporalCapability {
   asOf:      TemporalCapabilityLevel;
   compareTo: TemporalCapabilityLevel;
@@ -161,12 +176,13 @@ export interface WorkspaceDefinition {
    *  (no fetch behavior changes here). Empty ⇒ the workspace self-fetches. */
   dataNeeds?: readonly WorkspaceDataNeed[];
   /**
-   * Per-axis declaration of how this workspace consumes canonical Space time
+   * Per-axis declaration of how this workspace INTERPRETS canonical Space time
    * (asOf / compareTo / period). The SINGLE source of truth for temporal
    * participation — the former coarse `consumesShellTime` boolean is now DERIVED
    * from this (workspaceConsumesShellTime). Absent ⇒ the workspace consumes no
-   * canonical time axis. The shell (PerspectiveShell) renders each time control
-   * only where its axis !== "none" (temporalControlVisibility).
+   * canonical time axis. The shell gates only the EXPLICIT As-of/Compare-to date
+   * inputs by these axes (temporalControlVisibility); the universal preset/time
+   * slicer is rendered for every Perspective regardless.
    */
   temporalCapability?: TemporalCapability;
   /** The trust-envelope source for this workspace (see WorkspaceEnvelopeSource). */
@@ -184,18 +200,21 @@ export function workspaceConsumesShellTime(def: WorkspaceDefinition): boolean {
 }
 
 /**
- * DERIVED — which shell time controls a workspace should render. A control shows
- * iff its axis is not "none" ("partial" still renders — it is valid for the
- * temporal portions). Undefined capability ⇒ all controls (the pre-declaration
- * default), so only workspaces that declare a capability change the shell.
+ * DERIVED — which EXPLICIT point-in-time controls (the As-of / Compare-to date
+ * inputs) a workspace should render. Each shows iff its axis is not "none"
+ * ("partial" still renders — valid for the temporal portions). Undefined
+ * capability ⇒ both shown (the pre-declaration default).
+ *
+ * This does NOT govern the preset/time slicer — that is the UNIVERSAL way to select
+ * canonical time and is rendered for every Perspective (the `period` axis describes
+ * interpretation, not slicer availability).
  */
 export function temporalControlVisibility(cap: TemporalCapability | undefined): {
-  asOf: boolean; compareTo: boolean; period: boolean;
+  asOf: boolean; compareTo: boolean;
 } {
   return {
     asOf:      cap ? cap.asOf      !== "none" : true,
     compareTo: cap ? cap.compareTo !== "none" : true,
-    period:    cap ? cap.period    !== "none" : true,
   };
 }
 

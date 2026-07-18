@@ -52,8 +52,11 @@ interface Props {
 }
 
 export function PerspectiveShell(props: Props) {
-  // Honest controls: render each time control only where the lens consumes that
-  // axis ("none" ⇒ hidden; "partial"/"full" ⇒ shown — see temporalControlVisibility).
+  // The EXPLICIT point-in-time inputs (As-of / Compare-to) are capability-gated —
+  // hidden for a lens that exposes no literal date input (e.g. Cash Flow). The
+  // preset/time slicer below is UNIVERSAL: it is how every Perspective selects
+  // canonical {preset, asOf, compareTo}, so it always renders (never gated by
+  // temporalCapability — the `period` axis describes interpretation, not the slicer).
   const vis = temporalControlVisibility(props.temporalCapability);
   return (
     <div className="space-y-3">
@@ -90,9 +93,8 @@ export function PerspectiveShell(props: Props) {
           showAsOf={vis.asOf}
           showCompareTo={vis.compareTo}
         />
-        {vis.period && (
-          <CashFlowPeriodSelector value={props.presetValue} onChange={props.onSelectPreset} />
-        )}
+        {/* Universal canonical time slicer — every Perspective selects time here. */}
+        <CashFlowPeriodSelector value={props.presetValue} onChange={props.onSelectPreset} />
       </div>
     </div>
   );
