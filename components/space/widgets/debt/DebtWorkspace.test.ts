@@ -43,6 +43,8 @@ const PANEL = strip(read(`${DIR}/DebtHistoryPanel.tsx`));
 const ROUTE = read("app/api/spaces/[id]/debt/space-data/route.ts");
 const ROUTEC = strip(ROUTE);
 const DASH  = strip(read("components/dashboard/SpaceDashboard.tsx"));
+// SD-2 closeout — perspective render impls live in the component-layer renderer map.
+const REND  = strip(read("components/space/workspaces/workspaceRenderers.tsx"));
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -127,10 +129,11 @@ console.log("7. Route serves the debt lens AT asOf (authz-gated single authority
     !ROUTEC.includes("assembleDebtSpaceData") && !ROUTEC.includes("clipDebtHistory") && !ROUTEC.includes("DebtHistorySlice"));
 }
 
-console.log("8. Host RELAYS — mounts <DebtWorkspace> as the debt renderer, dropped <DebtPerspective>");
+console.log("8. Host RELAYS — the renderer map mounts <DebtWorkspace>, dropped <DebtPerspective>");
 {
-  check("host mounts DebtWorkspace (the debt destination's renderer)", DASH.includes("<DebtWorkspace"));
-  check("host no longer mounts DebtPerspective", !DASH.includes("<DebtPerspective"));
+  check("renderer map mounts DebtWorkspace (the debt destination's renderer)", REND.includes("<DebtWorkspace"));
+  check("neither host nor renderer mounts DebtPerspective", !DASH.includes("<DebtPerspective") && !REND.includes("<DebtPerspective"));
+  check("host dispatches via WORKSPACE_RENDERERS", DASH.includes("WORKSPACE_RENDERERS["));
 }
 
 console.log("9. Envelope OWNERSHIP — workspace resolves + emits its own trust envelope; host relays");
@@ -138,9 +141,10 @@ console.log("9. Envelope OWNERSHIP — workspace resolves + emits its own trust 
   check("workspace emits via onEnvelopeChange", CODE.includes("onEnvelopeChange("));
   check("envelope resolved from the on-screen lens via the canonical resolver",
     CODE.includes("resolvePerspectiveEnvelope(") && CODE.includes('perspectiveId: "debt"'));
-  check("host relays the workspace envelope (consolidated)", DASH.includes("<DebtWorkspace") && DASH.includes("onEnvelopeChange={setActiveEnvelope}"));
-  check("debt workspace is registered (registry-driven, not an if/else branch)",
-    DASH.includes("debt: () =>") && DASH.includes("<DebtWorkspace"));
+  check("renderer wires envelope up + host relays it (consolidated)",
+    REND.includes("<DebtWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && DASH.includes("onEnvelopeChange: setActiveEnvelope"));
+  check("debt workspace is registered in the renderer map (registry-driven, not an if/else branch)",
+    REND.includes("debt: (ctx) =>") && REND.includes("<DebtWorkspace"));
 }
 
 if (failures > 0) { console.error(`\n${failures} DebtWorkspace check(s) failed`); process.exit(1); }

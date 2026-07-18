@@ -42,6 +42,8 @@ const HOOKC = strip(HOOK);
 const ROUTE = read("app/api/spaces/[id]/liquidity/space-data/route.ts");
 const ROUTEC = strip(ROUTE);
 const DASH  = strip(read("components/dashboard/SpaceDashboard.tsx"));
+// SD-2 closeout — perspective render impls live in the component-layer renderer map.
+const REND  = strip(read("components/space/workspaces/workspaceRenderers.tsx"));
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -150,7 +152,8 @@ console.log("8. Envelope bridge — emitted up, consumed by the host");
   check("workspace emits the envelope via onEnvelopeChange", CODE.includes("onEnvelopeChange("));
   check("workspace reuses the canonical resolver", CODE.includes("resolvePerspectiveEnvelope("));
   check("host consumes the consolidated envelope in the shell chip", DASH.includes("activeEnvelope"));
-  check("host relays the workspace envelope (consolidated)", DASH.includes("<LiquidityWorkspace") && DASH.includes("onEnvelopeChange={setActiveEnvelope}"));
+  check("renderer wires envelope up + host relays it (consolidated)",
+    REND.includes("<LiquidityWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && DASH.includes("onEnvelopeChange: setActiveEnvelope"));
 }
 
 console.log("9. Route serves the WHOLE contract via loadLiquiditySpaceData (authz-gated single authority)");
@@ -163,10 +166,11 @@ console.log("9. Route serves the WHOLE contract via loadLiquiditySpaceData (auth
     !ROUTEC.includes("assembleLiquiditySpaceData") && !ROUTEC.includes("spliceLiquidityRows") && !ROUTEC.includes("computeLiquidity"));
 }
 
-console.log("10. Host RELAYS — mounts <LiquidityWorkspace>, dropped <LiquidityPerspective>");
+console.log("10. Host RELAYS — the renderer map mounts <LiquidityWorkspace>, dropped <LiquidityPerspective>");
 {
-  check("host mounts LiquidityWorkspace (the liquidity destination's renderer)", DASH.includes("<LiquidityWorkspace"));
-  check("host no longer mounts LiquidityPerspective", !DASH.includes("<LiquidityPerspective"));
+  check("renderer map mounts LiquidityWorkspace (the liquidity destination's renderer)", REND.includes("<LiquidityWorkspace"));
+  check("neither host nor renderer mounts LiquidityPerspective", !DASH.includes("<LiquidityPerspective") && !REND.includes("<LiquidityPerspective"));
+  check("host dispatches via WORKSPACE_RENDERERS", DASH.includes("WORKSPACE_RENDERERS["));
 }
 
 console.log("11. Registry — liquidity stays temporal (consumesShellTime: true)");

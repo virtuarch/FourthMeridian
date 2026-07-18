@@ -10,6 +10,8 @@
  * These import cleanly (pure modules — no DB / React / next).
  */
 
+import { readFileSync } from "fs";
+import { join } from "path";
 import { PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
 import { WIDGET_REGISTRY } from "@/lib/widget-registry";
 import {
@@ -32,24 +34,17 @@ const sameSet = (a: readonly string[], b: readonly string[]) =>
 // ── 1. Registry parity — every PerspectiveDef.widgets[] key exists in
 //      WIDGET_REGISTRY and is a real (implemented, non-deprecated) widget. ──
 //
-// EXCEPTION (P1 closeout): the Investments perspective renders via
-// SpaceDashboard's dedicated `activePerspectiveId === "investments"` branch, NOT
-// through toVirtualSections. Its former `investment_accounts` registry widget
-// was retired; it now carries a non-registry AFFORDANCE MARKER kept only so
-// `widgets.length > 0` (default-pick / Overview-doorway clickability / tab
-// hasWorkspace). The marker is intentionally NOT a registry widget — every OTHER
-// perspective's keys must still be real registry widgets.
-const DEDICATED_BRANCH_MARKERS = new Set(["investments_workspace"]);
-
-// Compensating assertions so a typo/rename can't silently slip through the
-// exemption: investments must use exactly this marker, and the marker must be
-// absent from the registry (proving no dead `investment_accounts` entry lingers).
-check("investments perspective uses exactly the dedicated-branch affordance marker",
-  sameSet(PERSPECTIVE_LIBRARY.investments.widgets ?? [], ["investments_workspace"]));
-check("the affordance marker is intentionally NOT a registry widget",
-  !WIDGET_REGISTRY.has("investments_workspace"));
+// SD-2 closeout: the former `investments_workspace` affordance marker is retired.
+// Investments now renders via its dedicated WORKSPACE_RENDERERS entry, and "is
+// this lens workspace-backed?" is answered by the renderer map (section 1b), NOT
+// by widget presence. So EVERY widgets[] key must now be a real registry widget —
+// no exemption remains.
 check("the retired investment_accounts widget is gone from the registry",
   !WIDGET_REGISTRY.has("investment_accounts"));
+check("the retired investments_workspace affordance marker is gone from the registry",
+  !WIDGET_REGISTRY.has("investments_workspace"));
+check("Investments carries NO widgets[] (it renders via WORKSPACE_RENDERERS, not virtual sections)",
+  !(PERSPECTIVE_LIBRARY.investments.widgets?.length));
 
 const withWidgets = Object.values(PERSPECTIVE_LIBRARY).filter((p) => p.widgets && p.widgets.length > 0);
 check("at least one Perspective has a widgets[] workspace (wealth)",
@@ -57,7 +52,6 @@ check("at least one Perspective has a widgets[] workspace (wealth)",
 
 for (const p of withWidgets) {
   for (const key of p.widgets!) {
-    if (DEDICATED_BRANCH_MARKERS.has(key)) continue; // dedicated-branch affordance marker (see above)
     const entry = WIDGET_REGISTRY.get(key);
     check(`perspective "${p.id}" widget "${key}" exists in WIDGET_REGISTRY`, entry !== undefined);
     if (entry) {
@@ -67,6 +61,30 @@ for (const p of withWidgets) {
     }
   }
 }
+
+// ── 1b. Registry ↔ renderer parity (SD-2 closeout). ──
+// WORKSPACE_REGISTRY (semantic identity) and WORKSPACE_RENDERERS (React render
+// impls) are two authorities that must NOT drift. The renderer map is a component
+// module (React) that can't be imported under bare tsx, so source-scan its
+// top-level keys and bind them to the registry's "renders an inline workspace"
+// set: a finance Perspective that is available and NOT a routed modal.
+const rendererSrc = readFileSync(
+  join(process.cwd(), "components", "space", "workspaces", "workspaceRenderers.tsx"), "utf8",
+);
+// Keys are the top-level `  <id>: (ctx) => (` entries of the WORKSPACE_RENDERERS object.
+const rendererKeys = [...rendererSrc.matchAll(/^ {2}(\w+):\s*\(ctx\)\s*=>/gm)].map((m) => m[1]);
+const rendererSet = new Set(rendererKeys);
+const registryRenderIds = Object.values(PERSPECTIVE_LIBRARY)
+  .filter((p) => p.kind === "perspective" && p.status === "available" && !p.routing?.targetTab)
+  .map((p) => p.id);
+check("no duplicate renderer keys", rendererKeys.length === rendererSet.size);
+check("every WORKSPACE_RENDERERS key is a real registry perspective id",
+  rendererKeys.every((id) => id in PERSPECTIVE_LIBRARY), `keys: ${rendererKeys.join(", ")}`);
+check("registry render-set === WORKSPACE_RENDERERS keys (no perspective without a renderer, no orphan renderer)",
+  sameSet(registryRenderIds, rendererKeys),
+  `registry: [${[...registryRenderIds].sort().join(", ")}] renderers: [${[...rendererKeys].sort().join(", ")}]`);
+check("Investments is workspace-backed via the renderer (proves the marker removal did not orphan it)",
+  rendererSet.has("investments"));
 
 // ── 2. Wealth workspace uses its purpose-built, assets-only widgets. ──
 // MEMBERSHIP is the doctrine (these four assets-only widgets, no Overview reuse);

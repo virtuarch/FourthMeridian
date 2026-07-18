@@ -34,6 +34,8 @@ const SECTION = strip(read(`${DIR}/HoldingsSection.tsx`));
 const MODAL   = strip(read(`${DIR}/HoldingsModal.tsx`));
 const ROUTEC  = strip(ROUTE);
 const HOSTC   = strip(read("components/dashboard/SpaceDashboard.tsx"));
+// SD-2 closeout — perspective render impls live in the component-layer renderer map.
+const REND    = strip(read("components/space/workspaces/workspaceRenderers.tsx"));
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -54,7 +56,10 @@ console.log("2. Data OWNERSHIP + envelope BRIDGE");
   check("host does NOT call the hook", !HOSTC.includes("useInvestmentsSpaceData"));
   check("host retains no Investments data", !HOSTC.includes("investments.data"));
   check("Workspace emits envelope via canonical resolver", CODE.includes("onEnvelopeChange(") && CODE.includes("resolvePerspectiveEnvelope("));
-  check("host relays the Workspace envelope (consolidated)", HOSTC.includes("<InvestmentsWorkspace") && HOSTC.includes("onEnvelopeChange={setActiveEnvelope}"));
+  check("renderer wires envelope up + host relays it (consolidated)",
+    REND.includes("<InvestmentsWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && HOSTC.includes("onEnvelopeChange: setActiveEnvelope"));
+  check("renderer map mounts <InvestmentsWorkspace> + host dispatches via WORKSPACE_RENDERERS",
+    REND.includes("<InvestmentsWorkspace") && HOSTC.includes("WORKSPACE_RENDERERS["));
 }
 
 console.log("3. Valuation chart — canonical SpaceSnapshot series, no double-count, no N×date");

@@ -29,6 +29,8 @@ const ROOT = process.cwd();
 const read = (p: string) => readFileSync(path.join(ROOT, p), "utf8");
 const WS   = read("components/space/widgets/cashflow/CashFlowWorkspace.tsx");
 const DASH = read("components/dashboard/SpaceDashboard.tsx");
+// SD-2 closeout — perspective render impls live in the component-layer renderer map.
+const REND = read("components/space/workspaces/workspaceRenderers.tsx");
 const CAL  = read("components/space/widgets/CashFlowCalendar.tsx");
 const HIST = read("components/space/widgets/CashFlowHistoryWidget.tsx");
 
@@ -40,10 +42,11 @@ function check(name: string, cond: boolean, detail?: string): void {
 
 console.log("1. CashFlowWorkspace is the render boundary");
 {
-  check("host mounts <CashFlowWorkspace (the cashFlow destination's renderer)", DASH.includes("<CashFlowWorkspace"));
-  check("host no longer imports the old cashflow/CashFlowPerspective", !DASH.includes("cashflow/CashFlowPerspective"));
-  check("host no longer references CashFlowPerspectiveWorkspace", !DASH.includes("CashFlowPerspectiveWorkspace"));
-  check("cashFlow workspace is registered", DASH.includes("cashFlow: () =>") && DASH.includes("<CashFlowWorkspace"));
+  check("renderer map mounts <CashFlowWorkspace (the cashFlow destination's renderer)", REND.includes("<CashFlowWorkspace"));
+  check("host dispatches perspective renderers via WORKSPACE_RENDERERS", DASH.includes("WORKSPACE_RENDERERS["));
+  check("neither host nor renderer references the old CashFlowPerspective",
+    !DASH.includes("cashflow/CashFlowPerspective") && !REND.includes("cashflow/CashFlowPerspective") && !DASH.includes("CashFlowPerspectiveWorkspace"));
+  check("cashFlow workspace is registered in the renderer map", REND.includes("cashFlow: (ctx) =>") && REND.includes("<CashFlowWorkspace"));
 }
 
 console.log("2. CashFlowSpaceData is the composition boundary");
@@ -112,10 +115,10 @@ console.log("9. Old Cash Flow host composition retired/reduced");
   check("host removed the cashFlowPerspective/filterId state block", !DASH.includes("const [cashFlowPerspective") && !DASH.includes("const [cashFlowFilterId"));
   check("host dropped the now-unused DEFAULT_FILTER_ID import", !DASH.includes("DEFAULT_FILTER_ID"));
   // The relocated slice controls are no longer passed down from the host.
-  check("host no longer passes the relocated slice controls to the workspace", (() => {
-    const i = DASH.indexOf("<CashFlowWorkspace");
-    const j = DASH.indexOf("/>", i);
-    const jsx = i >= 0 && j >= 0 ? DASH.slice(i, j) : "";
+  check("the renderer no longer passes the relocated slice controls to the workspace", (() => {
+    const i = REND.indexOf("<CashFlowWorkspace");
+    const j = REND.indexOf("/>", i);
+    const jsx = i >= 0 && j >= 0 ? REND.slice(i, j) : "";
     return !jsx.includes("perspective=") && !jsx.includes("filterId=") && !jsx.includes("onPerspectiveChange=");
   })());
 }
@@ -131,7 +134,8 @@ console.log("10. Trust OWNERSHIP — workspace owns the stamp AND emits its own 
     WS.includes("onEnvelopeChange(") && WS.includes("resolvePerspectiveEnvelope(") && WS.includes('perspectiveId: "cashFlow"'));
   check("host no longer computes cashFlowStampValue", !DASH.includes("cashFlowStampValue"));
   check("host no longer imports cashFlowStamp / LiquidityTx for the stamp", !DASH.includes("cash-flow-compare") && !DASH.includes("import type { LiquidityTx }"));
-  check("host relays the workspace envelope (consolidated)", DASH.includes("<CashFlowWorkspace") && DASH.includes("onEnvelopeChange={setActiveEnvelope}"));
+  check("renderer wires envelope up + host relays it (consolidated)",
+    REND.includes("<CashFlowWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && DASH.includes("onEnvelopeChange: setActiveEnvelope"));
 }
 
 if (failures > 0) { console.error(`\n${failures} CashFlowWorkspace check(s) failed`); process.exit(1); }

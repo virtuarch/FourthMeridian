@@ -32,6 +32,8 @@ const CONV  = read("lib/wealth/display-conversion.ts");
 const CONVC = strip(CONV);
 const TM    = strip(read("lib/wealth/wealth-time-machine.ts"));
 const HOSTC = strip(read("components/dashboard/SpaceDashboard.tsx"));
+// SD-2 closeout — the perspective render impls moved to the component-layer map.
+const REND  = strip(read("components/space/workspaces/workspaceRenderers.tsx"));
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -58,7 +60,8 @@ console.log("3. Data OWNERSHIP moved host → Workspace (no duplicate Wealth com
   check("Workspace owns the composition (computeWealthTimeMachine)", CODE.includes("computeWealthTimeMachine("));
   check("host no longer computes WealthResult", !HOSTC.includes("computeWealthTimeMachine("));
   check("host retains no wealthResult / wealthCurrency", !HOSTC.includes("wealthResult") && !HOSTC.includes("wealthCurrency"));
-  check("host mounts <WealthWorkspace> (the wealth destination's renderer)", HOSTC.includes("<WealthWorkspace"));
+  check("the renderer map mounts <WealthWorkspace> (the wealth destination's renderer)", REND.includes("<WealthWorkspace"));
+  check("host dispatches perspective renderers via WORKSPACE_RENDERERS", HOSTC.includes("WORKSPACE_RENDERERS["));
 }
 
 console.log("4. Canonical time — asOf/compareTo are PROPS; no local time authority");
@@ -90,7 +93,8 @@ console.log("6. Trust / envelope — resolved in the Workspace, bridged to the s
   // The host relays the engaged Workspace's envelope to the shell. Post-registry
   // this is ONE consolidated envelope state (setActiveEnvelope) fed by whichever
   // workspace is mounted — not a per-lens var + selection ternary.
-  check("host relays the Workspace envelope (setActiveEnvelope) to the shell", HOSTC.includes("onEnvelopeChange={setActiveEnvelope}") && HOSTC.includes("activeEnvelope"));
+  check("renderer wires the envelope up + host relays it (setActiveEnvelope → activeEnvelope) to the shell",
+    REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && HOSTC.includes("onEnvelopeChange: setActiveEnvelope") && HOSTC.includes("activeEnvelope"));
   check("Evidence drawer is now Workspace-owned (moved off the host)", CODE.includes("<EvidenceDrawer") && !HOSTC.includes("EvidenceDrawer"));
   check("no duplicate trust math (only the canonical resolver, no bespoke tiers)", !CODE.includes("completeness:") && !CODE.includes("tier:"));
 }

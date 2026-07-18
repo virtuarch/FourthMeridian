@@ -29,11 +29,7 @@ import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { PerspectiveTabs } from "@/components/space/shell/PerspectiveTabs";
-import { WealthWorkspace } from "@/components/space/widgets/wealth/WealthWorkspace";
-import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
-import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/LiquidityWorkspace";
-import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
-import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
+import { WORKSPACE_RENDERERS, type WorkspaceRenderCtx } from "@/components/space/workspaces/workspaceRenderers";
 import { MembersWorkspace } from "@/components/space/workspaces/MembersWorkspace";
 import { TransactionsWorkspace, TX_SCOPE_NOTE } from "@/components/space/workspaces/TransactionsWorkspace";
 import { AccountsWorkspace } from "@/components/space/workspaces/AccountsWorkspace";
@@ -320,12 +316,18 @@ export function SpaceDashboard({
   //     removed from the selector, its Workspace architecture treated separately.
   // ONE shared PerspectiveTabs renders this on the summary AND (engaged) inside
   // PerspectiveShell — same items, same handler; never two selectors at once.
+  // SD-2 — "is this Perspective workspace-backed?" is answered by the renderer
+  // contract (a dedicated WORKSPACE_RENDERERS entry) OR real widgets[] (the
+  // virtual-section path, e.g. Goals) — never by widget presence alone. Investments
+  // has a renderer but no widgets, so the widget-only proxy would wrongly gray it out.
+  const isWorkspaceBacked = (p: { id: string; widgets?: readonly string[] }) =>
+    p.id in WORKSPACE_RENDERERS || !!(p.widgets && p.widgets.length > 0);
   const lensSelectorItems = useMemo(
     () => [
       { id: NET_WORTH_LENS_ID, label: "Net Worth", hasWorkspace: true },
       ...CORE_LENS_IDS.map((id) => perspectiveItems.find((p) => p.id === id))
         .filter((p): p is (typeof perspectiveItems)[number] => Boolean(p))
-        .map((p) => ({ id: p.id, label: p.label, hasWorkspace: !!(p.widgets && p.widgets.length > 0) })),
+        .map((p) => ({ id: p.id, label: p.label, hasWorkspace: isWorkspaceBacked(p) })),
     ],
     [perspectiveItems],
   );
@@ -339,7 +341,7 @@ export function SpaceDashboard({
   const perspectiveDoorwayItems = useMemo(
     () =>
       perspectiveItems.map((p) =>
-        p.widgets && p.widgets.length > 0
+        isWorkspaceBacked(p)
           ? { ...p, onSelect: () => { setSelectedPerspectiveId(p.id); setActiveTab("OVERVIEW"); } }
           : { ...p, onSelect: undefined },
       ),
@@ -425,24 +427,14 @@ export function SpaceDashboard({
   // gate — the completeness stamp AND its trust envelope are now workspace-owned too
   // (emitted up via cashFlowEnvelope, below); the host retains only the canonical-time
   // seam (cashFlowPeriod).
-  // SD-6A — the Debt WORKSPACE owns its data consumption (the useDebtSpaceData
-  // fetch moved inside <DebtWorkspace>); this gates its as-of lens fetch to when
-  // the Debt perspective is open. compareTo is guarded to a strictly-earlier window.
+  // Debt/Investments/Liquidity own their own historical fetch (inside each
+  // Workspace) and gate it on being the open perspective. compareTo is guarded to a
+  // strictly-earlier window (those historical routes 400 on compareTo >= asOf) —
+  // one identical clamp shared by all three (SD-2 folded the former per-lens
+  // debt/investments/liquidityCompareTo consts into this).
   const debtActive = activeTab === "OVERVIEW" && activePerspectiveId === "debt";
-  const debtCompareTo = compareTo && compareTo < asOf ? compareTo : null;
-  // SD-4D+ — the Investments WORKSPACE now OWNS its data consumption (the
-  // useInvestmentsSpaceData fetch moved inside <InvestmentsWorkspace>). The host keeps
-  // NO Investments fetch; it only relays the workspace's trust envelope to the shell
-  // Completeness chip via this state (the narrow bridge, §1). compareTo is guarded to a
-  // valid strictly-earlier window (the route 400s on compareTo >= asOf).
-  const investmentsCompareTo = compareTo && compareTo < asOf ? compareTo : null;
-  // SD-6B — the Liquidity WORKSPACE now OWNS its data consumption (the
-  // useLiquiditySpaceData fetch moved inside <LiquidityWorkspace>), activating the
-  // historical engine end-to-end. Like Investments, the host keeps NO Liquidity fetch;
-  // it only gates the workspace's historical read to when the perspective is open, and
-  // relays the workspace's trust envelope (present-day OR as-of) to the shell chip.
   const liquidityActive = activeTab === "OVERVIEW" && activePerspectiveId === "liquidity";
-  const liquidityCompareTo = compareTo && compareTo < asOf ? compareTo : null;
+  const historicalCompareTo = compareTo && compareTo < asOf ? compareTo : null;
   // SD-7a — Goals data ownership moved OUT of the host: each Goals Perspective
   // widget self-fetches via GoalPerspectiveWidget (mirroring GoalsCard). The host
   // no longer fetches goals, holds `spaceGoals`, or threads it through SectionCard.
@@ -663,7 +655,7 @@ export function SpaceDashboard({
             // separate Perspectives tab). Stays on OVERVIEW; the lens selector
             // then lets the user move between lenses or back to the summary.
             onClick={() => {
-              const first = perspectiveItems.find((p) => p.widgets && p.widgets.length > 0)?.id;
+              const first = perspectiveItems.find((p) => isWorkspaceBacked(p))?.id;
               if (first) setSelectedPerspectiveId(first);
             }}
             className="text-xs font-medium text-[var(--meridian-400)] hover:text-[var(--meridian-300)] transition-colors"
@@ -689,86 +681,38 @@ export function SpaceDashboard({
     snapshotCurrency: snapshotCurrency ?? displayCurrency,
   };
 
-  // Perspective workspace registry — replaces the former `activePerspectiveId ===
-  // "..." ? <XWorkspace/> : ...` render ladder with a declarative id → renderer
-  // map: adding a lens is an entry, not another branch. Each is a THUNK so only
-  // the engaged workspace is evaluated. The map's KEYS are also the single source
-  // of truth for "which lenses own a workspace" — reused for the trust-envelope
-  // selection (an engaged workspace emits its own envelope into activeEnvelope;
-  // anything else falls through to the canonical resolver).
-  const workspaceRenderers: Record<string, () => React.ReactNode> = {
-    wealth: () => (
-      <WealthWorkspace
-        snapshots={snapshots}
-        snapshotCurrency={snapshotCurrency ?? displayCurrency}
-        asOf={asOf}
-        compareTo={compareTo}
-        accounts={accounts}
-        ctx={widgetCtx}
-        metric={chartMetric}
-        onMetricChange={setChartMetric}
-        onSwitchLens={switchLens}
-        onEnvelopeChange={setActiveEnvelope}
-        backfillInProgress={snapshotsBackfilling}
-      />
-    ),
-    cashFlow: () => (
-      <CashFlowWorkspace
-        transactions={spaceTransactions}
-        txCtx={txConversionCtx}
-        accounts={accounts}
-        period={cashFlowPeriod}
-        onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
-        onEnvelopeChange={setActiveEnvelope}
-      />
-    ),
-    liquidity: () => (
-      <LiquidityWorkspace
-        spaceId={spaceId}
-        asOf={asOf}
-        compareTo={liquidityCompareTo}
-        today={shellToday}
-        active={liquidityActive}
-        accounts={accounts}
-        ctx={widgetCtx}
-        presentLens={lensResults?.["liquidity"] ?? null}
-        transactions={spaceTransactions}
-        txCtx={txConversionCtx}
-        period={cashFlowPeriod}
-        onOpenCashFlow={() => setSelectedPerspectiveId("cashFlow")}
-        onEnvelopeChange={setActiveEnvelope}
-      />
-    ),
-    investments: () => (
-      <InvestmentsWorkspace
-        spaceId={spaceId}
-        asOf={asOf}
-        compareTo={investmentsCompareTo}
-        active={perspectiveNeedsInvestments}
-        today={shellToday}
-        accounts={accounts}
-        ctx={widgetCtx}
-        onEnvelopeChange={setActiveEnvelope}
-      />
-    ),
-    debt: () => (
-      <DebtWorkspace
-        spaceId={spaceId}
-        asOf={asOf}
-        compareTo={debtCompareTo}
-        today={shellToday}
-        active={debtActive}
-        accounts={accounts}
-        ctx={widgetCtx}
-        snapshots={snapshots}
-        snapshotCurrency={snapshotCurrency ?? displayCurrency}
-        ficoScore={ficoScore}
-        ficoUpdatedAt={ficoUpdatedAt}
-        presentLens={lensResults?.["debt"] ?? null}
-        targetCurrency={perspectiveTargetCurrency}
-        onEnvelopeChange={setActiveEnvelope}
-      />
-    ),
+  // SD-2 closeout — the perspective render implementations moved to the
+  // component-layer WORKSPACE_RENDERERS map (workspaceRenderers.tsx), keyed by the
+  // registry's workspace ids and bound to the registry by a parity test. The host
+  // no longer defines which component renders; it materializes ONE render context
+  // (from useSpaceData + useSpaceNavigation + shell time + props) and dispatches.
+  const renderCtx: WorkspaceRenderCtx = {
+    spaceId,
+    snapshotCurrency: snapshotCurrency ?? displayCurrency,
+    ficoScore,
+    ficoUpdatedAt,
+    perspectiveTargetCurrency,
+    accounts,
+    snapshots,
+    snapshotsBackfilling,
+    transactions: spaceTransactions,
+    widgetCtx,
+    txCtx: txConversionCtx,
+    asOf,
+    compareTo,
+    historicalCompareTo,
+    today: shellToday,
+    debtActive,
+    liquidityActive,
+    investmentsActive: perspectiveNeedsInvestments,
+    lensResults,
+    cashFlowPeriod,
+    chartMetric,
+    onMetricChange: setChartMetric,
+    onSwitchLens: switchLens,
+    onEnvelopeChange: setActiveEnvelope,
+    onSelectCashFlowPeriod: setCashFlowExplicitPeriod,
+    onOpenCashFlow: () => setSelectedPerspectiveId("cashFlow"),
   };
 
   return (
@@ -899,7 +843,7 @@ export function SpaceDashboard({
                 // The engaged workspace emits its OWN trust envelope into
                 // activeEnvelope; a lens without a workspace (e.g. goals) falls
                 // through to the canonical resolver. The registry keys decide which.
-                activePerspectiveId && workspaceRenderers[activePerspectiveId]
+                activePerspectiveId && WORKSPACE_RENDERERS[activePerspectiveId]
                   ? activeEnvelope
                   : resolvePerspectiveEnvelope({
                       perspectiveId: activePerspectiveId ?? "",
@@ -923,12 +867,12 @@ export function SpaceDashboard({
               aria-labelledby={activePerspectiveId ? `ptab-${activePerspectiveId}` : undefined}
               className="space-y-3"
             >
-              {activePerspectiveId && workspaceRenderers[activePerspectiveId] ? (
+              {activePerspectiveId && WORKSPACE_RENDERERS[activePerspectiveId] ? (
                 // Registry-driven: the engaged financial workspace (Wealth / Cash Flow
                 // / Liquidity / Investments / Debt). Each owns its data + FX + as-of
-                // trust and emits its envelope up; the host only supplies shared inputs
-                // + shell time. See workspaceRenderers above.
-                workspaceRenderers[activePerspectiveId]()
+                // trust and emits its envelope up; the host only supplies the render
+                // context. See components/space/workspaces/workspaceRenderers.tsx.
+                WORKSPACE_RENDERERS[activePerspectiveId](renderCtx)
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
                   <SectionCard

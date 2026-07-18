@@ -236,15 +236,12 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // historical pricing (the A8 price foundation). Wealth owns "how much am I
     // worth"; Investments never restates that hero. Per-holding gain/loss and
     // cost basis stay out — the data does not carry them, and unknown is
-    // preferable to incorrect. widgets[] is retained ONLY as the shell's
-    // "has-workspace" affordance marker — it is consumed for `.length > 0`
-    // (default-perspective pick, Overview-doorway clickability, tab
-    // hasWorkspace), never rendered: the composition mounts via SpaceDashboard's
-    // dedicated `activePerspectiveId === "investments"` branch, so the generic
-    // toVirtualSections path is unreachable here. The former "investment_accounts"
-    // registry widget was retired (P1 closeout); this marker is not a registry
-    // key (toVirtualSections would fall back to the raw string, but never runs).
-    widgets: ["investments_workspace"],
+    // preferable to incorrect. SD-2 closeout: Investments carries NO widgets[] —
+    // it renders via the dedicated WORKSPACE_RENDERERS.investments entry
+    // (components/space/workspaces/workspaceRenderers.tsx), and "is this lens
+    // workspace-backed?" is answered by that renderer map, not widget presence.
+    // The former "investment_accounts" registry widget and the "investments_workspace"
+    // affordance marker are both retired.
     // M2 canonical IA: Investments is a specialized Workspace (perspective)
     // selected through Overview — NOT a routed modal. Its former
     // `routing.targetTab: "INVESTMENTS"` (RoutedWorkspaceModal) is retired so it
