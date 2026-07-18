@@ -78,7 +78,6 @@ console.log("2. Host no longer DEFINES the extracted composition (ownership left
 console.log("3. The section subsystem is the ONE home for SectionCard + the registry");
 {
   check("SectionCard.tsx defines SectionCard once", count(SECTIONCARD, "export function SectionCard(") === 1);
-  check("SectionCard.tsx defines SortableSectionCard once", count(SECTIONCARD, "export function SortableSectionCard(") === 1);
   check("SectionRegistry.tsx defines the SectionRegistry once", count(SECTIONREGISTRY, "export const SectionRegistry") === 1);
   check("host imports SectionCard from the card module + SectionRegistry from the registry module",
     DASH.includes('from "@/components/space/sections/SectionCard"') &&

@@ -9,7 +9,7 @@
  * the same components, the same gating, the same order. The workspace now OWNS the
  * Overview composition switcher state (composition / compositionItems) — Overview-only
  * state that the host used to hold — while the SHARED data (accounts, snapshots, the
- * fetched doorway nodes) and the host-owned Edit-Layout controls come in as props.
+ * fetched doorway nodes) come in as props.
  *
  * OverviewSetupCard (the day-zero state) lives here — it is Overview's, not a section
  * renderer, so it left SpaceSections with SD-7.
@@ -27,7 +27,6 @@ import {
   SpaceSectionStack,
   NoSectionsCard,
   type SectionCardBundle,
-  type SectionStackControls,
 } from "./SpaceSectionStack";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 
@@ -89,7 +88,6 @@ export function OverviewWorkspace({
   snapshotsLoading,
   // Section stack
   sectionsForTab,
-  controls,
   card,
   // Change-preview doorways (host-composed nodes — read data already fetched)
   recentTransactionsDoorway,
@@ -109,7 +107,6 @@ export function OverviewWorkspace({
   heroCurrency: string;
   snapshotsLoading: boolean;
   sectionsForTab: DashboardSection[];
-  controls: SectionStackControls;
   card: SectionCardBundle;
   recentTransactionsDoorway: ReactNode;
   perspectivesDoorway: ReactNode;
@@ -173,7 +170,6 @@ export function OverviewWorkspace({
             <SpaceSectionStack
               sections={sectionsForTab}
               emptyState={heroDef && accounts.length > 0 ? null : <NoSectionsCard canManage={canManage} onManage={onManage} />}
-              {...controls}
               card={card}
             />
           )}

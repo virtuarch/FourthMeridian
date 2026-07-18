@@ -14,8 +14,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, LayoutDashboard, LogOut } from "lucide-react";
-import { PointerSensor, KeyboardSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
 // Unified Space Widget Layout (slice 1) — Personal Overview lede widgets, now
 // section-backed (net_worth_chart + allocation).
@@ -43,7 +41,7 @@ import { ActivityWorkspace } from "@/components/space/workspaces/ActivityWorkspa
 import { OverviewWorkspace } from "@/components/space/workspaces/OverviewWorkspace";
 import { AddGoalModal } from "@/components/space/workspaces/AddGoalModal";
 import { RoutedWorkspaceModal } from "@/components/space/workspaces/RoutedWorkspaceModal";
-import type { SectionCardBundle, SectionStackControls } from "@/components/space/workspaces/SpaceSectionStack";
+import type { SectionCardBundle } from "@/components/space/workspaces/SpaceSectionStack";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
 import { railVisibleTabs, SPACE_TAB_LABELS, SPACE_ACCOUNTS_CHANGED_EVENT, SPACE_CURRENCY_CHANGED_EVENT, SPACE_DATA_REFRESHED_EVENT } from "@/lib/space-nav";
 import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
@@ -734,23 +732,6 @@ export function SpaceDashboard({
     if (res.ok) setAccounts(await res.json());
   }, [spaceId]);
 
-  // ── Edit Layout mode (UX-CUST-1A) ──────────────────────────────────────────
-  // Lives on the visible dashboard surface: while active, the active tab's
-  // SectionCard stack shows drag handles and each drop persists the new order
-  // through the reorder endpoint. `savingLayout` guards the in-flight persist.
-  const [editingLayout, setEditingLayout] = useState(false);
-  // M3-Reset — Edit-Layout mode is no longer reachable (its toolbar button was
-  // removed); `editingLayout` stays false so the section stacks render plain, and
-  // the drag machinery below is inert (a follow-up can delete it entirely).
-  const [, setSavingLayout]  = useState(false);
-  const layoutSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
-  // Leaving a tab exits Edit Layout — reorder is scoped to the tab you entered.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { setEditingLayout(false); }, [activeTab]);
-
   // Refetch accounts whenever another component (e.g. ManageSpaceModal Finances tab) signals a change
   useEffect(() => {
     function handleAccountsChanged() { loadAccounts(); }
@@ -1002,57 +983,6 @@ export function SpaceDashboard({
     .filter((s) => s.tab === activeTab)
     .sort((a, b) => a.order - b.order);
 
-  // ── Edit Layout drag persistence (UX-CUST-1A) ──────────────────────────────
-  // The visible stack is only the enabled+renderable subset of the tab, but the
-  // reorder endpoint requires the tab's FULL permutation. So we splice the new
-  // visible order back into the full tab list, keeping hidden/unrenderable
-  // sections pinned at their current positions, and send that. Tab-scoped by
-  // construction (only activeTab's sections are ever touched).
-  const canReorderTab =
-    canManage &&
-    sectionsForTab.length > 1 &&
-    activeTab !== "SETTINGS" && activeTab !== "ACTIVITY" &&
-    !NEW_SPACE_TABS.includes(activeTab) &&
-    !isRoutedWorkspaceTab(activeTab);
-
-  async function handleSectionDragEnd(e: DragEndEvent) {
-    const { active, over } = e;
-    if (!over || active.id === over.id) return;
-
-    const visibleIds = sectionsForTab.map((s) => s.id);
-    const oldIdx = visibleIds.indexOf(String(active.id));
-    const newIdx = visibleIds.indexOf(String(over.id));
-    if (oldIdx === -1 || newIdx === -1) return;
-    const newVisible = arrayMove(visibleIds, oldIdx, newIdx);
-
-    // Full tab list in current order; substitute visible slots with the new
-    // visible sequence, leave hidden sections where they are.
-    const allTab = sections
-      .filter((s) => s.tab === activeTab)
-      .sort((a, b) => a.order - b.order);
-    const visibleSet = new Set(visibleIds);
-    let vp = 0;
-    const fullOrderIds = allTab.map((s) => (visibleSet.has(s.id) ? newVisible[vp++] : s.id));
-
-    // Optimistic: reassign order = index for this tab's rows.
-    const orderById = new Map(fullOrderIds.map((id, i) => [id, i]));
-    setSections((prev) =>
-      prev.map((s) => (orderById.has(s.id) ? { ...s, order: orderById.get(s.id)! } : s)),
-    );
-
-    setSavingLayout(true);
-    try {
-      await fetch(`/api/spaces/${spaceId}/sections/reorder`, {
-        method:  "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ tab: activeTab, sectionIds: fullOrderIds }),
-      });
-      await loadSections();
-    } finally {
-      setSavingLayout(false);
-    }
-  }
-
   // ── Hero series (Space Template Redesign) ─────────────────────────────────
   // MC1 QA Q4b — drop fxMiss points (off-stamp rows whose FX rate missed, so
   // their values are native/unconverted) so the hero series never plots mixed
@@ -1130,9 +1060,8 @@ export function SpaceDashboard({
       </div>
     ) : null;
 
-  // SD-7 — the SectionCard prop bundle + host-owned Edit-Layout controls that the
-  // section-backed Workspaces (Accounts / Activity / Overview) thread through
-  // SpaceSectionStack. Byte-identical to the props the host's inline stack passed.
+  // SD-7 — the SectionCard prop bundle that the section-backed Workspaces
+  // (Accounts / Activity / Overview) thread through SpaceSectionStack.
   const sectionCardBundle: SectionCardBundle = {
     accounts,
     spaceId,
@@ -1143,12 +1072,6 @@ export function SpaceDashboard({
     ctx: widgetCtx,
     snapshots,
     snapshotCurrency: snapshotCurrency ?? displayCurrency,
-  };
-  const sectionStackControls: SectionStackControls = {
-    editingLayout,
-    canReorder: canReorderTab,
-    sensors: layoutSensors,
-    onDragEnd: handleSectionDragEnd,
   };
 
   // Perspective workspace registry — replaces the former `activePerspectiveId ===
@@ -1519,7 +1442,6 @@ export function SpaceDashboard({
               heroCurrency={displayCurrency}
               snapshotsLoading={snapshots === null}
               sectionsForTab={sectionsForTab}
-              controls={sectionStackControls}
               card={sectionCardBundle}
               recentTransactionsDoorway={recentTransactionsDoorway}
               perspectivesDoorway={perspectivesDoorway}
@@ -1534,7 +1456,6 @@ export function SpaceDashboard({
             sections={sectionsForTab}
             canManage={canManage}
             onManage={() => setShowManage(true)}
-            controls={sectionStackControls}
             card={sectionCardBundle}
           />
         )}
@@ -1546,7 +1467,6 @@ export function SpaceDashboard({
             sections={sectionsForTab}
             canManage={canManage}
             onManage={() => setShowManage(true)}
-            controls={sectionStackControls}
             card={sectionCardBundle}
           />
         )}

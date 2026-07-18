@@ -276,11 +276,9 @@ export function renderAssetAllocation(
 // Treemap (default), Donut, and Allocation strip. renderAssetAllocation is left
 // intact and is REUSED verbatim for Donut mode (no duplicated donut logic).
 //
-// Drag/drop safety: chart-mode is LOCAL useState only — never persisted. Section
-// drag (when active) is handle-based (the SortableSectionCard grip owns the dnd
-// listeners), and the Wealth Perspective workspace renders these as virtual,
-// render-only sections with no drag at all — so internal state cannot interfere
-// with reorder. The toggle also stops pointerdown propagation defensively.
+// Chart-mode is LOCAL useState only — never persisted. The Wealth Perspective
+// workspace renders these as virtual, render-only sections. The toggle stops
+// pointerdown propagation defensively.
 
 type AllocationMode = "treemap" | "donut" | "strip";
 

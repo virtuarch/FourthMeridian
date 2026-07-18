@@ -14,9 +14,7 @@
  */
 
 import React, { useState } from "react";
-import { ChevronDown, ChevronUp, GripVertical } from "lucide-react";
-import { useSortable } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { simulatePayoff } from "@/components/space/sections/DebtPayoffSection";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
@@ -272,59 +270,6 @@ export function SectionCard({
           {renderBody()}
         </div>
       )}
-    </div>
-  );
-}
-
-// ─── Visible-surface reorder (UX-CUST-1A) ───────────────────────────────────────
-
-/**
- * SortableSectionCard — wraps the *existing* SectionCard rendering path with a
- * drag handle so section cards can be reordered directly on the visible
- * dashboard while Edit Layout mode is active. It does not alter SectionCard;
- * the card renders unchanged as children.
- *
- * Layout: this only mounts inside the Edit-Layout SortableContext, so it always
- * insets the card into a left gutter (`pl-8`) and drops the grip into that
- * gutter (`left-0`). That way the handle never overlaps the card's title/content
- * for ANY section type, and reverts to full width the moment Edit Layout exits
- * (this wrapper is no longer rendered).
- *
- * Module-level (not created during render) so the React Compiler doesn't flag
- * it. Tab-scoping is structural: the single SortableContext that mounts this
- * only ever contains the active tab's visible cards, so a card can never be
- * dropped into another tab.
- */
-export function SortableSectionCard({
-  section,
-  children,
-}: {
-  section:  DashboardSection;
-  children: React.ReactNode;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: section.id });
-
-  const style: React.CSSProperties = {
-    transform:  CSS.Transform.toString(transform),
-    transition,
-    opacity:    isDragging ? 0.6 : 1,
-    zIndex:     isDragging ? 20 : undefined,
-    position:   "relative",
-  };
-
-  return (
-    <div ref={setNodeRef} style={style} className="relative pl-8 touch-none">
-      <button
-        type="button"
-        {...attributes}
-        {...listeners}
-        aria-label={`Reorder ${section.label}`}
-        className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--modal-surface)] border border-[var(--border-hairline-strong)] shadow-sm cursor-grab active:cursor-grabbing transition-colors touch-none"
-      >
-        <GripVertical size={14} />
-      </button>
-      {children}
     </div>
   );
 }
