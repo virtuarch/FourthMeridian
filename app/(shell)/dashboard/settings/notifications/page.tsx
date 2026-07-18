@@ -8,18 +8,13 @@
  */
 
 import { getNotificationPreferences } from "@/lib/settings/loaders";
-import { SettingsPageHeader } from "@/components/settings/SettingsPageHeader";
 import { NotificationSettings } from "@/components/settings/NotificationSettings";
 
 export default async function NotificationSettingsPage() {
   const matrix = await getNotificationPreferences();
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6 px-4 py-6">
-      <SettingsPageHeader
-        title="Notifications"
-        subtitle="What we tell you about, and where."
-      />
+    <div className="max-w-2xl mx-auto space-y-6 px-4 pb-6">
       <NotificationSettings matrix={matrix} />
     </div>
   );

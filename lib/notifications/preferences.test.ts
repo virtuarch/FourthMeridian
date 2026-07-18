@@ -214,10 +214,13 @@ async function run(): Promise<void> {
       "preference API goes only through lib/notifications/preferences",
       src.includes("@/lib/notifications/preferences") && !src.includes('from "@/lib/db"'),
     );
-    const page = readFileSync("app/(shell)/dashboard/settings/page.tsx", "utf8");
+    // UI-Convergence Wave 1 (W1-B): the settings-index link-list retired for the
+    // SpaceShell rail. The "Notifications is wired into Settings navigation" truth
+    // now lives in the single composition owner, SETTINGS_WORKSPACE_ORDER.
+    const settingsWs = readFileSync("lib/settings/workspaces.ts", "utf8");
     check(
-      "settings directory gained the Notifications line",
-      page.includes("/dashboard/settings/notifications"),
+      "Settings rail composition includes the Notifications section",
+      settingsWs.includes("settings-notifications") && settingsWs.includes("/dashboard/settings/notifications"),
     );
   }
 
