@@ -3,8 +3,9 @@
 import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Eye, EyeOff, Loader2 } from "lucide-react";
-import { AppLogo } from "@/components/ui/AppLogo";
+import { AuthCard, AuthHeader, AuthFooter, AuthButton } from "@/components/auth";
+import { Field, Input, Select, PasswordField } from "@/components/atlas/fields";
+import { InlineBanner } from "@/components/atlas/InlineBanner";
 import { TurnstileWidget } from "@/components/ui/TurnstileWidget";
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
@@ -45,8 +46,6 @@ function RegisterForm() {
     confirmPassword:  "",
   });
 
-  const [showPw,      setShowPw]      = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
   const [error,       setError]       = useState("");
   const [loading,     setLoading]     = useState(false);
   // CAPTCHA (Wave 2 ⑥) — only rendered when a site key is configured.
@@ -112,252 +111,158 @@ function RegisterForm() {
     router.push("/login?registered=true");
   }
 
-  const inputClass =
-    "w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors";
-  const labelClass = "block text-sm text-gray-400 mb-1.5";
-  const selectClass =
-    "w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500 transition-colors appearance-none " +
-    "text-white [&>option]:bg-gray-900";
-
   return (
-    <div className="min-h-[100svh] bg-gray-950 flex items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md space-y-6">
+    <>
+      {error && <InlineBanner tone="error">{error}</InlineBanner>}
 
-        {/* Logo */}
-        <div className="text-center">
-          <div className="flex items-center justify-center mb-4">
-            <AppLogo size={32} withWordmark wordmarkClassName="text-white text-lg" forceTheme="dark" priority />
+      <form onSubmit={handleSubmit} className="space-y-5" suppressHydrationWarning>
+
+        {/* ── Personal ── */}
+        <div>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Personal</p>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="First name" htmlFor="reg-first">
+                <Input
+                  id="reg-first"
+                  type="text"
+                  value={form.firstName}
+                  onChange={(e) => set("firstName", e.target.value)}
+                  required
+                  placeholder="Jane"
+                  autoComplete="given-name"
+                />
+              </Field>
+              <Field label="Last name" htmlFor="reg-last">
+                <Input
+                  id="reg-last"
+                  type="text"
+                  value={form.lastName}
+                  onChange={(e) => set("lastName", e.target.value)}
+                  required
+                  placeholder="Smith"
+                  autoComplete="family-name"
+                />
+              </Field>
+            </div>
+
+            <Field label="Date of birth" htmlFor="reg-dob" help="Used for age-appropriate advice.">
+              <Input
+                id="reg-dob"
+                type="date"
+                value={form.dateOfBirth}
+                onChange={(e) => set("dateOfBirth", e.target.value)}
+                max={new Date().toISOString().split("T")[0]}
+              />
+            </Field>
+
+            <Field label="Employment status" htmlFor="reg-employment">
+              <Select
+                id="reg-employment"
+                value={form.employmentStatus}
+                onChange={(e) => set("employmentStatus", e.target.value)}
+                options={EMPLOYMENT_OPTIONS}
+                placeholder="Select status…"
+              />
+            </Field>
+
+            <Field label="Primary reason for use" htmlFor="reg-usecase">
+              <Select
+                id="reg-usecase"
+                value={form.useCase}
+                onChange={(e) => set("useCase", e.target.value)}
+                options={USE_CASE_OPTIONS}
+                placeholder="Select reason…"
+              />
+            </Field>
+
+            <Field label="Credit score" htmlFor="reg-credit" help="Optional — you can add this later.">
+              <Input
+                id="reg-credit"
+                type="number"
+                value={form.creditScore}
+                onChange={(e) => set("creditScore", e.target.value)}
+                min={300}
+                max={850}
+                placeholder="e.g. 740"
+              />
+            </Field>
           </div>
-          <h1 className="text-2xl font-bold text-white">Create your account</h1>
-          <p className="text-gray-400 text-sm mt-1">Set up your personal finance dashboard</p>
         </div>
 
-        {/* Error */}
-        {error && (
-          <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-4 py-3 text-sm text-red-400 text-center">
-            {error}
+        {/* ── Account ── */}
+        <div>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Account</p>
+          <div className="space-y-3">
+            <Field label="Email" htmlFor="reg-email">
+              <Input
+                id="reg-email"
+                type="email"
+                value={form.email}
+                onChange={(e) => set("email", e.target.value)}
+                required
+                placeholder="you@example.com"
+                autoComplete="email"
+              />
+            </Field>
+
+            <Field label="Username" htmlFor="reg-username" help="3–30 characters. Letters, numbers, underscores.">
+              <Input
+                id="reg-username"
+                type="text"
+                value={form.username}
+                onChange={(e) => set("username", e.target.value)}
+                required
+                placeholder="e.g. janesmith"
+                autoComplete="username"
+                pattern="[a-zA-Z0-9_]{3,30}"
+                title="3–30 characters: letters, numbers, underscores"
+              />
+            </Field>
+
+            <Field label="Password" htmlFor="reg-password">
+              <PasswordField
+                id="reg-password"
+                value={form.password}
+                onChange={(e) => set("password", e.target.value)}
+                required
+                minLength={8}
+                placeholder="Min. 8 characters"
+                autoComplete="new-password"
+              />
+            </Field>
+
+            <Field label="Confirm password" htmlFor="reg-confirm">
+              <PasswordField
+                id="reg-confirm"
+                value={form.confirmPassword}
+                onChange={(e) => set("confirmPassword", e.target.value)}
+                required
+                placeholder="Repeat password"
+                autoComplete="new-password"
+              />
+            </Field>
           </div>
+        </div>
+
+        {TURNSTILE_SITE_KEY && (
+          <TurnstileWidget
+            siteKey={TURNSTILE_SITE_KEY}
+            onToken={setCaptchaToken}
+            resetNonce={captchaNonce}
+            theme="dark"
+          />
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-5" suppressHydrationWarning>
-
-          {/* ── Personal ── */}
-          <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Personal</p>
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={labelClass}>First name</label>
-                  <input
-                    type="text"
-                    value={form.firstName}
-                    onChange={(e) => set("firstName", e.target.value)}
-                    required
-                    suppressHydrationWarning
-                    className={inputClass}
-                    placeholder="Jane"
-                    autoComplete="given-name"
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>Last name</label>
-                  <input
-                    type="text"
-                    value={form.lastName}
-                    onChange={(e) => set("lastName", e.target.value)}
-                    required
-                    suppressHydrationWarning
-                    className={inputClass}
-                    placeholder="Smith"
-                    autoComplete="family-name"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className={labelClass}>
-                  Date of birth
-                  <span className="text-gray-600 ml-1">(used for age-appropriate advice)</span>
-                </label>
-                <input
-                  type="date"
-                  value={form.dateOfBirth}
-                  onChange={(e) => set("dateOfBirth", e.target.value)}
-                  suppressHydrationWarning
-                  className={inputClass + " [color-scheme:dark]"}
-                  max={new Date().toISOString().split("T")[0]}
-                />
-              </div>
-
-              <div>
-                <label className={labelClass}>Employment status</label>
-                <select
-                  value={form.employmentStatus}
-                  onChange={(e) => set("employmentStatus", e.target.value)}
-                  className={selectClass}
-                >
-                  <option value="">Select status…</option>
-                  {EMPLOYMENT_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className={labelClass}>Primary reason for use</label>
-                <select
-                  value={form.useCase}
-                  onChange={(e) => set("useCase", e.target.value)}
-                  className={selectClass}
-                >
-                  <option value="">Select reason…</option>
-                  {USE_CASE_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className={labelClass}>
-                  Credit score
-                  <span className="text-gray-600 ml-1">(optional — you can add this later)</span>
-                </label>
-                <input
-                  type="number"
-                  value={form.creditScore}
-                  onChange={(e) => set("creditScore", e.target.value)}
-                  min={300}
-                  max={850}
-                  className={inputClass}
-                  placeholder="e.g. 740"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* ── Account ── */}
-          <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Account</p>
-            <div className="space-y-3">
-              <div>
-                <label className={labelClass}>Email</label>
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => set("email", e.target.value)}
-                  required
-                  suppressHydrationWarning
-                  className={inputClass}
-                  placeholder="you@example.com"
-                  autoComplete="email"
-                />
-              </div>
-
-              <div>
-                <label className={labelClass}>Username</label>
-                <input
-                  type="text"
-                  value={form.username}
-                  onChange={(e) => set("username", e.target.value)}
-                  required
-                  suppressHydrationWarning
-                  className={inputClass}
-                  placeholder="e.g. janesmith"
-                  autoComplete="username"
-                  pattern="[a-zA-Z0-9_]{3,30}"
-                  title="3–30 characters: letters, numbers, underscores"
-                />
-                <p className="text-xs text-gray-600 mt-1">3–30 characters. Letters, numbers, underscores.</p>
-              </div>
-
-              <div>
-                <label className={labelClass}>Password</label>
-                <div className="relative">
-                  <input
-                    type={showPw ? "text" : "password"}
-                    value={form.password}
-                    onChange={(e) => set("password", e.target.value)}
-                    required
-                    minLength={8}
-                    suppressHydrationWarning
-                    className={inputClass + " pr-11"}
-                    placeholder="Min. 8 characters"
-                    autoComplete="new-password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPw((v) => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors p-1"
-                    tabIndex={-1}
-                  >
-                    {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className={labelClass}>Confirm password</label>
-                <div className="relative">
-                  <input
-                    type={showConfirm ? "text" : "password"}
-                    value={form.confirmPassword}
-                    onChange={(e) => set("confirmPassword", e.target.value)}
-                    required
-                    suppressHydrationWarning
-                    className={inputClass + " pr-11"}
-                    placeholder="Repeat password"
-                    autoComplete="new-password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowConfirm((v) => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors p-1"
-                    tabIndex={-1}
-                  >
-                    {showConfirm ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {TURNSTILE_SITE_KEY && (
-            <TurnstileWidget
-              siteKey={TURNSTILE_SITE_KEY}
-              onToken={setCaptchaToken}
-              resetNonce={captchaNonce}
-              theme="dark"
-            />
-          )}
-
-          <button
-            type="submit"
-            disabled={loading || !form.email || !form.username || !form.password || !form.firstName || !form.lastName}
-            className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
-          >
-            {loading ? (
-              <>
-                <Loader2 size={15} className="animate-spin" />
-                Creating account…
-              </>
-            ) : (
-              "Create Account"
-            )}
-          </button>
-        </form>
-
-        <p className="text-center text-sm text-gray-500">
-          Already have an account?{" "}
-          <Link href="/login" className="text-blue-400 hover:text-blue-300 transition-colors">
-            Sign in
-          </Link>
-        </p>
-
-        <p className="text-center text-xs text-gray-600">
-          Secured with bcrypt · Date of birth encrypted at rest
-        </p>
-      </div>
-    </div>
+        <AuthButton
+          type="submit"
+          loading={loading}
+          disabled={loading || !form.email || !form.username || !form.password || !form.firstName || !form.lastName}
+        >
+          {loading ? "Creating account…" : "Create Account"}
+        </AuthButton>
+      </form>
+    </>
   );
 }
 
@@ -365,8 +270,24 @@ function RegisterForm() {
 // pattern as the reset-password page.
 export default function RegisterPage() {
   return (
-    <Suspense fallback={<div className="min-h-[100svh] bg-gray-950" />}>
-      <RegisterForm />
-    </Suspense>
+    <AuthCard width="md">
+      <AuthHeader title="Create your account" subtitle="Set up your personal finance dashboard" />
+
+      <Suspense fallback={<p className="text-center text-sm text-[var(--text-muted)]">Loading…</p>}>
+        <RegisterForm />
+      </Suspense>
+
+      <AuthFooter>
+        <p className="text-sm text-[var(--text-muted)]">
+          Already have an account?{" "}
+          <Link href="/login" className="text-[var(--accent-info)] transition-colors hover:text-[var(--meridian-300)]">
+            Sign in
+          </Link>
+        </p>
+        <p className="text-xs text-[var(--text-faint)]">
+          Secured with bcrypt · Date of birth encrypted at rest
+        </p>
+      </AuthFooter>
+    </AuthCard>
   );
 }

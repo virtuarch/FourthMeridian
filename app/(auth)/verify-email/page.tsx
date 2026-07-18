@@ -4,7 +4,8 @@ import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
-import { AppLogo } from "@/components/ui/AppLogo";
+import { AuthCard, AuthHeader, AuthButton, AuthStatus } from "@/components/auth";
+import { InlineBanner } from "@/components/atlas/InlineBanner";
 
 type VerifyStatus =
   | "loading"
@@ -79,10 +80,7 @@ function VerifyEmailInner() {
 
   if (status === "loading") {
     return (
-      <div className="rounded-xl bg-gray-900/60 border border-gray-800 px-4 py-4 text-center space-y-2">
-        <Loader2 size={20} className="text-blue-400 mx-auto animate-spin" />
-        <p className="text-sm text-gray-400">Verifying your email…</p>
-      </div>
+      <AuthStatus tone="neutral" icon={Loader2} iconSpin title="Verifying your email…" />
     );
   }
 
@@ -93,17 +91,10 @@ function VerifyEmailInner() {
         : "Your email is already verified.";
     return (
       <div className="space-y-4">
-        <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 px-4 py-4 text-center space-y-1">
-          <CheckCircle2 size={20} className="text-emerald-400 mx-auto" />
-          <p className="text-sm text-emerald-400 font-medium">{message}</p>
-          <p className="text-xs text-gray-500">You can sign in to your account.</p>
-        </div>
-        <Link
-          href="/login"
-          className="block w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold py-3 rounded-xl transition-colors text-center"
-        >
-          Continue to Sign In
-        </Link>
+        <AuthStatus tone="success" icon={CheckCircle2} title={message}>
+          You can sign in to your account.
+        </AuthStatus>
+        <AuthButton href="/login">Continue to Sign In</AuthButton>
       </div>
     );
   }
@@ -116,37 +107,34 @@ function VerifyEmailInner() {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-4 py-4 text-center space-y-1">
-        <AlertCircle size={20} className="text-red-400 mx-auto" />
-        <p className="text-sm text-red-400 font-medium">
-          {status === "expired" ? "Link expired" : "Invalid link"}
-        </p>
-        <p className="text-xs text-gray-500">{errorMessage}</p>
-      </div>
+      <AuthStatus
+        tone="error"
+        icon={AlertCircle}
+        title={status === "expired" ? "Link expired" : "Invalid link"}
+      >
+        {errorMessage}
+      </AuthStatus>
 
       {/* Resend is only meaningful for an expired link (the token still maps to
           a user); an invalid token has no account to resend to. */}
       {status === "expired" && (
         resendState === "sent" ? (
-          <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 px-4 py-3 text-sm text-emerald-400 text-center">
+          <InlineBanner tone="success">
             A new verification link has been sent — check your inbox.
-          </div>
+          </InlineBanner>
         ) : (
           <div className="space-y-1">
-            <button
-              type="button"
+            <AuthButton
               onClick={handleResend}
+              loading={resendState === "sending"}
               disabled={resendState === "sending"}
-              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
             >
-              {resendState === "sending" ? (
-                <><Loader2 size={15} className="animate-spin" /> Sending…</>
-              ) : (
-                "Resend verification email"
-              )}
-            </button>
+              {resendState === "sending" ? "Sending…" : "Resend verification email"}
+            </AuthButton>
             {resendState === "error" && (
-              <p className="text-xs text-red-400 text-center">Couldn&apos;t send right now. Please try again.</p>
+              <p className="text-center text-xs text-[var(--accent-negative)]">
+                Couldn&apos;t send right now. Please try again.
+              </p>
             )}
           </div>
         )
@@ -154,7 +142,7 @@ function VerifyEmailInner() {
 
       <Link
         href="/login"
-        className="block text-center text-sm text-gray-500 hover:text-gray-300 transition-colors"
+        className="block text-center text-sm text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
       >
         Back to sign in
       </Link>
@@ -164,20 +152,12 @@ function VerifyEmailInner() {
 
 export default function VerifyEmailPage() {
   return (
-    <div className="min-h-[100svh] bg-gray-950 flex items-center justify-center px-4 py-8">
-      <div className="w-full max-w-sm space-y-6">
-        <div className="text-center">
-          <div className="flex items-center justify-center mb-4">
-            <AppLogo size={32} withWordmark wordmarkClassName="text-white text-lg" forceTheme="dark" priority />
-          </div>
-          <h1 className="text-2xl font-bold text-white">Email verification</h1>
-          <p className="text-gray-400 text-sm mt-1">Confirming your email address</p>
-        </div>
+    <AuthCard>
+      <AuthHeader title="Email verification" subtitle="Confirming your email address" />
 
-        <Suspense fallback={<div className="text-gray-500 text-sm text-center">Loading…</div>}>
-          <VerifyEmailInner />
-        </Suspense>
-      </div>
-    </div>
+      <Suspense fallback={<p className="text-center text-sm text-[var(--text-muted)]">Loading…</p>}>
+        <VerifyEmailInner />
+      </Suspense>
+    </AuthCard>
   );
 }

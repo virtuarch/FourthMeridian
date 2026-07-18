@@ -14,3 +14,5 @@ export { Input } from "@/components/atlas/fields/Input";
 export { Select, type SelectOption } from "@/components/atlas/fields/Select";
 export { Toggle } from "@/components/atlas/fields/Toggle";
 export { Field } from "@/components/atlas/fields/Field";
+export { PasswordField } from "@/components/atlas/fields/PasswordField";
+export { OtpInput } from "@/components/atlas/fields/OtpInput";

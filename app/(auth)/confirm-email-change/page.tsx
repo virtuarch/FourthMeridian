@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
-import { AppLogo } from "@/components/ui/AppLogo";
+import { AuthCard, AuthHeader, AuthButton, AuthStatus } from "@/components/auth";
 
 type ConfirmStatus =
   | "loading"
@@ -55,32 +55,24 @@ function ConfirmEmailChangeInner() {
 
   if (status === "loading") {
     return (
-      <div className="rounded-xl bg-gray-900/60 border border-gray-800 px-4 py-4 text-center space-y-2">
-        <Loader2 size={20} className="text-blue-400 mx-auto animate-spin" />
-        <p className="text-sm text-gray-400">Confirming your new email…</p>
-      </div>
+      <AuthStatus tone="neutral" icon={Loader2} iconSpin title="Confirming your new email…" />
     );
   }
 
   if (status === "changed") {
     return (
       <div className="space-y-4">
-        <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 px-4 py-4 text-center space-y-1">
-          <CheckCircle2 size={20} className="text-emerald-400 mx-auto" />
-          <p className="text-sm text-emerald-400 font-medium">Your email address has been changed.</p>
+        <AuthStatus tone="success" icon={CheckCircle2} title="Your email address has been changed.">
           {newEmail && (
-            <p className="text-xs text-gray-400">
-              Sign in with your new email: <span className="text-gray-200">{newEmail}</span>
-            </p>
+            <>
+              Sign in with your new email:{" "}
+              <span className="text-[var(--text-secondary)]">{newEmail}</span>
+              <br />
+            </>
           )}
-          <p className="text-xs text-gray-500">For your security, all sessions were signed out.</p>
-        </div>
-        <Link
-          href="/login"
-          className="block w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold py-3 rounded-xl transition-colors text-center"
-        >
-          Continue to Sign In
-        </Link>
+          For your security, all sessions were signed out.
+        </AuthStatus>
+        <AuthButton href="/login">Continue to Sign In</AuthButton>
       </div>
     );
   }
@@ -100,14 +92,12 @@ function ConfirmEmailChangeInner() {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-4 py-4 text-center space-y-1">
-        <AlertCircle size={20} className="text-red-400 mx-auto" />
-        <p className="text-sm text-red-400 font-medium">{heading}</p>
-        <p className="text-xs text-gray-500">{message}</p>
-      </div>
+      <AuthStatus tone="error" icon={AlertCircle} title={heading}>
+        {message}
+      </AuthStatus>
       <Link
         href="/login"
-        className="block text-center text-sm text-gray-500 hover:text-gray-300 transition-colors"
+        className="block text-center text-sm text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
       >
         Back to sign in
       </Link>
@@ -117,20 +107,12 @@ function ConfirmEmailChangeInner() {
 
 export default function ConfirmEmailChangePage() {
   return (
-    <div className="min-h-[100svh] bg-gray-950 flex items-center justify-center px-4 py-8">
-      <div className="w-full max-w-sm space-y-6">
-        <div className="text-center">
-          <div className="flex items-center justify-center mb-4">
-            <AppLogo size={32} withWordmark wordmarkClassName="text-white text-lg" forceTheme="dark" priority />
-          </div>
-          <h1 className="text-2xl font-bold text-white">Confirm email change</h1>
-          <p className="text-gray-400 text-sm mt-1">Confirming your new email address</p>
-        </div>
+    <AuthCard>
+      <AuthHeader title="Confirm email change" subtitle="Confirming your new email address" />
 
-        <Suspense fallback={<div className="text-gray-500 text-sm text-center">Loading…</div>}>
-          <ConfirmEmailChangeInner />
-        </Suspense>
-      </div>
-    </div>
+      <Suspense fallback={<p className="text-center text-sm text-[var(--text-muted)]">Loading…</p>}>
+        <ConfirmEmailChangeInner />
+      </Suspense>
+    </AuthCard>
   );
 }
