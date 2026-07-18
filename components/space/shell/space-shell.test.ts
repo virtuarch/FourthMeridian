@@ -102,7 +102,9 @@ check("host composes the SpaceShell frame", /<SpaceShell/.test(dashCode));
 check("host does not import the rail primitives directly",
   !/from "@\/components\/atlas\/SegmentedControl"/.test(dashCode) &&
   !/from "@\/components\/atlas\/FloatingNavWrapper"/.test(dashCode));
-check("host still owns the URL authority (SD-0A)", /useSpaceUrl\(\)/.test(dashCode));
+// SD-8b — the URL authority moved into useSpaceNavigation; the host owns it by
+// composing that hook (it stays OUT of the SpaceShell frame, which is the seam).
+check("host owns the URL authority via useSpaceNavigation (SD-8b)", dashCode.includes("useSpaceNavigation("));
 check("host still owns the time authority (SD-0B)", /usePerspectiveShellState\(/.test(dashCode));
 check("host still avoids useSearchParams (no new Suspense boundary)", !dashCode.includes("useSearchParams"));
 

@@ -50,6 +50,12 @@ const pageSrc = readFileSync(
   path.join(ROOT, "app", "(shell)", "dashboard", "page.tsx"),
   "utf8"
 );
+// SD-8b — the URL/tab/perspective navigation state machine moved here; the
+// initial-tab + URL-tab seam checks follow it.
+const navSrc = readFileSync(
+  path.join(ROOT, "lib", "space", "use-space-navigation.ts"),
+  "utf8"
+);
 
 // Unified Space Widget Layout (slice 1): the renderHero seam is DELETED —
 // Personal Overview is now section-backed (net_worth / net_worth_chart /
@@ -88,14 +94,15 @@ check(
   /wantSnapshots = Boolean\(heroDef\) \|\| spaceType === "PERSONAL"/.test(dashSrc)
 );
 check(
-  "initial tab is applied once — from the URL (?tab=), then the initialTab fallback",
-  /initialTabSet\.current = true;[\s\S]{0,400}readUrlTabState\(\)[\s\S]{0,200}initialTab/.test(dashSrc)
+  "initial tab is applied once — from the URL (?tab=), then the initialTab fallback (useSpaceNavigation)",
+  /initialTabSet\.current = true;[\s\S]{0,400}readUrlTabState\(\)[\s\S]{0,300}initialTab/.test(navSrc)
 );
 
-// No URL synchronization was added for tab state.
+// URL tab state uses window.history (not useSearchParams, which forces a Suspense
+// boundary) — now owned by useSpaceNavigation; the host still adds no useSearchParams.
 check(
-  "URL tab state uses window.history (not the useSearchParams hook, which forces a Suspense boundary)",
-  !dashSrc.includes("useSearchParams") && dashSrc.includes("readUrlTabState")
+  "URL tab state uses window.history (not the useSearchParams hook)",
+  !dashSrc.includes("useSearchParams") && navSrc.includes("readUrlTabState")
 );
 
 // The flip happened (SP-2A-4c): Personal renders through the shared shell

@@ -28,6 +28,8 @@ const GOALS_ADAPTERS  = read("components", "space", "widgets", "goals-perspectiv
 const GOALS_CARD      = read("components", "space", "sections", "goals", "GoalsCard.tsx");
 // SD-7b — the shared structural data lifecycle moved OUT of the host into useSpaceData.
 const USE_SPACE_DATA  = read("lib", "space", "use-space-data.ts");
+// SD-8b — the URL/tab/perspective navigation state machine moved into useSpaceNavigation.
+const USE_SPACE_NAV   = read("lib", "space", "use-space-navigation.ts");
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -180,6 +182,44 @@ console.log("6. Shared Space data ownership left the host (SD-7b) — useSpaceDa
   check("host keeps the perspective-engine loader (lensResults)", DASHCODE.includes("setLensResults"));
   check("host keeps a currency-refresh for the perspective loader",
     DASHCODE.includes("perspectivesCurrencyNonce") && DASHCODE.includes("SPACE_CURRENCY_CHANGED_EVENT"));
+}
+
+console.log("7. Navigation ownership left the host (SD-8b) — useSpaceNavigation owns the URL state machine");
+{
+  // (a) The host no longer OWNS the URL/tab/perspective/metric machinery.
+  check("host no longer calls the URL authority directly", !DASHCODE.includes("useSpaceUrl"));
+  check("host no longer owns the URL tab reader", !DASHCODE.includes("readUrlTabState"));
+  check("host no longer owns the perspective slug helper", !DASHCODE.includes("perspectiveIdToSlug"));
+  for (const cell of ["const [activeTab", "const [selectedPerspectiveId", "const [chartMetric", "const [initialAccountFilter"]) {
+    check(`host no longer holds ${cell}]`, !DASHCODE.includes(cell));
+  }
+
+  // (b) The host CONSUMES the nav hook.
+  check("host imports useSpaceNavigation", DASH.includes('from "@/lib/space/use-space-navigation"'));
+  check("host calls useSpaceNavigation", DASHCODE.includes("useSpaceNavigation({"));
+
+  // (c) useSpaceNavigation OWNS the URL state machine.
+  check("useSpaceNavigation is a hook", USE_SPACE_NAV.includes("export function useSpaceNavigation("));
+  check("nav hook owns the URL authority (useSpaceUrl commit/subscribe)",
+    USE_SPACE_NAV.includes("useSpaceUrl(") && USE_SPACE_NAV.includes("spaceUrl.commit(") && USE_SPACE_NAV.includes("spaceUrl.subscribe("));
+  check("nav hook owns the tab reader + slug helper", USE_SPACE_NAV.includes("readUrlTabState") && USE_SPACE_NAV.includes("perspectiveIdToSlug"));
+  check("nav hook owns activeTab + activePerspectiveId + chartMetric",
+    USE_SPACE_NAV.includes("activePerspectiveId") && USE_SPACE_NAV.includes("chartMetric") && USE_SPACE_NAV.includes("?metric="));
+  check("nav constants (TAB_ORDER / lens ids) live in the nav hook",
+    USE_SPACE_NAV.includes("export const TAB_ORDER") && USE_SPACE_NAV.includes("export const NET_WORTH_LENS_ID"));
+
+  // (d) Data ⇄ nav stay separate + the one intentional coordination point.
+  check("nav hook does not fetch data (no /sections, /snapshots)",
+    !USE_SPACE_NAV.includes("/sections") && !USE_SPACE_NAV.includes("/snapshots"));
+  check("host folds activePerspectiveId into the DATA gates (nav → data, one-way)",
+    DASHCODE.includes("perspectiveNeedsSnapshots") && DASHCODE.includes("useSpaceData({"));
+  check("initial-tab resolution is coordinated via applyInitialTab(sections)", DASHCODE.includes("applyInitialTab(sections)"));
+
+  // (e) INTENTIONALLY LEFT BEHIND: cashFlowPeriod is derived from the shell TIME
+  // slice (data-derived), so it stays host-side — moving it would cycle nav→data→shell→nav.
+  check("cashFlowPeriod stays host-side (shell-time derived; nav hook declares no such state)",
+    DASHCODE.includes("shell.derived.cashFlowPeriod") &&
+    !USE_SPACE_NAV.includes("const cashFlowPeriod") && !USE_SPACE_NAV.includes("setCashFlowExplicitPeriod"));
 }
 
 if (failures > 0) { console.error(`\n${failures} workspaces check(s) failed`); process.exit(1); }

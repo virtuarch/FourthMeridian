@@ -43,8 +43,13 @@ check("shell time hook registers no popstate listener", !POPSTATE.test(shellCode
 check("useSpaceUrl owns the single popstate listener", POPSTATE.test(seamCode));
 
 // ── SD-0A: consumers route through the canonical authority ──────────────────────
-check("SpaceDashboard uses the canonical authority (useSpaceUrl.commit/subscribe)",
-  /useSpaceUrl\(\)/.test(dashCode) && /spaceUrl\.commit\(/.test(dashCode) && /spaceUrl\.subscribe\(/.test(dashCode));
+// SD-8b — the host's tab/perspective/metric URL routing moved into
+// useSpaceNavigation; the host now delegates to it and touches no URL directly.
+const navCode = stripComments(read("lib/space/use-space-navigation.ts"));
+check("navigation hook uses the canonical authority (useSpaceUrl.commit/subscribe)",
+  /useSpaceUrl\(\)/.test(navCode) && /spaceUrl\.commit\(/.test(navCode) && /spaceUrl\.subscribe\(/.test(navCode));
+check("SpaceDashboard routes navigation through useSpaceNavigation (no direct URL authority)",
+  dashCode.includes("useSpaceNavigation(") && !/useSpaceUrl\(\)/.test(dashCode));
 check("shell time hook uses the canonical authority (useSpaceUrl.commit/subscribe)",
   /useSpaceUrl\(\)/.test(shellCode) && /spaceUrl\.commit\(/.test(shellCode) && /spaceUrl\.subscribe\(/.test(shellCode));
 
