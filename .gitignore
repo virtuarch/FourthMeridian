@@ -19,6 +19,9 @@ scripts/.backfill-logs/
 # next.js
 /.next/
 /out/
+prototype/**/.next/
+prototype/**/out/
+prototype/**/node_modules/
 
 # production / build outputs
 /build
