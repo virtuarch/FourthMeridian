@@ -46,6 +46,9 @@ export interface WorkspaceRenderCtx {
   ficoScore?:              number | null;
   ficoUpdatedAt?:          string;
   perspectiveTargetCurrency?: string;
+  /** The Space's monthly-expense baseline (emergency_fund_progress config), or null.
+   *  Drives the Liquidity Hero's honest Coverage stat; absent ⇒ no coverage shown. */
+  liquidityMonthlyExpenses?: number | null;
 
   // Shared data (useSpaceData)
   accounts:                SpaceAccount[];
@@ -126,6 +129,9 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
       active={ctx.liquidityActive}
       accounts={ctx.accounts}
       ctx={ctx.widgetCtx}
+      snapshots={ctx.snapshots}
+      snapshotCurrency={ctx.snapshotCurrency}
+      monthlyExpenses={ctx.liquidityMonthlyExpenses}
       presentLens={ctx.lensResults?.["liquidity"] ?? null}
       transactions={ctx.transactions}
       txCtx={ctx.txCtx}

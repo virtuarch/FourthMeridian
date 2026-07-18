@@ -44,6 +44,12 @@ const ROUTEC = strip(ROUTE);
 const DASH  = strip(read("components/dashboard/SpaceDashboard.tsx"));
 // SD-2 closeout — perspective render impls live in the component-layer renderer map.
 const REND  = strip(read("components/space/workspaces/workspaceRenderers.tsx"));
+// Editorial redesign — the extracted surface components (present-day anchor + shared chart).
+const HERO    = strip(read(`${DIR}/LiquidityHero.tsx`));
+const HISTORY = strip(read(`${DIR}/LiquidityBalanceHistory.tsx`));
+const LEDGER  = strip(read(`${DIR}/SourcesLedger.tsx`));
+const DETAIL  = strip(read(`${DIR}/SourceAccountDetail.tsx`));
+const CASHHIST = strip(read("lib/liquidity/cash-history.ts"));
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -65,7 +71,12 @@ console.log("1. WORKSPACE BOUNDARY — owns the data, consumes the contract, no 
   check("Workspace consumes LiquiditySpaceData.current", CODE.includes("data?.current") || CODE.includes("data.current"));
   check("Workspace consumes LiquiditySpaceData.atAsOf", CODE.includes("data?.atAsOf"));
   check("Workspace consumes LiquiditySpaceData.delta", CODE.includes("data?.delta"));
-  check("Workspace presents trust via the shared TrustIndicator (canonical envelope)", CODE.includes("TrustIndicator"));
+  // Trust is presented via the shared TrustIndicator over the SAME canonical envelope the
+  // workspace resolves — now rendered inside the extracted Hero (the editorial lede), which
+  // receives the envelope as a prop (one authority, two consumers can't disagree).
+  check("Workspace resolves the canonical envelope and hands it to the Hero",
+    CODE.includes("resolvePerspectiveEnvelope(") && CODE.includes("envelope={envelope}"));
+  check("Hero presents trust via the shared TrustIndicator", HERO.includes("TrustIndicator"));
   check("no usePerspectiveShellState (no duplicate time authority)", !CODE.includes("usePerspectiveShellState"));
   check("no local as-of loader / valuation import",
     !CODE.includes("getAccountsAsOf") && !CODE.includes("accounts-asof") &&
@@ -116,11 +127,13 @@ console.log("5. Trust PRESENTED via the canonical envelope, not recomputed");
 {
   check("no completeness recomputation in the workspace", !CODE.includes("buildLiquidityCompleteness"));
   // Trust converged onto the shared indicator over the SAME envelope the shell reads —
-  // no hand-derived "≈" / amber reason line re-interpreting the lens.
+  // no hand-derived "≈" / amber reason line re-interpreting the lens. The inline caveat now
+  // lives in the Hero (the lede), over the envelope prop the workspace hands it.
   check("trust caveat is the shared TrustIndicator (inline) over the envelope",
-    CODE.includes('<TrustIndicator variant="inline"') && CODE.includes("envelope={envelope}"));
-  check("no bespoke hand-derived trust marker remains",
-    !CODE.includes("trust.reason") && !CODE.includes('estimated ? "≈'));
+    HERO.includes('<TrustIndicator variant="inline"') && HERO.includes("envelope={envelope}"));
+  check("no bespoke hand-derived trust marker remains (workspace or Hero)",
+    !CODE.includes("trust.reason") && !CODE.includes('estimated ? "≈') &&
+    !HERO.includes("trust.reason"));
 }
 
 console.log("6. Net EXCLUDES credit (liquidity.core doctrine)");
@@ -187,6 +200,51 @@ console.log("11. Registry — liquidity stays temporal (temporalCapability PARTI
     cap?.asOf === "partial" && cap?.compareTo === "partial" && cap?.period === "none");
   check("liquidity still participates in canonical shell time (derived consumesShellTime)",
     workspaceConsumesShellTime(PERSPECTIVE_LIBRARY.liquidity));
+}
+
+console.log("12. EDITORIAL REDESIGN — Hero / Balance History / Sources ledger (presentation only)");
+{
+  // ① Hero — present-day cashNow figure of record (from the accounts array, NOT the lens);
+  //    the window delta rides the cashNow snapshot basis and is DROPPED when historical.
+  check("workspace derives the cashNow figure of record from classifyAccounts (not the lens)",
+    CODE.includes("classifyAccounts(") && CODE.includes("classification.totalLiquid"));
+  check("Hero headline is passed in (presentation only — no sum in the Hero)",
+    HERO.includes("cashNow") && !HERO.includes("classifyAccounts") && !HERO.includes("reduce("));
+  check("Hero drops the window delta in a historical view (Debt precedent)",
+    HERO.includes("!historical &&") && HERO.includes("DeltaBadge"));
+  check("Hero SAYS balances are current in a historical view (no masquerade)",
+    HERO.includes("Balances are current"));
+
+  // TEMPORAL HONESTY — coverage is NEVER fabricated: it needs a real monthly-expense baseline.
+  check("coverage is conditional on monthlyExpenses (no fabricated runway)",
+    CODE.includes("monthlyExpenses == null") && CODE.includes("cashNow / monthlyExpenses"));
+  check("host threads the monthly-expense baseline from emergency_fund_progress config",
+    DASH.includes("emergency_fund_progress") && DASH.includes("liquidityMonthlyExpenses"));
+
+  // ② Balance History — the SHARED TrendChart over the cashNow series, no liquidity look-alike.
+  check("Balance History renders the shared TrendChart", HISTORY.includes("TrendChart"));
+  check("Balance History plots the cashNow series (accessible cash), not a bespoke value",
+    HISTORY.includes("value: p.cashNow"));
+  check("cashNow series is the cash tier (totalCash + totalSavings) — no new authority",
+    CASHHIST.includes("s.totalCash + s.totalSavings"));
+  check("cash history drops fxMiss points (mixed-magnitude guard, Debt/Wealth semantics)",
+    CASHHIST.includes("s.fxMiss !== true"));
+  check("workspace clips the cash series from the host snapshots (NO new fetch)",
+    CODE.includes("clipCashHistory(snapshots") && CODE.includes("convertCashHistory("));
+  check("no second history fetch — only the one contract hook fetches",
+    !CODE.includes("fetch(") && (CODE.match(/useLiquiditySpaceData\(/g) ?? []).length === 1);
+
+  // ③ Sources ledger — GENERIC Atlas panels, not a domain panel primitive.
+  check("Sources ledger composes the generic Atlas LeftPanel/RightPanel", LEDGER.includes("LeftPanel") && LEDGER.includes("RightPanel"));
+  check("Sources ledger imports the generic panel primitives (@/components/atlas/panels)",
+    LEDGER.includes("@/components/atlas/panels"));
+  check("no domain panel primitive was created (no LiquidityPanel/Ledger/Detail primitive)",
+    !LEDGER.includes("LiquidityPanel") && !LEDGER.includes("function LiquidityLedger") && !DETAIL.includes("function LiquidityDetail"));
+  check("account detail is honest about present-day scope (no fabricated per-account history)",
+    DETAIL.includes("Per-account history isn") || DETAIL.includes("history isn"));
+  // The historical branch degrades honestly to tier totals (no faked per-account rows).
+  check("historical Sources says per-account detail is current only",
+    CODE.includes("per-account detail is current only"));
 }
 
 if (failures > 0) { console.error(`\n${failures} LiquidityWorkspace check(s) failed`); process.exit(1); }

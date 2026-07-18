@@ -647,12 +647,21 @@ export function SpaceDashboard({
   // registry's workspace ids and bound to the registry by a parity test. The host
   // no longer defines which component renders; it materializes ONE render context
   // (from useSpaceData + useSpaceNavigation + shell time + props) and dispatches.
+  // The Space's monthly-expense baseline, read from the SAME emergency_fund_progress
+  // config the Overview EF hero uses (line ~581) — the ONLY honest source of a coverage
+  // multiple. null when unset; the Liquidity Hero then shows no coverage (never faked).
+  const liquidityMonthlyExpenses = (() => {
+    const raw = Number(sections.find((s) => s.key === "emergency_fund_progress")?.config?.monthlyExpenses);
+    return !isNaN(raw) && raw > 0 ? raw : null;
+  })();
+
   const renderCtx: WorkspaceRenderCtx = {
     spaceId,
     snapshotCurrency: snapshotCurrency ?? displayCurrency,
     ficoScore,
     ficoUpdatedAt,
     perspectiveTargetCurrency,
+    liquidityMonthlyExpenses,
     accounts,
     snapshots,
     snapshotsBackfilling,
