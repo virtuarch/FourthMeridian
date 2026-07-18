@@ -25,8 +25,9 @@ import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
 import { useSpaceData } from "@/lib/space/use-space-data";
 import { useSpaceNavigation, TAB_ORDER, NEW_SPACE_TABS, NET_WORTH_LENS_ID, CORE_LENS_IDS } from "@/lib/space/use-space-navigation";
+import { useSpaceLensResults } from "@/lib/space/use-space-lens-results";
+import { useActiveEnvelope } from "@/lib/space/use-active-envelope";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
-import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
 import { PerspectiveTabs } from "@/components/space/shell/PerspectiveTabs";
 import { WORKSPACE_RENDERERS, type WorkspaceRenderCtx } from "@/components/space/workspaces/workspaceRenderers";
@@ -38,11 +39,10 @@ import { OverviewWorkspace } from "@/components/space/workspaces/OverviewWorkspa
 import { AddGoalModal } from "@/components/space/workspaces/AddGoalModal";
 import { RoutedWorkspaceModal } from "@/components/space/workspaces/RoutedWorkspaceModal";
 import type { SectionCardBundle } from "@/components/space/workspaces/SpaceSectionStack";
-import { railVisibleTabs, SPACE_TAB_LABELS, SPACE_CURRENCY_CHANGED_EVENT } from "@/lib/space-nav";
+import { railVisibleTabs, SPACE_TAB_LABELS } from "@/lib/space-nav";
 import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
 import { getPerspectivesForCategory, getWorkspaceTargetTab, isRoutedWorkspaceTab, getWorkspaceDefinition } from "@/lib/perspectives";
 import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
-import type { LensResult } from "@/lib/perspective-engine/types";
 import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { type HeroPoint } from "@/components/dashboard/widgets/SpaceTrendHero";
@@ -156,11 +156,12 @@ export function SpaceDashboard({
   const [confirmLeave,  setConfirmLeave]  = useState(false);
   const [leaveBusy,     setLeaveBusy]    = useState(false);
 
-  // Perspective Engine results (commit 7) — keyed by lensId, fetched once
-  // per Space from the batch route. null = not loaded / fetch failed; the
-  // cards then render their static description (graceful fallback is the
-  // widget's contract, not this host's job).
-  const [lensResults, setLensResults] = useState<Record<string, LensResult> | null>(null);
+  // SD-9A — Perspective-Engine results (present-day lens verdicts, keyed by lensId)
+  // are loaded by useSpaceLensResults: the batch fetch, the "view as" target-currency
+  // param, and currency invalidation all live in that hook now. null = not loaded /
+  // fetch failed; cards then render their static description (the widget's contract).
+  // A SEPARATE seam from useSpaceData (perspective-engine output, not structural data).
+  const { lensResults } = useSpaceLensResults({ spaceId, targetCurrency: perspectiveTargetCurrency });
 
   // The dashboard layout mounts DisplayCurrencyProvider with this Space's
   // reportingCurrency (this component only renders as the active Space), so
@@ -416,12 +417,13 @@ export function SpaceDashboard({
   // switch-lens-from-workspace handler moved into useSpaceNavigation. The host
   // consumes chartMetric / setChartMetric / switchLens from it.
 
-  // ONE trust envelope for whichever workspace is engaged. Every financial
-  // workspace (Wealth/Cash Flow/Liquidity/Investments/Debt) owns its data + FX +
-  // as-of trust and emits its envelope up (onEnvelopeChange). Because exactly one
-  // workspace is mounted at a time, a single state holds the active one — the
-  // former five per-lens envelope states + their selection ternary collapse here.
-  const [activeEnvelope, setActiveEnvelope] = useState<PerspectiveEnvelope>({});
+  // SD-9B — the trust-PUBLICATION seam. useActiveEnvelope holds the engaged
+  // workspace's emitted envelope and owns the workspace-backed-vs-lens-only
+  // selection (formerly an inline host ternary). It does NOT calculate trust —
+  // the authority stays resolvePerspectiveEnvelope / PerspectiveEnvelope /
+  // CompletenessTier. The host only wires onEnvelopeChange into the render context
+  // and hands `activeEnvelope` to the shell.
+  const { envelope: activeEnvelope, onEnvelopeChange } = useActiveEnvelope({ activePerspectiveId, lensResults });
   // SD-6C — the Cash Flow / Spending perspective + measure filter is now OWNED by
   // CashFlowWorkspace (workspace-local semantic slice), no longer host state. SD-6
   // gate — the completeness stamp AND its trust envelope are now workspace-owned too
@@ -459,49 +461,10 @@ export function SpaceDashboard({
   // Overview doorway/modal. The recent_activity SECTION (TimelineWidget) self-
   // fetches /api/spaces/[id]/activity and paginates, so Activity owns its data.
 
-  // SD-7b — lensResults is a PERSPECTIVE-ENGINE loader (out of the useSpaceData
-  // extraction). It keeps its own currency-refresh: a reporting-currency change
-  // bumps this local nonce so the converted lens metrics re-fetch, exactly as the
-  // former shared currencyNonce did. (Same spaceId-scoped SPACE_CURRENCY_CHANGED
-  // signal useSpaceData listens to for its own data.)
-  const [perspectivesCurrencyNonce, setPerspectivesCurrencyNonce] = useState(0);
-  useEffect(() => {
-    function onCurrencyChanged(e: Event) {
-      const detail = (e as CustomEvent<{ spaceId?: string }>).detail;
-      if (detail?.spaceId && detail.spaceId !== spaceId) return;
-      setPerspectivesCurrencyNonce((n) => n + 1);
-    }
-    window.addEventListener(SPACE_CURRENCY_CHANGED_EVENT, onCurrencyChanged);
-    return () => window.removeEventListener(SPACE_CURRENCY_CHANGED_EVENT, onCurrencyChanged);
-  }, [spaceId]);
-
-  // Perspective Engine results — one batch fetch against the membership-
-  // gated route (mirrors the activity fetch above). Failure of any kind
-  // (network, 403, malformed) resolves to null: lens-backed cards then
-  // keep their static descriptions — the engine's rollback property, live.
-  useEffect(() => {
-    let active = true;
-    // MC1 view-as: when an override target is set, ask the engine to recompute
-    // the lenses in that currency (headline + verdict + sums together).
-    const url = perspectiveTargetCurrency
-      ? `/api/spaces/${spaceId}/perspectives?target=${encodeURIComponent(perspectiveTargetCurrency)}`
-      : `/api/spaces/${spaceId}/perspectives`;
-    fetch(url)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!active) return;
-        const results: LensResult[] = Array.isArray(data?.results) ? data.results : [];
-        setLensResults(
-          results.length
-            ? Object.fromEntries(results.map((res) => [res.lensId, res]))
-            : null,
-        );
-      })
-      .catch(() => { if (active) setLensResults(null); });
-    return () => { active = false; };
-    // perspectivesCurrencyNonce (Q6): refetch converted lens metrics after a currency change.
-    // perspectiveTargetCurrency: refetch when the "view as" override changes.
-  }, [spaceId, perspectivesCurrencyNonce, perspectiveTargetCurrency]);
+  // SD-9A — the lensResults loader (state + currency-refresh listener + batch fetch)
+  // moved to useSpaceLensResults (called at the top of the component). The host is no
+  // longer a perspective-loading authority: it neither fetches perspectives, owns lens
+  // result state, nor subscribes to the currency-refresh signal for lenses.
 
   // ── Initial-tab selection (NAV ⇄ DATA coordination point) ───────────────────
   // SD-8b — the RESOLUTION rules live in useSpaceNavigation; the host only
@@ -708,7 +671,7 @@ export function SpaceDashboard({
     chartMetric,
     onMetricChange: setChartMetric,
     onSwitchLens: switchLens,
-    onEnvelopeChange: setActiveEnvelope,
+    onEnvelopeChange,
     onSelectCashFlowPeriod: setCashFlowExplicitPeriod,
     onOpenCashFlow: () => setSelectedPerspectiveId("cashFlow"),
   };
@@ -774,12 +737,11 @@ export function SpaceDashboard({
         </>
       }
       title={displaySpaceName(spaceName)}
-      subtitle={
-        <>
-          {catLabel} Space{memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : ""}
-          {newestAccountUpdate ? ` · Updated ${formatRelativeTime(newestAccountUpdate)}` : ""}
-        </>
-      }
+      // SD-9C — ONE canonical subtitle derivation (chromeSubtitle + chromeUpdated,
+      // computed once above and also published to the desktop ContextualNavbar). The
+      // mobile relocation composes the same parts instead of recomputing catLabel /
+      // memberCount / formatRelativeTime a second time.
+      subtitle={chromeUpdated ? `${chromeSubtitle} · ${chromeUpdated}` : chromeSubtitle}
       // SHELL migration — the canonical FX + Manage cluster. On desktop these
       // render in the ContextualNavbar's Space mode (published above); here they
       // feed SpaceShell's mobile (<lg) relocation, where the sidebar is hidden.
@@ -837,17 +799,9 @@ export function SpaceDashboard({
               onAsOfChange={handleAsOfChange}
               onCompareToChange={handleCompareToChange}
               onSwap={shell.actions.swap}
-              envelope={
-                // The engaged workspace emits its OWN trust envelope into
-                // activeEnvelope; a lens without a workspace (e.g. goals) falls
-                // through to the canonical resolver. The registry keys decide which.
-                activePerspectiveId && WORKSPACE_RENDERERS[activePerspectiveId]
-                  ? activeEnvelope
-                  : resolvePerspectiveEnvelope({
-                      perspectiveId: activePerspectiveId ?? "",
-                      lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
-                    })
-              }
+              // SD-9B — the resolved envelope from useActiveEnvelope (workspace-backed
+              // → emitted; lens-only → resolvePerspectiveEnvelope). No host selection.
+              envelope={activeEnvelope}
               presetValue={timePreset === "CUSTOM" ? null : timePreset}
               onSelectPreset={handleSelectSlice}
               // Temporal-capability gating: the shell renders only the time controls

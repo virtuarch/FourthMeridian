@@ -152,7 +152,7 @@ console.log("10. Trust OWNERSHIP — workspace owns the stamp AND emits its own 
   check("host no longer computes cashFlowStampValue", !DASH.includes("cashFlowStampValue"));
   check("host no longer imports cashFlowStamp / LiquidityTx for the stamp", !DASH.includes("cash-flow-compare") && !DASH.includes("import type { LiquidityTx }"));
   check("renderer wires envelope up + host relays it (consolidated)",
-    REND.includes("<CashFlowWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && DASH.includes("onEnvelopeChange: setActiveEnvelope"));
+    REND.includes("<CashFlowWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && DASH.includes("useActiveEnvelope"));
 }
 
 if (failures > 0) { console.error(`\n${failures} CashFlowWorkspace check(s) failed`); process.exit(1); }

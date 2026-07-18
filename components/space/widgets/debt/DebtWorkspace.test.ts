@@ -147,7 +147,7 @@ console.log("9. Envelope OWNERSHIP — workspace resolves + emits its own trust 
   check("envelope resolved from the on-screen lens via the canonical resolver",
     CODE.includes("resolvePerspectiveEnvelope(") && CODE.includes('perspectiveId: "debt"'));
   check("renderer wires envelope up + host relays it (consolidated)",
-    REND.includes("<DebtWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && DASH.includes("onEnvelopeChange: setActiveEnvelope"));
+    REND.includes("<DebtWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && DASH.includes("useActiveEnvelope"));
   check("debt workspace is registered in the renderer map (registry-driven, not an if/else branch)",
     REND.includes("debt: (ctx) =>") && REND.includes("<DebtWorkspace"));
 }

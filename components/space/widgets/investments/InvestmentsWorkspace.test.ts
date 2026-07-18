@@ -57,7 +57,7 @@ console.log("2. Data OWNERSHIP + envelope BRIDGE");
   check("host retains no Investments data", !HOSTC.includes("investments.data"));
   check("Workspace emits envelope via canonical resolver", CODE.includes("onEnvelopeChange(") && CODE.includes("resolvePerspectiveEnvelope("));
   check("renderer wires envelope up + host relays it (consolidated)",
-    REND.includes("<InvestmentsWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && HOSTC.includes("onEnvelopeChange: setActiveEnvelope"));
+    REND.includes("<InvestmentsWorkspace") && REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && HOSTC.includes("useActiveEnvelope"));
   check("renderer map mounts <InvestmentsWorkspace> + host dispatches via WORKSPACE_RENDERERS",
     REND.includes("<InvestmentsWorkspace") && HOSTC.includes("WORKSPACE_RENDERERS["));
 }

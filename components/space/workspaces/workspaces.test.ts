@@ -177,11 +177,14 @@ console.log("6. Shared Space data ownership left the host (SD-7b) — useSpaceDa
   check("useSpaceData owns the 12s backfill poll",
     USE_SPACE_DATA.includes("setInterval") && USE_SPACE_DATA.includes("12000"));
 
-  // (d) The PERSPECTIVE-engine loader (lensResults) is out of scope and stays
-  // host-owned — with its own currency-refresh, so currency changes still update it.
-  check("host keeps the perspective-engine loader (lensResults)", DASHCODE.includes("setLensResults"));
-  check("host keeps a currency-refresh for the perspective loader",
-    DASHCODE.includes("perspectivesCurrencyNonce") && DASHCODE.includes("SPACE_CURRENCY_CHANGED_EVENT"));
+  // (d) SD-9A — the PERSPECTIVE-engine loader (lensResults) left the host too. It is
+  // now useSpaceLensResults: the host neither owns lens-result state nor subscribes to
+  // the lens currency-refresh signal; it only mounts the hook. (Its own invariants
+  // live in lib/space/space-runtime-ownership.test.ts.)
+  check("host no longer owns the lens-result state", !DASHCODE.includes("setLensResults"));
+  check("host no longer owns a currency-refresh for the perspective loader",
+    !DASHCODE.includes("perspectivesCurrencyNonce") && !DASHCODE.includes("SPACE_CURRENCY_CHANGED_EVENT"));
+  check("host mounts useSpaceLensResults", DASHCODE.includes("useSpaceLensResults({"));
 }
 
 console.log("7. Navigation ownership left the host (SD-8b) — useSpaceNavigation owns the URL state machine");

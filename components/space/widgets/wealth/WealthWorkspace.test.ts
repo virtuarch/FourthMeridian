@@ -90,11 +90,12 @@ console.log("6. Trust / envelope — resolved in the Workspace, bridged to the s
   check("Workspace resolves its own envelope via the canonical resolver", CODE.includes("resolvePerspectiveEnvelope(") && CODE.includes('perspectiveId: "wealth"'));
   check("Workspace emits the envelope up (onEnvelopeChange)", CODE.includes("onEnvelopeChange("));
   check("envelope resolved from the currency-consistent result", /resolvePerspectiveEnvelope\(\{[\s\S]*wealthResult: result/.test(CODE));
-  // The host relays the engaged Workspace's envelope to the shell. Post-registry
-  // this is ONE consolidated envelope state (setActiveEnvelope) fed by whichever
-  // workspace is mounted — not a per-lens var + selection ternary.
-  check("renderer wires the envelope up + host relays it (setActiveEnvelope → activeEnvelope) to the shell",
-    REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && HOSTC.includes("onEnvelopeChange: setActiveEnvelope") && HOSTC.includes("activeEnvelope"));
+  // The host relays the engaged Workspace's envelope to the shell. SD-9B — this is
+  // now the useActiveEnvelope seam (it holds the emitted envelope + owns the
+  // workspace-backed-vs-lens-only selection); the host no longer contains the state
+  // or the ternary, only mounts the hook and relays `activeEnvelope` to the shell.
+  check("renderer wires the envelope up + host relays it (useActiveEnvelope → activeEnvelope) to the shell",
+    REND.includes("onEnvelopeChange={ctx.onEnvelopeChange}") && HOSTC.includes("useActiveEnvelope") && HOSTC.includes("activeEnvelope"));
   check("Evidence drawer is now Workspace-owned (moved off the host)", CODE.includes("<EvidenceDrawer") && !HOSTC.includes("EvidenceDrawer"));
   check("no duplicate trust math (only the canonical resolver, no bespoke tiers)", !CODE.includes("completeness:") && !CODE.includes("tier:"));
 }
