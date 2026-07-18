@@ -245,7 +245,11 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // registry widget was retired (P1 closeout); this marker is not a registry
     // key (toVirtualSections would fall back to the raw string, but never runs).
     widgets: ["investments_workspace"],
-    routing: { targetTab: "INVESTMENTS" },
+    // M2 canonical IA: Investments is a specialized Workspace (perspective)
+    // selected through Overview — NOT a routed modal. Its former
+    // `routing.targetTab: "INVESTMENTS"` (RoutedWorkspaceModal) is retired so it
+    // has ONE runtime destination. Legacy `?tab=investments` links canonicalize
+    // to `?perspective=investments` in the host URL layer.
     dataNeeds: ["accounts", "investmentsHistory"], consumesShellTime: true, envelope: "investments",
   },
   debt: {
@@ -260,7 +264,11 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
       "debt_by_account", "debt_cost", "credit_utilization", "debt_history",
       "debt_payoff_calculator", "credit_score", "debt_complete_info",
     ],
-    routing: { targetTab: "DEBT" },
+    // M2 canonical IA: Debt is a specialized Workspace (perspective) selected
+    // through Overview — NOT a routed modal. Its former
+    // `routing.targetTab: "DEBT"` (RoutedWorkspaceModal) is retired so it has ONE
+    // runtime destination. Legacy `?tab=debt` / `?tab=credit` links canonicalize
+    // to `?perspective=debt` in the host URL layer.
     // A temporal Perspective: current-state KPIs plus a historical Balance-Over-
     // Time view over the snapshot series. consumesShellTime is the intended
     // contract (asOf/compareTo windowing of that history); today the chart shows

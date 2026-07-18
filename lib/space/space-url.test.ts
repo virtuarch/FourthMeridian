@@ -13,6 +13,7 @@ import {
   applySpaceUrlUpdate,
   buildSpaceUrl,
   readSpaceParam,
+  legacyTabPerspective,
   SPACE_URL_PARAMS,
 } from "./space-url";
 
@@ -98,6 +99,23 @@ const absent = (qs: string, k: string) => !params(qs).has(k);
     JSON.stringify([...SPACE_URL_PARAMS].sort()) ===
       JSON.stringify(["account", "asof", "compareto", "metric", "perspective", "preset", "tab", "transaction"]),
   );
+}
+
+// ── M2 canonical IA — legacy perspective-routing ?tab= → forced lens ────────────
+// Old links (?tab=debt / ?tab=credit / ?tab=investments) must canonicalize to a
+// perspective engaged through Overview, not a separate destination. The tab→lens
+// authority is this pure map; the host reads it in readUrlTabState.
+{
+  check("legacyTabPerspective(debt) → debt", legacyTabPerspective("debt") === "debt");
+  check("legacyTabPerspective(DEBT) is case-insensitive", legacyTabPerspective("DEBT") === "debt");
+  check("legacyTabPerspective(credit) → debt (credit is a debt alias)", legacyTabPerspective("credit") === "debt");
+  check("legacyTabPerspective(investments) → investments", legacyTabPerspective("investments") === "investments");
+  // "perspectives" carries NO forced lens — its own ?perspective= drives it.
+  check("legacyTabPerspective(perspectives) → null", legacyTabPerspective("perspectives") === null);
+  // Structural tabs and absent values force nothing.
+  check("legacyTabPerspective(overview) → null", legacyTabPerspective("overview") === null);
+  check("legacyTabPerspective(accounts) → null", legacyTabPerspective("accounts") === null);
+  check("legacyTabPerspective(null) → null", legacyTabPerspective(null) === null);
 }
 
 if (failures > 0) {

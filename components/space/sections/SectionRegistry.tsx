@@ -329,11 +329,20 @@ const renderNetWorth = (p: SectionRenderProps): React.ReactElement => {
   const debt   = debtConv.reduce((s, c) => s + c.amount, 0);
   const net    = assets - debt;
   const est    = assetConv.some((c) => c.estimated) || debtConv.some((c) => c.estimated) ? "≈ " : "";
+  // M3 Design Lab convergence — an accounts-derived subline (count + distinct
+  // currencies), read from the SAME `accounts` source, no new authority.
+  const currencyCount = new Set(p.accounts.map((a) => a.currency)).size;
+  const acctSubline = p.accounts.length > 0
+    ? `${p.accounts.length} account${p.accounts.length === 1 ? "" : "s"}` +
+      (currencyCount > 1 ? ` across ${currencyCount} currencies` : "")
+    : undefined;
   return (
     <SummaryWidget
+      variant="hero"
+      eyebrow="Net worth"
       primary={p.accounts.length > 0 ? {
         value: `${est}${formatBalance(net, p.ctx?.target)}`,
-        label: "Net worth across all shared accounts",
+        label: acctSubline,
         color: net >= 0 ? "white" : "red",
         size:  "3xl",
       } : undefined}

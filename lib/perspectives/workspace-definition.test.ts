@@ -102,26 +102,34 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
 
 // ── Routing converged — behavior-identical to the removed PERSPECTIVE_TARGET_TAB ──
 {
+  // M2 canonical IA: Debt & Investments are NO LONGER routed modals — they are
+  // perspectives selected through Overview, so they carry no routing.targetTab.
+  // Only Goals & Retirement remain routed (explicit compatibility boundary).
   const expectedTargets: Record<string, string | undefined> = {
-    investments: "INVESTMENTS", debt: "DEBT", retirement: "RETIREMENT", goals: "GOALS",
+    retirement: "RETIREMENT", goals: "GOALS",
+    investments: undefined, debt: undefined,
     wealth: undefined, cashFlow: undefined, liquidity: undefined, overview: undefined,
   };
   for (const [id, target] of Object.entries(expectedTargets)) {
     check(`getWorkspaceTargetTab(${id}) === ${target}`, getWorkspaceTargetTab(id) === target);
   }
-  // ROUTED_WORKSPACE_TABS === the old PERSPECTIVE_ROUTED_TABS set (order-free).
-  check("ROUTED_WORKSPACE_TABS === {GOALS,DEBT,INVESTMENTS,RETIREMENT}",
-    sameSet(ROUTED_WORKSPACE_TABS as readonly string[], ["GOALS", "DEBT", "INVESTMENTS", "RETIREMENT"]));
-  check("isRoutedWorkspaceTab true for a routed tab", isRoutedWorkspaceTab("DEBT"));
+  // M2: the routed set shrank to exactly {GOALS, RETIREMENT} (order-free).
+  check("ROUTED_WORKSPACE_TABS === {GOALS,RETIREMENT}",
+    sameSet(ROUTED_WORKSPACE_TABS as readonly string[], ["GOALS", "RETIREMENT"]));
+  check("isRoutedWorkspaceTab true for a routed tab (GOALS)", isRoutedWorkspaceTab("GOALS"));
+  check("isRoutedWorkspaceTab true for a routed tab (RETIREMENT)", isRoutedWorkspaceTab("RETIREMENT"));
+  // M2 regression: Debt/Investments must NEVER re-enter the routed-modal path —
+  // one canonical destination each (the Perspective under Overview).
+  check("isRoutedWorkspaceTab false for DEBT (retired)", !isRoutedWorkspaceTab("DEBT"));
+  check("isRoutedWorkspaceTab false for INVESTMENTS (retired)", !isRoutedWorkspaceTab("INVESTMENTS"));
   check("isRoutedWorkspaceTab false for a non-routed tab", !isRoutedWorkspaceTab("OVERVIEW") && !isRoutedWorkspaceTab("ACCOUNTS"));
 }
 
 // ── Modal chrome converged — behavior-identical to the removed PERSPECTIVE_MODAL_META
 {
+  // M2: only Goals & Retirement retain modal chrome (routed-modal boundary).
   const expectedModal: Record<string, { title: string; icon: string }> = {
     GOALS:       { title: "Goals",       icon: "Target" },
-    DEBT:        { title: "Debt",        icon: "CreditCard" },
-    INVESTMENTS: { title: "Investments", icon: "TrendingUp" },
     RETIREMENT:  { title: "Retirement",  icon: "PiggyBank" },
   };
   for (const [tab, meta] of Object.entries(expectedModal)) {
@@ -132,6 +140,9 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
     check(`modal icon "${meta.icon}" resolves in PERSPECTIVE_ICON_MAP`, !!PERSPECTIVE_ICON_MAP[meta.icon]);
   }
   check("getWorkspaceModalMeta(OVERVIEW) undefined (non-routed)", getWorkspaceModalMeta("OVERVIEW") === undefined);
+  // M2 regression: Debt/Investments no longer have modal chrome.
+  check("getWorkspaceModalMeta(DEBT) undefined (retired)", getWorkspaceModalMeta("DEBT") === undefined);
+  check("getWorkspaceModalMeta(INVESTMENTS) undefined (retired)", getWorkspaceModalMeta("INVESTMENTS") === undefined);
 }
 
 // ── dataNeeds declared to match current runtime (per the SD-2 census) ────────────
@@ -201,9 +212,10 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
   }
 }
 
-// ── Top-level Space tabs are NOT workspaces (order untouched — SD-2 P5) ───────────
-check("SPACE_TAB_ORDER unchanged (Space tabs ≠ workspaces)",
-  SPACE_TAB_ORDER.join(",") === "OVERVIEW,PERSPECTIVES,ACTIVITY,FINANCES,ACCOUNTS,TRANSACTIONS,MEMBERS,DOCUMENTS,SETTINGS");
+// ── Top-level Space tabs are NOT workspaces (M2: PERSPECTIVES removed from the
+//    rail — perspectives are selected through Overview, not a tab) ──────────────
+check("SPACE_TAB_ORDER is the M2 rail (no PERSPECTIVES tier)",
+  SPACE_TAB_ORDER.join(",") === "OVERVIEW,ACTIVITY,FINANCES,ACCOUNTS,TRANSACTIONS,MEMBERS,DOCUMENTS,SETTINGS");
 
 // ── Source-scan: the old duplicate host maps are gone; host uses the registry ────
 {

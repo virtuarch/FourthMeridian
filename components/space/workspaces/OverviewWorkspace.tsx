@@ -142,7 +142,10 @@ export function OverviewWorkspace({
       )}
 
       {composition === "overview" && (
-        <div className="space-y-3">
+        // M3 Design Lab convergence — airy editorial rhythm between the lede
+        // blocks (hero → balance history → composition → doorways), replacing the
+        // former dense 12px stack, to match the Design Lab's generous whitespace.
+        <div className="space-y-8 sm:space-y-10">
           {/* Hero — the template contract's slot 1 (One Space, One Lede). Only
               chartable categories have a heroDef; day-zero Spaces show the setup card. */}
           {accounts.length > 0 && heroDef && (

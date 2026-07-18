@@ -17,7 +17,7 @@
  */
 
 import { useState } from "react";
-import { Eye, Loader2 } from "lucide-react";
+import { ChevronDown, Loader2 } from "lucide-react";
 import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
 import type { SerializedConversionContext } from "@/lib/money/convert";
 
@@ -62,28 +62,34 @@ export function ViewCurrencyOverride({
     }
   }
 
+  // M3-Reset — compact prototype-style currency control: `USD ▾`. The verbose
+  // "View as" label, the "(saved)" suffix, and the "Preview only…" sentence are
+  // gone; the preview-not-saved honesty survives as a quiet "preview" cue (with
+  // the full explanation on hover) only WHEN an override is active. All FX
+  // behaviour/state/semantics underneath are unchanged.
   return (
-    <div className="flex items-center gap-2">
-      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]">
-        <Eye size={12} className="shrink-0" />
-        View as
-      </span>
-      <select
-        value={override?.currency ?? spaceCurrency}
-        onChange={(e) => select(e.target.value)}
-        disabled={busy}
-        className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-lg px-2 py-1 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--meridian-400)] transition-colors"
-      >
-        {[FX_BASE, ...SUPPORTED_QUOTES].map((c) => (
-          <option key={c} value={c}>
-            {c === spaceCurrency ? `${c} (saved)` : c}
-          </option>
-        ))}
-      </select>
+    <div className="flex items-center gap-1.5">
+      <div className="relative inline-flex items-center">
+        <select
+          value={override?.currency ?? spaceCurrency}
+          onChange={(e) => select(e.target.value)}
+          disabled={busy}
+          aria-label="Reporting currency (view as)"
+          className="appearance-none cursor-pointer bg-transparent hover:bg-[var(--surface-hover)] rounded-lg pl-2.5 pr-6 py-1 text-xs font-medium text-[var(--text-primary)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border-hairline-strong)] transition-colors"
+        >
+          {[FX_BASE, ...SUPPORTED_QUOTES].map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
+        <ChevronDown size={13} aria-hidden className="pointer-events-none absolute right-1.5 text-[var(--text-muted)]" />
+      </div>
       {busy && <Loader2 size={12} className="animate-spin text-[var(--text-muted)]" />}
       {override && !busy && (
-        <span className="text-[10px] text-[var(--text-muted)]">
-          Preview only — not saved. Reload returns to {spaceCurrency}.
+        <span
+          className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]"
+          title={`Preview only — not saved. Reload returns to ${spaceCurrency}.`}
+        >
+          preview
         </span>
       )}
       {error && <span className="text-[10px] text-[var(--coral-400)]">{error}</span>}

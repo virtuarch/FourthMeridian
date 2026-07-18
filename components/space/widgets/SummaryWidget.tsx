@@ -82,6 +82,15 @@ export interface SummaryRow {
 
 export interface SummaryWidgetProps {
   /**
+   * M3 Design Lab convergence — "hero" renders the card-less editorial lede
+   * (uppercase eyebrow, oversized figure, quiet inline stats) used by the
+   * Overview net-worth lede to match the Design Lab. Omit (default) for the
+   * existing boxed card treatment every other consumer keeps. Presentation only.
+   */
+  variant?:   "default" | "hero";
+  /** Uppercase eyebrow above the figure (hero variant), e.g. "Net worth". */
+  eyebrow?:   string;
+  /**
    * The headline number. Pass undefined to show the empty state.
    */
   primary?:   SummaryPrimary;
@@ -146,6 +155,8 @@ const STAT_GRID_COLS: Record<number, string> = {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function SummaryWidget({
+  variant = "default",
+  eyebrow,
   primary,
   secondary,
   stats,
@@ -177,6 +188,49 @@ export function SummaryWidget({
   const primaryColor    = VALUE_COLOR[primary.color ?? "white"];
   const primarySizeCls  = PRIMARY_SIZE[primary.size ?? "3xl"];
   const statCols        = STAT_GRID_COLS[Math.min(stats?.length ?? 0, 3)] ?? "grid-cols-2";
+
+  // ── Hero variant (M3 Design Lab convergence) ───────────────────────────────
+  // Card-less editorial lede: uppercase eyebrow, oversized figure, and quiet
+  // inline stats (no boxed tiles). Same data as the default treatment — this is
+  // presentation only.
+  if (variant === "hero") {
+    return (
+      <div className="space-y-6">
+        <div>
+          {eyebrow && (
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] mb-2.5" style={{ color: "var(--text-faint)" }}>
+              {eyebrow}
+            </p>
+          )}
+          <div className="flex items-baseline gap-3 flex-wrap">
+            <p className="text-[2.75rem] sm:text-6xl leading-[1.02] font-bold tabular-nums tracking-tight" style={{ color: primaryColor }}>
+              {primary.value}
+            </p>
+            {trend === "up"   && <TrendingUp   size={22} className="shrink-0 self-center" style={{ color: "var(--accent-positive)" }} />}
+            {trend === "down" && <TrendingDown size={22} className="shrink-0 self-center" style={{ color: "var(--accent-negative)" }} />}
+          </div>
+          {primary.label && (
+            <p className="text-sm mt-3" style={{ color: "var(--text-muted)" }}>{primary.label}</p>
+          )}
+        </div>
+
+        {stats && stats.length > 0 && (
+          <div className="flex flex-wrap gap-x-10 gap-y-4">
+            {stats.map((stat) => (
+              <div key={stat.label}>
+                <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>{stat.label}</p>
+                <p className="text-lg font-semibold tabular-nums" style={{ color: ACCENT_TEXT[stat.accent ?? "default"] }}>
+                  {stat.value}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {footer && <div>{footer}</div>}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">

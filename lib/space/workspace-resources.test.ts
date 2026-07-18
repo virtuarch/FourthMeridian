@@ -44,17 +44,21 @@ function check(name: string, cond: boolean, detail?: string): void {
   }
 }
 
-// ── openPerspectiveDataNeeds — only the OPEN perspective, only on the Perspectives tab
+// ── openPerspectiveDataNeeds — only the OPEN perspective, only on Overview (M2)
 {
-  // Non-Perspectives tabs never activate perspective needs (structural tabs keep
-  // their own host activation — SD-3 covers only the perspective-driven lazy fetch).
-  for (const tab of ["OVERVIEW", "TRANSACTIONS", "ACCOUNTS", "ACTIVITY", "MEMBERS"]) {
+  // M2 canonical IA: perspectives are engaged through OVERVIEW, so a perspective
+  // is "open" only there. Non-Overview tabs never activate perspective needs
+  // (structural tabs keep their own host activation — SD-3 covers only the
+  // perspective-driven lazy fetch).
+  for (const tab of ["TRANSACTIONS", "ACCOUNTS", "ACTIVITY", "MEMBERS"]) {
     check(`tab ${tab} ⇒ no perspective needs`, openPerspectiveDataNeeds(tab, "wealth").size === 0);
   }
-  // On the Perspectives tab, it is exactly the open perspective's registry needs.
-  check("PERSPECTIVES+wealth ⇒ wealth needs",
-    [...openPerspectiveDataNeeds("PERSPECTIVES", "wealth")].sort().join("|") === ["accounts", "snapshots"].sort().join("|"));
-  check("PERSPECTIVES+null ⇒ empty", openPerspectiveDataNeeds("PERSPECTIVES", null).size === 0);
+  // On Overview with a lens engaged, it is exactly the open perspective's needs.
+  check("OVERVIEW+wealth ⇒ wealth needs",
+    [...openPerspectiveDataNeeds("OVERVIEW", "wealth")].sort().join("|") === ["accounts", "snapshots"].sort().join("|"));
+  // Overview WITHOUT an engaged lens (summary) declares no perspective needs — its
+  // structural fetches stay category-gated in the host.
+  check("OVERVIEW+null (summary) ⇒ empty", openPerspectiveDataNeeds("OVERVIEW", null).size === 0);
 }
 
 // ── EXACT-EQUIVALENCE — the SD-3 refactor is behavior-preserving ─────────────────
@@ -63,7 +67,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 //   cashFlowActive || liquidityWorkspaceActive     → gated the transactions fetch
 //   goalsWorkspaceActive                            → gated the goals fetch
 //   investmentsActive                               → gated the investments hook
-// each defined as `activeTab === "PERSPECTIVES" && activePerspectiveId === <id>`.
+// each defined (M2) as `activeTab === "OVERVIEW" && activePerspectiveId === <id>`.
 // SD-3 replaces them with openPerspectiveDataNeeds(...).has(<need>). This section
 // proves — across the WHOLE registry — that each need membership reduces to EXACTLY
 // the same set of perspective ids, so no fetch triggers earlier, later, or differently.
@@ -82,7 +86,7 @@ function check(name: string, cond: boolean, detail?: string): void {
   const openablePerspectiveIds = Object.keys(PERSPECTIVE_LIBRARY).filter((id) => id !== "overview");
   for (const { need, ids } of REDUCTIONS) {
     const derived = openablePerspectiveIds.filter(
-      (id) => openPerspectiveDataNeeds("PERSPECTIVES", id).has(need as never),
+      (id) => openPerspectiveDataNeeds("OVERVIEW", id).has(need as never),
     );
     check(`need "${need}" activates exactly {${ids.sort().join(",")}}`,
       derived.sort().join("|") === ids.slice().sort().join("|"),

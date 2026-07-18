@@ -118,6 +118,14 @@ export function SectionCard({
   const isDebtPayoff    = (isDebtSpace && section.key === "savings_rate") || section.key === "debt_payoff_calculator";
   // Overview lede widgets: solid/frosted card, not collapsible (see SOLID_LEDE_KEYS).
   const isSolidLede     = SOLID_LEDE_KEYS.has(section.key);
+  // M3 Design Lab convergence — the Overview lede blocks render CARD-LESS (no
+  // box) for the editorial, airy feel of the Design Lab. `net_worth` is fully
+  // bare (its SummaryWidget hero variant supplies its own uppercase eyebrow);
+  // `net_worth_chart` keeps a quiet uppercase label above a card-less chart
+  // (the Design Lab's "BALANCE HISTORY" treatment). Presentation only — the
+  // sections, their data, and their ordering are unchanged.
+  const isBareLede      = section.key === "net_worth" || section.key === "net_worth_chart";
+  const bareLedeLabel   = section.key === "net_worth_chart"; // net_worth's eyebrow lives in its widget
 
   // ── Payoff summary for collapsed state ─────────────────────────────────────
   let payoffSummary: string | null = null;
@@ -177,6 +185,20 @@ export function SectionCard({
   //    treatment (GlassPanel) so these never use the faint SectionCard fill,
   //    and keeps the drag handle legible. Left padding leaves room for the
   //    Edit-Layout grip that overlays the card's top-left corner. */
+  // ── Card-less Overview lede (Net Worth + Balance history) — M3 convergence ──
+  if (isBareLede) {
+    return (
+      <div className="px-1 py-1">
+        {bareLedeLabel && (
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] mb-4" style={{ color: "var(--text-faint)" }}>
+            {displayLabel}
+          </p>
+        )}
+        {renderBody()}
+      </div>
+    );
+  }
+
   if (isSolidLede) {
     // Phase 7 — the Cash Flow Summary header names the active analytical time
     // slice, read from the SAME authoritative `period` every widget consumes

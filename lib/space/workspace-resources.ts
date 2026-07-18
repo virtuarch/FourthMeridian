@@ -48,8 +48,13 @@ export function workspaceDataNeeds(
 
 /**
  * The dataNeeds of the Perspective Workspace currently occupying the shell slot —
- * i.e. the OPEN perspective, and only while the Perspectives tab is active (else the
- * empty set). This is the SD-3 replacement for the host's former per-perspective
+ * i.e. the OPEN perspective. M2 canonical IA: perspectives are now selected
+ * through the OVERVIEW experience (a perspective is "open" when the Overview tab
+ * is active AND a lens is engaged), so this gates on OVERVIEW rather than the
+ * retired PERSPECTIVES tab. When no lens is engaged (`activePerspectiveId` null),
+ * `workspaceDataNeeds` returns the empty set, so the Overview summary declares no
+ * perspective needs (its structural fetches stay category-gated in the host).
+ * This is the SD-3 replacement for the host's former per-perspective
  * fetch booleans (`cashFlowActive` / `debtWorkspaceActive` / `wealthWorkspaceActive`
  * / `liquidityWorkspaceActive` / `goalsWorkspaceActive` / `investmentsActive`): the
  * host no longer hardcodes "debt ⇒ snapshots" or "cash flow ⇒ transactions" — it
@@ -68,6 +73,6 @@ export function openPerspectiveDataNeeds(
   activeTab: string,
   activePerspectiveId: string | null,
 ): ReadonlySet<WorkspaceDataNeed> {
-  if (activeTab !== "PERSPECTIVES") return NO_NEEDS;
+  if (activeTab !== "OVERVIEW") return NO_NEEDS;
   return workspaceDataNeeds(activePerspectiveId);
 }

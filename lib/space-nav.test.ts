@@ -61,9 +61,15 @@ check("TRANSACTIONS is visible on shared", railVisibleTabs("shared").includes("T
 check("TRANSACTIONS is visible on personal", railVisibleTabs("personal").includes("TRANSACTIONS"));
 
 // 3. Tabs with real content everywhere keep their rail slot on both hosts.
+//    M2 canonical IA: PERSPECTIVES is NO LONGER a rail destination (perspectives
+//    are selected through Overview), so it is intentionally absent here.
 const ALWAYS_REAL: SpaceTabId[] = [
-  "OVERVIEW", "PERSPECTIVES", "ACTIVITY", "ACCOUNTS", "MEMBERS", "SETTINGS",
+  "OVERVIEW", "ACTIVITY", "ACCOUNTS", "MEMBERS", "SETTINGS",
 ];
+// M2 regression: PERSPECTIVES must never re-earn a rail slot.
+for (const host of HOSTS) {
+  check(`PERSPECTIVES is NOT rail-visible on ${host}`, !railVisibleTabs(host).includes("PERSPECTIVES" as SpaceTabId));
+}
 for (const host of HOSTS) {
   for (const id of ALWAYS_REAL) {
     check(`${id} is rail-visible on ${host}`, railVisibleTabs(host).includes(id));
@@ -85,15 +91,15 @@ for (const host of HOSTS) {
 // 5. Exact expected rails (update deliberately when a tab re-earns its slot).
 //    TRANSACTIONS re-earned its shared slot in the Space Template Redesign.
 check(
-  "shared rail is exactly OVERVIEW/PERSPECTIVES/ACTIVITY/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
+  "shared rail is exactly OVERVIEW/ACTIVITY/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
   JSON.stringify(railVisibleTabs("shared")) ===
-    JSON.stringify(["OVERVIEW", "PERSPECTIVES", "ACTIVITY", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
+    JSON.stringify(["OVERVIEW", "ACTIVITY", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
   `got ${JSON.stringify(railVisibleTabs("shared"))}`,
 );
 check(
-  "personal rail is exactly OVERVIEW/PERSPECTIVES/ACTIVITY/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
+  "personal rail is exactly OVERVIEW/ACTIVITY/ACCOUNTS/TRANSACTIONS/MEMBERS/SETTINGS",
   JSON.stringify(railVisibleTabs("personal")) ===
-    JSON.stringify(["OVERVIEW", "PERSPECTIVES", "ACTIVITY", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
+    JSON.stringify(["OVERVIEW", "ACTIVITY", "ACCOUNTS", "TRANSACTIONS", "MEMBERS", "SETTINGS"]),
   `got ${JSON.stringify(railVisibleTabs("personal"))}`,
 );
 

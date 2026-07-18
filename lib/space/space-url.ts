@@ -71,3 +71,24 @@ export function buildSpaceUrl(pathname: string, search: string, updates: SpaceUr
 export function readSpaceParam(search: string, key: string): string | null {
   return new URLSearchParams(normalizeSearch(search)).get(key);
 }
+
+/**
+ * M2 canonical IA — the legacy `?tab=` values that ENCODED a perspective. When
+ * one of these is the tab, the host canonicalizes the tab to OVERVIEW and engages
+ * the mapped lens (`?perspective=`). `perspectives` is intentionally absent: it
+ * carries no forced lens (its own `?perspective=` param, if any, drives it).
+ *
+ * This lives in the canonical URL module so the legacy→canonical rule has ONE
+ * authority and can be regression-tested without importing the host component.
+ */
+export const LEGACY_TAB_PERSPECTIVE: Record<string, string> = {
+  debt: "debt",
+  credit: "debt",
+  investments: "investments",
+};
+
+/** The forced lens id for a legacy perspective-routing `?tab=` value, else null. */
+export function legacyTabPerspective(rawTab: string | null): string | null {
+  if (!rawTab) return null;
+  return LEGACY_TAB_PERSPECTIVE[rawTab.toLowerCase()] ?? null;
+}
