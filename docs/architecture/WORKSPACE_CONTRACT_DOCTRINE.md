@@ -20,7 +20,11 @@
 > **single data authority**, that **consumes canonical Space time** and **emits one
 > trust envelope**.
 
-Everything below is the elaboration and the enforcement of that sentence.
+Everything below is the elaboration and the enforcement of that sentence — for the
+**finance** domain, where all four axes are load-bearing. A Workspace may also belong
+to a **non-finance domain** (Platform, Connections, Settings), which satisfies a
+**reduced** contract: registry identity + frame/render + navigation + a data-ownership
+boundary, but no financial data, no canonical time, and no trust envelope. See §1.4.
 
 ---
 
@@ -105,6 +109,51 @@ temporal participation — it replaced the coarse `consumesShellTime` boolean, w
 
 This distinction is the doctrine's honest-debt mechanism: the registry itself already
 records where the contract is incomplete.
+
+### 1.4 Domains — the four Workspace classes
+
+`WorkspaceDefinition.domain` (`lib/perspectives.ts:174`) partitions the ONE registry by
+*what kind of thing* a Workspace is. Absent ⇒ `"finance"`. The discriminator exists so
+finance vocabularies (`dataNeeds` / `temporalCapability` / `envelope` / `routing`) stay
+**off** non-finance definitions — enforced per domain by
+`lib/{platform,connections,settings}/workspaces.test.ts`. This is the SD-2/SD-3
+"second real consumer" convergence: every class reuses the ONE `WORKSPACE_REGISTRY`,
+`SpaceShell`, and (where relevant) `TrustIndicator`/URL primitives — **never a parallel
+identity system or a second shell**.
+
+| Domain | Class | Owns | Data authority | Time | Trust | Frame |
+|---|---|---|---|---|---|---|
+| **`finance`** | **Analytical workspace** | The canonical financial knowledge (a Space's money) | one `*SpaceData`/`*Result` | ✅ `asOf`/`compareTo` | ✅ `PerspectiveEnvelope` | `SpaceShell` (`space`) inside a customer Space |
+| **`platform`** | **Internal operational workspace** | Operating-the-product signals (jobs, providers, security, growth) | self-fetching widgets | ✕ (History mirrors the model) | ✕ | `SpaceShell` (`space`), grant-gated |
+| **`connections`** | **User-owned infrastructure workspace** | The credential / provider / sync-lifecycle surface | `loadConnectionsSpaceData` (names only) | ✕ | ✕ | `SpaceShell` (`utility`), global-nav peer |
+| **`settings`** | **User-owned configuration workspace** | User account + preferences (profile, security, notifications, data) | per-section server loaders (`lib/settings/loaders.ts`) | ✕ | ✕ | `SpaceShell` (`utility`), global-nav peer, URL-driven |
+
+**The utility-workspace contract (Connections, Settings — UI-Convergence Wave 1).** A
+Workspace does **NOT** require:
+
+- customer **Space ownership** — Connections and Settings are `userId`-owned GLOBAL
+  destinations (Spaces · Brief · AI · Connections · Settings), not areas inside a Space;
+- **financial data** — Connections reads sync status + account *names* only and never
+  balances/valuations/positions (the PCS-2 boundary); Settings reads only user config;
+- **temporal capability** — no `asOf`/`compareTo`; they declare no `temporalCapability`;
+- a **trust envelope** — no `PerspectiveEnvelope`; they render no `TrustIndicator`.
+
+A Workspace **DOES** require, in every domain:
+
+- **registry identity** — exactly one `WorkspaceDefinition` in `WORKSPACE_REGISTRY`,
+  namespaced (`connections-*` / `settings-*` / `platform-*`), disjoint from finance ids;
+- a **render/frame contract** — it renders through the shared `SpaceShell` (utility
+  variant for the global-nav peers, D2 — they do **not** take over the ContextualNavbar);
+- a **navigation contract** — one composition owner declares order + destination
+  (`SETTINGS_WORKSPACE_ORDER` routes, URL-driven per D3; `CONNECTIONS_WORKSPACE_ORDER`);
+- a **data-ownership boundary** — one authority, no bypass, and no reach into another
+  domain's data (Connections ≠ the money layer; Settings ≠ Spaces/accounts — hence
+  archived-assets is *not* a Settings workspace, D4).
+
+Rows 1–2 answer all six §1 questions; rows 3–4 answer questions 1, 5, 6 and are
+*exempt by class* from 2–4 (data-as-money / time / trust). The exemption is declared,
+not silent: the domain tag + the per-domain guard test make "this class carries no
+finance vocabulary" a checked invariant.
 
 ---
 
@@ -333,7 +382,58 @@ title — already reads from `WorkspaceDefinition.label`; only the structural ta
 
 ---
 
-## 7. Non-goals (the anti-framework clause)
+## 7. The Experience Layer (panels vs modals)
+
+The contract (§§1–6) governs what a Workspace *is* and how it is *composed*. The
+Experience Layer governs how a Workspace lets the user **operate on it over time** —
+the move from `page → modal → page` to `workspace → context → detail → intelligence`.
+A Workspace may expose four presentation surfaces, in increasing interruption:
+
+```
+              Main View          the workspace body (renderer output)
+                 +
+            Context Panels       LeftPanel — "what am I operating in?"  (filters, controls, nav, AI prompt)
+                 +
+            Detail Panels        RightPanel — "tell me more about what I selected."  (holding / txn detail, evidence, explanation)
+                 +
+            Action Modals        OverlaySurface — "pause and complete a decision."  (delete, confirm, auth, destructive)
+```
+
+### 7.1 Panel vs Modal — the one distinction
+
+| | **Panel** (`components/atlas/panels`) | **Modal** (`components/atlas/OverlaySurface`) |
+|---|---|---|
+| Purpose | Persistent contextual surface | Interrupt for a bounded decision |
+| Mental model | "continue working while inspecting" | "pause and complete" |
+| Spatial | Edge-docked (left = context, right = detail); workspace stays visible | Centered; workspace recedes |
+| Examples | selected transaction, holding detail, filters, AI context, evidence | delete, confirm, authenticate, destructive actions |
+| Dismissal | non-destructive; scrim/Escape/close, workspace intact behind it | often a committed choice |
+
+Both are the **edge-anchored and centered siblings of one behavior language**: they
+share the material (`GlassPanel`), the scroll lock (`useBodyScrollLock`), and the
+a11y/motion hooks (`components/atlas/useOverlayBehavior` — focus trap, escape, focus
+capture/restore, reduced motion). There is exactly **one** focus-trap / escape /
+reduced-motion implementation, consumed by both — never a per-surface drawer framework.
+
+### 7.2 Panels are presentation primitives, NOT ownership boundaries
+
+The panel family (`Panel`, `PanelHeader`/`PanelContent`/`PanelFooter`, `LeftPanel`/
+`RightPanel`, `PanelStack`, `WorkspaceLayout`) knows layout, animation, open/close,
+accessibility, responsiveness, and stacking — and **nothing about any domain**
+(enforced by `components/atlas/panels/panels.test.ts`: no `@/lib/*`, no
+space/dashboard component imports, no domain-named panel files). A domain composes its
+own detail from the slots (`<RightPanel><PanelHeader/><PanelContent>…</PanelContent></RightPanel>`);
+the primitive never grows a `<TransactionPanel>` or `<InvestmentPanel>`. Responsive
+behavior is one CSS-driven component — desktop `[Left][Main][Right]` docked, tablet a
+docked overlay, mobile a full-width bottom sheet — never a separate mobile component.
+
+> **Status:** the primitive landed as the first Experience Convergence slice; no
+> workspace has migrated onto it yet (Investments / Transactions / AI / Brief are
+> future consumers). Existing modals are unchanged.
+
+---
+
+## 8. Non-goals (the anti-framework clause)
 
 This doctrine explicitly **does not** call for, and future slices should **not** introduce:
 
