@@ -29,7 +29,7 @@ console.log("canonical surface tokens");
 console.log("field-kit barrel completeness");
 {
   const barrel = read("components/atlas/fields/index.ts");
-  for (const name of ["Label", "HelpText", "FieldError", "Input", "Select", "Toggle", "Field", "SelectOption", "SaveResult", "FieldSaveFn", "INPUT_BASE", "inputStyle"]) {
+  for (const name of ["Label", "HelpText", "FieldError", "Input", "Textarea", "Select", "Toggle", "Field", "SelectOption", "SaveResult", "FieldSaveFn", "INPUT_BASE", "inputStyle"]) {
     check(`barrel exports ${name}`, barrel.includes(name));
   }
 }
@@ -39,6 +39,7 @@ console.log("promoted primitives exist");
   for (const f of [
     "components/atlas/fields/Field.tsx",
     "components/atlas/fields/Input.tsx",
+    "components/atlas/fields/Textarea.tsx",
     "components/atlas/fields/Select.tsx",
     "components/atlas/fields/Toggle.tsx",
     "components/atlas/Toast.tsx",

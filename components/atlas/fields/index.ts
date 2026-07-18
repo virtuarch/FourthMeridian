@@ -11,6 +11,7 @@ export { Label } from "@/components/atlas/fields/Label";
 export { HelpText } from "@/components/atlas/fields/HelpText";
 export { FieldError } from "@/components/atlas/fields/FieldError";
 export { Input } from "@/components/atlas/fields/Input";
+export { Textarea } from "@/components/atlas/fields/Textarea";
 export { Select, type SelectOption } from "@/components/atlas/fields/Select";
 export { Toggle } from "@/components/atlas/fields/Toggle";
 export { Field } from "@/components/atlas/fields/Field";
