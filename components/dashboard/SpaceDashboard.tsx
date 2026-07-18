@@ -992,15 +992,11 @@ export function SpaceDashboard({
           />
         )}
 
-        {/* Activity — a first-class rail tab (SD-7): its recent_activity section
-            through the shared section stack. Never reorders. */}
+        {/* Activity — a first-class rail tab: the editorial Activity timeline
+            (hero + date-banded feed → RightPanel detail), reading the canonical
+            activity feed. Presentation-only convergence; never reorders. */}
         {activeTab === "ACTIVITY" && (
-          <ActivityWorkspace
-            sections={sectionsForTab}
-            canManage={canManage}
-            onManage={() => setShowManage(true)}
-            card={sectionCardBundle}
-          />
+          <ActivityWorkspace spaceId={spaceId} />
         )}
 
         {/* No sections at all — only meaningful for the legacy data-driven

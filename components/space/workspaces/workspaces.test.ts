@@ -89,10 +89,16 @@ console.log("3. The section subsystem is the ONE home for SectionCard + the regi
   check("host imports SectionCard from the card module + SectionRegistry from the registry module",
     DASH.includes('from "@/components/space/sections/SectionCard"') &&
     DASH.includes('from "@/components/space/sections/SectionRegistry"'));
-  check("Accounts/Activity/Overview compose the shared SpaceSectionStack",
+  check("Accounts/Overview compose the shared SpaceSectionStack",
     WS("AccountsWorkspace.tsx").includes("<SpaceSectionStack") &&
-    WS("ActivityWorkspace.tsx").includes("<SpaceSectionStack") &&
     WS("OverviewWorkspace.tsx").includes("<SpaceSectionStack"));
+  // Activity migrated OUT of the generic section stack into the editorial timeline
+  // idiom — it composes the hero + rail feed + RightPanel over the canonical feed,
+  // and no longer renders a section stack.
+  check("Activity is the editorial timeline (hero + RightPanel), not a section stack",
+    WS("ActivityWorkspace.tsx").includes("<ActivityTimeline") &&
+    WS("ActivityWorkspace.tsx").includes("<RightPanel") &&
+    !WS("ActivityWorkspace.tsx").includes("<SpaceSectionStack"));
 }
 
 console.log("4. Shared dashboard types have ONE home (no host-inline re-declaration)");
