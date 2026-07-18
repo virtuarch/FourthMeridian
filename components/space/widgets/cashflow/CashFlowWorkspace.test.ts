@@ -43,7 +43,7 @@ console.log("1. CashFlowWorkspace is the render boundary");
   check("host mounts <CashFlowWorkspace (the cashFlow destination's renderer)", DASH.includes("<CashFlowWorkspace"));
   check("host no longer imports the old cashflow/CashFlowPerspective", !DASH.includes("cashflow/CashFlowPerspective"));
   check("host no longer references CashFlowPerspectiveWorkspace", !DASH.includes("CashFlowPerspectiveWorkspace"));
-  check("cashFlow branch exists", DASH.indexOf('activePerspectiveId === "cashFlow"') >= 0);
+  check("cashFlow workspace is registered", DASH.includes("cashFlow: () =>") && DASH.includes("<CashFlowWorkspace"));
 }
 
 console.log("2. CashFlowSpaceData is the composition boundary");
@@ -131,7 +131,7 @@ console.log("10. Trust OWNERSHIP — workspace owns the stamp AND emits its own 
     WS.includes("onEnvelopeChange(") && WS.includes("resolvePerspectiveEnvelope(") && WS.includes('perspectiveId: "cashFlow"'));
   check("host no longer computes cashFlowStampValue", !DASH.includes("cashFlowStampValue"));
   check("host no longer imports cashFlowStamp / LiquidityTx for the stamp", !DASH.includes("cash-flow-compare") && !DASH.includes("import type { LiquidityTx }"));
-  check("host declares + relays cashFlowEnvelope state", DASH.includes("setCashFlowEnvelope") && DASH.includes("? cashFlowEnvelope"));
+  check("host relays the workspace envelope (consolidated)", DASH.includes("<CashFlowWorkspace") && DASH.includes("onEnvelopeChange={setActiveEnvelope}"));
 }
 
 if (failures > 0) { console.error(`\n${failures} CashFlowWorkspace check(s) failed`); process.exit(1); }

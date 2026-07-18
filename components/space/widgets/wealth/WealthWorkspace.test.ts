@@ -87,7 +87,10 @@ console.log("6. Trust / envelope — resolved in the Workspace, bridged to the s
   check("Workspace resolves its own envelope via the canonical resolver", CODE.includes("resolvePerspectiveEnvelope(") && CODE.includes('perspectiveId: "wealth"'));
   check("Workspace emits the envelope up (onEnvelopeChange)", CODE.includes("onEnvelopeChange("));
   check("envelope resolved from the currency-consistent result", /resolvePerspectiveEnvelope\(\{[\s\S]*wealthResult: result/.test(CODE));
-  check("host relays the Workspace envelope (setWealthEnvelope) to the shell", HOSTC.includes("setWealthEnvelope") && HOSTC.includes("? wealthEnvelope"));
+  // The host relays the engaged Workspace's envelope to the shell. Post-registry
+  // this is ONE consolidated envelope state (setActiveEnvelope) fed by whichever
+  // workspace is mounted — not a per-lens var + selection ternary.
+  check("host relays the Workspace envelope (setActiveEnvelope) to the shell", HOSTC.includes("onEnvelopeChange={setActiveEnvelope}") && HOSTC.includes("activeEnvelope"));
   check("Evidence drawer is now Workspace-owned (moved off the host)", CODE.includes("<EvidenceDrawer") && !HOSTC.includes("EvidenceDrawer"));
   check("no duplicate trust math (only the canonical resolver, no bespoke tiers)", !CODE.includes("completeness:") && !CODE.includes("tier:"));
 }

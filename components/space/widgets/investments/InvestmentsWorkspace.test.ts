@@ -54,7 +54,7 @@ console.log("2. Data OWNERSHIP + envelope BRIDGE");
   check("host does NOT call the hook", !HOSTC.includes("useInvestmentsSpaceData"));
   check("host retains no Investments data", !HOSTC.includes("investments.data"));
   check("Workspace emits envelope via canonical resolver", CODE.includes("onEnvelopeChange(") && CODE.includes("resolvePerspectiveEnvelope("));
-  check("host relays the Workspace envelope", HOSTC.includes("investmentsEnvelope") && HOSTC.includes("setInvestmentsEnvelope"));
+  check("host relays the Workspace envelope (consolidated)", HOSTC.includes("<InvestmentsWorkspace") && HOSTC.includes("onEnvelopeChange={setActiveEnvelope}"));
 }
 
 console.log("3. Valuation chart — canonical SpaceSnapshot series, no double-count, no N×date");

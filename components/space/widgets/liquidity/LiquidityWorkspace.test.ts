@@ -149,8 +149,8 @@ console.log("8. Envelope bridge — emitted up, consumed by the host");
 {
   check("workspace emits the envelope via onEnvelopeChange", CODE.includes("onEnvelopeChange("));
   check("workspace reuses the canonical resolver", CODE.includes("resolvePerspectiveEnvelope("));
-  check("host consumes liquidityEnvelope in the shell chip", DASH.includes("liquidityEnvelope"));
-  check("host relays the workspace envelope (setLiquidityEnvelope)", DASH.includes("setLiquidityEnvelope"));
+  check("host consumes the consolidated envelope in the shell chip", DASH.includes("activeEnvelope"));
+  check("host relays the workspace envelope (consolidated)", DASH.includes("<LiquidityWorkspace") && DASH.includes("onEnvelopeChange={setActiveEnvelope}"));
 }
 
 console.log("9. Route serves the WHOLE contract via loadLiquiditySpaceData (authz-gated single authority)");

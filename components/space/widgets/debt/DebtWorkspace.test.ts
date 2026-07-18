@@ -138,9 +138,9 @@ console.log("9. Envelope OWNERSHIP — workspace resolves + emits its own trust 
   check("workspace emits via onEnvelopeChange", CODE.includes("onEnvelopeChange("));
   check("envelope resolved from the on-screen lens via the canonical resolver",
     CODE.includes("resolvePerspectiveEnvelope(") && CODE.includes('perspectiveId: "debt"'));
-  check("host declares + relays debtEnvelope state", DASH.includes("setDebtEnvelope") && DASH.includes("debtEnvelope"));
-  check("host no longer resolves debt's chip envelope inline (relays state)",
-    DASH.includes('activePerspectiveId === "debt"') && DASH.includes("? debtEnvelope"));
+  check("host relays the workspace envelope (consolidated)", DASH.includes("<DebtWorkspace") && DASH.includes("onEnvelopeChange={setActiveEnvelope}"));
+  check("debt workspace is registered (registry-driven, not an if/else branch)",
+    DASH.includes("debt: () =>") && DASH.includes("<DebtWorkspace"));
 }
 
 if (failures > 0) { console.error(`\n${failures} DebtWorkspace check(s) failed`); process.exit(1); }

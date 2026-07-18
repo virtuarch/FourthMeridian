@@ -645,11 +645,12 @@ export function SpaceDashboard({
   // (As Of / Compare To / preset) stays fixed (P1).
   const handleSwitchLens = (lensId: string) => setSelectedPerspectiveId(lensId);
 
-  // SD-5 — the Wealth WORKSPACE now OWNS its data composition, per-date FX, trust
-  // envelope resolution AND the Evidence drawer. Like Investments, it emits its
-  // envelope up (onEnvelopeChange) so the shell Completeness/Evidence chip renders a
-  // Workspace-derived envelope without the host recomputing WealthResult.
-  const [wealthEnvelope, setWealthEnvelope] = useState<PerspectiveEnvelope>({});
+  // ONE trust envelope for whichever workspace is engaged. Every financial
+  // workspace (Wealth/Cash Flow/Liquidity/Investments/Debt) owns its data + FX +
+  // as-of trust and emits its envelope up (onEnvelopeChange). Because exactly one
+  // workspace is mounted at a time, a single state holds the active one — the
+  // former five per-lens envelope states + their selection ternary collapse here.
+  const [activeEnvelope, setActiveEnvelope] = useState<PerspectiveEnvelope>({});
   // SD-6C — the Cash Flow / Spending perspective + measure filter is now OWNED by
   // CashFlowWorkspace (workspace-local semantic slice), no longer host state. SD-6
   // gate — the completeness stamp AND its trust envelope are now workspace-owned too
@@ -681,7 +682,6 @@ export function SpaceDashboard({
   // Completeness chip via this state (the narrow bridge, §1). compareTo is guarded to a
   // valid strictly-earlier window (the route 400s on compareTo >= asOf).
   const investmentsCompareTo = compareTo && compareTo < asOf ? compareTo : null;
-  const [investmentsEnvelope, setInvestmentsEnvelope] = useState<PerspectiveEnvelope>({});
   // SD-6B — the Liquidity WORKSPACE now OWNS its data consumption (the
   // useLiquiditySpaceData fetch moved inside <LiquidityWorkspace>), activating the
   // historical engine end-to-end. Like Investments, the host keeps NO Liquidity fetch;
@@ -689,12 +689,6 @@ export function SpaceDashboard({
   // relays the workspace's trust envelope (present-day OR as-of) to the shell chip.
   const liquidityActive = activeTab === "OVERVIEW" && activePerspectiveId === "liquidity";
   const liquidityCompareTo = compareTo && compareTo < asOf ? compareTo : null;
-  const [liquidityEnvelope, setLiquidityEnvelope] = useState<PerspectiveEnvelope>({});
-  // SD-6 gate — Debt and Cash Flow now emit their OWN trust envelopes (like Wealth /
-  // Investments / Liquidity), so the shell chip is honest for the SELECTED date (Debt:
-  // as-of lens; Cash Flow: workspace-owned stamp) and the host merely relays them.
-  const [debtEnvelope, setDebtEnvelope] = useState<PerspectiveEnvelope>({});
-  const [cashFlowEnvelope, setCashFlowEnvelope] = useState<PerspectiveEnvelope>({});
   const [spaceGoals, setSpaceGoals] = useState<SpaceGoal[] | null>(null);
   useEffect(() => {
     if (!perspectiveNeedsGoals || spaceGoals !== null) return;
@@ -1157,6 +1151,88 @@ export function SpaceDashboard({
     onDragEnd: handleSectionDragEnd,
   };
 
+  // Perspective workspace registry — replaces the former `activePerspectiveId ===
+  // "..." ? <XWorkspace/> : ...` render ladder with a declarative id → renderer
+  // map: adding a lens is an entry, not another branch. Each is a THUNK so only
+  // the engaged workspace is evaluated. The map's KEYS are also the single source
+  // of truth for "which lenses own a workspace" — reused for the trust-envelope
+  // selection (an engaged workspace emits its own envelope into activeEnvelope;
+  // anything else falls through to the canonical resolver).
+  const workspaceRenderers: Record<string, () => React.ReactNode> = {
+    wealth: () => (
+      <WealthWorkspace
+        snapshots={snapshots}
+        snapshotCurrency={snapshotCurrency ?? displayCurrency}
+        asOf={asOf}
+        compareTo={compareTo}
+        accounts={accounts}
+        ctx={widgetCtx}
+        metric={chartMetric}
+        onMetricChange={handleMetricChange}
+        onSwitchLens={handleSwitchLens}
+        onEnvelopeChange={setActiveEnvelope}
+        backfillInProgress={snapshotsBackfilling}
+      />
+    ),
+    cashFlow: () => (
+      <CashFlowWorkspace
+        transactions={spaceTransactions}
+        txCtx={txConversionCtx}
+        accounts={accounts}
+        period={cashFlowPeriod}
+        onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
+        onEnvelopeChange={setActiveEnvelope}
+      />
+    ),
+    liquidity: () => (
+      <LiquidityWorkspace
+        spaceId={spaceId}
+        asOf={asOf}
+        compareTo={liquidityCompareTo}
+        today={shellToday}
+        active={liquidityActive}
+        accounts={accounts}
+        ctx={widgetCtx}
+        presentLens={lensResults?.["liquidity"] ?? null}
+        transactions={spaceTransactions}
+        txCtx={txConversionCtx}
+        period={cashFlowPeriod}
+        onOpenCashFlow={() => setSelectedPerspectiveId("cashFlow")}
+        onEnvelopeChange={setActiveEnvelope}
+      />
+    ),
+    investments: () => (
+      <InvestmentsWorkspace
+        spaceId={spaceId}
+        asOf={asOf}
+        compareTo={investmentsCompareTo}
+        active={perspectiveNeedsInvestments}
+        today={shellToday}
+        accounts={accounts}
+        ctx={widgetCtx}
+        onEnvelopeChange={setActiveEnvelope}
+      />
+    ),
+    debt: () => (
+      <DebtWorkspace
+        spaceId={spaceId}
+        asOf={asOf}
+        compareTo={debtCompareTo}
+        today={shellToday}
+        active={debtActive}
+        accounts={accounts}
+        ctx={widgetCtx}
+        snapshots={snapshots}
+        snapshotCurrency={snapshotCurrency ?? displayCurrency}
+        ficoScore={ficoScore}
+        ficoUpdatedAt={ficoUpdatedAt}
+        presentLens={lensResults?.["debt"] ?? null}
+        targetCurrency={perspectiveTargetCurrency}
+        onEnvelopeChange={setActiveEnvelope}
+      />
+    ),
+  };
+
   return (
     <SpaceShell
       // Global shell overlays — the shell owns WHERE they mount (above the
@@ -1282,20 +1358,11 @@ export function SpaceDashboard({
               onCompareToChange={handleCompareToChange}
               onSwap={shell.actions.swap}
               envelope={
-                // SD-6 gate — ALL FIVE financial workspaces now emit their own envelope
-                // up (each owns its data + FX-consistent currency + as-of trust); the
-                // host merely relays the matching state. Only non-workspace lenses (e.g.
-                // goals) fall through to the canonical resolver below.
-                activePerspectiveId === "wealth"
-                  ? wealthEnvelope
-                  : activePerspectiveId === "investments"
-                  ? investmentsEnvelope
-                  : activePerspectiveId === "liquidity"
-                  ? liquidityEnvelope
-                  : activePerspectiveId === "debt"
-                  ? debtEnvelope
-                  : activePerspectiveId === "cashFlow"
-                  ? cashFlowEnvelope
+                // The engaged workspace emits its OWN trust envelope into
+                // activeEnvelope; a lens without a workspace (e.g. goals) falls
+                // through to the canonical resolver. The registry keys decide which.
+                activePerspectiveId && workspaceRenderers[activePerspectiveId]
+                  ? activeEnvelope
                   : resolvePerspectiveEnvelope({
                       perspectiveId: activePerspectiveId ?? "",
                       lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
@@ -1318,110 +1385,12 @@ export function SpaceDashboard({
               aria-labelledby={activePerspectiveId ? `ptab-${activePerspectiveId}` : undefined}
               className="space-y-3"
             >
-              {activePerspectiveId === "wealth" ? (
-                // SD-5 — the extracted Wealth WORKSPACE. All composition lives inside
-                // it: it derives WealthResult from the SHARED host-fetched snapshot
-                // series (computeWealthTimeMachine) AND converts that series per-date
-                // into the selected display currency (display-currency activation),
-                // then emits its trust envelope up (onEnvelopeChange) and owns its own
-                // Evidence drawer. The host only passes shared inputs + shell time.
-                // WealthResult remains the canonical Wealth boundary (no WealthSpaceData).
-                <WealthWorkspace
-                  snapshots={snapshots}
-                  snapshotCurrency={snapshotCurrency ?? displayCurrency}
-                  asOf={asOf}
-                  compareTo={compareTo}
-                  accounts={accounts}
-                  ctx={widgetCtx}
-                  metric={chartMetric}
-                  onMetricChange={handleMetricChange}
-                  onSwitchLens={handleSwitchLens}
-                  onEnvelopeChange={setWealthEnvelope}
-                  backfillInProgress={snapshotsBackfilling}
-                />
-              ) : activePerspectiveId === "cashFlow" ? (
-                // Cash Flow Perspective — the redesigned multi-panel composition
-                // (mirrors the Wealth grid pattern), replacing the generic
-                // single-column SectionCard stack for this Perspective only. Time
-                // stays host-owned via the existing period bridge; the exact same
-                // props the SectionCard path passed reach the same five widgets.
-                <CashFlowWorkspace
-                  transactions={spaceTransactions}
-                  txCtx={txConversionCtx}
-                  accounts={accounts}
-                  period={cashFlowPeriod}
-                  onSelectPeriod={(p) => setCashFlowExplicitPeriod(p)}
-                  onEnvelopeChange={setCashFlowEnvelope}
-                />
-              ) : activePerspectiveId === "liquidity" ? (
-                // SD-6B — the extracted Liquidity WORKSPACE over the canonical
-                // LiquiditySpaceData contract. All composition lives inside it; the
-                // host only mounts it with shell dates + host inputs. It activates the
-                // historical engine: the lede lens + the Liquidity Ladder are
-                // reconstructed AT asOf, and a compareTo yields a per-tier delta — date
-                // changes now visibly move the temporal panel. The per-account widgets
-                // (Accessible Cash / EFR / Reachability / Concentration / What Changed)
-                // stay the LIVE CURRENT ANCHOR from `accounts`. Present day reuses the
-                // host present-day lens (byte-identical); historical fetches its own.
-                // The workspace emits its trust envelope up (present-day or as-of).
-                <LiquidityWorkspace
-                  spaceId={spaceId}
-                  asOf={asOf}
-                  compareTo={liquidityCompareTo}
-                  today={shellToday}
-                  active={liquidityActive}
-                  accounts={accounts}
-                  ctx={widgetCtx}
-                  presentLens={lensResults?.["liquidity"] ?? null}
-                  transactions={spaceTransactions}
-                  txCtx={txConversionCtx}
-                  period={cashFlowPeriod}
-                  onOpenCashFlow={() => setSelectedPerspectiveId("cashFlow")}
-                  onEnvelopeChange={setLiquidityEnvelope}
-                />
-              ) : activePerspectiveId === "investments" ? (
-                // SD-4 — the extracted Investments WORKSPACE over the canonical
-                // InvestmentsSpaceData contract. All composition lives inside it;
-                // the host only mounts it with the fetched contract + shell dates.
-                // `current` (getCurrentPositions) is the canonical current view;
-                // `historical` (A10) drives as-of / compare — date changes visibly
-                // move the numbers. Props-in, render-out.
-                <InvestmentsWorkspace
-                  spaceId={spaceId}
-                  asOf={asOf}
-                  compareTo={investmentsCompareTo}
-                  active={perspectiveNeedsInvestments}
-                  today={shellToday}
-                  accounts={accounts}
-                  ctx={widgetCtx}
-                  onEnvelopeChange={setInvestmentsEnvelope}
-                />
-              ) : activePerspectiveId === "debt" ? (
-                // SD-6A — the extracted Debt WORKSPACE over the canonical
-                // DebtSpaceData contract. All composition lives inside it; the host
-                // only mounts it with shell dates + host inputs. It activates the
-                // as-of engine: the lede lens is computed AT asOf and the Balance
-                // Over Time series is CLIPPED to [compareTo, asOf] — date changes now
-                // visibly move the history window. Every VISIBLE FIGURE stays
-                // client-derived from `accounts` (dual authority). The host present-
-                // day lens (lensResults["debt"]) is reused on the today branch
-                // (byte-identical); historical fetches its own. LIABILITIES ONLY.
-                <DebtWorkspace
-                  spaceId={spaceId}
-                  asOf={asOf}
-                  compareTo={debtCompareTo}
-                  today={shellToday}
-                  active={debtActive}
-                  accounts={accounts}
-                  ctx={widgetCtx}
-                  snapshots={snapshots}
-                  snapshotCurrency={snapshotCurrency ?? displayCurrency}
-                  ficoScore={ficoScore}
-                  ficoUpdatedAt={ficoUpdatedAt}
-                  presentLens={lensResults?.["debt"] ?? null}
-                  targetCurrency={perspectiveTargetCurrency}
-                  onEnvelopeChange={setDebtEnvelope}
-                />
+              {activePerspectiveId && workspaceRenderers[activePerspectiveId] ? (
+                // Registry-driven: the engaged financial workspace (Wealth / Cash Flow
+                // / Liquidity / Investments / Debt). Each owns its data + FX + as-of
+                // trust and emits its envelope up; the host only supplies shared inputs
+                // + shell time. See workspaceRenderers above.
+                workspaceRenderers[activePerspectiveId]()
               ) : activePerspective?.widgets && activePerspective.widgets.length > 0 ? (
                 toVirtualSections(activePerspective.id, activePerspective.widgets).map((vs) => (
                   <SectionCard
