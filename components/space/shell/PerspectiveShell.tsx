@@ -24,6 +24,7 @@
 
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { temporalControlVisibility, type TemporalCapability } from "@/lib/perspectives";
 import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
 import { ShellContextRow } from "./ShellContextRow";
 import { PerspectiveTabs, type PerspectiveTabItem } from "./PerspectiveTabs";
@@ -41,6 +42,9 @@ interface Props {
   // Row B — presets (value is null under CUSTOM: no segment highlighted).
   presetValue:    CashFlowPeriod | null;
   onSelectPreset: (p: CashFlowPeriod) => void;
+  /** The engaged lens's temporal capability — gates which time controls render.
+   *  Undefined ⇒ render all (pre-declaration default). */
+  temporalCapability?: TemporalCapability;
   // Container 2 — the lens.
   tabs:        PerspectiveTabItem[];
   activeTabId: string | null;
@@ -48,6 +52,9 @@ interface Props {
 }
 
 export function PerspectiveShell(props: Props) {
+  // Honest controls: render each time control only where the lens consumes that
+  // axis ("none" ⇒ hidden; "partial"/"full" ⇒ shown — see temporalControlVisibility).
+  const vis = temporalControlVisibility(props.temporalCapability);
   return (
     <div className="space-y-3">
       {/* Container 2 — the lens. Rendered FIRST (SHELL_NAV §2.2: pick the lens
@@ -80,8 +87,12 @@ export function PerspectiveShell(props: Props) {
           onSwap={props.onSwap}
           today={props.today}
           envelope={props.envelope}
+          showAsOf={vis.asOf}
+          showCompareTo={vis.compareTo}
         />
-        <CashFlowPeriodSelector value={props.presetValue} onChange={props.onSelectPreset} />
+        {vis.period && (
+          <CashFlowPeriodSelector value={props.presetValue} onChange={props.onSelectPreset} />
+        )}
       </div>
     </div>
   );

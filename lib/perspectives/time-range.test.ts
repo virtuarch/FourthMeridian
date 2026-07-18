@@ -19,6 +19,7 @@ import {
   subMonths,
   subYears,
   clampAsOf,
+  historicalCompareTo,
   isValidYmd,
   mapPresetToCashFlowPeriod,
   shellTimeReducer,
@@ -203,6 +204,14 @@ console.log("URL serialize/hydrate round-trip + invalid fallback");
     JSON.stringify(fallback) === JSON.stringify(defaultPerspectiveTimeState(TODAY)));
   const futureAsOf = hydrateShellTimeState({ asOf: "2099-01-01", preset: "MTD" }, ctx);
   check("a future As Of clamps to today on hydrate", futureAsOf.asOf === TODAY);
+}
+
+console.log("historicalCompareTo — strictly-earlier compare derivation (SD-2C)");
+{
+  check("compareTo < asOf → the compareTo",           historicalCompareTo("2026-07-18", "2026-07-01") === "2026-07-01");
+  check("compareTo == asOf → null",                    historicalCompareTo("2026-07-18", "2026-07-18") === null);
+  check("compareTo > asOf → null",                     historicalCompareTo("2026-07-18", "2026-07-25") === null);
+  check("compareTo absent → null",                     historicalCompareTo("2026-07-18", null) === null);
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

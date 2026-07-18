@@ -25,8 +25,11 @@ import {
   ROUTED_WORKSPACE_TABS,
   isRoutedWorkspaceTab,
   getWorkspaceModalMeta,
+  workspaceConsumesShellTime,
+  temporalControlVisibility,
   type WorkspaceDataNeed,
   type WorkspaceEnvelopeSource,
+  type TemporalCapability,
 } from "../perspectives";
 import { PERSPECTIVE_ICON_MAP } from "../perspective-icons";
 import { SPACE_TAB_ORDER } from "../space-nav";
@@ -172,33 +175,57 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
   check("all declared dataNeeds are valid union members", allNeeds.every((n) => (VALID as string[]).includes(n)));
 }
 
-// ── consumesShellTime encodes the DOCTRINE contract, not current implementation ───
-// Renamed from consumesTime (SD-2C): "participates in the SD-0B canonical
-// asOf/compareTo model". DOCTRINE: every Perspective is a temporal financial lens
-// ⇒ true, even where runtime support is incomplete (e.g. Liquidity — a gap to
-// close, NOT a reclassification). Standard/domain workspaces ⇒ false.
+// ── temporalCapability is the DOCTRINE contract; consumesShellTime is DERIVED ─────
+// Each financial Perspective declares WHICH canonical time axes it consumes
+// (asOf/compareTo/period), at "full"/"partial"/"none". "partial" is an honest
+// capability GAP (part of the impl reflects it), NOT a reclassification. The
+// coarse consumesShellTime boolean is now derived (any axis !== "none"), never stored.
 {
-  const expectedTime: Record<string, boolean> = {
-    // temporal financial Perspectives — all true by contract
-    wealth: true, investments: true, cashFlow: true, debt: true, liquidity: true,
-    // standard/domain workspaces — false
-    goals: false,
+  const expected: Record<string, TemporalCapability> = {
+    wealth:      { asOf: "full",    compareTo: "full",    period: "none" },
+    investments: { asOf: "full",    compareTo: "full",    period: "none" },
+    cashFlow:    { asOf: "none",    compareTo: "none",    period: "full" },
+    debt:        { asOf: "partial", compareTo: "partial", period: "none" },
+    liquidity:   { asOf: "partial", compareTo: "partial", period: "none" },
   };
-  for (const [id, ct] of Object.entries(expectedTime)) {
-    check(`${id}.consumesShellTime === ${ct}`, WORKSPACE_REGISTRY[id].consumesShellTime === ct);
+  for (const [id, cap] of Object.entries(expected)) {
+    const actual = WORKSPACE_REGISTRY[id].temporalCapability;
+    check(`${id}.temporalCapability === ${JSON.stringify(cap)}`,
+      actual?.asOf === cap.asOf && actual?.compareTo === cap.compareTo && actual?.period === cap.period);
+    // Derived: every declared finance Perspective participates in shell time.
+    check(`${id} derives consumesShellTime = true`, workspaceConsumesShellTime(WORKSPACE_REGISTRY[id]) === true);
   }
-  // Standard workspaces never consume canonical shell time.
+  // Standard/domain workspaces declare no capability and derive false.
   for (const id of ["overview", "transactions", "accounts", "activity", "members", "goals"]) {
-    check(`${id}.consumesShellTime === false`, WORKSPACE_REGISTRY[id].consumesShellTime === false);
+    check(`${id} has no temporalCapability`, WORKSPACE_REGISTRY[id].temporalCapability === undefined);
+    check(`${id} derives consumesShellTime = false`, workspaceConsumesShellTime(WORKSPACE_REGISTRY[id]) === false);
   }
-  // DOCTRINE RATCHET: every Perspective WITH a workspace body (widgets) MUST be a
-  // temporal lens (consumesShellTime true) — the registry describes the intended
-  // contract, never fossilizing an implementation gap as a non-temporal category.
+  // DOCTRINE RATCHET: every renderer-backed financial Perspective is temporal — the
+  // registry describes the intended contract, never fossilizing an impl gap as a
+  // non-temporal category. (Renderer-backed = kind perspective, available, no routed modal.)
   for (const [id, def] of Object.entries(PERSPECTIVE_LIBRARY)) {
-    if (def.kind === "perspective" && def.widgets && def.widgets.length > 0) {
-      check(`perspective workspace "${id}" is temporal (consumesShellTime === true)`, def.consumesShellTime === true);
+    if (def.kind === "perspective" && def.status === "available" && !def.routing?.targetTab) {
+      check(`perspective workspace "${id}" declares a temporalCapability`, def.temporalCapability !== undefined);
+      check(`perspective workspace "${id}" is temporal (derived consumesShellTime)`, workspaceConsumesShellTime(def) === true);
     }
   }
+
+  // Shell control visibility derives from the capability (product-correctness).
+  const vis = (id: string) => temporalControlVisibility(WORKSPACE_REGISTRY[id].temporalCapability);
+  check("Wealth shell shows As-of + Compare-to, hides Period",
+    vis("wealth").asOf && vis("wealth").compareTo && !vis("wealth").period);
+  check("Investments shell shows As-of + Compare-to, hides Period",
+    vis("investments").asOf && vis("investments").compareTo && !vis("investments").period);
+  check("Cash Flow shell HIDES As-of + Compare-to, shows Period (dead-control fix)",
+    !vis("cashFlow").asOf && !vis("cashFlow").compareTo && vis("cashFlow").period);
+  check("Debt shell shows As-of + Compare-to (partial still renders)",
+    vis("debt").asOf && vis("debt").compareTo);
+  check("Liquidity shell shows As-of + Compare-to (partial still renders)",
+    vis("liquidity").asOf && vis("liquidity").compareTo);
+  // Undeclared capability ⇒ all controls (pre-declaration default; nothing changes).
+  check("undeclared capability renders all controls", (() => {
+    const d = temporalControlVisibility(undefined); return d.asOf && d.compareTo && d.period;
+  })());
 }
 
 // ── envelope source matches resolvePerspectiveEnvelope's switch ──────────────────

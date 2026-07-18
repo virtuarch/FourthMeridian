@@ -28,7 +28,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { PERSPECTIVE_LIBRARY } from "@/lib/perspectives";
+import { PERSPECTIVE_LIBRARY, workspaceConsumesShellTime } from "@/lib/perspectives";
 
 const ROOT = process.cwd();
 const DIR = "components/space/widgets/liquidity";
@@ -173,9 +173,15 @@ console.log("10. Host RELAYS — the renderer map mounts <LiquidityWorkspace>, d
   check("host dispatches via WORKSPACE_RENDERERS", DASH.includes("WORKSPACE_RENDERERS["));
 }
 
-console.log("11. Registry — liquidity stays temporal (consumesShellTime: true)");
+console.log("11. Registry — liquidity stays temporal (temporalCapability PARTIAL, not a non-participation)");
 {
-  check("liquidity consumesShellTime is true", PERSPECTIVE_LIBRARY.liquidity?.consumesShellTime === true);
+  const cap = PERSPECTIVE_LIBRARY.liquidity?.temporalCapability;
+  // PARTIAL asOf/compareTo — honest capability gap (Ladder temporal, per-account
+  // panels current-anchor); NOT reclassified as non-temporal.
+  check("liquidity temporalCapability is asOf/compareTo partial, period none",
+    cap?.asOf === "partial" && cap?.compareTo === "partial" && cap?.period === "none");
+  check("liquidity still participates in canonical shell time (derived consumesShellTime)",
+    workspaceConsumesShellTime(PERSPECTIVE_LIBRARY.liquidity));
 }
 
 if (failures > 0) { console.error(`\n${failures} LiquidityWorkspace check(s) failed`); process.exit(1); }

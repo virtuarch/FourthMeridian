@@ -40,7 +40,7 @@ import { RoutedWorkspaceModal } from "@/components/space/workspaces/RoutedWorksp
 import type { SectionCardBundle } from "@/components/space/workspaces/SpaceSectionStack";
 import { railVisibleTabs, SPACE_TAB_LABELS, SPACE_CURRENCY_CHANGED_EVENT } from "@/lib/space-nav";
 import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
-import { getPerspectivesForCategory, getWorkspaceTargetTab, isRoutedWorkspaceTab } from "@/lib/perspectives";
+import { getPerspectivesForCategory, getWorkspaceTargetTab, isRoutedWorkspaceTab, getWorkspaceDefinition } from "@/lib/perspectives";
 import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { PerspectivesWidget, type PerspectiveCardItem } from "@/components/dashboard/widgets/PerspectivesWidget";
@@ -428,13 +428,11 @@ export function SpaceDashboard({
   // (emitted up via cashFlowEnvelope, below); the host retains only the canonical-time
   // seam (cashFlowPeriod).
   // Debt/Investments/Liquidity own their own historical fetch (inside each
-  // Workspace) and gate it on being the open perspective. compareTo is guarded to a
-  // strictly-earlier window (those historical routes 400 on compareTo >= asOf) —
-  // one identical clamp shared by all three (SD-2 folded the former per-lens
-  // debt/investments/liquidityCompareTo consts into this).
+  // Workspace) and gate it on being the open perspective. The strictly-earlier
+  // compareTo (those historical routes 400 on compareTo >= asOf) is now a CANONICAL
+  // derived value — shell.derived.historicalCompareTo — not computed host-local.
   const debtActive = activeTab === "OVERVIEW" && activePerspectiveId === "debt";
   const liquidityActive = activeTab === "OVERVIEW" && activePerspectiveId === "liquidity";
-  const historicalCompareTo = compareTo && compareTo < asOf ? compareTo : null;
   // SD-7a — Goals data ownership moved OUT of the host: each Goals Perspective
   // widget self-fetches via GoalPerspectiveWidget (mirroring GoalsCard). The host
   // no longer fetches goals, holds `spaceGoals`, or threads it through SectionCard.
@@ -700,7 +698,7 @@ export function SpaceDashboard({
     txCtx: txConversionCtx,
     asOf,
     compareTo,
-    historicalCompareTo,
+    historicalCompareTo: shell.derived.historicalCompareTo,
     today: shellToday,
     debtActive,
     liquidityActive,
@@ -852,6 +850,9 @@ export function SpaceDashboard({
               }
               presetValue={timePreset === "CUSTOM" ? null : timePreset}
               onSelectPreset={handleSelectSlice}
+              // Temporal-capability gating: the shell renders only the time controls
+              // the engaged lens actually consumes (As-of/Compare-to vs Period).
+              temporalCapability={activePerspectiveId ? getWorkspaceDefinition(activePerspectiveId)?.temporalCapability : undefined}
               tabs={lensSelectorItems}
               activeTabId={activeLensId}
               onSelectTab={selectLens}

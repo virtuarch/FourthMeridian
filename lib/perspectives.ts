@@ -82,6 +82,29 @@ export type WorkspaceEnvelopeSource =
   | "lens"
   | "none";
 
+/**
+ * How much of a workspace HONORS a given axis of canonical Space time.
+ *   "full"    — the whole workspace reflects this axis.
+ *   "partial" — the workspace PARTICIPATES in this axis, but only part of the
+ *               current implementation reflects it (a capability GAP to close,
+ *               NOT permanent non-participation — e.g. Liquidity's historical
+ *               Ladder is temporal while its per-account panels stay current).
+ *   "none"    — this axis is not part of the workspace's temporal model.
+ * "partial" still RENDERS the control (it is valid for the temporal portions);
+ * the full/partial distinction is semantic metadata for future trust treatment.
+ */
+export type TemporalCapabilityLevel = "full" | "partial" | "none";
+
+/** Per-workspace declaration of which canonical time axes it consumes. Replaces
+ *  the coarse (and stale) `consumesShellTime` boolean — see workspaceConsumesShellTime.
+ *  `asOf`/`compareTo` are the point-in-time axes; `period` is the relative-period
+ *  axis (Cash Flow's native model). The shell renders a control iff its axis !== "none". */
+export interface TemporalCapability {
+  asOf:      TemporalCapabilityLevel;
+  compareTo: TemporalCapabilityLevel;
+  period:    TemporalCapabilityLevel;
+}
+
 /** Legacy data-tab ids a workspace can route to — each presented as a GlassModal
  *  launched from the Overview doorway. The union of every routing.targetTab;
  *  ROUTED_WORKSPACE_TABS is derived from it. NOTE: these are the host's internal
@@ -120,7 +143,7 @@ export interface WorkspaceDefinition {
   /**
    * OPS-5 S6 — which DOMAIN owns this workspace. Absent ⇒ "finance" (the original
    * and only domain until Platform Operations became the second real consumer).
-   * The finance-scoped metadata below (routing/dataNeeds/consumesShellTime/envelope)
+   * The finance-scoped metadata below (routing/dataNeeds/temporalCapability/envelope)
    * uses finance VOCABULARIES (WorkspaceDataNeed / WorkspaceEnvelopeSource /
    * RoutedWorkspaceTab); a "platform" workspace declares NONE of them (Platform
    * widgets self-fetch, have no finance envelope, and route via the platform rail,
@@ -138,14 +161,42 @@ export interface WorkspaceDefinition {
    *  (no fetch behavior changes here). Empty ⇒ the workspace self-fetches. */
   dataNeeds?: readonly WorkspaceDataNeed[];
   /**
-   * Whether this workspace participates in the SD-0B CANONICAL shell time model
-   * (asOf / compareTo). Named `consumesShellTime`, NOT `consumesTime`, on purpose:
-   * Cash Flow has its own period/calendar semantics but does NOT read the
-   * canonical asOf/compareTo, so it is false. Only Wealth + Investments are true.
+   * Per-axis declaration of how this workspace consumes canonical Space time
+   * (asOf / compareTo / period). The SINGLE source of truth for temporal
+   * participation — the former coarse `consumesShellTime` boolean is now DERIVED
+   * from this (workspaceConsumesShellTime). Absent ⇒ the workspace consumes no
+   * canonical time axis. The shell (PerspectiveShell) renders each time control
+   * only where its axis !== "none" (temporalControlVisibility).
    */
-  consumesShellTime?: boolean;
+  temporalCapability?: TemporalCapability;
   /** The trust-envelope source for this workspace (see WorkspaceEnvelopeSource). */
   envelope?: WorkspaceEnvelopeSource;
+}
+
+/**
+ * DERIVED — whether a workspace participates in canonical shell time at all
+ * (any axis !== "none"). This is the single-source replacement for the former
+ * stored `consumesShellTime` field: read this, never duplicate the boolean.
+ */
+export function workspaceConsumesShellTime(def: WorkspaceDefinition): boolean {
+  const c = def.temporalCapability;
+  return !!c && (c.asOf !== "none" || c.compareTo !== "none" || c.period !== "none");
+}
+
+/**
+ * DERIVED — which shell time controls a workspace should render. A control shows
+ * iff its axis is not "none" ("partial" still renders — it is valid for the
+ * temporal portions). Undefined capability ⇒ all controls (the pre-declaration
+ * default), so only workspaces that declare a capability change the shell.
+ */
+export function temporalControlVisibility(cap: TemporalCapability | undefined): {
+  asOf: boolean; compareTo: boolean; period: boolean;
+} {
+  return {
+    asOf:      cap ? cap.asOf      !== "none" : true,
+    compareTo: cap ? cap.compareTo !== "none" : true,
+    period:    cap ? cap.period    !== "none" : true,
+  };
 }
 
 /**
@@ -194,7 +245,7 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     id: "overview", kind: "standard", label: "Atlas", icon: "Compass", status: "available", group: "Financial",
     description: "Your full financial picture — net worth, cash flow, and recent activity in one view.",
     // The default landing composition (section stack + trend hero + doorways).
-    dataNeeds: ["accounts", "sections", "snapshots", "transactions", "lens"], consumesShellTime: false, envelope: "none",
+    dataNeeds: ["accounts", "sections", "snapshots", "transactions", "lens"], envelope: "none",
   },
   wealth: {
     id: "wealth", kind: "perspective", label: "Wealth", icon: "Gem", status: "available", group: "Financial",
@@ -207,7 +258,9 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // EXPERIMENT (UX): asset_allocation is placed first so the richer multi-mode
     // allocation chart sits ABOVE the Wealth by Account cards. Reversible.
     widgets: ["asset_allocation", "wealth_by_account", "institution_allocation", "wealth_concentration"],
-    dataNeeds: ["accounts", "snapshots"], consumesShellTime: true, envelope: "wealth",
+    dataNeeds: ["accounts", "snapshots"],
+    temporalCapability: { asOf: "full", compareTo: "full", period: "none" },
+    envelope: "wealth",
   },
   cashFlow: {
     id: "cashFlow", kind: "perspective", label: "Cash Flow", icon: "Waves", status: "available", group: "Financial",
@@ -224,7 +277,11 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // preset dimension (shell.derived.cashFlowPeriod → the workspace period), i.e.
     // its historical window follows the shared slice. (It reads the preset, not
     // asOf/compareTo directly; that is participation in canonical time.)
-    dataNeeds: ["accounts", "transactions"], consumesShellTime: true, envelope: "cashFlow",
+    dataNeeds: ["accounts", "transactions"],
+    // Period-native: Cash Flow consumes the relative-period axis, NOT the
+    // canonical asOf/compareTo (its internal then-vs-now compare is period-relative).
+    temporalCapability: { asOf: "none", compareTo: "none", period: "full" },
+    envelope: "cashFlow",
   },
   investments: {
     id: "investments", kind: "perspective", label: "Investments", icon: "TrendingUp", status: "available", group: "Financial",
@@ -247,7 +304,9 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // `routing.targetTab: "INVESTMENTS"` (RoutedWorkspaceModal) is retired so it
     // has ONE runtime destination. Legacy `?tab=investments` links canonicalize
     // to `?perspective=investments` in the host URL layer.
-    dataNeeds: ["accounts", "investmentsHistory"], consumesShellTime: true, envelope: "investments",
+    dataNeeds: ["accounts", "investmentsHistory"],
+    temporalCapability: { asOf: "full", compareTo: "full", period: "none" },
+    envelope: "investments",
   },
   debt: {
     id: "debt", kind: "perspective", label: "Debt", icon: "CreditCard", status: "available", group: "Financial",
@@ -266,12 +325,12 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // `routing.targetTab: "DEBT"` (RoutedWorkspaceModal) is retired so it has ONE
     // runtime destination. Legacy `?tab=debt` / `?tab=credit` links canonicalize
     // to `?perspective=debt` in the host URL layer.
-    // A temporal Perspective: current-state KPIs plus a historical Balance-Over-
-    // Time view over the snapshot series. consumesShellTime is the intended
-    // contract (asOf/compareTo windowing of that history); today the chart shows
-    // the full series rather than clipping to the shell window — a runtime gap to
-    // close during Debt workspace extraction, NOT a different category.
-    dataNeeds: ["accounts", "snapshots", "lens", "fico"], consumesShellTime: true, envelope: "lens",
+    // temporalCapability PARTIAL: the lede + Balance-Over-Time chart + trust honor
+    // asOf/compareTo, but the KPIs/utilization/payoff are present-day (dual-authority
+    // from the accounts array) — a capability GAP to close, not a different category.
+    dataNeeds: ["accounts", "snapshots", "lens", "fico"],
+    temporalCapability: { asOf: "partial", compareTo: "partial", period: "none" },
+    envelope: "lens",
   },
   /**
    * First library entry born lens-backed: no host tab behind it, no
@@ -288,18 +347,19 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // purpose-built widgets (no Overview / Wealth widget reuse). Rendered
     // through the same SectionCard compositor as virtual sections.
     widgets: ["liquidity_ladder", "accessible_cash", "emergency_fund_readiness", "liquidity_concentration"],
-    // A temporal Perspective by contract (consumesShellTime: true) — and, as of
-    // SD-6B, temporal in RUNTIME too: LiquidityWorkspace activates the historical
-    // engine (LiquiditySpaceData) end-to-end, so asOf/compareTo reconstruct the
-    // Liquidity Ladder and yield a per-tier delta. The former current-state-only gap
-    // is closed; the per-account current-anchor widgets remain live-state readings.
-    dataNeeds: ["accounts", "transactions", "lens"], consumesShellTime: true, envelope: "lens",
+    // temporalCapability PARTIAL: asOf/compareTo reconstruct the Liquidity Ladder +
+    // lede + per-tier delta (SD-6B historical engine), but the per-account panels
+    // (Accessible Cash / Emergency Fund / Reachability / Concentration) remain
+    // current-anchor live readings — a capability GAP to close, not a category.
+    dataNeeds: ["accounts", "transactions", "lens"],
+    temporalCapability: { asOf: "partial", compareTo: "partial", period: "none" },
+    envelope: "lens",
   },
   retirement: {
     id: "retirement", kind: "perspective", label: "Retirement", icon: "PiggyBank", status: "available", group: "Retirement",
     description: "Progress toward retirement targets.",
     // Routes to the legacy RETIREMENT tab (GlassModal); no Perspectives workspace
-    // of its own (no widgets[]), so no dataNeeds/consumesShellTime/envelope.
+    // of its own (no widgets[]), so no dataNeeds/temporalCapability/envelope.
     routing: { targetTab: "RETIREMENT" },
   },
   goals: {
@@ -309,13 +369,14 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // management — its own domain (progress, forecasting, projections, guidance
     // may come later, but that does not make it a temporal lens). It is kept in
     // PERSPECTIVE_LIBRARY (so today's Perspectives sub-nav card + workspace render
-    // are byte-unchanged) but tagged kind:"standard"; consumesShellTime is false.
+    // are byte-unchanged) but tagged kind:"standard"; it declares no
+    // temporalCapability (derived: consumes no canonical time axis).
     // Physical relocation to STANDARD_WORKSPACES (and out of the sub-nav) is a
     // functionality change deferred to the Goals workspace slice.
     id: "goals", kind: "standard", label: "Goals", icon: "Target", status: "available", group: "Goals",
     description: "Savings and habit goals tied to this Space.",
     routing: { targetTab: "GOALS" },
-    dataNeeds: ["accounts", "goals"], consumesShellTime: false, envelope: "none",
+    dataNeeds: ["accounts", "goals"], envelope: "none",
     // Doctrine: Goals answers "Am I on track?" — trajectory vs target, not current
     // balances. Rendered through the same SectionCard compositor.
     widgets: ["goal_progress", "goal_on_track", "goal_required_pace", "goal_funding_gap"],
@@ -415,21 +476,21 @@ export function getCompositionSwitcherItems(category: string): PerspectiveDef[] 
 export const STANDARD_WORKSPACES: Record<string, WorkspaceDefinition> = {
   transactions: {
     id: "transactions", kind: "standard", label: "Transactions", icon: "ArrowLeftRight",
-    dataNeeds: ["accounts", "transactions"], consumesShellTime: false, envelope: "none",
+    dataNeeds: ["accounts", "transactions"], envelope: "none",
   },
   accounts: {
     id: "accounts", kind: "standard", label: "Accounts", icon: "Landmark",
-    dataNeeds: ["accounts", "sections", "snapshots"], consumesShellTime: false, envelope: "none",
+    dataNeeds: ["accounts", "sections", "snapshots"], envelope: "none",
   },
   activity: {
     id: "activity", kind: "standard", label: "Activity", icon: "Activity",
     // The recent_activity SECTION renders here; TimelineWidget self-fetches its rows.
-    dataNeeds: ["sections"], consumesShellTime: false, envelope: "none",
+    dataNeeds: ["sections"], envelope: "none",
   },
   members: {
     id: "members", kind: "standard", label: "Members", icon: "Users",
     // SpaceMembersWidget self-fetches; the host provides no primitives.
-    dataNeeds: [], consumesShellTime: false, envelope: "none",
+    dataNeeds: [], envelope: "none",
   },
 };
 

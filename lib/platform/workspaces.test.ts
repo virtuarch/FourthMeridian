@@ -57,7 +57,7 @@ console.log("no finance-vocabulary pollution");
     check(`"${id}" declares no finance dataNeeds`, d.dataNeeds === undefined);
     check(`"${id}" declares no finance envelope`, d.envelope === undefined);
     check(`"${id}" declares no finance routing`, d.routing === undefined);
-    check(`"${id}" declares no consumesShellTime (finance SD-0B time)`, d.consumesShellTime === undefined);
+    check(`"${id}" declares no temporalCapability (finance SD-0B time)`, d.temporalCapability === undefined);
   }
 }
 

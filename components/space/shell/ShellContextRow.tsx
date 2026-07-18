@@ -29,6 +29,11 @@ interface Props {
   today: string;
   /** The active perspective's trust envelope (empty ⇒ inert "—" chips). */
   envelope: PerspectiveEnvelope;
+  /** Temporal-capability gates (default true) — hide the point-in-time controls
+   *  for a lens that does not consume that axis (e.g. Cash Flow). The trust chips
+   *  always render regardless. */
+  showAsOf?: boolean;
+  showCompareTo?: boolean;
   className?: string;
 }
 
@@ -96,6 +101,8 @@ export function ShellContextRow({
   onSwap,
   today,
   envelope,
+  showAsOf = true,
+  showCompareTo = true,
   className = "",
 }: Props) {
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -111,7 +118,9 @@ export function ShellContextRow({
       className={["flex flex-wrap items-center gap-2", className].join(" ")}
       aria-label="Time and trust context"
     >
-      {/* As of — the shared valuation date (defaults to today). */}
+      {/* As of — the shared valuation date (defaults to today). Hidden for lenses
+          that do not consume the point-in-time axis (temporalCapability.asOf none). */}
+      {showAsOf && (
       <label className="inline-flex items-center gap-1.5">
         <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]">
           <CalendarDays size={13} className="text-[var(--text-faint)]" aria-hidden />
@@ -126,8 +135,10 @@ export function ShellContextRow({
           className={FIELD_CLASS}
         />
       </label>
+      )}
 
-      {/* Swap — exchange As Of ↔ Compare To. */}
+      {/* Swap — exchange As Of ↔ Compare To (only when both controls are shown). */}
+      {showAsOf && showCompareTo && (
       <button
         type="button"
         onClick={onSwap}
@@ -138,8 +149,11 @@ export function ShellContextRow({
       >
         <ArrowLeftRight size={13} aria-hidden />
       </button>
+      )}
 
-      {/* Compare to — optional comparison date; none by default. */}
+      {/* Compare to — optional comparison date; none by default. Hidden when the
+          lens does not consume the compareTo axis (temporalCapability.compareTo none). */}
+      {showCompareTo && (
       <label className="inline-flex items-center gap-1.5">
         <span className="text-[11px] font-medium text-[var(--text-muted)]">Compare to</span>
         <span className="inline-flex items-center">
@@ -165,8 +179,10 @@ export function ShellContextRow({
           )}
         </span>
       </label>
+      )}
 
-      {/* Shell-level trust surfaces — interactive when the envelope has detail. */}
+      {/* Shell-level trust surfaces — interactive when the envelope has detail.
+          Always rendered (trust is independent of the temporal-control gating). */}
       <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
         <ShellChip
           icon={<ShieldCheck size={13} />}

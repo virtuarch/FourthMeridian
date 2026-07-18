@@ -195,6 +195,22 @@ export function clampAsOf(asOf: string, today: string): string {
   return asOf > today ? today : asOf;
 }
 
+/**
+ * The canonical `compareTo`, exposed ONLY when it is a strictly-earlier baseline
+ * than `asOf` — otherwise null. A pure derivation of canonical time (NOT a reducer
+ * invariant): the raw pair is kept as-is (Wealth compares to any date, including
+ * one ≥ asOf), while the window-constrained lenses (Debt / Investments / Liquidity,
+ * whose historical routes 400 on `compareTo >= asOf`) consume this strict value.
+ *
+ *   compareTo <  asOf → compareTo
+ *   compareTo == asOf → null
+ *   compareTo >  asOf → null
+ *   compareTo == null → null
+ */
+export function historicalCompareTo(asOf: string, compareTo: string | null): string | null {
+  return compareTo && compareTo < asOf ? compareTo : null;
+}
+
 const DERIVABLE_PRESETS: readonly TimePreset[] = [...INFERENCE_ORDER, "ALL"];
 
 /** Every non-CUSTOM preset carries a real CashFlowPeriod id; CUSTOM has none, so

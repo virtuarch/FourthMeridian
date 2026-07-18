@@ -28,6 +28,7 @@ import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { readSpaceParam } from "@/lib/space/space-url";
 import {
   defaultPerspectiveTimeState,
+  historicalCompareTo,
   hydrateShellTimeState,
   serializeShellTimeState,
   shellTimeReducer,
@@ -57,6 +58,12 @@ export interface PerspectiveShellState {
      * default when the shell has no relative slice to impose.
      */
     cashFlowPeriod: CashFlowPeriod | null;
+    /**
+     * The canonical compareTo, exposed only when strictly earlier than asOf (else
+     * null) — the strict baseline the window-constrained lenses (Debt / Investments
+     * / Liquidity) consume. Wealth keeps the raw `state.compareTo`.
+     */
+    historicalCompareTo: string | null;
   };
 }
 
@@ -141,6 +148,10 @@ export function usePerspectiveShellState(args: {
   return {
     state,
     actions,
-    derived: { chartWindow: [state.compareTo, state.asOf], cashFlowPeriod },
+    derived: {
+      chartWindow: [state.compareTo, state.asOf],
+      cashFlowPeriod,
+      historicalCompareTo: historicalCompareTo(state.asOf, state.compareTo),
+    },
   };
 }

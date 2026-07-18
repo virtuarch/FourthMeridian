@@ -160,8 +160,6 @@ check("config is null and enabled is true (render-only)",
 // ── 4. No second compositor / no mutation wiring in the workspace mount. ──
 // Source-scan SpaceDashboard: the Perspective workspace must render through the
 // existing SectionCard, and must NOT send virtual ids to the reorder endpoint.
-import { readFileSync } from "fs";
-import { join } from "path";
 const dash = readFileSync(join(process.cwd(), "components", "dashboard", "SpaceDashboard.tsx"), "utf8");
 const code = dash.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
 check("workspace renders via toVirtualSections", /toVirtualSections\(/.test(code));
