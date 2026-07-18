@@ -52,6 +52,7 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
   return (
     <ToastProvider>
       <SpaceShell
+        mobileOptimized
         variant="utility"
         title="Settings"
         subtitle="Manage your Fourth Meridian account."
