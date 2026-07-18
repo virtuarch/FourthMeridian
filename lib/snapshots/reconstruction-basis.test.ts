@@ -35,26 +35,45 @@ function check(name: string, cond: boolean, detail?: string): void {
 const approx = (a: number, b: number) => Math.abs(a - b) < 0.005;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. Source guards — the posted-only basis is present in BOTH historical writers.
-//    These fail under the OLD cash behavior (pending-inclusive), by construction.
+// 1. Source guards — the posted-only basis is enforced in EVERY balance-walk
+//    writer, structurally (no pending-inclusive variant exists to call). These
+//    fail under the OLD cash behavior, AND fail if any future writer reintroduces
+//    a pending-inclusive `excludePending` footgun. THREE writers reconstruct
+//    balances from the posted `FinancialAccount.balance` anchor:
+//      • lib/snapshots/backfill.ts            (M2 new-Space backfill)
+//      • lib/snapshots/regenerate-history.ts  (M3 ongoing regen + amendments)
+//      • lib/data/accounts-asof.ts            (as-of account-balance resolver)
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("1. Posted-only basis is wired in both writers (source guards)");
+console.log("1. Posted-only basis is enforced in ALL balance-walk writers (source guards)");
 {
-  const backfill = readFileSync(join(process.cwd(), "lib/snapshots/backfill.ts"), "utf8");
-  const regen    = readFileSync(join(process.cwd(), "lib/snapshots/regenerate-history.ts"), "utf8");
+  const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  const backfill = strip(readFileSync(join(process.cwd(), "lib/snapshots/backfill.ts"), "utf8"));
+  const regen    = strip(readFileSync(join(process.cwd(), "lib/snapshots/regenerate-history.ts"), "utf8"));
+  const asof     = strip(readFileSync(join(process.cwd(), "lib/data/accounts-asof.ts"), "utf8"));
 
-  // backfill.ts — BOTH the cash and the card delta groupBy carry `pending: false`.
-  const backfillPendingFalse = (backfill.match(/pending:\s*false/g) ?? []).length;
+  // backfill.ts inlines two groupBy queries (cash + card); BOTH carry pending:false.
   check("backfill.ts: cash AND card delta queries are posted-only (≥2 `pending: false`)",
-    backfillPendingFalse >= 2, `found ${backfillPendingFalse}`);
+    (backfill.match(/pending:\s*false/g) ?? []).length >= 2);
 
-  // regenerate-history.ts — NO buildDeltas call passes excludePending=false.
-  const regenCode = regen.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ""); // strip comments
-  check("regenerate-history.ts: no buildDeltas(..., false) — cash walk is posted-only",
-    !/buildDeltas\([^)]*,\s*false\s*\)/.test(regenCode),
-    "a buildDeltas(..., false) call remains → cash is pending-inclusive again");
-  check("regenerate-history.ts: buildDeltas is still called for cash + card (both true)",
-    (regenCode.match(/buildDeltas\(/g) ?? []).length >= 2);
+  // regenerate-history.ts + accounts-asof.ts route through a buildDeltas helper.
+  // The helper is now UNCONDITIONALLY posted-only — no excludePending parameter
+  // exists to pass, so a pending-inclusive walk cannot be requested by any caller.
+  for (const [name, code] of [["regenerate-history.ts", regen], ["accounts-asof.ts", asof]] as const) {
+    check(`${name}: buildDeltas has NO excludePending parameter (footgun removed)`,
+      !/excludePending/.test(code), "the pending-basis parameter is back — a caller can reintroduce the phantom");
+    check(`${name}: no pending-inclusive delta call — none pass a boolean basis flag`,
+      !/buildDeltas\([^)]*,\s*(true|false)\s*\)/.test(code),
+      "a buildDeltas(..., true/false) basis argument remains");
+    check(`${name}: buildDeltas hard-codes posted-only (`+ "`pending: false`)",
+      /pending:\s*false/.test(code));
+  }
+
+  // Cross-writer: NO reconstruction file may omit the pending filter on a balance
+  // delta query. (Every groupBy that feeds reconstructDaily{Cash,Liability}Balances
+  // must be posted-only.)
+  check("no balance-walk writer contains a bare non-deleted-only delta query (missing pending:false)",
+    !/deletedAt:\s*null,\s*date:\s*\{\s*gt:/.test(backfill + regen + asof),
+    "a delta groupBy filters only deletedAt (pending-inclusive) — reconstruct it posted-only");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -167,6 +186,25 @@ console.log("5. Boundary continuity permits real posted activity");
   check("residual is signed (observed − reconstructed − activity)",
     boundaryContinuityResidual(1000, 1250, 0) === 250 &&
     boundaryContinuityResidual(1250, 1000, 0) === -250);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. Rebuild idempotency — the walk-back is a pure function of (anchor, posted
+//    deltas): identical inputs ⇒ identical output, so regenerate→read→regenerate
+//    →read is stable (empirically confirmed on live data; frozen here at the core).
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("6. Reconstruction is deterministic / idempotent");
+{
+  const today = fromISO("2026-07-04");
+  const start = addDaysUTC(today, -5);
+  const deltas = new Map<string, Map<string, number>>([
+    ["a", new Map([[isoDate(addDaysUTC(today, -1)), -80], [isoDate(addDaysUTC(today, -3)), 200]])],
+  ]);
+  const run1 = reconstructDailyCashBalances([{ id: "a", balance: 1000 }], deltas, today, start);
+  const run2 = reconstructDailyCashBalances([{ id: "a", balance: 1000 }], deltas, today, start);
+  const ser = (m: Map<string, Map<string, number>>) =>
+    [...m.entries()].map(([d, inner]) => `${d}:${[...inner.entries()].join(",")}`).join("|");
+  check("two runs over identical inputs are byte-identical (idempotent rebuild)", ser(run1) === ser(run2));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

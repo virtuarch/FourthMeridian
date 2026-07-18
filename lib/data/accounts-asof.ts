@@ -123,9 +123,14 @@ export async function getAccountsAsOf(args: {
     .filter(isReconstructableCard)
     .map((a) => a.id);
 
+  // SAME-BASIS INVARIANT (HIST) — BOTH walks are POSTED-ONLY. The core anchors on
+  // FinancialAccount.balance (the posted truth the whole system uses); a pending row
+  // is not settled into that anchor, so reversing it would mix bases and inject a
+  // phantom. buildDeltas is unconditionally posted-only — there is no pending-
+  // inclusive variant to pass, by construction (the regression wall).
   const [cashDeltas, cardDeltas] = await Promise.all([
-    buildDeltas(cashIds, asOfDay, today, /*excludePending*/ false),
-    buildDeltas(cardIds, asOfDay, today, /*excludePending*/ true),
+    buildDeltas(cashIds, asOfDay, today),
+    buildDeltas(cardIds, asOfDay, today),
   ]);
 
   // 4. Pure resolution, then merge onto the visibility rows by id.
@@ -149,15 +154,17 @@ export async function getAccountsAsOf(args: {
 }
 
 /**
- * accountId → (isoDate → Σ signed amount posted that day) over (asOf, today].
- * Empty map for an empty id list (no query). `excludePending` matches the
- * backfill's card walk (posted-only) vs cash walk (all non-deleted).
+ * accountId → (isoDate → Σ signed POSTED amount that day) over (asOf, today].
+ * Empty map for an empty id list (no query). POSTED-ONLY unconditionally: the
+ * as-of walk reverses the posted FinancialAccount.balance anchor, so its deltas
+ * must be posted too (same-basis invariant, shared with backfill / regenerate-
+ * history). There is deliberately NO pending-inclusive option — that would
+ * reintroduce the reconstructed-history phantom this walk once carried for cash.
  */
 async function buildDeltas(
-  ids:            string[],
-  asOf:           Date,
-  today:          Date,
-  excludePending: boolean,
+  ids:   string[],
+  asOf:  Date,
+  today: Date,
 ): Promise<Map<string, Map<string, number>>> {
   const out = new Map<string, Map<string, number>>();
   if (ids.length === 0) return out;
@@ -167,7 +174,7 @@ async function buildDeltas(
     where: {
       financialAccountId: { in: ids },
       deletedAt: null,
-      ...(excludePending ? { pending: false } : {}),
+      pending:   false, // posted-only — anchor basis === delta basis
       date: { gt: asOf, lte: today },
     },
     _sum: { amount: true },

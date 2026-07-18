@@ -278,14 +278,15 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const cashAccounts: CashAccountBalance[] = accounts.filter((a) => a.type === "checking" || a.type === "savings").map((a) => ({ id: a.id, balance: a.balance }));
   const cardAccounts: CashAccountBalance[] = accounts.filter(isReconstructableCard).map((a) => ({ id: a.id, balance: a.balance }));
 
+  // SAME-BASIS INVARIANT — BOTH walks are posted-only. buildDeltas is
+  // unconditionally posted-only (no pending-inclusive variant, by construction),
+  // matching the FinancialAccount.balance anchor the walk-back reverses. `balance`
+  // is the only balance the snapshot system treats as truth and never carries
+  // pending, so reversing a pending row would mix bases and inject a phantom into
+  // every day before the pending date. See backfill.ts / accounts-asof.ts.
   const [cashDeltas, cardDeltas] = await Promise.all([
-    // SAME-BASIS INVARIANT — cash is now posted-only (excludePending=true), matching
-    // both the card walk (below) and the FinancialAccount.balance anchor the walk-back
-    // reverses. `balance` is the only balance the snapshot system treats as truth and
-    // never carries pending, so reversing a pending row would mix bases and inject a
-    // phantom into every day before the pending date. See backfill.ts's cash query.
-    buildDeltas(client, cashAccounts.map((a) => a.id), effectiveStart, today, true),
-    buildDeltas(client, cardAccounts.map((a) => a.id), effectiveStart, today, true),
+    buildDeltas(client, cashAccounts.map((a) => a.id), effectiveStart, today),
+    buildDeltas(client, cardAccounts.map((a) => a.id), effectiveStart, today),
   ]);
   const dailyCash = reconstructDailyCashBalances(cashAccounts, cashDeltas, today, effectiveStart);
   const dailyCard = reconstructDailyLiabilityBalances(cardAccounts, cardDeltas, today, effectiveStart);
@@ -505,18 +506,19 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
 }
 
 /**
- * accountId → (isoDate → Σ signed amount posted that day) over (from, today].
- * `excludePending=true` for BOTH cash and card walks: the walk-back reverses a
- * posted `FinancialAccount.balance` anchor, so its deltas must be posted-only too
- * (same-basis invariant). The parameter is retained for explicitness at the call
- * sites, not because either basis differs anymore.
+ * accountId → (isoDate → Σ signed POSTED amount that day) over (from, today].
+ * POSTED-ONLY unconditionally for BOTH cash and card walks: the walk-back reverses
+ * a posted `FinancialAccount.balance` anchor, so its deltas must be posted too
+ * (same-basis invariant). There is deliberately no pending-inclusive parameter —
+ * a pending-inclusive reconstruction is always a bug (the boundary phantom), so it
+ * is made structurally impossible rather than left as a per-call-site choice.
  */
-async function buildDeltas(client: Client, ids: string[], from: Date, today: Date, excludePending: boolean): Promise<Map<string, Map<string, number>>> {
+async function buildDeltas(client: Client, ids: string[], from: Date, today: Date): Promise<Map<string, Map<string, number>>> {
   const out = new Map<string, Map<string, number>>();
   if (ids.length === 0) return out;
   const grouped = await client.transaction.groupBy({
     by: ["financialAccountId", "date"],
-    where: { financialAccountId: { in: ids }, deletedAt: null, ...(excludePending ? { pending: false } : {}), date: { gt: from, lte: today } },
+    where: { financialAccountId: { in: ids }, deletedAt: null, pending: false, date: { gt: from, lte: today } },
     _sum: { amount: true },
   });
   for (const g of grouped) {
