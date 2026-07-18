@@ -1,10 +1,10 @@
 /**
  * components/space/widgets/investments/holdings-util.ts
  *
- * Shared, pure helpers for the Holdings domain components (HoldingCard / HoldingsGrid
- * / HoldingDetail) so there is ONE definition of a holding's identity key, its native
- * cost basis access, and its trust-mark presentation — reused by both the inline
- * Section and the Modal. No React, no I/O.
+ * Shared, pure helpers for the Holdings domain components (HoldingsLedger /
+ * HoldingsConcentration / HoldingDetail) so there is ONE definition of a holding's
+ * identity key, its native cost basis access, and its trust-mark presentation. No
+ * React, no I/O.
  */
 
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";

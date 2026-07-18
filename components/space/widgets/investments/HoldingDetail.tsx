@@ -4,8 +4,8 @@
  * components/space/widgets/investments/HoldingDetail.tsx
  *
  * The shared Holding DETAIL view — one domain-local presentation reused verbatim by
- * both the inline HoldingsSection and the HoldingsModal (SD-4 §10). It leads with the
- * customer's INVESTMENT FACTS and demotes valuation EVIDENCE to a compact block (§12).
+ * the editorial HoldingsLedger's RightPanel (v2). It leads with the customer's
+ * INVESTMENT FACTS and demotes valuation EVIDENCE to a compact block (§12).
  *
  * Honesty (unchanged rules): cost basis / avg cost / "Value vs cost" render ONLY when
  * a NON-NULL native `costBasis` exists (Plaid, current view) and quantity > 0 — native

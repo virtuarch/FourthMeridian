@@ -4,10 +4,11 @@
  * Per-date display-currency conversion of the Debt Balance-Over-Time slice — the
  * Debt analogue of `convertWealthSnapshots` (SD-5). It closes the LAST symbol-only
  * relabel in the Perspective workspaces: `DebtSpaceData.history` carries snapshot
- * (reporting)-currency totals, but `DebtHistoryPanel` formats them with the selected
- * DISPLAY symbol. Without this pass, a non-USD display showed reporting magnitudes
- * under a display symbol (e.g. USD 10,000 rendered "€10,000") — sitting right beside
- * a KPI strip that DOES convert via `ctx`. This converts each point at ITS OWN date
+ * (reporting)-currency totals, but the Balance-history presenter (now DebtBalanceHistory,
+ * the shared TrendChart) formats them with the selected DISPLAY symbol. Without this pass,
+ * a non-USD display showed reporting magnitudes under a display symbol (e.g. USD 10,000
+ * rendered "€10,000") — sitting right beside figures that DO convert via `ctx`. This
+ * converts each point at ITS OWN date
  * through the ONE canonical money authority (`convertMoney` / `ConversionContext`,
  * lib/money) so the chart reads CONVERTED magnitudes, matching the KPIs beside it.
  *

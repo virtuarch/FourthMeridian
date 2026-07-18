@@ -5,8 +5,13 @@
  * TEST-3 cleanup: brittle layout (grid-cols/h-[)/JSX-source-order/interaction-handler
  * pins removed; the durable invariants kept: data OWNERSHIP + envelope BRIDGE;
  * SpaceSnapshot valuation chart (no double-count, no N×date sampler, crypto-once);
- * display-currency + hook honesty; SHARED holdings grid/detail reused by inline Section
- * AND Modal (no divergent impls, single overlay); contract boundary; do-not-fake.
+ * display-currency + hook honesty; the editorial HoldingsLedger + reused HoldingDetail;
+ * contract boundary; do-not-fake.
+ *
+ * The v2 editorial redesign RETIRED the dense KpiStrip, the HoldingsGrid/Section/Modal
+ * cluster, and the old PortfolioValueChart — those files are DELETED (orphan cleanup),
+ * so this suite scans only the LIVE surfaces; §1 still guards their absence from the
+ * workspace composition so they can't creep back.
  *
  *   npx tsx components/space/widgets/investments/InvestmentsWorkspace.test.ts
  */
@@ -21,19 +26,17 @@ const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
 
 const SRC     = read(`${DIR}/InvestmentsWorkspace.tsx`);
 const CODE    = strip(SRC);
-const KPI     = strip(read(`${DIR}/InvestmentKpiStrip.tsx`));
 const HOOK    = read(`${DIR}/useInvestmentsSpaceData.ts`);
 const ROUTE   = read("app/api/spaces/[id]/investments/space-data/route.ts");
 const ALLOC   = strip(read(`${DIR}/InvestmentAllocationPanel.tsx`));
 const CONV    = read("lib/investments/display-conversion.ts");
 const SERIES  = strip(read("lib/investments/portfolio-series.ts"));
 // The LIVE balance-history component (owns the window clip); the old PortfolioValueChart
-// is retired from the composition.
+// is retired from the composition and deleted.
 const CHART   = strip(read(`${DIR}/InvestmentsBalanceHistory.tsx`));
-const GRID    = strip(read(`${DIR}/HoldingsGrid.tsx`));
+// The LIVE holdings surfaces (v2): the editorial ledger + the reused detail body.
+const LEDGER  = strip(read(`${DIR}/HoldingsLedger.tsx`));
 const DETAIL  = strip(read(`${DIR}/HoldingDetail.tsx`));
-const SECTION = strip(read(`${DIR}/HoldingsSection.tsx`));
-const MODAL   = strip(read(`${DIR}/HoldingsModal.tsx`));
 const ROUTEC  = strip(ROUTE);
 const HOSTC   = strip(read("components/dashboard/SpaceDashboard.tsx"));
 // SD-2 closeout — perspective render impls live in the component-layer renderer map.
@@ -47,7 +50,6 @@ function check(name: string, cond: boolean, detail?: string): void {
 
 console.log("1. Render boundary — composes its EDITORIAL research surfaces (v2)");
 {
-  const LEDGER = strip(read(`${DIR}/HoldingsLedger.tsx`));
   const BALANCE = strip(read(`${DIR}/InvestmentsBalanceHistory.tsx`));
   const WEALTHCHART = strip(read("components/space/widgets/wealth/WealthTrendChart.tsx"));
   // v2 research surfaces: hero → balance history → this period → holdings → allocation
@@ -118,36 +120,27 @@ console.log("4. Display currency + activation + hook honesty");
   check("hook honesty guards intact", HOOK.includes("compareTo < asOf") && HOOK.includes("if (!active) return") && !HOOK.includes("setData(null)"));
 }
 
-console.log("5. Holdings — inline reuses the shared grid, shows a subset");
+console.log("5. Holdings ledger — top subset + reused detail (the v2 surface)");
 {
-  check("inline default renders the shared grid (no divergent impl)", SECTION.includes("<HoldingsGrid"));
-  check("inline shows a top subset only (slice)", SECTION.includes("slice(0,"));
+  // The old inline-Section / Modal / Grid cluster is deleted; the ledger is the ONE
+  // holdings surface. It shows a top subset and reuses the shared HoldingDetail body.
+  check("ledger shows a top subset only (slice)", LEDGER.includes("slice(0, topN") || LEDGER.includes("slice(0,"));
+  check("ledger reuses the shared HoldingDetail (no divergent detail impl)", LEDGER.includes("<HoldingDetail") && LEDGER.includes('from "./HoldingDetail"'));
 }
 
-console.log("6. SHARED holdings components — one grid/detail, single overlay");
+console.log("6. Contract boundary — no ad hoc asset-detail fetches in the live holdings surfaces");
 {
-  check("modal reuses the SHARED HoldingsGrid + HoldingDetail", MODAL.includes("<HoldingsGrid") && MODAL.includes("<HoldingDetail"));
-  check("modal renders exactly ONE GlassModal (no nested/second overlay)", (MODAL.match(/<GlassModal/g) || []).length === 1 && !MODAL.includes("<HoldingsModal"));
-  check("section AND modal import the SAME shared grid + detail (no divergent impls)",
-    SECTION.includes('from "./HoldingsGrid"') && SECTION.includes('from "./HoldingDetail"') &&
-    MODAL.includes('from "./HoldingsGrid"') && MODAL.includes('from "./HoldingDetail"'));
-}
-
-console.log("7. Contract boundary — no ad hoc asset-detail fetches in cards");
-{
-  for (const [name, code] of [["HoldingsGrid", GRID], ["HoldingDetail", DETAIL], ["HoldingsSection", SECTION]] as const) {
+  for (const [name, code] of [["HoldingsLedger", LEDGER], ["HoldingDetail", DETAIL]] as const) {
     check(`${name} does not fetch ad hoc`, !code.includes("fetch(") && !code.includes("useInvestmentsSpaceData") && !/prisma|@\/lib\/db/.test(code));
   }
 }
 
-console.log("8. DO NOT FAKE DATA");
+console.log("7. DO NOT FAKE DATA");
 {
   const FORBIDDEN = ["IRR", "Sharpe", "S&P", "VTI", "Benchmark", "Best Month", "Worst Month", "Realized", "Unrealized", "Held since"];
   for (const t of FORBIDDEN) {
-    check(`KPI does not render "${t}"`, !KPI.includes(t));
     check(`holding detail does not render "${t}"`, !DETAIL.includes(t));
   }
-  check("income disclosed as combined", KPI.includes("combined"));
   check("detail uses honest 'Value vs cost' (native, not unrealized)", DETAIL.includes("Value vs cost"));
   check("allocation keeps dropdown + shared donut (unchanged, §15)", ALLOC.includes("<select") && ALLOC.includes("BreakdownWidget"));
 }
