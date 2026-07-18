@@ -91,6 +91,12 @@ console.log("3. Panel behavior contract");
   // responsive — one component, CSS-driven (mobile sheet vs desktop docked)
   check("mobile bottom sheet (rounded top + grab handle) vs desktop docked (sm:)",
     P.includes("!rounded-t-") && P.includes("sm:hidden") && P.includes("sm:h-dvh"));
+  // SCROLL-1: the inner flex column must carry DEFINITE height caps (not `h-full`,
+  // which collapses through GlassPanel's non-flex `relative z-10` wrapper) so
+  // PanelContent's flex-1/min-h-0/overflow region actually bounds and long lists
+  // scroll. Guards the regression that clipped Holdings/Liabilities/Category lists.
+  check("inner column bounds scroll via definite caps, not the broken h-full chain",
+    P.includes("max-h-[92dvh] sm:h-dvh sm:max-h-none") && !P.includes("flex h-full flex-col"));
   // edge semantics — left vs right differ
   check("left vs right differ (scrim + dock side)", P.includes('side === "left"') && P.includes("left ? "));
   // stacking

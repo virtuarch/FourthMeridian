@@ -223,7 +223,16 @@ export function Panel({
             aria-label={titled ? undefined : ariaLabel}
             tabIndex={-1}
             onKeyDown={onKeyDownTrap}
-            className="flex h-full flex-col outline-none"
+            // SCROLL-1 fix (same root cause as OverlaySurface): GlassPanel wraps
+            // children in a plain `relative z-10` block (no flex, no height), which
+            // breaks any height:100% chain passing through it — so `h-full` here
+            // collapsed to auto, this column became content-height, and
+            // PanelContent's `flex-1 min-h-0 overflow-y-auto` never bounded (long
+            // lists clipped instead of scrolling). Carry the same DEFINITE
+            // viewport-relative caps the GlassPanel frame uses directly on this
+            // inner flex column (mobile sheet cap → desktop full dvh), so the body
+            // has a real height to overflow against. Header/footer stay shrink-0.
+            className="flex min-h-0 flex-col outline-none max-h-[92dvh] sm:h-dvh sm:max-h-none"
           >
             {/* Mobile grab handle — signals the bottom sheet is draggable-feeling;
                 hidden on desktop where the panel is edge-docked. */}
