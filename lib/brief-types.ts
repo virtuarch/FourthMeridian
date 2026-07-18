@@ -30,6 +30,17 @@ export type VisitState =
 
 // ── Brief item ────────────────────────────────────────────────────────────────
 
+/**
+ * Trust provenance for a Brief item — how well we know the claim.
+ * Presentational slot (v2.6): the editorial Brief renders a trust dot ONLY when
+ * an item carries a `basis`. The current /api/brief builder does NOT emit this
+ * yet, so no dot is shown — the field is a seam, not fabricated data. Wiring
+ * per-item provenance requires the Brief pipeline to emit a completeness
+ * envelope per insight (see components/space/trust/TrustIndicator + the
+ * PerspectiveEnvelope model).
+ */
+export type BriefBasis = "observed" | "reconstructed" | "mixed";
+
 export interface BriefItem {
   id:      string;
   label:   string;
@@ -37,6 +48,8 @@ export interface BriefItem {
   detail?: string;
   tone?:   BriefTone;
   href?:   string;
+  /** Reserved presentational slot — see BriefBasis. Not emitted by /api/brief. */
+  basis?:  BriefBasis;
 }
 
 // ── Tracked account (Since Last Visit modal — "Accounts Tracked" tab) ──────────

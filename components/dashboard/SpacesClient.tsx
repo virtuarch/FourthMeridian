@@ -46,8 +46,9 @@ import {
   Plus, Globe, Lock, Users, Crown, Mail, Loader2, Check, X,
   Pencil, ChevronRight, ChevronDown, Home, Briefcase, Car, Plane, TrendingUp,
   Wrench, CreditCard, Target, LayoutDashboard, MoreHorizontal,
-  Sunset, Building2, Shield,
+  Sunset, Building2, Shield, ArrowUpRight,
 } from "lucide-react";
+import { Surface, Figure } from "@/components/atlas/Surface";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
@@ -256,53 +257,6 @@ function formatActivity(lastUpdated: string | null, createdAt: string): string {
   return `${verb} ${new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })}`;
 }
 
-// Deterministic per-member fill so an avatar stack reads as solid, tactile
-// chips (Linear/Slack-style) instead of a single repeated tint. Drawn only
-// from existing category/tone tokens — no new colors invented.
-const AVATAR_PALETTE = [
-  "var(--meridian-600)",
-  "var(--brass-600)",
-  "var(--violet-600)",
-  "var(--emerald-600)",
-  "var(--coral-600)",
-];
-
-function avatarColor(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
-}
-
-function MemberAvatars({ members }: { members: Member[] }) {
-  const shown = members.slice(0, 3);
-  const extra = members.length - shown.length;
-  return (
-    <div className="flex items-center -space-x-2">
-      {shown.map((m) => {
-        const initial = (m.user.name ?? m.user.username ?? "?")[0].toUpperCase();
-        return (
-          <div
-            key={m.id}
-            title={m.user.name ?? m.user.username ?? ""}
-            className="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
-            style={{ background: avatarColor(m.id), border: "1.5px solid var(--bg-base)" }}
-          >
-            <span className="text-[9px] font-semibold text-white">{initial}</span>
-          </div>
-        );
-      })}
-      {extra > 0 && (
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
-          style={{ background: "var(--ink-600)", border: "1.5px solid var(--bg-base)" }}
-        >
-          <span className="text-[9px] font-semibold text-white">+{extra}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // Tiny inline trend visualization — intentionally hand-rolled SVG rather
 // than recharts; a card grid of 20+ Spaces rendering 20+ chart instances is
 // exactly the case a 12-line polyline beats a charting library for.
@@ -366,13 +320,36 @@ function Sparkline({
   );
 }
 
-// ─── Space Card ───────────────────────────────────────────────────────────────
+// ─── Space Row (editorial) ────────────────────────────────────────────────────
 //
-// Renders as a plain tinted tile (not a nested GlassPanel) so a grid of
-// these can live inside one shared Atlas Glass canvas without stacking
-// blur-on-blur. Background/border are Tailwind utility classes rather than
-// inline `style` specifically so the `hover:` variants can take effect —
-// see GlassButton.tsx for the same note.
+// The launcher is a LIST of rooms you already own, not a grid of products to
+// browse (prototype Launcher.tsx). Each Space is one editorial row on a solid
+// Atlas Surface — "solid surfaces carry information" — carrying identity on the
+// left, its own trend + one real figure on the right, and an enter affordance.
+// No Liquid/Glass material here: reading a number wants a still surface, and a
+// launcher's whole job is to be a quiet threshold.
+//
+// Nothing about the DATA changed — same SpaceItem, same handlers, same
+// cookie-switch on click. Only the presentation moved from tile to row.
+
+// Compact money for the row figure so long balances (S$1,284,320) read as
+// S$1.28M and never wrap the right column. Same currency, same source number.
+function formatCurrencyCompact(value: number, currency = DEFAULT_DISPLAY_CURRENCY) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency", currency, notation: "compact", maximumFractionDigits: 1,
+  }).format(value);
+}
+
+// Period change derived from the SAME trend series the sparkline draws — not a
+// new number. Math.abs on the base keeps the sign honest for debt Spaces (whose
+// base can be negative). Null when there isn't enough history to state a change.
+function trendDeltaPct(trend: number[]): number | null {
+  if (trend.length < 2) return null;
+  const first = trend[0];
+  const last = trend[trend.length - 1];
+  if (first === 0) return null;
+  return ((last - first) / Math.abs(first)) * 100;
+}
 
 function SpaceCard({
   space,
@@ -403,212 +380,139 @@ function SpaceCard({
       ? space.trend[space.trend.length - 1] >= space.trend[0] ? "positive" : "danger"
       : "neutral";
   const category = space.category as SpaceCategory;
-
-  const tile = isActive
-    ? "bg-[rgba(59,130,246,.08)] hover:bg-[rgba(59,130,246,.13)] border-[rgba(125,168,255,.32)] hover:border-[rgba(125,168,255,.5)]"
-    : "bg-[var(--surface-muted)] hover:bg-[var(--surface-hover)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]";
-
-  // Product override (Spaces overview): Space cards render on the sanctioned
-  // Atlas **Liquid** material when supported, falling back to the Glass tile
-  // below when not (useAtlasLiquid: no WebGL / prefers-reduced-transparency /
-  // ?atlasLiquid=0). Liquid is an enhancement, never a dependency — the Glass
-  // path stays a complete card. Interactions are identical on both paths.
-  const liquid = useAtlasLiquid();
   const tint = spaceIdentityTint(category);
+  const hasFigure = space.trend.length > 0;
+  const delta = trendDeltaPct(space.trend);
+  const isShared = space.type === "SHARED";
 
-  // Per-category identity tint — a quiet corner wash only (never health/state).
-  // R4-a: the coloured identity RING was removed — the card edge stays clean,
-  // crisp, and neutral; colour comes from the material + the graphic, not the
-  // outline. (Full material-native hue lands in R4-b.)
-  const identityOverlay = (
-    <span
-      aria-hidden
-      className="pointer-events-none absolute inset-0 rounded-[inherit]"
-      style={{ background: `radial-gradient(118% 88% at 0% 0%, ${tint}22, transparent 58%)` }}
-    />
-  );
+  // The whole left/centre/figure region is one enter affordance (onOpen →
+  // cookie switch). Crown/Manage are SIBLINGS of that button, never nested
+  // inside it (no button-in-button), so they keep their own click targets.
+  const openable = interactive && !!onOpen;
 
-  // Card interior (identical on both material paths). Its own p-5/gap-4 padding
-  // lives on the wrapping element below (AtlasLiquidCard zeroes content padding).
-  const body = (
-    <>
-      {/* Specular top-edge highlight — faint at rest, brightens on hover so
-          the "liquid glass raise" reads as physical rather than a flat tint
-          swap. */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute top-0 left-4 right-4 h-px opacity-30 group-hover:opacity-100 transition-opacity duration-[var(--dur-base)] ease-[var(--ease-standard)]"
-        style={{ background: "linear-gradient(90deg, transparent, var(--specular-edge), transparent)" }}
-      />
+  return (
+    <Surface
+      as="li"
+      className={[
+        "group relative flex items-stretch overflow-hidden transition-colors duration-[var(--dur-base)] ease-[var(--ease-standard)]",
+        isActive ? "border-[rgba(125,168,255,.4)]" : "hover:border-[var(--border-hairline-strong)]",
+        switching ? "opacity-60" : "",
+      ].filter(Boolean).join(" ")}
+    >
+      {/* Active accent — a quiet left rail, not a fill; identity stays neutral. */}
+      {isActive && (
+        <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ background: "var(--meridian-400)" }} />
+      )}
 
-      {/* Soft diagonal glass reflection — a faint sheen band that only
-          appears on hover, clipped to the card's rounded corners by the
-          parent's overflow-hidden. Intentionally subtle: no bloom, no
-          neon, just a hint of light passing across glass. */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute -inset-x-6 -top-1/2 h-[180%] opacity-0 group-hover:opacity-100 transition-opacity duration-[var(--dur-base)] ease-[var(--ease-standard)]"
-        style={{
-          background:
-            "linear-gradient(115deg, transparent 38%, rgba(255,255,255,.045) 48%, rgba(255,255,255,.085) 50%, rgba(255,255,255,.045) 52%, transparent 62%)",
-        }}
-      />
+      <button
+        type="button"
+        onClick={openable ? onOpen : undefined}
+        disabled={!openable}
+        aria-label={openable ? `Enter ${displaySpaceName(space.name)}` : displaySpaceName(space.name)}
+        className="flex min-w-0 flex-1 items-center gap-4 p-4 text-left sm:gap-5 sm:p-5 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-inset"
+      >
+        {/* Identity chip — the one place category colour appears (identity only,
+            never state), a small tinted glass swatch echoing the prototype. */}
+        <div
+          className="relative hidden size-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--radius-sm)] text-white sm:flex"
+          style={{
+            background: `linear-gradient(140deg, ${tint}66, ${tint}22)`,
+            boxShadow: `inset 0 1px 0 rgba(255,255,255,.4), inset 0 0 0 1px ${tint}59`,
+          }}
+        >
+          <CategoryIcon name={CATEGORY_ICONS[category] ?? "LayoutDashboard"} />
+        </div>
 
-      {/* R4-a header — the Space NAME is the primary element; the graphic +
-          type form a secondary identity row beneath it. */}
-      <div className="relative">
-        <div className="flex items-start gap-1.5">
-          {/* Name: sharper/larger, strong white, tighter tracking (decision 10).
-              line-clamp-2 keeps long names readable rather than truncated. */}
-          <p
-            className="flex-1 min-w-0 font-semibold text-[var(--text-primary)] tracking-[-0.01em] leading-snug line-clamp-2 break-words"
-            style={{ fontSize: "clamp(0.9375rem, 0.86rem + 0.35vw, 1.0625rem)" }}
-          >
-            {displaySpaceName(space.name)}
+        {/* Name + one meta line — the reading axis. */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h2 className="truncate font-semibold text-[var(--text-primary)] tracking-[-0.01em]">
+              {displaySpaceName(space.name)}
+            </h2>
+            {isActive && <RowChip tone="accent">Active</RowChip>}
+            {isShared && <RowChip>Shared</RowChip>}
+            {space.isPublic
+              ? <Globe size={12} className="shrink-0 text-[var(--text-muted)]" />
+              : !isPersonal && <Lock size={12} className="shrink-0 text-[var(--text-muted)]" />}
+            {!interactive && (
+              <span className="shrink-0 text-[10px] font-medium text-[var(--text-muted)]">Not joined</span>
+            )}
+          </div>
+          <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
+            {CATEGORY_LABELS[category] ?? "Space"}
+            {" · "}{space.members.length} member{space.members.length === 1 ? "" : "s"}
+            {" · "}{formatActivity(space.lastUpdated, space.createdAt)}
           </p>
-          {space.isPublic
-            ? <Globe size={12} className="text-[var(--text-secondary)] shrink-0 mt-1" />
-            : !isPersonal && <Lock size={12} className="text-[var(--text-secondary)] shrink-0 mt-1" />}
-          {!interactive && (
-            <span className="text-[9px] font-medium text-[var(--text-secondary)] shrink-0 mt-1">Not joined</span>
+        </div>
+
+        {/* Trend — hidden on mobile where the row is already tight. */}
+        <div className="hidden w-24 shrink-0 md:block">
+          <Sparkline values={space.trend} tone={tone} fullWidth />
+        </div>
+
+        {/* One real figure + its derived change. Money is neutral (a number is
+            not a claim); only the delta carries gain/loss colour. */}
+        <div className="shrink-0 text-right">
+          <Figure value={hasFigure ? formatCurrencyCompact(space.netWorth, space.currency) : "—"} size="lede" />
+          {delta !== null && (
+            <p className={["tabular-nums mt-0.5 text-[11px]", delta >= 0 ? "text-[var(--accent-positive)]" : "text-[var(--accent-negative)]"].join(" ")}>
+              {delta >= 0 ? "+" : ""}{delta.toFixed(1)}%
+            </p>
           )}
         </div>
 
-        {/* Secondary identity row — small heavily-tinted glass graphic chip
-            (same hue as the card identity, decision 7/8) beside the type. */}
-        <div className="flex items-center gap-2 mt-2">
-          <div
-            className="relative w-7 h-7 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0 overflow-hidden text-white"
-            style={{
-              background: `linear-gradient(140deg, ${tint}66, ${tint}22)`,
-              boxShadow: `inset 0 1px 0 rgba(255,255,255,.4), inset 0 0 0 1px ${tint}59, 0 2px 6px rgba(0,0,0,.3)`,
-            }}
-          >
-            {/* Specular highlight — sells the "floating tinted glass" read. */}
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-x-0 top-0 h-1/2"
-              style={{ background: "linear-gradient(180deg, rgba(255,255,255,.28), transparent)" }}
-            />
-            <CategoryIcon name={CATEGORY_ICONS[category] ?? "LayoutDashboard"} />
-          </div>
-          <p className="text-xs font-medium text-[var(--text-secondary)] truncate">
-            {CATEGORY_LABELS[category] ?? "Space"}
-          </p>
+        <ArrowUpRight
+          size={15}
+          aria-hidden
+          className="shrink-0 text-[var(--text-muted)] transition-[transform,color] duration-[var(--dur-base)] ease-[var(--ease-standard)] group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-[var(--text-secondary)]"
+        />
+      </button>
+
+      {/* Row actions — siblings of the enter button, revealed on hover/focus. */}
+      {interactive && (isDefault || onSetDefault || canManage) && (
+        <div className="flex items-center gap-0.5 pr-3 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          {isDefault ? (
+            <span title="Default landing Space" className="p-1.5">
+              <Crown size={13} className="text-[var(--brass-400)]" />
+            </span>
+          ) : onSetDefault && (
+            <button
+              onClick={onSetDefault}
+              title="Set as default Space"
+              className="rounded-[var(--radius-xs)] p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover-strong)] hover:text-[var(--text-primary)]"
+            >
+              {settingDefault ? <Loader2 size={13} className="animate-spin" /> : <Crown size={13} />}
+            </button>
+          )}
+          {canManage && (
+            <button
+              onClick={onManage}
+              title="Manage Space"
+              className="rounded-[var(--radius-xs)] p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover-strong)] hover:text-[var(--text-primary)]"
+            >
+              <Pencil size={13} />
+            </button>
+          )}
         </div>
-      </div>
-
-      {/* Primary financial metric — number only; the chart lives lower now. */}
-      <div className="relative">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)] mb-1">
-          {metricLabelForCategory(category)}
-        </p>
-        <p className="text-[1.6rem] font-bold text-[var(--text-primary)] tabular-nums leading-none">
-          {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
-        </p>
-      </div>
-
-      {/* Trend chart — every card, lower half, centered + widened, with a faint
-          area fill so it reads as integrated into the card (decision 5). */}
-      <div className="relative mt-auto">
-        <Sparkline values={space.trend} tone={tone} fullWidth />
-      </div>
-
-      {/* Members + last updated + hover actions — no divider; spacing +
-          type weight separate it (decision 6). */}
-      <div className="relative flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <MemberAvatars members={space.members} />
-          <span className="text-[11px] text-[var(--text-secondary)] truncate">
-            {formatActivity(space.lastUpdated, space.createdAt)}
-          </span>
-        </div>
-        {interactive && (
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity shrink-0">
-            {isDefault ? (
-              <span title="Default landing Space" className="p-1.5">
-                <Crown size={13} className="text-[var(--brass-400)]" />
-              </span>
-            ) : onSetDefault && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onSetDefault(); }}
-                title="Set as default Space"
-                className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors"
-              >
-                {settingDefault ? <Loader2 size={13} className="animate-spin" /> : <Crown size={13} />}
-              </button>
-            )}
-            {canManage && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onManage!(); }}
-                title="Manage Space"
-                className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors"
-              >
-                <Pencil size={13} />
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-    </>
+      )}
+    </Surface>
   );
+}
 
-  // ── Liquid material path ──────────────────────────────────────────────────
-  // Only when Liquid is supported AND the card is interactive (onOpen present).
-  // AtlasLiquidCard owns the click/keyboard affordance (onClick + Enter/Space);
-  // nested Manage/Crown buttons keep their e.stopPropagation() so they don't
-  // also trigger onOpen. `group` for the hover reflections comes from
-  // AtlasLiquidCard's shell.
-  if (liquid && interactive && onOpen) {
-    return (
-      <AtlasLiquidCard
-        onClick={onOpen}
-        ariaLabel={displaySpaceName(space.name)}
-        backgroundImage={SPACE_CARD_TEXTURE}
-        tint={identityTintColor(tint)}
-        tintStrength={SPACE_CARD_TINT_STRENGTH}
-      >
-        <div
-          className={[
-            "relative rounded-[20px] overflow-hidden p-5 flex flex-col gap-4",
-            switching ? "opacity-60" : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-        >
-          {identityOverlay}
-          {body}
-        </div>
-      </AtlasLiquidCard>
-    );
-  }
-
-  // ── Glass fallback path (no WebGL / reduced-transparency / ?atlasLiquid=0) ──
+// A quiet inline badge — the prototype's `Chip` for "Shared"/"Active" identity
+// marks. Not the Atlas radiogroup Chips (that's a switcher); this is a label.
+function RowChip({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "accent" }) {
   return (
-    <div
+    <span
       className={[
-        "group relative overflow-hidden rounded-[var(--radius-lg)] border p-5 flex flex-col gap-4",
-        "transition-[transform,background-color,border-color,box-shadow] duration-[var(--dur-base)] ease-[var(--ease-standard)]",
-        tile,
-        interactive
-          ? "cursor-pointer hover:-translate-y-[3px] hover:scale-[1.014] hover:shadow-[var(--shadow-e3)]"
-          : "",
-        switching ? "opacity-60" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-      onClick={interactive ? onOpen : undefined}
-      role={interactive && onOpen ? "button" : undefined}
-      tabIndex={interactive && onOpen ? 0 : undefined}
-      onKeyDown={
-        interactive && onOpen
-          ? (e: React.KeyboardEvent) => { if (e.key === "Enter") onOpen(); }
-          : undefined
-      }
+        "shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none",
+        tone === "accent"
+          ? "border-[rgba(125,168,255,.34)] text-[var(--meridian-300)]"
+          : "border-[var(--border-hairline)] text-[var(--text-muted)]",
+      ].join(" ")}
     >
-      {identityOverlay}
-      {body}
-    </div>
+      {children}
+    </span>
   );
 }
 
@@ -950,49 +854,43 @@ function PlatformSpaceGroup({ spaces }: { spaces: PlatformSpaceItem[] }) {
 
   return (
     <div className="mt-10">
-      <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]">
-        <Shield size={14} className="text-[var(--meridian-400)]" />
-        Platform
-      </h2>
-      <p className="text-xs text-[var(--text-secondary)] mt-1 mb-3">
-        Operational areas of Fourth Meridian you have been granted access to.
-      </p>
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(240px,100%),1fr))] gap-3">
+      {/* Divider label — the same "operator Spaces, distinct section, same shell"
+          treatment as the prototype's Fourth Meridian HQ (Launcher.tsx §5.2). */}
+      <div className="mb-3 flex items-center gap-3">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+          Fourth Meridian HQ
+        </span>
+        <span className="h-px flex-1 bg-[var(--border-hairline)]" aria-hidden />
+      </div>
+      <ul className="space-y-2.5">
         {spaces.map((p) => {
           const href = `/dashboard/platform/${p.area}`;
           return (
-            <div
-              key={p.id}
-              onClick={() => router.push(href)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Enter") router.push(href); }}
-              className="group relative overflow-hidden rounded-[var(--radius-md)] border p-4 flex flex-col gap-3 cursor-pointer bg-[var(--surface-muted)] hover:bg-[var(--surface-hover)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] transition-[background-color,border-color]"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div
-                  className="w-8 h-8 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0"
-                  style={{ background: "rgba(59,130,246,.12)", color: "var(--meridian-400)", border: "1px solid rgba(125,168,255,.24)" }}
-                >
-                  <Shield size={15} />
-                </div>
-                <span
-                  className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full border"
-                  style={{ background: "var(--glass-ultrathin)", color: "var(--text-secondary)", borderColor: "var(--border-hairline)" }}
-                >
-                  {p.access}
+            <Surface as="li" key={p.id} className="group transition-colors duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:border-[var(--border-hairline-strong)]">
+              <button
+                type="button"
+                onClick={() => router.push(href)}
+                aria-label={`Open ${displaySpaceName(p.name)}`}
+                className="flex w-full items-center gap-4 p-4 text-left sm:p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-inset"
+              >
+                {/* HQ badge — operator identity, never a financial figure. */}
+                <span className="grid size-9 shrink-0 place-items-center rounded-full border border-[var(--border-hairline-strong)] text-[9px] font-semibold text-[var(--brass-300)]">
+                  HQ
                 </span>
-              </div>
-              <div className="min-w-0">
-                <p className="font-semibold text-[var(--text-primary)] text-sm leading-snug truncate">
-                  {displaySpaceName(p.name)}
-                </p>
-                <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Platform area</p>
-              </div>
-            </div>
+                <div className="min-w-0 flex-1">
+                  <h2 className="truncate font-semibold text-[var(--text-primary)]">{displaySpaceName(p.name)}</h2>
+                  <p className="mt-1 truncate text-xs text-[var(--text-muted)]">Platform area · {p.access}</p>
+                </div>
+                <ArrowUpRight
+                  size={15}
+                  aria-hidden
+                  className="shrink-0 text-[var(--text-muted)] transition-[transform,color] duration-[var(--dur-base)] ease-[var(--ease-standard)] group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-[var(--text-secondary)]"
+                />
+              </button>
+            </Surface>
           );
         })}
-      </div>
+      </ul>
     </div>
   );
 }
@@ -1020,10 +918,15 @@ function SpacesHeader({ onCreateSpace }: { onCreateSpace: () => void }) {
   const liquid = useAtlasLiquid();
   return (
     <div className="pt-2 pb-8 md:pb-10 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-5">
-      <div>
+      <div className="min-w-0">
         <h1 className="text-3xl md:text-[2.5rem] font-semibold tracking-tight text-[var(--text-primary)]">
           Spaces
         </h1>
+        {/* Manifesto — the launcher's one line of framing (prototype
+            Launcher.tsx). Each Space is a walled financial world. */}
+        <p className="mt-1.5 text-sm text-[var(--text-secondary)] max-w-md">
+          Each Space is a separate financial world. Nothing leaks between them.
+        </p>
       </div>
       {/* Opens CreateSpaceModal (mounted once from DashboardChrome.tsx) via the
           same "open-create-space" window event the Sidebar's row dispatches. */}
@@ -1196,13 +1099,10 @@ export function SpacesClient({
 
         {pendingInvites.length > 0 && <InviteBanner invites={pendingInvites} onAction={refresh} />}
 
-        {/* R4-a: the outer Glass "canvas" was removed — the Liquid Space cards
-            are their own visual grouping and breathe directly in the page
-            layout. auto-fit + minmax sizes columns off the content width; once
-            two 280px-min cards can't sit side by side it drops to one column.
-            min(280px,100%) keeps the floor from ever exceeding the container on
-            narrow screens (no horizontal scroll). */}
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-4 md:gap-5">
+        {/* A LIST, not a grid — rooms you already own, on one reading axis
+            (prototype Launcher.tsx). Each row is a solid Atlas Surface; the
+            personal Space is pinned first upstream (`ordered`). */}
+        <ul className="space-y-2.5">
           {visibleSpaces.map((space) => (
             <SpaceCard
               key={space.id}
@@ -1217,7 +1117,7 @@ export function SpacesClient({
               settingDefault={settingDefaultId === space.id}
             />
           ))}
-        </div>
+        </ul>
 
         {hiddenSpaceCount > 0 && (
           <div className="flex justify-center pt-6">
