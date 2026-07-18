@@ -31,6 +31,9 @@ function check(name: string, cond: boolean, detail?: string): void {
   }
 }
 const read = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8");
+/** Strip comments so documentation prose (which may name an avoided call) never
+ *  trips a code ratchet — the house pattern (see space-shell.test.ts). */
+const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
 
 console.log("universal registry identity");
 {
@@ -70,7 +73,7 @@ console.log("composition + render reuse");
   // contained W1-0 commit stays green before then).
   const dashRel = "components/connections/ConnectionsSpaceDashboard.tsx";
   if (existsSync(path.join(process.cwd(), dashRel))) {
-    const dash = read(dashRel);
+    const dash = stripComments(read(dashRel));
     check("navigation reuses the shared SpaceShell (not a parallel frame)", /@\/components\/space\/shell\/SpaceShell/.test(dash) && /railOptions/.test(dash));
     // D2 — global-nav peer: MUST NOT take over the ContextualNavbar (no publishSpace).
     check("does NOT enter customer Space mode (no publishSpace / useSpaceChromePublisher)", !/publishSpace|useSpaceChromePublisher/.test(dash));

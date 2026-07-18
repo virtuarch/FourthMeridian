@@ -65,6 +65,21 @@ export interface SpaceShellProps {
   activeTab:   string;
   onSelectTab: (tab: string) => void;
 
+  /**
+   * Frame variant (UI-Convergence Wave 1, D2). Default `"space"` — the customer /
+   * Platform frame that delegates identity to the ContextualNavbar's Space mode
+   * (the host publishes it via SpaceChrome); on desktop this frame renders NO
+   * header. `"utility"` is for the GLOBAL-nav destinations (Connections, Settings)
+   * that do NOT take over the navbar: the frame renders its own identity header on
+   * ALL widths (title + subtitle + optional `headerActions`), and — because a lone
+   * destination needs no switcher — suppresses the rail when there is a single
+   * workspace. One prop, one branch: NOT a second shell.
+   */
+  variant?: "space" | "utility";
+  /** Utility-variant only: an actions cluster rendered at the right of the header
+   *  (e.g. Connections' Connect / Add-wallet controls). Ignored in `"space"`. */
+  headerActions?: ReactNode;
+
   /** The workspace viewport — the active tab's content. Owned by the host. */
   children: ReactNode;
 }
@@ -78,8 +93,15 @@ export function SpaceShell({
   railOptions,
   activeTab,
   onSelectTab,
+  variant = "space",
+  headerActions,
   children,
 }: SpaceShellProps) {
+  const isUtility = variant === "utility";
+  // A lone utility destination needs no switcher; a Space/Platform frame always
+  // renders its rail (a single-Overview Platform area keeps its one pill — the
+  // shipped behavior this must not change).
+  const showRail = isUtility ? railOptions.length > 1 : true;
   // The Space-level rail control — the ONE fixed Spaces rail (lib/space-nav.ts),
   // TEXT-ONLY labels (the prototype's rail language), every label always visible.
   const rail = (
@@ -97,24 +119,37 @@ export function SpaceShell({
       {overlays}
 
       <div className="max-w-5xl mx-auto">
-        {/* Mobile-only relocation row (<lg) — identity + the canonical
-            SpaceControls, because the Space-mode sidebar that normally hosts them
-            is hidden on a phone. Hidden on desktop, where the sidebar owns them. */}
-        <div className="lg:hidden mb-5 flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
-            <p className="truncate text-[13px] text-[var(--text-muted)]">{subtitle}</p>
+        {isUtility ? (
+          /* Utility variant (D2) — a GLOBAL-nav destination that does NOT take over
+             the ContextualNavbar, so it renders its OWN identity header on all
+             widths (no SpaceControls: utility surfaces have no FX / Manage). */
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <h1 className="text-xl font-bold text-[var(--text-primary)]">{title}</h1>
+              <p className="text-sm text-[var(--text-muted)]">{subtitle}</p>
+            </div>
+            {headerActions && <div className="shrink-0">{headerActions}</div>}
           </div>
-          <div className="shrink-0">
-            <SpaceControls currencyControl={currencyControl} onManage={onManage} />
+        ) : (
+          /* Mobile-only relocation row (<lg) — identity + the canonical
+             SpaceControls, because the Space-mode sidebar that normally hosts them
+             is hidden on a phone. Hidden on desktop, where the sidebar owns them. */
+          <div className="lg:hidden mb-5 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
+              <p className="truncate text-[13px] text-[var(--text-muted)]">{subtitle}</p>
+            </div>
+            <div className="shrink-0">
+              <SpaceControls currencyControl={currencyControl} onManage={onManage} />
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Navigation rail — the prototype's STABLE, CENTERED rail. Centered and
             in-flow on every Workspace AND every lens: no left-shift when a
             Perspective engages, no scroll-shrink float. Switching pages never
-            moves the rail. */}
-        <div className="mb-7 flex justify-center">{rail}</div>
+            moves the rail. (Suppressed for a single-workspace utility surface.) */}
+        {showRail && <div className="mb-7 flex justify-center">{rail}</div>}
 
         {/* Workspace slot */}
         {children}

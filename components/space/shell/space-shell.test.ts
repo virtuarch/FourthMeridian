@@ -53,11 +53,17 @@ type _RailOption = Expect<Equal<keyof SpaceShellRailOption, "id" | "label" | "ic
 // Workspace and lens. SHELL migration — `toolbar` + `displayCurrencyControl`
 // dropped in favour of the ContextualNavbar-published identity/controls, with
 // `currencyControl` + `onManage` retained here for the narrow-width relocation.
+// UI-Convergence Wave 1 (D2) — `variant` ("space" default | "utility") + the
+// utility-only `headerActions` slot let a GLOBAL-nav destination (Connections /
+// Settings) reuse the frame without taking over the navbar. One prop, one branch.
 type _SlotApiKeys = Expect<Equal<
   keyof SpaceShellProps,
   | "overlays" | "title" | "subtitle" | "currencyControl" | "onManage"
-  | "railOptions" | "activeTab" | "onSelectTab" | "children"
+  | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "children"
 >>;
+// The variant discriminator + its optional header-actions slot.
+type _Variant       = Expect<Equal<SpaceShellProps["variant"], "space" | "utility" | undefined>>;
+type _HeaderActions = Expect<Equal<SpaceShellProps["headerActions"], ReactNode | undefined>>;
 
 // ── RUNTIME: the durable boundary scans (source-scan — no DOM runner in-repo) ────
 let failures = 0;
