@@ -32,6 +32,9 @@ function check(name: string, cond: boolean, detail?: string): void {
   }
 }
 const read = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8");
+/** Strip comments so documentation prose (which may name an avoided call) never
+ *  trips a code ratchet — the house pattern (see space-shell.test.ts). */
+const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
 
 console.log("universal registry identity");
 {
@@ -76,7 +79,7 @@ console.log("navigation reuse (SpaceShell, URL-driven)");
   // Activates once W1-B lands the SpaceShell layout host (W1-0 stays green before then).
   const layoutRel = "app/(shell)/dashboard/settings/layout.tsx";
   if (existsSync(path.join(process.cwd(), layoutRel))) {
-    const layout = read(layoutRel);
+    const layout = stripComments(read(layoutRel));
     check("layout reuses the shared SpaceShell", /@\/components\/space\/shell\/SpaceShell/.test(layout) && /railOptions/.test(layout));
     check("rail comes from SETTINGS_WORKSPACE_ORDER (not hardcoded JSX)", /SETTINGS_WORKSPACE_ORDER/.test(layout));
     check("URL-driven: derives active from pathname + navigates by router.push (D3)", /usePathname/.test(layout) && /router\.push/.test(layout));

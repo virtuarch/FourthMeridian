@@ -63,6 +63,21 @@ editing the host.
   Perspective. `PerspectiveDef extends WorkspaceDefinition`. A `domain` field
   (`"finance"` default | `"platform"`) keeps finance vocabularies out of
   Platform definitions without a base/subclass type split.
+- **Navigation IA (M2 canonical).** There is ONE Workspace model and two
+  navigation planes (global destinations · in-Space workspaces). Perspectives are
+  specialized Workspaces selected **through the Overview experience**
+  (`?perspective=<id>`), NOT a rail tier — `PERSPECTIVES` is no longer in
+  `SPACE_TAB_ORDER`. On Overview, no engaged lens ⇒ the summary; an engaged lens ⇒
+  that Perspective's Workspace occupies the content slot (the selector's "Overview"
+  item returns to the summary). Depth lives in **Sections** (DB or virtual);
+  transient detail in **Panels/Drills**. Debt and Investments have exactly ONE
+  runtime destination each (their Perspective) — their former
+  `routing.targetTab`/`RoutedWorkspaceModal` overlays are retired; legacy
+  `?tab=debt|credit|investments` links canonicalize to `?perspective=…` via
+  `legacyTabPerspective` in `lib/space/space-url.ts`. Goals and Retirement remain
+  `RoutedWorkspaceModal` surfaces as an explicit, isolated compatibility boundary
+  (`ROUTED_WORKSPACE_TABS = {GOALS, RETIREMENT}`) until their product architecture
+  is decided.
 - **Declarative loading (dataNeeds).** A workspace DECLARES what it may consume;
   the host RESOLVES those needs to activate existing loaders. `dataNeeds` is
   orchestration metadata only — never a DTO, a domain contract, or a fetch. The
@@ -110,9 +125,10 @@ editing the host.
 
 ## Invariants
 
-- The shell never names a specific tab or domain; behavioral branches that used
-  to key on `activeTab === "PERSPECTIVES"` are expressed as neutral props
-  (e.g. `railStatic`).
+- The shell never names a specific tab or domain; behavioral branches are
+  expressed as neutral props (e.g. `railStatic`, now driven by
+  `perspectiveEngaged` — a lens engaged through Overview — rather than a
+  `PERSPECTIVES` tab).
 - `WORKSPACE_REGISTRY` is composed from disjoint id sets (standard, perspective,
   `platform-*`-namespaced) so no identity is duplicated and no finance helper
   ever sees a Platform entry.
