@@ -897,9 +897,19 @@ export function SpaceDashboard({
           />
         )}
 
-        {/* Members tab — real data. */}
+        {/* Members tab — the editorial People destination (owns roster, roles,
+            invites, pending queue via the existing member/invite routes).
+            "Manage Space" still routes to the modal for General / Add Accounts /
+            Delete; onRefresh keeps host totals honest when a removal revokes
+            the departing member's shared accounts. */}
         {activeTab === "MEMBERS" && (
-          <MembersWorkspace spaceId={spaceId} onManage={() => setShowManage(true)} />
+          <MembersWorkspace
+            spaceId={spaceId}
+            myRole={myRole}
+            currentUserId={currentUserId}
+            onManage={() => setShowManage(true)}
+            onRefresh={() => { reloadSections(); reloadAccounts(); }}
+          />
         )}
 
         {/* Goals / Retirement — the last remaining legacy routed-modal surfaces

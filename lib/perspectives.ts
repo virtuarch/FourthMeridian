@@ -497,8 +497,8 @@ export function getCompositionSwitcherItems(category: string): PerspectiveDef[] 
  * the SpaceShell workspace slot. Base WorkspaceDefinitions — no lens/card
  * metadata. Icons mirror lib/space-nav-icons SPACE_TAB_ICON_MAP (the rail still
  * renders from that map; these are the canonical identity + SD-3 dataNeeds).
- * ACTIVITY/MEMBERS self-fetch (TimelineWidget / SpaceMembersWidget), so their
- * host-provided dataNeeds are minimal.
+ * ACTIVITY/MEMBERS self-fetch (TimelineWidget / MembersWorkspace's useSpaceMembers),
+ * so their host-provided dataNeeds are minimal.
  */
 export const STANDARD_WORKSPACES: Record<string, WorkspaceDefinition> = {
   transactions: {
@@ -516,7 +516,7 @@ export const STANDARD_WORKSPACES: Record<string, WorkspaceDefinition> = {
   },
   members: {
     id: "members", kind: "standard", label: "Members", icon: "Users",
-    // SpaceMembersWidget self-fetches; the host provides no primitives.
+    // MembersWorkspace self-fetches its roster + invites; the host provides no primitives.
     dataNeeds: [], envelope: "none",
   },
 };
