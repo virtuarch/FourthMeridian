@@ -13,35 +13,27 @@
 
 import Link from "next/link";
 import { Archive, ChevronRight, Download } from "lucide-react";
-import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
+import { SettingsSection } from "@/components/settings/SettingsSection";
 import { ExportDataCard } from "@/components/security/ExportDataCard";
 
 export function DataPrivacySettings() {
   return (
     <>
       {/* ── Download My Data ── */}
-      <DataCard>
-        <div className="flex items-center gap-2 mb-1">
-          <Download size={15} style={{ color: "var(--text-secondary)" }} />
-          <DataCardTitle>Download My Data</DataCardTitle>
-        </div>
-        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
-          Export a copy of your personal data — profile, accounts, transactions,
-          and Spaces — as a ZIP archive.
-        </p>
+      <SettingsSection
+        icon={Download}
+        title="Download My Data"
+        description="Export a copy of your personal data — profile, accounts, transactions, and Spaces — as a ZIP archive."
+      >
         <ExportDataCard />
-      </DataCard>
+      </SettingsSection>
 
-      {/* ── Archive & Trash (moved verbatim) ── */}
-      <DataCard>
-        <div className="flex items-center gap-2 mb-1">
-          <Archive size={15} style={{ color: "var(--text-secondary)" }} />
-          <DataCardTitle>Data &amp; Archive</DataCardTitle>
-        </div>
-        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
-          Manage archived accounts and Spaces. Restore them, or remove them permanently.
-        </p>
-
+      {/* ── Archive & Trash (cross-link; archived-assets is a separate surface, D4) ── */}
+      <SettingsSection
+        icon={Archive}
+        title="Data & Archive"
+        description="Manage archived accounts and Spaces. Restore them, or remove them permanently."
+      >
         <Link
           href="/dashboard/settings/archived-assets"
           className="flex items-center justify-between px-4 py-3 rounded-xl border hover:bg-[var(--surface-hover)] transition-colors group"
@@ -58,7 +50,7 @@ export function DataPrivacySettings() {
           </div>
           <ChevronRight size={15} style={{ color: "var(--text-faint)" }} />
         </Link>
-      </DataCard>
+      </SettingsSection>
     </>
   );
 }

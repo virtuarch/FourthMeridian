@@ -9,15 +9,19 @@
  *   Security History
  *   Danger Zone       → Deactivate · Delete
  *
- * All pieces are reused, not rewritten: the password form is lifted verbatim
- * from the former SettingsClient.tsx; every other card is an existing
- * self-contained security component. No API or validation changes.
+ * UI-Convergence Wave 1 (W1-E) converged the presentation onto the shared kit —
+ * SettingsSection cards, Atlas Field/Input for the password form, one save signal
+ * (Toast success / InlineBanner error). The password VALIDATION and every API call
+ * are unchanged; the other cards are the same self-contained security components.
  */
 
 import { useState, Suspense } from "react";
 import { Eye, EyeOff, Loader2, ShieldCheck, Mail, Monitor, UserX, Trash2 } from "lucide-react";
-import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
-import { INPUT_BASE, inputStyle } from "@/components/settings/InlineField";
+import { DataCard } from "@/components/atlas/DataCard";
+import { SettingsSection } from "@/components/settings/SettingsSection";
+import { Field, Input } from "@/components/atlas/fields";
+import { InlineBanner } from "@/components/atlas/InlineBanner";
+import { useToast } from "@/components/atlas/Toast";
 import { ActiveSessions } from "@/components/security/ActiveSessions";
 import { SecurityHistory } from "@/components/security/SecurityHistory";
 import { ChangeEmailForm } from "@/components/security/ChangeEmailForm";
@@ -33,15 +37,25 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Show/hide affordance for a password field (Input `trailing`). */
+function RevealButton({ shown, onToggle }: { shown: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" onClick={onToggle}
+      className="hover:text-[var(--text-secondary)] p-1" style={{ color: "var(--text-muted)" }}>
+      {shown ? <EyeOff size={14} /> : <Eye size={14} />}
+    </button>
+  );
+}
+
 export function SecuritySettings({ email }: { email: string }) {
-  // ── Password change (moved verbatim from SettingsClient) ────────────────────
+  const { toast } = useToast();
+  // ── Password change (validation + API unchanged) ────────────────────────────
   const [currentPw, setCurrentPw] = useState("");
   const [newPw,     setNewPw]     = useState("");
   const [confirmPw, setConfirmPw] = useState("");
   const [showCur,   setShowCur]   = useState(false);
   const [showNew,   setShowNew]   = useState(false);
   const [pwError,   setPwError]   = useState("");
-  const [pwOk,      setPwOk]      = useState(false);
   const [pwBusy,    setPwBusy]    = useState(false);
 
   async function handlePasswordChange(e: React.FormEvent) {
@@ -62,12 +76,9 @@ export function SecuritySettings({ email }: { email: string }) {
 
     if (!res.ok) { setPwError(data.error ?? "Failed to update password."); return; }
 
-    setPwOk(true);
     setCurrentPw(""); setNewPw(""); setConfirmPw("");
-    setTimeout(() => setPwOk(false), 3500);
+    toast("Password updated");
   }
-
-  const inputCls = INPUT_BASE + " px-3 py-2.5";
 
   return (
     <>
@@ -75,78 +86,45 @@ export function SecuritySettings({ email }: { email: string }) {
       <SectionLabel>Account Security</SectionLabel>
 
       {/* Password */}
-      <DataCard>
-        <div className="flex items-center gap-2 mb-4">
-          <ShieldCheck size={15} style={{ color: "var(--text-secondary)" }} />
-          <DataCardTitle>Password</DataCardTitle>
-        </div>
-
+      <SettingsSection icon={ShieldCheck} title="Password">
         <form onSubmit={handlePasswordChange} className="space-y-3">
-          {pwError && (
-            <div className="rounded-xl border px-3 py-2.5 text-sm" style={{ background: "rgba(237,82,71,0.10)", borderColor: "rgba(237,82,71,0.30)", color: "var(--accent-negative)" }}>
-              {pwError}
-            </div>
-          )}
-          {pwOk && (
-            <div className="rounded-xl border px-3 py-2.5 text-sm" style={{ background: "rgba(34,197,94,0.10)", borderColor: "rgba(34,197,94,0.30)", color: "var(--accent-positive)" }}>
-              Password updated successfully.
-            </div>
-          )}
+          <InlineBanner tone="error">{pwError}</InlineBanner>
 
-          <div>
-            <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Current password</label>
-            <div className="relative">
-              <input
-                type={showCur ? "text" : "password"}
-                value={currentPw}
-                onChange={(e) => setCurrentPw(e.target.value)}
-                required
-                className={inputCls + " pr-10"}
-                style={inputStyle}
-                placeholder="••••••••"
-                autoComplete="current-password"
-              />
-              <button type="button" onClick={() => setShowCur((v) => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-secondary)] p-1" style={{ color: "var(--text-muted)" }}>
-                {showCur ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-            </div>
-          </div>
+          <Field label="Current password">
+            <Input
+              type={showCur ? "text" : "password"}
+              value={currentPw}
+              onChange={(e) => setCurrentPw(e.target.value)}
+              required
+              placeholder="••••••••"
+              autoComplete="current-password"
+              trailing={<RevealButton shown={showCur} onToggle={() => setShowCur((v) => !v)} />}
+            />
+          </Field>
 
-          <div>
-            <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>New password</label>
-            <div className="relative">
-              <input
-                type={showNew ? "text" : "password"}
-                value={newPw}
-                onChange={(e) => setNewPw(e.target.value)}
-                required
-                minLength={8}
-                className={inputCls + " pr-10"}
-                style={inputStyle}
-                placeholder="Min. 8 characters"
-                autoComplete="new-password"
-              />
-              <button type="button" onClick={() => setShowNew((v) => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-secondary)] p-1" style={{ color: "var(--text-muted)" }}>
-                {showNew ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-            </div>
-          </div>
+          <Field label="New password">
+            <Input
+              type={showNew ? "text" : "password"}
+              value={newPw}
+              onChange={(e) => setNewPw(e.target.value)}
+              required
+              minLength={8}
+              placeholder="Min. 8 characters"
+              autoComplete="new-password"
+              trailing={<RevealButton shown={showNew} onToggle={() => setShowNew((v) => !v)} />}
+            />
+          </Field>
 
-          <div>
-            <label className="block text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>Confirm new password</label>
-            <input
+          <Field label="Confirm new password">
+            <Input
               type="password"
               value={confirmPw}
               onChange={(e) => setConfirmPw(e.target.value)}
               required
-              className={inputCls}
-              style={inputStyle}
               placeholder="Repeat new password"
               autoComplete="new-password"
             />
-          </div>
+          </Field>
 
           <button
             type="submit"
@@ -158,44 +136,33 @@ export function SecuritySettings({ email }: { email: string }) {
             Update Password
           </button>
         </form>
-      </DataCard>
+      </SettingsSection>
 
       {/* Email */}
-      <DataCard>
-        <div className="flex items-center gap-2 mb-1">
-          <Mail size={15} style={{ color: "var(--text-secondary)" }} />
-          <DataCardTitle>Email Address</DataCardTitle>
-        </div>
-        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
-          Change the email address for your account. We&apos;ll send a confirmation
-          link to the new address.
-        </p>
+      <SettingsSection
+        icon={Mail}
+        title="Email Address"
+        description="Change the email address for your account. We'll send a confirmation link to the new address."
+      >
         <ChangeEmailForm currentEmail={email} />
-      </DataCard>
+      </SettingsSection>
 
       {/* Two-factor */}
-      <DataCard>
-        <div className="flex items-center gap-2 mb-4">
-          <ShieldCheck size={15} style={{ color: "var(--text-secondary)" }} />
-          <DataCardTitle>Two-Factor Authentication</DataCardTitle>
-        </div>
+      <SettingsSection icon={ShieldCheck} title="Two-Factor Authentication">
         <Suspense fallback={<div className="h-16 rounded-xl animate-pulse" style={{ background: "var(--surface-inset)" }} />}>
           <TotpSection />
         </Suspense>
-      </DataCard>
+      </SettingsSection>
 
       {/* ── Sessions ── */}
       <SectionLabel>Sessions</SectionLabel>
-      <DataCard>
-        <div className="flex items-center gap-2 mb-1">
-          <Monitor size={15} style={{ color: "var(--text-secondary)" }} />
-          <DataCardTitle>Active Sessions</DataCardTitle>
-        </div>
-        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
-          Devices currently signed in to your account. Revoke any you don&apos;t recognize.
-        </p>
+      <SettingsSection
+        icon={Monitor}
+        title="Active Sessions"
+        description="Devices currently signed in to your account. Revoke any you don't recognize."
+      >
         <ActiveSessions />
-      </DataCard>
+      </SettingsSection>
 
       {/* ── Recent Activity ── */}
       <SectionLabel>Recent Activity</SectionLabel>
@@ -205,29 +172,23 @@ export function SecuritySettings({ email }: { email: string }) {
 
       {/* ── Danger Zone ── */}
       <SectionLabel>Danger Zone</SectionLabel>
-      <DataCard>
-        <div className="flex items-center gap-2 mb-1">
-          <UserX size={15} style={{ color: "var(--accent-negative)" }} />
-          <DataCardTitle>Deactivate Account</DataCardTitle>
-        </div>
-        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
-          Temporarily deactivate your account. Your data is kept and nothing is
-          deleted — sign in again anytime to reactivate.
-        </p>
+      <SettingsSection
+        icon={UserX}
+        title="Deactivate Account"
+        danger
+        description="Temporarily deactivate your account. Your data is kept and nothing is deleted — sign in again anytime to reactivate."
+      >
         <DeactivateAccountCard />
-      </DataCard>
+      </SettingsSection>
 
-      <DataCard>
-        <div className="flex items-center gap-2 mb-1">
-          <Trash2 size={15} style={{ color: "var(--accent-negative)" }} />
-          <DataCardTitle>Delete Account</DataCardTitle>
-        </div>
-        <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
-          Permanently delete your account and all your data. You&apos;ll have 7
-          days to cancel by signing back in — after that it can&apos;t be undone.
-        </p>
+      <SettingsSection
+        icon={Trash2}
+        title="Delete Account"
+        danger
+        description="Permanently delete your account and all your data. You'll have 7 days to cancel by signing back in — after that it can't be undone."
+      >
         <DeleteAccountCard />
-      </DataCard>
+      </SettingsSection>
     </>
   );
 }

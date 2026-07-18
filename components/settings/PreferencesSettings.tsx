@@ -3,16 +3,21 @@
 /**
  * components/settings/PreferencesSettings.tsx  (UX-1)
  *
- * Preferences page — user preference values. Moves the reporting-currency
- * field and the Default Space picker out of the former SettingsClient.tsx.
- * Both PATCH /api/user/profile via the shared save hook; behavior unchanged.
+ * Preferences page — reporting currency, timezone, and the Default Space picker.
+ * All PATCH /api/user/profile via the shared save hook. UI-Convergence Wave 1
+ * (W1-E) converged the presentation onto the shared kit — SettingsSection cards,
+ * the Atlas Select, and one save signal (Toast success / InlineBanner error) —
+ * retiring PreferredSpaceCard's bespoke flash. API + save behavior unchanged.
  */
 
 import { useState } from "react";
 import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
-import { InlineField, INPUT_BASE, inputStyle, type SelectOption } from "@/components/settings/InlineField";
+import { InlineField, type SelectOption } from "@/components/settings/InlineField";
+import { SettingsSection } from "@/components/settings/SettingsSection";
 import { useProfileSave } from "@/components/settings/useProfileSave";
-import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
+import { Select } from "@/components/atlas/fields";
+import { InlineBanner } from "@/components/atlas/InlineBanner";
+import { useToast } from "@/components/atlas/Toast";
 import { displaySpaceName } from "@/lib/format";
 import { Loader2, LayoutDashboard, Coins, Globe } from "lucide-react";
 import type { PreferencesData, SpaceOption } from "@/lib/settings/loaders";
@@ -38,7 +43,7 @@ function timezoneOptions(current: string | null): SelectOption[] {
   ];
 }
 
-// ── Preferred space card (moved verbatim from SettingsClient) ─────────────────
+// ── Preferred space card ──────────────────────────────────────────────────────
 
 function PreferredSpaceCard({
   spaces,
@@ -49,10 +54,10 @@ function PreferredSpaceCard({
   initialPreferredId: string | null;
   saveField:          (payload: Record<string, string>) => Promise<string | null>;
 }) {
+  const { toast } = useToast();
   const [preferredId, setPreferredId] = useState(initialPreferredId ?? "");
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState("");
-  const [flash,       setFlash]       = useState(false);
 
   const currentName = spaces.find((w) => w.id === preferredId)?.name ?? "";
 
@@ -65,44 +70,32 @@ function PreferredSpaceCard({
       setError(err);
     } else {
       setPreferredId(newId);
-      setFlash(true);
-      setTimeout(() => setFlash(false), 2500);
+      toast("Default Space saved");
     }
   }
 
-  const selectCls = INPUT_BASE + " px-3 py-2 appearance-none";
+  const spaceOptions: SelectOption[] = [
+    { value: "", label: "Personal Space (default)" },
+    ...spaces.filter((w) => w.type !== "PERSONAL").map((w) => ({ value: w.id, label: displaySpaceName(w.name) })),
+  ];
 
   return (
-    <DataCard>
-      <div className="flex items-center gap-2 mb-1">
-        <LayoutDashboard size={15} style={{ color: "var(--text-secondary)" }} />
-        <DataCardTitle>Default Space</DataCardTitle>
-      </div>
-      <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
-        The Space that&apos;s active by default when you continue in from your Daily Brief. Defaults to your Personal Space if not set.
-      </p>
-
-      {error && (
-        <div className="rounded-xl border px-3 py-2 text-sm mb-3" style={{ background: "rgba(237,82,71,0.10)", borderColor: "rgba(237,82,71,0.30)", color: "var(--accent-negative)" }}>
-          {error}
-        </div>
-      )}
+    <SettingsSection
+      icon={LayoutDashboard}
+      title="Default Space"
+      description="The Space that's active by default when you continue in from your Daily Brief. Defaults to your Personal Space if not set."
+    >
+      {error && <div className="mb-3"><InlineBanner tone="error">{error}</InlineBanner></div>}
 
       <div className="flex items-center gap-3">
-        <select
+        <Select
           value={preferredId}
           onChange={(e) => handleSave(e.target.value)}
           disabled={saving}
-          className={selectCls + " flex-1"}
-          style={inputStyle}
-        >
-          <option value="">Personal Space (default)</option>
-          {spaces.filter((w) => w.type !== "PERSONAL").map((w) => (
-            <option key={w.id} value={w.id}>{displaySpaceName(w.name)}</option>
-          ))}
-        </select>
+          options={spaceOptions}
+          className="flex-1"
+        />
         {saving && <Loader2 size={14} className="animate-spin shrink-0" style={{ color: "var(--text-muted)" }} />}
-        {flash   && <span className="text-xs shrink-0" style={{ color: "var(--accent-positive)" }}>Saved ✓</span>}
       </div>
 
       {preferredId && currentName && (
@@ -117,7 +110,7 @@ function PreferredSpaceCard({
           </button>
         </p>
       )}
-    </DataCard>
+    </SettingsSection>
   );
 }
 
@@ -128,12 +121,7 @@ export function PreferencesSettings({ preferences }: { preferences: PreferencesD
 
   return (
     <>
-      <DataCard>
-        <div className="flex items-center gap-2 mb-1">
-          <Coins size={15} style={{ color: "var(--text-secondary)" }} />
-          <DataCardTitle>Reporting Currency</DataCardTitle>
-        </div>
-
+      <SettingsSection icon={Coins} title="Reporting Currency">
         <InlineField
           label="Default reporting currency"
           value={preferences.reportingCurrency}
@@ -142,16 +130,11 @@ export function PreferencesSettings({ preferences }: { preferences: PreferencesD
           selectOptions={CURRENCY_OPTIONS}
           helpText="Default for new Spaces you create. Changing it never affects existing Spaces."
         />
-      </DataCard>
+      </SettingsSection>
 
       {/* OPS-3 S3 — timezone lives HERE (a general preference consumed by
           future digests and Brief greetings), not on the Notifications page. */}
-      <DataCard>
-        <div className="flex items-center gap-2 mb-1">
-          <Globe size={15} style={{ color: "var(--text-secondary)" }} />
-          <DataCardTitle>Timezone</DataCardTitle>
-        </div>
-
+      <SettingsSection icon={Globe} title="Timezone">
         <InlineField
           label="Your timezone"
           value={preferences.timezone ?? ""}
@@ -160,7 +143,7 @@ export function PreferencesSettings({ preferences }: { preferences: PreferencesD
           selectOptions={timezoneOptions(preferences.timezone)}
           helpText="Used for daily summaries and greetings. UTC until set."
         />
-      </DataCard>
+      </SettingsSection>
 
       <PreferredSpaceCard
         spaces={preferences.spaces}

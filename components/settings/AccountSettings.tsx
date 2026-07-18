@@ -10,7 +10,7 @@
 
 import { InlineField, type SelectOption } from "@/components/settings/InlineField";
 import { useProfileSave } from "@/components/settings/useProfileSave";
-import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
+import { SettingsSection } from "@/components/settings/SettingsSection";
 import { User } from "lucide-react";
 import type { AccountData } from "@/lib/settings/loaders";
 
@@ -37,12 +37,7 @@ export function AccountSettings({ account }: { account: AccountData }) {
   const saveField = useProfileSave();
 
   return (
-    <DataCard>
-      <div className="flex items-center gap-2 mb-1">
-        <User size={15} style={{ color: "var(--text-secondary)" }} />
-        <DataCardTitle>Personal Information</DataCardTitle>
-      </div>
-
+    <SettingsSection icon={User} title="Personal Information">
       <InlineField
         label="Email"
         value={account.email}
@@ -97,6 +92,6 @@ export function AccountSettings({ account }: { account: AccountData }) {
         onSave={(val) => saveField({ useCase: val })}
         selectOptions={USE_CASE_OPTIONS}
       />
-    </DataCard>
+    </SettingsSection>
   );
 }

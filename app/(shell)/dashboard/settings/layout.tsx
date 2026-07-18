@@ -29,6 +29,7 @@
 import type { ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
+import { ToastProvider } from "@/components/atlas/Toast";
 import { SETTINGS_WORKSPACE_ORDER, getSettingsWorkspace } from "@/lib/settings/workspaces";
 
 export default function SettingsLayout({ children }: { children: ReactNode }) {
@@ -49,18 +50,20 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
   }));
 
   return (
-    <SpaceShell
-      variant="utility"
-      title="Settings"
-      subtitle="Manage your Fourth Meridian account."
-      railOptions={railOptions}
-      activeTab={active.workspaceId}
-      onSelectTab={(id) => {
-        const target = SETTINGS_WORKSPACE_ORDER.find((w) => w.workspaceId === id);
-        if (target && target.route !== active.route) router.push(target.route);
-      }}
-    >
-      {children}
-    </SpaceShell>
+    <ToastProvider>
+      <SpaceShell
+        variant="utility"
+        title="Settings"
+        subtitle="Manage your Fourth Meridian account."
+        railOptions={railOptions}
+        activeTab={active.workspaceId}
+        onSelectTab={(id) => {
+          const target = SETTINGS_WORKSPACE_ORDER.find((w) => w.workspaceId === id);
+          if (target && target.route !== active.route) router.push(target.route);
+        }}
+      >
+        {children}
+      </SpaceShell>
+    </ToastProvider>
   );
 }

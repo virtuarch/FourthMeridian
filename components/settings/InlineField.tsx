@@ -3,25 +3,22 @@
 /**
  * components/settings/InlineField.tsx
  *
- * Shared inline-editable field primitive for the Settings section (UX-1).
- * Extracted verbatim from the former components/dashboard/SettingsClient.tsx
- * so Account and Preferences pages can both reuse it without duplication.
- * Behavior is unchanged — same save/flash/error/keyboard handling.
+ * Inline-editable field row for the Settings sections. UI-Convergence Wave 1
+ * (W1-E) rebuilt its internals on the shared Atlas field kit (Input / Select /
+ * HelpText / FieldError) and routes success through the shared Toast — retiring the
+ * bespoke input markup and the local "Saved ✓" flash. The public API is unchanged
+ * (label / value / onSave / … ), so Account and Preferences call it exactly as
+ * before. INPUT_BASE / inputStyle are re-exported for the pre-existing importers
+ * outside Settings (SecurityHistory, DebtClient, transaction widgets).
  */
 
 import { useState } from "react";
 import { Pencil, Check, X, Loader2 } from "lucide-react";
+import { Input, Select, HelpText, FieldError, type SelectOption, type FieldSaveFn } from "@/components/atlas/fields";
+import { useToast } from "@/components/atlas/Toast";
 
-export interface SelectOption { value: string; label: string; }
-
-// ── Shared input styling (Atlas tokens) ──────────────────────────────────────
-export const INPUT_BASE =
-  "w-full border rounded-lg text-sm focus:outline-none focus:border-[var(--accent-info)] transition-colors placeholder:text-[var(--text-faint)]";
-export const inputStyle: React.CSSProperties = {
-  background:  "var(--surface-inset)",
-  borderColor: "var(--border-hairline)",
-  color:       "var(--text-primary)",
-};
+export { INPUT_BASE, inputStyle } from "@/components/atlas/fields";
+export type { SelectOption };
 
 export function InlineField({
   label,
@@ -37,20 +34,20 @@ export function InlineField({
   label:          string;
   value:          string;
   displayValue?:  string;
-  onSave:         (val: string) => Promise<string | null>;
+  onSave:         FieldSaveFn;
   inputType?:     string;
   placeholder?:   string;
   helpText?:      string;
   selectOptions?: SelectOption[];
   readOnly?:      boolean;
 }) {
+  const { toast } = useToast();
   const [editing, setEditing] = useState(false);
   const [draft,   setDraft]   = useState(value);
   const [saving,  setSaving]  = useState(false);
   const [error,   setError]   = useState("");
   const [current, setCurrent] = useState(value);
   const [curDisp, setCurDisp] = useState(displayValue ?? value);
-  const [flash,   setFlash]   = useState(false);
 
   async function handleSave() {
     if (draft === current) { setEditing(false); return; }
@@ -67,14 +64,11 @@ export function InlineField({
         : draft;
       setCurDisp(newDisplay);
       setEditing(false);
-      setFlash(true);
-      setTimeout(() => setFlash(false), 2500);
+      toast(`${label} saved`);
     }
   }
 
   function handleCancel() { setDraft(current); setError(""); setEditing(false); }
-
-  const inputCls = INPUT_BASE + " px-3 py-2";
 
   return (
     <div className="flex items-start justify-between gap-4 py-3.5 border-b last:border-0" style={{ borderColor: "var(--border-hairline)" }}>
@@ -84,35 +78,28 @@ export function InlineField({
         {editing ? (
           <div className="mt-1.5 space-y-2">
             {selectOptions ? (
-              <select
+              <Select
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 autoFocus
-                className={inputCls + " appearance-none"}
-                style={inputStyle}
-              >
-                <option value="">Select…</option>
-                {selectOptions.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
+                placeholder="Select…"
+                options={selectOptions}
+              />
             ) : (
-              <input
+              <Input
                 type={inputType}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 autoFocus
                 placeholder={placeholder}
-                className={inputCls + " [color-scheme:dark]"}
-                style={inputStyle}
                 onKeyDown={(e) => {
                   if (e.key === "Enter")  handleSave();
                   if (e.key === "Escape") handleCancel();
                 }}
               />
             )}
-            {helpText && <p className="text-xs" style={{ color: "var(--text-faint)" }}>{helpText}</p>}
-            {error    && <p className="text-xs" style={{ color: "var(--accent-negative)" }}>{error}</p>}
+            {helpText && <HelpText>{helpText}</HelpText>}
+            <FieldError>{error}</FieldError>
             <div className="flex gap-2">
               <button
                 onClick={handleSave}
@@ -135,7 +122,7 @@ export function InlineField({
         ) : (
           <p className="text-sm" style={{ color: "var(--text-primary)" }}>
             {curDisp
-              ? <>{curDisp}{flash && <span className="ml-2 text-xs" style={{ color: "var(--accent-positive)" }}>Saved ✓</span>}</>
+              ? curDisp
               : <span className="italic text-sm" style={{ color: "var(--text-faint)" }}>Not set</span>
             }
           </p>

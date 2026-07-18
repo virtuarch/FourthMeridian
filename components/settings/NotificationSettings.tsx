@@ -10,12 +10,16 @@
  * Locked categories (ACCOUNT_SECURITY) render checked-and-disabled with the
  * frozen note — the API also rejects writes for them (defense in depth).
  * Toggles PATCH /api/user/notification-preferences one cell at a time,
- * optimistic with rollback on failure (the settings-card idiom).
+ * optimistic with rollback on failure. UI-Convergence Wave 1 (W1-E) converged the
+ * presentation onto the shared kit (SettingsSection · Toggle · InlineBanner); the
+ * optimistic-flip logic and the API are unchanged.
  */
 
 import { useState } from "react";
-import { BellRing, Loader2 } from "lucide-react";
-import { DataCard, DataCardTitle } from "@/components/atlas/DataCard";
+import { BellRing } from "lucide-react";
+import { SettingsSection } from "@/components/settings/SettingsSection";
+import { Toggle } from "@/components/atlas/fields";
+import { InlineBanner } from "@/components/atlas/InlineBanner";
 import type {
   PreferenceChannel,
   PreferenceMatrixRow,
@@ -71,24 +75,12 @@ export function NotificationSettings({ matrix }: { matrix: PreferenceMatrixRow[]
   }
 
   return (
-    <DataCard>
-      <div className="flex items-center gap-2 mb-1">
-        <BellRing size={15} style={{ color: "var(--text-secondary)" }} />
-        <DataCardTitle>Notification preferences</DataCardTitle>
-      </div>
-      <p className="text-xs mb-4" style={{ color: "var(--text-faint)" }}>
-        Choose where each kind of notification reaches you. Changes apply to new
-        notifications.
-      </p>
-
-      {error && (
-        <div
-          className="rounded-xl border px-3 py-2 text-sm mb-3"
-          style={{ background: "rgba(237,82,71,0.10)", borderColor: "rgba(237,82,71,0.30)", color: "var(--accent-negative)" }}
-        >
-          {error}
-        </div>
-      )}
+    <SettingsSection
+      icon={BellRing}
+      title="Notification preferences"
+      description="Choose where each kind of notification reaches you. Changes apply to new notifications."
+    >
+      {error && <div className="mb-3"><InlineBanner tone="error">{error}</InlineBanner></div>}
 
       {/* Column headers */}
       <div className="flex items-center justify-end gap-6 px-4 pb-1">
@@ -115,26 +107,17 @@ export function NotificationSettings({ matrix }: { matrix: PreferenceMatrixRow[]
                 </p>
               </div>
               <div className="flex items-center gap-6 shrink-0">
-                {CHANNELS.map((ch) => {
-                  const cell = `${row.category}:${ch}`;
-                  const busy = savingCell === cell;
-                  return (
-                    <span key={ch} className="w-12 flex justify-center">
-                      {busy ? (
-                        <Loader2 size={14} className="animate-spin" style={{ color: "var(--text-muted)" }} />
-                      ) : (
-                        <input
-                          type="checkbox"
-                          checked={row.channels[ch]}
-                          disabled={row.locked || savingCell !== null}
-                          onChange={(e) => toggle(row.category, ch, e.target.checked)}
-                          aria-label={`${labels.title} — ${CHANNEL_LABELS[ch]}`}
-                          className="w-4 h-4 accent-blue-500 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
-                        />
-                      )}
-                    </span>
-                  );
-                })}
+                {CHANNELS.map((ch) => (
+                  <span key={ch} className="w-12 flex justify-center">
+                    <Toggle
+                      checked={row.channels[ch]}
+                      disabled={row.locked || savingCell !== null}
+                      busy={savingCell === `${row.category}:${ch}`}
+                      onChange={(next) => toggle(row.category, ch, next)}
+                      aria-label={`${labels.title} — ${CHANNEL_LABELS[ch]}`}
+                    />
+                  </span>
+                ))}
               </div>
             </div>
           );
@@ -145,6 +128,6 @@ export function NotificationSettings({ matrix }: { matrix: PreferenceMatrixRow[]
         Email delivery for these categories begins when notification emails
         launch; your choices here are respected from day one.
       </p>
-    </DataCard>
+    </SettingsSection>
   );
 }
