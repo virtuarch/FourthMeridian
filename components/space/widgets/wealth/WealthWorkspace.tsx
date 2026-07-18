@@ -186,7 +186,7 @@ export function WealthWorkspace({
       <div className="space-y-8 sm:space-y-10 min-w-0">
         {/* ① Hero — the one net-worth headline (bare, no card). */}
         <div id="wealth-summary" className="scroll-mt-20">
-          <WealthHero result={result} currency={displayCurrency} />
+          <WealthHero result={result} currency={displayCurrency} envelope={envelope} />
         </div>
 
         {/* ② Trend — the dominant honesty chart, near the top, full width. */}

@@ -8,7 +8,7 @@
 import { resolvePerspectiveEnvelope } from "./envelope";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
 import type { Snapshot } from "@/types";
-import type { LensResult, CompletenessTier } from "@/lib/perspective-engine/types";
+import type { LensResult, CompletenessTier, Completeness } from "@/lib/perspective-engine/types";
 import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import type { InvestmentsTimeMachineResult } from "@/lib/investments/investments-time-machine-core";
 
@@ -78,8 +78,10 @@ console.log("Investments dynamic envelope (A10 — from the InvestmentsTimeMachi
   check("incomplete ⇒ Partially valued / warning", incomplete.completeness?.tier === "incomplete" && incomplete.completeness?.label === "Partially valued" && incomplete.completeness?.tone === "warning");
   check("incomplete ⇒ evidence counts reflect the partial", incomplete.evidence?.label === "2 of 5 positions valued");
 
+  // Convergence: `unknown` is now its OWN canonical tier (UNAVAILABLE), no longer
+  // collapsed into `incomplete` — the drift the single-vocabulary slice removed.
   const unknown = resolvePerspectiveEnvelope({ perspectiveId: "investments", investmentsResult: invResult({ tier: "unknown" }) });
-  check("unknown tier ⇒ maps to incomplete / Partially valued", unknown.completeness?.tier === "incomplete" && unknown.completeness?.label === "Partially valued");
+  check("unknown tier ⇒ carried through (not collapsed), Valuation unavailable / warning", unknown.completeness?.tier === "unknown" && unknown.completeness?.label === "Valuation unavailable" && unknown.completeness?.tone === "warning");
 
   const derived = resolvePerspectiveEnvelope({ perspectiveId: "investments", investmentsResult: invResult({ tier: "derived" }) });
   check("derived ⇒ Reconstructed / neutral tone", derived.completeness?.tier === "derived" && derived.completeness?.label === "Reconstructed" && derived.completeness?.tone === "neutral");
@@ -105,17 +107,41 @@ console.log("Cash Flow dynamic envelope (S4 — from cashFlowStamp)");
   check("absent stamp ⇒ static observed fallback (unchanged wording)", fallback.completeness?.tier === "observed" && /within transaction depth/i.test(fallback.completeness!.label));
 }
 
-console.log("Lens-provenance envelopes (Liquidity/Debt)");
+console.log("Lens-provenance envelopes (Liquidity/Debt) — tier from completeness, FX orthogonal");
 {
-  const lens = (estimated: boolean, ids: string[]): LensResult => ({
+  const lens = (o: { estimated?: boolean; ids: string[]; completeness?: Completeness }): LensResult => ({
     lensId: "liquidity", lensVersion: 1, scope: { spaceId: "s", userId: "u" }, computedAt: "2026-07-01T00:00:00Z",
-    status: "ok", estimated, metrics: [], assumptions: [],
-    provenance: { accountIds: ids, tierCounts: { full: ids.length, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: "2026-07-01T00:00:00Z", redactions: [] },
+    status: "ok", estimated: o.estimated ?? false, metrics: [], assumptions: [],
+    ...(o.completeness ? { completeness: o.completeness } : {}),
+    provenance: { accountIds: o.ids, tierCounts: { full: o.ids.length, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: "2026-07-01T00:00:00Z", redactions: [] },
   });
-  const obs = resolvePerspectiveEnvelope({ perspectiveId: "liquidity", lensResult: lens(false, ["a", "b", "c"]) });
-  check("non-estimated lens ⇒ Observed + real account count", obs.completeness?.tier === "observed" && obs.evidence?.label === "3 accounts");
-  const est = resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lens(true, ["a"]) });
-  check("estimated lens ⇒ Estimated tier/tone", est.completeness?.tier === "estimated" && est.completeness?.tone === "warning" && est.evidence?.label === "1 account");
+  const cmpl = (tier: CompletenessTier, reason = ""): Completeness => ({ tier, conflict: false, reason });
+
+  // A live "now" read carries no completeness envelope ⇒ observed (not fabricated).
+  const obs = resolvePerspectiveEnvelope({ perspectiveId: "liquidity", lensResult: lens({ ids: ["a", "b", "c"] }) });
+  check("no completeness (live now) ⇒ Observed + real account count", obs.completeness?.tier === "observed" && obs.evidence?.label === "3 accounts");
+  check("no completeness ⇒ no warnings", obs.warnings === undefined);
+
+  // THE Phase-2 correctness fix: the tier is the lens's OWN completeness tier, NOT
+  // lens.estimated. Reconstructed + estimated=false ⇒ the shell reads RECONSTRUCTED.
+  const recon = resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lens({ ids: ["a"], estimated: false, completeness: cmpl("derived", "Balances reconstructed for 2026-05-01.") }) });
+  check("completeness=derived, estimated=false ⇒ Reconstructed (NOT Estimated), no warning",
+    recon.completeness?.tier === "derived" && recon.completeness?.label === "Reconstructed" && recon.completeness?.tone === "neutral" && recon.warnings === undefined);
+  check("completeness reason flows into the popover detail", recon.completeness?.detail === "Balances reconstructed for 2026-05-01.");
+
+  // FX is now an ORTHOGONAL warning — it must NOT flip the completeness tier.
+  const fxOnly = resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lens({ ids: ["a"], estimated: true }) });
+  check("estimated (FX) with no completeness ⇒ tier stays observed + an FX warning",
+    fxOnly.completeness?.tier === "observed" && (fxOnly.warnings?.some((w) => w.kind === "fx") ?? false));
+
+  // The two axes coexist: reconstructed tier AND an FX caveat, neither collapsing the other.
+  const both = resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lens({ ids: ["a"], estimated: true, completeness: cmpl("derived") }) });
+  check("reconstructed + FX ⇒ derived tier AND an fx warning (orthogonal)",
+    both.completeness?.tier === "derived" && (both.warnings?.some((w) => w.kind === "fx") ?? false));
+
+  // A conflict still forces a warning tone even at a good tier (unchanged doctrine).
+  const conflict = resolvePerspectiveEnvelope({ perspectiveId: "liquidity", lensResult: lens({ ids: ["a"], completeness: { tier: "observed", conflict: true, reason: "" } }) });
+  check("conflict ⇒ warning tone even at observed", conflict.completeness?.tier === "observed" && conflict.completeness?.tone === "warning");
 }
 
 console.log("Absent inputs ⇒ empty envelope (inert placeholders, never fabricated)");

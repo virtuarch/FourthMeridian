@@ -13,7 +13,7 @@
  */
 
 import { useState } from "react";
-import { CalendarDays, ArrowLeftRight, ShieldCheck, FileSearch, X } from "lucide-react";
+import { CalendarDays, ArrowLeftRight, ShieldCheck, FileSearch, AlertTriangle, X } from "lucide-react";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { CompletenessPopover } from "./CompletenessPopover";
 import { EvidenceDrawer } from "./EvidenceDrawer";
@@ -110,6 +110,7 @@ export function ShellContextRow({
 
   const completeness = envelope.completeness;
   const evidence = envelope.evidence;
+  const warnings = envelope.warnings ?? [];
   const canPopover = !!completeness?.detail;
   const canDrawer = !!(evidence?.rows && evidence.rows.length > 0);
 
@@ -197,6 +198,19 @@ export function ShellContextRow({
           value={evidence?.label}
           onClick={canDrawer ? () => setDrawerOpen(true) : undefined}
         />
+        {/* Orthogonal trust caveats (FX today) — a SEPARATE axis from completeness, so
+            "Observed + missing FX" reads honestly at the shell instead of collapsing
+            the whole chip to "Estimated" (the pre-convergence behavior). */}
+        {warnings.map((w, i) => (
+          <div
+            key={`${w.kind}-${i}`}
+            title={w.detail ?? w.label}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-[var(--surface-inset)] border border-[var(--border-hairline)]"
+          >
+            <span className="text-[var(--accent-warning)]" aria-hidden><AlertTriangle size={13} /></span>
+            <span className="text-[11px] font-semibold text-[var(--accent-warning)]">{w.label}</span>
+          </div>
+        ))}
       </div>
 
       {completeness && (

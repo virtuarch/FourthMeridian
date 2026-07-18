@@ -45,6 +45,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import { convertDebtHistory } from "@/lib/debt/display-conversion";
 import {
   renderDebtByAccount,
@@ -144,13 +145,16 @@ export function DebtWorkspace({
   // consistent with the KPI strip beside it (which already converts via `ctx`).
   const history = useMemo(() => convertDebtHistory(data.history, ctx), [data.history, ctx]);
 
-  // Emit the trust envelope from the on-screen lens (as-of when historical, else the
-  // host present-day lens — exactly what `data.lens` composes) through the ONE
-  // canonical resolver, so the shell chip is honest for the SELECTED date instead of
-  // stuck on present state. The host no longer owns Debt's chip envelope.
-  useEffect(() => {
-    onEnvelopeChange(resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lens }));
-  }, [lens, onEnvelopeChange]);
+  // The trust envelope from the on-screen lens (as-of when historical, else the host
+  // present-day lens — exactly what `data.lens` composes) through the ONE canonical
+  // resolver, so the shell chip is honest for the SELECTED date instead of stuck on
+  // present state. Computed ONCE and shared by the shell (onEnvelopeChange) and the
+  // workspace's own local TrustIndicator, so the two can never disagree.
+  const envelope = useMemo(
+    () => resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lens }),
+    [lens],
+  );
+  useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
 
   // The blended aggregate the planner derives — computed ONCE and handed to the
   // scenario strip so the two can never disagree inside one panel (plan risk §5).
@@ -168,13 +172,10 @@ export function DebtWorkspace({
     if (!lens || lens.status !== "ok" || !lens.verdict) return null;
     const freshnessLabel = lens.provenance.dataAsOf ? formatDate(lens.provenance.dataAsOf) : null;
     const redactions = lens.provenance.redactions?.length ?? 0;
-    const completeness = data.completeness;
     return (
       <div className="min-w-0 lg:col-span-12">
         <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4 min-w-0">
-          <p className="text-sm text-[var(--text-primary)] leading-snug">
-            {lens.estimated ? "≈ " : ""}{lens.verdict}
-          </p>
+          <p className="text-sm text-[var(--text-primary)] leading-snug">{lens.verdict}</p>
           {(freshnessLabel || redactions > 0) && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1">
               {freshnessLabel && <span className="text-[11px] text-[var(--text-faint)]">as of {freshnessLabel}</span>}
@@ -183,11 +184,10 @@ export function DebtWorkspace({
               )}
             </div>
           )}
-          {/* As-of trust envelope — presented, never recomputed (data.completeness
-              re-surfaces lens.completeness). Present only on the as-of path. */}
-          {completeness && completeness.tier !== "observed" && (
-            <p className="text-[11px] text-[#f59e0b] mt-1 leading-snug">{completeness.reason}</p>
-          )}
+          {/* Trust caveat — the SHARED indicator over the SAME envelope the shell chip
+              reads. Renders only when noteworthy (reconstructed/estimated tier, or an
+              orthogonal FX caveat); the "≈"/reason marker is no longer hand-derived. */}
+          <TrustIndicator variant="inline" envelope={envelope} className="mt-1" />
         </GlassPanel>
       </div>
     );

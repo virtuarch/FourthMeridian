@@ -64,6 +64,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import { convertLiquiditySpaceData } from "@/lib/liquidity/display-conversion";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
@@ -180,20 +181,19 @@ export function LiquidityWorkspace({
   const atAsOf = data?.atAsOf ?? null;
   const showAsOf = atAsOf != null && atAsOf.status === "ok";
   const delta = data?.delta ?? null;
-  const trust = data?.trust ?? null;
   // The lens the lede reads: the reconstructed as-of lens when historical, else the
   // live current lens (data.current === the host present lens present-day).
   const ledeLens: LensResult | null = showAsOf ? atAsOf : (data?.current ?? null);
 
-  // Emit the trust envelope from whichever endpoint is on screen — the atAsOf lens
-  // carries the as-of completeness (held-flat / estimated), so the shell chip is
-  // honest for the SELECTED date, not stuck on current state. Reuses the ONE
-  // canonical resolver; the host no longer owns Liquidity data for the chip.
-  useEffect(() => {
-    onEnvelopeChange(
-      resolvePerspectiveEnvelope({ perspectiveId: "liquidity", lensResult: ledeLens }),
-    );
-  }, [ledeLens, onEnvelopeChange]);
+  // The trust envelope from whichever endpoint is on screen — the atAsOf lens carries
+  // the as-of completeness (held-flat / estimated), so the shell chip is honest for the
+  // SELECTED date, not stuck on current state. Computed ONCE and shared by the shell
+  // (onEnvelopeChange) and the workspace's own local TrustIndicator — one authority.
+  const envelope = useMemo(
+    () => resolvePerspectiveEnvelope({ perspectiveId: "liquidity", lensResult: ledeLens }),
+    [ledeLens],
+  );
+  useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
 
   // ⓪ Lens lede — the verdict SENTENCE only, never a second cashNow KPI (the lens
   // headline is the same figure Accessible Cash / the Ladder leads with — the
@@ -206,9 +206,7 @@ export function LiquidityWorkspace({
     return (
       <div className="min-w-0 lg:col-span-12">
         <GlassPanel depth="thin" elevation="e2" radius="lg" className="p-4 min-w-0">
-          <p className="text-sm text-[var(--text-primary)] leading-snug">
-            {ledeLens.estimated ? "≈ " : ""}{ledeLens.verdict}
-          </p>
+          <p className="text-sm text-[var(--text-primary)] leading-snug">{ledeLens.verdict}</p>
           {(freshnessLabel || redactions > 0) && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1">
               {freshnessLabel && <span className="text-[11px] text-[var(--text-faint)]">as of {freshnessLabel}</span>}
@@ -217,11 +215,10 @@ export function LiquidityWorkspace({
               )}
             </div>
           )}
-          {/* As-of trust envelope — presented, never recomputed (data.trust re-surfaces
-              the atAsOf completeness). Present only on the historical path. */}
-          {showAsOf && trust && trust.tier !== "observed" && (
-            <p className="text-[11px] text-[#f59e0b] mt-1 leading-snug">{trust.reason}</p>
-          )}
+          {/* Trust caveat — the SHARED indicator over the SAME envelope the shell chip
+              reads. Renders only when noteworthy (reconstructed/estimated tier, or an
+              orthogonal FX caveat); the "≈"/reason marker is no longer hand-derived. */}
+          <TrustIndicator variant="inline" envelope={envelope} className="mt-1" />
         </GlassPanel>
       </div>
     );

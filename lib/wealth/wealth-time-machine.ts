@@ -28,6 +28,7 @@
 import { formatCurrency } from "@/lib/format";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
 import { wealthBasisDisclosure, type WealthBasisDisclosure } from "@/lib/wealth/basis-disclosure";
+import type { CompletenessTier } from "@/lib/perspective-engine/types";
 import type { Snapshot } from "@/types";
 
 // ── Result shapes ─────────────────────────────────────────────────────────────
@@ -96,8 +97,6 @@ export interface WealthDelta {
   pct: number | null;
 }
 
-export type WealthTier = "observed" | "derived" | "incomplete";
-
 export interface WealthChartPoint extends WealthMetrics {
   date:        string;
   isEstimated: boolean;
@@ -140,7 +139,7 @@ export interface WealthResult {
     asOfDate:    string | null;
     compareDate: string | null;
   };
-  completeness: { tier: WealthTier; label: string; tone: "neutral" | "positive" | "warning" };
+  completeness: { tier: CompletenessTier; label: string; tone: "neutral" | "positive" | "warning" };
   evidence:     { label: string } | null;
   /** Deterministic, template-based Wealth Explanation (Amendment 10). No LLM. */
   explanation:  string | null;

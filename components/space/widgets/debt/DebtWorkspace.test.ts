@@ -57,7 +57,7 @@ console.log("1. WORKSPACE BOUNDARY — owns the data, consumes the contract, no 
   check("Workspace owns the hook (calls useDebtSpaceData)", CODE.includes("useDebtSpaceData("));
   check("Workspace consumes DebtSpaceData.lens", CODE.includes("data.lens"));
   check("Workspace consumes DebtSpaceData.history", CODE.includes("data.history"));
-  check("Workspace consumes DebtSpaceData.completeness", CODE.includes("data.completeness"));
+  check("Workspace presents trust via the shared TrustIndicator (canonical envelope)", CODE.includes("TrustIndicator"));
   check("Workspace consumes DebtSpaceData.fico", CODE.includes("data.fico"));
   // No LOCAL time model — asOf/compareTo are shell props threaded into the hook.
   check("no usePerspectiveShellState (no duplicate time authority)", !CODE.includes("usePerspectiveShellState"));
@@ -98,10 +98,15 @@ console.log("3. DUAL AUTHORITY — lens is prose-only; visible figures come from
   check("lede gated on status === \"ok\"", CODE.includes('lens.status !== "ok"'));
 }
 
-console.log("4. Completeness PRESENTED, not recomputed");
+console.log("4. Completeness PRESENTED via the canonical envelope, not recomputed");
 {
   check("no completeness recomputation in the workspace", !CODE.includes("buildDebtCompleteness"));
-  check("completeness reason is presented", CODE.includes("completeness.reason"));
+  // Trust converged onto the shared indicator over the SAME envelope the shell reads —
+  // no hand-derived "≈" / amber reason line re-interpreting the lens.
+  check("trust caveat is the shared TrustIndicator (inline) over the envelope",
+    CODE.includes('<TrustIndicator variant="inline"') && CODE.includes("envelope={envelope}"));
+  check("no bespoke hand-derived trust marker remains",
+    !CODE.includes("completeness.reason") && !CODE.includes('estimated ? "≈'));
 }
 
 console.log("5. FICO passthrough via the contract");

@@ -65,7 +65,7 @@ console.log("1. WORKSPACE BOUNDARY — owns the data, consumes the contract, no 
   check("Workspace consumes LiquiditySpaceData.current", CODE.includes("data?.current") || CODE.includes("data.current"));
   check("Workspace consumes LiquiditySpaceData.atAsOf", CODE.includes("data?.atAsOf"));
   check("Workspace consumes LiquiditySpaceData.delta", CODE.includes("data?.delta"));
-  check("Workspace consumes LiquiditySpaceData.trust", CODE.includes("data?.trust"));
+  check("Workspace presents trust via the shared TrustIndicator (canonical envelope)", CODE.includes("TrustIndicator"));
   check("no usePerspectiveShellState (no duplicate time authority)", !CODE.includes("usePerspectiveShellState"));
   check("no local as-of loader / valuation import",
     !CODE.includes("getAccountsAsOf") && !CODE.includes("accounts-asof") &&
@@ -112,10 +112,15 @@ console.log("4. Crypto exactly once / no second valuation authority in the works
     !CODE.includes("totalDigitalAssets +") || count(CODE, "totalDigitalAssets") <= 2);
 }
 
-console.log("5. Trust PRESENTED, not recomputed");
+console.log("5. Trust PRESENTED via the canonical envelope, not recomputed");
 {
   check("no completeness recomputation in the workspace", !CODE.includes("buildLiquidityCompleteness"));
-  check("as-of trust reason is presented", CODE.includes("trust.reason"));
+  // Trust converged onto the shared indicator over the SAME envelope the shell reads —
+  // no hand-derived "≈" / amber reason line re-interpreting the lens.
+  check("trust caveat is the shared TrustIndicator (inline) over the envelope",
+    CODE.includes('<TrustIndicator variant="inline"') && CODE.includes("envelope={envelope}"));
+  check("no bespoke hand-derived trust marker remains",
+    !CODE.includes("trust.reason") && !CODE.includes('estimated ? "≈'));
 }
 
 console.log("6. Net EXCLUDES credit (liquidity.core doctrine)");

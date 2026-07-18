@@ -18,42 +18,29 @@
 import { formatCurrency } from "@/lib/format";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
+import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
+import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import { WealthUnavailable, DeltaBadge } from "./wealth-ui";
-
-function toneColor(tone: "neutral" | "positive" | "warning"): string {
-  return tone === "positive"
-    ? "var(--accent-positive)"
-    : tone === "warning"
-      ? "var(--accent-warning)"
-      : "var(--text-secondary)";
-}
 
 export function WealthHero({
   result,
   currency,
+  envelope,
 }: {
   result:   WealthResult;
   currency: string;
+  /** The workspace's canonical trust envelope — drives the confidence chip. */
+  envelope: PerspectiveEnvelope;
 }) {
-  const { asOfState, deltas, compareState, completeness } = result;
+  const { asOfState, deltas, compareState } = result;
   const compareLabel =
     compareState?.found && compareState.date ? formatWealthDate(compareState.date) : undefined;
   const asOfLabel = asOfState.date ? `As of ${formatWealthDate(asOfState.date)}` : undefined;
 
-  const confidenceChip = (
-    <span
-      className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium border"
-      style={{
-        color: toneColor(completeness.tone),
-        borderColor: "var(--border-hairline)",
-        background: "var(--surface-inset)",
-      }}
-      title="Data confidence for this date"
-    >
-      {completeness.label}
-    </span>
-  );
+  // The confidence chip is now the shared trust primitive, reading the SAME
+  // envelope the shell Completeness chip does — they can never disagree.
+  const confidenceChip = <TrustIndicator variant="compact" envelope={envelope} />;
 
   // Eyebrow + confidence — the quiet label above the figure (prototype hero).
   const eyebrow = (
