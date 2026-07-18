@@ -19,10 +19,9 @@ import { MarketingNav } from "@/components/marketing/MarketingNav";
 import { MarketingFooter } from "@/components/marketing/MarketingFooter";
 
 export const metadata: Metadata = {
-  title: "Fourth Meridian — Your whole financial life, in one clear view",
+  title: "Fourth Meridian — Transform data into clarity",
   description:
-    "Fourth Meridian brings your balances, investments, crypto, and debt into a " +
-    "single, honest picture — organized into Spaces, with an ambient daily briefing.",
+    "An intelligent financial ecosystem for individuals, families, and businesses—turning fragmented financial data into clarity and action.",
 };
 
 export default function PublicLayout({

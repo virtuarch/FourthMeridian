@@ -11,7 +11,7 @@ import { SITE } from "@/content/marketing/copy";
 const FOOTER_LINKS = [
   { label: "Security", href: "/security" },
   { label: "About", href: "/about" },
-  { label: "Request access", href: "/request-access" },
+  { label: "Get Started", href: "/request-access" },
   { label: "Terms", href: "/terms" },
   { label: "Privacy", href: "/privacy" },
   { label: "AI disclosures", href: "/legal/ai" },
@@ -20,7 +20,7 @@ const FOOTER_LINKS = [
 export function MarketingFooter() {
   return (
     <footer
-      className="mt-24 border-t py-12"
+      className="border-t py-12"
       style={{ borderColor: "var(--border-hairline)" }}
     >
       <Container className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
