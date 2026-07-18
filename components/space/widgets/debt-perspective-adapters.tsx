@@ -44,6 +44,11 @@ export interface DebtPerspectiveAccount {
   interestRate?:   number;  // APR, e.g. 19.99
   minimumPayment?: number;  // monthly minimum
   creditLimit?:    number;
+  // Presentation-only metadata already carried on the runtime Account object
+  // (types/index.ts). Widened here so the editorial ledger can GROUP liabilities
+  // by kind and label an estimated minimum — no data-layer / authority change.
+  debtSubtype?:               string;   // credit_card | line_of_credit | heloc | auto_loan | mortgage | personal_loan | student_loan
+  minimumPaymentIsEstimated?: boolean;  // true ⇒ minimum was computed, not entered/issuer-provided
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

@@ -37,9 +37,13 @@ const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
 
 const SRC   = read(`${DIR}/DebtWorkspace.tsx`);
 const CODE  = strip(SRC);
+const HERO  = strip(read(`${DIR}/DebtHero.tsx`));
 const HOOK  = read(`${DIR}/useDebtSpaceData.ts`);
 const HOOKC = strip(HOOK);
-const PANEL = strip(read(`${DIR}/DebtHistoryPanel.tsx`));
+// The editorial redesign's live Balance-history presenter — a thin wrapper over the
+// SHARED TrendChart core (one chart with Net Worth / Investments); the old
+// DebtHistoryPanel bar-column presenter is retired from the composition.
+const PANEL = strip(read(`${DIR}/DebtBalanceHistory.tsx`));
 const ROUTE = read("app/api/spaces/[id]/debt/space-data/route.ts");
 const ROUTEC = strip(ROUTE);
 const DASH  = strip(read("components/dashboard/SpaceDashboard.tsx"));
@@ -57,7 +61,10 @@ console.log("1. WORKSPACE BOUNDARY — owns the data, consumes the contract, no 
   check("Workspace owns the hook (calls useDebtSpaceData)", CODE.includes("useDebtSpaceData("));
   check("Workspace consumes DebtSpaceData.lens", CODE.includes("data.lens"));
   check("Workspace consumes DebtSpaceData.history", CODE.includes("data.history"));
-  check("Workspace presents trust via the shared TrustIndicator (canonical envelope)", CODE.includes("TrustIndicator"));
+  // Trust converged onto the editorial hero: the workspace resolves + threads the ONE
+  // envelope down, and the shared TrustIndicator lives in the hero (the lede's chip).
+  check("Hero presents trust via the shared TrustIndicator (canonical envelope)", HERO.includes("TrustIndicator"));
+  check("Workspace threads the ONE envelope into the hero", CODE.includes("envelope={envelope}"));
   check("Workspace consumes DebtSpaceData.fico", CODE.includes("data.fico"));
   // No LOCAL time model — asOf/compareTo are shell props threaded into the hook.
   check("no usePerspectiveShellState (no duplicate time authority)", !CODE.includes("usePerspectiveShellState"));
@@ -81,31 +88,32 @@ console.log("2. TEMPORAL activation — history pre-clipped by the contract, len
   check("hook honesty: keeps last lens on error (no setAsOfLens(null) on catch)",
     HOOKC.includes("setError(true)") && !/catch[\s\S]*setAsOfLens\(null\)/.test(HOOKC));
   // The presenter consumes a pre-clipped slice type (not a raw Snapshot[]).
-  check("DebtHistoryPanel consumes DebtHistorySlice (not Snapshot[])", PANEL.includes("DebtHistorySlice"));
+  check("Balance-history chart consumes DebtHistorySlice (not Snapshot[])", PANEL.includes("DebtHistorySlice"));
 }
 
 console.log("3. DUAL AUTHORITY — lens is prose-only; visible figures come from accounts");
 {
-  // KPI band + bars + payoff + signals are all sourced from the accounts array.
-  check("KPI strip sourced from accounts (not the lens)", SRC.includes("<DebtKpiStrip accounts={accounts}"));
+  // Hero total + ledger + payoff + signals are all sourced from the accounts array.
+  check("hero figures sourced from accounts via computeDebtKpis (not the lens)", CODE.includes("computeDebtKpis(accounts"));
   check("payoff aggregate sourced from accounts", CODE.includes("computePayoffAggregate(accounts"));
-  check("debt-by-account sourced from accounts", SRC.includes("renderDebtByAccount(accounts"));
+  check("liabilities ledger sourced from accounts (not the lens)", SRC.includes("<LiabilitiesLedger accounts={accounts}"));
   check("signals fed the lens only as context (lensResult:), figures from accounts",
     CODE.includes("buildDebtSignals({ accounts") && CODE.includes("lensResult: lens"));
   // The lede is the ONLY lens consumer, and only its verdict SENTENCE (prose).
   check("lede reads only lens.verdict/provenance (prose), never a lens figure of record",
     CODE.includes("lens.verdict") && !CODE.includes("lens.headline") && !CODE.includes("lens.metrics"));
-  check("lede gated on status === \"ok\"", CODE.includes('lens.status !== "ok"'));
+  check("lede gated on status === \"ok\"", CODE.includes('lens.status === "ok"'));
 }
 
 console.log("4. Completeness PRESENTED via the canonical envelope, not recomputed");
 {
   check("no completeness recomputation in the workspace", !CODE.includes("buildDebtCompleteness"));
   // Trust converged onto the shared indicator over the SAME envelope the shell reads —
-  // no hand-derived "≈" / amber reason line re-interpreting the lens.
-  check("trust caveat is the shared TrustIndicator (inline) over the envelope",
-    CODE.includes('<TrustIndicator variant="inline"') && CODE.includes("envelope={envelope}"));
-  check("no bespoke hand-derived trust marker remains",
+  // no hand-derived amber reason line re-interpreting the lens. The hero renders the
+  // canonical chip; the workspace resolves + threads the ONE envelope.
+  check("trust caveat is the shared TrustIndicator over the envelope (in the hero)",
+    HERO.includes("<TrustIndicator") && HERO.includes("envelope={envelope}"));
+  check("no bespoke hand-derived trust marker in the workspace",
     !CODE.includes("completeness.reason") && !CODE.includes('estimated ? "≈'));
 }
 
@@ -120,7 +128,7 @@ console.log("6. FX ownership — history converted via the canonical transform, 
   check("no bespoke inline FX in the workspace (delegates to convertDebtHistory)", !CODE.includes("convertMoney"));
   check("convertDebtHistory itself uses the ONE money authority", strip(read("lib/debt/display-conversion.ts")).includes("convertMoney("));
   check("workspace threads a ConversionContext (no second rate source)", CODE.includes("ConversionContext"));
-  check("history presenter formats via ConversionContext (no second convertMoney)", PANEL.includes("formatCurrency") && !PANEL.includes("convertMoney"));
+  check("history presenter renders via the shared TrendChart (no second convertMoney)", PANEL.includes("TrendChart") && !PANEL.includes("convertMoney"));
 }
 
 console.log("7. Route serves the debt lens AT asOf (authz-gated single authority)");
