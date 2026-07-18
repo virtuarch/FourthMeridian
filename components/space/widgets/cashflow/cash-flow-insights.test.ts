@@ -84,6 +84,27 @@ console.log("3. buildCashFlowInsights — compare present for an explicit period
   check("at most 5 bullets", ins.length <= 5, `${ins.length}`);
 }
 
+console.log("3b. buildCashFlowInsights — canonical compareTo drives the comparison window (SD-2C)");
+{
+  // Income in Jan 2025 (primary MTD@asOf) and Jan 2024 (comparison MTD@compareTo).
+  const yoy: LiquidityTx[] = [
+    tx({ amount: 5000, date: "2025-01-10", category: "Income", flowType: "INCOME" }),
+    tx({ amount: 3000, date: "2024-01-10", category: "Income", flowType: "INCOME" }),
+  ];
+  const asOfJan25 = () => new Date(2025, 0, 17); // MTD@asOf = 2025-01-01 → 2025-01-17
+  // compareTo = 2024-01-17 (a DISTINCT prior baseline) ⇒ then = MTD@2024 = Jan 1–17 2024.
+  const withCmp = buildCashFlowInsights({ transactions: yoy, accounts, period: "MTD", perspective: "liquidity", now: asOfJan25, compareTo: "2024-01-17" });
+  const cmp = withCmp.find((i) => i.id === "compare-net");
+  check("compareTo: compare bullet present", !!cmp);
+  check("compareTo: bullet references the 2024 comparison window (not a sequential month)", !!cmp && /2024/.test(cmp!.text) && !/December/.test(cmp!.text));
+  check("compareTo: delta = Jan-2025 (5000) − Jan-2024 (3000) ⇒ up 2,000", !!cmp && /up/.test(cmp!.text) && /2,000/.test(cmp!.text));
+
+  // No compareTo ⇒ sequential previous FULL month (December 2024, empty ⇒ up the full 5,000).
+  const seq = buildCashFlowInsights({ transactions: yoy, accounts, period: "MTD", perspective: "liquidity", now: asOfJan25 });
+  const seqCmp = seq.find((i) => i.id === "compare-net");
+  check("no compareTo: comparison is the sequential previous month (December 2024)", !!seqCmp && /December 2024/.test(seqCmp!.text));
+}
+
 console.log("4. buildCashFlowInsights — no then for ALL / rolling (honestly omitted)");
 {
   const insAll = buildCashFlowInsights({ transactions: rows, accounts, period: "ALL", perspective: "economic", now: CLOCK });

@@ -48,6 +48,9 @@ import {
 interface Props {
   transactions: Transaction[];
   period:       CashFlowPeriod;
+  /** Canonical As-of clock — anchors the period→range resolution for the month grid
+   *  (periodRange(period, now())). Absent ⇒ today (standalone/registry path). */
+  now?:         () => Date;
   ctx?:         ConversionContext;
   /** Account tiers — the Calendar resolves the liquidity axis via these. */
   accounts:     { id: string; type: string }[];
@@ -67,13 +70,14 @@ interface Props {
   daily?:       Map<string, DayFacts>;
 }
 
-export function CashFlowCalendar({ transactions, period, ctx, accounts, measures, onSelectDay, viewYear, daily: dailyProp }: Props) {
+export function CashFlowCalendar({ transactions, period, now, ctx, accounts, measures, onSelectDay, viewYear, daily: dailyProp }: Props) {
   // When viewYear is set (All Time), the visible span is exactly that one year;
-  // otherwise it is the period's own range. The sentinel All-Time range is never
-  // fed to monthsInRange — that is the whole reason for this prop.
+  // otherwise it is the period's own range, ANCHORED at the canonical As-of clock
+  // (so a historical As-of paints the historical month, not today's). The sentinel
+  // All-Time range is never fed to monthsInRange — that is the whole reason for this prop.
   const range  = useMemo(
-    () => (viewYear != null ? { start: `${viewYear}-01-01`, end: `${viewYear}-12-31` } : periodRange(period)),
-    [period, viewYear],
+    () => (viewYear != null ? { start: `${viewYear}-01-01`, end: `${viewYear}-12-31` } : periodRange(period, now?.())),
+    [period, viewYear, now],
   );
   const daily  = useMemo(
     () => dailyProp ?? projectDailyFacts(transactions as LiquidityTx[], tierResolver(accounts), ctx),

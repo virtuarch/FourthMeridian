@@ -184,7 +184,7 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
   const expected: Record<string, TemporalCapability> = {
     wealth:      { asOf: "full",    compareTo: "full",    period: "none" },
     investments: { asOf: "full",    compareTo: "full",    period: "none" },
-    cashFlow:    { asOf: "none",    compareTo: "none",    period: "full" },
+    cashFlow:    { asOf: "full",    compareTo: "full",    period: "full" },
     debt:        { asOf: "partial", compareTo: "partial", period: "none" },
     liquidity:   { asOf: "partial", compareTo: "partial", period: "none" },
   };
@@ -217,8 +217,8 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
     vis("wealth").asOf && vis("wealth").compareTo);
   check("Investments shell shows As-of + Compare-to inputs",
     vis("investments").asOf && vis("investments").compareTo);
-  check("Cash Flow shell HIDES the As-of + Compare-to inputs (no explicit point-in-time)",
-    !vis("cashFlow").asOf && !vis("cashFlow").compareTo);
+  check("Cash Flow shell SHOWS the As-of + Compare-to inputs (fully temporal — historical navigation)",
+    vis("cashFlow").asOf && vis("cashFlow").compareTo);
   check("Debt shell shows As-of + Compare-to inputs (partial still renders)",
     vis("debt").asOf && vis("debt").compareTo);
   check("Liquidity shell shows As-of + Compare-to inputs (partial still renders)",

@@ -25,6 +25,7 @@ import {
   outflowByCategory,
   incomeBySource,
   periodLabel,
+  periodRange,
   isExplicitPeriod,
   type CashFlowPeriod,
 } from "@/lib/transactions/cash-flow";
@@ -37,7 +38,7 @@ import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
 import { groupCashFlowContext } from "@/lib/transactions/cash-flow-context";
 import { compareCashFlow, type CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatDate } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 
@@ -102,14 +103,31 @@ export function buildCashFlowInsights(args: {
   period:       CashFlowPeriod;
   perspective:  CashFlowPerspective;
   now:          () => Date;
+  /** Canonical compareTo anchor (YYYY-MM-DD, strictly earlier than asOf). When
+   *  present, the then-vs-now comparison uses the SAME period at this anchor
+   *  (period@asOf vs period@compareTo) instead of the sequential previous period. */
+  compareTo?:   string | null;
   moneyCtx?:    ConversionContext;
   stamp?:       CashFlowStamp | null;
 }): CashFlowInsight[] {
-  const { transactions, accounts, period, perspective, now, moneyCtx, stamp } = args;
+  const { transactions, accounts, period, perspective, now, compareTo, moneyCtx, stamp } = args;
   if (transactions == null) return [];
 
   const clock = now;
   const rows = filterByPeriod(transactions, period, clock()) as LiquidityTx[];
+  // Canonical compareTo ⇒ compare the SAME period at the compareTo anchor — but ONLY
+  // when compareTo is a DISTINCT prior baseline (strictly before the primary window's
+  // start). For a plain preset, canonical compareTo IS the period's own start (a
+  // point-in-time baseline, meaningless as a Cash Flow range comparison), so it falls
+  // through to the sequential previous-period insight below.
+  // Only RELATIVE periods re-anchor by the clock (explicit month/quarter/year drills
+  // are absolute — periodRange ignores the anchor — so compareTo can't shift them;
+  // those keep the sequential previous-period comparison).
+  const primaryStart = (period === "ALL" || isExplicitPeriod(period)) ? null : periodRange(period, clock()).start;
+  const compareToClock =
+    compareTo && primaryStart && compareTo < primaryStart
+      ? () => new Date(`${compareTo}T00:00:00`)
+      : null;
   const liqCtx = tierResolver(accounts);
   const facts = aggregateDayFacts(rows, liqCtx, moneyCtx);
   const fmt = (v: number) => formatCurrency(v, moneyCtx?.target ?? DEFAULT_DISPLAY_CURRENCY);
@@ -120,7 +138,11 @@ export function buildCashFlowInsights(args: {
   // (a) Then-vs-now net delta — only when a previous-equivalent period exists AND
   //     the current period has activity (a flat comparison of two empty windows is
   //     noise, not an insight; an empty period degrades to the "none" bullet below).
-  const then = hasActivity ? previousEquivalentPeriod(period, clock()) : null;
+  // The comparison window: canonical compareTo (SAME period at the compareTo anchor)
+  // when set, else the sequential previous-equivalent period (the existing insight).
+  const then = hasActivity
+    ? (compareToClock ? period : previousEquivalentPeriod(period, clock()))
+    : null;
   if (then) {
     const cmp = compareCashFlow({
       transactions: transactions as LiquidityTx[],
@@ -129,10 +151,14 @@ export function buildCashFlowInsights(args: {
       now: period,
       perspective,
       clock,
+      thenClock: compareToClock ?? undefined,
       moneyCtx,
     });
     const dNet = cmp.delta.totals.net;
-    const prevLabel = periodLabel(then);
+    const cmpRange = compareToClock ? periodRange(period, compareToClock()) : null;
+    const prevLabel = cmpRange
+      ? `${formatDate(cmpRange.start)} – ${formatDate(cmpRange.end)}`
+      : periodLabel(then);
     // P2-1B — the compare net is perspective-aware: in LIQUIDITY mode the delta
     // is Cash In − Cash Out ("Net cash"); in ECONOMIC mode it is income − clamped
     // spending, which is NOT cash ("Income after spending"). Arithmetic unchanged.

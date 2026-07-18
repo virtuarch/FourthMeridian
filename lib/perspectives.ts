@@ -297,9 +297,12 @@ export const PERSPECTIVE_LIBRARY: Record<string, PerspectiveDef> = {
     // its historical window follows the shared slice. (It reads the preset, not
     // asOf/compareTo directly; that is participation in canonical time.)
     dataNeeds: ["accounts", "transactions"],
-    // Period-native: Cash Flow consumes the relative-period axis, NOT the
-    // canonical asOf/compareTo (its internal then-vs-now compare is period-relative).
-    temporalCapability: { asOf: "none", compareTo: "none", period: "full" },
+    // Fully temporal: the selected canonical range is anchored at asOf (the window's
+    // END travels with asOf — historical Cash Flow), compareTo drives the then-vs-now
+    // comparison (period@asOf vs period@compareTo), and the range is interpreted as a
+    // period (Cash Flow's native model). It exposes the same As-of/Compare-to + slicer
+    // controls as every lens; the difference is range interpretation, not participation.
+    temporalCapability: { asOf: "full", compareTo: "full", period: "full" },
     envelope: "cashFlow",
   },
   investments: {

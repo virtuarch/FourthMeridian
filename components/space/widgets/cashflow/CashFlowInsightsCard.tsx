@@ -37,6 +37,8 @@ export function CashFlowInsightsCard({
   transactions,
   accounts,
   period,
+  now,
+  compareTo,
   perspective,
   txCtx,
   stamp,
@@ -44,6 +46,10 @@ export function CashFlowInsightsCard({
   transactions?: Transaction[] | null;
   accounts:      { id: string; type: string }[];
   period:        CashFlowPeriod;
+  /** The canonical As-of clock — the anchor for the primary period window. */
+  now:           () => Date;
+  /** Canonical compareTo (strictly-earlier) — anchors the then-vs-now comparison. */
+  compareTo?:    string | null;
   perspective:   CashFlowPerspective;
   txCtx?:        ConversionContext;
   stamp?:        CashFlowStamp | null;
@@ -51,10 +57,10 @@ export function CashFlowInsightsCard({
   // A stable primitive key for the period object (React can't compare it by value).
   const periodId = periodKey(period);
   const insights = useMemo(
-    () => buildCashFlowInsights({ transactions, accounts, period, perspective, now: () => new Date(), moneyCtx: txCtx, stamp }),
+    () => buildCashFlowInsights({ transactions, accounts, period, perspective, now, compareTo, moneyCtx: txCtx, stamp }),
     // period is reconstructed from periodId; stamp identity is stable per host memo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [transactions, accounts, periodId, perspective, txCtx, stamp],
+    [transactions, accounts, periodId, perspective, txCtx, stamp, now, compareTo],
   );
 
   if (transactions == null) {

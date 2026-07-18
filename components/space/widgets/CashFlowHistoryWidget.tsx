@@ -248,6 +248,9 @@ function CardsView({
 interface Props {
   transactions:   Transaction[] | null | undefined;
   period:         CashFlowPeriod;
+  /** Canonical As-of clock — anchors the calendar's month grid to the selected
+   *  window (periodRange(period, now())). Absent ⇒ today (standalone/registry path). */
+  now?:           () => Date;
   ctx?:           ConversionContext;
   /** Account tiers — CF-2B: History/Calendar consume the liquidity projection. */
   accounts:       { id: string; type: string }[];
@@ -268,7 +271,7 @@ interface Props {
 }
 
 /** Multi-mode Cash Flow History (Calendar · Cards) with in-widget history. */
-export function CashFlowHistoryWidget({ transactions, period, ctx, accounts, onSelectPeriod, perspective: controlledPerspective, filterId: controlledFilterId, onPerspectiveChange, windowRows, daily, buckets }: Props) {
+export function CashFlowHistoryWidget({ transactions, period, now, ctx, accounts, onSelectPeriod, perspective: controlledPerspective, filterId: controlledFilterId, onPerspectiveChange, windowRows, daily, buckets }: Props) {
   const modes       = getCashFlowHistoryModes(period);
   const defaultMode = getDefaultCashFlowHistoryMode(period);
 
@@ -370,7 +373,7 @@ export function CashFlowHistoryWidget({ transactions, period, ctx, accounts, onS
                 <AllTimeYearNav year={effectiveViewYear} years={dataYears} onChange={setViewYear} />
               )}
               <CashFlowCalendar
-                transactions={rows} period={period} ctx={ctx} accounts={accounts}
+                transactions={rows} period={period} now={now} ctx={ctx} accounts={accounts}
                 measures={measures} onSelectDay={openDay}
                 viewYear={period === "ALL" ? effectiveViewYear ?? undefined : undefined}
                 daily={daily}

@@ -111,6 +111,8 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
       txCtx={ctx.txCtx}
       accounts={ctx.accounts}
       period={ctx.cashFlowPeriod}
+      asOf={ctx.asOf}
+      compareTo={ctx.historicalCompareTo}
       onSelectPeriod={ctx.onSelectCashFlowPeriod}
       onEnvelopeChange={ctx.onEnvelopeChange}
     />

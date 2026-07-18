@@ -85,6 +85,8 @@ export function CashFlowWorkspace({
   txCtx,
   accounts,
   period,
+  asOf,
+  compareTo,
   onSelectPeriod,
   onEnvelopeChange,
 }: {
@@ -92,6 +94,11 @@ export function CashFlowWorkspace({
   txCtx?:          ConversionContext;
   accounts:        { id: string; type: string }[];
   period:          CashFlowPeriod;
+  /** Canonical As-of — the ANCHOR for the selected period. The window's end travels
+   *  with asOf (periodRange(period, asOf)), so Cash Flow is historical, not today-only. */
+  asOf:            string;
+  /** Canonical compareTo (strictly-earlier) — anchors the then-vs-now comparison. */
+  compareTo?:      string | null;
   onSelectPeriod:  (period: CashFlowPeriod) => void;
   /** SD-6 gate — the workspace now OWNS its completeness stamp (computed below from
    *  its own transactions + period) and emits the resulting trust envelope; the host
@@ -108,12 +115,18 @@ export function CashFlowWorkspace({
     setFilterId(id);
   };
 
+  // The canonical As-of clock — the ONE anchor for every period→range resolution in
+  // this workspace (the contract fold, the stamp, the calendar grid, the insights
+  // comparison). Replacing the former implicit `new Date()` (today) makes the whole
+  // Cash Flow window travel with asOf: periodRange(period, asOf).
+  const asOfClock = useMemo(() => () => new Date(`${asOf}T00:00:00`), [asOf]);
+
   // THE composition boundary — one canonical projection of the selected window,
   // fanned out to every panel. Null while transactions load (widgets show their own
   // loading state via the null-transactions guard).
   const data = useMemo(
-    () => (transactions ? buildCashFlowSpaceData({ transactions, accounts, period, moneyCtx: txCtx }) : null),
-    [transactions, accounts, period, txCtx],
+    () => (transactions ? buildCashFlowSpaceData({ transactions, accounts, period, moneyCtx: txCtx, now: asOfClock }) : null),
+    [transactions, accounts, period, txCtx, asOfClock],
   );
 
   // Completeness stamp — RELOCATED here from the host (SD-6 gate): the workspace has
@@ -124,9 +137,9 @@ export function CashFlowWorkspace({
   // while transactions load ⇒ the caveat is omitted and the chip shows static text.
   const stamp = useMemo(
     () => (transactions
-      ? cashFlowStamp({ transactions: transactions as unknown as LiquidityTx[], period, now: () => new Date() })
+      ? cashFlowStamp({ transactions: transactions as unknown as LiquidityTx[], period, now: asOfClock })
       : null),
-    [transactions, period],
+    [transactions, period, asOfClock],
   );
   useEffect(() => {
     onEnvelopeChange(resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", cashFlowStamp: stamp }));
@@ -224,6 +237,7 @@ export function CashFlowWorkspace({
           <CashFlowHistoryWidget
             transactions={transactions}
             period={period}
+            now={asOfClock}
             ctx={txCtx}
             accounts={accounts}
             onSelectPeriod={onSelectPeriod}
@@ -270,6 +284,8 @@ export function CashFlowWorkspace({
             transactions={transactions}
             accounts={accounts}
             period={period}
+            now={asOfClock}
+            compareTo={compareTo}
             perspective={perspective}
             txCtx={txCtx}
             stamp={stamp}

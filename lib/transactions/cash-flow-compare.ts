@@ -251,10 +251,15 @@ export function compareCashFlow(args: {
   now: CashFlowPeriod;
   perspective: CashFlowPerspective;
   clock: () => Date;
+  /** Anchor for the "then" side, when it differs from `now`'s clock — e.g. a
+   *  canonical compareTo comparison resolves the SAME period at an earlier anchor
+   *  (period@asOf vs period@compareTo). Absent ⇒ `then` uses the shared `clock`
+   *  (the sequential previous-period comparison). */
+  thenClock?: () => Date;
   moneyCtx?: ConversionContext;
 }): CashFlowComparison {
-  const { transactions, liqCtx, then, now, perspective, clock, moneyCtx } = args;
-  const thenSide = computeSide(transactions, then, liqCtx, perspective, clock, moneyCtx);
+  const { transactions, liqCtx, then, now, perspective, clock, thenClock, moneyCtx } = args;
+  const thenSide = computeSide(transactions, then, liqCtx, perspective, thenClock ?? clock, moneyCtx);
   const nowSide = computeSide(transactions, now, liqCtx, perspective, clock, moneyCtx);
 
   return {

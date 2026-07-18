@@ -47,6 +47,23 @@ console.log("1. CashFlowWorkspace is the render boundary");
   check("neither host nor renderer references the old CashFlowPerspective",
     !DASH.includes("cashflow/CashFlowPerspective") && !REND.includes("cashflow/CashFlowPerspective") && !DASH.includes("CashFlowPerspectiveWorkspace"));
   check("cashFlow workspace is registered in the renderer map", REND.includes("cashFlow: (ctx) =>") && REND.includes("<CashFlowWorkspace"));
+  // SD-2C — the renderer passes canonical asOf + compareTo so Cash Flow is historical.
+  check("renderer passes canonical asOf + compareTo to CashFlowWorkspace",
+    /asOf=\{ctx\.asOf\}/.test(REND) && /compareTo=\{ctx\.historicalCompareTo\}/.test(REND));
+}
+
+console.log("1b. Cash Flow is anchored at canonical As-of, not today (SD-2C historical)");
+{
+  const WSRC = read("components/space/widgets/cashflow/CashFlowWorkspace.tsx");
+  // The workspace builds ONE asOf clock and feeds it to every period→range resolver
+  // (contract fold, stamp, calendar, insights) — no `new Date()` (today) anchor remains.
+  check("workspace derives an asOf clock", /const asOfClock\s*=/.test(WSRC) && /new Date\(`\$\{asOf\}/.test(WSRC));
+  check("contract fold is asOf-anchored (buildCashFlowSpaceData now: asOfClock)",
+    /buildCashFlowSpaceData\(\{[\s\S]*now:\s*asOfClock/.test(WSRC));
+  check("completeness stamp is asOf-anchored (no today clock)",
+    /cashFlowStamp\(\{[\s\S]*now:\s*asOfClock/.test(WSRC) && !/now:\s*\(\)\s*=>\s*new Date\(\)/.test(WSRC));
+  check("calendar + insights receive the asOf clock", /now=\{asOfClock\}/.test(WSRC));
+  check("insights receive canonical compareTo", /compareTo=\{compareTo\}/.test(WSRC));
 }
 
 console.log("2. CashFlowSpaceData is the composition boundary");

@@ -110,6 +110,14 @@ check("PAST_WEEK starts 7 days back",        periodRange("PAST_WEEK", now).start
 check("PAST_MONTH starts one month back",    periodRange("PAST_MONTH", now).start === "2026-06-09");
 check("PAST_YEAR starts one year back",      periodRange("PAST_YEAR", now).start === "2025-07-09");
 
+// SD-2C — HISTORICAL anchor (Cash Flow travels backward): a past As-of moves the
+// whole window, not just the end. MTD @ 2025-01-17 ⇒ 2025-01-01 → 2025-01-17.
+const asOfHist = new Date(2025, 0, 17);
+check("historical MTD @ 2025-01-17 starts 2025-01-01", periodRange("MTD", asOfHist).start === "2025-01-01");
+check("historical MTD @ 2025-01-17 ends 2025-01-17",   periodRange("MTD", asOfHist).end === "2025-01-17");
+check("historical 1M (PAST_MONTH) @ 2025-01-17 ⇒ 2024-12-17 → 2025-01-17",
+  periodRange("PAST_MONTH", asOfHist).start === "2024-12-17" && periodRange("PAST_MONTH", asOfHist).end === "2025-01-17");
+
 check("filterByPeriod keeps in-range, drops out-of-range",
   filterByPeriod([tx("2026-07-05", 10, "INCOME"), tx("2026-06-30", 10, "INCOME")], "MTD", now).length === 1);
 
