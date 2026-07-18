@@ -14,13 +14,10 @@
  */
 
 import { useState, useMemo, useCallback } from "react";
-import type { ComponentType, CSSProperties } from "react";
-import { Account, AccountType, Transaction, TransactionCategory } from "@/types";
+import { Account, Transaction, TransactionCategory } from "@/types";
 import { DataCard } from "@/components/atlas/DataCard";
 import {
-  Search, X, SlidersHorizontal, CalendarDays, ChevronRight, ChevronLeft, ArrowDownUp,
-  Landmark, CreditCard, TrendingUp, Wallet, Building2,
-  ArrowUpRight, ArrowDownRight, ArrowLeftRight, RotateCcw, Minus, Percent, HelpCircle, Settings2,
+  Search, X, SlidersHorizontal, CalendarDays, ChevronRight, ChevronLeft, ArrowDownUp, ArrowLeftRight,
 } from "lucide-react";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
 import { ToolbarMenuButton } from "@/components/dashboard/widgets/transactions/ToolbarMenuButton";
@@ -87,47 +84,13 @@ const SORT_LABELS: Record<SortBy, string> = {
   merchant: "Merchant A–Z",
 };
 
-// ── Column presentation helpers (table redesign follow-up) ───────────────────
-type IconType = ComponentType<{ size?: number; className?: string; style?: CSSProperties }>;
-
-// Shared grid template — the desktop column header and every desktop TxRow use
-// the SAME string so columns can never drift out of alignment with each other.
-const TX_GRID_COLS = "40px minmax(0,1fr) 170px 130px 120px 100px 118px 20px";
-
-// Account-type glyph for the new Account column — presentation only, no new data.
-const ACCOUNT_TYPE_ICON: Record<AccountType, IconType> = {
-  checking:   Landmark,
-  savings:    Landmark,
-  investment: TrendingUp,
-  crypto:     Wallet,
-  debt:       CreditCard,
-  other:      Building2,
-};
-
-// Flow-type glyph for the new Flow type column — covers every FLOW_TYPE_LABEL
-// key (QuickFlowPills' pill row deliberately shows only a curated subset; this
-// column needs all of them). Kept local rather than shared with QuickFlowPills
-// — the same "not worth extracting until a third consumer" threshold this
-// codebase already applies to the Panel/GlassPanel pattern.
-const FLOW_TYPE_ICON: Record<string, IconType> = {
-  INCOME:       ArrowUpRight,
-  SPENDING:     ArrowDownRight,
-  TRANSFER:     ArrowLeftRight,
-  DEBT_PAYMENT: CreditCard,
-  REFUND:       RotateCcw,
-  FEE:          Minus,
-  INTEREST:     Percent,
-  INVESTMENT:   TrendingUp,
-  ADJUSTMENT:   Settings2,
-  UNKNOWN:      HelpCircle,
-};
-
-// Status column — posting state, reusing the existing `pending` boolean that
-// already drives the row's inline "Pending" badge (same source, no new concept).
-function statusOf(tx: Transaction): { label: string; color: string } {
-  return tx.pending
-    ? { label: "Pending", color: "var(--accent-warning)" }
-    : { label: "Posted", color: "var(--accent-positive)" };
+// ── Day-header formatter (editorial timeline) ────────────────────────────────
+// The ledger's temporal spine: rows group under the day they occurred. Parsed at
+// local midnight (append T00:00:00, no trailing Z) so a YYYY-MM-DD never drifts a
+// day across time zones. Presentation only — no new data.
+function formatDayHeader(iso: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  return d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
 }
 
 // ── Pagination (table redesign follow-up) ─────────────────────────────────────
@@ -425,6 +388,23 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     }));
   }, [sorted, groupBy, acctInst, acctName, flowSums, rowAmount]);
 
+  // ── Editorial day grouping (default List view) ─────────────────────────────
+  // With no explicit pivot and a chronological sort, the flat list reads as a
+  // ledger: rows grouped under their day with a sticky day header (the prototype's
+  // temporal spine). Amount/merchant sorts stay flat — day headers only make sense
+  // in date order. Groups the CURRENT page, so pagination is unaffected.
+  const chronological = sortBy === "newest" || sortBy === "oldest";
+  const dayGroups = useMemo(() => {
+    if (groupBy !== "none" || !chronological) return null;
+    const map = new Map<string, Transaction[]>();
+    for (const tx of paged) {
+      const bucket = map.get(tx.date);
+      if (bucket) bucket.push(tx);
+      else map.set(tx.date, [tx]);
+    }
+    return [...map.entries()];
+  }, [paged, groupBy, chronological]);
+
   // ── Summary totals (§2.3.1) ────────────────────────────────────────────────
   // Composed from the shared flowSums map above (same source as Group By).
   // Spend = SPENDING + FEE + INTEREST (cost flows) minus REFUND, clamped ≥ 0 —
@@ -522,7 +502,7 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
               Time selector so the two don't compete (§2.4). */}
           <SegmentedControl
             options={[
-              { id: "table", label: "Table" },
+              { id: "table", label: "List" },
               { id: "calendar", label: "Calendar" },
             ]}
             value={viewMode}
@@ -688,37 +668,19 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       ) : (
         <>
           <DataCard padding="0" className="overflow-hidden">
-            {/* Column header — desktop table only (`lg:` and up). Mobile keeps
-                the original compact card row unchanged, and has nothing below
-                `lg` for a column header to align to. Hidden for the calendar
-                view and the no-results state, where there is no row grid. */}
-            {filtered.length > 0 && viewMode === "table" && (
-              <div
-                className="hidden lg:grid gap-3 px-5 py-2.5 border-b text-[11px] font-semibold uppercase tracking-wide"
-                style={{ gridTemplateColumns: TX_GRID_COLS, borderColor: "var(--border-hairline)", color: "var(--text-faint)" }}
-              >
-                <span aria-hidden />
-                <span>Description</span>
-                <span>Account</span>
-                <span>Category</span>
-                <span>Flow type</span>
-                <span className="text-right">Amount</span>
-                <span>Status</span>
-                <span aria-hidden />
-              </div>
-            )}
             {filtered.length === 0 ? (
               <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>
                 No transactions match your filters.
               </p>
             ) : viewMode === "calendar" ? (
               // §2.4 — day heat-map over the same filtered set (net in − out), the
-              // amount accessor + formatter shared with the summary chips.
+              // amount accessor + formatter shared with the summary chips. Calendar
+              // authority (TransactionsCalendarHeatmap / CalendarHeatmapGrid) preserved.
               <TransactionsCalendarHeatmap transactions={filtered} amountOf={rowAmount} fmt={fmtAgg} />
             ) : groups ? (
-              // Grouped (pivoted) view — a header per bucket, then its rows. Not
-              // paginated (see PAGE_SIZE_OPTIONS comment): every matching row
-              // renders, same as before this redesign.
+              // Explicit pivot (flow / merchant / account / category) — a header per
+              // bucket, then its rows. Not paginated (see PAGE_SIZE_OPTIONS comment):
+              // every matching row renders. Rows share the editorial TxRow.
               <div className="divide-y divide-[var(--border-hairline)]">
                 {groups.map((g) => (
                   <div key={g.key}>
@@ -741,7 +703,34 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
                           tx={tx}
                           acctName={acctName(tx.accountId)}
                           acctInst={acctInst(tx.accountId)}
-                          acctType={accountMap.get(tx.accountId)?.type ?? "other"}
+                          onOpen={() => openTransaction(tx.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : dayGroups ? (
+              // Editorial default — the ledger grouped by DAY with sticky day headers.
+              // The date lives in the header, so rows drop their own date (showDate=false).
+              <div className="divide-y divide-[var(--border-hairline)]">
+                {dayGroups.map(([date, rows]) => (
+                  <div key={date}>
+                    <div
+                      className="flex items-center justify-between gap-2 px-4 sm:px-5 py-2.5 sticky top-0 z-10 border-b"
+                      style={{ background: "color-mix(in srgb, var(--surface-muted) 88%, transparent)", color: "var(--text-secondary)", borderColor: "var(--border-hairline)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
+                    >
+                      <span className="text-xs font-semibold uppercase tracking-wide truncate">{formatDayHeader(date)}</span>
+                      <span className="text-xs shrink-0" style={{ color: "var(--text-muted)" }}>{rows.length}</span>
+                    </div>
+                    <div className="divide-y divide-[var(--border-hairline)]">
+                      {rows.map((tx) => (
+                        <TxRow
+                          key={tx.id}
+                          tx={tx}
+                          acctName={acctName(tx.accountId)}
+                          acctInst={acctInst(tx.accountId)}
+                          showDate={false}
                           onOpen={() => openTransaction(tx.id)}
                         />
                       ))}
@@ -750,6 +739,8 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
                 ))}
               </div>
             ) : (
+              // Non-chronological sort (largest / smallest / merchant) — a flat ledger,
+              // each row carrying its own date since there are no day headers.
               <div className="divide-y divide-[var(--border-hairline)]">
                 {paged.map((tx) => (
                   <TxRow
@@ -757,7 +748,6 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
                     tx={tx}
                     acctName={acctName(tx.accountId)}
                     acctInst={acctInst(tx.accountId)}
-                    acctType={accountMap.get(tx.accountId)?.type ?? "other"}
                     onOpen={() => openTransaction(tx.id)}
                   />
                 ))}
@@ -837,29 +827,29 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
 }
 
 // ── Transaction row ───────────────────────────────────────────────────────────
-// Two layouts, one component: below `lg` this is exactly the original compact
-// card row (unchanged); at `lg` and up it renders the full column table row
-// (table redesign follow-up), sharing TX_GRID_COLS with the header above so the
-// two can never drift apart. Only one of the two is ever visible at a time —
-// Tailwind's `flex lg:hidden` / `hidden lg:grid` pair, no JS breakpoint check.
+// One editorial ledger row at every width (the prototype thesis: no table, at any
+// width — the row reflows, it does not become a spreadsheet). Merchant on top;
+// category · disposition · account beneath; amount right-aligned. Transfers get a
+// glyph, not a colour — moving your own money is structural, neither gain nor loss.
+// A hover accent rail signals the row opens a detail. `showDate` is dropped in the
+// day-grouped timeline (the day header carries the date) and kept in flat/pivot views.
+// Keeps role="button" + Enter/Space for keyboard access (the shared-opener contract).
 function TxRow({
   tx,
   acctName,
   acctInst,
-  acctType,
+  showDate = true,
   onOpen,
 }: {
-  tx:       Transaction;
-  acctName: string;
-  acctInst: string;
-  acctType: AccountType;
-  onOpen:   () => void;
+  tx:        Transaction;
+  acctName:  string;
+  acctInst:  string;
+  showDate?: boolean;
+  onOpen:    () => void;
 }) {
-  const isCredit = tx.amount > 0;
-  const title    = tx.merchantDisplayName ?? tx.merchant; // MI M6 — resolved name, raw fallback
-  const AcctIcon = ACCOUNT_TYPE_ICON[acctType] ?? Building2;
-  const FlowIcon = tx.flowType ? FLOW_TYPE_ICON[tx.flowType] : null;
-  const status   = statusOf(tx);
+  const isTransfer = tx.flowType === "TRANSFER";
+  const isCredit   = tx.amount > 0 && !isTransfer;
+  const title      = tx.merchantDisplayName ?? tx.merchant; // MI M6 — resolved name, raw fallback
 
   return (
     <div
@@ -867,101 +857,59 @@ function TxRow({
       tabIndex={0}
       onClick={onOpen}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
-      className="group hover:bg-[var(--surface-hover)] transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--surface-hover)]"
+      className="group relative flex items-center gap-3.5 px-4 py-3.5 sm:px-5 cursor-pointer transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:bg-[var(--surface-hover)]"
     >
-      {/* Mobile / tablet (below `lg`) — the original compact card row, byte-for-byte unchanged. */}
-      <div className="flex lg:hidden items-center gap-3.5 px-4 py-3.5 sm:px-5">
-        <TransactionDate date={tx.date} />
+      {/* Hover accent rail — the affordance that this row opens a detail. */}
+      <span
+        aria-hidden
+        className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-[var(--meridian-400)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+      />
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{title}</p>
-            {tx.pending && (
-              <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>
-                Pending
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-            <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
-              {tx.category}
-            </span>
-            {tx.transferDisposition && (
-              <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
-                {TRANSFER_DISPOSITION_LABEL[tx.transferDisposition] ?? tx.transferDisposition}
-              </span>
-            )}
-            <span className="text-xs truncate" style={{ color: "var(--text-faint)" }}>
-              {acctInst}{acctInst && acctName ? " · " : ""}{acctName}
-            </span>
-          </div>
-        </div>
+      {showDate && <TransactionDate date={tx.date} />}
 
-        <div className="shrink-0 text-right">
-          <p className="text-sm font-bold tabular-nums" style={{ color: isCredit ? "var(--accent-positive)" : "var(--text-primary)" }}>
-            {isCredit ? "+" : "−"}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
-          </p>
-        </div>
+      {isTransfer && (
+        <ArrowLeftRight size={14} strokeWidth={1.75} aria-hidden className="shrink-0" style={{ color: "var(--text-faint)" }} />
+      )}
 
-        <ChevronRight
-          size={15}
-          aria-hidden
-          className="shrink-0 -mr-1 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity"
-          style={{ color: "var(--text-faint)" }}
-        />
-      </div>
-
-      {/* Desktop (`lg` and up) — full column row: Description · Account · Category ·
-          Flow type · Amount · Status. Table redesign follow-up. */}
-      <div className="hidden lg:grid items-center gap-3 px-5 py-3" style={{ gridTemplateColumns: TX_GRID_COLS }}>
-        <TransactionDate date={tx.date} />
-
-        <div className="min-w-0">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
           <p className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>{title}</p>
-          {tx.transferDisposition && (
-            <span className={`inline-block mt-0.5 text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
-              {TRANSFER_DISPOSITION_LABEL[tx.transferDisposition] ?? tx.transferDisposition}
+          {tx.pending && (
+            <span className="text-xs px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "var(--surface-inset)", color: "var(--text-secondary)" }}>
+              Pending
             </span>
           )}
         </div>
-
-        <div className="min-w-0 flex items-center gap-2">
-          <AcctIcon size={14} className="shrink-0" style={{ color: "var(--text-faint)" }} />
-          <div className="min-w-0">
-            <p className="text-xs font-medium truncate" style={{ color: "var(--text-secondary)" }}>{acctName}</p>
-            {acctInst && <p className="text-[11px] truncate" style={{ color: "var(--text-faint)" }}>{acctInst}</p>}
-          </div>
-        </div>
-
-        <div className="min-w-0">
-          <span className={`inline-block max-w-full truncate text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
+        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+          <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
             {tx.category}
           </span>
-        </div>
-
-        <div className="min-w-0 flex items-center gap-1.5">
-          {FlowIcon && <FlowIcon size={13} className="shrink-0" style={{ color: "var(--text-faint)" }} />}
-          <span className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>
-            {tx.flowType ? (FLOW_TYPE_LABEL[tx.flowType] ?? tx.flowType) : "—"}
+          {tx.transferDisposition && (
+            <span className={`text-xs px-1.5 py-0.5 rounded-full ${CAT_CHIP}`}>
+              {TRANSFER_DISPOSITION_LABEL[tx.transferDisposition] ?? tx.transferDisposition}
+            </span>
+          )}
+          <span className="text-xs truncate" style={{ color: "var(--text-faint)" }}>
+            {acctInst}{acctInst && acctName ? " · " : ""}{acctName}
           </span>
         </div>
-
-        <p className="text-sm font-bold tabular-nums text-right" style={{ color: isCredit ? "var(--accent-positive)" : "var(--text-primary)" }}>
-          {isCredit ? "+" : "−"}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
-        </p>
-
-        <div className="min-w-0 flex items-center gap-1.5">
-          <span aria-hidden className="h-1.5 w-1.5 rounded-full shrink-0" style={{ background: status.color }} />
-          <span className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>{status.label}</span>
-        </div>
-
-        <ChevronRight
-          size={15}
-          aria-hidden
-          className="shrink-0 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity justify-self-end"
-          style={{ color: "var(--text-faint)" }}
-        />
       </div>
+
+      <div className="shrink-0 text-right">
+        <p
+          className="text-sm font-bold tabular-nums"
+          style={{ color: isCredit ? "var(--accent-positive)" : isTransfer ? "var(--text-secondary)" : "var(--text-primary)" }}
+        >
+          {isTransfer ? "" : isCredit ? "+" : "−"}{fmt(tx.amount, tx.currency ?? DEFAULT_DISPLAY_CURRENCY)}
+        </p>
+      </div>
+
+      <ChevronRight
+        size={15}
+        aria-hidden
+        className="shrink-0 -mr-1 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity"
+        style={{ color: "var(--text-faint)" }}
+      />
     </div>
   );
 }

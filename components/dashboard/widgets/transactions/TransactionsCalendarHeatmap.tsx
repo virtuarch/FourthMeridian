@@ -23,11 +23,31 @@
 
 import { useMemo } from "react";
 import type { Transaction } from "@/types";
-import { monthsInRange } from "@/lib/transactions/cash-flow";
 import {
   CalendarHeatmapGrid,
   type HeatmapTooltipRow,
 } from "@/components/space/widgets/shared/CalendarHeatmapGrid";
+
+/** The most-recent month grids to paint, NEWEST first, walking back from `end` to
+ *  `start` and capped at `cap` (defensive, matches the grid's own ceiling). The
+ *  Transactions "All Time" span can cover years; the shared monthsInRange caps from
+ *  the OLDEST edge, which would strand the calendar on the first-ever month. This
+ *  anchors on the newest activity instead — the ledger's default "Newest" reading —
+ *  without touching the shared grid or its range/values. */
+export function recentMonths(
+  start: string,
+  end: string,
+  cap = 24,
+): { year: number; month: number }[] {
+  const sy = Number(start.slice(0, 4)), sm = Number(start.slice(5, 7));
+  const out: { year: number; month: number }[] = [];
+  let y = Number(end.slice(0, 4)), m = Number(end.slice(5, 7));
+  while ((y > sy || (y === sy && m >= sm)) && out.length < cap) {
+    out.push({ year: y, month: m });
+    if (--m < 1) { m = 12; y--; }
+  }
+  return out;
+}
 
 /** Pure — signed net (money in − money out) per ISO day. `amountOf` returns the
  *  row's own signed, converted amount (positive = credit / in). */
@@ -83,7 +103,11 @@ export function TransactionsCalendarHeatmap({ transactions, amountOf, fmt }: Pro
   const range  = useMemo(() => transactionsDateRange(transactions), [transactions]);
   const values = useMemo(() => bucketNetByDay(transactions, amountOf), [transactions, amountOf]);
   const inOut  = useMemo(() => bucketInOutByDay(transactions, amountOf), [transactions, amountOf]);
-  const months = useMemo(() => (range ? monthsInRange(range.start, range.end) : []), [range]);
+  // Newest month first — the calendar leads with the most recent activity (matching
+  // the ledger's default "Newest" sort) instead of opening on the first-ever month.
+  // Presentation only: the grid paints months in the order given; range/values and
+  // the shared CalendarHeatmapGrid authority are untouched.
+  const months = useMemo(() => (range ? recentMonths(range.start, range.end) : []), [range]);
   const max    = useMemo(() => {
     let m = 0;
     if (range) {

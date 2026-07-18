@@ -2,9 +2,11 @@
  * components/transactions/TransactionDetailDrawer.test.ts
  *
  * TI5-3A — source-scan contract tests (repo style: no RTL/Playwright). Asserts
- * the wiring rather than rendering: the drawer reuses OverlaySurface + the
+ * the wiring rather than rendering: the drawer reuses the Atlas RightPanel + the
  * existing endpoint + the ?transaction= param, transaction-list rows call the
  * shared opener, and the drawer pulls in no AI/serializer/export/Brief code.
+ * (Editorial convergence: the detail is a contextual RightPanel — inspect while
+ * the ledger stays put — not the centered OverlaySurface modal it began as.)
  * (The standalone Banking surface was retired with /dashboard/banking; the live
  * transaction surfaces are the Space Transactions panel and the Debt client.)
  *
@@ -24,9 +26,9 @@ const chrome = read('components/ui/DashboardChrome.tsx');
 const spacePanel = read('components/dashboard/widgets/SpaceTransactionsPanel.tsx');
 const debt = read('components/dashboard/DebtClient.tsx');
 
-test('drawer reuses the OverlaySurface primitive (no new drawer framework)', () => {
-  assert.match(drawer, /from "@\/components\/atlas\/OverlaySurface"/);
-  assert.match(drawer, /<OverlaySurface/);
+test('drawer uses the Atlas RightPanel primitive (contextual detail, not a modal)', () => {
+  assert.match(drawer, /from "@\/components\/atlas\/panels"/);
+  assert.match(drawer, /<RightPanel/);
 });
 
 test('drawer reuses the existing GET /api/transactions/[id] endpoint (no new endpoint)', () => {
