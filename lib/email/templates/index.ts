@@ -17,6 +17,7 @@ import { securityAlertTemplate } from "@/lib/email/templates/security-alert";
 import { emailChangeTemplate } from "@/lib/email/templates/email-change";
 import { notificationTemplate } from "@/lib/email/templates/notification";
 import { betaInviteTemplate } from "@/lib/email/templates/beta-invite";
+import { betaRequestTemplate } from "@/lib/email/templates/beta-request";
 import { platformAlertTemplate } from "@/lib/email/templates/platform-alert";
 
 /**
@@ -33,6 +34,7 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateName, EmailTemplate<never>> = 
   "email-change":       emailChangeTemplate as EmailTemplate<never>,
   "notification":       notificationTemplate as EmailTemplate<never>,
   "beta-invite":        betaInviteTemplate as EmailTemplate<never>,
+  "beta-request":       betaRequestTemplate as EmailTemplate<never>,
   "platform-alert":     platformAlertTemplate as EmailTemplate<never>,
 };
 

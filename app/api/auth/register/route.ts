@@ -34,6 +34,7 @@ import { getRequestMeta } from "@/lib/api";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { AuditAction } from "@/lib/audit-actions";
 import { getMinPasswordLength, getRegistrationMode } from "@/lib/platform-settings";
+import { validateInvite } from "@/lib/registration-policy";
 import { getTemplateForCategory } from "@/lib/space-templates/registry";
 import { planTemplateApplication } from "@/lib/space-templates/apply";
 
@@ -138,28 +139,24 @@ export async function POST(req: NextRequest) {
           { status: 403 },
         );
       }
-      const betaRequest = await db.betaAccessRequest.findFirst({
-        where: {
-          inviteTokenHash: hashResetToken(inviteToken),
-          inviteExpiresAt: { gt: new Date() },
-          status:          BetaAccessRequestStatus.APPROVED,
-        },
-        select: { id: true, email: true },
-      });
-      if (!betaRequest) {
+      // ONE authoritative invite validator (lib/registration-policy.ts) — the same
+      // one the public register page consults, so the gate can never disagree
+      // with what the visitor was shown.
+      const invite = await validateInvite(inviteToken);
+      if (!invite.valid) {
         return NextResponse.json(
           { error: "This invite is invalid or has expired. Please request access again." },
           { status: 403 },
         );
       }
       // Email-bound: the invite is single-inbox. A mismatch is rejected outright.
-      if (betaRequest.email !== normalizedEmail) {
+      if (invite.email !== normalizedEmail) {
         return NextResponse.json(
           { error: "This invite was issued to a different email address." },
           { status: 403 },
         );
       }
-      betaRequestId = betaRequest.id;
+      betaRequestId = invite.requestId;
     }
 
     // ── Hash password + encrypt DOB ───────────────────────────────────────────

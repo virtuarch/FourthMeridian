@@ -61,6 +61,12 @@ const _e = {
   // mailbox that might bounce. Still env-gated by RESEND_API_KEY like all mail.
   PLATFORM_ALERTS_EMAIL: process.env.PLATFORM_ALERTS_EMAIL,
 
+  // PO-3B — beta-request intake notification destination. Same honest-skip
+  // pattern as PLATFORM_ALERTS_EMAIL: null when unset ⇒ no operator notification
+  // is sent (the request is still recorded + reviewable in the queue). Never a
+  // hardcoded personal address.
+  BETA_REQUESTS_EMAIL: process.env.BETA_REQUESTS_EMAIL,
+
   // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Both optional — absent means
   // CAPTCHA is DISABLED (verifyCaptchaToken skips → true; widgets don't
   // render). The secret gates server-side verification (lib/captcha.ts reads
@@ -321,6 +327,10 @@ export const env = {
   /** Platform Ops alert destination (OPS-5 S5). null when unset — no destination,
    *  no send (honest skip); the operator sets this to activate email alerting. */
   get PLATFORM_ALERTS_EMAIL(): string | null { return _e.PLATFORM_ALERTS_EMAIL ?? null; },
+  /** Beta-request intake notification destination (PO-3B). null when unset — no
+   *  notification is sent (honest skip); the operator sets this to be alerted of
+   *  new beta requests. Never a hardcoded personal address. */
+  get BETA_REQUESTS_EMAIL(): string | null { return _e.BETA_REQUESTS_EMAIL ?? null; },
 
   // ── CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥) ────────────────────────────────
   // NOTE: lib/captcha.ts (the single server-side verify site) reads

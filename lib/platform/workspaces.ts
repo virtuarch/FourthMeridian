@@ -130,7 +130,7 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     { workspaceId: "platform-costs", sections: ["ops_cost", "ops_ai_trend"] },
   ],
   SECURITY_OPS: [
-    { workspaceId: "platform-overview", sections: ["sec_audit_feed", "sec_auth_posture", "sec_sessions", "sec_anomalies"] },
+    { workspaceId: "platform-overview", sections: ["sec_auth_posture", "sec_operator_actions", "sec_audit_feed", "sec_sessions", "sec_anomalies"] },
   ],
   GROWTH_REVENUE: [
     { workspaceId: "platform-overview", sections: ["growth_signups", "growth_beta_requests", "growth_users", "growth_activity", "growth_funnel"] },

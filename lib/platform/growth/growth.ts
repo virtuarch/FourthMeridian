@@ -116,6 +116,54 @@ function realReaders(now: Date): GrowthReaders {
   };
 }
 
+// ── Invitation lifecycle (PO-3A) ─────────────────────────────────────────────
+//
+// The four invitation states the HQ Beta Controls surface reports, derived
+// purely from BetaAccessRequest columns — no new store, no fabricated metric:
+//   sent     — an invite email was ever issued  (invitedAt != null)
+//   accepted — the invite was consumed at registration (status = REDEEMED)
+//   expired  — an outstanding APPROVED invite whose inviteExpiresAt has lapsed
+//              (unredeemed; expiry is otherwise evaluated lazily at redeem time)
+//   revoked  — an invite that was issued and then pulled (DENIED after invitedAt)
+// These are orthogonal projections of the same rows the funnel counts, reported
+// separately because the operator asks "what happened to the invitations?" not
+// only "how many requests are pending?".
+
+export interface BetaInvitationLifecycle {
+  sent: number;
+  accepted: number;
+  expired: number;
+  revoked: number;
+  checkedAt: string;
+}
+
+export interface InvitationLifecycleReaders {
+  sent(): Promise<number>;
+  accepted(): Promise<number>;
+  expired(now: Date): Promise<number>;
+  revoked(): Promise<number>;
+}
+
+function realInvitationReaders(): InvitationLifecycleReaders {
+  return {
+    sent:     () => db.betaAccessRequest.count({ where: { invitedAt: { not: null } } }),
+    accepted: () => db.betaAccessRequest.count({ where: { status: "REDEEMED" } }),
+    expired:  (now) => db.betaAccessRequest.count({ where: { status: "APPROVED", inviteExpiresAt: { lt: now } } }),
+    revoked:  () => db.betaAccessRequest.count({ where: { status: "DENIED", invitedAt: { not: null } } }),
+  };
+}
+
+export async function getBetaInvitationLifecycle(
+  deps: { now?: Date; readers?: InvitationLifecycleReaders } = {},
+): Promise<BetaInvitationLifecycle> {
+  const now = deps.now ?? new Date();
+  const r = deps.readers ?? realInvitationReaders();
+  const [sent, accepted, expired, revoked] = await Promise.all([
+    r.sent(), r.accepted(), r.expired(now), r.revoked(),
+  ]);
+  return { sent, accepted, expired, revoked, checkedAt: now.toISOString() };
+}
+
 export async function getGrowthFunnel(deps: { now?: Date; readers?: GrowthReaders } = {}): Promise<GrowthFunnel> {
   const now = deps.now ?? new Date();
   const r = deps.readers ?? realReaders(now);

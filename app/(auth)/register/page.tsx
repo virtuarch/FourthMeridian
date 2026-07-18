@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AuthCard, AuthHeader, AuthFooter, AuthButton } from "@/components/auth";
 import { Field, Input, Select, PasswordField } from "@/components/atlas/fields";
 import { InlineBanner } from "@/components/atlas/InlineBanner";
 import { TurnstileWidget } from "@/components/ui/TurnstileWidget";
+import type { RegistrationPolicyResponse } from "@/app/api/registration-policy/route";
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
@@ -52,9 +53,42 @@ function RegisterForm() {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [captchaNonce, setCaptchaNonce] = useState(0);
 
+  // PO-3C — the register form honors the authoritative registration policy: it is
+  // not shown until the mode (+ any invite) is resolved. invite_only without a
+  // valid invite ⇒ steer to request-access; closed ⇒ registration unavailable.
+  const [policy, setPolicy]             = useState<RegistrationPolicyResponse | null>(null);
+  const [policyLoading, setPolicyLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/registration-policy", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ invite: inviteToken || undefined }),
+        });
+        const p = (await r.json()) as RegistrationPolicyResponse;
+        if (!alive) return;
+        setPolicy(p);
+        // Lock the email to the invited address so a mismatch can't even be typed.
+        if (p.invitedEmail) setForm((f) => ({ ...f, email: p.invitedEmail as string }));
+      } catch {
+        // Fail OPEN to the form — the register API still enforces the mode
+        // authoritatively, so a policy-fetch failure never bypasses the gate.
+        if (alive) setPolicy({ mode: "open", canRegister: true, invitedEmail: null, requiresInvite: false });
+      } finally {
+        if (alive) setPolicyLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [inviteToken]);
+
   function set(field: string, value: string) {
     setForm((f) => ({ ...f, [field]: value }));
   }
+
+  const emailLocked = !!policy?.invitedEmail;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -111,9 +145,39 @@ function RegisterForm() {
     router.push("/login?registered=true");
   }
 
+  // ── Policy gating (PO-3C) ───────────────────────────────────────────────────
+  if (policyLoading) {
+    return <p className="text-center text-sm text-[var(--text-muted)]">Checking registration…</p>;
+  }
+  if (policy && !policy.canRegister) {
+    const closed = policy.mode === "closed";
+    return (
+      <div className="space-y-4 text-center">
+        <InlineBanner tone={closed ? "error" : "info"}>
+          {closed
+            ? "Registration is currently closed."
+            : "Fourth Meridian is invite-only right now. You need an invitation to create an account."}
+        </InlineBanner>
+        <p className="text-sm text-[var(--text-muted)]">
+          {closed
+            ? "We’re not accepting new accounts at the moment."
+            : "Have an invite? Open the link from your email. Otherwise, request access and we’ll reach out when a spot opens."}
+        </p>
+        <AuthButton href="/request-access" tone={closed ? "warning" : "primary"}>
+          Request access
+        </AuthButton>
+      </div>
+    );
+  }
+
   return (
     <>
       {error && <InlineBanner tone="error">{error}</InlineBanner>}
+      {emailLocked && (
+        <InlineBanner tone="info">
+          You&rsquo;re registering with your invited email — it&rsquo;s locked to match your invitation.
+        </InlineBanner>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-5" suppressHydrationWarning>
 
@@ -201,6 +265,7 @@ function RegisterForm() {
                 value={form.email}
                 onChange={(e) => set("email", e.target.value)}
                 required
+                readOnly={emailLocked}
                 placeholder="you@example.com"
                 autoComplete="email"
               />

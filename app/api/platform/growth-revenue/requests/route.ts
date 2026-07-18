@@ -28,21 +28,38 @@ export interface BetaRequestRow {
   decidedAt: string | null;
 }
 
+/** PO-3B — an APPROVED, un-redeemed invitation, for the invitation-management panel. */
+export interface BetaInvitationRow {
+  id:              string;
+  email:           string;
+  invitedAt:       string | null; // when the invite was (last) sent
+  inviteExpiresAt: string | null;
+  expired:         boolean;       // inviteExpiresAt < now (derived at read time)
+}
+
 export interface BetaRequestsResponse {
-  pending: BetaRequestRow[];
-  counts:  { pending: number; approved: number; denied: number; redeemed: number };
+  pending:     BetaRequestRow[];
+  invitations: BetaInvitationRow[];
+  counts:      { pending: number; approved: number; denied: number; redeemed: number };
 }
 
 export async function GET() {
   const [, err] = await requirePlatformAccess("GROWTH_REVENUE", "READ");
   if (err) return err;
 
-  const [pending, pendingCount, approvedCount, deniedCount, redeemedCount] = await Promise.all([
+  const now = new Date();
+  const [pending, invitations, pendingCount, approvedCount, deniedCount, redeemedCount] = await Promise.all([
     db.betaAccessRequest.findMany({
       where:   { status: BetaAccessRequestStatus.PENDING },
       orderBy: { createdAt: "asc" }, // oldest first — FIFO queue
       take:    100,
       select:  { id: true, email: true, note: true, status: true, createdAt: true, invitedAt: true, decidedAt: true },
+    }),
+    db.betaAccessRequest.findMany({
+      where:   { status: BetaAccessRequestStatus.APPROVED },
+      orderBy: { invitedAt: "desc" }, // most-recently invited first
+      take:    100,
+      select:  { id: true, email: true, invitedAt: true, inviteExpiresAt: true },
     }),
     db.betaAccessRequest.count({ where: { status: BetaAccessRequestStatus.PENDING } }),
     db.betaAccessRequest.count({ where: { status: BetaAccessRequestStatus.APPROVED } }),
@@ -59,6 +76,13 @@ export async function GET() {
       createdAt: r.createdAt.toISOString(),
       invitedAt: r.invitedAt?.toISOString() ?? null,
       decidedAt: r.decidedAt?.toISOString() ?? null,
+    })),
+    invitations: invitations.map((r) => ({
+      id:              r.id,
+      email:           r.email,
+      invitedAt:       r.invitedAt?.toISOString() ?? null,
+      inviteExpiresAt: r.inviteExpiresAt?.toISOString() ?? null,
+      expired:         r.inviteExpiresAt != null && r.inviteExpiresAt < now,
     })),
     counts: {
       pending:  pendingCount,

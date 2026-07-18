@@ -82,6 +82,7 @@ export type EmailTemplateName =
   | "email-change"
   | "notification"
   | "beta-invite"
+  | "beta-request"
   | "platform-alert";
 
 /**

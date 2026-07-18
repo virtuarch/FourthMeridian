@@ -25,9 +25,11 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { env } from "@/lib/env";
 import { limitByIp } from "@/lib/rate-limit";
 import { getRequestMeta } from "@/lib/api";
 import { verifyCaptchaToken } from "@/lib/captcha";
+import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
 
 export const runtime = "nodejs";
@@ -85,6 +87,22 @@ export async function POST(req: NextRequest) {
         metadata:  { email: normalizedEmail },
       },
     });
+
+    // PO-3B — operator intake notification. Honest-skip when BETA_REQUESTS_EMAIL
+    // is unset (no guessed mailbox); non-throwing so a delivery failure never
+    // affects the applicant's identical 200. The applicant never receives this —
+    // only the approval invite (beta-invite) is applicant-facing.
+    if (env.BETA_REQUESTS_EMAIL) {
+      const queueUrl = `${env.NEXT_PUBLIC_APP_URL}/dashboard/platform/GROWTH_REVENUE`;
+      const notify = await sendEmail("beta-request", env.BETA_REQUESTS_EMAIL, {
+        applicantEmail: normalizedEmail,
+        note:           trimmedNote || null,
+        queueUrl,
+      });
+      if (notify.status === "error") {
+        console.error("[access-request] operator notification failed to send:", notify.error);
+      }
+    }
 
     // Identical 200 regardless of prior state — non-enumerating.
     return NextResponse.json({

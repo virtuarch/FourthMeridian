@@ -159,6 +159,20 @@ export const AuditAction = {
   BETA_ACCESS_APPROVED:     "BETA_ACCESS_APPROVED",
   BETA_ACCESS_DENIED:       "BETA_ACCESS_DENIED",
   BETA_ACCESS_REDEEMED:     "BETA_ACCESS_REDEEMED",
+  // PO-3B — beta operations write controls. Distinct operator mutations on the
+  // same BetaAccessRequest lifecycle: the platform registration-mode switch, and
+  // resend/revoke on an already-issued invitation (revoke nulls the token and
+  // flips status to DENIED — it never touches users or existing access). All
+  // three are written with performedByAdminId (the acting operator) and surface
+  // in the Security Ops operator-action feed.
+  BETA_MODE_CHANGED:        "BETA_MODE_CHANGED",
+  // PO-3C — an operator issued a direct (cold) invitation to an email that never
+  // submitted a request. Same email-bound single-use token as the approve flow.
+  BETA_INVITATION_CREATED:  "BETA_INVITATION_CREATED",
+  BETA_INVITATION_RESENT:   "BETA_INVITATION_RESENT",
+  BETA_INVITATION_REVOKED:  "BETA_INVITATION_REVOKED",
+  // PO-3C — the LAUNCH axis (development/beta/live), separate from the signup gate.
+  PRODUCT_STATUS_CHANGED:   "PRODUCT_STATUS_CHANGED",
 
   // ── Platform access (PO1.0) ─────────────────────────────────────────────
   // Grant lifecycle on a platform area (user × area × level). Never free
@@ -251,6 +265,34 @@ export const USER_SECURITY_HISTORY_ACTIONS: AuditActionType[] = [
   AuditAction.RECOVERY_CODES_GENERATED,
   AuditAction.RECOVERY_CODES_REGENERATED,
   AuditAction.SESSION_REVOKED,
+];
+
+/**
+ * OPERATOR actions — what a platform operator (or SYSTEM_ADMIN) DID to the
+ * platform, as opposed to end-user auth events. This is the read set behind the
+ * Security Ops "operator action feed" (PO-3A): grant lifecycle, manual platform
+ * operations, beta decisions, and operator-driven account state changes. Every
+ * one of these is written with `performedByAdminId` set (the acting operator),
+ * so the feed can attribute the actor honestly. Deliberately DISTINCT from
+ * ADMIN_SECURITY_FILTER_ACTIONS (end-user auth/session/2FA events) — the two
+ * answer different questions ("is auth healthy?" vs "what did operators do?").
+ */
+export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
+  AuditAction.PLATFORM_GRANT_CREATED,
+  AuditAction.PLATFORM_GRANT_LEVEL_CHANGED,
+  AuditAction.PLATFORM_GRANT_REVOKED,
+  AuditAction.PLATFORM_GRANT_REINSTATED,
+  AuditAction.PLATFORM_OPERATION_EXECUTED,
+  AuditAction.PLATFORM_OPERATION_DRY_RUN,
+  AuditAction.BETA_ACCESS_APPROVED,
+  AuditAction.BETA_ACCESS_DENIED,
+  AuditAction.BETA_MODE_CHANGED,
+  AuditAction.BETA_INVITATION_CREATED,
+  AuditAction.BETA_INVITATION_RESENT,
+  AuditAction.BETA_INVITATION_REVOKED,
+  AuditAction.PRODUCT_STATUS_CHANGED,
+  AuditAction.ACCOUNT_DEACTIVATED,
+  AuditAction.ACCOUNT_REACTIVATED,
 ];
 
 /** Actions counted by the admin audit "security only" quick-filter. */

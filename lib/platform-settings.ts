@@ -17,6 +17,11 @@ export const PlatformSettingKey = {
   // route. One key, three values (below): two booleans would admit a
   // contradictory fourth state (closed-but-invite-required).
   REGISTRATION_MODE:         "registration_mode",
+  // PO-3C — the LAUNCH dimension, deliberately SEPARATE from registration_mode:
+  // "how mature is the product" (development/beta/live) is a different axis from
+  // "who may sign up" (open/invite_only/closed). Presentation/framing only — it
+  // gates no behavior by itself; registration_mode remains the only signup gate.
+  PRODUCT_STATUS:            "product_status",
 } as const;
 
 export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof PlatformSettingKey];
@@ -30,6 +35,15 @@ export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof Plat
 export const REGISTRATION_MODES = ["open", "invite_only", "closed"] as const;
 export type RegistrationMode = typeof REGISTRATION_MODES[number];
 
+/**
+ * Product maturity (product_status setting) — the LAUNCH axis, orthogonal to
+ * registration_mode. It frames the platform ("we're in beta") without gating
+ * signup ("who may register"). A team can be `beta` + `open` (public beta) or
+ * `live` + `invite_only` (soft launch); the two never collapse into one control.
+ */
+export const PRODUCT_STATUSES = ["development", "beta", "live"] as const;
+export type ProductStatus = typeof PRODUCT_STATUSES[number];
+
 /** Defaults if the row doesn't exist yet (migration seeds these, but be safe). */
 const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   require_totp_system_admin: "false",
@@ -39,6 +53,8 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   min_password_length:       "8",
   // Ships `open` so nothing changes until an admin flips it (S3 ship checklist).
   registration_mode:         "open",
+  // Ships `beta` — honest current maturity; changed only when the operator flips it.
+  product_status:            "beta",
 };
 
 /** Read all platform settings as a key→value map. */
@@ -82,6 +98,15 @@ export async function getRegistrationMode(): Promise<RegistrationMode> {
   return (REGISTRATION_MODES as readonly string[]).includes(raw)
     ? (raw as RegistrationMode)
     : "open";
+}
+
+/** The current product maturity (PO-3C). Falls back to `beta` for an unset or
+ *  unrecognized value — the honest current stage, never a silent "live". */
+export async function getProductStatus(): Promise<ProductStatus> {
+  const raw = await getSetting(PlatformSettingKey.PRODUCT_STATUS);
+  return (PRODUCT_STATUSES as readonly string[]).includes(raw)
+    ? (raw as ProductStatus)
+    : "beta";
 }
 
 /** Write a setting value. */

@@ -9,7 +9,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { buildGrowthFunnel, getGrowthFunnel, type GrowthReaders } from "@/lib/platform/growth/growth";
+import { buildGrowthFunnel, getGrowthFunnel, getBetaInvitationLifecycle, type GrowthReaders } from "@/lib/platform/growth/growth";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -69,6 +69,17 @@ async function main() {
     check("reads BetaAccessRequest + User + UserSession", /betaAccessRequest/.test(src) && /userSession/.test(src));
     check("writes nothing", !/\.(create|update|delete|upsert)\(/.test(src));
     check("no new telemetry emission", !/recordApiUsage|\bemit\(/.test(src));
+  }
+
+  console.log("getBetaInvitationLifecycle (PO-3A) · injected readers");
+  {
+    const lc = await getBetaInvitationLifecycle({
+      now: NOW,
+      readers: { sent: async () => 12, accepted: async () => 5, expired: async () => 3, revoked: async () => 1 },
+    });
+    check("sent/accepted/expired/revoked pass through", lc.sent === 12 && lc.accepted === 5 && lc.expired === 3 && lc.revoked === 1);
+    check("checkedAt is the injected now", lc.checkedAt === NOW.toISOString());
+    check("all four are independent projections (no derived arithmetic)", lc.sent !== lc.accepted + lc.expired + lc.revoked);
   }
 
   if (failures > 0) { console.error(`\ngrowth.test: ${failures} failure(s).`); process.exit(1); }

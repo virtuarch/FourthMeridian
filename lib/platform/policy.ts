@@ -100,12 +100,16 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       "Audit feed, authentication posture, and session activity across the platform.",
     sections: [
       { key: "sec_audit_feed",   label: "Audit Feed",          order: 0 },
-      { key: "sec_auth_posture", label: "Authentication Posture", order: 1 },
-      { key: "sec_sessions",     label: "Sessions",            order: 2 },
+      // PO-3A — operator action feed: what operators DID to the platform (grant
+      // changes, manual operations, beta decisions), distinct from the end-user
+      // auth events in the audit feed. Backfilled by ensurePlatformSections.
+      { key: "sec_operator_actions", label: "Operator Actions", order: 1 },
+      { key: "sec_auth_posture", label: "Authentication Posture", order: 2 },
+      { key: "sec_sessions",     label: "Sessions",            order: 3 },
       // Wave 3 ⑧ — real-time auth-anomaly trips (failed-login bursts, recovery
       // streaks, disabled-admin probes). Backfilled onto the live Space by
       // ensurePlatformSections.
-      { key: "sec_anomalies",    label: "Anomalies",           order: 3 },
+      { key: "sec_anomalies",    label: "Anomalies",           order: 4 },
     ],
   },
   GROWTH_REVENUE: {

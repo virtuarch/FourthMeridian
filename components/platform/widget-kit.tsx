@@ -20,6 +20,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Loader2, AlertTriangle } from "lucide-react";
+import { Block, Surface, Figure } from "@/components/atlas/Surface";
 
 /** The section shape the host (PlatformSpaceDashboard) hands each widget. */
 export type PlatformSection = { id: string; key: string; label: string };
@@ -62,8 +63,18 @@ export function useWidgetFetch<T>(url: string): { data: T | null; loading: boole
   return { data, loading, error };
 }
 
-/** The card shell — mirrors PlaceholderCard's surface so widgets sit flush with
- *  any still-placeholder cards on the same grid. */
+/**
+ * PO-2 — the editorial section shell every platform widget renders through. It
+ * composes the SAME Atlas read-surface language customer Spaces use: an Atlas
+ * `Block` (the quiet uppercase eyebrow — "the label found once, then ignored")
+ * with a `Surface` carrying the widget's content. The old bordered dashboard
+ * card (icon badge + bold title) is gone — a stack of these Blocks reads as an
+ * editorial workspace, not a grid of isolated metric cards.
+ *
+ * The `icon` is kept as a FAINT marker in the Block's hint slot (a scanning aid
+ * on a dense operational surface), never the loud badge it was. Signature is
+ * unchanged, so no widget call site changes.
+ */
 export function PlatformWidgetCard({
   label,
   icon: Icon,
@@ -74,21 +85,9 @@ export function PlatformWidgetCard({
   children: ReactNode;
 }) {
   return (
-    <div
-      className="relative overflow-hidden rounded-[var(--radius-lg)] border p-5 flex flex-col gap-3"
-      style={{ background: "var(--surface-muted)", borderColor: "var(--border-hairline)" }}
-    >
-      <div className="flex items-center gap-2">
-        <div
-          className="w-7 h-7 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0"
-          style={{ background: "var(--glass-ultrathin)", color: "var(--text-muted)" }}
-        >
-          <Icon size={14} />
-        </div>
-        <p className="font-semibold text-[var(--text-primary)] text-sm">{label}</p>
-      </div>
-      {children}
-    </div>
+    <Block label={label} hint={<Icon size={12} aria-hidden className="text-[var(--text-faint)]" />}>
+      <Surface className="p-4 md:p-5 flex flex-col gap-3">{children}</Surface>
+    </Block>
   );
 }
 
@@ -134,11 +133,14 @@ export function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-/** Small stat used across the summary widgets. */
+/** A single operational figure — the platform reading of the Atlas `Figure`
+ *  primitive (tabular, no brand tone: a number's colour is a claim). Used across
+ *  the summary widgets so every platform metric renders in the same editorial
+ *  type as customer-Space figures. */
 export function WidgetStat({ value, label }: { value: string | number; label: string }) {
   return (
-    <div className="flex flex-col">
-      <span className="text-xl font-semibold text-[var(--text-primary)] tabular-nums">{value}</span>
+    <div className="flex flex-col gap-1">
+      <Figure value={value} size="figure" />
       <span className="text-[11px] uppercase tracking-wide text-[var(--text-secondary)]">{label}</span>
     </div>
   );

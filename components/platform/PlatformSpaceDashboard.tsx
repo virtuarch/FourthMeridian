@@ -38,8 +38,10 @@ import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, G
 import type { PlatformArea } from "@prisma/client";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
 import { getPlatformAreaWorkspaces, getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { PlatformAreaHero } from "./PlatformAreaHero";
 import type { PlatformSection } from "./widget-kit";
 import { SecAuditFeedWidget } from "./widgets/SecAuditFeedWidget";
+import { SecOperatorActionsWidget } from "./widgets/SecOperatorActionsWidget";
 import { SecAuthPostureWidget } from "./widgets/SecAuthPostureWidget";
 import { SecSessionsWidget } from "./widgets/SecSessionsWidget";
 import { SecAnomaliesWidget } from "./widgets/SecAnomaliesWidget";
@@ -74,8 +76,9 @@ type Section = PlatformSection;
  */
 const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section }>> = {
   // Security Operations
-  sec_audit_feed:   SecAuditFeedWidget,
-  sec_auth_posture: SecAuthPostureWidget,
+  sec_audit_feed:       SecAuditFeedWidget,
+  sec_operator_actions: SecOperatorActionsWidget,
+  sec_auth_posture:     SecAuthPostureWidget,
   sec_sessions:     SecSessionsWidget,
   sec_anomalies:    SecAnomaliesWidget,
   // Platform Operations
@@ -143,7 +146,13 @@ function WorkspaceDoorway({ targetId, onOpen }: { targetId: string; onOpen: (id:
   );
 }
 
-/** One workspace body — its composed section widgets (+ Overview doorways). */
+/** One workspace body — its composed section widgets (+ Overview doorways).
+ *
+ * PO-2 — the body is now an EDITORIAL STACK, not a card grid: each widget is an
+ * Atlas Block+Surface (widget-kit) laid out in the same top-to-bottom reading
+ * rhythm customer Spaces use (space-y), so density builds down the page instead
+ * of tiling isolated metric cards. The doorways keep their summary→detail role
+ * but read as a quiet "Explore" region rather than a second card grid. */
 function PlatformWorkspaceBody({
   sectionKeys,
   doorways,
@@ -160,11 +169,11 @@ function PlatformWorkspaceBody({
     .filter((row): row is Section => row != null && PLATFORM_WIDGET_REGISTRY[row.key] != null);
 
   return (
-    <div className="pb-16 flex flex-col gap-4 md:gap-5">
+    <div className="flex flex-col gap-8 md:gap-10 pb-16">
       {rows.length === 0 ? (
         <p className="text-sm text-[var(--text-secondary)]">No sections enabled for this workspace.</p>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-4 md:gap-5">
+        <div className="flex flex-col gap-8 md:gap-10">
           {rows.map((row) => {
             const Widget = PLATFORM_WIDGET_REGISTRY[row.key];
             return <Widget key={row.id} section={row} />;
@@ -173,14 +182,14 @@ function PlatformWorkspaceBody({
       )}
 
       {doorways && doorways.length > 0 && (
-        <div>
-          <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-2">Explore</p>
+        <section aria-label="Explore">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)] mb-3">Explore</p>
           <div className="grid grid-cols-[repeat(auto-fit,minmax(min(220px,100%),1fr))] gap-3">
             {doorways.map((id) => (
               <WorkspaceDoorway key={id} targetId={id} onOpen={onOpen} />
             ))}
           </div>
-        </div>
+        </section>
       )}
     </div>
   );
@@ -225,12 +234,20 @@ export function PlatformSpaceDashboard({ area, areaLabel, spaceName, accessLevel
       onSelectTab={setActiveTab}
     >
       {active ? (
-        <PlatformWorkspaceBody
-          sectionKeys={active.sections}
-          doorways={active.doorways}
-          dbByKey={dbByKey}
-          onOpen={setActiveTab}
-        />
+        <div className="flex flex-col gap-8 md:gap-10">
+          {/* The area's editorial lede opens its Overview — the "operating
+              environment" identity. Detail workspaces (Jobs/Providers/…) skip it
+              and lead straight with their content. */}
+          {active.workspaceId === "platform-overview" && (
+            <PlatformAreaHero area={area} accessLevel={accessLevel} />
+          )}
+          <PlatformWorkspaceBody
+            sectionKeys={active.sections}
+            doorways={active.doorways}
+            dbByKey={dbByKey}
+            onOpen={setActiveTab}
+          />
+        </div>
       ) : (
         <p className="text-sm text-[var(--text-secondary)]">No workspaces configured for this area.</p>
       )}
