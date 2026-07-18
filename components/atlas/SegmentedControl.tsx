@@ -109,19 +109,25 @@ export function SegmentedControl<T extends string>({
       role="tablist"
       aria-label={rest["aria-label"]}
       className={[
-        "relative inline-flex max-w-full overflow-x-auto no-scrollbar p-1.5 gap-0",
+        // SHELL migration — matched to the prototype Rail exactly: 4px track
+        // padding (p-1) + blur(20px) saturate(180%) glass, so the rail/lens read
+        // pixel-identical to the reference (colors + highlight already matched).
+        "relative inline-flex max-w-full overflow-x-auto no-scrollbar p-1 gap-0",
         className,
       ].join(" ")}
       style={{
         background: "var(--glass-ultrathin)",
         border: "1px solid var(--border-hairline)",
         borderRadius: "var(--radius-full)",
-        backdropFilter: "blur(30px) saturate(160%)",
-        WebkitBackdropFilter: "blur(30px) saturate(160%)",
+        backdropFilter: "blur(20px) saturate(180%)",
+        WebkitBackdropFilter: "blur(20px) saturate(180%)",
       }}
     >
-      {/* Sliding active-segment highlight — translucent Meridian wash, not a
-          solid color block (see GlassButton's tone="meridian" recipe). */}
+      {/* Sliding active-segment highlight — M3-Reset: the prototype's NEUTRAL
+          white-glass wash (Rail/LensSelector recipe: bg oklch(1 0 0 / 9%)), NOT
+          the old blue Meridian tint. No blue anywhere in the resting active
+          state — the highlight is a quiet glass pill and the active LABEL carries
+          the emphasis via full-white text. */}
       {highlight && (
         <div
           aria-hidden
@@ -129,9 +135,9 @@ export function SegmentedControl<T extends string>({
           style={{
             width: highlight.width,
             transform: `translateX(${highlight.left}px)`,
-            background: "rgba(59,130,246,.14)",
-            border: "1px solid rgba(125,168,255,.32)",
-            boxShadow: "inset 0 1px 0 rgba(255,255,255,.10), 0 1px 6px rgba(37,99,235,.16)",
+            background: "rgba(255,255,255,.09)",
+            border: "1px solid rgba(255,255,255,.10)",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,.10)",
           }}
         >
           {/* Specular top-edge highlight — same signature as GlassPanel/GlassButton */}
@@ -146,9 +152,8 @@ export function SegmentedControl<T extends string>({
         </div>
       )}
 
-      {options.map((opt, i) => {
+      {options.map((opt) => {
         const isActive = opt.id === value;
-        const prevIsActive = i > 0 && options[i - 1].id === value;
         // Under "activeOnly", an inactive segment collapses its label to
         // icon-only (the label stays in the DOM via sr-only, not display:none).
         //
@@ -178,19 +183,15 @@ export function SegmentedControl<T extends string>({
             aria-label={isActiveOnly ? opt.label : undefined}
             onClick={() => onChange(opt.id)}
             className={[
-              "relative z-10 shrink-0 whitespace-nowrap rounded-[var(--radius-full)] px-4 py-2 text-xs font-semibold",
+              "relative z-10 shrink-0 whitespace-nowrap rounded-[var(--radius-full)] px-4 py-1.5 text-xs font-medium",
               "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-hairline-strong)]",
+              // M3-Reset — prototype treatment: active = full-white text on the
+              // neutral glass pill (no blue); inactive = muted, brightening on hover.
               isActive
-                ? "text-[var(--meridian-400)]"
+                ? "text-[var(--text-primary)]"
                 : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
             ].join(" ")}
-            style={{
-              borderLeft:
-                !isActive && !prevIsActive && i > 0
-                  ? "1px solid var(--border-hairline)"
-                  : "1px solid transparent",
-            }}
           >
             {opt.icon != null ? (
               // Icon + label share the segment; the inner flex owns the gap so

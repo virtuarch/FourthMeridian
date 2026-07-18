@@ -30,7 +30,9 @@
  * simply skipped), so the placeholder branch was dead (OPS-5 integration gate §12).
  */
 
-import { useState, type ComponentType } from "react";
+import { useEffect, useState, type ComponentType } from "react";
+import { useRouter } from "next/navigation";
+import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
 import type { LucideIcon } from "lucide-react";
 import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, ArrowRight } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
@@ -115,21 +117,6 @@ interface Props {
   sections:    Section[];
 }
 
-function AccessBadge({ level }: { level: string }) {
-  const isWrite = level === "WRITE";
-  return (
-    <span
-      className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border"
-      style={
-        isWrite
-          ? { background: "rgba(201,155,60,.14)", color: "var(--brass-300)", borderColor: "rgba(201,155,60,.3)" }
-          : { background: "rgba(59,130,246,.1)", color: "var(--meridian-400)", borderColor: "rgba(125,168,255,.24)" }
-      }
-    >
-      {level} access
-    </span>
-  );
-}
 
 /** A summary→detail doorway button (Overview only). */
 function WorkspaceDoorway({ targetId, onOpen }: { targetId: string; onOpen: (id: string) => void }) {
@@ -213,11 +200,29 @@ export function PlatformSpaceDashboard({ area, areaLabel, spaceName, accessLevel
 
   const active = workspaces.find((w) => w.workspaceId === activeTab) ?? workspaces[0];
 
+  // SHELL migration — publish platform identity to the ContextualNavbar's Space
+  // mode (the same transforming sidebar customer Spaces use; platform Spaces are
+  // count-based, so no FX and no Manage). The operator's access level, formerly a
+  // toolbar badge, folds into the subtitle so no information is lost.
+  const router = useRouter();
+  const { publishSpace, publishCurrencyControl } = useSpaceChromePublisher();
+  const chromeSubtitle = `Platform · ${areaLabel} · ${accessLevel}`;
+  useEffect(() => {
+    publishCurrencyControl(null);
+    publishSpace({
+      identity: { name: spaceName, subtitle: chromeSubtitle },
+      sections: [],
+      activeSection: "",
+      onSelectSection: () => {},
+      onLeave: () => router.push("/dashboard/spaces"),
+    });
+    return () => publishSpace(null);
+  }, [publishSpace, publishCurrencyControl, spaceName, chromeSubtitle, router]);
+
   return (
     <SpaceShell
       title={spaceName}
-      subtitle={`Platform · ${areaLabel}`}
-      toolbar={<AccessBadge level={accessLevel} />}
+      subtitle={chromeSubtitle}
       railOptions={railOptions}
       activeTab={active?.workspaceId ?? activeTab}
       onSelectTab={setActiveTab}

@@ -25,7 +25,6 @@
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
-import { FloatingNavWrapper, PERSPECTIVE_PILL_TOP } from "@/components/atlas/FloatingNavWrapper";
 import { ShellContextRow } from "./ShellContextRow";
 import { PerspectiveTabs, type PerspectiveTabItem } from "./PerspectiveTabs";
 
@@ -51,24 +50,28 @@ interface Props {
 export function PerspectiveShell(props: Props) {
   return (
     <div className="space-y-3">
-      {/* Container 2 — the lens. Now rendered FIRST (SHELL_NAV §2.2: pick the
-          lens above, read/adjust time below) and as a centered FLOATING pill
-          (§2.4) rather than a bordered selector frame — the SegmentedControl
-          supplies its own glass material, so the old border box is dropped. */}
-      <FloatingNavWrapper top={PERSPECTIVE_PILL_TOP}>
-        <PerspectiveTabs items={props.tabs} activeId={props.activeTabId} onSelect={props.onSelectTab} />
-      </FloatingNavWrapper>
+      {/* Container 2 — the lens. Rendered FIRST (SHELL_NAV §2.2: pick the lens
+          above, read/adjust time below) as the prototype's in-flow, centered lens
+          chips (LensSelector) — the SAME selector as the Overview summary, so the
+          engaged and summary lens rows are visually identical. The former floating
+          pill (FloatingNavWrapper) is dropped: the prototype's lens selector is
+          in-flow, and loose chips must not float over the content. */}
+      <div className="flex justify-center px-1">
+        <PerspectiveTabs
+          items={props.tabs}
+          activeId={props.activeTabId}
+          onSelect={props.onSelectTab}
+        />
+      </div>
 
-      {/* Container 1 — time & trust (the permanent instrument panel). */}
-      <div
-        className="rounded-2xl border p-3 sm:p-4 space-y-3"
-        style={{
-          background: "var(--glass-ultrathin)",
-          borderColor: "var(--border-hairline-strong)",
-          backdropFilter: "blur(30px) saturate(160%)",
-          WebkitBackdropFilter: "blur(30px) saturate(160%)",
-        }}
-      >
+      {/* Container 1 — time & trust, LIGHTENED (M3-Reset).
+          The temporal capability (As of / Compare to / Completeness / Evidence +
+          presets) is UNCHANGED, but it no longer sits in a heavy bordered glass
+          instrument panel — the controls sit inline on the page, like the
+          prototype's light TimeBar, so a lens reads as an editorial surface, not
+          a dashboard control deck. Nothing about asOf/compareTo/evidence semantics
+          changes; this is purely the surrounding chrome. */}
+      <div className="space-y-3 px-1">
         <ShellContextRow
           asOf={props.asOf}
           onAsOfChange={props.onAsOfChange}

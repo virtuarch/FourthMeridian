@@ -50,6 +50,11 @@ function priorityTint(priority: string): string {
 
 const POLL_MS = 60_000;
 
+/** How many notifications the compact dropdown shows before summarising the rest.
+ *  Keeps the panel to the UserMenu's size envelope — no scroll, no giant panel,
+ *  no (deferred) Notification Center. */
+const NOTIF_VISIBLE = 4;
+
 export function NotificationBell() {
   const pathname = usePathname();
   const router = useRouter();
@@ -184,79 +189,98 @@ export function NotificationBell() {
         )}
       </button>
 
-      {/* Panel — fixed so it never overflows the viewport edge (UserButton). */}
+      {/* Panel — SAME size envelope + glass material as the UserMenu dropdown (a
+          compact anchored dropdown, not a competing panel). It shows only the most
+          recent items that fit; anything beyond is summarised, never scrolled. The
+          full-history Notification Center is deferred. */}
       {open && (
-        <div className="fixed top-[58px] right-3 w-[min(24rem,calc(100vw-1.5rem))] bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden z-50">
+        <div
+          className="absolute right-0 top-full z-50 mt-2 w-[300px] origin-top-right overflow-hidden rounded-[var(--radius-md)] shadow-[0_16px_40px_rgba(0,0,0,.45)]"
+          style={{
+            background: "var(--glass-thick)",
+            border: "1px solid var(--border-hairline-strong)",
+            backdropFilter: "blur(48px) saturate(150%)",
+            WebkitBackdropFilter: "blur(48px) saturate(150%)",
+          }}
+        >
           {/* Header */}
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800">
-            <p className="text-xs font-semibold text-white">Notifications</p>
+          <div className="flex items-center justify-between border-b border-[var(--border-hairline)] px-3 py-2">
+            <p className="text-xs font-semibold text-[var(--text-primary)]">Notifications</p>
             <button
               onClick={markAllRead}
               disabled={busy || !hasUnreadInList}
-              className="flex items-center gap-1 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-default transition-colors"
+              className="flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-default transition-colors"
             >
               <CheckCheck size={13} strokeWidth={1.75} />
               Mark all read
             </button>
           </div>
 
-          {/* Body */}
-          <div className="max-h-[min(28rem,70vh)] overflow-y-auto">
+          {/* Body — no scroll expansion; only NOTIF_VISIBLE items render. */}
+          <div>
             {items === null ? (
-              // Loading state
-              <div className="px-4 py-8 text-center text-xs text-gray-500">
+              <div className="px-3 py-8 text-center text-xs text-[var(--text-muted)]">
                 Loading notifications…
               </div>
             ) : items.length === 0 ? (
-              // Empty state
-              <div className="px-4 py-10 text-center">
-                <Bell size={20} strokeWidth={1.5} className="mx-auto mb-2 text-gray-600" />
-                <p className="text-xs text-gray-500">You&apos;re all caught up.</p>
+              <div className="px-3 py-10 text-center">
+                <Bell size={20} strokeWidth={1.5} className="mx-auto mb-2 text-[var(--text-muted)]" />
+                <p className="text-xs text-[var(--text-muted)]">You&apos;re all caught up.</p>
               </div>
             ) : (
-              <ul>
-                {items.map((n) => {
-                  const Icon = iconFor(n.icon);
-                  return (
-                    <li key={n.id} className="border-b border-gray-800 last:border-b-0">
-                      <button
-                        onClick={() => markRead(n)}
-                        className={[
-                          "w-full flex items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-800/60",
-                          n.read ? "opacity-60" : "",
-                        ].join(" ")}
-                      >
-                        <span className={["mt-0.5 shrink-0", priorityTint(n.priority)].join(" ")}>
-                          <Icon size={15} strokeWidth={1.75} />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-2">
-                            <span
-                              className={[
-                                "text-xs truncate",
-                                n.read ? "text-gray-400" : "text-white font-medium",
-                              ].join(" ")}
-                            >
-                              {n.title}
+              <>
+                <ul>
+                  {items.slice(0, NOTIF_VISIBLE).map((n) => {
+                    const Icon = iconFor(n.icon);
+                    return (
+                      <li key={n.id} className="border-b border-[var(--border-hairline)] last:border-b-0">
+                        <button
+                          onClick={() => markRead(n)}
+                          className={[
+                            "w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)]",
+                            n.read ? "opacity-60" : "",
+                          ].join(" ")}
+                        >
+                          <span className={["mt-0.5 shrink-0", priorityTint(n.priority)].join(" ")}>
+                            <Icon size={15} strokeWidth={1.75} />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center gap-2">
+                              <span
+                                className={[
+                                  "text-xs truncate",
+                                  n.read ? "text-[var(--text-muted)]" : "text-[var(--text-primary)] font-medium",
+                                ].join(" ")}
+                              >
+                                {n.title}
+                              </span>
+                              {!n.read && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-[var(--meridian-400)] shrink-0" aria-label="Unread" />
+                              )}
                             </span>
-                            {!n.read && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0" aria-label="Unread" />
+                            {n.body && (
+                              // No `block` here — it would override line-clamp's own
+                              // `display:-webkit-box`, so the body would wrap instead
+                              // of truncating to one line (and the panel grew tall).
+                              <span className="text-[11px] text-[var(--text-muted)] mt-0.5 line-clamp-1">
+                                {n.body}
+                              </span>
                             )}
-                          </span>
-                          {n.body && (
-                            <span className="block text-[11px] text-gray-500 mt-0.5 line-clamp-2">
-                              {n.body}
+                            <span className="block text-[10px] text-[var(--text-faint)] mt-0.5">
+                              {formatRelativeTime(n.createdAt)}
                             </span>
-                          )}
-                          <span className="block text-[10px] text-gray-600 mt-1">
-                            {formatRelativeTime(n.createdAt)}
                           </span>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {items.length > NOTIF_VISIBLE && (
+                  <p className="border-t border-[var(--border-hairline)] px-3 py-2 text-center text-[11px] text-[var(--text-muted)]">
+                    {items.length - NOTIF_VISIBLE} more recent
+                  </p>
+                )}
+              </>
             )}
           </div>
         </div>

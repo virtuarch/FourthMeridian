@@ -37,19 +37,26 @@ type _SubtitleSlot = Expect<Equal<SpaceShellProps["subtitle"], ReactNode>>;
 // Optional host-composed chrome slots (a slot, never structured props — the shell
 // stays agnostic of what each one opens or renders).
 type _OverlaysSlot = Expect<Equal<SpaceShellProps["overlays"], ReactNode | undefined>>;
-type _ToolbarSlot  = Expect<Equal<SpaceShellProps["toolbar"], ReactNode | undefined>>;
-// SD-2C — the display-currency control is a SHELL-owned SLOT: the host builds the
-// control + its state, the shell performs NO FX. Optional (absent ⇒ nothing renders).
-type _FxSlot = Expect<Equal<SpaceShellProps["displayCurrencyControl"], ReactNode | undefined>>;
+// SHELL migration — the identity, the FX control, and Manage now live in the
+// ContextualNavbar's Space mode (published via SpaceChrome). The shell keeps a
+// SECOND, CSS-gated mount point for the canonical controls used at narrow widths
+// (where the sidebar is hidden): the FX node is a ReactNode SLOT (the shell does
+// NO FX), Manage is the host's handler. Optional (absent ⇒ nothing renders).
+type _FxSlot     = Expect<Equal<SpaceShellProps["currencyControl"], ReactNode | undefined>>;
+type _ManageSlot = Expect<Equal<SpaceShellProps["onManage"], (() => void) | undefined>>;
 // The rail slot carries resolved id/label/icon options — never domain workspaces.
 type _RailSlot   = Expect<Equal<SpaceShellProps["railOptions"], SpaceShellRailOption[]>>;
 type _RailOption = Expect<Equal<keyof SpaceShellRailOption, "id" | "label" | "icon">>;
 // The EXACT slot-API surface — nothing added, nothing dropped. Replaces the old
-// text scan for `overlays?:` / `toolbar?:` / `railOptions:` / `children:`.
+// text scan for `overlays?:` / `railOptions:` / `children:`.
+// M3-Reset — `railStatic` removed: the rail is centered + stationary on every
+// Workspace and lens. SHELL migration — `toolbar` + `displayCurrencyControl`
+// dropped in favour of the ContextualNavbar-published identity/controls, with
+// `currencyControl` + `onManage` retained here for the narrow-width relocation.
 type _SlotApiKeys = Expect<Equal<
   keyof SpaceShellProps,
-  | "overlays" | "title" | "subtitle" | "toolbar" | "displayCurrencyControl"
-  | "railOptions" | "activeTab" | "onSelectTab" | "railStatic" | "children"
+  | "overlays" | "title" | "subtitle" | "currencyControl" | "onManage"
+  | "railOptions" | "activeTab" | "onSelectTab" | "children"
 >>;
 
 // ── RUNTIME: the durable boundary scans (source-scan — no DOM runner in-repo) ────

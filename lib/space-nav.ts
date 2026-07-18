@@ -32,9 +32,15 @@ export type SpaceTabId =
   | "DOCUMENTS"
   | "SETTINGS";
 
+// M2 canonical IA: "PERSPECTIVES" is NO LONGER a rail destination. Perspectives
+// are specialized Workspaces selected through the Overview experience
+// (?perspective=<id>), so the rail never shows a Perspectives button. The id is
+// kept in SpaceTabId + SPACE_TAB_LABELS for back-compat (legacy
+// ?tab=perspectives links canonicalize to Overview in the host URL layer), but
+// it is deliberately absent from SPACE_TAB_ORDER so railVisibleTabs() can never
+// re-surface it. Fixed ORDER remains law for every tab that DOES appear.
 export const SPACE_TAB_ORDER: SpaceTabId[] = [
   "OVERVIEW",
-  "PERSPECTIVES",
   "ACTIVITY",
   "FINANCES",
   "ACCOUNTS",
@@ -116,6 +122,50 @@ export function isRailTabVisible(id: SpaceTabId, host: SpaceDashboardHost): bool
  */
 export function railVisibleTabs(host: SpaceDashboardHost): SpaceTabId[] {
   return SPACE_TAB_ORDER.filter((id) => isRailTabVisible(id, host));
+}
+
+/**
+ * The five top-level application destinations — the ONE navigation model, shared
+ * by the desktop ContextualNavbar (global mode) and the mobile BottomNav, so the
+ * two are responsive presentations of one model rather than separate systems.
+ * This is the prototype's global nav (DS-6): Spaces · Brief · AI · Connections ·
+ * Settings, in that fixed order.
+ *
+ * Data only (id/label/href/live) — icon components stay in the consuming
+ * components (same convention as SPACE_TAB_LABELS above and lib/widget-registry),
+ * so this stays a framework-agnostic module. Every destination is a real,
+ * shipping production route, so all five are `live` (the prototype's "Settings ·
+ * soon" stub does not apply here).
+ */
+export type GlobalDestId = "spaces" | "brief" | "ai" | "connections" | "settings";
+
+export interface GlobalDest {
+  id:    GlobalDestId;
+  label: string;
+  href:  string;
+  live:  boolean;
+}
+
+export const GLOBAL_NAV: GlobalDest[] = [
+  { id: "spaces",      label: "Spaces",      href: "/dashboard/spaces",      live: true },
+  { id: "brief",       label: "Brief",       href: "/dashboard/brief",       live: true },
+  { id: "ai",          label: "AI",          href: "/dashboard/analyze",     live: true },
+  { id: "connections", label: "Connections", href: "/dashboard/connections", live: true },
+  { id: "settings",    label: "Settings",    href: "/dashboard/settings",    live: true },
+];
+
+/**
+ * Is a global destination active for the given pathname? "Spaces" owns both the
+ * Spaces launcher AND an individual Space dashboard (/dashboard) — you reach a
+ * Space by picking one under Spaces, so /dashboard reads as part of that section
+ * (this mirrors the retired BottomNav's rule). The others match by prefix.
+ */
+export function isGlobalDestActive(id: GlobalDestId, pathname: string): boolean {
+  if (id === "spaces") {
+    return pathname.startsWith("/dashboard/spaces") || pathname === "/dashboard";
+  }
+  const dest = GLOBAL_NAV.find((d) => d.id === id);
+  return dest ? pathname.startsWith(dest.href) : false;
 }
 
 /**

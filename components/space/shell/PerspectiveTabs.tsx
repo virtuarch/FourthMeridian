@@ -3,38 +3,25 @@
 /**
  * components/space/shell/PerspectiveTabs.tsx
  *
- * Perspective shell — Container 2 ("the lens"). The six lenses as ONE
- * SegmentedControl track, so the shell has a single active-state grammar (the
- * Meridian-glass sliding highlight) across presets and tabs. The track scrolls
- * horizontally on narrow widths (SegmentedControl's built-in overflow) — never a
- * <select>, never a sidebar. Workspace-less lenses keep the "· soon" suffix.
+ * The Lens / Perspective selector — the prototype's LensSelector (DS-5 §5). It is
+ * DELIBERATELY NOT a segmented control: each lens is its own loose, bordered chip
+ * on a rule, so the row reads as "a set of questions you could ask" rather than
+ * "a set of places you could go". No track, no sliding highlight, no container —
+ * just independent buttons, matching the prototype 1:1.
  *
- * Extracted from the former inline PerspectiveTabSelector; role=tablist and
- * aria-selected come from SegmentedControl. (Roving arrow-key nav is not provided
- * by the shared control; every tab stays Tab-focusable and clickable.)
+ * Kept as `PerspectiveTabs` (name + props) so both call sites — the Overview
+ * summary selector and the engaged PerspectiveShell — are unchanged; only the
+ * PRESENTATION moved from SegmentedControl to prototype chips. Selection state,
+ * ids, and semantics are untouched. Workspace-less lenses keep the "· soon" suffix.
  */
-
-import { SegmentedControl } from "@/components/atlas/SegmentedControl";
-import { PERSPECTIVE_ICON_MAP, PERSPECTIVE_ICON_FALLBACK } from "@/lib/perspective-icons";
 
 export interface PerspectiveTabItem {
   id:           string;
   label:        string;
   hasWorkspace: boolean;
-  /** Lucide icon NAME (from PerspectiveDef.icon), resolved to a node here via
-   *  lib/perspective-icons. Optional so callers that don't want icons omit it. */
+  /** Retained for API compatibility with the registry item shape; the prototype
+   *  lens chips are TEXT-ONLY, so it is intentionally not rendered. */
   icon?:        string;
-}
-
-/**
- * Resolve a PerspectiveDef.icon NAME to its Lucide component and render it at
- * the tab scale — same shape as TimelineWidget's EventIcon (a static top-level
- * component, so the icon type is never "created during render"). Decorative:
- * the tab's visible label is its accessible name, so the glyph is aria-hidden.
- */
-function TabIcon({ name }: { name: string }) {
-  const Icon = PERSPECTIVE_ICON_MAP[name] ?? PERSPECTIVE_ICON_FALLBACK;
-  return <Icon size={14} aria-hidden />;
 }
 
 export function PerspectiveTabs({
@@ -48,20 +35,33 @@ export function PerspectiveTabs({
   onSelect:  (id: string) => void;
   className?: string;
 }) {
-  const options = items.map((i) => ({
-    id:    i.id,
-    label: i.hasWorkspace ? i.label : `${i.label} · soon`,
-    icon:  i.icon ? <TabIcon name={i.icon} /> : undefined,
-  }));
-
   return (
-    <SegmentedControl
+    <div
+      role="radiogroup"
       aria-label="Perspectives"
-      className={["max-w-full", className].join(" ")}
-      options={options}
-      value={activeId ?? ""}
-      onChange={onSelect}
-      labelVisibility="activeOnly"
-    />
+      className={["no-scrollbar flex flex-wrap justify-center gap-1.5 overflow-x-auto", className].join(" ")}
+    >
+      {items.map((i) => {
+        const on = i.id === activeId;
+        const label = i.hasWorkspace ? i.label : `${i.label} · soon`;
+        return (
+          <button
+            key={i.id}
+            role="radio"
+            aria-checked={on}
+            onClick={() => onSelect(i.id)}
+            className={[
+              "shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-[12px]",
+              "transition-[color,background-color,border-color] duration-[120ms] ease-[var(--ease-standard)]",
+              on
+                ? "border-[rgba(255,255,255,.22)] bg-[rgba(255,255,255,.08)] text-[var(--text-primary)]"
+                : "border-[var(--border-hairline)] text-[var(--text-muted)] hover:border-[var(--border-hairline-strong)] hover:text-[var(--text-secondary)]",
+            ].join(" ")}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
   );
 }

@@ -13,7 +13,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, LayoutDashboard, Settings, LogOut, GripVertical } from "lucide-react";
+import { Loader2, LayoutDashboard, LogOut } from "lucide-react";
 import { PointerSensor, KeyboardSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { CATEGORY_LABELS, SpaceCategory } from "@/lib/space-presets";
@@ -25,11 +25,12 @@ import { DEFAULT_CASH_FLOW_PERIOD, isExplicitPeriod, type CashFlowPeriod } from 
 import { usePerspectiveShellState } from "@/components/space/shell/usePerspectiveShellState";
 import { SpaceShell } from "@/components/space/shell/SpaceShell";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
-import { readSpaceParam } from "@/lib/space/space-url";
+import { readSpaceParam, legacyTabPerspective } from "@/lib/space/space-url";
 import { openPerspectiveDataNeeds } from "@/lib/space/workspace-resources";
 import { inferPerspectiveTimePreset } from "@/lib/perspectives/time-range";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { PerspectiveShell } from "@/components/space/shell/PerspectiveShell";
+import { PerspectiveTabs } from "@/components/space/shell/PerspectiveTabs";
 import { WealthWorkspace } from "@/components/space/widgets/wealth/WealthWorkspace";
 import { CashFlowWorkspace } from "@/components/space/widgets/cashflow/CashFlowWorkspace";
 import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/LiquidityWorkspace";
@@ -44,8 +45,8 @@ import { AddGoalModal } from "@/components/space/workspaces/AddGoalModal";
 import { RoutedWorkspaceModal } from "@/components/space/workspaces/RoutedWorkspaceModal";
 import type { SectionCardBundle, SectionStackControls } from "@/components/space/workspaces/SpaceSectionStack";
 import type { WealthMetricKey } from "@/components/space/widgets/wealth/WealthTrendChart";
-import { SPACE_TAB_ICON_MAP, SPACE_TAB_ICON_FALLBACK } from "@/lib/space-nav-icons";
 import { railVisibleTabs, SPACE_TAB_LABELS, SPACE_ACCOUNTS_CHANGED_EVENT, SPACE_CURRENCY_CHANGED_EVENT, SPACE_DATA_REFRESHED_EVENT } from "@/lib/space-nav";
+import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
 import { getPerspectivesForCategory, PERSPECTIVE_LIBRARY, getWorkspaceTargetTab, isRoutedWorkspaceTab } from "@/lib/perspectives";
 import { toVirtualSections } from "@/lib/perspectives/virtual-sections";
 import type { LensResult } from "@/lib/perspective-engine/types";
@@ -130,17 +131,31 @@ interface Props {
 // Perspective compositions — and were previously dropped to OVERVIEW on refresh
 // because the write below was gated off them (the read path already handled
 // ?tab=debt etc. via URL_TAB_ALIAS).
+// M2 canonical IA: PERSPECTIVES / DEBT / INVESTMENTS are no longer runtime
+// destinations — perspectives are selected through OVERVIEW (?perspective=), so
+// they are dropped from the synced set. Only the true rail tabs plus the two
+// remaining legacy routed modals (GOALS / RETIREMENT) are mirrored, so refreshing
+// inside one restores it. Debt/Investments canonicalize to OVERVIEW+perspective.
 const URL_SYNCED_TABS = new Set([
-  "OVERVIEW", "PERSPECTIVES", "ACCOUNTS", "ACTIVITY", "TRANSACTIONS", "MEMBERS",
-  "GOALS", "DEBT", "INVESTMENTS", "RETIREMENT",
+  "OVERVIEW", "ACCOUNTS", "ACTIVITY", "TRANSACTIONS", "MEMBERS",
+  "GOALS", "RETIREMENT",
 ]);
-// URL "tab" value → activeTab. Includes rail tabs, the modal-routed tabs, and
-// legacy aliases (timeline/banking/credit) so existing deep links keep working.
+// URL "tab" value → activeTab. Rail tabs, the two remaining routed modals
+// (goals/retirement), and legacy aliases (timeline/banking/credit) so existing
+// deep links keep working. M2: the former perspective-routing tabs
+// (perspectives/debt/credit/investments) canonicalize to OVERVIEW; when they
+// encoded a specific lens it is forced via LEGACY_TAB_PERSPECTIVE below.
 const URL_TAB_ALIAS: Record<string, string> = {
-  overview: "OVERVIEW", perspectives: "PERSPECTIVES", accounts: "ACCOUNTS", banking: "ACCOUNTS",
+  overview: "OVERVIEW", accounts: "ACCOUNTS", banking: "ACCOUNTS",
   activity: "ACTIVITY", timeline: "ACTIVITY", transactions: "TRANSACTIONS", members: "MEMBERS",
-  goals: "GOALS", debt: "DEBT", credit: "DEBT", investments: "INVESTMENTS", retirement: "RETIREMENT",
+  goals: "GOALS", retirement: "RETIREMENT",
+  // Legacy perspective-routing tabs → Overview (the lens is engaged separately).
+  perspectives: "OVERVIEW", debt: "OVERVIEW", credit: "OVERVIEW", investments: "OVERVIEW",
 };
+
+// M2: the legacy ?tab= → forced-lens mapping lives in the canonical URL module
+// (lib/space/space-url.ts → legacyTabPerspective) so it has ONE authority and is
+// regression-tested there.
 
 /** URL "tab" param → activeTab. Present-but-invalid ⇒ OVERVIEW. Absent ⇒ null. */
 function parseTabParam(raw: string | null): string | null {
@@ -159,17 +174,31 @@ function slugToPerspectiveId(slug: string): string {
 function parsePerspectiveParam(raw: string | null): string | null {
   if (!raw) return null;
   const id = slugToPerspectiveId(raw);
-  return id in PERSPECTIVE_LIBRARY ? id : "wealth";
+  // M3-Reset — "wealth" is the underlying implementation of the Net Worth DEFAULT,
+  // not a separate destination: canonicalize the legacy ?perspective=wealth alias
+  // (and any unknown id) to the clean Net Worth default (null).
+  if (id === "wealth") return null;
+  return id in PERSPECTIVE_LIBRARY ? id : null;
 }
 function readUrlTabState(): { tab: string | null; perspective: string | null } {
   if (typeof window === "undefined") return { tab: null, perspective: null };
   const p = new URLSearchParams(window.location.search);
-  return { tab: parseTabParam(p.get("tab")), perspective: parsePerspectiveParam(p.get("perspective")) };
+  const rawTab = p.get("tab");
+  // M2: a legacy perspective-routing tab (debt/credit/investments) forces its
+  // lens; otherwise the ?perspective= param drives it (null ⇒ Overview summary).
+  const forced = legacyTabPerspective(rawTab);
+  return {
+    tab: parseTabParam(rawTab),
+    perspective: forced ?? parsePerspectiveParam(p.get("perspective")),
+  };
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const TAB_ORDER = ["OVERVIEW", "GOALS", "ACCOUNTS", "DEBT", "INVESTMENTS", "RETIREMENT", "ACTIVITY"];
+// M2: DEBT / INVESTMENTS removed — they are no longer standalone tabs (now
+// perspectives under Overview). GOALS / RETIREMENT remain only as legacy routed
+// modals (isRoutedWorkspaceTab), and are filtered out of the default-tab pick.
+const TAB_ORDER = ["OVERVIEW", "GOALS", "ACCOUNTS", "RETIREMENT", "ACTIVITY"];
 
 // (TAB_LABELS removed with the in-space Settings tab — UX-CUST-1A correction.
 //  Rail labels come from SPACE_TAB_LABELS in lib/space-nav.ts.)
@@ -184,17 +213,8 @@ const TAB_ORDER = ["OVERVIEW", "GOALS", "ACCOUNTS", "DEBT", "INVESTMENTS", "RETI
 // or the new Timeline tab) vs. which become reachable only as a Perspective
 // card, so nothing real is lost, just re-entered through one calm front door.
 
-/**
- * Resolve a rail tab id to its Lucide glyph at the tab scale — same static-
- * component shape as PerspectiveTabs' TabIcon (so the icon type is never
- * "created during render"). Decorative: the tab's label (visible, or its
- * aria-label when collapsed under labelVisibility="activeOnly") is the
- * accessible name, so the glyph is aria-hidden.
- */
-function RailTabIcon({ id }: { id: string }) {
-  const Icon = SPACE_TAB_ICON_MAP[id] ?? SPACE_TAB_ICON_FALLBACK;
-  return <Icon size={14} aria-hidden />;
-}
+// M3-Reset — the old per-tab RailTabIcon (icon-based rail) is deleted; the rail
+// is now text-only, matching the prototype.
 
 // SD-2: workspace routing identity (target tab, modal-routed set, modal chrome)
 // is now owned by the canonical registry (lib/perspectives.ts) via
@@ -205,7 +225,14 @@ function RailTabIcon({ id }: { id: string }) {
 /** New tab ids that live entirely on the fixed rail (not section-driven).
  *  ACTIVITY is NOT here: it renders its recent_activity section inline through
  *  the normal section system (Unified Space Widget Layout — Activity slice). */
-const NEW_SPACE_TABS = ["PERSPECTIVES", "FINANCES", "TRANSACTIONS", "MEMBERS", "DOCUMENTS"];
+const NEW_SPACE_TABS = ["FINANCES", "TRANSACTIONS", "MEMBERS", "DOCUMENTS"];
+
+// M3-Reset — the canonical Overview LENS set (prototype parity). "Net Worth" is
+// the default lens and maps to the Overview summary (a null engaged perspective);
+// the rest engage their extracted Workspaces. "Wealth" and "Goals" are
+// deliberately absent from the core row (see the lensSelectorItems comment).
+const NET_WORTH_LENS_ID = "networth";
+const CORE_LENS_IDS = ["cashFlow", "liquidity", "investments", "debt"];
 
 /** Flow-identified templates (Space Template Redesign): money movement is
  *  part of these Spaces' story, so Transactions is a first-class Overview
@@ -353,13 +380,15 @@ export function SpaceDashboard({
   // lists today (SHARED_ONLY_PLACEHOLDER_TABS is empty), so shared Spaces —
   // and any future Personal mount — inherit the same fixed rail order.
   const railHost = spaceType === "PERSONAL" ? ("personal" as const) : ("shared" as const);
-  const railOptions: { id: string; label: string; icon: React.ReactNode }[] = railVisibleTabs(railHost)
+  // M3-Reset — TEXT-ONLY rail options (the prototype's rail language); the old
+  // per-tab RailTabIcon treatment is dropped.
+  const railOptions: { id: string; label: string }[] = railVisibleTabs(railHost)
     // UX-CUST-1A correction: Settings is no longer an in-space rail tab.
     // Space-level settings (incl. section show/hide and layout controls) live
     // in ManageSpaceModal → Overview. "SETTINGS" stays a valid tab id in
     // lib/space-nav for types/back-compat, but it renders no rail button here.
     .filter((id) => id !== "SETTINGS")
-    .map((id) => ({ id, label: SPACE_TAB_LABELS[id], icon: <RailTabIcon id={id} /> }));
+    .map((id) => ({ id, label: SPACE_TAB_LABELS[id] }));
 
   // "overview" is filtered out here, not in lib/perspectives.ts: it's never
   // a clickable Perspective *card* (see that file's doc comment on the
@@ -390,25 +419,72 @@ export function SpaceDashboard({
   // Default = the first workspace-backed Perspective (Wealth) so the tab opens
   // on a real workspace. The Overview doorway keeps `perspectiveItems` intact.
   const [selectedPerspectiveId, setSelectedPerspectiveId] = useState<string | null>(null);
-  const defaultPerspectiveId =
-    perspectiveItems.find((p) => p.widgets && p.widgets.length > 0)?.id ??
-    perspectiveItems[0]?.id ??
-    null;
-  const activePerspectiveId = selectedPerspectiveId ?? defaultPerspectiveId;
+  // M2 canonical IA: null ⇒ the Overview summary (default landing); a lens id ⇒
+  // that Perspective is engaged through the Overview experience. There is no
+  // default-to-Wealth fallback — the summary is the Overview home, and a lens is
+  // engaged explicitly (selector / doorway / ?perspective=).
+  // M3-Reset — NET WORTH SUBSUMES WEALTH. The user-facing "Net Worth" lens IS the
+  // canonical Wealth capability (WealthResult time-machine: asOf/compareTo,
+  // evidence, completeness — all unchanged). So on Overview the RENDERED lens
+  // defaults to "wealth" when no other lens is engaged; there is no separate
+  // user-facing Wealth chip or destination. `selectedPerspectiveId` stays the
+  // clean selection state (null = Net Worth default → clean URL); this derived id
+  // is what actually renders + drives dataNeeds. Non-Overview tabs engage no lens.
+  const wealthAvailable = useMemo(() => perspectiveItems.some((p) => p.id === "wealth"), [perspectiveItems]);
+  const activePerspectiveId =
+    activeTab === "OVERVIEW" ? (selectedPerspectiveId ?? (wealthAvailable ? "wealth" : null)) : null;
   const activePerspective = activePerspectiveId
     ? perspectiveItems.find((p) => p.id === activePerspectiveId) ?? null
     : null;
+  // A Perspective is "engaged" (its Workspace occupies the Overview content slot)
+  // whenever Overview resolves a lens — which, with the Net Worth default, is
+  // always true for finance Spaces. Stock-category Spaces without a Wealth
+  // perspective resolve null and keep the summary fallback.
+  const perspectiveEngaged = activeTab === "OVERVIEW" && activePerspective != null;
 
-  // Overview Perspectives doorway — each workspace-backed card deep-links into
-  // its Perspective workspace (tab=PERSPECTIVES + that perspective selected; the
-  // URL sync then writes ?tab=perspectives&perspective=<slug>). Perspectives
-  // without a workspace (e.g. Investments — coming soon) stay non-clickable
-  // "Soon" placeholders. This replaces the old modal-tab routing on the doorway.
+  // M3-Reset — the Overview LENS row, reconciled to the Design Lab's set + feel.
+  //
+  //   Net Worth · Cash Flow · Liquidity · Investments · Debt   (text-only, no icons)
+  //
+  // "Net Worth" is the DEFAULT lens and IS the Overview summary (point-in-time
+  // net worth + composition), matching the prototype's `temporal:false` Net Worth
+  // lens — selecting it clears the engaged perspective. The other four engage
+  // their existing extracted Workspaces. Reconciliation notes:
+  //   • "Wealth" (assets-only, a full asOf/compareTo time-machine) is dropped from
+  //     the core lens row — it is heavier than the prototype's point-in-time Net
+  //     Worth lens; its semantics are untouched and it stays reachable at
+  //     ?perspective=wealth.
+  //   • "Goals" is not a core financial analytical lens (prototype excludes it);
+  //     removed from the selector, its Workspace architecture treated separately.
+  // ONE shared PerspectiveTabs renders this on the summary AND (engaged) inside
+  // PerspectiveShell — same items, same handler; never two selectors at once.
+  const lensSelectorItems = useMemo(
+    () => [
+      { id: NET_WORTH_LENS_ID, label: "Net Worth", hasWorkspace: true },
+      ...CORE_LENS_IDS.map((id) => perspectiveItems.find((p) => p.id === id))
+        .filter((p): p is (typeof perspectiveItems)[number] => Boolean(p))
+        .map((p) => ({ id: p.id, label: p.label, hasWorkspace: !!(p.widgets && p.widgets.length > 0) })),
+    ],
+    [perspectiveItems],
+  );
+  // Net Worth ⇒ the summary (clear the engaged lens); any other id engages it.
+  const selectLens = (id: string) => setSelectedPerspectiveId(id === NET_WORTH_LENS_ID ? null : id);
+  // The selector's active id: the engaged lens, or "Net Worth" on the summary.
+  // Highlight: the engaged non-default lens, else "Net Worth" (the default, whose
+  // implementation is Wealth). Uses the SELECTION state, so the Net Worth chip is
+  // active whenever no other lens is explicitly chosen.
+  const activeLensId = selectedPerspectiveId ?? NET_WORTH_LENS_ID;
+
+  // Overview Perspectives doorway — each workspace-backed card engages that
+  // Perspective through the Overview experience (M2 canonical IA: stay on
+  // OVERVIEW, set the lens; the URL sync then writes ?tab=overview&perspective=
+  // <slug>). Perspectives without a workspace stay non-clickable "Soon"
+  // placeholders. This is the summary-level entry into the lens selector.
   const perspectiveDoorwayItems = useMemo(
     () =>
       perspectiveItems.map((p) =>
         p.widgets && p.widgets.length > 0
-          ? { ...p, onSelect: () => { setSelectedPerspectiveId(p.id); setActiveTab("PERSPECTIVES"); } }
+          ? { ...p, onSelect: () => { setSelectedPerspectiveId(p.id); setActiveTab("OVERVIEW"); } }
           : { ...p, onSelect: undefined },
       ),
     [perspectiveItems],
@@ -423,13 +499,13 @@ export function SpaceDashboard({
   const spaceUrl = useSpaceUrl();
 
   // ── URL-backed tab state (write) ────────────────────────────────────────────
-  // Mirror activeTab (+ selected Perspective) into ?tab=…&perspective=… — no
-  // server re-run, no reload. First sync canonicalizes with replace; later user
-  // changes push so browser back/forward works. Any tab in URL_SYNCED_TABS is
-  // mirrored — including the modal-routed GOALS/DEBT/INVESTMENTS/RETIREMENT — so
-  // refreshing inside one restores it instead of falling back to OVERVIEW. The
-  // perspective param is written only on PERSPECTIVES (else deleted), so a modal
-  // tab yields a clean ?tab=<name>.
+  // Mirror activeTab (+ engaged Perspective) into ?tab=…&perspective=… — no
+  // server re-run, no reload. First sync canonicalizes with replace (so a legacy
+  // ?tab=debt / ?tab=perspectives URL self-heals to the canonical form); later
+  // user changes push so browser back/forward works. M2 canonical IA: the
+  // perspective param is written only on OVERVIEW when a lens is engaged (else
+  // deleted), so a bare tab yields a clean ?tab=<name> and an engaged lens yields
+  // ?tab=overview&perspective=<slug>.
   const urlInitDone = useRef(false);
   useEffect(() => {
     if (!activeTab || !URL_SYNCED_TABS.has(activeTab)) return;
@@ -437,21 +513,27 @@ export function SpaceDashboard({
       {
         tab: activeTab.toLowerCase(),
         perspective:
-          activeTab === "PERSPECTIVES" && activePerspectiveId
-            ? perspectiveIdToSlug(activePerspectiveId)
+          // Uses the SELECTION state so the Net Worth default (null) yields a clean
+          // ?tab=overview with no perspective param; only an explicitly-engaged
+          // non-default lens writes ?perspective=. (Legacy ?perspective=wealth is
+          // canonicalized away by parsePerspectiveParam → null.)
+          activeTab === "OVERVIEW" && selectedPerspectiveId
+            ? perspectiveIdToSlug(selectedPerspectiveId)
             : null,
       },
       { history: urlInitDone.current ? "push" : "replace" },
     );
     if (wrote) urlInitDone.current = true;
-  }, [activeTab, activePerspectiveId, spaceUrl]);
+  }, [activeTab, selectedPerspectiveId, spaceUrl]);
 
   // ── URL-backed tab state (read: browser back/forward) ───────────────────────
   useEffect(
     () =>
       spaceUrl.subscribe(() => {
         const { tab, perspective } = readUrlTabState();
-        if (perspective) setSelectedPerspectiveId(perspective);
+        // Set unconditionally: navigating BACK to a summary URL (no perspective)
+        // must clear an engaged lens, not leave the previous one stuck.
+        setSelectedPerspectiveId(perspective);
         if (tab) setActiveTab(tab);
       }),
     [spaceUrl],
@@ -591,7 +673,7 @@ export function SpaceDashboard({
   // SD-6A — the Debt WORKSPACE owns its data consumption (the useDebtSpaceData
   // fetch moved inside <DebtWorkspace>); this gates its as-of lens fetch to when
   // the Debt perspective is open. compareTo is guarded to a strictly-earlier window.
-  const debtActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "debt";
+  const debtActive = activeTab === "OVERVIEW" && activePerspectiveId === "debt";
   const debtCompareTo = compareTo && compareTo < asOf ? compareTo : null;
   // SD-4D+ — the Investments WORKSPACE now OWNS its data consumption (the
   // useInvestmentsSpaceData fetch moved inside <InvestmentsWorkspace>). The host keeps
@@ -605,7 +687,7 @@ export function SpaceDashboard({
   // historical engine end-to-end. Like Investments, the host keeps NO Liquidity fetch;
   // it only gates the workspace's historical read to when the perspective is open, and
   // relays the workspace's trust envelope (present-day OR as-of) to the shell chip.
-  const liquidityActive = activeTab === "PERSPECTIVES" && activePerspectiveId === "liquidity";
+  const liquidityActive = activeTab === "OVERVIEW" && activePerspectiveId === "liquidity";
   const liquidityCompareTo = compareTo && compareTo < asOf ? compareTo : null;
   const [liquidityEnvelope, setLiquidityEnvelope] = useState<PerspectiveEnvelope>({});
   // SD-6 gate — Debt and Cash Flow now emit their OWN trust envelopes (like Wealth /
@@ -663,7 +745,10 @@ export function SpaceDashboard({
   // SectionCard stack shows drag handles and each drop persists the new order
   // through the reorder endpoint. `savingLayout` guards the in-flight persist.
   const [editingLayout, setEditingLayout] = useState(false);
-  const [savingLayout,  setSavingLayout]  = useState(false);
+  // M3-Reset — Edit-Layout mode is no longer reachable (its toolbar button was
+  // removed); `editingLayout` stays false so the section stacks render plain, and
+  // the drag machinery below is inert (a follow-up can delete it entirely).
+  const [, setSavingLayout]  = useState(false);
   const layoutSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -873,6 +958,43 @@ export function SpaceDashboard({
 
   const catLabel = CATEGORY_LABELS[category as SpaceCategory] ?? category;
 
+  // ── SHELL migration — publish this Space's identity + controls UP to the
+  //    ContextualNavbar (Space mode). The transforming sidebar lives in the
+  //    app-global chrome ABOVE this route child, so the host reaches it through
+  //    SpaceChrome rather than props. Cleared on unmount ⇒ the sidebar reverts to
+  //    global navigation when you leave the Space. Declared BEFORE the loading
+  //    early-return so the hook order is unconditional. Section anchors are
+  //    deferred (they require workspace-body ids, out of scope for this shell-only
+  //    pass), so an empty list keeps the SECTIONS block hidden — honest.
+  const { publishSpace, publishCurrencyControl } = useSpaceChromePublisher();
+  const chromeSubtitle =
+    `${catLabel} Space` +
+    (memberCount !== null ? ` · ${memberCount} member${memberCount === 1 ? "" : "s"}` : "");
+  const chromeUpdated = newestAccountUpdate ? `Updated ${formatRelativeTime(newestAccountUpdate)}` : null;
+
+  useEffect(() => {
+    publishSpace({
+      identity: {
+        name: displaySpaceName(spaceName),
+        subtitle: chromeSubtitle,
+        updatedLabel: chromeUpdated,
+        shared: spaceType !== "PERSONAL",
+      },
+      sections: [],
+      activeSection: "",
+      onSelectSection: () => {},
+      onManage: canManage ? () => setShowManage(true) : undefined,
+      onLeave: () => router.push("/dashboard/spaces"),
+      onLeaveSpace: canLeave ? () => setConfirmLeave(true) : undefined,
+    });
+    return () => publishSpace(null);
+  }, [publishSpace, spaceName, chromeSubtitle, chromeUpdated, spaceType, canManage, canLeave, router]);
+
+  useEffect(() => {
+    publishCurrencyControl(displayCurrencyControl ?? null);
+    return () => publishCurrencyControl(null);
+  }, [publishCurrencyControl, displayCurrencyControl]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -1001,7 +1123,13 @@ export function SpaceDashboard({
           <p className="text-sm font-semibold text-white">Perspectives</p>
           <button
             type="button"
-            onClick={() => setActiveTab("PERSPECTIVES")}
+            // M2: engage the first workspace-backed lens through Overview (no
+            // separate Perspectives tab). Stays on OVERVIEW; the lens selector
+            // then lets the user move between lenses or back to the summary.
+            onClick={() => {
+              const first = perspectiveItems.find((p) => p.widgets && p.widgets.length > 0)?.id;
+              if (first) setSelectedPerspectiveId(first);
+            }}
             className="text-xs font-medium text-[var(--meridian-400)] hover:text-[var(--meridian-300)] transition-colors"
           >
             See all
@@ -1099,73 +1227,48 @@ export function SpaceDashboard({
           {newestAccountUpdate ? ` · Updated ${formatRelativeTime(newestAccountUpdate)}` : ""}
         </>
       }
-      toolbar={
-        <>
-          {/* Edit Layout toggle (UX-CUST-1A) — visible-surface reorder for the
-              active tab's section cards. Shown only where a reorderable stack
-              exists; while active it flips to Done. */}
-          {(canReorderTab || editingLayout) && (
-            <button
-              onClick={() => setEditingLayout((v) => !v)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-colors border ${
-                editingLayout
-                  ? "bg-[var(--accent-info)] text-white border-transparent"
-                  : "text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"
-              }`}
-            >
-              {savingLayout
-                ? <Loader2 size={13} className="animate-spin" />
-                : <GripVertical size={13} />}
-              {editingLayout ? "Done" : "Edit layout"}
-            </button>
-          )}
-
-          {canManage && (
-            <button
-              onClick={() => setShowManage(true)}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--text-secondary)] hover:text-white hover:bg-[var(--surface-hover)] transition-colors border border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]"
-            >
-              <Settings size={13} />
-              Manage
-            </button>
-          )}
-
-          {canLeave && (
-            <button
-              onClick={() => setConfirmLeave(true)}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-[var(--text-muted)] hover:text-[var(--accent-negative)] hover:bg-red-500/10 transition-colors border border-[var(--border-hairline)] hover:border-red-500/30"
-            >
-              <LogOut size={13} />
-              Leave
-            </button>
-          )}
-        </>
-      }
+      // SHELL migration — the canonical FX + Manage cluster. On desktop these
+      // render in the ContextualNavbar's Space mode (published above); here they
+      // feed SpaceShell's mobile (<lg) relocation, where the sidebar is hidden.
+      // Same state, second mount point. (Membership "Leave" moved to the sidebar
+      // Space mode; the ConfirmDialog overlay above is unchanged.)
+      currencyControl={displayCurrencyControl}
+      onManage={canManage ? () => setShowManage(true) : undefined}
       // Space-level navigation rail — fixed Spaces rail (lib/space-nav.ts), shared
-      // order across every Space type. On PERSPECTIVES the rail goes fully static
-      // so the Perspective track below owns the float/shrink (SHELL_NAV §2.3).
+      // order across every Space type, centered + stationary on every Workspace
+      // and lens (no railStatic left-shift).
       railOptions={railOptions}
       activeTab={activeTab}
-      onSelectTab={setActiveTab}
-      railStatic={activeTab === "PERSPECTIVES"}
-      // SD-2C — the Space-level display-currency control mounts in the shell
-      // header (a Space capability), not the Overview body.
-      displayCurrencyControl={displayCurrencyControl}
+      // M3: selecting the Overview rail tab always lands on the summary — it
+      // clears any engaged lens, so "Overview" is the way back from a Perspective.
+      onSelectTab={(id) => {
+        if (id === "OVERVIEW") setSelectedPerspectiveId(null);
+        setActiveTab(id);
+      }}
     >
+
+        {/* M3-Reset — the "turn a page" transition. The shell + rail stay fixed;
+            only THIS body region re-enters on any change of Workspace OR engaged
+            lens (keyed on both), so switching feels like content arriving in
+            place, never a route change or a page rebuild. Reduced-motion users get
+            no animation (the @media rule below). */}
+        <div key={`${activeTab}:${activePerspectiveId ?? "networth"}`} className="fm-view-enter">
 
         {/* Settings is no longer an in-space tab (UX-CUST-1A correction):
             section show/hide and layout controls moved to ManageSpaceModal →
             Overview. Opened via the "Manage" button above. */}
 
-        {/* Perspectives tab — free-form tab SELECTOR + the selected
-            Perspective's WORKSPACE (UX-PER-3). Selecting a tab swaps the panel
-            below: workspace-backed Perspectives (widgets[]) render their widgets
-            through the EXISTING SectionCard/SectionRegistry compositor as
-            VIRTUAL, render-only sections (no persistence, no drag/drop, no
-            reorder — virtual ids never reach a mutation endpoint); others show
-            an honest "coming soon" placeholder. No card grid, no enclosing
-            container. Overview's Perspectives doorway is unchanged. */}
-        {activeTab === "PERSPECTIVES" && (
+        {/* M2 canonical IA — the Perspective experience now lives UNDER Overview
+            (no separate PERSPECTIVES rail tab). When a lens is engaged
+            (perspectiveEngaged) the Perspective's WORKSPACE + the lens selector
+            occupy the Overview content slot IN PLACE of the summary; the "Overview"
+            item in the selector returns to the summary. Selecting a lens swaps the
+            panel below: workspace-backed Perspectives (widgets[]) render through
+            the EXISTING SectionCard/SectionRegistry compositor as VIRTUAL,
+            render-only sections (virtual ids never reach a mutation endpoint);
+            others show an honest "coming soon" placeholder. The financial
+            workspaces, contracts, time semantics, Evidence, and FX are unchanged. */}
+        {activeTab === "OVERVIEW" && perspectiveEngaged && (
           <div className="space-y-4">
             {/* ── Perspective shell — two framed containers (§2) ────────────────
                 Container 1 (time & trust): As of / Compare to / Completeness /
@@ -1203,14 +1306,9 @@ export function SpaceDashboard({
               }
               presetValue={timePreset === "CUSTOM" ? null : timePreset}
               onSelectPreset={handleSelectSlice}
-              tabs={perspectiveItems.map((p) => ({
-                id:           p.id,
-                label:        p.label,
-                hasWorkspace: !!(p.widgets && p.widgets.length > 0),
-                icon:         p.icon,
-              }))}
-              activeTabId={activePerspectiveId}
-              onSelectTab={setSelectedPerspectiveId}
+              tabs={lensSelectorItems}
+              activeTabId={activeLensId}
+              onSelectTab={selectLens}
             />
 
             {/* Row 4 — Perspective-specific controls slot. These stay
@@ -1394,11 +1492,13 @@ export function SpaceDashboard({
           <MembersWorkspace spaceId={spaceId} onManage={() => setShowManage(true)} />
         )}
 
-        {/* Goals/Debt/Investments/Retirement — Glass modal (IA refactor
-            points 4 & 5), launched from the matching Perspective card.
-            Same sectionsForTab/SectionCard rendering each tab always had —
-            no widget/business-logic changes, just shown in a floating
-            sheet instead of swapping the whole rail tab. */}
+        {/* Goals / Retirement — the last remaining legacy routed-modal surfaces
+            (M2 explicit compatibility boundary). Debt & Investments were retired
+            from this path — they now have ONE canonical destination each: the
+            Perspective under Overview. Goals/Retirement keep the GlassModal until
+            their future product architecture is decided (not this slice), so the
+            legacy mechanism is deliberately isolated to these two ids via the
+            registry's routing.targetTab (ROUTED_WORKSPACE_TABS = {GOALS, RETIREMENT}). */}
         {isRoutedWorkspaceTab(activeTab) && (
           <RoutedWorkspaceModal
             activeTab={activeTab}
@@ -1415,31 +1515,51 @@ export function SpaceDashboard({
           />
         )}
 
-        {/* Overview — the Space's primary canvas (SD-7). OverviewWorkspace owns the
-            composition switcher + coming-soon panel + the canvas (hero → day-zero
-            setup / section stack → doorways). Host passes shared data + host-derived
-            hero values + the Edit-Layout controls + the fetched doorway nodes. */}
-        {activeTab === "OVERVIEW" && (
-          <OverviewWorkspace
-            category={category}
-            spaceType={spaceType}
-            accounts={accounts}
-            loading={loading}
-            canManage={canManage}
-            onManage={() => setShowManage(true)}
-            onAddGoal={() => setShowAddGoal(true)}
-            heroDef={heroDef ?? null}
-            heroPoints={heroPoints}
-            heroHeadlineOverride={heroHeadlineOverride}
-            heroSublineNote={heroSublineNote}
-            heroCurrency={displayCurrency}
-            snapshotsLoading={snapshots === null}
-            sectionsForTab={sectionsForTab}
-            controls={sectionStackControls}
-            card={sectionCardBundle}
-            recentTransactionsDoorway={recentTransactionsDoorway}
-            perspectivesDoorway={perspectivesDoorway}
-          />
+        {/* Overview summary — the Space's primary canvas (SD-7), shown when no
+            lens is engaged (M2: an engaged lens swaps in the Perspective block
+            above). OverviewWorkspace owns the composition switcher + coming-soon
+            panel + the canvas (hero → day-zero setup / section stack → doorways).
+            Host passes shared data + host-derived hero values + the Edit-Layout
+            controls + the fetched doorway nodes (incl. the Perspectives entry). */}
+        {activeTab === "OVERVIEW" && !perspectiveEngaged && (
+          <div className="space-y-7 sm:space-y-9">
+            {/* M3 Design Lab convergence — the lens selector, surfaced on the
+                Overview summary so Perspective selection is front-and-centre.
+                Hidden at day zero (no accounts) where every lens would open onto
+                empty data — there the setup card is the one call to action. */}
+            {accounts.length > 0 && lensSelectorItems.length > 0 && (
+              <div className="flex flex-col items-center gap-2">
+                <p className="text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
+                  Lens
+                </p>
+                <PerspectiveTabs
+                  items={lensSelectorItems}
+                  activeId={activeLensId}
+                  onSelect={selectLens}
+                />
+              </div>
+            )}
+            <OverviewWorkspace
+              category={category}
+              spaceType={spaceType}
+              accounts={accounts}
+              loading={loading}
+              canManage={canManage}
+              onManage={() => setShowManage(true)}
+              onAddGoal={() => setShowAddGoal(true)}
+              heroDef={heroDef ?? null}
+              heroPoints={heroPoints}
+              heroHeadlineOverride={heroHeadlineOverride}
+              heroSublineNote={heroSublineNote}
+              heroCurrency={displayCurrency}
+              snapshotsLoading={snapshots === null}
+              sectionsForTab={sectionsForTab}
+              controls={sectionStackControls}
+              card={sectionCardBundle}
+              recentTransactionsDoorway={recentTransactionsDoorway}
+              perspectivesDoorway={perspectivesDoorway}
+            />
+          </div>
         )}
 
         {/* Accounts — a section-backed tab (SD-7): the shared section stack + its
@@ -1478,6 +1598,20 @@ export function SpaceDashboard({
             )}
           </div>
         )}
+        </div>
+
+        {/* M3-Reset page-turn keyframes. opacity + a short lift + a brief
+            de-blur reads as "focus arriving" (the prototype's lens/workspace
+            transition feel) without a directional route-change slide. */}
+        <style>{`
+          @media (prefers-reduced-motion: no-preference) {
+            .fm-view-enter { animation: fm-view-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+          }
+          @keyframes fm-view-in {
+            from { opacity: 0; transform: translateY(10px); filter: blur(4px); }
+            to   { opacity: 1; transform: translateY(0);    filter: blur(0);   }
+          }
+        `}</style>
     </SpaceShell>
   );
 }
