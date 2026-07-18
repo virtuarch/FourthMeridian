@@ -55,10 +55,14 @@ export function InvestmentAllocationPanel({
   holdings,
   accounts,
   reportingCurrency,
+  showConcentrationInsight = true,
 }: {
   holdings:          ValuedHoldingRow[];
   accounts:          { id: string; name: string }[];
   reportingCurrency: string;
+  /** The one-line concentration insight above the dimension toggle. Set false when a
+   *  dedicated Concentration surface renders alongside (avoids saying it twice). */
+  showConcentrationInsight?: boolean;
 }) {
   const [dimension, setDimension] = useState<Dimension>("assetClass");
 
@@ -89,7 +93,7 @@ export function InvestmentAllocationPanel({
   return (
     <div>
       {/* Concentration insight — intelligence before configuration. */}
-      {conc && (
+      {showConcentrationInsight && conc && (
         <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 px-1 mb-3 text-xs">
           <span className="font-semibold" style={{ color: conc.color }}>{conc.label}</span>
           {c.effectiveHoldings != null && (

@@ -27,7 +27,9 @@ const ROUTE   = read("app/api/spaces/[id]/investments/space-data/route.ts");
 const ALLOC   = strip(read(`${DIR}/InvestmentAllocationPanel.tsx`));
 const CONV    = read("lib/investments/display-conversion.ts");
 const SERIES  = strip(read("lib/investments/portfolio-series.ts"));
-const CHART   = strip(read(`${DIR}/PortfolioValueChart.tsx`));
+// The LIVE balance-history component (owns the window clip); the old PortfolioValueChart
+// is retired from the composition.
+const CHART   = strip(read(`${DIR}/InvestmentsBalanceHistory.tsx`));
 const GRID    = strip(read(`${DIR}/HoldingsGrid.tsx`));
 const DETAIL  = strip(read(`${DIR}/HoldingDetail.tsx`));
 const SECTION = strip(read(`${DIR}/HoldingsSection.tsx`));
@@ -43,23 +45,38 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-console.log("1. Render boundary — composes its EDITORIAL surfaces (hero, chart, holdings ledger)");
+console.log("1. Render boundary — composes its EDITORIAL research surfaces (v2)");
 {
   const LEDGER = strip(read(`${DIR}/HoldingsLedger.tsx`));
-  for (const panel of ["<InvestmentsHero", "<PortfolioValueChart", "<HoldingsLedger"]) {
-    check(`composes ${panel}`, SRC.includes(panel));
+  const BALANCE = strip(read(`${DIR}/InvestmentsBalanceHistory.tsx`));
+  const WEALTHCHART = strip(read("components/space/widgets/wealth/WealthTrendChart.tsx"));
+  // v2 research surfaces: hero → balance history → this period → holdings → allocation
+  // → concentration → activity.
+  for (const surface of [
+    "<InvestmentsHero", "<InvestmentsBalanceHistory", "<InvestmentsBridgeCard",
+    "<HoldingsLedger", "<InvestmentAllocationPanel", "<HoldingsConcentration", "<InvestmentsActivityCard",
+  ]) {
+    check(`composes ${surface}`, SRC.includes(surface));
   }
-  // Redesign (prototype idiom): the dense KPI strip, the card grid, and the separate
-  // allocation donut are retired from the workspace composition — the value/coverage
-  // folds into the hero, and the allocation folds into the ledger's weight bars.
-  for (const gone of ["<InvestmentKpiStrip", "<HoldingsSection", "<InvestmentAllocationPanel"]) {
-    check(`no longer composes ${gone} (editorial redesign)`, !SRC.includes(gone));
+  // The dense KPI strip, the card grid, and the OLD chart are retired from the
+  // composition (value/coverage → hero; grid → ledger; chart → shared TrendChart).
+  for (const gone of ["<InvestmentKpiStrip", "<HoldingsSection", "<PortfolioValueChart"]) {
+    check(`no longer composes ${gone}`, !SRC.includes(gone));
   }
-  // The holdings detail now opens in the Atlas RightPanel primitive, and the bar IS
-  // the allocation view (share of portfolio), not a donut.
+  // Balance history uses the SAME chart core as Net Worth — one chart, not two.
+  check("balance history + Net Worth share the ONE TrendChart core (no duplicate chart)",
+    BALANCE.includes("TrendChart") && WEALTHCHART.includes("TrendChart"));
+  // Holdings: top-few by value + "View all" opens the LeftPanel browser; a row opens
+  // the RightPanel detail. The bar IS the allocation view (share of portfolio).
+  check("ledger shows a top subset + View all → LeftPanel browser",
+    LEDGER.includes("slice(0, topN") && LEDGER.includes("LeftPanel") && LEDGER.includes("View all"));
   check("ledger opens detail in the Atlas RightPanel + reuses HoldingDetail",
     LEDGER.includes("RightPanel") && LEDGER.includes("<HoldingDetail"));
   check("ledger renders inline weight bars from row.share", LEDGER.includes("row.share"));
+  // Allocation vs Concentration are DISTINCT surfaces; the panel's inline concentration
+  // line is suppressed so it isn't said twice.
+  check("allocation suppresses its inline concentration line (dedicated widget renders it)",
+    SRC.includes("showConcentrationInsight={false}"));
   // Editorial rhythm + section anchors published to the sidebar (like Net Worth).
   check("editorial layout with section anchors", CODE.includes("space-y-8") && CODE.includes("useSpaceSectionsPublisher"));
 }

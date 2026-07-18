@@ -3,29 +3,26 @@
 /**
  * components/space/widgets/investments/InvestmentsWorkspace.tsx
  *
- * The Investments WORKSPACE — owns Investments data consumption + display conversion,
- * and emits its trust envelope outward. The composition is EDITORIAL (the Net Worth /
- * prototype idiom), not a dense dashboard: a bare lede, the read surfaces stacked with
- * generous rhythm, the honesty stated up front.
+ * The Investments WORKSPACE — an investment RESEARCH surface, editorial not dashboard:
+ * an overview lede, then the analytical surfaces stacked for exploration, then detail
+ * on demand. It owns Investments data consumption + display conversion and emits its
+ * trust envelope outward.
  *
- *   ① InvestmentsHero   — portfolio value + period change + valued/total coverage
- *   ② Excluded          — positions that couldn't be valued, stated ABOVE the ledger
- *   ③ Balance history   — Portfolio Value Over Time (the dominant analytical visual)
- *   ④ Holdings          — the weight-bar ledger (the bar IS the allocation view) →
- *                         RightPanel detail (the Atlas panel primitive)
- *   ⑤ This period       — Activity + What Changed
- *   ⑥ Connections
+ *   ① InvestmentsHero        — portfolio value + period change + valued/total coverage
+ *   ② Excluded               — positions that couldn't be valued, stated up front
+ *   ③ Balance history        — invested value over time (the SHARED Net Worth chart)
+ *   ④ This period            — the opening→in→out→change→closing movement bridge
+ *   ⑤ Holdings               — top-few weight-bar ledger; "View all" → LeftPanel browser
+ *                              → RightPanel detail (the Atlas panel primitives)
+ *   ⑥ Allocation             — "what do I own?" (the shared donut breakdown)
+ *   ⑦ Concentration          — "how exposed am I?" (largest / top-5 / sector)
+ *   ⑧ Activity               — the period's money-in / money-out narrative
  *
- * DATA (never cross-derived — PCS-1): CURRENT portfolio from `data.current`
- * (getCurrentPositions); as-of/compare + period change from `data.historical` (A10). The
- * Portfolio Value series is the canonical persisted SpaceSnapshot window. All money is
- * display-converted through the ONE canonical seam; the envelope is emitted from the
- * UNCONVERTED historical (trust is currency-agnostic).
- *
- * "How well", never "where" (the scoping rule): Wealth owns the scalar ("where is my
- * money"), Investments owns holdings + what happened. Per-holding gain/loss and cost
- * basis are NOT in the historical data and are never fabricated in the headline; cost
- * basis (where Plaid supplies it, current view) lives in the holding detail only.
+ * DATA (never cross-derived — PCS-1): CURRENT portfolio from `data.current`; as-of/
+ * compare + period change from `data.historical` (A10). The Balance-history series is
+ * the canonical persisted SpaceSnapshot window (investments + crypto, no double-count).
+ * All money is display-converted through the ONE canonical seam; the envelope is emitted
+ * from the UNCONVERTED historical (trust is currency-agnostic). No new data contracts.
  */
 
 import { useEffect, useMemo, type ReactNode } from "react";
@@ -37,21 +34,27 @@ import type { ConversionContext } from "@/lib/money/types";
 import { convertInvestmentsSpaceData } from "@/lib/investments/display-conversion";
 import { convertPortfolioValueSeries } from "@/lib/investments/portfolio-series";
 import { Surface, Block } from "@/components/atlas/Surface";
+import { DataCard } from "@/components/atlas/DataCard";
 import { useInvestmentsSpaceData } from "./useInvestmentsSpaceData";
 import { InvestmentsActivityCard } from "./InvestmentsActivityCard";
 import { InvestmentsBridgeCard } from "./InvestmentsBridgeCard";
 import { InvestmentConnectionsCard } from "./InvestmentConnectionsCard";
-import { PortfolioValueChart } from "./PortfolioValueChart";
+import { InvestmentAllocationPanel } from "./InvestmentAllocationPanel";
 import { InvestmentsHero } from "./InvestmentsHero";
+import { InvestmentsBalanceHistory } from "./InvestmentsBalanceHistory";
 import { HoldingsLedger } from "./HoldingsLedger";
+import { HoldingsConcentration } from "./HoldingsConcentration";
 
 /** The Investments workspace's own section anchors — what the sidebar shows as
  *  "what's inside" this workspace (each maps to a scroll-target id below). */
 const INVESTMENTS_SECTIONS: SpaceChromeSection[] = [
   { label: "Summary",         anchor: "investments-summary" },
   { label: "Balance history", anchor: "investments-history" },
+  { label: "This period",     anchor: "investments-period" },
   { label: "Holdings",        anchor: "investments-holdings" },
-  { label: "This period",     anchor: "investments-activity" },
+  { label: "Allocation",      anchor: "investments-allocation" },
+  { label: "Concentration",   anchor: "investments-concentration" },
+  { label: "Activity",        anchor: "investments-activity" },
 ];
 
 export function InvestmentsWorkspace({
@@ -142,7 +145,7 @@ export function InvestmentsWorkspace({
         </div>
       )}
 
-      {/* ① Lede — portfolio value, period change, valued/total coverage. */}
+      {/* ① Lede. */}
       <div id="investments-summary" className="scroll-mt-20">
         <InvestmentsHero
           portfolio={primary.portfolio} reconciliation={reconciliation}
@@ -163,32 +166,55 @@ export function InvestmentsWorkspace({
         </div>
       )}
 
-      {/* ③ Balance history — Portfolio Value Over Time. */}
-      <Block id="investments-history" label="Balance history">
-        <Surface className="p-4">
-          <PortfolioValueChart points={series} currency={reportingCurrency} asOf={asOf} compareTo={compareTo} />
-        </Surface>
-      </Block>
+      {/* ③ Balance history — invested value over time (the SHARED Net Worth chart). */}
+      <div id="investments-history" className="scroll-mt-20">
+        <InvestmentsBalanceHistory points={series} currency={reportingCurrency} asOf={asOf} compareTo={compareTo} />
+      </div>
 
-      {/* ④ Holdings — the weight-bar ledger; the bar IS the allocation view. */}
+      {/* ④ This period — the opening → in → out → change → closing movement bridge. */}
+      <div id="investments-period" className="scroll-mt-20">
+        <Block label="This period">
+          <Surface className="p-4"><InvestmentsBridgeCard reconciliation={reconciliation} flows={flows} /></Surface>
+        </Block>
+      </div>
+
+      {/* ⑤ Holdings — top-few weight-bar ledger; the bar IS the allocation view. */}
       <Block
         id="investments-holdings"
         label="Holdings"
         hint={<span className="text-[11px] tabular-nums text-[var(--text-faint)]">{primary.holdings.length}</span>}
-        action={<span className="text-[11px] text-[var(--text-faint)]">Bar shows share of portfolio</span>}
+        action={<span className="text-[11px] text-[var(--text-faint)]">Top by value · bar shows share</span>}
       >
         <HoldingsLedger holdings={primary.holdings} reportingCurrency={reportingCurrency} accounts={accounts} />
       </Block>
 
-      {/* ⑤ This period — Activity + What Changed. */}
-      <Block id="investments-activity" label="This period">
-        <div className="grid gap-4 lg:grid-cols-2 items-start min-w-0">
-          <Surface className="p-4 min-w-0"><InvestmentsActivityCard flows={flows} /></Surface>
-          <Surface className="p-4 min-w-0"><InvestmentsBridgeCard reconciliation={reconciliation} flows={flows} /></Surface>
-        </div>
-      </Block>
+      {/* ⑥ Allocation — "what do I own?" (the shared donut breakdown). */}
+      <div id="investments-allocation" className="scroll-mt-20">
+        <Block label="Allocation">
+          <DataCard>
+            <InvestmentAllocationPanel
+              holdings={primary.holdings} accounts={accounts}
+              reportingCurrency={reportingCurrency} showConcentrationInsight={false}
+            />
+          </DataCard>
+        </Block>
+      </div>
 
-      {/* ⑥ Connections — renders its own panel only when an account needs attention. */}
+      {/* ⑦ Concentration — "how exposed am I?" (largest / top-5 / sector). */}
+      <div id="investments-concentration" className="scroll-mt-20">
+        <Block label="Concentration">
+          <HoldingsConcentration holdings={primary.holdings} accounts={accounts} />
+        </Block>
+      </div>
+
+      {/* ⑧ Activity — the period's money-in / money-out narrative. */}
+      <div id="investments-activity" className="scroll-mt-20">
+        <Block label="Activity">
+          <Surface className="p-4"><InvestmentsActivityCard flows={flows} /></Surface>
+        </Block>
+      </div>
+
+      {/* Connections — renders its own panel only when an account needs attention. */}
       <InvestmentConnectionsCard spaceId={spaceId} />
     </div>
   );
