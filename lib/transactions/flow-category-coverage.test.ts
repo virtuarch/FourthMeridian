@@ -52,8 +52,18 @@ check("the enum is readable at runtime (guards against an empty sweep passing va
 // ── The contract: no schema category may classify UNKNOWN ────────────────────
 // UNKNOWN is reserved for a category string the schema CANNOT produce (a corrupt
 // or hand-written value). Any real enum value reaching it is a coverage gap.
+//
+// SR-1 EXCEPTION — `Other` is the deliberate exception, and ONLY on the INFLOW
+// side. `Other` is the "provider told us nothing" sentinel, not a real spend
+// category: a POSITIVE Other is an unclassified inflow whose honest answer IS
+// UNKNOWN (never a manufactured REFUND). Its OUTFLOW side is still SPENDING (a
+// cost with no finer label), so it remains covered there. Every OTHER category
+// must still be known on both signs — a genuine spend category reaching UNKNOWN
+// would silently delete its rows from every economic surface.
+const OTHER_SENTINEL = "Other";
 for (const category of ALL_CATEGORIES) {
   for (const [label, amount] of [["outflow", -50], ["inflow", 50]] as const) {
+    if (category === OTHER_SENTINEL && label === "inflow") continue; // SR-1: asserted separately below
     const c = classifyFlow({ category, amount });
     check(
       `${category} (${label}) is known to the classifier`,
@@ -62,6 +72,17 @@ for (const category of ALL_CATEGORIES) {
       `UNKNOWN removes the row from the spend ledger, expenseTotal, and AI context`,
     );
   }
+}
+
+// SR-1 — the `Other` inflow exception, pinned explicitly so it stays intentional.
+{
+  const otherInflow  = classifyFlow({ category: OTHER_SENTINEL, amount: 50 });
+  const otherOutflow = classifyFlow({ category: OTHER_SENTINEL, amount: -50 });
+  check("SR-1: Other inflow is UNKNOWN (absence of info, not a fabricated REFUND)",
+    otherInflow.flowType === "UNKNOWN" && otherInflow.flowDirection === "INFLOW",
+    `got ${otherInflow.flowType}/${otherInflow.flowDirection}`);
+  check("SR-1: Other outflow is still SPENDING (a cost with no finer label)",
+    otherOutflow.flowType === "SPENDING", `got ${otherOutflow.flowType}`);
 }
 
 // Zero-amount rows are a separate, legitimate ADJUSTMENT/UNKNOWN case (a

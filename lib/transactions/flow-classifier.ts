@@ -68,6 +68,20 @@ import { isLiabilityAccount, isLiabilityOutflow } from './liability-payment';
  *               classifier stays descriptor-blind.)
  *         • 2E  the six MI1 M1 spend categories are known, so they classify
  *               SPENDING/REFUND instead of falling through to UNKNOWN.
+ *   4 = SR-1 — the fabricated-refund correction. A positive amount in the
+ *       catch-all `Other` category is NO LONGER a REFUND. `Other` is
+ *       mapPlaidCategory/mapCategory's "the provider told us nothing" sentinel
+ *       (absence of information), not a spend category — so a positive Other is an
+ *       unclassified inflow (UNKNOWN/INFLOW, the honesty valve), never a
+ *       manufactured reversal of spend. Positive amounts in GENUINE spend
+ *       categories (Dining, Groceries, …) remain REFUND: a credit there is real
+ *       reversal evidence. Descriptor evidence that a positive Other is actually
+ *       income (payroll) is resolved into the `Income` category ONE layer up
+ *       (lib/transactions/descriptor-evidence.ts) BEFORE this classifier runs, so
+ *       a rescuable inflow never reaches the sign-default path as Other. This
+ *       changes semantic OUTPUT for existing rows (Other/REFUND/SIGN_DEFAULT_INFLOW
+ *       → UNKNOWN/AMBIGUOUS_UNKNOWN), hence the version bump: see
+ *       scripts/repair-refund-misclassification.ts for the version-gated repair.
  *
  * ── OWNERSHIP, not merely staleness (CCPAY-2F) ──────────────────────────────
  * This number records WHICH AUTHORITY produced a row's persisted flow facts, and
@@ -85,7 +99,7 @@ import { isLiabilityAccount, isLiabilityOutflow } from './liability-payment';
  * unknown-inflow honesty signal and raised confidence on a circular derivation.
  * See docs/doctrine/financial-semantics.md (§ Liability payment classification).
  */
-export const FLOW_CLASSIFIER_VERSION = 3;
+export const FLOW_CLASSIFIER_VERSION = 4;
 
 export type FlowType =
   | 'SPENDING'      // discretionary/non-discretionary consumption (a real cost)
@@ -207,6 +221,22 @@ const SPEND_CATEGORIES = new Set<string>([
 const INVESTMENT_ACTIVITY_CATEGORIES = new Set<string>([
   'Buy', 'Sell', 'Split',
 ]);
+
+/**
+ * SR-1 — the "provider told us nothing useful" catch-all. This is the SAME
+ * sentinel lib/transactions/liability-payment.ts calls UNRESOLVED_CATEGORY: the
+ * value mapPlaidCategory's `default` and the CSV importer's mapCategory fallback
+ * both emit when no category could be decided.
+ *
+ * It is a member of SPEND_CATEGORIES only so a NEGATIVE Other still classifies
+ * SPENDING (a cost with no finer label). Its POSITIVE side is NOT reversal
+ * evidence — absence of information cannot prove a refund — so a positive Other
+ * is deliberately routed to the honest UNKNOWN valve (rule 5) rather than
+ * fabricating a REFUND. A genuine income/payment meaning is resolved into a REAL
+ * category upstream (descriptor-evidence.ts / liability-payment.ts) before this
+ * function ever sees the row, so nothing rescuable is lost here.
+ */
+const UNRESOLVED_CATEGORY = 'Other';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Direction helpers
@@ -395,11 +425,22 @@ export function classifyFlow(input: FlowClassificationInput): FlowClassification
       return { flowType: 'SPENDING', flowDirection: 'OUTFLOW', confidence: 0.5, reason: 'SIGN_DEFAULT_SPENDING' };
     }
     if (amount > 0) {
-      // Positive in a spend category → a refund/reversal, NOT income.
-      return { flowType: 'REFUND', flowDirection: 'INFLOW', confidence: 0.5, reason: 'SIGN_DEFAULT_INFLOW' };
+      // SR-1 — a positive amount is REFUND evidence ONLY in a GENUINE spend
+      // category (Dining, Groceries, …): a credit there is the reversal of a
+      // known cost. The catch-all `Other` is absence of information, never
+      // reversal evidence, so a positive Other is NOT forced into a REFUND — it
+      // falls through to the honest UNKNOWN valve (rule 5). A real income /
+      // payment meaning behind a positive Other is resolved into a concrete
+      // category ONE layer up (descriptor-evidence.ts, liability-payment.ts)
+      // before this runs, so nothing rescuable reaches this branch as Other.
+      if (category !== UNRESOLVED_CATEGORY) {
+        return { flowType: 'REFUND', flowDirection: 'INFLOW', confidence: 0.5, reason: 'SIGN_DEFAULT_INFLOW' };
+      }
+      // Positive `Other` → intentionally NOT returned here; fall through to rule 5.
+    } else {
+      // amount === 0 in a spend category → a non-economic artifact.
+      return { flowType: 'ADJUSTMENT', flowDirection: 'UNKNOWN', confidence: 0.3, reason: 'AMBIGUOUS_UNKNOWN' };
     }
-    // amount === 0 in a spend category → a non-economic artifact.
-    return { flowType: 'ADJUSTMENT', flowDirection: 'UNKNOWN', confidence: 0.3, reason: 'AMBIGUOUS_UNKNOWN' };
   }
 
   // 5. Unknown category string — honest UNKNOWN, never forced into SPENDING.

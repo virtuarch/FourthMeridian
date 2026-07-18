@@ -78,6 +78,11 @@ import { mapPlaidCategory } from "@/lib/transactions/plaid-category";
 // CCPAY-2C-3 — the card-payment category rescue is one shared decision, owned by
 // the liability-payment authority; this path supplies evidence, not logic.
 import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
+// SR-2 — the payroll descriptor-evidence rescue, the income-side sibling of the
+// card-payment rescue above. Both act ONLY on the "Other" sentinel and both run
+// BEFORE classifyFlow, so the descriptor decision produces category + flowType
+// coherently and the classifier stays descriptor-blind.
+import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
 export { mapPlaidCategory } from "@/lib/transactions/plaid-category";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 // FlowType P2 (import fidelity) — shadow classification only. Nothing below is
@@ -88,6 +93,7 @@ import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-c
 import {
   buildPlaidFlowInput,
   buildFlowWriteFields,
+  withDescriptorEvidenceReason,
   NULL_FLOW_WRITE_FIELDS,
   createShadowStats,
   accumulateShadow,
@@ -307,6 +313,24 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
           description,
         });
 
+        // SR-2 — payroll descriptor rescue: an inbound "Other" whose descriptor
+        // attests earned income (PAYROLL / DIRECT DEPOSIT / SALARY) becomes
+        // `Income`, so classifyFlow yields INCOME instead of the sign-default
+        // UNKNOWN. Rescue-only + Other-only, so it can never fire after the
+        // card-payment rescue above already resolved the category, and never
+        // touches a purchase or a provider-decided category.
+        const categoryBeforePayroll = category;
+        category = resolvePayrollIncomeCategory(category, "Income", {
+          amount,
+          merchant,
+          description,
+        });
+        // SR-4 — the descriptor resolver (not the descriptor-blind classifier)
+        // decided the kind when it promoted Other → Income here. Stamp the
+        // provenance so a freshly-synced pending payroll carries the same
+        // DESCRIPTOR_EVIDENCE reason as a row the repair fixed retroactively.
+        const payrollRescued = category !== categoryBeforePayroll;
+
         const { input, captured } = buildPlaidFlowInput(txn, {
           category,
           amount,
@@ -314,7 +338,10 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
           debtSubtype: meta.debtSubtype,
         });
         const classification = classifyFlow(input);
-        flowFields = buildFlowWriteFields(classification, input, captured, FLOW_CLASSIFIER_VERSION);
+        flowFields = withDescriptorEvidenceReason(
+          buildFlowWriteFields(classification, input, captured, FLOW_CLASSIFIER_VERSION),
+          payrollRescued,
+        );
         // TI2-4 — reuse the already-computed classification + captured metadata;
         // do NOT re-run classifyFlow. TI facts are category-independent, so they
         // are computed here once and never recomputed in miData's override branch.

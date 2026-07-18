@@ -1625,6 +1625,13 @@ enum FlowClassificationReason {
   SIGN_DEFAULT_SPENDING
   SIGN_DEFAULT_INFLOW
   AMBIGUOUS_UNKNOWN
+  /// SR-4 — a deterministic DESCRIPTOR-EVIDENCE resolver (not the descriptor-blind
+  /// classifier) decided the economic kind by promoting the "Other" sentinel to a
+  /// real category (e.g. an ACH "PAYROLL SEC:PPD" credit → Income → INCOME). Stamped
+  /// by the write layer AFTER classifyFlow; the classifier never emits it. This makes
+  /// "we know this because the descriptor said so" permanently auditable/greppable,
+  /// distinct from a category that was natively a flow value (CATEGORY_FLOW_VALUE).
+  DESCRIPTOR_EVIDENCE
 }
 
 // ── Merchant Intelligence (MI1 M1 — additive, nothing reads/writes yet) ───────

@@ -348,6 +348,27 @@ export function buildFlowWriteFields(
   };
 }
 
+/**
+ * SR-4 — override a row's persisted classification reason to DESCRIPTOR_EVIDENCE
+ * when a DESCRIPTOR-EVIDENCE category rescue (lib/transactions/descriptor-evidence.ts,
+ * the evidence layer), NOT the descriptor-blind classifier, decided the economic
+ * kind. It operates on the ALREADY-MAPPED FlowWriteFields (post buildFlowWriteFields),
+ * so the classifier's FlowReason union stays pure — the classifier can neither see
+ * a descriptor nor emit this reason. `flowType`/`flowDirection`/`confidence` are
+ * unchanged: the rescue only changes WHY we recorded that kind, matching the fact
+ * that the resolver — not sign/category defaulting — is the provenance.
+ *
+ * Idempotent and no-op when `descriptorRescued` is false, so every write site can
+ * call it unconditionally.
+ */
+export function withDescriptorEvidenceReason(
+  fields: FlowWriteFields,
+  descriptorRescued: boolean,
+): FlowWriteFields {
+  if (!descriptorRescued) return fields;
+  return { ...fields, classificationReason: "DESCRIPTOR_EVIDENCE" };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Row-sourced flow input (P4 backfill, Slice 1)
 //

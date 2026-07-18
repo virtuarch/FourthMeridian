@@ -95,6 +95,9 @@ import { runImportPipeline } from "@/lib/imports/pipeline";
 // CCPAY-2C-4 — the same card-payment rescue the confirm route applies, so this
 // preview keeps showing what that route would actually write.
 import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
+// SR-2 — payroll descriptor rescue, layered over the card-payment rescue so the
+// preview matches the confirm route's persisted category exactly.
+import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { suggestColumnMapping } from "@/lib/imports/suggest";
 import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
@@ -268,12 +271,23 @@ export const POST = withApiHandler(async (
     const rescuedCategory =
       row.amount === null || !row.merchant
         ? row.category
-        : resolveLiabilityPaymentCategory(row.category, "Payment", {
-            ...previewAccountContext,
-            amount:      row.amount,
-            merchant:    row.merchant,
-            description: row.description,
-          });
+        : resolvePayrollIncomeCategory(
+            // SR-2 — payroll rescue layered over the card-payment rescue, in the
+            // exact order the confirm route uses, so the preview a user sees
+            // matches what confirm will persist.
+            resolveLiabilityPaymentCategory(row.category, "Payment", {
+              ...previewAccountContext,
+              amount:      row.amount,
+              merchant:    row.merchant,
+              description: row.description,
+            }),
+            "Income",
+            {
+              amount:      row.amount,
+              merchant:    row.merchant,
+              description: row.description,
+            },
+          );
 
     if (row.date) {
       if (!earliest || row.date < earliest) earliest = row.date;

@@ -19,6 +19,17 @@
  * line ($6,529.45) above total monthly spending ($5,848.70), while the
  * drilldown reported a third figure ($2,970.55).
  *
+ * SR-1 UPDATE — a positive amount in the catch-all `Other` category no longer
+ * classifies REFUND; it is UNKNOWN (non-economic residue), because `Other` is the
+ * "provider told us nothing" sentinel, not reversal evidence. buildMonthlyBreakdown
+ * already skips non-economic residue (`isNonEconomicResidue` → continue), so those
+ * four +credits are now EXCLUDED from the Other category line rather than disclosed
+ * as its `creditTotal`. The KD-17 protection is unchanged and this suite still
+ * proves it: category totals stay debit-only, GENUINE refund credits (a positive
+ * in a real spend category — Shopping/Travel below) are still disclosed and never
+ * netted, and the invariant Σ(spending categories) ≤ expenseTotal still holds. The
+ * assembler is untouched; only the classifier's KIND for a positive Other changed.
+ *
  * Three layers of checks:
  *   1. Rollup behavior — buildMonthlyBreakdown emits debit-only category
  *      totals with separate credit disclosure (January 2026 shape and edge
@@ -164,11 +175,16 @@ const janRows: Row[] = [
   check('Jan-2026 shape: Other total is debit-only $2,970.55 — NOT the netted $6,529.45',
     other !== undefined && approx(other.total, 2970.55), `got ${other?.total}`);
 
-  check('Jan-2026 shape: Other credits disclosed as creditTotal $9,500.00, never netted',
-    other !== undefined && approx(other.creditTotal ?? 0, 9500.00), `got ${other?.creditTotal}`);
+  // SR-1 — the four +credits ("Payment Thank You-Mobile", categorized Other) are
+  // positive amounts in the "no info" sentinel. They are NOT refunds: a positive
+  // Other classifies UNKNOWN and is EXCLUDED from the category breakdown, rather
+  // than disclosed as an Other creditTotal. A genuine refund credit is still
+  // disclosed — see Shopping (+23.95 Return → REFUND → creditTotal) below.
+  check('SR-1: Other +credits are UNKNOWN residue — NOT disclosed as an Other creditTotal',
+    other !== undefined && other.creditTotal === undefined, `got ${other?.creditTotal}`);
 
-  check('Jan-2026 shape: Other.count still counts all rows (debits + credits)',
-    other?.count === 8, `got ${other?.count}`);
+  check('SR-1: Other.count is debit-only (4) — the +credits are excluded as residue',
+    other?.count === 4, `got ${other?.count}`);
 
   // Drilldown agreement: assembleDrilldown aggregates Σ|amount| over amount<0
   // rows of the category — recompute that population independently and demand
@@ -203,20 +219,50 @@ const janRows: Row[] = [
 // ---------------------------------------------------------------------------
 
 {
+  // The headline defect class uses a GENUINE spend category (Shopping), where a
+  // positive amount legitimately IS a refund (REFUND) — so the "credits > debits,
+  // debit-only total, credit disclosed not netted" protection stays meaningful
+  // after SR-1. (Under the old classifier this fixture used `Other`; SR-1 makes a
+  // positive Other UNKNOWN, which is exercised as its own case immediately below.)
   const jan = janBreakdown([
-    row(3,  TransactionCategory.Other,  -100.00),
-    row(5,  TransactionCategory.Other,  +6629.45, 'Big misclassified credit'),
-    row(10, TransactionCategory.Dining, -50.00),
+    row(3,  TransactionCategory.Shopping, -100.00),
+    row(5,  TransactionCategory.Shopping, +6629.45, 'Big refund'),
+    row(10, TransactionCategory.Dining,   -50.00),
   ]);
-  const other = jan.byCategory.find((c) => c.category === 'Other');
-  check('Net-positive month: Other total is $100.00 (debits), not |net| $6,529.45',
-    other !== undefined && approx(other.total, 100.00), `got ${other?.total}`);
-  check('Net-positive month: credit carried in creditTotal ($6,629.45)',
-    other !== undefined && approx(other.creditTotal ?? 0, 6629.45), `got ${other?.creditTotal}`);
+  const shopping = jan.byCategory.find((c) => c.category === 'Shopping');
+  check('Net-positive month: Shopping total is $100.00 (debits), not |net| $6,529.45',
+    shopping !== undefined && approx(shopping.total, 100.00), `got ${shopping?.total}`);
+  check('Net-positive month: refund credit carried in creditTotal ($6,629.45), never netted',
+    shopping !== undefined && approx(shopping.creditTotal ?? 0, 6629.45), `got ${shopping?.creditTotal}`);
   check('Net-positive month: expenseTotal counts debits only ($150.00)',
     approx(jan.expenseTotal, 150.00), `got ${jan.expenseTotal}`);
   const spendingCats = jan.byCategory.filter((c) => !NON_SPENDING.has(c.category));
   check('Net-positive month: invariant holds',
+    checkSpendingCategoryInvariant(spendingCats, jan.expenseTotal, NON_SPENDING, '2026-01') === null);
+}
+
+// ---------------------------------------------------------------------------
+// 2b. SR-1 — the same net-positive shape with the catch-all `Other`: the big
+//     +credit is NOT a refund. It classifies UNKNOWN and is excluded entirely,
+//     so it can neither inflate the line nor be disclosed as a phantom refund.
+// ---------------------------------------------------------------------------
+
+{
+  const jan = janBreakdown([
+    row(3,  TransactionCategory.Other,  -100.00),
+    row(5,  TransactionCategory.Other,  +6629.45, 'Unclassified inbound'),
+    row(10, TransactionCategory.Dining, -50.00),
+  ]);
+  const other = jan.byCategory.find((c) => c.category === 'Other');
+  check('SR-1 net-positive Other: total is $100.00 (debits only)',
+    other !== undefined && approx(other.total, 100.00), `got ${other?.total}`);
+  check('SR-1 net-positive Other: the +credit is UNKNOWN residue — NO creditTotal, count debit-only',
+    other !== undefined && other.creditTotal === undefined && other.count === 1,
+    `creditTotal=${other?.creditTotal} count=${other?.count}`);
+  check('SR-1 net-positive Other: expenseTotal counts debits only ($150.00)',
+    approx(jan.expenseTotal, 150.00), `got ${jan.expenseTotal}`);
+  const spendingCats = jan.byCategory.filter((c) => !NON_SPENDING.has(c.category));
+  check('SR-1 net-positive Other: invariant holds',
     checkSpendingCategoryInvariant(spendingCats, jan.expenseTotal, NON_SPENDING, '2026-01') === null);
 }
 

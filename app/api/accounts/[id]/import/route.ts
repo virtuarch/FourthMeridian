@@ -138,6 +138,9 @@ import { buildFlowInputFromRow, buildFlowWriteFields } from "@/lib/transactions/
 // CCPAY-2C-4 — the ONE card-payment category rescue, shared with the Plaid sync
 // seam. File imports supply evidence; the authority owns the decision.
 import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
+// SR-2 — the payroll descriptor-evidence rescue, applied on the same seam and in
+// the same order as the Plaid sync path (card-payment rescue, then payroll).
+import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
 // TI2-5 — stamp durable TI facts beside FlowType on the import write paths.
 // Imports carry no provider metadata, so only the honestly-derivable facts are
 // non-null (settlementState from pending=false; fxApplied from the single
@@ -404,8 +407,16 @@ export const POST = withApiHandler(async (
     // debit, so a payment credit is positive). A file imported under the wrong
     // signConvention flips payments negative, which the liability+inflow guard
     // rejects — a MISS, never a false DEBT_PAYMENT.
-    const rescuedCategory = resolveLiabilityPaymentCategory(row.category, "Payment", {
+    const paymentRescuedCategory = resolveLiabilityPaymentCategory(row.category, "Payment", {
       ...flowAccountContext,
+      amount:      row.amount,
+      merchant:    row.merchant,
+      description: row.description,
+    });
+    // SR-2 — payroll descriptor rescue, same order as the Plaid sync seam. Both
+    // are rescue-only + Other-only, so an already-rescued Payment leg passes
+    // through untouched and only a still-"Other" inbound payroll credit promotes.
+    const rescuedCategory = resolvePayrollIncomeCategory(paymentRescuedCategory, "Income", {
       amount:      row.amount,
       merchant:    row.merchant,
       description: row.description,

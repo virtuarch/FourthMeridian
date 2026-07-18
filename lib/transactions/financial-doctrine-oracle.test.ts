@@ -74,6 +74,11 @@ import {
   isBankingPopulation,
   isDebtPayment,
 } from "@/lib/transactions/flow-predicates";
+// SR-6 — the classification layer the oracle historically started too late to
+// cover: provider/category/descriptor EVIDENCE → flowType, BEFORE aggregation.
+import { classifyFlow } from "@/lib/transactions/flow-classifier";
+import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
+import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
 import { deriveTransferDisposition, type TransferDisposition, type TransferEvidence } from "@/lib/transactions/transfer-evidence";
 import { shouldSurfaceAsNeedsClassification } from "@/lib/transactions/needs-classification";
 import { totalDebtPaid, type DebtPaymentTxnLike } from "@/lib/debt";
@@ -769,9 +774,114 @@ check("exactly one visibility level grants transaction detail (FULL)",
     grantsTransactionDetail(VisibilityLevel.FULL) === true /* gate is orthogonal to the flow above */);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PART 7 — CLASSIFICATION-LAYER DOCTRINE (SR-1 / SR-2 / SR-6)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The parts above pin flowType → aggregation. This part pins the layer BEFORE
+// them: provider / category / DESCRIPTOR evidence → flowType. It runs the SAME
+// per-row chain every ingest seam runs — the descriptor rescues, THEN the
+// descriptor-blind classifier — so the doctrine below is frozen at the point a
+// row is born, not merely where it is summed.
+//
+// Governing doctrine (SR):
+//   • Pending is a settlement STATE, not an economic type.
+//   • Provider OTHER / OTHER_OTHER is ABSENCE of information, not a refund.
+//   • Cash direction establishes DIRECTION, not economic PURPOSE.
+//   • Refund requires refund EVIDENCE (a positive amount in a real spend category).
+//   • Descriptor evidence resolves BEFORE the classifier; UNKNOWN is the honest
+//     fallback when no evidence exists.
+
+console.log("── Part 7 — classification-layer doctrine (SR-1/SR-2/SR-6) ──");
+
+// The real seam sequence: card-payment rescue → payroll rescue → classifyFlow.
+function seamFlowType(row: {
+  category: string; amount: number; merchant: string | null; description: string | null;
+  accountType?: string | null; debtSubtype?: string | null;
+  pfcPrimary?: string | null; pfcDetailed?: string | null;
+}): string {
+  const acct = { accountType: row.accountType ?? null, debtSubtype: row.debtSubtype ?? null };
+  const afterPayment = resolveLiabilityPaymentCategory(row.category, "Payment", {
+    ...acct, amount: row.amount, merchant: row.merchant, description: row.description,
+  });
+  const category = resolvePayrollIncomeCategory(afterPayment, "Income", {
+    amount: row.amount, merchant: row.merchant, description: row.description,
+  });
+  return classifyFlow({
+    category, amount: row.amount, accountType: acct.accountType, debtSubtype: acct.debtSubtype,
+    pfcPrimary: row.pfcPrimary ?? null, pfcDetailed: row.pfcDetailed ?? null,
+  }).flowType;
+}
+
+// Case 1 — pending payroll (Other / OTHER_OTHER / +) → INCOME after descriptor
+// resolution, and NEVER REFUND. The real Vectrus shape.
+{
+  const t = seamFlowType({ category: "Other", amount: 5286.63, merchant: "VECTRUS SYSTEMS",
+    description: "VECTRUS SYSTEMS CORP PAYROLL SEC:PPD", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER",
+    accountType: "checking" });
+  check("SR Case 1: pending payroll → INCOME (never REFUND)", t === "INCOME", `got ${t}`);
+}
+
+// Case 2 — generic positive Other, no evidence → UNKNOWN, never REFUND.
+{
+  const t = seamFlowType({ category: "Other", amount: 250, merchant: "COUNTERPARTY",
+    description: "INBOUND", accountType: "checking" });
+  check("SR Case 2: generic positive Other → UNKNOWN (never REFUND)", t === "UNKNOWN", `got ${t}`);
+}
+
+// Case 3 — genuine merchant refund (Dining + positive) → REFUND.
+{
+  const t = seamFlowType({ category: "Dining", amount: 15, merchant: "RESTAURANT", description: "REFUND",
+    accountType: "checking" });
+  check("SR Case 3: Dining + positive → REFUND (real reversal evidence)", t === "REFUND", `got ${t}`);
+}
+
+// Case 4 — a positive Other with no LOAN_PAYMENT PFC and no card descriptor is
+// NOT a refund (honest UNKNOWN); the real card-payment leg still resolves DEBT_PAYMENT.
+{
+  const ambiguous = seamFlowType({ category: "Other", amount: 800, merchant: "BANK",
+    description: "PAYMENT", accountType: "checking" });
+  check("SR Case 4: ambiguous positive Other is NOT REFUND", ambiguous !== "REFUND", `got ${ambiguous}`);
+  const cardLeg = seamFlowType({ category: "Other", amount: 5000, merchant: "PAYMENT-THANK YOU",
+    description: "PAYMENT-THANK YOU", accountType: "debt", debtSubtype: "credit_card" });
+  check("SR Case 4: real card-payment leg still DEBT_PAYMENT", cardLeg === "DEBT_PAYMENT", `got ${cardLeg}`);
+}
+
+// Case 5 — settlement invariance: pending (Other/OTHER_OTHER) and posted
+// (INCOME/INCOME_WAGES) snapshots of the SAME event agree on the economic kind.
+{
+  const pending = seamFlowType({ category: "Other", amount: 5286.63, merchant: "VECTRUS SYSTEMS",
+    description: "VECTRUS SYSTEMS CORP PAYROLL", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER",
+    accountType: "checking" });
+  const posted = seamFlowType({ category: "Income", amount: 5286.63, merchant: "VECTRUS SYSTEMS",
+    description: "VECTRUS SYSTEMS CORP PAYROLL", pfcPrimary: "INCOME", pfcDetailed: "INCOME_WAGES",
+    accountType: "checking" });
+  check("SR Case 5: pending kind === posted kind (settlement invariance)",
+    pending === posted && posted === "INCOME", `pending=${pending} posted=${posted}`);
+}
+
+// The four canonical doctrine rules, stated directly on the classifier output so
+// a future edit cannot quietly re-fabricate refunds.
+{
+  // (1) Pending is a settlement state, not an economic type — proven by Case 5.
+  // (2) Provider OTHER is absence of information, not refund evidence.
+  const otherPos = classifyFlow({ category: "Other", amount: 500, pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER" });
+  check("Doctrine: OTHER + positive is NOT REFUND", otherPos.flowType !== "REFUND", `got ${otherPos.flowType}`);
+  // (3) REFUND requires evidence — a genuine spend category, not bare direction.
+  check("Doctrine: REFUND requires spend-category evidence (Dining+ = REFUND)",
+    classifyFlow({ category: "Dining", amount: 25 }).flowType === "REFUND");
+  check("Doctrine: bare positive with no evidence is UNKNOWN, not REFUND",
+    classifyFlow({ category: "Other", amount: 25 }).flowType === "UNKNOWN");
+  // (4) Direction ≠ purpose — a positive Other is INFLOW in DIRECTION but UNKNOWN
+  // in PURPOSE; the sign fixes direction, never economic meaning.
+  check("Doctrine: direction ≠ purpose (positive Other = INFLOW direction, UNKNOWN purpose)",
+    otherPos.flowDirection === "INFLOW" && otherPos.flowType === "UNKNOWN",
+    `got ${otherPos.flowType}/${otherPos.flowDirection}`);
+}
+
 // ─── Summary ────────────────────────────────────────────────────────────────────
 
 console.log(`\n${passes} passed, ${failures} failed (${passes + failures} checks).`);
 if (failures > 0) { console.log("Financial doctrine oracle FAILED."); process.exit(1); }
-console.log("Financial doctrine oracle passed — semantics FROZEN for classifier v3.");
+console.log("Financial doctrine oracle passed — semantics FROZEN for classifier v4.");
 process.exit(0);

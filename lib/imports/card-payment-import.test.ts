@@ -72,14 +72,18 @@ test('a card-payment leg imported from CSV becomes DEBT_PAYMENT, not REFUND', ()
   assert.equal(flow.flowDirection, 'INFLOW');
 });
 
-test('the same leg WITHOUT the rescue would be REFUND (the bug, pinned)', () => {
+test('the same leg WITHOUT the rescue is UNKNOWN, never a fabricated REFUND (the rescue is load-bearing)', () => {
   const parsed = parseCsvText(`Date,Description,Amount\n2026-07-16,PAYMENT-THANK YOU,5000.00\n`);
   const columns = detectColumns(parsed.headers) as CsvColumnMap;
   const row = normalizeRow(parsed.rows[0], columns, 'creditPositive', 1);
-  // Feeding the RAW category straight to the classifier — the pre-2C-4 behavior.
+  // Feeding the RAW category straight to the classifier — the pre-rescue behavior.
   const unrescued = classifyFlow({ category: row.category, amount: row.amount as number, accountType: 'debt' });
-  assert.equal(unrescued.flowType, 'REFUND',
-    'if this is no longer REFUND the rescue is being applied somewhere unexpected');
+  // SR-1 — a positive `Other` is NO LONGER a fabricated REFUND; it is the honest
+  // UNKNOWN residue. The rescue is still load-bearing: it is what turns this leg
+  // into DEBT_PAYMENT (asserted above). Without it the leg is merely unclassified,
+  // not misattributed as a spend reversal.
+  assert.equal(unrescued.flowType, 'UNKNOWN',
+    'positive Other must classify UNKNOWN when unrescued (SR-1) — if REFUND reappears the fabrication regressed');
 });
 
 // ── Descriptor format invariance, through the real parser ────────────────────

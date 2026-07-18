@@ -183,8 +183,15 @@ export function normalizeDescriptor(value: string): string {
     .trim();
 }
 
-/** Normalized words of a descriptor, in order. `[]` for an empty descriptor. */
-function descriptorWords(value: string): string[] {
+/**
+ * Normalized words of a descriptor, in order. `[]` for an empty descriptor.
+ *
+ * SR-2 — exported as a shared primitive so the descriptor-evidence resolver
+ * (lib/transactions/descriptor-evidence.ts) reuses the SAME normalization +
+ * word-splitting the card-payment rescue uses, rather than re-implementing (and
+ * risking a drift in) the matcher. It stays zero-dependency and pure.
+ */
+export function descriptorWords(value: string): string[] {
   const n = normalizeDescriptor(value);
   return n === "" ? [] : n.split(" ");
 }
@@ -203,7 +210,7 @@ function descriptorWords(value: string): string[] {
  * needs `-` → space, while "e-payment" needs `-` → deleted. As word sequences
  * both are simply themselves.
  */
-function containsPhrase(words: readonly string[], needle: string): boolean {
+export function containsPhrase(words: readonly string[], needle: string): boolean {
   const target = descriptorWords(needle);
   if (target.length === 0) return false;
   for (let i = 0; i + target.length <= words.length; i++) {
