@@ -279,7 +279,12 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   const cardAccounts: CashAccountBalance[] = accounts.filter(isReconstructableCard).map((a) => ({ id: a.id, balance: a.balance }));
 
   const [cashDeltas, cardDeltas] = await Promise.all([
-    buildDeltas(client, cashAccounts.map((a) => a.id), effectiveStart, today, false),
+    // SAME-BASIS INVARIANT — cash is now posted-only (excludePending=true), matching
+    // both the card walk (below) and the FinancialAccount.balance anchor the walk-back
+    // reverses. `balance` is the only balance the snapshot system treats as truth and
+    // never carries pending, so reversing a pending row would mix bases and inject a
+    // phantom into every day before the pending date. See backfill.ts's cash query.
+    buildDeltas(client, cashAccounts.map((a) => a.id), effectiveStart, today, true),
     buildDeltas(client, cardAccounts.map((a) => a.id), effectiveStart, today, true),
   ]);
   const dailyCash = reconstructDailyCashBalances(cashAccounts, cashDeltas, today, effectiveStart);
@@ -501,7 +506,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
 
 /**
  * accountId → (isoDate → Σ signed amount posted that day) over (from, today].
- * `excludePending` matches the card walk (posted-only) vs the cash walk.
+ * `excludePending=true` for BOTH cash and card walks: the walk-back reverses a
+ * posted `FinancialAccount.balance` anchor, so its deltas must be posted-only too
+ * (same-basis invariant). The parameter is retained for explicitness at the call
+ * sites, not because either basis differs anymore.
  */
 async function buildDeltas(client: Client, ids: string[], from: Date, today: Date, excludePending: boolean): Promise<Map<string, Map<string, number>>> {
   const out = new Map<string, Map<string, number>>();

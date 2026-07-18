@@ -123,6 +123,59 @@ export function reconstructDailyLiabilityBalances(
   return out;
 }
 
+// ── Reconstruction/observation boundary continuity ────────────────────────────
+
+/**
+ * The boundary between RECONSTRUCTED and OBSERVED history (the ownership rule this
+ * codebase actually implements — there is NO persisted `firstSyncedAt`):
+ *
+ *   • Storage grain: SpaceSnapshot is one row per `@@unique([spaceId, date])`, so a
+ *     calendar date has AT MOST ONE row — reconstructed and observed can never
+ *     coexist for the same day. Ownership is decided by the row's `isEstimated`.
+ *   • `isEstimated = false` → OBSERVED (a live snapshot regenerate.ts wrote from
+ *     that day's real `FinancialAccount.balance`); it is FROZEN — automatic regen
+ *     skips it (regenerate-history.core.ts's skip-frozen guard).
+ *   • `isEstimated = true`  → RECONSTRUCTED (walked back from the current balance).
+ *   • The handoff day is therefore the earliest `isEstimated = false` date; every
+ *     earlier date is reconstructed. It is defined by the DATA (which days have a
+ *     frozen observed row), not by any stored sync timestamp.
+ *
+ * The desired shape is `… reconstructed(N-1) │ observed(N) observed(N+1) …` with no
+ * overlap (guaranteed by the unique key) and no gap. CONTINUITY across that seam
+ * is the same-basis invariant expressed at the boundary: since both sides read the
+ * same posted `balance` truth, the only legitimate difference between the last
+ * reconstructed value and the first observed value is the POSTED economic activity
+ * dated on the observed day:
+ *
+ *   firstObserved − lastReconstructed − postedBoundaryActivity  ==  0   (± epsilon)
+ *
+ * Any non-zero residual is value NOT explained by posted activity — a phantom
+ * (e.g. an anchor that carried unsettled/pending value, or a stale anchor never
+ * re-walked). `postedBoundaryActivity` is the day-N net change in the SAME value
+ * the two balances measure, in the caller's sign convention (for cash: Σ FM signed
+ * amount dated N; for owed: the day-N change in owed). Sign-agnostic by design.
+ */
+export const RECONSTRUCTION_CONTINUITY_EPSILON = 0.01;
+
+/** firstObserved − lastReconstructed − postedBoundaryActivity. 0 (±ε) ⇒ continuous. */
+export function boundaryContinuityResidual(
+  lastReconstructed: number,
+  firstObserved: number,
+  postedBoundaryActivity: number,
+): number {
+  return firstObserved - lastReconstructed - postedBoundaryActivity;
+}
+
+/** True when the reconstructed→observed seam is explained entirely by posted activity. */
+export function isBoundaryContinuous(
+  lastReconstructed: number,
+  firstObserved: number,
+  postedBoundaryActivity: number,
+  epsilon: number = RECONSTRUCTION_CONTINUITY_EPSILON,
+): boolean {
+  return Math.abs(boundaryContinuityResidual(lastReconstructed, firstObserved, postedBoundaryActivity)) <= epsilon;
+}
+
 // ── Reconstructable-card predicate ────────────────────────────────────────────
 
 /**

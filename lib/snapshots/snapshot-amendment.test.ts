@@ -64,6 +64,25 @@ async function main(): Promise<void> {
       await expectThrow(() => applyAmendment(req(fakeClient({ spaceType: "PERSONAL", hasLink: false }))), (e) => e instanceof Error && /SpaceAccountLink/i.test((e as Error).message)));
   }
 
+  // 4. Rebuild RECOMPUTES from canonical inputs — it must NOT copy previously
+  //    materialized SpaceSnapshot values (else a bad historical anchor would be
+  //    re-frozen verbatim). Source guard: both entry points drive the reconstruction
+  //    through regenerateWealthHistory (walk-backs + A8 + classifyAccounts), and the
+  //    stored SnapshotAmendmentDay rows are an AUDIT breakdown, not the compute source.
+  console.log("4. Amendment recomputes (does not copy materialized reconstruction)");
+  {
+    const { readFileSync } = await import("fs");
+    const { join } = await import("path");
+    const src = readFileSync(join(process.cwd(), "lib/snapshots/snapshot-amendment.ts"), "utf8");
+    const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+    check("previewAmendment + applyAmendment both recompute via regenerateWealthHistory",
+      (code.match(/regenerateWealthHistory\s*\(/g) ?? []).length >= 2);
+    check("no SpaceSnapshot READ-BACK feeds the amendment compute (findMany/findUnique on spaceSnapshot)",
+      !/spaceSnapshot\.(findMany|findUnique|findFirst)/.test(code));
+    check("the derived reconstruction is written by regen's upsert, not copied here",
+      !/spaceSnapshot\.(create|createMany|update)\b/.test(code));
+  }
+
   if (failures > 0) { console.error(`\n${failures} check(s) FAILED`); process.exit(1); }
   console.log("\nAll snapshot-amendment policy-guard checks passed.");
   process.exit(0);

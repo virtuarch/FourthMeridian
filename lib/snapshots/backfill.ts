@@ -192,6 +192,16 @@ export async function backfillSpaceSnapshots(
       where: {
         financialAccountId: { in: cashIds },
         deletedAt: null,
+        // SAME-BASIS INVARIANT — posted-only. The walk-back anchors on
+        // FinancialAccount.balance, which is the ONLY balance the whole snapshot
+        // system treats as truth (regenerate.ts's live/observed row classifies it
+        // as-is via classifyAccounts, and NOTHING anywhere folds pending into it).
+        // A pending row is by definition not settled into that anchor, so reversing
+        // it here would walk the posted anchor through a delta it never contained —
+        // a posted-vs-pending basis mismatch that injects a phantom for every day
+        // before the pending date. This mirrors the card walk below (which already
+        // excludes pending "to match posted balance"): anchor basis === delta basis.
+        pending:   false,
         date: { gt: effectiveStart, lte: today },
       },
       _sum: { amount: true },
