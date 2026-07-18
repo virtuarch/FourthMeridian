@@ -30,9 +30,13 @@ function Row({ label, value, valueColor }: { label: string; value: ReactNode; va
   );
 }
 
-export function HoldingDetail({ row, reportingCurrency, accountName, onBack, backLabel = "Back to holdings" }: {
+export function HoldingDetail({ row, reportingCurrency, accountName, onBack, backLabel = "Back to holdings", hideIdentity = false }: {
   row: ValuedHoldingRow; reportingCurrency: string; accountName: string;
-  onBack: () => void; backLabel?: string;
+  /** Back affordance — omitted when the container supplies its own dismissal
+   *  (e.g. a RightPanel whose header carries the close button). */
+  onBack?: () => void; backLabel?: string;
+  /** Skip the symbol/name header when the container already shows it (panel header). */
+  hideIdentity?: boolean;
 }) {
   const unvalued = row.reportingValue == null;
   const nativeCcy = row.currency ?? reportingCurrency;
@@ -45,15 +49,21 @@ export function HoldingDetail({ row, reportingCurrency, accountName, onBack, bac
 
   return (
     <div className="min-w-0">
-      {/* Back control — concise (§6/§9). */}
-      <button type="button" onClick={onBack}
-        className="flex items-center gap-1 text-xs font-medium mb-3 hover:underline" style={{ color: "var(--meridian-400)" }}>
-        <ArrowLeft size={13} /> {backLabel}
-      </button>
+      {/* Back control — concise (§6/§9). Rendered only when a back handler exists. */}
+      {onBack && (
+        <button type="button" onClick={onBack}
+          className="flex items-center gap-1 text-xs font-medium mb-3 hover:underline" style={{ color: "var(--meridian-400)" }}>
+          <ArrowLeft size={13} /> {backLabel}
+        </button>
+      )}
 
-      {/* Identity + headline value. */}
-      <p className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>{rowLabel(row)}</p>
-      {row.symbol && row.name && <p className="text-xs mb-2" style={{ color: "var(--text-muted)" }}>{row.name}</p>}
+      {/* Identity + headline value — skipped when the container's header shows them. */}
+      {!hideIdentity && (
+        <>
+          <p className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>{rowLabel(row)}</p>
+          {row.symbol && row.name && <p className="text-xs mb-2" style={{ color: "var(--text-muted)" }}>{row.name}</p>}
+        </>
+      )}
 
       {/* ── Investment facts first. ── */}
       <div className="flex flex-col gap-1.5 mt-2">

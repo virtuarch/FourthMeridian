@@ -43,11 +43,25 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-console.log("1. Render boundary — composes its panels (KPI, chart, holdings, allocation)");
+console.log("1. Render boundary — composes its EDITORIAL surfaces (hero, chart, holdings ledger)");
 {
-  for (const panel of ["<InvestmentKpiStrip", "<PortfolioValueChart", "<HoldingsSection", "<InvestmentAllocationPanel"]) {
+  const LEDGER = strip(read(`${DIR}/HoldingsLedger.tsx`));
+  for (const panel of ["<InvestmentsHero", "<PortfolioValueChart", "<HoldingsLedger"]) {
     check(`composes ${panel}`, SRC.includes(panel));
   }
+  // Redesign (prototype idiom): the dense KPI strip, the card grid, and the separate
+  // allocation donut are retired from the workspace composition — the value/coverage
+  // folds into the hero, and the allocation folds into the ledger's weight bars.
+  for (const gone of ["<InvestmentKpiStrip", "<HoldingsSection", "<InvestmentAllocationPanel"]) {
+    check(`no longer composes ${gone} (editorial redesign)`, !SRC.includes(gone));
+  }
+  // The holdings detail now opens in the Atlas RightPanel primitive, and the bar IS
+  // the allocation view (share of portfolio), not a donut.
+  check("ledger opens detail in the Atlas RightPanel + reuses HoldingDetail",
+    LEDGER.includes("RightPanel") && LEDGER.includes("<HoldingDetail"));
+  check("ledger renders inline weight bars from row.share", LEDGER.includes("row.share"));
+  // Editorial rhythm + section anchors published to the sidebar (like Net Worth).
+  check("editorial layout with section anchors", CODE.includes("space-y-8") && CODE.includes("useSpaceSectionsPublisher"));
 }
 
 console.log("2. Data OWNERSHIP + envelope BRIDGE");
@@ -82,7 +96,7 @@ console.log("4. Display currency + activation + hook honesty");
 {
   check("Workspace converts the contract (convertInvestmentsSpaceData)", CODE.includes("convertInvestmentsSpaceData("));
   check("transform identity when reporting === target", CONV.includes("from === ctx.target") && CONV.includes("return data"));
-  check("reads current + historical + activity + trust", CODE.includes("data.current") && CODE.includes("data.historical") && CODE.includes("data.activity") && CODE.includes("data.trust"));
+  check("reads current + historical + trust", CODE.includes("data.current") && CODE.includes("data.historical") && CODE.includes("data.trust"));
   check("no raw-loader call in the Workspace", !CODE.includes("getCurrentPositions") && !CODE.includes("getInvestmentsTimeMachine"));
   check("hook honesty guards intact", HOOK.includes("compareTo < asOf") && HOOK.includes("if (!active) return") && !HOOK.includes("setData(null)"));
 }
