@@ -66,6 +66,13 @@ import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
+import {
+  usePrefersReducedMotion,
+  useEscapeKey,
+  useReturnFocus,
+  useAutoFocus,
+  useFocusTrap,
+} from "@/components/atlas/useOverlayBehavior";
 
 export type OverlayIntent = "dialog" | "form" | "workspace";
 export type OverlaySize = "sm" | "md" | "lg" | "xl" | "full";
@@ -78,10 +85,6 @@ const WIDTH_CLASS: Record<OverlaySize, string> = {
   xl:   "sm:max-w-5xl",    // ≈1024px — workspace overlays
   full: "sm:max-w-[96vw]", // immersive
 };
-
-const FOCUSABLE =
-  'a[href], button:not([disabled]), textarea:not([disabled]), ' +
-  'input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export interface OverlaySurfaceProps {
   /** Controlled visibility. When false the primitive renders nothing. */
@@ -140,20 +143,6 @@ export interface OverlaySurfaceProps {
   className?: string;
 }
 
-/** matchMedia-based reduced-motion check (SSR-safe). */
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const update = () => setReduced(mq.matches);
-    update();
-    mq.addEventListener?.("change", update);
-    return () => mq.removeEventListener?.("change", update);
-  }, []);
-  return reduced;
-}
-
 export function OverlaySurface({
   open,
   onClose,
@@ -178,9 +167,9 @@ export function OverlaySurface({
   const [mounted, setMounted] = useState(false);
   const [entered, setEntered] = useState(false);
   const panelRef = useRef<HTMLElement | null>(null);
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const reducedMotion = usePrefersReducedMotion();
+  const onKeyDownTrap = useFocusTrap(panelRef);
 
   // Portal target only exists on the client. Flip the flag inside a rAF
   // callback (not synchronously in the effect body) so we don't trigger a
@@ -190,41 +179,13 @@ export function OverlaySurface({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  // Escape to close — guarded by preventClose.
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !preventClose) onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [open, onClose, preventClose]);
-
-  // Body scroll lock — shared nest-safe helper that also preserves and
-  // restores window.scrollY, so opening/closing never jumps the page to the
-  // top (see useBodyScrollLock / doctrine §14).
+  // Escape (guarded by preventClose), body-scroll lock (nest-safe, preserves
+  // window.scrollY), focus capture/restore, and initial focus — the shared,
+  // domain-free overlay behaviors (see useOverlayBehavior / useBodyScrollLock).
+  useEscapeKey(open, onClose, preventClose);
   useBodyScrollLock(open);
-
-  // Focus: capture the trigger, move focus in, restore on close.
-  useEffect(() => {
-    if (!open) return;
-    restoreFocusRef.current = document.activeElement as HTMLElement | null;
-    // Defer so the portalled panel is in the DOM.
-    const raf = requestAnimationFrame(() => {
-      const panel = panelRef.current;
-      if (!panel) return;
-      const first = panel.querySelector<HTMLElement>(FOCUSABLE);
-      // preventScroll: focusing must never scroll the page/panel into view —
-      // the surface is already fixed + centered (doctrine §14).
-      (first ?? panel).focus({ preventScroll: true });
-    });
-    return () => {
-      cancelAnimationFrame(raf);
-      // preventScroll: restoring focus to the trigger must not scroll it into
-      // view / shift the page on close.
-      restoreFocusRef.current?.focus?.({ preventScroll: true });
-    };
-  }, [open]);
+  useReturnFocus(open);
+  useAutoFocus(open, panelRef);
 
   // Entrance trigger — mount hidden, animate in next frame.
   useEffect(() => {
@@ -233,27 +194,6 @@ export function OverlaySurface({
   }, [open]);
 
   if (!open || !mounted) return null;
-
-  // Tab focus trap — keeps focus within the panel.
-  function onKeyDownTrap(e: React.KeyboardEvent) {
-    if (e.key !== "Tab") return;
-    const panel = panelRef.current;
-    if (!panel) return;
-    const nodes = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-      (el) => el.offsetParent !== null || el === document.activeElement
-    );
-    if (nodes.length === 0) { e.preventDefault(); panel.focus(); return; }
-    const first = nodes[0];
-    const last = nodes[nodes.length - 1];
-    const active = document.activeElement as HTMLElement | null;
-    if (e.shiftKey && (active === first || !panel.contains(active))) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && active === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  }
 
   const backdropCloses =
     closeOnBackdrop ?? (intent !== "workspace");
