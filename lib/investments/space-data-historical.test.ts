@@ -128,6 +128,20 @@ function main(): void {
   check("investments UI never calls a raw loader (reads the composed InvestmentsSpaceData)",
     leaks.length === 0, leaks.join(", "));
 
+  console.log("6. Coverage is a single authority (no consumer re-derives it)");
+  // The two-truths guard: a coverage-gated subtotal always travels with its
+  // coverage (type-level, in investments-time-machine-coverage.test.ts), and the
+  // coverage itself is derived in exactly ONE place — the pure core's
+  // buildValuationCoverage. A second site computing `coverageByCount` is the
+  // parallel-authority drift the semantics layer forbids; a consumer that wants
+  // coverage reads it, never recomputes it from `valuedSubtotal`.
+  const coverageFormula = /coverageByCount:\s*held === 0 \? 1 :/;
+  const coverageOwners = [...collectSources("lib"), ...collectSources("components")]
+    .filter((rel) => coverageFormula.test(read(rel)));
+  check("coverageByCount is computed in exactly one place (investments-time-machine-core.ts)",
+    coverageOwners.length === 1 && /investments-time-machine-core\.ts$/.test(coverageOwners[0]),
+    coverageOwners.join(", "));
+
   // Reference the type-level asserts so they are unmistakably load-bearing.
   void (null as unknown as [_HistoricalIsA10, _SlotIsA10, _ArgsAreA10]);
 

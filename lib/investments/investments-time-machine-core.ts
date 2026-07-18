@@ -53,6 +53,38 @@ export interface ValuedHoldingRow extends InstrumentValuation {
   isCash:     boolean;
 }
 
+/**
+ * Position-valuation COVERAGE for one endpoint — the machine-readable answer to
+ * "how much of what was held did we actually value, and how confidently?", so a
+ * consumer NEVER mistakes a coverage-gated `valuedValue` for the whole portfolio.
+ *
+ * This is the "Position valuation truth" face of the two-truths split (see
+ * docs/doctrine/financial-semantics.md §6): a bottom-up subtotal that is honest
+ * about what it left out. It exposes coverage, it does not fabricate a total.
+ *
+ * Honesty model (mirrors the tier vocabulary — estimated ≠ observed, unavailable
+ * ≠ zero, missing ≠ ignored):
+ *   - `valuedValue`      = the confident floor (Σ valued positions == valuedSubtotal).
+ *   - `observedValue`    = the part of `valuedValue` a provider/you stated (observed tier).
+ *   - `estimatedValue`   = the reconstructed part (held-constant quantities, walked-back
+ *                          price/FX) — a real magnitude, but disclosed as not-observed.
+ *   - `unavailableCount` = positions held (a quantity is known) with NO defensible value.
+ *   - `unavailableValue` = the magnitude of that remainder, or `null` when it cannot be
+ *                          estimated without fabricating a price. NEVER 0-as-known.
+ *   - `coverageByCount`  = valued / (valued + unavailable) in 0..1 (1 when nothing held).
+ *   - `fullyObserved`    = every held position valued AND every valued one observed.
+ */
+export interface PortfolioValuationCoverage {
+  valuedValue:      number;
+  observedValue:    number;
+  estimatedValue:   number;
+  valuedCount:      number;
+  unavailableCount: number;
+  unavailableValue: number | null;
+  coverageByCount:  number;
+  fullyObserved:    boolean;
+}
+
 /** The as-of portfolio view (the A8 shape, re-surfaced verbatim). */
 export interface InvestmentsPortfolio {
   reportingCurrency: string;
@@ -60,6 +92,9 @@ export interface InvestmentsPortfolio {
   valuedCount:       number;
   unvaluedCount:     number;
   unvalued:          UnvaluedPosition[];
+  /** Coverage of this as-of subtotal (PortfolioValuationCoverage). Consumers read
+   *  THIS — not `valuedSubtotal` alone — before treating the figure as a total. */
+  coverage:          PortfolioValuationCoverage;
   completeness: {
     tier:     CompletenessTier;
     conflict: boolean;
@@ -78,7 +113,36 @@ export interface InvestmentsPortfolio {
  * portfolio boundary. It is a residual by construction, never an asserted
  * "market gain". When either endpoint is a partial subtotal the identity is a
  * partial and `endpointIncomplete` is set.
+ *
+ * COVERAGE (the two-truths guard): `openingValue`/`closingValue` are each a
+ * position-valuation subtotal, and the two endpoints can cover DIFFERENT position
+ * sets (a position first observed after `from` is absent from the opening). A
+ * change divided by a partial opening is the "fake return" failure this contract
+ * exists to prevent. `openingCoverage`/`closingCoverage` expose each endpoint's
+ * coverage, and `coverageConsistent` is the single machine-readable verdict a
+ * consumer reads before rendering a percentage: it is true ONLY when both
+ * endpoints valued every held position (no unavailable remainder either side), so
+ * the change compares like-for-like. When false, `totalChange / openingValue` does
+ * not represent a whole-portfolio return and must not be shown as one.
  */
+/**
+ * What `totalChange` actually represents — the gate a consumer reads BEFORE it
+ * shows a percentage, so a value change can never be presented as a return.
+ * `(closing − opening) / opening` equals a genuine holding-period return only when
+ * no external capital crossed the portfolio boundary in the window; long ranges
+ * (YTD / 1Y / All Time) routinely violate that, which is why a confident "+550%"
+ * over a year of contributions is a value change, not a gain.
+ *
+ *   "return"       — coverageConsistent AND no external flows ⇒ Δ/opening IS a
+ *                    holding-period return; a percentage is valid.
+ *   "value-change" — coverageConsistent but external flows occurred ⇒ Δ folds in
+ *                    contributions/withdrawals; present the $ value change, never a
+ *                    return %. A true return needs TWR/IRR (a separate methodology).
+ *   "incomparable" — endpoints cover different universes (coverageConsistent false)
+ *                    ⇒ not even a clean value change; show $ with a caveat, no %.
+ */
+export type ChangeInterpretation = "return" | "value-change" | "incomparable";
+
 export interface InvestmentsReconciliation {
   from:              string; // compareTo
   to:                string; // asOf
@@ -92,6 +156,20 @@ export interface InvestmentsReconciliation {
   completeness:      CompletenessTier;
   conflict:          boolean;
   endpointIncomplete: boolean;
+  /** Coverage of each endpoint subtotal — so a consumer can rebase or suppress a
+   *  percentage rather than divide by a partial opening. */
+  openingCoverage:   PortfolioValuationCoverage;
+  closingCoverage:   PortfolioValuationCoverage;
+  /** True ONLY when BOTH endpoints valued every held position (like-for-like change).
+   *  When false, `totalChange / openingValue` is NOT a whole-portfolio return. */
+  coverageConsistent: boolean;
+  /** Did external capital cross the portfolio boundary in the window (or move
+   *  unmeasured)? When true, `totalChange` folds in contributions/withdrawals, so a
+   *  simple percentage is a value change — never a return. */
+  hasExternalFlows:   boolean;
+  /** The verdict a consumer reads before rendering a percentage (see ChangeInterpretation).
+   *  A return only when the change is coverage-consistent AND flow-free. */
+  changeInterpretation: ChangeInterpretation;
   reason:            string;
 }
 
@@ -157,6 +235,40 @@ export function toValuedHoldingRows(
     .sort(holdingSort);
 }
 
+/**
+ * Derive the machine-readable coverage of a valuation view. PURE — reads only the
+ * view's own valued subtotal, counts, and per-component tiers; adds NO valuation
+ * math and reaches for no price/FX. The observed/estimated split partitions the
+ * ALREADY-computed `valuedSubtotal` by each valued component's `overallTier`, so
+ * `observedValue + estimatedValue === valuedSubtotal` by construction.
+ *
+ * `unavailableValue` is left `null`: a position with no defensible value has no
+ * honest magnitude, and inventing one (e.g. from the closing price, or a stale
+ * quote) would be the very fabrication the honesty model forbids. The unavailable
+ * remainder is exposed as a COUNT (+ the view's `unvalued[]` detail) instead.
+ */
+export function buildValuationCoverage(view: InvestmentValuationView): PortfolioValuationCoverage {
+  let observedValue = 0;
+  let estimatedValue = 0;
+  for (const c of view.components) {
+    if (c.reportingValue == null) continue; // unvalued → the remainder, not a value
+    if (c.overallTier === "observed") observedValue += c.reportingValue;
+    else estimatedValue += c.reportingValue; // derived / estimated / any non-observed
+  }
+  const unavailableCount = view.unvaluedCount;
+  const held = view.valuedCount + unavailableCount;
+  return {
+    valuedValue:      view.valuedSubtotal,
+    observedValue,
+    estimatedValue,
+    valuedCount:      view.valuedCount,
+    unavailableCount,
+    unavailableValue: null,
+    coverageByCount:  held === 0 ? 1 : view.valuedCount / held,
+    fullyObserved:    unavailableCount === 0 && estimatedValue === 0,
+  };
+}
+
 /** Re-surface a valuation view as the portfolio subtotal + unvalued remainder. PURE. */
 export function toInvestmentsPortfolio(view: InvestmentValuationView): InvestmentsPortfolio {
   return {
@@ -165,6 +277,7 @@ export function toInvestmentsPortfolio(view: InvestmentValuationView): Investmen
     valuedCount:       view.valuedCount,
     unvaluedCount:     view.unvaluedCount,
     unvalued:          view.unvalued,
+    coverage:          buildValuationCoverage(view),
     completeness:      view.completeness,
   };
 }
@@ -208,6 +321,24 @@ function buildReconciliation(
   const residualChange = totalChange - netExternalFlows;
   const endpointIncomplete = view.unvaluedCount > 0 || compareView.unvaluedCount > 0;
 
+  // Per-endpoint coverage + the like-for-like verdict. The change compares
+  // like-for-like ONLY when neither endpoint dropped a held position; a partial
+  // opening divided into the delta is the "fake return" this guards against.
+  const openingCoverage = buildValuationCoverage(compareView);
+  const closingCoverage = buildValuationCoverage(view);
+  const coverageConsistent =
+    openingCoverage.unavailableCount === 0 && closingCoverage.unavailableCount === 0;
+
+  // Return integrity: (closing − opening)/opening is a genuine holding-period
+  // return ONLY when no external capital crossed the boundary AND the universe is
+  // comparable. GROSS external activity (not net — offsetting flows still break the
+  // simple return) OR value that moved unmeasured makes the change a value change.
+  const hasExternalFlows = flowsCrossedBoundary(flows);
+  const changeInterpretation: ChangeInterpretation =
+    !coverageConsistent ? "incomparable"
+    : hasExternalFlows   ? "value-change"
+    :                      "return";
+
   const tier = worstTier([
     view.completeness.tier,
     compareView.completeness.tier,
@@ -225,8 +356,26 @@ function buildReconciliation(
     from, to: asOf, reportingCurrency,
     openingValue, closingValue, totalChange, netExternalFlows,
     residualChange, residualReason: RESIDUAL_REASON,
-    completeness: tier, conflict, endpointIncomplete, reason,
+    completeness: tier, conflict, endpointIncomplete,
+    openingCoverage, closingCoverage, coverageConsistent,
+    hasExternalFlows, changeInterpretation, reason,
   };
+}
+
+/**
+ * Did external capital cross the portfolio boundary in the window, or did value
+ * move that we could not measure as a flow? Uses GROSS legs — a +$1000
+ * contribution and a −$1000 withdrawal net to zero but still break the simple
+ * return — plus the unmeasured-external counters. Null flows ⇒ conservatively
+ * treated as "unknown activity" (not a clean return). PURE.
+ */
+function flowsCrossedBoundary(flows: PeriodFlows | null): boolean {
+  if (!flows) return true; // no flow evidence ⇒ cannot assert a flow-free return
+  return (
+    flows.contributions !== 0 || flows.withdrawals !== 0 ||
+    flows.transfersIn !== 0 || flows.transfersOut !== 0 ||
+    flows.externalAmountMissingCount > 0 || flows.inKindTransferCount > 0
+  );
 }
 
 function buildEnvelope(

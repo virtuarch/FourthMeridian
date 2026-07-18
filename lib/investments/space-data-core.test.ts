@@ -57,6 +57,7 @@ function main(): void {
     valuedCount:       4,
     unvaluedCount:     1,
     unvalued:          [],
+    coverage:          { valuedValue: 12000, observedValue: 12000, estimatedValue: 0, valuedCount: 4, unavailableCount: 1, unavailableValue: null, coverageByCount: 4 / 5, fullyObserved: false },
     completeness:      { tier: "incomplete", conflict: false, reason: "one position unvalued", byInstrument: {} },
   };
   const positions: CurrentPositions = { asOf: "2026-07-16", reportingCurrency: "USD", rows, portfolio };

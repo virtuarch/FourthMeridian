@@ -38,8 +38,21 @@ function recon(over: Partial<InvestmentsReconciliation>): InvestmentsReconciliat
     residualChange: (closingValue - openingValue) - netExternalFlows,
     residualReason: "Change not explained by external contributions, withdrawals, or transfers.",
     completeness: "observed", conflict: false, endpointIncomplete: false,
+    openingCoverage: bridgeCov(openingValue), closingCoverage: bridgeCov(closingValue), coverageConsistent: true,
+    hasExternalFlows: netExternalFlows !== 0,
+    changeInterpretation: netExternalFlows !== 0 ? "value-change" : "return",
     reason: "Closing value = opening value + net external flows + residual.",
     ...over,
+  };
+}
+
+/** A fully-covered coverage fixture for the bridge tests (the bridge reads levels,
+ *  not coverage, so a single observed block per endpoint suffices). */
+function bridgeCov(valuedValue: number): InvestmentsReconciliation["openingCoverage"] {
+  return {
+    valuedValue, observedValue: valuedValue, estimatedValue: 0,
+    valuedCount: 1, unavailableCount: 0, unavailableValue: null,
+    coverageByCount: 1, fullyObserved: true,
   };
 }
 
@@ -120,7 +133,9 @@ console.log("5. Broken identity throws (dev guard)");
       { from: "2026-01-01", to: "2026-02-01", reportingCurrency: "USD",
         openingValue: 100, closingValue: 200, totalChange: 100, netExternalFlows: 0,
         residualChange: 999, // deliberately wrong: 100 + 0 + 0 + 999 ≠ 200
-        residualReason: "x", completeness: "observed", conflict: false, endpointIncomplete: false, reason: "x" },
+        residualReason: "x", completeness: "observed", conflict: false, endpointIncomplete: false,
+        openingCoverage: bridgeCov(100), closingCoverage: bridgeCov(200), coverageConsistent: true,
+        hasExternalFlows: false, changeInterpretation: "return", reason: "x" },
       null,
     );
   } catch { threw = true; }

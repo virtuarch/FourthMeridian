@@ -254,6 +254,72 @@ at **read** time, so they self-heal as accounts are linked or reclassified.
 
 # 6 — Investment positions
 
+**Doctrine gate (read first): investments have TWO truths, and they must never be
+conflated** — the same split debt already draws between flow truth and balance
+truth (§8). One is bottom-up and evidence-gated; the other is a total. A consumer
+that reads the first as if it were the second is the exact bug the coverage
+contract exists to prevent (it is what produced a hero "+364%" against a small
+real move — a period change divided by a *partial* opening subtotal).
+
+### Position valuation truth — A10 / `getCurrentPositions`
+- **Question:** *"What can be reconstructed from known positions, observations, and
+  price evidence at a date?"*
+- **Owns:** holdings, allocation, concentration, position decomposition, per-holding
+  historical analysis.
+- **Properties:** **bottom-up**, evidence-based, **coverage-gated**. It values only
+  what it has a position observation AND a price for; everything else is an explicit
+  unvalued remainder or a disclosed `estimated` continuation. Its `valuedSubtotal`
+  is **a subtotal, never a whole-portfolio total** — the same "a partial is never
+  presented as the whole" rule the valuation core enforces (valuation-core.ts).
+- **Coverage is part of the contract, not an afterthought.** Every A10 endpoint
+  carries a `PortfolioValuationCoverage` (`valuedValue` / `observedValue` /
+  `estimatedValue` / `unavailableCount` / `unavailableValue` (null when it cannot be
+  estimated without fabricating a price) / `coverageByCount` / `fullyObserved`), and
+  the reconciliation carries `openingCoverage`, `closingCoverage`, and the
+  like-for-like verdict `coverageConsistent`. A change is a defensible return only
+  when `coverageConsistent` is true.
+- **Must NOT be used for:** the headline "what was the whole portfolio worth" total,
+  or a period return, when coverage is partial. `valuedSubtotal` alone is never a
+  portfolio total — read the coverage.
+
+### Portfolio total truth — balance-oriented, reconciled
+- **Question:** *"What was the total portfolio worth at a point in time?"*
+- **Owns:** the headline portfolio value, total change, AI summaries, export totals.
+- **Properties:** **balance-oriented**, reconciled against whatever account truth
+  exists, and **may be `estimated`** when no historical balance evidence exists
+  (there is no per-account per-date balance history in the schema — provider
+  `balance` is a single mutable scalar; the only persisted historical total is the
+  aggregated `SpaceSnapshot`, held flat on estimated rows). It is NOT derivable by
+  summing individually-priced positions — for the same reason debt balance truth is
+  not derivable from period flows: coverage gaps, unpriced holdings, and cash sweep
+  mean the bottom-up sum and the account total need not agree.
+- **Status:** the coverage contract above is the foundation; the reconciled total
+  authority (one figure feeding hero / chart / AI / export, with an explicit
+  residual against the position-valuation subtotal) is the planned build on top of
+  it. Until then, consumers read A10's coverage and refuse to present a partial
+  subtotal as a whole-portfolio total or a coverage-inconsistent change as a return.
+
+### Change vs return — a period % is a return only when flows are zero
+- **Rule:** `(closing − opening) / opening` equals a genuine holding-period return
+  **only when no external capital crossed the portfolio boundary in the window**
+  (then time-weighted ≡ money-weighted). Any contribution / withdrawal / transfer
+  folds contributed capital into `totalChange`, so the percentage becomes a *value
+  change*, not a return. Its error is range-independent in kind but grows with the
+  window — a year of deposits turns a single-digit return into a confident "+550%."
+  This is the exact separation `investment-flows-core.ts` encodes ("a cash transfer
+  is never equated with performance"); the percentage must not re-fuse it.
+- **Authority:** `buildReconciliation` (A10 pure core) derives, from the values it
+  already holds, a machine-readable verdict `changeInterpretation`:
+  `"return"` (coverageConsistent AND no external flows) · `"value-change"`
+  (coverageConsistent but flows crossed the boundary — present the $ change, never a
+  return %) · `"incomparable"` (coverageConsistent false). `hasExternalFlows` exposes
+  the driver (gross legs + unmeasured external counters — net-zero offsetting flows
+  still break the simple return).
+- **Must NOT be used for:** presenting a `"value-change"` or `"incomparable"` delta
+  as a return / gain percentage. `residualChange` (flow-excluded) is a disclosure,
+  **not** a return % — a true return over a flow-containing window is TWR / IRR, a
+  separate methodology built only when the product commits to it.
+
 ### getCurrentPositions — the current-position seam
 - **Purpose:** the ONE cheap current-position projection for non-historical consumers — today's valued investment positions per Space or account.
 - **Authority:** `lib/investments/current-positions.ts` `getCurrentPositions(scope, options)`. It is **A10-at-today**: it composes the exact same valuation path as the A10 Time Machine (`valuation.ts` → `valuation-core`) but sources its rows through a CHEAP latest-observation-per-`(account, instrument)` read instead of scanning the full window. It computes **no** value / price / FX / cash / completeness math of its own — **not a second investment authority.** Pure assembly lives in `current-positions-core.ts` (`assembleCurrentPositions`).

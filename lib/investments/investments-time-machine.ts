@@ -73,10 +73,22 @@ export async function getInvestmentsTimeMachine(
   // (FULL) links only, so a BALANCE_ONLY / SUMMARY_ONLY account never exposes its
   // positions or their value here. The wealth-total path (A9 regeneration) keeps
   // the "all" default and is unaffected.
+  //
+  // holdConstantBeforeEarliest (parity with A9 wealth reconstruction): a position
+  // whose first observation postdates a historical endpoint would otherwise vanish
+  // BEFORE it can be disclosed — a silent absence, invisible even to the coverage
+  // guard (it never becomes an unvalued remainder). Holding the earliest observed
+  // quantity backward as an ESTIMATED continuation (valued at the real market price
+  // of the endpoint date — the institution anchor is dropped, valuation.ts) converts
+  // that silent gap into a disclosed, tier-`estimated` value. Honesty is preserved:
+  // estimated ≠ observed (the tier says so, and flows/residual still separate real
+  // contributions), and a position with no PRICE stays an unvalued remainder that
+  // the reconciliation's coverage reports. Both endpoints use it so the change
+  // compares the SAME position set like-for-like.
   const [view, compareView] = await Promise.all([
-    getInvestmentValueAsOf({ ...scope, asOf, client, visibilityScope: "detailEligible" }),
+    getInvestmentValueAsOf({ ...scope, asOf, client, visibilityScope: "detailEligible", holdConstantBeforeEarliest: true }),
     compareTo
-      ? getInvestmentValueAsOf({ ...scope, asOf: compareTo, client, visibilityScope: "detailEligible" })
+      ? getInvestmentValueAsOf({ ...scope, asOf: compareTo, client, visibilityScope: "detailEligible", holdConstantBeforeEarliest: true })
       : Promise.resolve(null),
   ]);
 

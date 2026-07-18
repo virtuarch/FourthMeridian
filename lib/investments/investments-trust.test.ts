@@ -22,6 +22,7 @@ import { formatFlowCaveatSentence, type PeriodFlows } from "./investment-flows-c
 import type {
   InvestmentsTimeMachineResult,
   InvestmentsReconciliation,
+  PortfolioValuationCoverage,
 } from "./investments-time-machine-core";
 import {
   buildInvestmentsTrustSummary,
@@ -55,6 +56,17 @@ function flows(over: Partial<PeriodFlows> = {}): PeriodFlows {
   };
 }
 
+/** A fully-observed coverage fixture (valuedValue, valuedCount, unavailableCount). */
+function cov(valuedValue: number, valuedCount: number, unavailableCount = 0): PortfolioValuationCoverage {
+  const held = valuedCount + unavailableCount;
+  return {
+    valuedValue, observedValue: valuedValue, estimatedValue: 0,
+    valuedCount, unavailableCount, unavailableValue: null,
+    coverageByCount: held === 0 ? 1 : valuedCount / held,
+    fullyObserved: unavailableCount === 0,
+  };
+}
+
 function reconciliation(over: Partial<InvestmentsReconciliation> = {}): InvestmentsReconciliation {
   return {
     from: "2026-01-01", to: "2026-03-31", reportingCurrency: CUR,
@@ -62,6 +74,8 @@ function reconciliation(over: Partial<InvestmentsReconciliation> = {}): Investme
     netExternalFlows: 50, residualChange: 150,
     residualReason: "residual reason text",
     completeness: "observed", conflict: false, endpointIncomplete: false,
+    openingCoverage: cov(1000, 1), closingCoverage: cov(1200, 1), coverageConsistent: true,
+    hasExternalFlows: true, changeInterpretation: "value-change",
     reason: "reconciled",
     ...over,
   };
@@ -93,6 +107,7 @@ function result(over: {
       valuedCount,
       unvaluedCount,
       unvalued: [],
+      coverage: cov(1200, valuedCount, unvaluedCount),
       completeness: { tier, conflict, reason, byInstrument: {} },
     },
     flows: over.flows ?? null,

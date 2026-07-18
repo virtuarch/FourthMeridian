@@ -34,6 +34,7 @@ import type {
   InvestmentsPortfolio,
   InvestmentsReconciliation,
   InvestmentsTimeMachineResult,
+  PortfolioValuationCoverage,
   ValuedHoldingRow,
 } from "./investments-time-machine-core";
 import type { CurrentPositionRow } from "./current-positions-core";
@@ -59,10 +60,22 @@ function convRow<T extends ValuedHoldingRow>(row: T, c: Conv, target: string): T
   };
 }
 
+/** Convert the reporting-currency money in a coverage block; ratios/counts/flags
+ *  are scale-invariant and pass through. `unavailableValue` may be null. */
+function convCoverage(cov: PortfolioValuationCoverage, c: Conv): PortfolioValuationCoverage {
+  return {
+    ...cov,
+    valuedValue:      c(cov.valuedValue),
+    observedValue:    c(cov.observedValue),
+    estimatedValue:   c(cov.estimatedValue),
+    unavailableValue: cov.unavailableValue == null ? cov.unavailableValue : c(cov.unavailableValue),
+  };
+}
+
 function convPortfolio(p: InvestmentsPortfolio, c: Conv, target: string): InvestmentsPortfolio {
   // `unvalued[]` positions carry no reporting value (that is why they are unvalued),
   // so there is nothing to convert there.
-  return { ...p, valuedSubtotal: c(p.valuedSubtotal), reportingCurrency: target };
+  return { ...p, valuedSubtotal: c(p.valuedSubtotal), coverage: convCoverage(p.coverage, c), reportingCurrency: target };
 }
 
 function convSlices(slices: AllocationSlice[], c: Conv): AllocationSlice[] {
@@ -108,6 +121,8 @@ function convReconciliation(r: InvestmentsReconciliation, c: Conv, target: strin
     totalChange:      c(r.totalChange),
     netExternalFlows: c(r.netExternalFlows),
     residualChange:   c(r.residualChange),
+    openingCoverage:  convCoverage(r.openingCoverage, c),
+    closingCoverage:  convCoverage(r.closingCoverage, c),
     reportingCurrency: target,
   };
 }

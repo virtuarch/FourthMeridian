@@ -48,7 +48,8 @@ function row(reportingValue: number) {
     costBasis: 80,
   };
 }
-const portfolio = { reportingCurrency: "USD", valuedSubtotal: 200, valuedCount: 1, unvaluedCount: 0, unvalued: [], completeness: { tier: "observed", conflict: false, reason: "", byInstrument: {} } };
+const coverage = { valuedValue: 200, observedValue: 200, estimatedValue: 0, valuedCount: 1, unavailableCount: 0, unavailableValue: null, coverageByCount: 1, fullyObserved: true };
+const portfolio = { reportingCurrency: "USD", valuedSubtotal: 200, valuedCount: 1, unvaluedCount: 0, unvalued: [], coverage, completeness: { tier: "observed", conflict: false, reason: "", byInstrument: {} } };
 const flows = {
   from: "2025-01-01", to: "2026-07-14", reportingCurrency: "USD", eventCount: 2,
   contributions: 100, withdrawals: -10, transfersIn: 5, transfersOut: -5, buys: 50, sells: -20, income: 8, fees: -2,
@@ -59,7 +60,10 @@ const flows = {
 const reconciliation = {
   from: "2025-01-01", to: "2026-07-14", reportingCurrency: "USD",
   openingValue: 150, closingValue: 200, totalChange: 50, netExternalFlows: 90, residualChange: -40,
-  residualReason: "market", completeness: "observed", conflict: false, endpointIncomplete: false, reason: "",
+  residualReason: "market", completeness: "observed", conflict: false, endpointIncomplete: false,
+  openingCoverage: { valuedValue: 150, observedValue: 150, estimatedValue: 0, valuedCount: 1, unavailableCount: 0, unavailableValue: null, coverageByCount: 1, fullyObserved: true },
+  closingCoverage: { valuedValue: 200, observedValue: 200, estimatedValue: 0, valuedCount: 1, unavailableCount: 0, unavailableValue: null, coverageByCount: 1, fullyObserved: true },
+  coverageConsistent: true, hasExternalFlows: true, changeInterpretation: "value-change", reason: "",
 };
 const allocation = {
   valuedTotal: 200, valuedCount: 1, unvaluedCount: 0,
@@ -87,6 +91,10 @@ const data = {
   check("current.allocation.byAssetClass value 200→100", near(out.current.allocation.byAssetClass[0].value, 100));
   check("current.allocation.byCurrency value 200→100", near(out.current.allocation.byCurrency[0].value, 100));
   check("historical.portfolio.valuedSubtotal 200→100", near(out.historical!.portfolio.valuedSubtotal, 100));
+  check("current.portfolio.coverage.valuedValue 200→100", near(out.current.portfolio.coverage.valuedValue, 100));
+  check("coverage.unavailableValue stays null (no fabricated magnitude)", out.current.portfolio.coverage.unavailableValue === null);
+  check("reconciliation.openingCoverage.valuedValue 150→75", near(out.historical!.reconciliation!.openingCoverage.valuedValue, 75));
+  check("reconciliation.coverageConsistent flag preserved through conversion", out.historical!.reconciliation!.coverageConsistent === true);
   check("historical.reconciliation.totalChange 50→25", near(out.historical!.reconciliation!.totalChange, 25));
   check("historical.reconciliation.openingValue 150→75", near(out.historical!.reconciliation!.openingValue, 75));
   check("historical.reconciliation.residualChange -40→-20", near(out.historical!.reconciliation!.residualChange, -20));

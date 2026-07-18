@@ -60,6 +60,12 @@ console.log("Investments dynamic envelope (A10 — from the InvestmentsTimeMachi
     portfolio: {
       reportingCurrency: "USD", valuedSubtotal: 0,
       valuedCount: o.valuedCount ?? 3, unvaluedCount: o.unvaluedCount ?? 1, unvalued: [],
+      coverage: {
+        valuedValue: 0, observedValue: 0, estimatedValue: 0,
+        valuedCount: o.valuedCount ?? 3, unavailableCount: o.unvaluedCount ?? 1, unavailableValue: null,
+        coverageByCount: (o.valuedCount ?? 3) / ((o.valuedCount ?? 3) + (o.unvaluedCount ?? 1)),
+        fullyObserved: (o.unvaluedCount ?? 1) === 0,
+      },
       completeness: { tier: o.tier, conflict: o.conflict ?? false, reason: o.reason ?? "", byInstrument: {} },
     },
     flows: null, reconciliation: null,
