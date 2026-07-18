@@ -69,11 +69,13 @@ const sameSet = (a: readonly string[], b: readonly string[]) =>
   for (const id of PERSPECTIVES) check(`${id}.kind === "perspective"`, WORKSPACE_REGISTRY[id]?.kind === "perspective");
   check("Goals is a standard Workspace, NOT a Perspective", WORKSPACE_REGISTRY.goals?.kind === "standard");
   // Exhaustive: the FINANCE standard set is EXACTLY these six (registry
-  // verification). Scoped to the finance domain because OPS-5 S6 registers Platform
-  // Operations workspaces (domain:"platform") that are also kind:"standard" in the
-  // same universal registry — those are validated in lib/platform/workspaces.test.ts.
+  // verification). Scoped to the finance domain because the universal registry also
+  // holds non-finance kind:"standard" workspaces — Platform Operations
+  // (domain:"platform", OPS-5 S6) and the UI-Convergence utility surfaces
+  // (domain:"connections"/"settings", Wave 1) — each validated in its own domain's
+  // workspaces.test.ts. Finance ⇔ domain absent or "finance".
   check("finance kind:standard set === {overview,transactions,accounts,activity,members,goals}",
-    sameSet(Object.values(WORKSPACE_REGISTRY).filter((d) => d.kind === "standard" && d.domain !== "platform").map((d) => d.id), STANDARD));
+    sameSet(Object.values(WORKSPACE_REGISTRY).filter((d) => d.kind === "standard" && (d.domain ?? "finance") === "finance").map((d) => d.id), STANDARD));
   // Every Perspective is a Workspace: PERSPECTIVE_LIBRARY entries carry the base fields.
   check("every PERSPECTIVE_LIBRARY entry has an id/label/icon/kind",
     Object.values(PERSPECTIVE_LIBRARY).every((d) => !!d.id && !!d.label && !!d.icon && !!d.kind));

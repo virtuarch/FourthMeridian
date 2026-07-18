@@ -35,6 +35,8 @@ import type { LensId } from "@/lib/perspective-engine/types";
 // module and unioned into the universal registry below (value import; the module is
 // a client-safe config file with no engine/server code, exactly like this one).
 import { PLATFORM_WORKSPACES } from "@/lib/platform/workspaces";
+import { CONNECTIONS_WORKSPACES } from "@/lib/connections/workspaces";
+import { SETTINGS_WORKSPACES } from "@/lib/settings/workspaces";
 
 export type PerspectiveStatus = "available" | "comingSoon";
 
@@ -157,17 +159,20 @@ export interface WorkspaceDefinition {
   kind: WorkspaceKind;
   /**
    * OPS-5 S6 — which DOMAIN owns this workspace. Absent ⇒ "finance" (the original
-   * and only domain until Platform Operations became the second real consumer).
-   * The finance-scoped metadata below (routing/dataNeeds/temporalCapability/envelope)
-   * uses finance VOCABULARIES (WorkspaceDataNeed / WorkspaceEnvelopeSource /
-   * RoutedWorkspaceTab); a "platform" workspace declares NONE of them (Platform
-   * widgets self-fetch, have no finance envelope, and route via the platform rail,
-   * not the finance modal tabs). This discriminator + the guard in
-   * lib/platform/workspaces.test.ts is what keeps finance vocabularies from
-   * polluting Platform definitions — WITHOUT a base/PersonalFinance type split
-   * (which SD-3 forbids: dataNeeds is universal orchestration metadata by design).
+   * and only domain until Platform Operations became the second real consumer;
+   * UI-Convergence Wave 1 added the user-owned "connections" and "settings" utility
+   * surfaces as further consumers). The finance-scoped metadata below (routing/
+   * dataNeeds/temporalCapability/envelope) uses finance VOCABULARIES
+   * (WorkspaceDataNeed / WorkspaceEnvelopeSource / RoutedWorkspaceTab); a non-finance
+   * workspace ("platform" / "connections" / "settings") declares NONE of them: its
+   * bodies self-fetch, carry no finance envelope, and navigate via their own rail,
+   * not the finance modal tabs. This discriminator + the guards in
+   * lib/platform/workspaces.test.ts and lib/{connections,settings}/workspaces.test.ts
+   * is what keeps finance vocabularies from polluting non-finance definitions —
+   * WITHOUT a base/PersonalFinance type split (which SD-3 forbids: dataNeeds is
+   * universal orchestration metadata by design).
    */
-  domain?: "finance" | "platform";
+  domain?: "finance" | "platform" | "connections" | "settings";
   /** Routing/navigation identity — the ONE answer to "which top-level tab owns
    *  this workspace, and how is it presented?" (replaces the host-side
    *  PERSPECTIVE_TARGET_TAB / PERSPECTIVE_ROUTED_TABS / PERSPECTIVE_MODAL_META). */
@@ -530,6 +535,12 @@ export const WORKSPACE_REGISTRY: Record<string, WorkspaceDefinition> = {
   ...STANDARD_WORKSPACES,
   ...PERSPECTIVE_LIBRARY,
   ...PLATFORM_WORKSPACES,
+  // UI Convergence Wave 1 — the two GLOBAL, user-owned utility surfaces reuse the
+  // universal identity authority (disjoint "connections-*"/"settings-*" namespaces,
+  // domain:"connections"/"settings"), NOT a parallel registry. Their modules live
+  // under lib/connections and lib/settings; this file only unions them in.
+  ...CONNECTIONS_WORKSPACES,
+  ...SETTINGS_WORKSPACES,
 };
 
 /** Deterministic lookup by workspace id; undefined for unknown ids (fails safe). */
