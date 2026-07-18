@@ -7,9 +7,12 @@
  * Session strategy: JWT (no DB sessions).
  *
  * SYSTEM_ADMIN notes:
- *   - Logs in via this same flow
- *   - M3-TOTP: after TOTP is implemented, admin login will require TOTP verification
- *     Uncomment the TOTP guard block below once M3 is complete.
+ *   - Logs in via this same flow.
+ *   - MFA is MANDATORY (PO-1): an un-enrolled admin is forced into TOTP
+ *     enrolment (requireTotpSetup) and can reach nothing but the 2FA-setup flow;
+ *     an enrolled admin is challenged for a live TOTP/recovery code every login.
+ *     There is no password-only path to admin power. This is NOT gated on the
+ *     REQUIRE_TOTP_* platform settings — see lib/auth-totp-policy.ts.
  *   - Admin routes are at /admin/* — the middleware redirects admins away from /dashboard
  *   - To disable SYSTEM_ADMIN entirely: set role = USER in the DB or set
  *     DISABLE_SYSTEM_ADMIN=true in .env and it will be rejected at login
@@ -23,6 +26,9 @@ import { db } from "@/lib/db";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
+import { buildAuditData } from "@/lib/audit";
+import { requiresTotpEnrollment } from "@/lib/auth-totp-policy";
+import { PlatformSettingKey } from "@/lib/platform-settings";
 import { verifyTOTP } from "@/lib/totp";
 import { sendEmail } from "@/lib/email/send";
 import { createNotification } from "@/lib/notifications/create";
@@ -248,31 +254,46 @@ export const authOptions: NextAuthOptions = {
           return null;
         }
 
-        // ── Platform TOTP requirement check ───────────────────────────────────
-        // Check if the platform requires TOTP for this user's role.
-        // If required but not yet enrolled, we still allow login but mark the
-        // session with requireTotpSetup = true. Middleware redirects those
-        // sessions to /settings?setup2fa=true for forced enrollment.
+        // ── Mandatory-MFA / forced-enrolment decision (PO-1) ──────────────────
+        // A SYSTEM_ADMIN without TOTP is ALWAYS forced into enrolment,
+        // independent of the REQUIRE_TOTP_* platform settings — there is no
+        // password-only path to admin power. The session is marked
+        // requireTotpSetup = true: every session guard (lib/session.ts +
+        // lib/platform/authorize.ts) rejects it via totpSetupPending(), and
+        // proxy.ts confines the browser to /admin/security?setup2fa=true, so the
+        // admin can complete enrolment but reach nothing else until they do.
+        // Once enrolled, the totpEnabled branch below challenges them for a live
+        // code on every subsequent login.
+        //
+        // Customer authentication is UNCHANGED: a normal USER is forced into
+        // enrolment only when the operator has turned on require_totp_all_users
+        // (default off). The pure rule lives in lib/auth-totp-policy.ts
+        // (unit-tested); this adapter resolves only the one setting it needs, and
+        // skips even that DB read for admins (mandatory regardless).
         let requireTotpSetup = false;
         if (!user.totpEnabled) {
-          const roleKey =
-            user.role === UserRole.SYSTEM_ADMIN ? "require_totp_system_admin" :
-                                                  "require_totp_all_users";
+          const requireTotpAllUsers =
+            user.role === UserRole.SYSTEM_ADMIN
+              ? false // not consulted for admins — enrolment is mandatory
+              : (await db.platformSetting.findUnique({
+                  where:  { key: PlatformSettingKey.REQUIRE_TOTP_ALL_USERS },
+                  select: { value: true },
+                }))?.value === "true";
 
-          const [roleRequired, allRequired] = await Promise.all([
-            db.platformSetting.findUnique({ where: { key: roleKey },             select: { value: true } }),
-            db.platformSetting.findUnique({ where: { key: "require_totp_all_users" }, select: { value: true } }),
-          ]);
-
-          if (roleRequired?.value === "true" || allRequired?.value === "true") {
-            requireTotpSetup = true;
-          }
+          requireTotpSetup = requiresTotpEnrollment({
+            role:        user.role,
+            totpEnabled: user.totpEnabled,
+            requireTotpAllUsers,
+          });
         }
 
         // ── TOTP enforcement ──────────────────────────────────────────────────
         // If the user has 2FA enabled, they must provide either a valid TOTP
         // code or a valid recovery code to complete login.
         // The login page sends these via the two-step flow (pre-login → TOTP screen).
+        // `mfaMethod` records which second factor actually completed the login so
+        // the success audit event is honest about it ("TOTP verified") — PO-1.
+        let mfaMethod: "totp" | "recovery" | "none" = "none";
         if (user.totpEnabled && user.totpSecret) {
           const totpCode     = (credentials as Record<string, string>).totpCode?.replace(/\s/g, "");
           const recoveryCode = (credentials as Record<string, string>).recoveryCode?.trim();
@@ -300,6 +321,7 @@ export const authOptions: NextAuthOptions = {
               });
               return null;
             }
+            mfaMethod = "totp";
           } else if (recoveryCode) {
             // Verify and consume a recovery code
             const used = await verifyRecoveryCode(user.id, recoveryCode);
@@ -311,6 +333,7 @@ export const authOptions: NextAuthOptions = {
               return null;
             }
             // verifyRecoveryCode marks the code used; write the login event below
+            mfaMethod = "recovery";
           }
         }
 
@@ -403,13 +426,21 @@ export const authOptions: NextAuthOptions = {
             },
           }),
           db.auditLog.create({
-            data: {
-              userId:    user.id,
-              action:    "LOGIN",
+            // PO-1 — normalise onto the operator/security audit shape
+            // (lib/audit.ts). Keeps action = LOGIN and metadata.role for the
+            // existing security-history/activity consumers, and ADDS actorType +
+            // result + the second-factor method so an admin login records "TOTP
+            // verified" honestly. Written in the same $transaction as the
+            // session row, so the session and its audit fact commit atomically.
+            data: buildAuditData({
+              actorId:   user.id,
+              actorType: user.role === UserRole.SYSTEM_ADMIN ? "SYSTEM_ADMIN" : "USER",
+              action:    AuditAction.LOGIN,
+              result:    "SUCCESS",
               ipAddress,
               userAgent,
-              metadata:  { role: user.role },
-            },
+              metadata:  { role: user.role, mfa: mfaMethod },
+            }),
           }),
         ]);
 

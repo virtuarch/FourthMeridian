@@ -1,0 +1,77 @@
+# Platform Security Boundary — Three Authorization Axes
+
+**Status:** ARCHITECTURE — binding. Established by PO-1 (2026-07-18).
+**Scope:** the authorization model separating customers, platform operators, and emergency administration in Fourth Meridian.
+**Companion:** `docs/audits/PLATFORM_OPERATIONS_CONVERGENCE_AUDIT.md` (the investigation this doctrine formalises).
+
+---
+
+## The rule, stated once
+
+Fourth Meridian has **three independent authorization axes**. They are separate models, separate policy modules, and separate adapters. A grant on one axis confers **zero** authority on the others. Do not add a fourth path, and do not let any axis import another's authority.
+
+```
+Fourth Meridian
+│
+├─ Customer access          SpaceMember          → a customer Space's financial/product data
+│
+├─ Operator access          PlatformGrant        → a Fourth Meridian HQ area (read/act on the platform)
+│
+└─ Emergency access         User.role = SYSTEM_ADMIN → break-glass administration of the platform
+```
+
+| Axis | Model | Enum(s) | Controls | Gated by |
+|---|---|---|---|---|
+| **Customer** | `SpaceMember` (per user × Space) | `SpaceMemberRole {OWNER, ADMIN, MEMBER, VIEWER}`, status `ACTIVE\|REMOVED\|LEFT` | Access to a **customer Space's** balances, transactions, goals, AI, sharing | `requireSpaceRole(spaceId, minRole)` → `spaceMember` lookup (`lib/session.ts`, `lib/spaces/policy.ts`) |
+| **Operator** | `PlatformGrant` (per user × area) | `PlatformArea {PLATFORM_OPS, SECURITY_OPS, GROWTH_REVENUE, CUSTOMER_SUCCESS}` × `PlatformAccessLevel {READ, WRITE}`, status `ACTIVE\|REVOKED` | Access to a **Fourth Meridian HQ** area at `/dashboard/platform/[area]` and its `/api/platform/*` routes | `requirePlatformAccess(area, level)` → `hasPlatformAccess` pure policy (`lib/platform/authorize.ts`, `lib/platform/policy.ts`) |
+| **Emergency** | `User.role` | `UserRole {USER, SYSTEM_ADMIN}` | Break-glass administration at `/admin/*`: issue/revoke grants, user & space oversight, security settings, audit | `requireSystemAdmin` / `requireFreshSystemAdmin` (`lib/session.ts`) |
+
+### Why they are separate — and must stay so
+
+- **A `PlatformGrant` never creates a `SpaceMember` row, and vice-versa** (schema comment on `PlatformGrant`; enforced by the `spaceMember.create` tripwire in `lib/platform-surface.test.ts`). Holding operator access to `SECURITY_OPS` gives an employee **no** ability to read any customer's money; being a customer Space OWNER gives **no** platform power.
+- **The platform surface reads only operational ledgers** (`AuditLog`, `JobRun`, `ApiUsageCounter`, `UserSession`, `FxRate`, `BetaAccessRequest`, `SyncIssue`, `PlatformGrant`) — **never** `Transaction`/`Holding`/`Position`/balance tables. Locked by source-scan (`lib/platform-surface.test.ts`).
+- **Escalation is closed:** only `SYSTEM_ADMIN` can mint `PlatformGrant` rows, and only onto `role === USER` accounts. No platform capability can mint platform capabilities.
+- **`SYSTEM_ADMIN` is break-glass, not a daily role.** It carries an unconditional bypass over every platform area (`decidePlatformAccess`), so it is the highest-value credential in the system and is treated accordingly (mandatory MFA below; kill switch `DISABLE_SYSTEM_ADMIN`; every admin action audited with `performedByAdminId`).
+
+The employee/operator tier is expressed **today** as a normal `USER` account + one or more per-area `PlatformGrant`s — least-privilege, with zero customer-data reach and no new role enum required.
+
+---
+
+## Mandatory MFA for SYSTEM_ADMIN (PO-1)
+
+**Invariant: there is no password-only path to admin power.**
+
+- An **un-enrolled** `SYSTEM_ADMIN` is **always** forced into TOTP enrolment at login (`requireTotpSetup = true`), **independent of the `REQUIRE_TOTP_*` platform settings**. That session is rejected by every guard via `totpSetupPending()` (`lib/session.ts`, `lib/platform/authorize.ts`) and confined by `proxy.ts` to `/admin/security?setup2fa=true` — it can complete enrolment and reach nothing else.
+- An **enrolled** `SYSTEM_ADMIN` is challenged for a live TOTP or recovery code on **every** login (the enforcement block in `lib/auth.ts` `authorize()`).
+- The decision rule is pure and unit-tested: `requiresTotpEnrollment()` in `lib/auth-totp-policy.ts` (tests in `lib/auth-totp-policy.test.ts`; wiring locked by `lib/security-surface.test.ts` §5).
+
+**Customer authentication is unchanged.** A normal `USER` is forced into enrolment only when the operator turns on `require_totp_all_users` (default off) — exactly as before PO-1. The `REQUIRE_TOTP_*` settings remain the opt-in toggle for ordinary users; they are simply no longer the gate for admins.
+
+**Bootstrap (no lockout):** the first login of a new/never-enrolled admin is password-only *into the enrolment flow only* — a session with zero capability. They enrol via `/api/user/totp/*` (which opt out of the gate with `allowTotpSetupPending: true`), and every subsequent login is password + TOTP. This is mandatory 2FA enrolment, the industry-standard pattern, chosen over outright denial specifically so the sole founder-admin can never be locked out.
+
+---
+
+## Operator audit foundation (PO-1)
+
+**Decision: `AuditLog` IS the audit foundation — extended, not duplicated.** No second table or parallel event store was introduced (that would duplicate the platform's strongest primitive: append-only, `SET NULL`-on-delete, indexed on `(action, createdAt)`, `performedByAdminId` for on-behalf actions). The required operator-audit fields map onto the existing model:
+
+| Required field | AuditLog storage |
+|---|---|
+| actor | `userId` (null for anonymous/pre-account) |
+| actor type | `metadata.actorType` — `USER \| SYSTEM_ADMIN \| PLATFORM_OPERATOR \| SYSTEM` |
+| action | `action` — typed `AuditAction` vocabulary (`lib/audit-actions.ts`) |
+| target | `metadata.target` — `{ type, id }`, domain-neutral |
+| timestamp | `createdAt` (DB default `now()`) |
+| result | `metadata.result` — `SUCCESS \| FAILURE` |
+| metadata | `metadata` — counts/ids/kinds only; **never** financial values or user content |
+| (on-behalf-of) | `performedByAdminId` — dedicated column, unchanged |
+
+The shape is codified in `lib/audit.ts`: `buildAuditData()` (pure, unit-tested in `lib/audit.test.ts`) and `recordAuditEvent(input, client?)` (adapter, accepts a `$transaction` client). The successful-login event now records the second factor used (`metadata.mfa = "totp" | "recovery" | "none"`) so an admin login reads honestly as *"TOTP verified"*. Failed logins remain captured by the purpose-built `LOGIN_FAILED` + `{ reason }` recorder (with inline anomaly detection).
+
+Future PO slices (per-connection resync, membership actions, etc.) emit through this one shape, so the operator audit feed is uniform from birth. `action` stays `LOGIN` (not `LOGIN_SUCCESS`) to preserve the existing security-history/activity allowlists — success vs failure is carried by `result` + the `LOGIN` / `LOGIN_FAILED` action split.
+
+---
+
+## What this slice deliberately did NOT do
+
+Deferred to later PO slices (see the convergence audit's Track B/S): user-management UI, space-management UI, connection-resync / job-retry actions and their UIs, `/admin` → Platform HQ migration, new operator write APIs, per-action step-up re-auth, read-audit on platform surfaces, and any employee role tier beyond the `USER` + `PlatformGrant` model. PO-1 is the security foundation those capabilities require before operator power is added.

@@ -170,5 +170,28 @@ for (const file of cachedOnlyReadRoutes) {
   check(`${file} stays on cached requireSystemAdmin (read-only)`, !src(file).includes("requireFreshSystemAdmin"));
 }
 
+console.log("5. Mandatory MFA for SYSTEM_ADMIN (PO-1)");
+// The forced-enrolment decision is wired to the pure rule, not a settings-only
+// gate — this is the "no password-only path to admin power" invariant.
+check(
+  "authorize() routes the enrolment decision through requiresTotpEnrollment()",
+  authorizeBody.includes("requiresTotpEnrollment("),
+);
+check(
+  "the old settings-only roleKey gate is gone from authorize()",
+  !authorizeBody.includes('"require_totp_system_admin"'),
+);
+const totpPolicy = src("lib/auth-totp-policy.ts");
+check(
+  "the pure rule forces enrolment for un-enrolled SYSTEM_ADMIN unconditionally",
+  totpPolicy.includes("role === UserRole.SYSTEM_ADMIN") &&
+    totpPolicy.includes("return true"),
+);
+// The successful-login audit is honest about the second factor used.
+check(
+  "login success is recorded through the buildAuditData() operator/security shape",
+  authorizeBody.includes("buildAuditData({") && authorizeBody.includes("mfa: mfaMethod"),
+);
+
 console.log(failures === 0 ? "\nAll security-surface scans passed." : `\n${failures} failure(s).`);
 process.exit(failures === 0 ? 0 : 1);
