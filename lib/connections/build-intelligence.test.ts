@@ -1,13 +1,13 @@
 /**
- * lib/connections/rebuild-intelligence.test.ts  (CONN-2B)
+ * lib/connections/build-intelligence.test.ts  (CONN-2B)
  *
- * Source-scan invariants for the multi-account intelligence rebuild. Standalone
+ * Source-scan invariants for the multi-account intelligence build. Standalone
  * `tsx` (no DB). Proves the CONN-2 constraints the mission requires:
  *   - reuses the ONE reconstruction authority (regenerateWealthHistoryForAccounts)
  *   - creates NO duplicate authority (no refreshMultipleAccounts / refresh path)
  *   - changes NO balance/snapshot freshness logic (L3 untouched)
  *   - is owner-scoped + rate-limited + kill-switch-honest
- *   - reconstruction status derives from existing sources (no persisted intel store)
+ *   - intelligence status derives from existing sources (no persisted intel store)
  */
 
 import { readFileSync } from "node:fs";
@@ -25,7 +25,7 @@ function check(name: string, cond: boolean) {
   else { failures++; console.error(`  ✗ ${name}`); }
 }
 
-const ROUTE = "app/api/connections/rebuild-intelligence/route.ts";
+const ROUTE = "app/api/connections/build-intelligence/route.ts";
 const route = code(ROUTE);
 
 console.log("Reuses the ONE reconstruction authority");
@@ -65,5 +65,5 @@ console.log("Reconstruction status derives from existing sources (no persisted i
   check("available history from Transaction min date (not a constant)", /transaction\.groupBy|_min:\s*\{\s*date/.test(loader));
 }
 
-if (failures > 0) { console.error(`\nrebuild-intelligence: ${failures} failure(s).`); process.exit(1); }
-console.log("\nrebuild-intelligence: all passed.");
+if (failures > 0) { console.error(`\nbuild-intelligence: ${failures} failure(s).`); process.exit(1); }
+console.log("\nbuild-intelligence: all passed.");
