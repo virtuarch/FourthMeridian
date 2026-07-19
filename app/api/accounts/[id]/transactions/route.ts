@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/session";
 import { ShareStatus } from "@prisma/client";
 import { grantsTransactionDetail } from "@/lib/ai/visibility";
 import { serializeTransactionRow } from "@/lib/transactions/serialize";
+import { DEFAULT_TX_LIMIT, capFetched } from "@/lib/data/transactions";
 
 export async function GET(
   _req: NextRequest,
@@ -46,7 +47,10 @@ export async function GET(
     return NextResponse.json({ transactions: [] });
   }
 
-  const rows = await db.transaction.findMany({
+  // TX-2D — bounded: at most DEFAULT_TX_LIMIT most-recent rows for this account
+  // (a heavy multi-year account otherwise returned thousands of rows to the
+  // modal). `take: limit + 1` detects truncation without a second query.
+  const fetched = await db.transaction.findMany({
     where: {
       financialAccountId: id,
       // deletedAt: null — D2 Step 4D-R: excludes rows soft-deleted by an
@@ -56,9 +60,11 @@ export async function GET(
       deletedAt: null,
     },
     orderBy: { date: "desc" },
+    take: DEFAULT_TX_LIMIT + 1,
     // MI M6 read cutover — resolved Merchant presentation (additive join).
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } } },
   });
+  const { rows, truncated } = capFetched(fetched, DEFAULT_TX_LIMIT);
 
   // TI-1: canonical serialization via the shared serializer
   // (lib/transactions/serialize.ts). This route's previous inline copy had
@@ -68,5 +74,5 @@ export async function GET(
   // read. Additive only; all previously-present fields are unchanged.
   const transactions = rows.map(serializeTransactionRow);
 
-  return NextResponse.json({ transactions });
+  return NextResponse.json({ transactions, truncated });
 }

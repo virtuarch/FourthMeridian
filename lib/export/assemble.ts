@@ -45,6 +45,7 @@ import { SECURITY_HISTORY_ACTIONS, securityHistoryLabel } from "@/lib/security-h
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import {
   capTransactions,
+  EXPORT_TRANSACTION_CAP,
   dedupById,
   filterVisibleContributions,
   isFullVisibility,
@@ -125,8 +126,13 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
       accounts.push({ ...row.account, spaceId, spaceName });
     }
 
-    const spaceTxns = await getTransactions({ spaceId });
-    for (const t of spaceTxns) transactions.push({ ...t, spaceId });
+    // TX-2E — move the export cap into the QUERY (per space) so no single space
+    // materializes its full multi-year history in memory. The final combined cap
+    // (capTransactions below) still trims to EXPORT_TRANSACTION_CAP total, and the
+    // result is identical: the global most-recent N are a subset of each space's
+    // most-recent N. Streaming a larger export remains deferred (TX-3/4).
+    const spaceTxns = await getTransactions({ spaceId, limit: EXPORT_TRANSACTION_CAP });
+    for (const t of spaceTxns.rows) transactions.push({ ...t, spaceId });
 
     // Investment positions: canonical seam (FULL-authorized, valued + FX) merged
     // with the crypto-only bridge (self-custody wallet positions still live in

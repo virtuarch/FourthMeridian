@@ -38,7 +38,9 @@ export async function fetchPerLiabilityDebtPayments(ctx: SpaceContext_AI): Promi
   const txn = getTransactionsSummary(ctx);
   if (!txn) return [];
   try {
-    const rows = await getDebtTransactions({ spaceId: ctx.space.id });
+    // TX-2 — bounded read (default cap); the in-memory window filter below is
+    // unchanged. The AI intel now inherits the loader's bound automatically.
+    const { rows } = await getDebtTransactions({ spaceId: ctx.space.id });
     const inWindow = rows.filter(
       (r) => !r.pending && r.date >= txn.startDate && r.date <= txn.endDate,
     );

@@ -10,11 +10,12 @@ export const runtime = "nodejs";
 
 export default async function CreditPage() {
   const ctx = await getSpaceContext();
-  const [{ score, updatedAt }, accounts, transactions] = await Promise.all([
+  const [{ score, updatedAt }, accounts, debtTxns] = await Promise.all([
     getFicoData({ userId: ctx.userId }),
     getAccounts({ spaceId: ctx.spaceId }),
-    getDebtTransactions({ spaceId: ctx.spaceId }),
+    getDebtTransactions({ spaceId: ctx.spaceId }), // TX-2 bounded (default cap)
   ]);
+  const transactions = debtTxns.rows;
 
   const debtAccounts = accounts.filter((a) => a.type === "debt");
 

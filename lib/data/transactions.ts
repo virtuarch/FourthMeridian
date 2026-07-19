@@ -46,7 +46,7 @@ import {
   TransactionDetailReporting,
   TransactionProvenanceSource,
 } from "@/types";
-import { ShareStatus, FlowType } from "@prisma/client";
+import { ShareStatus, FlowType, Prisma } from "@prisma/client";
 
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 // TI-1: canonical row → DTO serialization (single derivation site — replaces
@@ -125,51 +125,87 @@ function counterpartyVisibilityInclude(spaceId: string) {
   } as const;
 }
 
-/** Banking transactions only (excludes investment activity), newest first. */
-export async function getTransactions(ctx?: { spaceId: string }): Promise<Transaction[]> {
-  const { spaceId } = ctx ?? (await getSpaceContext());
+// ── TX-2 — bounded transaction read contract ────────────────────────────────
+// Transaction is RAW financial-event data. A consumer must not accidentally load
+// a user's entire multi-year history. Every list loader below is bounded by a
+// default row cap with a truncation sentinel (the same discipline the AI
+// assembler already uses), plus an optional date window. For a population at or
+// under the cap the result is byte-identical to the old unbounded read
+// (`truncated: false`, same rows) — so DayFacts / Cash Flow / FlowType folds over
+// the returned rows are UNCHANGED. Above the cap, `truncated: true` is an honest
+// signal (no silent fake completeness); consumers get the most-recent `limit` rows.
 
-  const rows = await db.transaction.findMany({
-    where: {
-      // deletedAt: null guards against an archived account's transactions
-      // surfacing in a shared Space if its link were ever left ACTIVE —
-      // same defensive filter getAccounts()/getHoldings() already apply.
-      // visibilityLevel (KD-15): only links granting transaction detail
-      // (FULL) contribute rows; BALANCE_ONLY / SUMMARY_ONLY are excluded.
-      financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } },
-      // Transaction.deletedAt: null — D2 Step 4D-R: excludes rows soft-deleted
-      // by an import rollback. See module header above for rationale.
+// The pure bounding primitives live in a server-only-free module so they can be
+// unit-tested in isolation; imported for local use + re-exported for callers.
+import { DEFAULT_TX_LIMIT, capFetched, windowFloorDate } from "./transaction-bounds";
+export { DEFAULT_TX_LIMIT, capFetched, windowFloorDate };
+
+export interface BoundedTransactions {
+  /** The transaction DTOs, newest first, at most `limit` rows. */
+  rows:       Transaction[];
+  /** True iff more rows matched than `limit` — the returned set is the most-recent slice. */
+  truncated:  boolean;
+  /** The row cap applied. */
+  limit:      number;
+  /** The date-window (in days) applied, or null for no window. */
+  windowDays: number | null;
+}
+
+/** The ONE canonical banking-population `where` (KD-15 visibility + deletedAt +
+ *  FlowType population). Shared by the list loaders AND cheap aggregate readers
+ *  (e.g. view-context) so they can never disagree on the population. */
+export function bankingTransactionWhere(spaceId: string, opts?: { debtOnly?: boolean }): Prisma.TransactionWhereInput {
+  return {
+    // deletedAt: null guards an archived account's rows; visibilityLevel (KD-15)
+    // admits only transaction-detail (FULL) links. debtOnly narrows to debt accounts.
+    financialAccount: {
+      ...(opts?.debtOnly ? { type: "debt" } : {}),
       deletedAt: null,
-      // P2-2 — banking semantic population by canonical FlowType, not by provider
-      // category allow-list. `flowType: { not: INVESTMENT }` (see BANKING_POPULATION):
-      // admits every banking flow incl. UNKNOWN/unclassified (visible for review) and
-      // excludes only pure investment security-activity. Replaces the former
-      // `category: { in: BANKING_CATEGORIES }` gate.
-      ...BANKING_POPULATION,
+      spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } },
     },
+    deletedAt: null,
+    ...BANKING_POPULATION,
+  };
+}
+
+/**
+ * Banking transactions (excludes investment activity), newest first — BOUNDED.
+ * @param ctx.windowDays optional date floor (days back from today)
+ * @param ctx.limit      row cap (default DEFAULT_TX_LIMIT); `limit + 1` is fetched
+ *                        to detect truncation.
+ */
+export async function getTransactions(
+  ctx?: { spaceId?: string; windowDays?: number; limit?: number },
+): Promise<BoundedTransactions> {
+  const spaceId    = ctx?.spaceId ?? (await getSpaceContext()).spaceId;
+  const limit      = ctx?.limit ?? DEFAULT_TX_LIMIT;
+  const windowDays = ctx?.windowDays ?? null;
+  const floor      = windowFloorDate(windowDays);
+
+  const fetched = await db.transaction.findMany({
+    where: { ...bankingTransactionWhere(spaceId), ...(floor ? { date: { gte: floor } } : {}) },
     orderBy: { date: "desc" },
+    take: limit + 1, // +1 sentinel to detect truncation without a second query
     // MI M6 read cutover — resolved Merchant presentation (additive join).
     // + KD-15 counterparty visibility for the Cash Flow liquidity axis.
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
   });
+  const { rows: capped, truncated } = capFetched(fetched, limit);
 
   // TI4 Slice 1 — read-time owned-account transfer matches, already KD-15-gated.
-  const resolvedCp = await resolveOwnedTransferCounterparties(rows, { spaceId });
+  const resolvedCp = await resolveOwnedTransferCounterparties(capped, { spaceId });
   // TI-1: canonical serialization. counterpartyAccountId is KD-15-gated here
-  // (nulled unless the counterparty account is visible to this Space) before it
-  // ever reaches the serializer / client. Persisted (provider-confirmed) links win;
-  // a read-time transfer match fills in only where no persisted link exists.
-  // CF-1 (additive): read-time context facts spread onto the DTO — no calc change.
-  return rows.map((r) => ({
+  // (nulled unless the counterparty account is visible to this Space). Persisted
+  // (provider-confirmed) links win; a read-time transfer match fills in gaps.
+  const rows = capped.map((r) => ({
     ...serializeTransactionRow({
       ...r,
       counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
     }),
     ...contextFields(r, resolvedCp),
-    // Transactions Tab Phase 1 — the provenance source as a list-level field
-    // (same precedence the detail read uses; see deriveSource). Pure, no query.
     source: deriveSource(r),
   }));
+  return { rows, truncated, limit, windowDays };
 }
 
 /**
@@ -213,42 +249,38 @@ function contextFields(
   return { transferDisposition: c.transferDisposition, needsClassification: c.needsClassification };
 }
 
-/** Transactions for debt accounts only (credit card activity), newest first. */
-export async function getDebtTransactions(ctx?: { spaceId: string }): Promise<Transaction[]> {
-  const { spaceId } = ctx ?? (await getSpaceContext());
+/**
+ * Transactions for debt accounts only (credit-card activity), newest first —
+ * BOUNDED (TX-2). Same bounding contract as getTransactions; the debt-payment
+ * folds (lib/debt.ts) additionally filter on isDebtPayment(flowType), so the cap
+ * never changes their totals within the returned window. The AI debt-payments
+ * intelligence consumer inherits this bound automatically.
+ */
+export async function getDebtTransactions(
+  ctx?: { spaceId?: string; windowDays?: number; limit?: number },
+): Promise<BoundedTransactions> {
+  const spaceId    = ctx?.spaceId ?? (await getSpaceContext()).spaceId;
+  const limit      = ctx?.limit ?? DEFAULT_TX_LIMIT;
+  const windowDays = ctx?.windowDays ?? null;
+  const floor      = windowFloorDate(windowDays);
 
-  const rows = await db.transaction.findMany({
-    where: {
-      // deletedAt: null + visibilityLevel (KD-15) — see getTransactions() above.
-      financialAccount: { type: "debt", deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } },
-      // Transaction.deletedAt: null — D2 Step 4D-R, see getTransactions() above.
-      deletedAt: null,
-      // P2-2 — banking semantic population by canonical FlowType (see
-      // BANKING_POPULATION / getTransactions above); replaces the former
-      // `category: { in: BANKING_CATEGORIES }` gate. ANDed with the debt-account
-      // scope in the OR above, so this stays "debt-account banking activity"; the
-      // debt-payment consumers (lib/debt.ts) additionally filter on
-      // isDebtPayment(flowType), so the wider population does not change their totals.
-      ...BANKING_POPULATION,
-    },
+  const fetched = await db.transaction.findMany({
+    where: { ...bankingTransactionWhere(spaceId, { debtOnly: true }), ...(floor ? { date: { gte: floor } } : {}) },
     orderBy: { date: "desc" },
-    // MI M6 read cutover — resolved Merchant presentation (additive join).
-    // + KD-15 counterparty visibility for the Cash Flow liquidity axis.
+    take: limit + 1,
     include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
   });
+  const { rows: capped, truncated } = capFetched(fetched, limit);
 
-  // TI4 Slice 1 — read-time owned-account transfer matches, already KD-15-gated;
-  // persisted (provider-confirmed) links take precedence via chooseCounterpartyId.
-  const resolvedCp = await resolveOwnedTransferCounterparties(rows, { spaceId });
-  // TI-1: canonical serialization. counterpartyAccountId KD-15-gated here.
-  // CF-1 (additive): read-time context facts spread onto the DTO — no calc change.
-  return rows.map((r) => ({
+  const resolvedCp = await resolveOwnedTransferCounterparties(capped, { spaceId });
+  const rows = capped.map((r) => ({
     ...serializeTransactionRow({
       ...r,
       counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
     }),
     ...contextFields(r, resolvedCp),
   }));
+  return { rows, truncated, limit, windowDays };
 }
 
 /**

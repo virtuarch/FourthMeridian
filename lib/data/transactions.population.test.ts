@@ -129,15 +129,41 @@ const BANKING_READS: { label: string; startMarker: string; endMarker: string }[]
   },
 ];
 
+// TX-2 — the population + structural filters now live in the shared
+// `bankingTransactionWhere` builder; the loaders delegate to it (DRY). Verify
+// BOTH: the builder carries the invariants, AND each loader applies it. The
+// semantic guarantee (population/visibility/soft-delete) is unchanged — only its
+// location moved.
+const whereBody = bodyBetween(dataCode, "export function bankingTransactionWhere(", "export async function getTransactions(");
+check("bankingTransactionWhere: body located", whereBody.length > 0, "could not slice the shared where-builder");
+check(
+  "bankingTransactionWhere: applies the canonical FlowType population fragment (...BANKING_POPULATION)",
+  /\.\.\.BANKING_POPULATION\b/.test(whereBody),
+  "the shared where must spread the FlowType population fragment, not a category filter",
+);
+check(
+  "bankingTransactionWhere: no category:{ } gate (population is FlowType, not provider category)",
+  !/\bcategory:\s*\{/.test(whereBody),
+);
+check(
+  "bankingTransactionWhere: preserves deletedAt: null (import-rollback soft-delete)",
+  /\bdeletedAt:\s*null\b/.test(whereBody),
+);
+check(
+  "bankingTransactionWhere: preserves SpaceAccountLink transaction-detail visibility gate",
+  /visibilityLevel:\s*\{\s*in:\s*TRANSACTION_DETAIL_VISIBILITY\s*\}/.test(whereBody),
+  "the KD-15 visibility predicate must remain on the SAL path",
+);
+
 for (const { label, startMarker, endMarker } of BANKING_READS) {
   const body = bodyBetween(dataCode, startMarker, endMarker);
   check(`${label}: body located`, body.length > 0, `could not slice ${label} body`);
 
-  // Population rule present (applies the canonical FlowType fragment).
+  // Each loader applies the shared population/visibility/soft-delete via the builder.
   check(
-    `${label}: applies the canonical FlowType population fragment (...BANKING_POPULATION)`,
-    /\.\.\.BANKING_POPULATION\b/.test(body),
-    "spread the FlowType population fragment instead of a category filter",
+    `${label}: applies the shared banking population via bankingTransactionWhere()`,
+    /bankingTransactionWhere\(/.test(body),
+    "the loader must delegate to the shared where-builder (population + visibility + deletedAt)",
   );
 
   // No category gate — the whole point of the cutover.
@@ -147,15 +173,11 @@ for (const { label, startMarker, endMarker } of BANKING_READS) {
     "a category population gate was reintroduced — use the FlowType rule",
   );
 
-  // Structural filters preserved: soft-delete + Space-visibility.
+  // TX-2 — the read is bounded (a row cap / truncation sentinel), never unbounded.
   check(
-    `${label}: preserves deletedAt: null (import-rollback soft-delete)`,
-    /\bdeletedAt:\s*null\b/.test(body),
-  );
-  check(
-    `${label}: preserves SpaceAccountLink transaction-detail visibility gate`,
-    /visibilityLevel:\s*\{\s*in:\s*TRANSACTION_DETAIL_VISIBILITY\s*\}/.test(body),
-    "the KD-15 visibility predicate must remain on the SAL path",
+    `${label}: is bounded (take: limit + 1)`,
+    /take:\s*limit\s*\+\s*1/.test(body),
+    "the loader must fetch a bounded page (limit + 1 sentinel), not the full history",
   );
 }
 

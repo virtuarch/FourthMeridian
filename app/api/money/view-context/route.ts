@@ -15,10 +15,11 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { getSpaceContext } from "@/lib/space";
 import { getAccounts } from "@/lib/data/accounts";
-import { getTransactions } from "@/lib/data/transactions";
+import { bankingTransactionWhere } from "@/lib/data/transactions";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { serializeSpaceConversionContext } from "@/lib/money/server-context";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
@@ -34,9 +35,16 @@ export async function GET(req: NextRequest) {
   }
 
   const ctx = await getSpaceContext();
-  const [accounts, transactions, snapshots] = await Promise.all([
+  // TX-2C — this endpoint only needs the DISTINCT currencies + dates present in
+  // the Space's transactions to build FX coverage, NOT the rows themselves.
+  // Enumerate them with cheap DB aggregates (groupBy) over the SAME banking
+  // population as getTransactions — one row per distinct currency / calendar day,
+  // bounded by days not transaction count — instead of loading the full history.
+  const txWhere = bankingTransactionWhere(ctx.spaceId);
+  const [accounts, currencyRows, dateRows, snapshots] = await Promise.all([
     getAccounts({ spaceId: ctx.spaceId }),
-    getTransactions({ spaceId: ctx.spaceId }),
+    db.transaction.groupBy({ by: ["currency"], where: txWhere }),
+    db.transaction.groupBy({ by: ["date"], where: txWhere }),
     // Snapshot dates + the Space's stamp currency are enumerated so the chart's
     // per-point conversion resolves under the override instead of rate-missing
     // (each historical net-worth point converts at its own date). Same 365-day
@@ -44,21 +52,21 @@ export async function GET(req: NextRequest) {
     getRecentSnapshots(365, { spaceId: ctx.spaceId }),
   ]);
 
-  // Same input coverage as the dashboard page's persisted-context prop —
-  // balances at the latest close, transaction rows at their own dates — plus
-  // the snapshot series (stamped in the Space's reporting currency, valued at
-  // each snapshot's own date), all targeted at the requested view currency.
+  // Same input coverage as before — balances at the latest close, the distinct
+  // transaction currencies + dates, plus the snapshot series — all targeted at
+  // the requested view currency. Aggregate-derived coverage is equivalent to the
+  // old row scan (same distinct currency/date sets).
   const moneyCtx = await serializeSpaceConversionContext(
     { reportingCurrency: parsed.value },
     {
       currencies: [
         ctx.space.reportingCurrency, // snapshot totals' stamp currency (the "from" for chart points)
         ...accounts.map((a) => a.currency ?? null),
-        ...transactions.map((t) => t.currency ?? null),
+        ...currencyRows.map((r) => r.currency ?? null),
       ],
       dates: [
         yesterdayUTCISO(),
-        ...transactions.map((t) => t.date),
+        ...dateRows.map((r) => r.date.toISOString().split("T")[0]),
         ...snapshots.map((s) => s.date),
       ],
     },
