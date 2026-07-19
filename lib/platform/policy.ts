@@ -69,6 +69,11 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "ops_api_usage",        label: "API Usage",        order: 3 },
       // Wave 2 CH-1 — provider connection health (Part B).
       { key: "ops_connection_health", label: "Connection Health", order: 4 },
+      // CONN-2F — per-connection operator diagnostics (acquisition/intelligence/
+      // freshness). Display order within the providers workspace comes from
+      // PLATFORM_AREA_WORKSPACES (right after connection_health); this materialized
+      // order is just a unique Int.
+      { key: "ops_connection_diagnostics", label: "Connection Diagnostics", order: 14 },
       // OPS-5 S1 — content-aware resource freshness (FX rates, security prices).
       { key: "ops_resource_freshness", label: "Resource Freshness", order: 5 },
       // OPS-5 S4 — manual operational controls (Run Now / Dry Run) over the

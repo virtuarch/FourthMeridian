@@ -118,7 +118,7 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       doorways: ["platform-jobs", "platform-providers", "platform-operations", "platform-alerts", "platform-trends", "platform-ai", "platform-costs"],
     },
     { workspaceId: "platform-jobs", sections: ["ops_job_health"] },
-    { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_connection_health", "ops_resource_freshness", "ops_api_usage"] },
+    { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_connection_health", "ops_connection_diagnostics", "ops_resource_freshness", "ops_api_usage"] },
     { workspaceId: "platform-operations", sections: ["ops_manual_operations"] },
     { workspaceId: "platform-alerts", sections: ["ops_alerts"] },
     // OPS-5 Wave B intelligence layer (S7 → S9 → S10 add their sections here).
