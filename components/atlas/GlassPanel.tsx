@@ -206,7 +206,7 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
         {/* Neutral interior bloom — soft interior light for thick/floating glass.
             Distinct from the accent `glow` below; sits on the base, below content. */}
         {showBloom && (
-          <div
+          <span
             aria-hidden
             className="pointer-events-none absolute inset-0 z-0"
             style={{ background: INTERIOR_BLOOM }}
@@ -215,7 +215,7 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
 
         {/* Ambient lighting bloom — sits below content, above the base glass */}
         {glow !== "none" && (
-          <div
+          <span
             aria-hidden
             className="pointer-events-none absolute inset-0 z-0"
             style={{ background: GLOW_RECIPES[glow as Exclude<GlassGlow, "none">] }}
@@ -223,7 +223,7 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
         )}
 
         {/* Specular top-edge highlight — the Atlas Glass signature */}
-        <div
+        <span
           aria-hidden
           className="pointer-events-none absolute top-0 left-0 right-0 h-px z-[1]"
           style={{
@@ -232,11 +232,29 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
           }}
         />
 
-        {/* Content always sits above glow + specular layers. `contentClassName`
-            is where content LAYOUT belongs — see the prop doc above. */}
-        <div className={["relative z-10", contentClassName].filter(Boolean).join(" ")}>
+        {/*
+          Content always sits above the bloom / glow / specular / fresnel layers.
+          That stacking is why a wrapper exists at all: those four are POSITIONED
+          (z-0, z-0, z-[1], and .atlas-fresnel-edge::after), and positioned
+          elements paint above in-flow siblings — so unwrapped children would sit
+          UNDER the decoration. Only `relative z-10` lifts them clear.
+
+          It is a <span>, not a <div>, so the markup stays valid for every `as`
+          target. <button>'s content model is phrasing content; a <div> child is
+          invalid there (and two call sites besides TimelineLens render
+          as="button"). A <span class="block"> is phrasing content and lays out
+          identically — validity fixed with no layout or stacking change.
+
+          Removing the wrapper entirely would require pushing all four decorative
+          layers to negative z-index and re-tuning their relative order, i.e.
+          changing the material system's paint order. See
+          docs/design/ATLAS_PRIMITIVE_HARDENING.md.
+
+          `contentClassName` is where content LAYOUT belongs — see the prop doc.
+        */}
+        <span className={["relative z-10 block", contentClassName].filter(Boolean).join(" ")}>
           {children as ReactNode}
-        </div>
+        </span>
       </Component>
     );
   }
