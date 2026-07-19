@@ -125,6 +125,49 @@ function counterpartyVisibilityInclude(spaceId: string) {
   } as const;
 }
 
+/**
+ * TX-3.0 — the ONE include for a banking LIST read (resolved merchant + KD-15
+ * counterparty visibility). Exported so the keyset explorer authority
+ * (lib/data/transaction-query.ts) fetches the identical row shape as getTransactions
+ * — the DTO can never diverge between the two reads.
+ */
+export function transactionListInclude(spaceId: string) {
+  return {
+    resolvedMerchant: { select: { displayName: true, logoUrl: true } },
+    ...counterpartyVisibilityInclude(spaceId),
+  } as const;
+}
+
+/** The Prisma payload a `transactionListInclude` findMany returns (all scalar
+ *  Transaction fields + the two visibility-gated relations). Derived FROM the
+ *  include builder (not a hand-written shape) so the KD-15 visibility predicate
+ *  lives in exactly one place — the counterparty include — and the privacy
+ *  source-scan sees no unguarded spaceAccountLinks literal here. */
+export type TransactionListRow = Prisma.TransactionGetPayload<{
+  include: ReturnType<typeof transactionListInclude>;
+}>;
+
+/**
+ * TX-3.0 — the ONE list-row → DTO projection: read-time owned-account transfer
+ * matching (KD-15-gated) → canonical serialize → CF-1 context fields → provenance
+ * source. Extracted verbatim from getTransactions so getTransactions AND the keyset
+ * explorer authority produce byte-identical `Transaction` DTOs (no second builder).
+ */
+export async function projectTransactionListRows(
+  rows: TransactionListRow[],
+  spaceId: string,
+): Promise<Transaction[]> {
+  const resolvedCp = await resolveOwnedTransferCounterparties(rows, { spaceId });
+  return rows.map((r) => ({
+    ...serializeTransactionRow({
+      ...r,
+      counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
+    }),
+    ...contextFields(r, resolvedCp),
+    source: deriveSource(r),
+  }));
+}
+
 // ── TX-2 — bounded transaction read contract ────────────────────────────────
 // Transaction is RAW financial-event data. A consumer must not accidentally load
 // a user's entire multi-year history. Every list loader below is bounded by a
@@ -188,23 +231,14 @@ export async function getTransactions(
     take: limit + 1, // +1 sentinel to detect truncation without a second query
     // MI M6 read cutover — resolved Merchant presentation (additive join).
     // + KD-15 counterparty visibility for the Cash Flow liquidity axis.
-    include: { resolvedMerchant: { select: { displayName: true, logoUrl: true } }, ...counterpartyVisibilityInclude(spaceId) },
+    include: transactionListInclude(spaceId),
   });
   const { rows: capped, truncated } = capFetched(fetched, limit);
 
-  // TI4 Slice 1 — read-time owned-account transfer matches, already KD-15-gated.
-  const resolvedCp = await resolveOwnedTransferCounterparties(capped, { spaceId });
-  // TI-1: canonical serialization. counterpartyAccountId is KD-15-gated here
-  // (nulled unless the counterparty account is visible to this Space). Persisted
-  // (provider-confirmed) links win; a read-time transfer match fills in gaps.
-  const rows = capped.map((r) => ({
-    ...serializeTransactionRow({
-      ...r,
-      counterpartyAccountId: chooseCounterpartyId(gatedCounterpartyId(r), resolvedCp.get(r.id) ?? null),
-    }),
-    ...contextFields(r, resolvedCp),
-    source: deriveSource(r),
-  }));
+  // TI4 Slice 1 + TI-1 — read-time owned-account transfer match (KD-15-gated) →
+  // canonical serialization → CF-1 context → provenance source. Shared projection
+  // so the keyset explorer authority (transaction-query.ts) can never diverge.
+  const rows = await projectTransactionListRows(capped, spaceId);
   return { rows, truncated, limit, windowDays };
 }
 
