@@ -184,9 +184,11 @@ export function WealthWorkspace({
           explanation. The Basis/coverage slot is intentionally not duplicated
           here — the shell's Completeness/Evidence chips already carry it. */}
       <div className="space-y-8 sm:space-y-10 min-w-0">
-        {/* ① Hero — the one net-worth headline (bare, no card). */}
+        {/* ① Hero — the headline scalar. Reflects the SAME metric the Balance
+            history chart shows, so selecting Assets / Liabilities / Liquid NW
+            changes the headline too. */}
         <div id="wealth-summary" className="scroll-mt-20">
-          <WealthHero result={result} currency={displayCurrency} envelope={envelope} />
+          <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric} />
         </div>
 
         {/* ② Trend — the dominant honesty chart, near the top, full width. */}

@@ -21,22 +21,39 @@ import { formatWealthDate } from "@/lib/wealth/wealth-time-machine";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
+import type { WealthMetricKey } from "./WealthTrendChart";
 import { WealthUnavailable, DeltaBadge } from "./wealth-ui";
+
+/** Hero eyebrow label per metric — mirrors the chart's metric switcher so the
+ *  headline reads as whatever series the user selected in Balance history. */
+const METRIC_LABEL: Record<WealthMetricKey, string> = {
+  netWorth:         "Net worth",
+  totalAssets:      "Total assets",
+  totalLiabilities: "Total liabilities",
+  liquidNetWorth:   "Liquid net worth",
+};
 
 export function WealthHero({
   result,
   currency,
   envelope,
+  metric = "netWorth",
 }: {
   result:   WealthResult;
   currency: string;
   /** The workspace's canonical trust envelope — drives the confidence chip. */
   envelope: PerspectiveEnvelope;
+  /** The chart's selected series — the hero reflects the SAME metric so the
+   *  headline changes to Assets / Liabilities / Liquid NW when the user does. */
+  metric?:  WealthMetricKey;
 }) {
   const { asOfState, deltas, compareState } = result;
   const compareLabel =
     compareState?.found && compareState.date ? formatWealthDate(compareState.date) : undefined;
   const asOfLabel = asOfState.date ? `As of ${formatWealthDate(asOfState.date)}` : undefined;
+
+  // Rising liabilities are BAD; every other metric is good when it rises.
+  const goodDirection: "up" | "down" = metric === "totalLiabilities" ? "down" : "up";
 
   // The confidence chip is now the shared trust primitive, reading the SAME
   // envelope the shell Completeness chip does — they can never disagree.
@@ -45,7 +62,7 @@ export function WealthHero({
   // Eyebrow + confidence — the quiet label above the figure (prototype hero).
   const eyebrow = (
     <div className="flex items-center justify-between gap-3">
-      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Net worth</p>
+      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{METRIC_LABEL[metric]}</p>
       {confidenceChip}
     </div>
   );
@@ -66,13 +83,13 @@ export function WealthHero({
       {eyebrow}
 
       <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-2">
-        <Figure value={formatCurrency(asOfState.netWorth, currency)} size="hero" className="sm:text-5xl leading-none" />
+        <Figure value={formatCurrency(asOfState[metric], currency)} size="hero" className="sm:text-5xl leading-none" />
         {deltas ? (
           <DeltaBadge
-            abs={deltas.netWorth.abs}
-            pct={deltas.netWorth.pct}
+            abs={deltas[metric].abs}
+            pct={deltas[metric].pct}
             currency={currency}
-            goodDirection="up"
+            goodDirection={goodDirection}
             compareLabel={compareLabel}
             className="!text-xs"
           />
