@@ -123,6 +123,13 @@ export const AuditAction = {
   // single record that anchors BOTH the SYNC_COMPLETED bell notification and the
   // Recent-Activity entry (never two independently-triggered paths).
   PLAID_HISTORY_SYNCED:     "PLAID_HISTORY_SYNCED",
+  // CONN-2B — a user-triggered financial-intelligence rebuild for a connection
+  // (regenerateWealthHistoryForAccounts over its accounts — derived-truth
+  // reconstruction, no re-acquisition/balance write). Records WHEN a connection's
+  // intelligence was last rebuilt so lastReconstructedAt + diagnostics stay
+  // honest across manual rebuilds, alongside PLAID_HISTORY_SYNCED. metadata:
+  // { connectionId, provider, fromDate, toDate }.
+  CONNECTION_INTELLIGENCE_REBUILT: "CONNECTION_INTELLIGENCE_REBUILT",
   WALLET_SYNC:              "WALLET_SYNC",
   // CH-2 — durable connection status-transition history. One action per model
   // (not one-per-direction); direction lives in `{ from, to }` metadata, the

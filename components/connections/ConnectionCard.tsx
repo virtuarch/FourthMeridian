@@ -44,20 +44,10 @@ import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
 import { ImportHistoryButton } from "@/components/connections/import/ImportHistoryButton";
 import { providerName, type SyncConnection } from "@/lib/sync/status";
 import { deriveConnectionLifecycle } from "@/lib/sync/lifecycle";
-import type { ConnectionIntelligenceStatus, AvailableHistory } from "@/lib/connections/intelligence";
-
-/**
- * CONN-2A — human "~N available" label from the derived span. null history →
- * "No historical data yet" (never "0 months" — CONN-2 empty-data rule).
- */
-function formatAvailableHistory(h: AvailableHistory | null): string {
-  if (!h || h.months <= 0) return "No historical data yet";
-  const { years, remainderMonths, months } = h;
-  if (years <= 0) return `~${months} month${months === 1 ? "" : "s"}`;
-  const y = `${years} year${years === 1 ? "" : "s"}`;
-  if (remainderMonths <= 0) return `~${y}`;
-  return `~${y} ${remainderMonths} month${remainderMonths === 1 ? "" : "s"}`;
-}
+import {
+  formatAvailableHistory,
+  type ConnectionIntelligenceStatus,
+} from "@/lib/connections/intelligence";
 
 /** Account inventory item — NAMES ONLY on Connections (no balances). */
 export interface AccountLite {

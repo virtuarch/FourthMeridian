@@ -156,3 +156,16 @@ export function deriveConnectionIntelligence(
 export function isBuildingIntelligence(statuses: ConnectionIntelligenceStatus[]): boolean {
   return statuses.some((s) => s.phase === "IMPORTING" || s.phase === "RECONSTRUCTING");
 }
+
+/**
+ * Human "~N available" label from the derived span. null / zero history →
+ * "No historical data yet" (never "0 months" — the CONN-2 empty-data rule).
+ */
+export function formatAvailableHistory(h: AvailableHistory | null): string {
+  if (!h || h.months <= 0) return "No historical data yet";
+  const { years, remainderMonths, months } = h;
+  if (years <= 0) return `~${months} month${months === 1 ? "" : "s"}`;
+  const y = `${years} year${years === 1 ? "" : "s"}`;
+  if (remainderMonths <= 0) return `~${y}`;
+  return `~${y} ${remainderMonths} month${remainderMonths === 1 ? "" : "s"}`;
+}

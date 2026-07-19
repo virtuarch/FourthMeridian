@@ -27,6 +27,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ConnectionCard, type AccountLite } from "@/components/connections/ConnectionCard";
+import { RebuildIntelligencePanel } from "@/components/connections/RebuildIntelligencePanel";
 import type { SyncStatus } from "@/lib/sync/status";
 import {
   isBuildingIntelligence,
@@ -323,6 +324,14 @@ export function ConnectionsList({
           {resolved.map(renderCard)}
         </div>
       )}
+
+      {/* CONN-2B — master multi-account intelligence rebuild. Renders itself only
+          when ≥2 connections have transactions to rebuild from. */}
+      <RebuildIntelligencePanel
+        connections={status.connections}
+        intelligence={intelligence}
+        accountsByConnectionId={accountsByConnectionId}
+      />
 
       {!shouldPoll && anyReady && (
         <div className="pt-1">

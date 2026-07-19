@@ -202,17 +202,24 @@ async function loadConnectionIntelligence(
 ): Promise<Record<string, ConnectionIntelligenceStatus>> {
   const now = new Date();
 
-  // 1. Latest PLAID_HISTORY_SYNCED per plaid item (rows are few per user; the
-  //    (userId, createdAt) index serves this; group by metadata.plaidItemId in JS).
+  // 1. Latest reconstruction anchor per connection — the initial PLAID_HISTORY_SYNCED
+  //    (keyed by metadata.plaidItemId) OR a manual CONNECTION_INTELLIGENCE_REBUILT
+  //    (keyed by metadata.connectionId; CONN-2B). Both mean "a reconstruction
+  //    completed"; the latest of either is the connection's reconstruction time.
+  //    Rows are few per user; the (userId, createdAt) index serves this.
   const historyRows = await db.auditLog.findMany({
-    where:   { userId, action: AuditAction.PLAID_HISTORY_SYNCED },
+    where: {
+      userId,
+      action: { in: [AuditAction.PLAID_HISTORY_SYNCED, AuditAction.CONNECTION_INTELLIGENCE_REBUILT] },
+    },
     select:  { createdAt: true, metadata: true },
     orderBy: { createdAt: "desc" },
   });
-  const anchorByItem = new Map<string, Date>();
+  const anchorByConn = new Map<string, Date>();
   for (const row of historyRows) {
-    const pid = (row.metadata as { plaidItemId?: string } | null)?.plaidItemId;
-    if (pid && !anchorByItem.has(pid)) anchorByItem.set(pid, row.createdAt); // desc → first is latest
+    const meta = row.metadata as { plaidItemId?: string; connectionId?: string } | null;
+    const id = meta?.connectionId ?? meta?.plaidItemId; // rebuilt → connectionId; history-synced → plaidItemId
+    if (id && !anchorByConn.has(id)) anchorByConn.set(id, row.createdAt); // desc → first is latest
   }
 
   // 2. Earliest transaction date per account (the same MIN(non-deleted date)
@@ -239,11 +246,12 @@ async function loadConnectionIntelligence(
       if (e && (!earliest || e < earliest)) earliest = e;
     }
     const historySyncedAt =
-      c.provider === "WALLET"
-        ? c.state === "ready" && c.lastSyncedAt
-          ? new Date(c.lastSyncedAt)
-          : null
-        : (anchorByItem.get(c.id) ?? null);
+      (anchorByConn.get(c.id) ?? null) ??
+      // Wallet fallback: reconstruction runs inline before Connection.lastSyncedAt
+      // is set, so a ready wallet with no explicit anchor uses lastSyncedAt.
+      (c.provider === "WALLET" && c.state === "ready" && c.lastSyncedAt
+        ? new Date(c.lastSyncedAt)
+        : null);
 
     out[c.id] = deriveConnectionIntelligence(
       { provider: c.provider, state: c.state, historySyncedAt, earliestTxDate: earliest },
