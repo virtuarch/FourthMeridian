@@ -22,9 +22,22 @@
  *   wealth → investments → cashFlow → debt, liquidity
  */
 
-/** Perspective ids that render the Atlas TimelineLens instead of the legacy pair. */
+/**
+ * Perspective ids that render the Atlas TimelineLens instead of the legacy pair.
+ *
+ * All five temporal Perspectives, each verified against the legacy control before
+ * being added. No per-Perspective adapter exists or should: the differences
+ * between these lenses live DOWNSTREAM of time selection (the historicalCompareTo
+ * clamp in workspaceRenderers, the Cash-Flow explicit-period fork in
+ * SpaceDashboard), never in how time is chosen. Selecting MTD is the same act
+ * everywhere. One adapter, one authority, five consumers.
+ */
 export const TIMELINE_LENS_PERSPECTIVES: ReadonlySet<string> = new Set<string>([
   "wealth",
+  "cashFlow",
+  "investments",
+  "debt",
+  "liquidity",
 ]);
 
 /** Whether the engaged Perspective renders TimelineLens. Null/unknown ⇒ legacy. */

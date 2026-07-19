@@ -63,12 +63,15 @@ const LEGACY_SWAP = (html: string) => html.includes('aria-label="Swap As of and 
 // ── 1. Exactly one selector, chosen only by the flag ─────────────────────────
 console.log("1. Exclusivity — a Perspective never shows two time selectors");
 {
+  // Pick a fixture that is genuinely NOT allowlisted, whatever the rollout state,
+  // so this test keeps testing exclusivity rather than a stale membership snapshot.
+  const legacyId = ["cashFlow", "investments", "debt", "liquidity"].find((id) => !usesTimelineLens(id)) ?? null;
   const wealth = render("wealth");
-  const cashFlow = render("cashFlow");
+  const cashFlow = render(legacyId);
   const none = render(null);
 
   check("wealth is on the allowlist (fixture precondition)", usesTimelineLens("wealth"));
-  check("cashFlow is NOT on the allowlist (fixture precondition)", !usesTimelineLens("cashFlow"));
+  check("a non-allowlisted fixture exists while the flag lives", legacyId !== null || TIMELINE_LENS_PERSPECTIVES.size === 5);
 
   // Flag ON
   check("wealth renders TimelineLens", LENS(wealth));
@@ -107,10 +110,20 @@ console.log("2. Trust surfaces are independent of the time control");
 // ── 3. The rollout is a migration device, not a permanent fork ───────────────
 console.log("3. Rollout allowlist shape");
 {
-  check("the allowlist is non-empty (the canary is running)", TIMELINE_LENS_PERSPECTIVES.size > 0);
-  check("the rollout has NOT silently expanded past Wealth",
-    TIMELINE_LENS_PERSPECTIVES.size === 1 && TIMELINE_LENS_PERSPECTIVES.has("wealth"),
+  check("the allowlist is non-empty (the rollout is running)", TIMELINE_LENS_PERSPECTIVES.size > 0);
+
+  // The allowlist may only ever contain REAL temporal Perspectives. This is the
+  // durable property; the specific membership changes as the rollout advances, so
+  // pinning an exact set would just be a chore that gets edited away rather than a
+  // guard. Wealth is the canary and must stay in for as long as the flag exists.
+  const TEMPORAL = ["wealth", "cashFlow", "investments", "debt", "liquidity"];
+  check("every allowlisted id is a real temporal Perspective",
+    [...TIMELINE_LENS_PERSPECTIVES].every((id) => TEMPORAL.includes(id)),
     [...TIMELINE_LENS_PERSPECTIVES].join(","));
+  check("Wealth (the validated canary) is on the allowlist", TIMELINE_LENS_PERSPECTIVES.has("wealth"));
+  check("no NON-temporal workspace was allowlisted (transactions/activity must never be)",
+    !TIMELINE_LENS_PERSPECTIVES.has("transactions") && !TIMELINE_LENS_PERSPECTIVES.has("activity") &&
+    !TIMELINE_LENS_PERSPECTIVES.has("accounts") && !TIMELINE_LENS_PERSPECTIVES.has("overview"));
   check("null/undefined never enables the lens",
     !usesTimelineLens(null) && !usesTimelineLens(undefined) && !usesTimelineLens(""));
 }
