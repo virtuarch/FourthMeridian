@@ -30,6 +30,7 @@ import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { LensResult } from "@/lib/perspective-engine/types";
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { ConversionContext } from "@/lib/money/types";
+import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
 import type { SpaceAccount } from "@/lib/space/dashboard-types";
 import type { Snapshot, Transaction } from "@/types";
 
@@ -55,6 +56,10 @@ export interface WorkspaceRenderCtx {
   snapshots:               Snapshot[] | null;
   snapshotsBackfilling:    boolean;
   transactions:            Transaction[] | null;
+  /** TX-2A — the transaction population's coverage state (truncated + cap). Lets
+   *  the transaction-derived workspaces surface an honest "history incomplete" note
+   *  when the TX-2 read was capped; null/complete ⇒ no indicator. */
+  transactionsMeta:        TransactionsCoverage | null;
   widgetCtx?:              ConversionContext;
   txCtx?:                  ConversionContext;
 
@@ -111,6 +116,7 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
   cashFlow: (ctx) => (
     <CashFlowWorkspace
       transactions={ctx.transactions}
+      transactionsMeta={ctx.transactionsMeta}
       txCtx={ctx.txCtx}
       accounts={ctx.accounts}
       period={ctx.cashFlowPeriod}
@@ -134,6 +140,7 @@ export const WORKSPACE_RENDERERS: Record<string, (ctx: WorkspaceRenderCtx) => Re
       monthlyExpenses={ctx.liquidityMonthlyExpenses}
       presentLens={ctx.lensResults?.["liquidity"] ?? null}
       transactions={ctx.transactions}
+      transactionsMeta={ctx.transactionsMeta}
       txCtx={ctx.txCtx}
       period={ctx.cashFlowPeriod}
       onOpenCashFlow={ctx.onOpenCashFlow}

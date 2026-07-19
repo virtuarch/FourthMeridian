@@ -51,6 +51,8 @@ import { buildCashFlowSpaceData } from "@/lib/transactions/cash-flow-space-data"
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { Surface, Block } from "@/components/atlas/Surface";
+import { TransactionCoverageNote } from "@/components/space/trust/TransactionCoverageNote";
+import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
 import { DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
 import { CashFlowSummaryWidget } from "@/components/space/widgets/CashFlowSummaryWidget";
 import { CashFlowHistoryWidget } from "@/components/space/widgets/CashFlowHistoryWidget";
@@ -89,6 +91,7 @@ function SubHeading({ children }: { children: ReactNode }) {
 
 export function CashFlowWorkspace({
   transactions,
+  transactionsMeta,
   txCtx,
   accounts,
   period,
@@ -98,6 +101,9 @@ export function CashFlowWorkspace({
   onEnvelopeChange,
 }: {
   transactions?:   Transaction[] | null;
+  /** TX-2A — coverage state for an honest "history incomplete" caveat when the
+   *  shared read was capped (TX-2). null/complete ⇒ no note; folds are unaffected. */
+  transactionsMeta?: TransactionsCoverage | null;
   txCtx?:          ConversionContext;
   accounts:        { id: string; type: string }[];
   period:          CashFlowPeriod;
@@ -313,6 +319,10 @@ export function CashFlowWorkspace({
         label="Activity"
         action={<span className="text-[11px] text-[var(--text-faint)]">Daily net · click a day to inspect</span>}
       >
+        {/* TX-2A — honest completeness caveat for the HISTORICAL view when the
+            shared transaction read was capped (TX-2). Renders nothing when the
+            population is complete; never blocks the charts or alters the fold. */}
+        <TransactionCoverageNote coverage={transactionsMeta} variant="history" className="mb-3" />
         <CashFlowHistoryWidget
           transactions={transactions}
           period={period}

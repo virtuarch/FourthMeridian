@@ -14,8 +14,10 @@
 
 import { Loader2 } from "lucide-react";
 import { SpaceTransactionsPanel } from "@/components/dashboard/widgets/SpaceTransactionsPanel";
+import { TransactionCoverageNote } from "@/components/space/trust/TransactionCoverageNote";
 import type { Transaction, Account as PersonalAccount } from "@/types";
 import type { SpaceAccount } from "@/lib/space/dashboard-types";
+import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
 import type { SerializedConversionContext } from "@/lib/money/convert";
 
 /** The scope caveat shown on the Transactions panel + the Overview doorway preview.
@@ -27,6 +29,7 @@ export function TransactionsWorkspace({
   accounts,
   moneyCtx,
   initialAccountFilter,
+  transactionsMeta,
 }: {
   /** null ⇒ still loading (the host's lazy fetch hasn't resolved). */
   transactions: Transaction[] | null;
@@ -35,6 +38,9 @@ export function TransactionsWorkspace({
   moneyCtx?: SerializedConversionContext;
   /** Banking→Transactions retarget — deep-link account pre-filter. */
   initialAccountFilter: string | null;
+  /** TX-2A — coverage state; drives an honest "most recent N" note when the read
+   *  was capped. null/complete ⇒ no note (identical to before). */
+  transactionsMeta?: TransactionsCoverage | null;
 }) {
   if (transactions === null) {
     return (
@@ -44,12 +50,18 @@ export function TransactionsWorkspace({
     );
   }
   return (
-    <SpaceTransactionsPanel
-      transactions={transactions}
-      accounts={accounts.map((a) => ({ ...a, type: a.type as PersonalAccount["type"] })) as PersonalAccount[]}
-      scopeNote={TX_SCOPE_NOTE}
-      moneyCtx={moneyCtx}
-      initialAccountFilter={initialAccountFilter}
-    />
+    <div className="space-y-3 min-w-0">
+      {/* TX-2A — honest coverage line, only when the population was capped (TX-2).
+          Renders nothing for a complete population, so no calculation or layout
+          changes for the common case. */}
+      <TransactionCoverageNote coverage={transactionsMeta} variant="browse" className="px-1" />
+      <SpaceTransactionsPanel
+        transactions={transactions}
+        accounts={accounts.map((a) => ({ ...a, type: a.type as PersonalAccount["type"] })) as PersonalAccount[]}
+        scopeNote={TX_SCOPE_NOTE}
+        moneyCtx={moneyCtx}
+        initialAccountFilter={initialAccountFilter}
+      />
+    </div>
   );
 }

@@ -39,7 +39,7 @@ export async function GET(
   // the payload so the UI can honestly say "showing the most recent N" for a
   // heavy account rather than silently implying completeness (server-side
   // pagination is the TX-3 follow-up; this slice only removes the unbounded load).
-  const { rows: transactions, truncated } = await getTransactions({ spaceId });
+  const { rows: transactions, truncated, limit } = await getTransactions({ spaceId });
 
   // MC1 Phase 4 Slice 6 (F-6, plan D-8) — a serialized conversion context
   // rides the payload so the client-fetched SpaceTransactionsPanel can
@@ -59,5 +59,8 @@ export async function GET(
       })
     : undefined;
 
-  return NextResponse.json({ transactions, moneyCtx, truncated });
+  // TX-2A — `limit` rides alongside `truncated` so the workspace honesty note can
+  // say the real cap ("the most recent 5,000") rather than a client-side magic
+  // number. Presentation metadata only; no calculation depends on it.
+  return NextResponse.json({ transactions, moneyCtx, truncated, limit });
 }

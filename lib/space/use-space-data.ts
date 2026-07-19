@@ -30,6 +30,7 @@ import {
 } from "@/lib/space-nav";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 import type { ConversionContext } from "@/lib/money/types";
+import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
 import type { Snapshot, Transaction } from "@/types";
 
 export interface UseSpaceDataArgs {
@@ -57,6 +58,14 @@ export interface SpaceData {
   snapshots:    Snapshot[] | null;
   backfilling:  boolean;
   transactions: Transaction[] | null;
+  /**
+   * TX-2A — the transaction population's coverage state. `truncated` is true when
+   * the server capped the read to the most-recent `limit` rows (TX-2 boundary), so
+   * a workspace can be HONEST that its history is incomplete instead of silently
+   * appearing complete. null until the transaction fetch resolves; workspace-safe
+   * (no raw loader vocabulary rides up here).
+   */
+  transactionsMeta: TransactionsCoverage | null;
   moneyCtx:     SerializedConversionContext | undefined;
   widgetCtx:    ConversionContext | undefined;
   memberCount:  number | null;
@@ -78,6 +87,7 @@ export function useSpaceData({
   const [snapshots,    setSnapshots]    = useState<Snapshot[] | null>(null);
   const [backfilling,  setBackfilling]  = useState(false);
   const [transactions, setTransactions] = useState<Transaction[] | null>(null);
+  const [transactionsMeta, setTransactionsMeta] = useState<TransactionsCoverage | null>(null);
   const [moneyCtx,     setMoneyCtx]     = useState<SerializedConversionContext | undefined>(undefined);
   const [widgetMoneyCtx, setWidgetMoneyCtx] = useState<SerializedConversionContext | undefined>(undefined);
 
@@ -120,6 +130,7 @@ export function useSpaceData({
       // Ignore currency changes for other Spaces (e.g. edited from the Spaces list).
       if (detail?.spaceId && detail.spaceId !== spaceId) return;
       setTransactions(null);   // release the tx fetch's "already loaded" guard
+      setTransactionsMeta(null); // TX-2A — re-derived by the refetch
       setMoneyCtx(undefined);
       setCurrencyNonce((n) => n + 1);
     }
@@ -139,6 +150,7 @@ export function useSpaceData({
       if (detail?.spaceId && detail.spaceId !== spaceId) return; // ignore other Spaces
       reloadAccounts();
       setTransactions(null);
+      setTransactionsMeta(null); // TX-2A — re-derived by the refetch
       setRefreshNonce((n) => n + 1);
     }
     window.addEventListener(SPACE_DATA_REFRESHED_EVENT, onDataRefreshed);
@@ -191,8 +203,11 @@ export function useSpaceData({
         if (!active) return;
         setTransactions(data?.transactions ?? []);
         setMoneyCtx(data?.moneyCtx ?? undefined); // MC1 P4 Slice 6 (F-6)
+        // TX-2A — carry the coverage sentinel so workspaces can be honest when the
+        // read was capped (TX-2). Absent/false ⇒ complete ⇒ no indicator.
+        setTransactionsMeta({ truncated: !!data?.truncated, limit: data?.limit });
       })
-      .catch(() => { if (active) setTransactions([]); });
+      .catch(() => { if (active) { setTransactions([]); setTransactionsMeta(null); } });
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaceId, wantTransactions, transactions === null, currencyNonce, refreshNonce]);
@@ -219,6 +234,7 @@ export function useSpaceData({
     snapshots,
     backfilling,
     transactions,
+    transactionsMeta,
     moneyCtx,
     widgetCtx,
     memberCount,

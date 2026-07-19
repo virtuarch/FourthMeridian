@@ -54,7 +54,9 @@ import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/
 import { convertLiquiditySpaceData } from "@/lib/liquidity/display-conversion";
 import { clipCashHistory, convertCashHistory } from "@/lib/liquidity/cash-history";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
 import { Surface, Block } from "@/components/atlas/Surface";
+import { TransactionCoverageNote } from "@/components/space/trust/TransactionCoverageNote";
 import { LiquidityHero, type LiquidityWindowChange, type LiquidityCoverage } from "./LiquidityHero";
 import { LiquidityBalanceHistory } from "./LiquidityBalanceHistory";
 import { SourcesLedger } from "./SourcesLedger";
@@ -96,6 +98,7 @@ export function LiquidityWorkspace({
   monthlyExpenses,
   presentLens,
   transactions,
+  transactionsMeta,
   txCtx,
   period,
   onOpenCashFlow,
@@ -126,6 +129,9 @@ export function LiquidityWorkspace({
   /** S4 — the shell-bridged transaction window for the What Changed panel (current
    *  anchor; transaction-window filtering relative to today, NOT a balance-as-of read). */
   transactions?: Transaction[] | null;
+  /** TX-2A — coverage state for the transaction-derived "What changed" drivers;
+   *  surfaces an honest caveat when the shared read was capped. null ⇒ no note. */
+  transactionsMeta?: TransactionsCoverage | null;
   txCtx?: ConversionContext;
   period?: CashFlowPeriod;
   onOpenCashFlow?: () => void;
@@ -362,6 +368,9 @@ export function LiquidityWorkspace({
       {period && (
         <Block id="liquidity-activity" label={`What changed · ${periodLabel(period)}`}>
           <Surface className="p-4 min-w-0">
+            {/* TX-2A — honest caveat for the transaction-derived drivers when the
+                shared read was capped (TX-2). Nothing when complete; no fold change. */}
+            <TransactionCoverageNote coverage={transactionsMeta} variant="history" className="mb-3" />
             <LiquidityWhatChangedCard
               transactions={transactions}
               accounts={accounts}
