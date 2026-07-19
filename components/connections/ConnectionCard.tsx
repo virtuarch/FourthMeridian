@@ -44,6 +44,20 @@ import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
 import { ImportHistoryButton } from "@/components/connections/import/ImportHistoryButton";
 import { providerName, type SyncConnection } from "@/lib/sync/status";
 import { deriveConnectionLifecycle } from "@/lib/sync/lifecycle";
+import type { ConnectionIntelligenceStatus, AvailableHistory } from "@/lib/connections/intelligence";
+
+/**
+ * CONN-2A — human "~N available" label from the derived span. null history →
+ * "No historical data yet" (never "0 months" — CONN-2 empty-data rule).
+ */
+function formatAvailableHistory(h: AvailableHistory | null): string {
+  if (!h || h.months <= 0) return "No historical data yet";
+  const { years, remainderMonths, months } = h;
+  if (years <= 0) return `~${months} month${months === 1 ? "" : "s"}`;
+  const y = `${years} year${years === 1 ? "" : "s"}`;
+  if (remainderMonths <= 0) return `~${y}`;
+  return `~${y} ${remainderMonths} month${remainderMonths === 1 ? "" : "s"}`;
+}
 
 /** Account inventory item — NAMES ONLY on Connections (no balances). */
 export interface AccountLite {
@@ -55,6 +69,9 @@ export interface AccountLite {
 interface Props {
   connection: SyncConnection;
   accounts:   AccountLite[];
+  /** CONN-2A — derived intelligence status for this connection. When absent the
+   *  card falls back to the pre-CONN-2 state-only rendering. */
+  intelligence?: ConnectionIntelligenceStatus;
   /** True after the poll safety cap: importing is taking longer than usual. */
   slow?:      boolean;
   /**
@@ -345,18 +362,69 @@ function ImportingContent({
   );
 }
 
+// ── Reconstructing (transactions done, intelligence still building) ───────────
+// CONN-2C/2G — the connection reads "ready" (syncIncompleteAt cleared) but the
+// derived intelligence pipeline (wealth timeline / snapshots) is still running,
+// before PLAID_HISTORY_SYNCED is written. Transactions/accounts are DONE facts;
+// timeline/charts/insights are the reconstruction in flight. No percentages —
+// stages map to readiness, not backend jobs.
+function ReconstructingContent({
+  connection,
+  accounts,
+  intelligence,
+}: {
+  connection:   SyncConnection;
+  accounts:     AccountLite[];
+  intelligence: ConnectionIntelligenceStatus;
+}) {
+  const stages: Stage[] = [
+    { label: "Transactions available", value: String(accounts.length) + (accounts.length === 1 ? " account" : " accounts"), status: "done" },
+    { label: "Accounts mapped", status: "done" },
+    { label: "Rebuilding timeline", status: "active" },
+    { label: "Updating charts", status: "pending" },
+    { label: "Refreshing insights", status: "pending" },
+  ];
+  const available = formatAvailableHistory(intelligence.availableHistory);
+  return (
+    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+      <EyebrowHeading eyebrow="Building your financial intelligence" institution={connection.institution} />
+      <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
+        Your transactions are in. Fourth Meridian is building your financial timeline and insights from them.
+      </p>
+
+      <StageStepper stages={stages} />
+
+      {available !== "No historical data yet" && (
+        <p className="mt-2 text-xs text-[var(--text-muted)]">{available} of history available</p>
+      )}
+      <p className="mt-3 text-xs text-[var(--text-muted)]">You can leave this page — this finishes in the background.</p>
+      <AccountNames accounts={accounts} />
+    </div>
+  );
+}
+
 function ReadyContent({
   connection,
   accounts,
+  intelligence,
 }: {
-  connection: SyncConnection;
-  accounts:   AccountLite[];
+  connection:    SyncConnection;
+  accounts:      AccountLite[];
+  intelligence?: ConnectionIntelligenceStatus;
 }) {
   const { lastSyncedAt } = connection;
   const count = accounts.length;
+  // CONN-2G — "Financial profile ready" is only shown when intelligence is
+  // actually READY. With no intelligence data (pre-CONN-2 fallback) the card
+  // keeps the prior "Connected" framing.
+  const profileReady = intelligence?.intelligenceReady === true;
+  const available = intelligence ? formatAvailableHistory(intelligence.availableHistory) : null;
   return (
     <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
-      <EyebrowHeading eyebrow="Connected" institution={connection.institution} />
+      <EyebrowHeading
+        eyebrow={profileReady ? "Financial profile ready" : "Connected"}
+        institution={connection.institution}
+      />
       <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
       {lastSyncedAt && (
         <p className="mt-0.5 mb-4 text-sm text-[var(--text-muted)]">
@@ -372,7 +440,12 @@ function ReadyContent({
           (cursor is set). Daily Brief / AI are NOT shown as complete. */}
       <ul className="space-y-1.5">
         <DoneStatusRow label="Transaction history imported" />
+        {profileReady && <DoneStatusRow label="Financial intelligence built" />}
       </ul>
+
+      {available && available !== "No historical data yet" && (
+        <p className="mt-2 text-xs text-[var(--text-muted)]">{available} of history available</p>
+      )}
 
       {/* Connection-specific Investments capability (Plaid only). */}
       <InvestmentsCapability connection={connection} />
@@ -466,7 +539,7 @@ function ErrorContent({
 
 // ── Canonical card ────────────────────────────────────────────────────────────
 
-export function ConnectionCard({ connection, accounts, slow, allowLiquid = true }: Props) {
+export function ConnectionCard({ connection, accounts, intelligence, slow, allowLiquid = true }: Props) {
   const { state, institution } = connection;
   const capable = useAtlasLiquid();
   const canLiquid = capable && allowLiquid;
@@ -477,7 +550,13 @@ export function ConnectionCard({ connection, accounts, slow, allowLiquid = true 
       content = <ImportingContent connection={connection} accounts={accounts} slow={slow} />;
       break;
     case "ready":
-      content = <ReadyContent connection={connection} accounts={accounts} />;
+      // CONN-2G — "ready" transactions ≠ "Fourth Meridian ready". While derived
+      // intelligence is still rebuilding (RECONSTRUCTING), show the reconstruction
+      // lifecycle, not the Connected/ready card. Only READY intelligence (or no
+      // intelligence data at all — pre-CONN-2 fallback) shows ReadyContent.
+      content = intelligence && intelligence.phase === "RECONSTRUCTING"
+        ? <ReconstructingContent connection={connection} accounts={accounts} intelligence={intelligence} />
+        : <ReadyContent connection={connection} accounts={accounts} intelligence={intelligence} />;
       break;
     case "needs_reauth":
       content = <NeedsReauthContent connection={connection} accounts={accounts} />;

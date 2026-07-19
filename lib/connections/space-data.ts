@@ -55,8 +55,14 @@ import {
   buildSyncStatus,
   finalizeSyncStatus,
   type SyncStatus,
+  type SyncConnection,
 } from "@/lib/sync/status";
 import { loadWalletSyncConnections } from "@/lib/sync/wallet-connections";
+import { AuditAction } from "@/lib/audit-actions";
+import {
+  deriveConnectionIntelligence,
+  type ConnectionIntelligenceStatus,
+} from "@/lib/connections/intelligence";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 
 /**
@@ -70,6 +76,25 @@ import type { AccountLite } from "@/components/connections/ConnectionCard";
 export interface ConnectionsSpaceData {
   status: SyncStatus;
   accountsByConnectionId: Record<string, AccountLite[]>;
+  /**
+   * CONN-2A — per-connection financial-intelligence status (derived, never
+   * persisted): whether derived intelligence (wealth timeline / snapshots) is
+   * built vs still rebuilding after transactions landed. Keyed by
+   * SyncConnection.id, same id space as accountsByConnectionId.
+   */
+  intelligenceByConnectionId: Record<string, ConnectionIntelligenceStatus>;
+}
+
+/**
+ * The poller's view (GET /api/sync/status): sync status + the intelligence map,
+ * so the card can advance importing → RECONSTRUCTING → ready LIVE. The
+ * reconstruction transition happens AFTER syncIncompleteAt clears, so the poll
+ * must carry intelligence or the card would freeze at "ready" while intelligence
+ * is still building.
+ */
+export interface ConnectionsSyncView {
+  status: SyncStatus;
+  intelligenceByConnectionId: Record<string, ConnectionIntelligenceStatus>;
 }
 
 /** The PlaidItem fields buildSyncStatus + the account join need. */
@@ -161,21 +186,82 @@ async function loadPlaidConnectionAccounts(
 }
 
 /**
- * Provider-agnostic sync status for the user's connections (Plaid + wallet).
- * The lean read for the poller — status only, no per-connection account join.
- * The page's GET /api/sync/status and loadConnectionsSpaceData share this one
- * assembly so the poll and the first render can never derive state differently.
+ * CONN-2A — per-connection intelligence status, derived from existing truth ONLY
+ * (no new authority, nothing persisted):
+ *   - PLAID_HISTORY_SYNCED AuditLog anchor → reconstruction-complete + timestamp
+ *   - MIN(non-deleted Transaction.date) across the connection's accounts → available history
+ *   - SyncConnection.state → acquisition status
+ * Wallets have no PLAID_HISTORY_SYNCED anchor (reconstruction runs inline before
+ * Connection.lastSyncedAt is set), so a ready wallet uses lastSyncedAt as the
+ * reconstruction proxy. PCS-2-safe: status/dates only, no balances/valuations.
  */
-export async function loadConnectionsSyncStatus(userId: string): Promise<SyncStatus> {
-  const [items, wallet] = await Promise.all([
-    db.plaidItem.findMany({
-      where:   { userId, status: { not: PlaidItemStatus.REVOKED } },
-      select:  PLAID_ITEM_SELECT,
-      orderBy: { createdAt: "asc" },
-    }),
-    loadWalletSyncConnections(userId),
-  ]);
-  return finalizeSyncStatus([...buildSyncStatus(items).connections, ...wallet.connections]);
+async function loadConnectionIntelligence(
+  userId: string,
+  connections: SyncConnection[],
+  accountsByConnectionId: Record<string, AccountLite[]>,
+): Promise<Record<string, ConnectionIntelligenceStatus>> {
+  const now = new Date();
+
+  // 1. Latest PLAID_HISTORY_SYNCED per plaid item (rows are few per user; the
+  //    (userId, createdAt) index serves this; group by metadata.plaidItemId in JS).
+  const historyRows = await db.auditLog.findMany({
+    where:   { userId, action: AuditAction.PLAID_HISTORY_SYNCED },
+    select:  { createdAt: true, metadata: true },
+    orderBy: { createdAt: "desc" },
+  });
+  const anchorByItem = new Map<string, Date>();
+  for (const row of historyRows) {
+    const pid = (row.metadata as { plaidItemId?: string } | null)?.plaidItemId;
+    if (pid && !anchorByItem.has(pid)) anchorByItem.set(pid, row.createdAt); // desc → first is latest
+  }
+
+  // 2. Earliest transaction date per account (the same MIN(non-deleted date)
+  //    definition the wealth-regen floor + accounts route use).
+  const allAccountIds = Object.values(accountsByConnectionId).flat().map((a) => a.id);
+  const floors = allAccountIds.length
+    ? await db.transaction.groupBy({
+        by:    ["financialAccountId"],
+        where: { financialAccountId: { in: allAccountIds }, deletedAt: null },
+        _min:  { date: true },
+      })
+    : [];
+  const earliestByAccount = new Map<string, Date>();
+  for (const f of floors) {
+    if (f.financialAccountId && f._min.date) earliestByAccount.set(f.financialAccountId, f._min.date);
+  }
+
+  const out: Record<string, ConnectionIntelligenceStatus> = {};
+  for (const c of connections) {
+    // Connection availability = the earliest transaction across its accounts.
+    let earliest: Date | null = null;
+    for (const a of accountsByConnectionId[c.id] ?? []) {
+      const e = earliestByAccount.get(a.id);
+      if (e && (!earliest || e < earliest)) earliest = e;
+    }
+    const historySyncedAt =
+      c.provider === "WALLET"
+        ? c.state === "ready" && c.lastSyncedAt
+          ? new Date(c.lastSyncedAt)
+          : null
+        : (anchorByItem.get(c.id) ?? null);
+
+    out[c.id] = deriveConnectionIntelligence(
+      { provider: c.provider, state: c.state, historySyncedAt, earliestTxDate: earliest },
+      now,
+    );
+  }
+  return out;
+}
+
+/**
+ * Provider-agnostic sync status + intelligence for the user's connections
+ * (Plaid + wallet) — the poller read (GET /api/sync/status). Shares the same
+ * assembly as loadConnectionsSpaceData so the poll and first render can never
+ * derive state differently.
+ */
+export async function loadConnectionsSyncStatus(userId: string): Promise<ConnectionsSyncView> {
+  const { status, intelligenceByConnectionId } = await loadConnectionsSpaceData(userId);
+  return { status, intelligenceByConnectionId };
 }
 
 /**
@@ -198,9 +284,13 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
   // Plaid accounts by stable connection id; wallet accounts already come keyed
   // by connection id from loadWalletSyncConnections. One id space, one map.
   const plaidAccounts = await loadPlaidConnectionAccounts(userId, items.map((i) => i.id));
+  const accountsByConnectionId = { ...plaidAccounts, ...wallet.accountsByConnectionId };
 
-  return {
-    status,
-    accountsByConnectionId: { ...plaidAccounts, ...wallet.accountsByConnectionId },
-  };
+  const intelligenceByConnectionId = await loadConnectionIntelligence(
+    userId,
+    status.connections,
+    accountsByConnectionId,
+  );
+
+  return { status, accountsByConnectionId, intelligenceByConnectionId };
 }

@@ -28,6 +28,11 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ConnectionCard, type AccountLite } from "@/components/connections/ConnectionCard";
 import type { SyncStatus } from "@/lib/sync/status";
+import {
+  isBuildingIntelligence,
+  type ConnectionIntelligenceStatus,
+} from "@/lib/connections/intelligence";
+import type { ConnectionsSyncView } from "@/lib/connections/space-data";
 
 const POLL_INTERVAL_MS = 4000;
 const MAX_POLLS = 45; // ~3 min safety cap, then stop polling.
@@ -59,31 +64,48 @@ interface Props {
    *  SyncConnection.id for EVERY provider — Plaid and wallet alike. PCS-2
    *  unified the two grouping schemes onto one stable-id map. Default empty. */
   accountsByConnectionId?: Record<string, AccountLite[]>;
+  /** CONN-2A — per-connection intelligence status, keyed by SyncConnection.id.
+   *  Drives the RECONSTRUCTING lifecycle + keep-polling-through-reconstruction. */
+  initialIntelligence?: Record<string, ConnectionIntelligenceStatus>;
 }
 
-export function ConnectionsList({ initialStatus, accountsByConnectionId = {} }: Props) {
+export function ConnectionsList({
+  initialStatus,
+  accountsByConnectionId = {},
+  initialIntelligence = {},
+}: Props) {
   const router = useRouter();
   const [status, setStatus] = useState<SyncStatus>(initialStatus);
+  const [intelligence, setIntelligence] =
+    useState<Record<string, ConnectionIntelligenceStatus>>(initialIntelligence);
   const [slow, setSlow] = useState(false);
+
+  // CONN-2 — poll while ACQUIRING (status.building) OR RECONSTRUCTING intelligence.
+  // Reconstruction runs AFTER syncIncompleteAt clears, so status.building alone
+  // would stop the poller before intelligence finishes; the card would freeze at
+  // "ready" mid-rebuild. This superset keeps it live until intelligence is READY.
+  const buildingIntelligence = isBuildingIntelligence(Object.values(intelligence));
+  const shouldPoll = status.building || buildingIntelligence;
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inFlightRef = useRef(false);
   const pollCountRef = useRef(0);
-  const prevBuildingRef = useRef(initialStatus.building);
+  const prevShouldPollRef = useRef(shouldPoll);
   // D2.x resume — per-connection resume bookkeeping (id → timing/attempts).
   const resumeRef = useRef<Map<string, ResumeEntry>>(new Map());
 
-  // Re-seed from a fresh server render. useState(initialStatus) only reads the
-  // prop on first mount, so a router.refresh() (e.g. after an in-app
-  // "Enable Investments" success updates a connection's capability) would
-  // otherwise leave the card showing stale state. initialStatus's reference
-  // only changes on a real server re-render (navigation/refresh), never during
-  // client-side polling, so this never clobbers live poll updates.
+  // Re-seed from a fresh server render. useState() only reads the prop on first
+  // mount, so a router.refresh() (e.g. after an in-app "Enable Investments"
+  // success, or when a second connection is added) would otherwise leave the
+  // cards showing stale state. The initial* references only change on a real
+  // server re-render (navigation/refresh), never during client-side polling, so
+  // this never clobbers live poll updates.
   useEffect(() => {
     // Intentional prop→state sync on a fresh server render — see comment above.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setStatus(initialStatus);
-  }, [initialStatus]);
+    setIntelligence(initialIntelligence);
+  }, [initialStatus, initialIntelligence]);
 
   const stop = useCallback(() => {
     if (intervalRef.current) {
@@ -140,19 +162,24 @@ export function ConnectionsList({ initialStatus, accountsByConnectionId = {} }: 
     try {
       const res = await fetch("/api/sync/status", { cache: "no-store" });
       if (res.ok) {
-        const next = (await res.json()) as SyncStatus;
-        setStatus(next);
+        const next = (await res.json()) as ConnectionsSyncView;
+        setStatus(next.status);
+        setIntelligence(next.intelligenceByConnectionId);
 
         // Auto-resume any stalled Plaid history imports (see driveResume).
-        driveResume(next);
+        driveResume(next.status);
 
-        // building true → false: refresh the server page once to pull the
-        // now-complete data (lastSyncedAt, any late accounts), then stop.
-        if (prevBuildingRef.current && !next.building) {
+        // Keep polling while acquiring OR reconstructing intelligence. On the
+        // true → false transition (everything ready), refresh the server page
+        // once to pull now-complete data (lastSyncedAt, late accounts), then stop.
+        const nextShouldPoll =
+          next.status.building ||
+          isBuildingIntelligence(Object.values(next.intelligenceByConnectionId));
+        if (prevShouldPollRef.current && !nextShouldPoll) {
           router.refresh();
         }
-        prevBuildingRef.current = next.building;
-        if (!next.building) stop();
+        prevShouldPollRef.current = nextShouldPoll;
+        if (!nextShouldPoll) stop();
       }
     } catch {
       // Transient network error — leave the last known state; next tick retries.
@@ -173,31 +200,31 @@ export function ConnectionsList({ initialStatus, accountsByConnectionId = {} }: 
   }, [poll]);
 
   useEffect(() => {
-    // CONN-2 — (re)arm live tracking whenever `building` is true, keyed on that
-    // flag rather than only at mount. Adding a SECOND connection while this page
-    // is already open re-renders ConnectionsList IN PLACE (router.push to the
-    // current route → no remount, no key), so the re-seed effect flips
-    // `status.building` false→true without ever remounting. The old empty-deps
-    // effect captured only the mount-time value of `building`, so for the
-    // already-ready page it had returned early and never started the poller —
-    // leaving the new card spinning until a manual hard refresh. Keying on
-    // `status.building` makes the poller start for that newly-importing
-    // connection. Completion still comes SOLELY from persisted state, read via
-    // the poll → /api/sync/status (never from a notification).
-    if (!status.building) return; // nothing to poll — all settled
+    // CONN-2 — (re)arm live tracking whenever the connection set is ACQUIRING or
+    // RECONSTRUCTING (shouldPoll), keyed on that flag rather than only at mount.
+    // Adding a SECOND connection while this page is already open re-renders
+    // ConnectionsList IN PLACE (router.push to the current route → no remount, no
+    // key), so the re-seed effect flips shouldPoll false→true without ever
+    // remounting. The old empty-deps effect captured only the mount-time value,
+    // so for an already-ready page it returned early and never started the poller
+    // — leaving the new card spinning until a manual hard refresh. Keying on
+    // shouldPoll starts the poller for the newly-importing connection AND keeps it
+    // alive through the reconstruction window (which begins after syncIncompleteAt
+    // clears). Completion still comes SOLELY from persisted state, read via the
+    // poll → /api/sync/status (never from a notification).
+    if (!shouldPoll) return; // nothing to poll — acquired AND intelligence built
 
-    // Fresh live-tracking window for this building period: reset the poll budget
-    // + slow flag so a just-added connection gets the full budget, and seed
-    // prevBuilding=true so the building→false transition still fires the single
-    // router.refresh() that pulls the now-complete data. (prevBuildingRef is
-    // otherwise only updated inside poll(), so without this a poller that starts
-    // late would miss the transition.)
+    // Fresh live-tracking window: reset the poll budget + slow flag so a just-added
+    // connection gets the full budget, and seed prevShouldPoll=true so the
+    // shouldPoll→false transition still fires the single router.refresh() that
+    // pulls the now-complete data. (prevShouldPollRef is otherwise only updated
+    // inside poll(), so without this a poller that starts late would miss it.)
     pollCountRef.current = 0;
-    // Intentional reset on entering a building period (see comment above) — same
+    // Intentional reset on entering a polling period (see comment above) — same
     // sanctioned prop/flag→state sync the re-seed effect uses.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSlow(false);
-    prevBuildingRef.current = true;
+    prevShouldPollRef.current = true;
     start();
 
     const onVisibility = () => {
@@ -223,28 +250,35 @@ export function ConnectionsList({ initialStatus, accountsByConnectionId = {} }: 
       document.removeEventListener("visibilitychange", onVisibility);
       stop();
     };
-    // Keyed on status.building: (re)arm on false→true, tear down on true→false.
+    // Keyed on shouldPoll: (re)arm on false→true, tear down on true→false.
     // poll/start/stop are stable callbacks; live state is driven by the interval,
     // not by re-running this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status.building]);
+  }, [shouldPoll]);
 
-  const anyReady = status.connections.some((c) => c.state === "ready");
+  // CONN-2 — a connection is still "in progress" while acquiring (importing) OR
+  // reconstructing intelligence (state ready, but derived intelligence still
+  // building). Both belong in the in-progress queue and are Liquid-prioritized.
+  const inProgressPhase = (id: string) =>
+    intelligence[id]?.phase === "IMPORTING" || intelligence[id]?.phase === "RECONSTRUCTING";
+  const isInProgress = (c: SyncStatus["connections"][number]) =>
+    c.state === "importing" || inProgressPhase(c.id);
 
-  // Cap Liquid usage for WebGL-context safety: importing cards first, then the
+  const anyReady = status.connections.some((c) => intelligence[c.id]?.phase === "READY");
+
+  // Cap Liquid usage for WebGL-context safety: in-progress cards first, then the
   // rest by order, up to LIQUID_CAP. Cards beyond the cap use the DataCard
   // (Glass) fallback — same card family.
-  const liquidOrder = [...status.connections].sort((a, b) => {
-    const rank = (s: SyncStatus["connections"][number]["state"]) => (s === "importing" ? 0 : 1);
-    return rank(a.state) - rank(b.state);
-  });
+  const liquidOrder = [...status.connections].sort(
+    (a, b) => (isInProgress(a) ? 0 : 1) - (isInProgress(b) ? 0 : 1),
+  );
   const liquidAllowed = new Set(liquidOrder.slice(0, LIQUID_CAP).map((c) => c.id));
 
-  // Part-4 — split the still-importing queue from everything already resolved
-  // (ready / needs_reauth / error). The queue renders as a full-width vertical
-  // stack ABOVE the grid; the resolved connections keep the existing grid.
-  const importing = status.connections.filter((c) => c.state === "importing");
-  const resolved  = status.connections.filter((c) => c.state !== "importing");
+  // Part-4 / CONN-2 — split the in-progress queue (importing OR reconstructing)
+  // from everything resolved (ready-with-intelligence / needs_reauth / error).
+  // The queue renders as a full-width vertical stack ABOVE the grid.
+  const inProgress = status.connections.filter(isInProgress);
+  const resolved   = status.connections.filter((c) => !isInProgress(c));
 
   const renderCard = (c: SyncStatus["connections"][number]) => (
     <ConnectionCard
@@ -253,6 +287,7 @@ export function ConnectionsList({ initialStatus, accountsByConnectionId = {} }: 
       // One id space for every provider — Plaid and wallet accounts both look up
       // by connection id (PCS-2). No more institution-string grouping.
       accounts={accountsByConnectionId[c.id] ?? []}
+      intelligence={intelligence[c.id]}
       slow={slow}
       allowLiquid={liquidAllowed.has(c.id)}
     />
@@ -273,9 +308,9 @@ export function ConnectionsList({ initialStatus, accountsByConnectionId = {} }: 
           across parents), which here coincides exactly with the card's own
           importing→ready content switch, so it reads as the intended "snaps
           down into the grid" transition rather than a gratuitous re-mount. */}
-      {importing.length > 0 && (
+      {inProgress.length > 0 && (
         <div className="flex flex-col gap-4">
-          {importing.map(renderCard)}
+          {inProgress.map(renderCard)}
         </div>
       )}
 
@@ -289,7 +324,7 @@ export function ConnectionsList({ initialStatus, accountsByConnectionId = {} }: 
         </div>
       )}
 
-      {!status.building && anyReady && (
+      {!shouldPoll && anyReady && (
         <div className="pt-1">
           <Link
             href="/dashboard"

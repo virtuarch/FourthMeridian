@@ -29,9 +29,14 @@ export default async function ConnectionsPage() {
   // The single canonical read: sync status + per-connection account inventory
   // (NAMES ONLY), both keyed by connection id. No portfolio read (PCS-2). The
   // Workspace frame + body is composed by the client host.
-  const { status, accountsByConnectionId } = await loadConnectionsSpaceData(userId);
+  const { status, accountsByConnectionId, intelligenceByConnectionId } =
+    await loadConnectionsSpaceData(userId);
 
   return (
-    <ConnectionsSpaceDashboard status={status} accountsByConnectionId={accountsByConnectionId} />
+    <ConnectionsSpaceDashboard
+      status={status}
+      accountsByConnectionId={accountsByConnectionId}
+      intelligenceByConnectionId={intelligenceByConnectionId}
+    />
   );
 }
