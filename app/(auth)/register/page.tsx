@@ -49,6 +49,11 @@ function RegisterForm() {
 
   const [error,       setError]       = useState("");
   const [loading,     setLoading]     = useState(false);
+  // CONN-1 — post-success "check your inbox" state for uninvited signups. Holds
+  // the address we sent the verification link to. Kept in component state (never
+  // a URL param) so the email is not exposed in the address bar / history.
+  const [sentTo,      setSentTo]      = useState<string | null>(null);
+  const [resendState, setResendState] = useState<"idle" | "sending" | "sent">("idle");
   // CAPTCHA (Wave 2 ⑥) — only rendered when a site key is configured.
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [captchaNonce, setCaptchaNonce] = useState(0);
@@ -142,7 +147,73 @@ function RegisterForm() {
       return;
     }
 
+    // CONN-1 — honor the server's authoritative signal. An uninvited signup is
+    // created UNVERIFIED and login is blocked until verified, so sending them to
+    // the sign-in page (as before) was a dead-end. Show a "check your inbox"
+    // screen instead. Invited signups are pre-verified → straight to sign-in.
+    const data = await res.json().catch(() => ({}));
+    if (data.verificationRequired) {
+      setSentTo(form.email.trim());
+      return;
+    }
     router.push("/login?registered=true");
+  }
+
+  async function handleResend() {
+    if (!sentTo || resendState === "sending") return;
+    setResendState("sending");
+    // Identifier-based resend is non-enumerating (always a generic 200), so the
+    // UI shows the same confirmation regardless of outcome — no account-existence
+    // signal. Rate limited server-side.
+    await fetch("/api/auth/verify-email/resend", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ identifier: sentTo }),
+    }).catch(() => {});
+    setResendState("sent");
+  }
+
+  // ── CONN-1: post-success "check your inbox" (uninvited signups) ─────────────
+  // Reached only after a 201 with verificationRequired. The account exists but
+  // login is blocked until the emailed link is clicked — so this screen is the
+  // truthful next step, not the sign-in page.
+  if (sentTo) {
+    return (
+      <div className="space-y-5 text-center">
+        <InlineBanner tone="success">
+          Account created. Check your inbox to finish setting up.
+        </InlineBanner>
+        <p className="text-sm text-[var(--text-secondary)]">
+          We sent a verification link to <span className="font-semibold text-[var(--text-primary)]">{sentTo}</span>.
+          Click it to activate your account, then sign in. The link expires in about an hour.
+        </p>
+        <p className="text-xs text-[var(--text-muted)]">
+          Didn&rsquo;t get it? Check spam, or resend below.
+        </p>
+        <div className="space-y-3">
+          <AuthButton
+            type="button"
+            onClick={handleResend}
+            loading={resendState === "sending"}
+            disabled={resendState !== "idle"}
+          >
+            {resendState === "sent"
+              ? "Verification email sent"
+              : resendState === "sending"
+                ? "Sending…"
+                : "Resend verification email"}
+          </AuthButton>
+          <p className="text-sm text-[var(--text-muted)]">
+            <Link
+              href="/login"
+              className="text-[var(--accent-info)] transition-colors hover:text-[var(--meridian-300)]"
+            >
+              Back to sign in
+            </Link>
+          </p>
+        </div>
+      </div>
+    );
   }
 
   // ── Policy gating (PO-3C) ───────────────────────────────────────────────────

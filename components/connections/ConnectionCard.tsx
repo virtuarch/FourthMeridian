@@ -43,6 +43,7 @@ import { EnableInvestmentsButton } from "@/components/dashboard/EnableInvestment
 import { SyncWalletButton } from "@/components/dashboard/SyncWalletButton";
 import { ImportHistoryButton } from "@/components/connections/import/ImportHistoryButton";
 import { providerName, type SyncConnection } from "@/lib/sync/status";
+import { deriveConnectionLifecycle } from "@/lib/sync/lifecycle";
 
 /** Account inventory item — NAMES ONLY on Connections (no balances). */
 export interface AccountLite {
@@ -285,16 +286,32 @@ function ImportingContent({
       </div>
     );
   }
-  const stages: Stage[] = [
-    { label: "Institution connected", status: "done" },
-    { label: "Accounts discovered", value: String(accounts.length), status: "done" },
-    { label: "Balances imported", status: "done" },
-    {
-      label: slow ? "Transaction history — taking a little longer" : "Transaction history importing…",
-      status: "active",
-    },
-    { label: "Ready", status: "pending" },
-  ];
+  // Stage TRUTH (which stage, what status) comes from the one lifecycle
+  // authority; this card owns only the wording. For an importing Plaid
+  // connection the projection yields connected/accounts/balances = done,
+  // transactions = active, ready = pending — identical to the prior inline list.
+  const stages: Stage[] = deriveConnectionLifecycle(connection).map((s) => {
+    switch (s.key) {
+      case "connected":
+        return { label: "Institution connected", status: s.status };
+      case "accountsDiscovered":
+        return { label: "Accounts discovered", value: String(accounts.length), status: s.status };
+      case "balancesImported":
+        return { label: "Balances imported", status: s.status };
+      case "transactionsImported":
+        return {
+          label:
+            s.status === "active"
+              ? slow
+                ? "Transaction history — taking a little longer"
+                : "Transaction history importing…"
+              : "Transaction history imported",
+          status: s.status,
+        };
+      default: // "ready"
+        return { label: "Ready", status: s.status };
+    }
+  });
 
   return (
     <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
@@ -311,14 +328,16 @@ function ImportingContent({
         <NextRow label="AI insights" icon={Brain} />
       </ul>
       {slow && (
-        // Part-5 — honest framing once live polling has paused (past the ~3-min
-        // budget): the sync is genuinely still running server-side; we've stopped
-        // actively tracking it on screen, and the Part-3 notification is the
-        // eventual signal. Reopening/refocusing this tab resumes live tracking.
+        // CONN-1 — truthful framing once live polling has paused (past the ~3-min
+        // budget). The import genuinely continues server-side; completion is
+        // persisted (syncIncompleteAt → null) whether or not a notification lands.
+        // We deliberately DON'T promise a push we can't guarantee — the best-effort
+        // notification may not arrive and the poller has stopped — so we invite a
+        // re-check instead. Reopening/refocusing this tab resumes live tracking.
         <p className="mt-3 text-xs text-[var(--text-muted)]">
           Still importing — accounts with a lot of history can take several minutes.
-          We&rsquo;ll notify you the moment it&rsquo;s ready, so you can safely leave this page;
-          reopen it any time to resume live progress.
+          This keeps running in the background even if you leave; reopen Connections
+          any time to check progress.
         </p>
       )}
       <AccountNames accounts={accounts} />

@@ -164,10 +164,13 @@ export async function POST(req: NextRequest) {
     const dateOfBirthEncrypted = dateOfBirth ? encryptWithPurpose(dateOfBirth, EncryptionPurpose.DATE_OF_BIRTH) : undefined;
 
     // ── Email-verification token (OPS-1 S2b) ──────────────────────────────────
-    // New signups start UNVERIFIED (emailVerifiedAt stays null). Only the hash
-    // is persisted; rawVerificationToken lives solely in the outbound email.
-    // STORED-BUT-NOT-CONSUMED: no verify/resend route or login gate reads these
-    // yet — this slice only proves the email is sent and the state is stored.
+    // New (uninvited) signups start UNVERIFIED (emailVerifiedAt stays null). Only
+    // the hash is persisted; rawVerificationToken lives solely in the outbound
+    // email. These ARE now consumed downstream: the login gate (lib/auth.ts)
+    // blocks unverified sign-in, and the verify-email + resend routes redeem them.
+    // The 201 response carries `verificationRequired` (CONN-1) so the client can
+    // route an uninvited signup to a "check your inbox" screen instead of the
+    // sign-in page it cannot yet use.
     const rawVerificationToken = crypto.randomBytes(32).toString("hex");
     const verificationExpiry   = new Date(Date.now() + VERIFICATION_TTL_MS);
 
@@ -316,7 +319,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ success: true, userId: user.id }, { status: 201 });
+    // `verificationRequired` mirrors exactly whether a verification email was
+    // sent above: uninvited signups are unverified and must check their inbox
+    // before they can sign in; invited signups are pre-verified and can sign in
+    // immediately. The client branches on this — never on guessing invite state.
+    return NextResponse.json(
+      { success: true, userId: user.id, verificationRequired: !invitedFlow },
+      { status: 201 },
+    );
   } catch (err) {
     console.error("[register] error:", err);
     return NextResponse.json({ error: "Registration failed. Please try again." }, { status: 500 });
