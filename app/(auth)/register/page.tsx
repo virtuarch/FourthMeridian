@@ -57,6 +57,8 @@ function RegisterForm() {
   // CAPTCHA (Wave 2 ⑥) — only rendered when a site key is configured.
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [captchaNonce, setCaptchaNonce] = useState(0);
+  // PO-5A — required Terms/Privacy consent.
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
 
   // PO-3C — the register form honors the authoritative registration policy: it is
   // not shown until the mode (+ any invite) is resolved. invite_only without a
@@ -111,6 +113,10 @@ function RegisterForm() {
       setError("Please complete the verification below.");
       return;
     }
+    if (!agreedToTerms) {
+      setError("Please accept the Terms of Service and Privacy Policy to continue.");
+      return;
+    }
 
     setLoading(true);
 
@@ -126,6 +132,7 @@ function RegisterForm() {
       creditScore:      form.creditScore ? parseInt(form.creditScore) : undefined,
       inviteToken:      inviteToken || undefined,
       captchaToken:     captchaToken || undefined,
+      acceptedTerms:    agreedToTerms,
     };
 
     const res = await fetch("/api/auth/register", {
@@ -390,10 +397,27 @@ function RegisterForm() {
           />
         )}
 
+        {/* PO-5A — required Terms/Privacy consent. */}
+        <label className="flex items-start gap-2.5 text-sm text-[var(--text-secondary)]">
+          <input
+            type="checkbox"
+            checked={agreedToTerms}
+            onChange={(e) => setAgreedToTerms(e.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--meridian-500)]"
+            aria-label="Accept the Terms of Service and Privacy Policy"
+          />
+          <span>
+            I agree to the{" "}
+            <Link href="/terms" target="_blank" className="text-[var(--accent-info)] hover:text-[var(--meridian-300)]">Terms of Service</Link>
+            {" "}and{" "}
+            <Link href="/privacy" target="_blank" className="text-[var(--accent-info)] hover:text-[var(--meridian-300)]">Privacy Policy</Link>.
+          </span>
+        </label>
+
         <AuthButton
           type="submit"
           loading={loading}
-          disabled={loading || !form.email || !form.username || !form.password || !form.firstName || !form.lastName}
+          disabled={loading || !agreedToTerms || !form.email || !form.username || !form.password || !form.firstName || !form.lastName}
         >
           {loading ? "Creating account…" : "Create Account"}
         </AuthButton>

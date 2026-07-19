@@ -360,6 +360,12 @@ model User {
   emailVerifiedAt         DateTime?
   emailVerificationToken  String?           @unique
   emailVerificationExpiry DateTime?
+  // PO-5A — Terms/Privacy consent captured at registration. `acceptedTermsAt` is
+  // the timestamp of affirmative agreement; `acceptedTermsVersion` records which
+  // policy version was accepted. Nullable/additive — existing rows stay null
+  // (never backfilled to a consent the user did not give).
+  acceptedTermsAt         DateTime?
+  acceptedTermsVersion    String?
   // OPS-2 S3a — authenticated email-change seam. `pendingEmail` holds the
   // requested new address (not yet active); the token columns mirror the
   // verification/reset pattern (hashed at rest, single outstanding token, 1h

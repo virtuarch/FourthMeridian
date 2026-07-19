@@ -74,6 +74,8 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // PLATFORM_AREA_WORKSPACES (right after connection_health); this materialized
       // order is just a unique Int.
       { key: "ops_connection_diagnostics", label: "Connection Diagnostics", order: 14 },
+      // PO-5A — email-delivery visibility (sent/captured/error over NotificationDelivery).
+      { key: "ops_email_delivery", label: "Email Delivery", order: 15 },
       // OPS-5 S1 — content-aware resource freshness (FX rates, security prices).
       { key: "ops_resource_freshness", label: "Resource Freshness", order: 5 },
       // OPS-5 S4 — manual operational controls (Run Now / Dry Run) over the

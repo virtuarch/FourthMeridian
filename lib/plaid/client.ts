@@ -33,42 +33,55 @@ function validatePlaidEnv(): PlaidEnv {
   return env as PlaidEnv;
 }
 
-const plaidEnv = validatePlaidEnv();
+// ── LAZY init (PO-5A) ────────────────────────────────────────────────────────
+// The real client is built on FIRST USE, not at module import. This is the P0
+// beta fix: importing this module must never throw, so a route that imports
+// plaidClient can guard with `env.isPlaidEnabled` and return a clean 503 when
+// Plaid is unconfigured — instead of the whole route crashing at module load.
+// A misconfigured deploy now fails at the first ACTUAL Plaid call (guarded away),
+// never at import.
+let _realClient: PlaidApi | null = null;
 
-const config = new Configuration({
-  basePath: PlaidEnvironments[plaidEnv],
-  baseOptions: {
-    headers: {
-      "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID!,
-      "PLAID-SECRET":    process.env.PLAID_SECRET!,
+function realPlaidClient(): PlaidApi {
+  if (_realClient) return _realClient;
+  const plaidEnv = validatePlaidEnv(); // throws only here, on first real use
+  const config = new Configuration({
+    basePath: PlaidEnvironments[plaidEnv],
+    baseOptions: {
+      headers: {
+        "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID!,
+        "PLAID-SECRET":    process.env.PLAID_SECRET!,
+      },
     },
-  },
-});
-
-// The real Plaid SDK client. Kept internal; every consumer imports the
-// recording proxy below (same name, same type) instead.
-const basePlaidClient = new PlaidApi(config);
+  });
+  _realClient = new PlaidApi(config);
+  return _realClient;
+}
 
 /**
- * Wave 2 S7 — usage-recording proxy over the real PlaidApi. Transparent: it has
- * the same type and the same `plaidClient` export name, so the ~16 existing call
- * sites keep their imports/usage unchanged (this is purely additive — no call
- * site is edited). On each method invocation it fire-and-forgets one `calls`
- * counter keyed on the method name (the metric), then delegates to the real
- * client with the real instance as `this`. recordApiUsage is non-throwing, so
- * instrumentation can never affect a Plaid call's behavior or result.
+ * Wave 2 S7 — usage-recording proxy over the real PlaidApi, now also LAZY: the
+ * real client is resolved on first property access (realPlaidClient()), so this
+ * module has no import-time side effects. Same type + `plaidClient` export name,
+ * so the ~16 call sites are unchanged. Each method invocation fire-and-forgets
+ * one `calls` counter, then delegates. recordApiUsage is non-throwing.
  */
-export const plaidClient: PlaidApi = new Proxy(basePlaidClient, {
-  get(target, prop, receiver) {
-    const value = Reflect.get(target, prop, receiver);
+export const plaidClient: PlaidApi = new Proxy({} as PlaidApi, {
+  get(_target, prop, receiver) {
+    const client = realPlaidClient();
+    const value = Reflect.get(client, prop, receiver);
     if (typeof value !== "function") return value;
     const method = typeof prop === "string" ? prop : String(prop);
     return function (...args: unknown[]) {
       void recordApiUsage("PLAID", method, "calls", 1);
-      return (value as (...a: unknown[]) => unknown).apply(target, args);
+      return (value as (...a: unknown[]) => unknown).apply(client, args);
     };
   },
 });
 
-/** The resolved Plaid environment (for use in routes that need to log it). */
-export const PLAID_ENV = plaidEnv;
+/**
+ * The configured Plaid environment label (for routes that log/echo it). Read
+ * RAW at import (no validation/throw) so importing this module is side-effect
+ * free; the real client still validates on first use. Meaningful only when Plaid
+ * is configured — guard real usage with env.isPlaidEnabled.
+ */
+export const PLAID_ENV = (process.env.PLAID_ENV ?? "sandbox") as PlaidEnv;

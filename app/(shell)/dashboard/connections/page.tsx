@@ -18,6 +18,7 @@
 import { getSpaceContext } from "@/lib/space";
 import { loadConnectionsSpaceData } from "@/lib/connections/space-data";
 import { ConnectionsSpaceDashboard } from "@/components/connections/ConnectionsSpaceDashboard";
+import { env } from "@/lib/env";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
@@ -37,6 +38,7 @@ export default async function ConnectionsPage() {
       status={status}
       accountsByConnectionId={accountsByConnectionId}
       intelligenceByConnectionId={intelligenceByConnectionId}
+      plaidEnabled={env.isPlaidEnabled}
     />
   );
 }

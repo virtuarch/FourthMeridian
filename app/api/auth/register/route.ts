@@ -44,6 +44,10 @@ const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
 // OPS-1 S2b — email-verification token TTL (mirrors password reset: 1 hour).
 const VERIFICATION_TTL_MS = 60 * 60 * 1000;
 
+// PO-5A — the Terms/Privacy policy version recorded on consent. Bump when the
+// legal documents materially change (so re-consent can be required later).
+const TERMS_VERSION = "2026-07-19";
+
 export async function POST(req: NextRequest) {
   try {
     const limited = await limitByIp(req, "register", { limit: 5, windowSec: 900 });
@@ -63,7 +67,18 @@ export async function POST(req: NextRequest) {
       creditScore,
       inviteToken,
       captchaToken,
+      acceptedTerms,
     } = body;
+
+    // PO-5A — affirmative Terms/Privacy consent is required to register. The
+    // client enforces the checkbox; the server records consent only on a real
+    // affirmative flag, so a stored acceptedTermsAt always reflects agreement.
+    if (acceptedTerms !== true) {
+      return NextResponse.json(
+        { error: "You must accept the Terms of Service and Privacy Policy to create an account." },
+        { status: 400 },
+      );
+    }
 
     // ── Registration gate (Wave 1 S2) ─────────────────────────────────────────
     // Read the platform-wide mode BEFORE any field validation so `closed` short-
@@ -186,6 +201,9 @@ export async function POST(req: NextRequest) {
           dateOfBirthEncrypted:    dateOfBirthEncrypted ?? null,
           employmentStatus:        (employmentStatus as EmploymentStatus) ?? null,
           useCase:                 (useCase as UseCase) ?? null,
+          // PO-5A — record affirmative Terms/Privacy consent (validated above).
+          acceptedTermsAt:         new Date(),
+          acceptedTermsVersion:    TERMS_VERSION,
           passwordHash,
           // Invited signups are pre-verified: the invite email already proved
           // inbox ownership, so we skip the whole verification leg (no token

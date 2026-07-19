@@ -36,7 +36,7 @@ import type { ConnectionsSpaceData } from "@/lib/connections/space-data";
  * AND that Fourth Meridian then builds financial intelligence from it — the L1→L2
  * story the whole reconstruction experience is about. Presentation only.
  */
-function ConnectionsEmptyState() {
+function ConnectionsEmptyState({ plaidEnabled = true }: { plaidEnabled?: boolean }) {
   const steps = [
     "Import your transactions",
     "Build your financial timeline",
@@ -58,7 +58,7 @@ function ConnectionsEmptyState() {
         ))}
       </ul>
       <p className="mb-5 text-xs text-[var(--text-muted)]">Your first build happens automatically.</p>
-      <ConnectionsActions centered />
+      <ConnectionsActions centered plaidEnabled={plaidEnabled} />
     </div>
   );
 }
@@ -67,7 +67,8 @@ export function ConnectionsSpaceDashboard({
   status,
   accountsByConnectionId,
   intelligenceByConnectionId,
-}: ConnectionsSpaceData) {
+  plaidEnabled = true,
+}: ConnectionsSpaceData & { plaidEnabled?: boolean }) {
   const hasConnections = status.connections.length > 0;
 
   // Identity comes from the registry (no hardcoded rail JSX). Single workspace in
@@ -85,7 +86,7 @@ export function ConnectionsSpaceDashboard({
       variant="utility"
       title="Connections"
       subtitle="Manage the institutions and providers connected to Fourth Meridian."
-      headerActions={hasConnections ? <ConnectionsActions /> : undefined}
+      headerActions={hasConnections ? <ConnectionsActions plaidEnabled={plaidEnabled} /> : undefined}
       railOptions={railOptions}
       activeTab={activeTab}
       onSelectTab={setActiveTab}
@@ -97,7 +98,7 @@ export function ConnectionsSpaceDashboard({
           initialIntelligence={intelligenceByConnectionId}
         />
       ) : (
-        <ConnectionsEmptyState />
+        <ConnectionsEmptyState plaidEnabled={plaidEnabled} />
       )}
     </SpaceShell>
   );

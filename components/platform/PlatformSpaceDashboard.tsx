@@ -51,6 +51,7 @@ import { OpsEnvStatusWidget } from "./widgets/OpsEnvStatusWidget";
 import { OpsApiUsageWidget } from "./widgets/OpsApiUsageWidget";
 import { OpsConnectionHealthWidget } from "./widgets/OpsConnectionHealthWidget";
 import { OpsConnectionDiagnosticsWidget } from "./widgets/OpsConnectionDiagnosticsWidget";
+import { OpsEmailDeliveryWidget } from "./widgets/OpsEmailDeliveryWidget";
 import { OpsResourceFreshnessWidget } from "./widgets/OpsResourceFreshnessWidget";
 import { OpsManualOperationsWidget } from "./widgets/OpsManualOperationsWidget";
 import { OpsProviderHealthWidget } from "./widgets/OpsProviderHealthWidget";
@@ -89,6 +90,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   ops_api_usage:          OpsApiUsageWidget,
   ops_connection_health:  OpsConnectionHealthWidget,
   ops_connection_diagnostics: OpsConnectionDiagnosticsWidget,
+  ops_email_delivery:     OpsEmailDeliveryWidget,
   ops_resource_freshness: OpsResourceFreshnessWidget,
   ops_manual_operations:  OpsManualOperationsWidget,
   ops_provider_health:    OpsProviderHealthWidget,

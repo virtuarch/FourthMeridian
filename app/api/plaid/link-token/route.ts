@@ -55,6 +55,17 @@ export async function GET(req: NextRequest) {
   const [user, err] = await requireUser();
   if (err) return err;
 
+  // PO-5A — availability gate. When Plaid isn't configured, return a clean 503
+  // (the client renders an honest "temporarily unavailable" state) instead of
+  // the module-load crash a missing key used to cause. The client is lazy now
+  // (lib/plaid/client.ts), so importing it above is side-effect free.
+  if (!env.isPlaidEnabled) {
+    return NextResponse.json(
+      { error: "unavailable", message: "Bank connections are being set up. Please check back soon." },
+      { status: 503 },
+    );
+  }
+
   // OPS-1 S4 — each call mints a Plaid Link token (external API cost).
   const limited = await limitByUser(user.id, "plaid-link-token", { limit: 10, windowSec: 900 });
   if (limited) return limited;
