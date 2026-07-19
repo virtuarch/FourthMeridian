@@ -87,3 +87,6 @@ cloudflared/cert.pem
 # scratch/backup artifacts
 _to_delete/
 fintracker_backup.sql
+
+# DB backups (Recovery/Hardening slice) — never commit dumps
+backups/
