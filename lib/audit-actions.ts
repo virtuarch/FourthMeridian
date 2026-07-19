@@ -130,6 +130,10 @@ export const AuditAction = {
   // honest across manual rebuilds, alongside PLAID_HISTORY_SYNCED. metadata:
   // { connectionId, provider, fromDate, toDate }.
   CONNECTION_INTELLIGENCE_REBUILT: "CONNECTION_INTELLIGENCE_REBUILT",
+  // CONN-4A — user-initiated connection-level DISCONNECT (Model A: stop syncing,
+  // revoke provider access when orphaned, PRESERVE history — never a deletion).
+  // metadata: { institution, provider, accountCount }.
+  CONNECTION_DISCONNECTED: "CONNECTION_DISCONNECTED",
   WALLET_SYNC:              "WALLET_SYNC",
   // CH-2 — durable connection status-transition history. One action per model
   // (not one-per-direction); direction lives in `{ from, to }` metadata, the

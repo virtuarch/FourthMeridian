@@ -49,6 +49,7 @@ import {
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
 import { ConnectionTimeline } from "@/components/connections/ConnectionTimeline";
+import { ConnectionMenu } from "@/components/connections/ConnectionMenu";
 
 /** Account inventory item — NAMES ONLY on Connections (no balances). */
 export interface AccountLite {
@@ -606,6 +607,12 @@ export function ConnectionCard({ connection, accounts, intelligence, slow, allow
   // px-6 md:px-8 py-6 md:py-7) so the glass has real area to refract.
   // Wallet cards get a reuse of SyncWalletButton (recovery/freshness) — rendered
   // once, in every wallet state; returns null for Plaid so those are unchanged.
+  // CONN-4A — per-connection ⋯ menu (Refresh / Restore intelligence / Disconnect).
+  // Shown once the connection has resolved (not mid-import).
+  const menu = state !== "importing"
+    ? <div className="absolute right-3 top-3 z-30"><ConnectionMenu connection={connection} /></div>
+    : null;
+
   const walletActions = <WalletActions connection={connection} accounts={accounts} />;
   // A7-6 — capability-aware historical-import affordance. Renders nothing unless
   // this is a Plaid connection (past first import) with an investment account, so
@@ -614,9 +621,11 @@ export function ConnectionCard({ connection, accounts, intelligence, slow, allow
 
   return canLiquid ? (
     <AtlasLiquidCard ariaLabel={`${institution} — ${state}`}>
-      <div className="relative z-10 px-6 md:px-8 py-6 md:py-7">{content}{walletActions}{importAction}</div>
+      <div className="relative z-10 px-6 md:px-8 py-6 md:py-7">{menu}{content}{walletActions}{importAction}</div>
     </AtlasLiquidCard>
   ) : (
-    <DataCard accent={state === "error" ? "negative" : "none"}>{content}{walletActions}{importAction}</DataCard>
+    <DataCard accent={state === "error" ? "negative" : "none"}>
+      <div className="relative">{menu}{content}{walletActions}{importAction}</div>
+    </DataCard>
   );
 }
