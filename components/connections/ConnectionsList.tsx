@@ -173,8 +173,31 @@ export function ConnectionsList({ initialStatus, accountsByConnectionId = {} }: 
   }, [poll]);
 
   useEffect(() => {
-    if (!status.building) return; // nothing to poll — all settled at first paint
+    // CONN-2 — (re)arm live tracking whenever `building` is true, keyed on that
+    // flag rather than only at mount. Adding a SECOND connection while this page
+    // is already open re-renders ConnectionsList IN PLACE (router.push to the
+    // current route → no remount, no key), so the re-seed effect flips
+    // `status.building` false→true without ever remounting. The old empty-deps
+    // effect captured only the mount-time value of `building`, so for the
+    // already-ready page it had returned early and never started the poller —
+    // leaving the new card spinning until a manual hard refresh. Keying on
+    // `status.building` makes the poller start for that newly-importing
+    // connection. Completion still comes SOLELY from persisted state, read via
+    // the poll → /api/sync/status (never from a notification).
+    if (!status.building) return; // nothing to poll — all settled
 
+    // Fresh live-tracking window for this building period: reset the poll budget
+    // + slow flag so a just-added connection gets the full budget, and seed
+    // prevBuilding=true so the building→false transition still fires the single
+    // router.refresh() that pulls the now-complete data. (prevBuildingRef is
+    // otherwise only updated inside poll(), so without this a poller that starts
+    // late would miss the transition.)
+    pollCountRef.current = 0;
+    // Intentional reset on entering a building period (see comment above) — same
+    // sanctioned prop/flag→state sync the re-seed effect uses.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSlow(false);
+    prevBuildingRef.current = true;
     start();
 
     const onVisibility = () => {
@@ -200,10 +223,11 @@ export function ConnectionsList({ initialStatus, accountsByConnectionId = {} }: 
       document.removeEventListener("visibilitychange", onVisibility);
       stop();
     };
-    // Intentionally run once on mount; poll/start/stop are stable callbacks and
-    // subsequent state is driven by the interval, not by re-running this effect.
+    // Keyed on status.building: (re)arm on false→true, tear down on true→false.
+    // poll/start/stop are stable callbacks; live state is driven by the interval,
+    // not by re-running this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [status.building]);
 
   const anyReady = status.connections.some((c) => c.state === "ready");
 
