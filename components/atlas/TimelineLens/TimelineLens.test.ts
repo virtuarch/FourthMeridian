@@ -172,6 +172,12 @@ console.log("5. Contract — intent surface and prior-iteration regressions");
 
   check("the period choice is ONE radiogroup, not competing groups",
     (panel.match(/role="radiogroup"/g) ?? []).length === 1);
+  // Choosing a period applies immediately AND dismisses the panel, so arrow keys
+  // must not carry selection — otherwise the first arrow press commits and closes,
+  // and a keyboard user can never browse the options.
+  check("arrow keys move focus without committing a selection",
+    /radios\[next\]\.focus\(\);/.test(panel) && !/radios\[next\]\.click\(\)/.test(panel));
+
   check("options expose radio semantics",
     panel.includes('role="radio"') && panel.includes("aria-checked"));
 

@@ -45,10 +45,18 @@ const GROUPS = [
 ];
 
 /**
- * Roving focus across the whole period choice. Arrow keys move and select
- * (selection-follows-focus, the standard radiogroup pattern); Home/End jump to
- * the ends. There is exactly ONE radiogroup, so focus traverses every option and
- * cannot be stranded in a subsection whose selection lives in the other.
+ * Roving focus across the whole period choice. Arrow keys MOVE FOCUS ONLY;
+ * Home/End jump to the ends. Space/Enter commits (native <button> behaviour).
+ *
+ * Deliberately NOT selection-follows-focus. Choosing a period performs an action
+ * — it applies immediately and dismisses the panel — so if focus carried
+ * selection, the very first arrow press would commit and close, and a keyboard
+ * user could never browse the options at all. ARIA's radiogroup guidance calls
+ * for exactly this "selection does not follow focus" variant when moving
+ * selection would trigger an action.
+ *
+ * There is exactly ONE radiogroup, so focus traverses every option and cannot be
+ * stranded in a subsection whose selection lives in the other.
  */
 function onRadioKeyDown(event: KeyboardEvent<HTMLDivElement>) {
   const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
@@ -71,8 +79,8 @@ function onRadioKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     next = (current + delta + radios.length) % radios.length;
   }
 
+  // Focus only — no .click(). See the doc block above.
   radios[next].focus();
-  radios[next].click();
 }
 
 function PeriodRadio({
