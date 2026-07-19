@@ -68,6 +68,16 @@ export interface TimelineLensCapability {
   comparison?: boolean;
 }
 
+/**
+ * Parent-owned validation feedback. Carries WHICH boundary was rejected, so the
+ * message renders under the field the user actually touched — a single opaque
+ * string cannot say that, and defaulted to the wrong field.
+ */
+export interface TimelineBoundaryError {
+  boundary: "asOf" | "compareTo";
+  message: string;
+}
+
 export interface TimelineLensProps {
   /** Derived from canonical every render. `null` = no option matches (custom). */
   activeOptionId: string | null;
@@ -86,8 +96,8 @@ export interface TimelineLensProps {
   /** The only mutation boundary. One user action, one intent, one parent commit. */
   onIntent: (intent: TimelineIntent) => void;
   capability?: TimelineLensCapability;
-  /** Parent-owned validation feedback, surfaced on the boundary fields. */
-  boundaryError?: string | null;
+  /** Parent-owned validation feedback, surfaced on the field that was rejected. */
+  boundaryError?: TimelineBoundaryError | null;
   disabled?: boolean;
   ariaLabel?: string;
   className?: string;

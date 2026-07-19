@@ -148,6 +148,14 @@ console.log("5. Contract — intent surface and prior-iteration regressions");
     ['"period"', '"customBoundary"', '"swap"', '"clearComparison"'].every((v) => types.includes(v)));
   check("props carry maxDate", /maxDate:\s*string/.test(types));
 
+  // A rejected boundary must be attributable to the field the user touched. An
+  // opaque string cannot say which, and defaulted to rendering under the wrong
+  // one — caught only by exercising the real panel in a browser.
+  check("boundary errors carry which boundary they belong to",
+    /boundary:\s*"asOf"\s*\|\s*"compareTo"/.test(types) && types.includes("TimelineBoundaryError"));
+  check("each boundary Field renders only its OWN error",
+    (panel.match(/boundaryError\?\.boundary === "(asOf|compareTo)"/g) ?? []).length === 2);
+
   // Parity: production caps As-of AND Compare-to at today.
   check("both boundary inputs are capped with max",
     (panel.match(/max=\{maxDate\}/g) ?? []).length === 2);
@@ -168,6 +176,11 @@ console.log("5. Contract — intent surface and prior-iteration regressions");
     panel.includes('role="radio"') && panel.includes("aria-checked"));
 
   // Panel doctrine: LeftPanel is context/control, RightPanel is selected-item detail.
+  // Mobile touch floor: the icon-only swap/clear affordances render ~27px from
+  // `size="sm"` alone, below a comfortable touch target on the bottom sheet.
+  check("icon-only affordances carry a 44px minimum touch target",
+    (panel.match(/min-h-11 min-w-11/g) ?? []).length === 2);
+
   check("uses LeftPanel (context/control), not RightPanel",
     panel.includes("<LeftPanel") && !panel.includes("<RightPanel"));
 }

@@ -13,7 +13,7 @@
  * unchanged (Space tabs are NOT workspaces).
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import {
   PERSPECTIVE_LIBRARY,
@@ -230,17 +230,84 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
     const d = temporalControlVisibility(undefined); return d.asOf && d.compareTo;
   })());
 
-  // UNIVERSAL SLICER (correction to SD-2C): the WTD/MTD/QTD/YTD/1W/… preset strip
-  // is how EVERY Perspective selects canonical time — PerspectiveShell renders it
-  // unconditionally, never behind a temporalCapability / vis.period gate.
+  // ── DOCTRINE: no workspace owns canonical timeline controls ──────────────────
+  //
+  // This replaces the old "PerspectiveShell renders <CashFlowPeriodSelector>"
+  // assertion, which pinned a FILE NAME. The property actually worth protecting
+  // is an ownership boundary: canonical time is selected in ONE shared place, and
+  // no workspace grows its own time control. That stays true whether the shell
+  // renders the legacy slicer, TimelineLens, or something later.
   const shellSrc = readFileSync(
     path.join(process.cwd(), "components", "space", "shell", "PerspectiveShell.tsx"), "utf8",
   );
-  check("PerspectiveShell renders the CashFlowPeriodSelector slicer", shellSrc.includes("<CashFlowPeriodSelector"));
-  check("the slicer is NOT gated by capability (no vis.period gate remains)",
+
+  // 1. The shell still owns a universal canonical time selector.
+  const SHELL_SELECTORS = ["<CashFlowPeriodSelector", "<TimelineLens"];
+  check("PerspectiveShell renders a canonical time selector",
+    SHELL_SELECTORS.some((s) => shellSrc.includes(s)),
+    "expected one of: " + SHELL_SELECTORS.join(", "));
+
+  // 2. It is UNIVERSAL — never behind a temporalCapability / vis.period gate. The
+  //    `period` axis describes interpretation, not slicer availability.
+  check("the selector is NOT gated by capability (no vis.period gate remains)",
     !shellSrc.includes("vis.period") && !/\{vis\.period\s*&&/.test(shellSrc));
   check("temporalControlVisibility governs only the explicit inputs (no period key)",
     !("period" in temporalControlVisibility(WORKSPACE_REGISTRY.cashFlow.temporalCapability)));
+
+  // 3. THE DOCTRINE: no workspace renders a canonical time control or reaches the
+  //    time authority. Scans the workspace render surfaces — the standard
+  //    workspaces plus the five financial Perspective workspaces.
+  const WORKSPACE_DIRS = [
+    ["components", "space", "workspaces"],
+    ["components", "space", "widgets", "wealth"],
+    ["components", "space", "widgets", "investments"],
+    ["components", "space", "widgets", "debt"],
+    ["components", "space", "widgets", "liquidity"],
+    ["components", "space", "widgets", "cashflow"],
+  ];
+
+  // Data-entry date fields are NOT view-time controls. A goal's target date is a
+  // value the user is storing, not a lens they are looking through. Exempt by
+  // explicit name so adding another is a conscious act, never a silent drift.
+  const DATA_ENTRY_EXEMPT = new Set(["AddGoalModal.tsx"]);
+
+  // Owning canonical time = rendering a time selector, holding the time reducer,
+  // or dispatching a shell time action directly.
+  const TIME_CONTROL_MARKERS = [
+    "<CashFlowPeriodSelector", "<TimelineLens", "<ShellContextRow", "<PerspectiveShell",
+    "usePerspectiveShellState", "shellTimeReducer", "perspective-time-adapter",
+    "actions.selectPreset", "actions.setAsOf", "actions.setCompareTo", "actions.clearCompareTo",
+  ];
+
+  for (const dir of WORKSPACE_DIRS) {
+    const abs = path.join(process.cwd(), ...dir);
+    let files: string[] = [];
+    try { files = readdirSync(abs).filter((f) => f.endsWith(".tsx")); } catch { continue; }
+
+    for (const file of files) {
+      const src = readFileSync(path.join(abs, file), "utf8");
+      const where = `${dir.slice(2).join("/")}/${file}`;
+
+      for (const marker of TIME_CONTROL_MARKERS) {
+        check(`${where} does not own canonical time (${marker})`, !src.includes(marker));
+      }
+
+      if (!DATA_ENTRY_EXEMPT.has(file)) {
+        check(`${where} renders no raw date input (view time is the shell's)`,
+          !src.includes('type="date"'));
+      }
+    }
+  }
+
+  // 4. The rollout allowlist is a MIGRATION device, not a permanent fork: exactly
+  //    one time UI renders per Perspective, and the legacy path must survive
+  //    until the rollout completes (a clean rollback while the canary runs).
+  check("PerspectiveShell branches on the rollout allowlist",
+    shellSrc.includes("usesTimelineLens"));
+  check("the legacy control path is still present (rollback path intact)",
+    shellSrc.includes("<CashFlowPeriodSelector") && shellSrc.includes("<ShellContextRow"));
+  check("the two time UIs are mutually exclusive (never both rendered)",
+    /useLens\s*\?/.test(shellSrc));
 }
 
 // ── envelope source matches resolvePerspectiveEnvelope's switch ──────────────────

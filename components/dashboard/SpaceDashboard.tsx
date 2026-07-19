@@ -286,6 +286,7 @@ export function SpaceDashboard({
     snapshots,
     backfilling: snapshotsBackfilling,
     transactions: spaceTransactions,
+    transactionsMeta,
     moneyCtx: spaceMoneyCtx,
     widgetCtx,
     memberCount,
@@ -666,6 +667,7 @@ export function SpaceDashboard({
     snapshots,
     snapshotsBackfilling,
     transactions: spaceTransactions,
+    transactionsMeta,
     widgetCtx,
     txCtx: txConversionCtx,
     asOf,
@@ -817,6 +819,13 @@ export function SpaceDashboard({
               // Temporal-capability gating: the shell renders only the time controls
               // the engaged lens actually consumes (As-of/Compare-to vs Period).
               temporalCapability={activePerspectiveId ? getWorkspaceDefinition(activePerspectiveId)?.temporalCapability : undefined}
+              // TimelineLens path (rollout allowlist). Read-only canonical state:
+              // the lens DERIVES its entire display from this every render and
+              // stores nothing, so back-navigation and async coverage arrival are
+              // reflected without it knowing they happened. Every intent it emits
+              // comes back through the handlers above — same actions, same order.
+              timeState={shell.state}
+              activePerspectiveId={activePerspectiveId}
               tabs={lensSelectorItems}
               activeTabId={activeLensId}
               onSelectTab={selectLens}
@@ -895,6 +904,8 @@ export function SpaceDashboard({
             moneyCtx={transactionsMoneyCtxOverride ?? spaceMoneyCtx}
             // Banking→Transactions retarget — deep-link account pre-filter.
             initialAccountFilter={initialAccountFilter}
+            // TX-2A — coverage honesty when the read was capped (no-op when complete).
+            transactionsMeta={transactionsMeta}
           />
         )}
 

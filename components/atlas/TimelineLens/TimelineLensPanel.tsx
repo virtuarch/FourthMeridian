@@ -18,6 +18,7 @@ import { GlassButton } from "@/components/atlas/GlassButton";
 import { Field, Input } from "@/components/atlas/fields";
 import { LeftPanel, PanelContent, PanelFooter, PanelHeader } from "@/components/atlas/panels";
 import type {
+  TimelineBoundaryError,
   TimelineIntent,
   TimelineLensCapability,
   TimelineLensSummary,
@@ -32,7 +33,7 @@ interface Props {
   periodOptions: readonly TimelinePeriodOption[];
   capability: TimelineLensCapability;
   maxDate: string;
-  boundaryError: string | null;
+  boundaryError: TimelineBoundaryError | null;
   onIntent: (intent: TimelineIntent) => void;
   onClose: () => void;
 }
@@ -187,7 +188,9 @@ export function TimelineLensPanel({
                     disabled={!hasComparison}
                     onClick={() => onIntent({ type: "swap" })}
                     aria-label="Swap the two boundary dates"
-                    className="!px-2"
+                    /* 44px minimum touch target — `size="sm"` alone renders ~27px,
+                       which is below the comfortable-touch floor on the mobile sheet. */
+                    className="!px-2 min-h-11 min-w-11 justify-center"
                   >
                     <ArrowLeftRight size={13} aria-hidden />
                   </GlassButton>
@@ -198,7 +201,7 @@ export function TimelineLensPanel({
                     disabled={!hasComparison}
                     onClick={() => onIntent({ type: "clearComparison" })}
                     aria-label="Clear the comparison boundary"
-                    className="!px-2"
+                    className="!px-2 min-h-11 min-w-11 justify-center"
                   >
                     <X size={13} aria-hidden />
                   </GlassButton>
@@ -213,7 +216,11 @@ export function TimelineLensPanel({
               that is meaningful is the consumer's call, not this component's.
             */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Compare to" htmlFor={compareToId} error={boundaryError}>
+              <Field
+                label="Compare to"
+                htmlFor={compareToId}
+                error={boundaryError?.boundary === "compareTo" ? boundaryError.message : undefined}
+              >
                 <Input
                   id={compareToId}
                   type="date"
@@ -224,7 +231,11 @@ export function TimelineLensPanel({
                   }
                 />
               </Field>
-              <Field label="As of" htmlFor={asOfId}>
+              <Field
+                label="As of"
+                htmlFor={asOfId}
+                error={boundaryError?.boundary === "asOf" ? boundaryError.message : undefined}
+              >
                 <Input
                   id={asOfId}
                   type="date"
