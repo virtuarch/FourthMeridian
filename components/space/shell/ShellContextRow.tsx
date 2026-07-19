@@ -12,11 +12,9 @@
  * canonical shell reducer.
  */
 
-import { useState } from "react";
-import { CalendarDays, ArrowLeftRight, ShieldCheck, FileSearch, AlertTriangle, X } from "lucide-react";
+import { CalendarDays, ArrowLeftRight, X } from "lucide-react";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
-import { CompletenessPopover } from "./CompletenessPopover";
-import { EvidenceDrawer } from "./EvidenceDrawer";
+import { ShellTrustRow } from "./ShellTrustRow";
 
 interface Props {
   asOf: string;
@@ -42,57 +40,6 @@ const FIELD_CLASS =
   "text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-info)] " +
   "[color-scheme:dark]";
 
-/** A shell chip; a button when `onClick` is provided, otherwise a static chip. */
-function ShellChip({
-  icon,
-  label,
-  value,
-  tone = "neutral",
-  onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value?: string;
-  tone?: "neutral" | "positive" | "warning";
-  onClick?: () => void;
-}) {
-  const toneColor =
-    value === undefined
-      ? "var(--text-faint)"
-      : tone === "positive"
-        ? "var(--accent-positive)"
-        : tone === "warning"
-          ? "var(--accent-warning)"
-          : "var(--text-secondary)";
-  const inner = (
-    <>
-      <span className="text-[var(--text-faint)]" aria-hidden>{icon}</span>
-      <span className="text-[11px] font-medium text-[var(--text-muted)]">{label}</span>
-      <span className="text-[11px] font-semibold tabular-nums" style={{ color: toneColor }}>
-        {value ?? "—"}
-      </span>
-    </>
-  );
-  const base = "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-[var(--surface-inset)] border border-[var(--border-hairline)]";
-  if (onClick) {
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        title={`${label}: ${value ?? "—"}`}
-        className={`${base} hover:border-[var(--border-hairline-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] transition-colors cursor-pointer`}
-      >
-        {inner}
-      </button>
-    );
-  }
-  return (
-    <div className={base} title={value === undefined ? `${label} — not yet available` : `${label}: ${value}`}>
-      {inner}
-    </div>
-  );
-}
-
 export function ShellContextRow({
   asOf,
   onAsOfChange,
@@ -105,15 +52,6 @@ export function ShellContextRow({
   showCompareTo = true,
   className = "",
 }: Props) {
-  const [popoverOpen, setPopoverOpen] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-
-  const completeness = envelope.completeness;
-  const evidence = envelope.evidence;
-  const warnings = envelope.warnings ?? [];
-  const canPopover = !!completeness?.detail;
-  const canDrawer = !!(evidence?.rows && evidence.rows.length > 0);
-
   return (
     <div
       className={["flex flex-wrap items-center gap-2", className].join(" ")}
@@ -183,42 +121,11 @@ export function ShellContextRow({
       )}
 
       {/* Shell-level trust surfaces — interactive when the envelope has detail.
-          Always rendered (trust is independent of the temporal-control gating). */}
-      <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
-        <ShellChip
-          icon={<ShieldCheck size={13} />}
-          label="Completeness"
-          value={completeness?.label}
-          tone={completeness?.tone}
-          onClick={canPopover ? () => setPopoverOpen(true) : undefined}
-        />
-        <ShellChip
-          icon={<FileSearch size={13} />}
-          label="Evidence"
-          value={evidence?.label}
-          onClick={canDrawer ? () => setDrawerOpen(true) : undefined}
-        />
-        {/* Orthogonal trust caveats (FX today) — a SEPARATE axis from completeness, so
-            "Observed + missing FX" reads honestly at the shell instead of collapsing
-            the whole chip to "Estimated" (the pre-convergence behavior). */}
-        {warnings.map((w, i) => (
-          <div
-            key={`${w.kind}-${i}`}
-            title={w.detail ?? w.label}
-            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-[var(--surface-inset)] border border-[var(--border-hairline)]"
-          >
-            <span className="text-[var(--accent-warning)]" aria-hidden><AlertTriangle size={13} /></span>
-            <span className="text-[11px] font-semibold text-[var(--accent-warning)]">{w.label}</span>
-          </div>
-        ))}
-      </div>
-
-      {completeness && (
-        <CompletenessPopover open={popoverOpen} onClose={() => setPopoverOpen(false)} completeness={completeness} />
-      )}
-      {evidence && (
-        <EvidenceDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} evidence={evidence} />
-      )}
+          Always rendered (trust is independent of the temporal-control gating).
+          Extracted to ShellTrustRow (TimelineLens v4, Slice 0): the time controls
+          above are moving into the Atlas lens; these are not. Composed here so the
+          rendered markup is unchanged by the split. */}
+      <ShellTrustRow envelope={envelope} />
     </div>
   );
 }
