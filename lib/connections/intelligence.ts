@@ -31,13 +31,16 @@ export type IntelligenceStatus = "READY" | "REBUILDING" | "NOT_READY";
 
 /**
  * Derived UI phase (CONN-2E). Provider truth is NOT expanded into these — they
- * are computed. RETRYING is a client-only refinement of IMPORTING (the resume
- * bookkeeping in ConnectionsList); REMOVING is a forward slot with no signal yet
- * — neither is produced by this pure server derivation, and neither is faked.
+ * are computed. BUILDING_INTELLIGENCE is the default-journey name: the customer
+ * does not know a previous state existed, so it is "building" (not "rebuilding"/
+ * "reconstructing") their financial profile from data that is already acquired.
+ * RETRYING is a client-only refinement of IMPORTING (the resume bookkeeping in
+ * ConnectionsList); REMOVING is a forward slot with no signal yet — neither is
+ * produced by this pure server derivation, and neither is faked.
  */
 export type ConnectionLifecyclePhase =
   | "IMPORTING"
-  | "RECONSTRUCTING"
+  | "BUILDING_INTELLIGENCE"
   | "READY"
   | "ACTION_REQUIRED";
 
@@ -63,6 +66,11 @@ export interface ConnectionIntelligenceStatus {
   availableHistory:        AvailableHistory | null;
   earliestTransactionDate: string | null; // ISO
   lastReconstructedAt:     string | null; // ISO — PLAID_HISTORY_SYNCED.createdAt (wallet: lastSyncedAt proxy)
+  /** When the source was first connected/authorized (Connection.createdAt). null if unknown. */
+  connectedAt:             string | null; // ISO
+  /** Last successful acquisition/sync (Connection.lastSyncedAt) — the FRESHNESS
+   *  timestamp (CONN-2D "last updated"). NOT rebuilt-intelligence time. */
+  lastSyncedAt:            string | null; // ISO
 }
 
 /** Structural input for the pure derivation — gathered by the loader. */
@@ -75,6 +83,10 @@ export interface IntelligenceInput {
   historySyncedAt: Date | null;
   /** MIN(non-deleted Transaction.date) across the connection's accounts, or null. */
   earliestTxDate:  Date | null;
+  /** Connection.createdAt — the authorization/connected time, or null. */
+  connectedAt:     Date | null;
+  /** Connection.lastSyncedAt — last successful acquisition (freshness), or null. */
+  lastSyncedAt:    Date | null;
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -128,7 +140,7 @@ function derivePhase(state: SyncConnectionState, intelligence: IntelligenceStatu
   if (state === "needs_reauth" || state === "error") return "ACTION_REQUIRED";
   if (state === "importing") return "IMPORTING";
   // state === "ready":
-  return intelligence === "READY" ? "READY" : "RECONSTRUCTING";
+  return intelligence === "READY" ? "READY" : "BUILDING_INTELLIGENCE";
 }
 
 /** Pure derivation of the full intelligence status from gathered inputs. */
@@ -147,6 +159,8 @@ export function deriveConnectionIntelligence(
     availableHistory: computeAvailableHistory(input.earliestTxDate, now),
     earliestTransactionDate: input.earliestTxDate ? input.earliestTxDate.toISOString() : null,
     lastReconstructedAt: input.historySyncedAt ? input.historySyncedAt.toISOString() : null,
+    connectedAt:  input.connectedAt  ? input.connectedAt.toISOString()  : null,
+    lastSyncedAt: input.lastSyncedAt ? input.lastSyncedAt.toISOString() : null,
   };
 }
 
@@ -154,7 +168,48 @@ export function deriveConnectionIntelligence(
  *  reconstructing) — the "keep polling" condition for the Connections poller,
  *  a superset of SyncStatus.building (which only covers importing). */
 export function isBuildingIntelligence(statuses: ConnectionIntelligenceStatus[]): boolean {
-  return statuses.some((s) => s.phase === "IMPORTING" || s.phase === "RECONSTRUCTING");
+  return statuses.some((s) => s.phase === "IMPORTING" || s.phase === "BUILDING_INTELLIGENCE");
+}
+
+/**
+ * CONN-2D — the customer "Connection Truth Timeline": a PROVIDER-NEUTRAL, honest
+ * projection of where a financial source is in its lifecycle. Purely derived from
+ * ConnectionIntelligenceStatus — no new source of truth, no provider/Plaid terms,
+ * no fabricated timestamps (every timestamp is null unless a real one exists).
+ *
+ * The four layers mirror the L1/L2/L3 doctrine, in customer language:
+ *   Authorization    — the source is connected (connectedAt)
+ *   Data acquisition — transactions are available (a fact, not a job)
+ *   Financial intelligence — the profile is BUILT (wealth timeline + cash flow)
+ *   Current freshness — when data was last updated (freshness, NOT rebuilt intel)
+ */
+export interface ConnectionTimeline {
+  authorization: { connectedAt: string | null };
+  acquisition:   { transactionsAvailable: boolean };
+  intelligence:  {
+    profileBuilt:   boolean; // acquisition + reconstruction both complete
+    wealthTimeline: boolean;
+    cashFlow:       boolean; // read-time derived from transactions → available whenever they are
+    lastBuiltAt:    string | null;
+  };
+  freshness:     { lastUpdatedAt: string | null };
+}
+
+export function deriveConnectionTimeline(s: ConnectionIntelligenceStatus): ConnectionTimeline {
+  const transactionsAvailable = s.transactionHistory === "READY";
+  return {
+    authorization: { connectedAt: s.connectedAt },
+    acquisition:   { transactionsAvailable },
+    intelligence: {
+      profileBuilt:   s.intelligenceReady,
+      wealthTimeline: s.intelligenceReady,
+      // Cash-flow "history" is a read-time projection over transactions — it is
+      // available whenever transactions are (no separate build step).
+      cashFlow:       transactionsAvailable,
+      lastBuiltAt:    s.lastReconstructedAt,
+    },
+    freshness: { lastUpdatedAt: s.lastSyncedAt },
+  };
 }
 
 /**

@@ -13,6 +13,7 @@
 
 import {
   deriveConnectionIntelligence,
+  deriveConnectionTimeline,
   computeAvailableHistory,
   isBuildingIntelligence,
   type IntelligenceInput,
@@ -35,6 +36,8 @@ function derive(p: Partial<IntelligenceInput>) {
       state:           p.state ?? "ready",
       historySyncedAt: p.historySyncedAt ?? null,
       earliestTxDate:  p.earliestTxDate ?? null,
+      connectedAt:     p.connectedAt ?? null,
+      lastSyncedAt:    p.lastSyncedAt ?? null,
     },
     NOW,
   );
@@ -45,7 +48,7 @@ console.log("CONN-2G — incomplete intelligence can never claim ready");
   // Transactions done (state ready) but NO PLAID_HISTORY_SYNCED anchor = REBUILDING.
   const rebuilding = derive({ provider: "PLAID", state: "ready", historySyncedAt: null });
   check("Plaid ready + no anchor → intelligence REBUILDING", rebuilding.intelligence === "REBUILDING");
-  check("REBUILDING → phase RECONSTRUCTING", rebuilding.phase === "RECONSTRUCTING");
+  check("REBUILDING → phase BUILDING_INTELLIGENCE", rebuilding.phase === "BUILDING_INTELLIGENCE");
   check("REBUILDING → intelligenceReady is FALSE", rebuilding.intelligenceReady === false);
   check("REBUILDING → transactionHistory still READY", rebuilding.transactionHistory === "READY");
 }
@@ -116,6 +119,38 @@ console.log("isBuildingIntelligence — importing OR reconstructing keeps pollin
   check("all ready → not building", isBuildingIntelligence([ready]) === false);
   check("one reconstructing → building", isBuildingIntelligence([ready, rebuilding]) === true);
   check("one importing → building", isBuildingIntelligence([ready, importing]) === true);
+}
+
+console.log("CONN-2D timeline — provider-neutral projection, no fabricated timestamps");
+{
+  const connected = new Date("2026-07-01T00:00:00.000Z");
+  const synced = new Date("2026-07-19T00:00:00.000Z");
+  const ready = derive({
+    provider: "PLAID", state: "ready", historySyncedAt: ANCHOR,
+    earliestTxDate: TWO_YEARS_AGO, connectedAt: connected, lastSyncedAt: synced,
+  });
+  const tl = deriveConnectionTimeline(ready);
+  check("authorization carries the real connectedAt", tl.authorization.connectedAt === connected.toISOString());
+  check("acquisition: transactions available at ready", tl.acquisition.transactionsAvailable === true);
+  check("intelligence: profile built when READY", tl.intelligence.profileBuilt === true);
+  check("intelligence: wealth timeline built", tl.intelligence.wealthTimeline === true);
+  check("intelligence: cash flow available (derived from tx)", tl.intelligence.cashFlow === true);
+  check("intelligence: lastBuiltAt = anchor", tl.intelligence.lastBuiltAt === ANCHOR.toISOString());
+  check("freshness: lastUpdatedAt = lastSyncedAt", tl.freshness.lastUpdatedAt === synced.toISOString());
+
+  // Building phase: acquisition done, but profile NOT built, no fabricated build time.
+  const building = derive({ provider: "PLAID", state: "ready", historySyncedAt: null, connectedAt: connected });
+  const btl = deriveConnectionTimeline(building);
+  check("building: transactions available but profile NOT built", btl.acquisition.transactionsAvailable === true && btl.intelligence.profileBuilt === false);
+  check("building: cash flow available (tx exist)", btl.intelligence.cashFlow === true);
+  check("building: lastBuiltAt is null (not fabricated)", btl.intelligence.lastBuiltAt === null);
+
+  // No connectedAt → null, never fabricated.
+  const noDates = derive({ provider: "PLAID", state: "importing" });
+  const ntl = deriveConnectionTimeline(noDates);
+  check("no connectedAt → authorization.connectedAt null", ntl.authorization.connectedAt === null);
+  check("importing: transactions NOT available", ntl.acquisition.transactionsAvailable === false);
+  check("importing: freshness null (never fabricated)", ntl.freshness.lastUpdatedAt === null);
 }
 
 if (failures > 0) { console.error(`\nintelligence: ${failures} failure(s).`); process.exit(1); }

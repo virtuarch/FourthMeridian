@@ -48,6 +48,7 @@ import {
   formatAvailableHistory,
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
+import { ConnectionTimeline } from "@/components/connections/ConnectionTimeline";
 
 /** Account inventory item — NAMES ONLY on Connections (no balances). */
 export interface AccountLite {
@@ -352,13 +353,14 @@ function ImportingContent({
   );
 }
 
-// ── Reconstructing (transactions done, intelligence still building) ───────────
+// ── Building your financial profile (transactions done, intelligence building) ─
 // CONN-2C/2G — the connection reads "ready" (syncIncompleteAt cleared) but the
-// derived intelligence pipeline (wealth timeline / snapshots) is still running,
-// before PLAID_HISTORY_SYNCED is written. Transactions/accounts are DONE facts;
-// timeline/charts/insights are the reconstruction in flight. No percentages —
-// stages map to readiness, not backend jobs.
-function ReconstructingContent({
+// derived intelligence (wealth timeline / cash flow / insights) is still being
+// BUILT, before PLAID_HISTORY_SYNCED is written. The customer never knew a prior
+// state existed, so this is "building your financial profile", never "rebuilding".
+// Transactions/accounts are DONE facts; timeline/insights are in flight. No
+// percentages — stages map to readiness, not backend jobs.
+function BuildingProfileContent({
   connection,
   accounts,
   intelligence,
@@ -369,17 +371,16 @@ function ReconstructingContent({
 }) {
   const stages: Stage[] = [
     { label: "Transactions available", value: String(accounts.length) + (accounts.length === 1 ? " account" : " accounts"), status: "done" },
-    { label: "Accounts mapped", status: "done" },
-    { label: "Rebuilding timeline", status: "active" },
-    { label: "Updating charts", status: "pending" },
-    { label: "Refreshing insights", status: "pending" },
+    { label: "Accounts connected", status: "done" },
+    { label: "Building your timeline", status: "active" },
+    { label: "Generating insights", status: "pending" },
   ];
   const available = formatAvailableHistory(intelligence.availableHistory);
   return (
     <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
-      <EyebrowHeading eyebrow="Building your financial intelligence" institution={connection.institution} />
+      <EyebrowHeading eyebrow="Building your financial profile" institution={connection.institution} />
       <p className="mt-1.5 mb-5 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
-        Your transactions are in. Fourth Meridian is building your financial timeline and insights from them.
+        Your transactions are already available. Fourth Meridian is building your financial timeline and insights from them.
       </p>
 
       <StageStepper stages={stages} />
@@ -441,6 +442,9 @@ function ReadyContent({
       <InvestmentsCapability connection={connection} />
 
       <AccountNames accounts={accounts} />
+
+      {/* CONN-2D — provider-neutral lifecycle timeline (collapsible). */}
+      {intelligence && <ConnectionTimeline intelligence={intelligence} />}
     </div>
   );
 }
@@ -541,11 +545,11 @@ export function ConnectionCard({ connection, accounts, intelligence, slow, allow
       break;
     case "ready":
       // CONN-2G — "ready" transactions ≠ "Fourth Meridian ready". While derived
-      // intelligence is still rebuilding (RECONSTRUCTING), show the reconstruction
-      // lifecycle, not the Connected/ready card. Only READY intelligence (or no
-      // intelligence data at all — pre-CONN-2 fallback) shows ReadyContent.
-      content = intelligence && intelligence.phase === "RECONSTRUCTING"
-        ? <ReconstructingContent connection={connection} accounts={accounts} intelligence={intelligence} />
+      // intelligence is still building (BUILDING_INTELLIGENCE), show the
+      // building-profile lifecycle, not the Connected/ready card. Only READY
+      // intelligence (or no intelligence data — pre-CONN-2 fallback) shows ReadyContent.
+      content = intelligence && intelligence.phase === "BUILDING_INTELLIGENCE"
+        ? <BuildingProfileContent connection={connection} accounts={accounts} intelligence={intelligence} />
         : <ReadyContent connection={connection} accounts={accounts} intelligence={intelligence} />;
       break;
     case "needs_reauth":

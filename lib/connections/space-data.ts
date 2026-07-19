@@ -50,7 +50,7 @@
  */
 
 import { db } from "@/lib/db";
-import { PlaidItemStatus } from "@prisma/client";
+import { PlaidItemStatus, ConnectionStatus } from "@prisma/client";
 import {
   buildSyncStatus,
   finalizeSyncStatus,
@@ -106,6 +106,7 @@ const PLAID_ITEM_SELECT = {
   lastSyncedAt:       true,
   errorCode:          true,
   investmentsConsent: true, // → client-safe `investments` capability only
+  createdAt:          true, // CONN-2D — authorization/connected time (timeline)
 } as const;
 
 /**
@@ -199,6 +200,7 @@ async function loadConnectionIntelligence(
   userId: string,
   connections: SyncConnection[],
   accountsByConnectionId: Record<string, AccountLite[]>,
+  connectedAtByConnId: Map<string, Date>,
 ): Promise<Record<string, ConnectionIntelligenceStatus>> {
   const now = new Date();
 
@@ -254,7 +256,14 @@ async function loadConnectionIntelligence(
         : null);
 
     out[c.id] = deriveConnectionIntelligence(
-      { provider: c.provider, state: c.state, historySyncedAt, earliestTxDate: earliest },
+      {
+        provider: c.provider,
+        state:    c.state,
+        historySyncedAt,
+        earliestTxDate: earliest,
+        connectedAt:    connectedAtByConnId.get(c.id) ?? null,
+        lastSyncedAt:   c.lastSyncedAt ? new Date(c.lastSyncedAt) : null,
+      },
       now,
     );
   }
@@ -294,10 +303,21 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
   const plaidAccounts = await loadPlaidConnectionAccounts(userId, items.map((i) => i.id));
   const accountsByConnectionId = { ...plaidAccounts, ...wallet.accountsByConnectionId };
 
+  // Connected/authorization time per connection (CONN-2D timeline): Plaid item
+  // createdAt (already selected) + wallet Connection.createdAt (a tiny id→date read).
+  const walletCreatedRows = await db.connection.findMany({
+    where:  { userId, status: { not: ConnectionStatus.REVOKED } },
+    select: { id: true, createdAt: true },
+  });
+  const connectedAtByConnId = new Map<string, Date>();
+  for (const i of items) connectedAtByConnId.set(i.id, i.createdAt);
+  for (const w of walletCreatedRows) connectedAtByConnId.set(w.id, w.createdAt);
+
   const intelligenceByConnectionId = await loadConnectionIntelligence(
     userId,
     status.connections,
     accountsByConnectionId,
+    connectedAtByConnId,
   );
 
   return { status, accountsByConnectionId, intelligenceByConnectionId };

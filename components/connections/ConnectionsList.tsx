@@ -27,7 +27,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ConnectionCard, type AccountLite } from "@/components/connections/ConnectionCard";
-import { RebuildIntelligencePanel } from "@/components/connections/RebuildIntelligencePanel";
+import { BuildIntelligencePanel } from "@/components/connections/BuildIntelligencePanel";
 import type { SyncStatus } from "@/lib/sync/status";
 import {
   isBuildingIntelligence,
@@ -66,7 +66,7 @@ interface Props {
    *  unified the two grouping schemes onto one stable-id map. Default empty. */
   accountsByConnectionId?: Record<string, AccountLite[]>;
   /** CONN-2A — per-connection intelligence status, keyed by SyncConnection.id.
-   *  Drives the RECONSTRUCTING lifecycle + keep-polling-through-reconstruction. */
+   *  Drives the BUILDING_INTELLIGENCE lifecycle + keep-polling-through-build. */
   initialIntelligence?: Record<string, ConnectionIntelligenceStatus>;
 }
 
@@ -81,10 +81,10 @@ export function ConnectionsList({
     useState<Record<string, ConnectionIntelligenceStatus>>(initialIntelligence);
   const [slow, setSlow] = useState(false);
 
-  // CONN-2 — poll while ACQUIRING (status.building) OR RECONSTRUCTING intelligence.
-  // Reconstruction runs AFTER syncIncompleteAt clears, so status.building alone
+  // CONN-2 — poll while ACQUIRING (status.building) OR BUILDING intelligence.
+  // Intelligence-building runs AFTER syncIncompleteAt clears, so status.building alone
   // would stop the poller before intelligence finishes; the card would freeze at
-  // "ready" mid-rebuild. This superset keeps it live until intelligence is READY.
+  // "ready" mid-build. This superset keeps it live until intelligence is READY.
   const buildingIntelligence = isBuildingIntelligence(Object.values(intelligence));
   const shouldPoll = status.building || buildingIntelligence;
 
@@ -202,7 +202,7 @@ export function ConnectionsList({
 
   useEffect(() => {
     // CONN-2 — (re)arm live tracking whenever the connection set is ACQUIRING or
-    // RECONSTRUCTING (shouldPoll), keyed on that flag rather than only at mount.
+    // BUILDING intelligence (shouldPoll), keyed on that flag rather than only at mount.
     // Adding a SECOND connection while this page is already open re-renders
     // ConnectionsList IN PLACE (router.push to the current route → no remount, no
     // key), so the re-seed effect flips shouldPoll false→true without ever
@@ -261,7 +261,7 @@ export function ConnectionsList({
   // reconstructing intelligence (state ready, but derived intelligence still
   // building). Both belong in the in-progress queue and are Liquid-prioritized.
   const inProgressPhase = (id: string) =>
-    intelligence[id]?.phase === "IMPORTING" || intelligence[id]?.phase === "RECONSTRUCTING";
+    intelligence[id]?.phase === "IMPORTING" || intelligence[id]?.phase === "BUILDING_INTELLIGENCE";
   const isInProgress = (c: SyncStatus["connections"][number]) =>
     c.state === "importing" || inProgressPhase(c.id);
 
@@ -327,7 +327,7 @@ export function ConnectionsList({
 
       {/* CONN-2B — master multi-account intelligence rebuild. Renders itself only
           when ≥2 connections have transactions to rebuild from. */}
-      <RebuildIntelligencePanel
+      <BuildIntelligencePanel
         connections={status.connections}
         intelligence={intelligence}
         accountsByConnectionId={accountsByConnectionId}
