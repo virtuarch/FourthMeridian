@@ -131,6 +131,17 @@ export interface GlassPanelOwnProps {
   /** Adds hover lift + brighten; pairs with role="button"/tabIndex on the host. */
   interactive?: boolean;
   className?: string;
+  /**
+   * Classes for the INNER content wrapper.
+   *
+   * Children do not render as direct descendants of the panel element — they sit
+   * inside a `relative z-10` block that stacks them above the bloom/glow/specular
+   * layers. So layout classes on `className` (grid, flex, gap, …) style the panel
+   * box but never reach the children, which reads as "my grid silently did
+   * nothing". Panel.tsx documents hitting the same wrapper for its height chain.
+   * Put content layout here instead of adding a wrapper element at every call site.
+   */
+  contentClassName?: string;
   style?: CSSProperties;
   children?: ReactNode;
 }
@@ -152,6 +163,7 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
       edgeStrength,
       interactive = false,
       className = "",
+      contentClassName = "",
       style,
       children,
       ...rest
@@ -220,8 +232,11 @@ export const GlassPanel = forwardRef<HTMLElement, GlassPanelProps>(
           }}
         />
 
-        {/* Content always sits above glow + specular layers */}
-        <div className="relative z-10">{children as ReactNode}</div>
+        {/* Content always sits above glow + specular layers. `contentClassName`
+            is where content LAYOUT belongs — see the prop doc above. */}
+        <div className={["relative z-10", contentClassName].filter(Boolean).join(" ")}>
+          {children as ReactNode}
+        </div>
       </Component>
     );
   }
