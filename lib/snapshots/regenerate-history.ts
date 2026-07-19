@@ -543,6 +543,49 @@ export function recentWealthWindow(now: Date = new Date()): { fromDate: string; 
 }
 
 /**
+ * CONN-2 — the MAXIMUM-available wealth window: from an account set's earliest
+ * real transaction to yesterday. This is the "intelligence generation window"
+ * (what Fourth Meridian chooses to BUILD) — deliberately NOT the arbitrary 30-day
+ * default. Fourth Meridian must not discard available history: a new connection
+ * with 2 years of transactions builds 2 years of intelligence.
+ *
+ * PURE (testable without a DB). It never fabricates history beyond real data:
+ *   - no earliest transaction  → the 30-day recent window (nothing deeper exists)
+ *   - earliest is on/after yesterday → recent window (no history before yesterday)
+ *   - otherwise → [earliest, yesterday]
+ * regenerateWealthHistory ADDITIONALLY clamps each account to its own earliest-tx
+ * floor, so passing a wide window can never invent days an account didn't have.
+ */
+export function wealthWindowFromEarliest(
+  earliest: Date | null,
+  now: Date = new Date(),
+): { fromDate: string; toDate: string } {
+  const recent = recentWealthWindow(now);
+  if (!earliest) return recent;
+  const fromDate = earliest.toISOString().slice(0, 10);
+  if (fromDate >= recent.toDate) return recent; // nothing before yesterday to build
+  return { fromDate, toDate: recent.toDate };
+}
+
+/**
+ * Resolve the max-available wealth window for an account set (reads only the
+ * earliest non-deleted transaction date). THE shared window for both the initial
+ * connect (backgroundHistorySync A9) and the manual recovery path, so they build
+ * identical intelligence from the same L2 authority.
+ */
+export async function maxAvailableWealthWindow(
+  financialAccountIds: string[],
+  now: Date = new Date(),
+): Promise<{ fromDate: string; toDate: string }> {
+  if (financialAccountIds.length === 0) return recentWealthWindow(now);
+  const floor = await db.transaction.aggregate({
+    where: { financialAccountId: { in: financialAccountIds }, deletedAt: null },
+    _min:  { date: true },
+  });
+  return wealthWindowFromEarliest(floor._min.date ?? null, now);
+}
+
+/**
  * Trigger-ready fan-out: regenerate every Space that ACTIVE-links any of the
  * given accounts, over the window. Mirrors regenerateSnapshotsForAccounts;
  * exported for a future integration commit to call after price backfill /

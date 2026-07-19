@@ -1,8 +1,8 @@
 /**
- * POST /api/connections/rebuild-intelligence  (CONN-2B)
+ * POST /api/connections/build-intelligence  (CONN-2B)
  *
- * Multi-account financial-INTELLIGENCE rebuild. This is a LAYER-2 operation: it
- * rebuilds derived intelligence (the wealth-history timeline) from transactions
+ * Multi-account financial-INTELLIGENCE build. This is a LAYER-2 operation: it
+ * builds derived intelligence (the wealth-history timeline) from transactions
  * that ALREADY exist. It does NOT re-acquire data from a provider, does NOT call
  * accountsGet, does NOT write FinancialAccount.balance, and does NOT touch today's
  * live snapshot (an L3 freshness concern, owned by CONN-3).
@@ -20,7 +20,7 @@ import { limitByUser } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
 import {
   regenerateWealthHistoryForAccounts,
-  recentWealthWindow,
+  maxAvailableWealthWindow,
   wealthRegenerationEnabled,
 } from "@/lib/snapshots/regenerate-history";
 
@@ -79,16 +79,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ rebuilt: false, enabled: false });
   }
 
-  // Window: from the earliest transaction across the selected accounts (rebuild
-  // the FULL available intelligence) to yesterday. Today's live row is frozen —
-  // owned by regenerateSpaceSnapshot (L3), which this L2 rebuild never touches.
-  const floor = await db.transaction.aggregate({
-    where: { financialAccountId: { in: faIds }, deletedAt: null },
-    _min:  { date: true },
-  });
-  const recent = recentWealthWindow();
-  const fromDate = floor._min.date ? floor._min.date.toISOString().slice(0, 10) : recent.fromDate;
-  const toDate = recent.toDate; // yesterday
+  // Window: the MAX-available intelligence window (earliest transaction →
+  // yesterday) — the SAME helper the initial connect (backgroundHistorySync A9)
+  // uses, so recovery and initial build produce identical intelligence. Today's
+  // live row is frozen (owned by regenerateSpaceSnapshot, L3 — never touched here).
+  const { fromDate, toDate } = await maxAvailableWealthWindow(faIds);
 
   // The ONE reconstruction authority — reused, not duplicated.
   const spacesTouched = await regenerateWealthHistoryForAccounts(faIds, { fromDate, toDate });

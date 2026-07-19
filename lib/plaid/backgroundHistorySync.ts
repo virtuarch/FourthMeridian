@@ -38,6 +38,7 @@ import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { backfillSpaceSnapshots } from "@/lib/snapshots/backfill";
 import {
   regenerateWealthHistoryForAccounts,
+  maxAvailableWealthWindow,
   wealthRegenerationEnabled,
 } from "@/lib/snapshots/regenerate-history";
 import {
@@ -55,17 +56,6 @@ import { backfillPricesForInstruments } from "@/lib/prices/backfill";
  * not backfill historical windows.
  */
 const PRICE_BACKFILL_BUDGET_MS = 25_000;
-
-/** yesterday-anchored ISO day helpers — same convention as the snapshot
- *  backfill window and scripts/regenerate-wealth-history.ts. */
-function isoDayUTC(d: Date): string {
-  const x = new Date(d);
-  x.setUTCHours(0, 0, 0, 0);
-  return x.toISOString().slice(0, 10);
-}
-function minusDaysISO(iso: string, n: number): string {
-  return new Date(Date.parse(`${iso}T00:00:00Z`) - n * 86_400_000).toISOString().slice(0, 10);
-}
 
 /**
  * D2.x Slice 4 — after first-run history has synced, reconstruct up to 30 days
@@ -194,12 +184,18 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
     // yet, this keeps self-healing on its own without a manual re-run.
     if (wealthRegenerationEnabled()) {
       try {
-        const toDate   = minusDaysISO(isoDayUTC(new Date()), 1); // yesterday — today's live row is frozen
-        const fromDate = minusDaysISO(toDate, 30);               // matches the 30-day snapshot backfill window
-        const spaces = await regenerateWealthHistoryForAccounts(faIds, { fromDate, toDate });
+        // CONN-2 — build the MAXIMUM available intelligence at connect, not an
+        // arbitrary 30-day window. The window spans each account's earliest real
+        // transaction → yesterday (today's live row is frozen). This is the SAME
+        // window + authority the manual recovery path uses, so a new user's charts
+        // are complete immediately instead of shallow-until-manually-restored.
+        // regenerateWealthHistory clamps per-account to its own earliest-tx floor,
+        // so no history is fabricated beyond what was imported.
+        const window = await maxAvailableWealthWindow(faIds);
+        const spaces = await regenerateWealthHistoryForAccounts(faIds, window);
         console.log(
-          `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over [${fromDate} … ${toDate}] ` +
-            `(item ${plaidItemId}, ${faIds.length} account(s))`,
+          `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over ` +
+            `[${window.fromDate} … ${window.toDate}] (item ${plaidItemId}, ${faIds.length} account(s), MAX available)`,
         );
       } catch (e) {
         console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, e);
