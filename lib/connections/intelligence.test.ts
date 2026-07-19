@@ -38,6 +38,7 @@ function derive(p: Partial<IntelligenceInput>) {
       earliestTxDate:  p.earliestTxDate ?? null,
       connectedAt:     p.connectedAt ?? null,
       lastSyncedAt:    p.lastSyncedAt ?? null,
+      balanceVerifiedAt: p.balanceVerifiedAt ?? null,
     },
     NOW,
   );
@@ -137,6 +138,12 @@ console.log("CONN-2D timeline — provider-neutral projection, no fabricated tim
   check("intelligence: cash flow available (derived from tx)", tl.intelligence.cashFlow === true);
   check("intelligence: lastBuiltAt = anchor", tl.intelligence.lastBuiltAt === ANCHOR.toISOString());
   check("freshness: lastUpdatedAt = lastSyncedAt", tl.freshness.lastUpdatedAt === synced.toISOString());
+
+  // CONN-3 balance freshness is separate from data (lastSynced) + intelligence.
+  const verified = new Date("2026-07-19T09:00:00.000Z");
+  const withBal = derive({ provider: "PLAID", state: "ready", historySyncedAt: ANCHOR, lastSyncedAt: synced, balanceVerifiedAt: verified });
+  check("balanceVerifiedAt surfaced separately from lastSyncedAt", withBal.balanceVerifiedAt === verified.toISOString() && withBal.lastSyncedAt === synced.toISOString());
+  check("no balance verification → null (never fabricated)", derive({ state: "ready", historySyncedAt: ANCHOR }).balanceVerifiedAt === null);
 
   // Building phase: acquisition done, but profile NOT built, no fabricated build time.
   const building = derive({ provider: "PLAID", state: "ready", historySyncedAt: null, connectedAt: connected });

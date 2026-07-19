@@ -239,13 +239,29 @@ async function loadConnectionIntelligence(
     if (f.financialAccountId && f._min.date) earliestByAccount.set(f.financialAccountId, f._min.date);
   }
 
+  // 3. CONN-3 balance freshness — FinancialAccount.lastUpdated (the accountsGet
+  //    balance-verified stamp). TIMESTAMP ONLY: `balance` is never selected here,
+  //    so the PCS-2 no-portfolio-read boundary holds (freshness metadata, no money).
+  const balanceRows = allAccountIds.length
+    ? await db.financialAccount.findMany({
+        where:  { id: { in: allAccountIds } },
+        select: { id: true, lastUpdated: true },
+      })
+    : [];
+  const balanceVerifiedByAccount = new Map<string, Date>();
+  for (const b of balanceRows) balanceVerifiedByAccount.set(b.id, b.lastUpdated);
+
   const out: Record<string, ConnectionIntelligenceStatus> = {};
   for (const c of connections) {
-    // Connection availability = the earliest transaction across its accounts.
+    // Connection availability = the earliest transaction across its accounts;
+    // balance freshness = the MOST RECENT balance verification across them.
     let earliest: Date | null = null;
+    let balanceVerified: Date | null = null;
     for (const a of accountsByConnectionId[c.id] ?? []) {
       const e = earliestByAccount.get(a.id);
       if (e && (!earliest || e < earliest)) earliest = e;
+      const b = balanceVerifiedByAccount.get(a.id);
+      if (b && (!balanceVerified || b > balanceVerified)) balanceVerified = b;
     }
     const historySyncedAt =
       (anchorByConn.get(c.id) ?? null) ??
@@ -263,6 +279,7 @@ async function loadConnectionIntelligence(
         earliestTxDate: earliest,
         connectedAt:    connectedAtByConnId.get(c.id) ?? null,
         lastSyncedAt:   c.lastSyncedAt ? new Date(c.lastSyncedAt) : null,
+        balanceVerifiedAt: balanceVerified,
       },
       now,
     );

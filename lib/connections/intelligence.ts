@@ -68,9 +68,12 @@ export interface ConnectionIntelligenceStatus {
   lastReconstructedAt:     string | null; // ISO — PLAID_HISTORY_SYNCED.createdAt (wallet: lastSyncedAt proxy)
   /** When the source was first connected/authorized (Connection.createdAt). null if unknown. */
   connectedAt:             string | null; // ISO
-  /** Last successful acquisition/sync (Connection.lastSyncedAt) — the FRESHNESS
-   *  timestamp (CONN-2D "last updated"). NOT rebuilt-intelligence time. */
+  /** DATA freshness — last successful transaction acquisition (PlaidItem.lastSyncedAt). */
   lastSyncedAt:            string | null; // ISO
+  /** BALANCE freshness (CONN-3) — when current balances were last confirmed via
+   *  accountsGet (MAX FinancialAccount.lastUpdated across the connection's
+   *  accounts). A timestamp only — never a balance value (PCS-2-safe). null if unknown. */
+  balanceVerifiedAt:       string | null; // ISO
 }
 
 /** Structural input for the pure derivation — gathered by the loader. */
@@ -85,8 +88,11 @@ export interface IntelligenceInput {
   earliestTxDate:  Date | null;
   /** Connection.createdAt — the authorization/connected time, or null. */
   connectedAt:     Date | null;
-  /** Connection.lastSyncedAt — last successful acquisition (freshness), or null. */
+  /** Connection.lastSyncedAt — last successful acquisition (data freshness), or null. */
   lastSyncedAt:    Date | null;
+  /** MAX FinancialAccount.lastUpdated across the connection's accounts — balance
+   *  freshness (CONN-3). Timestamp only. null if unknown. */
+  balanceVerifiedAt: Date | null;
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -161,6 +167,7 @@ export function deriveConnectionIntelligence(
     lastReconstructedAt: input.historySyncedAt ? input.historySyncedAt.toISOString() : null,
     connectedAt:  input.connectedAt  ? input.connectedAt.toISOString()  : null,
     lastSyncedAt: input.lastSyncedAt ? input.lastSyncedAt.toISOString() : null,
+    balanceVerifiedAt: input.balanceVerifiedAt ? input.balanceVerifiedAt.toISOString() : null,
   };
 }
 
@@ -208,7 +215,9 @@ export function deriveConnectionTimeline(s: ConnectionIntelligenceStatus): Conne
       cashFlow:       transactionsAvailable,
       lastBuiltAt:    s.lastReconstructedAt,
     },
-    freshness: { lastUpdatedAt: s.lastSyncedAt },
+    // Current freshness prefers the balance-verified time (CONN-3, the truest
+    // "is today's state current?"), falling back to the last data sync.
+    freshness: { lastUpdatedAt: s.balanceVerifiedAt ?? s.lastSyncedAt },
   };
 }
 

@@ -394,6 +394,39 @@ function BuildingProfileContent({
   );
 }
 
+/**
+ * CONN-3 — three UNAMBIGUOUS freshness lines. The card must never just say
+ * "Synced" (which conflates data, intelligence, and balance). Each line is a
+ * distinct L1/L2/L3 freshness signal, shown only when a real timestamp exists.
+ */
+function fmtFreshnessRelative(iso: string): string {
+  const day = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const days = Math.floor((day(new Date()) - day(new Date(iso))) / 86_400_000);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  return `on ${new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+}
+
+function FreshnessRows({ intelligence }: { intelligence: ConnectionIntelligenceStatus }) {
+  const rows: Array<{ label: string; verb: string; iso: string | null }> = [
+    { label: "Transactions",      verb: "Updated",  iso: intelligence.lastSyncedAt },
+    { label: "Financial profile", verb: "Built",    iso: intelligence.lastReconstructedAt },
+    { label: "Balance",           verb: "Verified", iso: intelligence.balanceVerifiedAt },
+  ];
+  const shown = rows.filter((r) => r.iso);
+  if (shown.length === 0) return null;
+  return (
+    <div className="mt-0.5 mb-4">
+      {shown.map((r) => (
+        <p key={r.label} className="text-sm text-[var(--text-muted)]">
+          <span className="text-[var(--text-secondary)]">{r.label}:</span> {r.verb} {fmtFreshnessRelative(r.iso as string)}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 function ReadyContent({
   connection,
   accounts,
@@ -417,10 +450,16 @@ function ReadyContent({
         institution={connection.institution}
       />
       <p className="mt-1.5 text-sm text-[var(--text-secondary)]">{providerLine(connection)}</p>
-      {lastSyncedAt && (
-        <p className="mt-0.5 mb-4 text-sm text-[var(--text-muted)]">
-          Last synced: {fmtSyncedAt(lastSyncedAt)}
-        </p>
+      {/* CONN-3 — three unambiguous freshness lines when intelligence data is
+          present; otherwise the pre-CONN-3 single "Last synced" fallback. */}
+      {intelligence ? (
+        <FreshnessRows intelligence={intelligence} />
+      ) : (
+        lastSyncedAt && (
+          <p className="mt-0.5 mb-4 text-sm text-[var(--text-muted)]">
+            Last synced: {fmtSyncedAt(lastSyncedAt)}
+          </p>
+        )
       )}
 
       <p className="text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)] mt-1 mb-2">

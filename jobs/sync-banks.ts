@@ -47,6 +47,8 @@ import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
 import { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled, recentWealthWindow } from "@/lib/snapshots/regenerate-history";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { refreshBalancesForItem } from "@/lib/plaid/refresh";
 
 export interface SyncBanksResult {
   succeeded: number;
@@ -92,6 +94,22 @@ export async function syncBanks(): Promise<SyncBanksResult> {
           console.log(
             `[sync-banks] ${item.institutionName}: +${result.added} ~${result.modified} -${result.removed}`
           );
+        }
+
+        // CONN-3 — L3 FRESHNESS. The daily sync imports transactions but never
+        // refreshed FinancialAccount.balance or today's SpaceSnapshot, so balances
+        // could lag a full day. Refresh current balances then regenerate today's
+        // snapshot from those FRESH balances — the ONE balance authority + the
+        // existing snapshot authority (no new engine). Best-effort/non-fatal. This
+        // resolves the deferred-snapshot-cron stale-balance blocker (registry S3):
+        // the snapshot is now written only immediately after a balance refresh.
+        try {
+          const bal = await refreshBalancesForItem(item.id);
+          if (bal.updatedAccountIds.length > 0) {
+            await regenerateSnapshotsForAccounts(bal.updatedAccountIds);
+          }
+        } catch (e) {
+          console.warn(`[sync-banks] balance/snapshot freshness failed for "${item.institutionName}" (PlaidItem ${item.id}) (non-fatal):`, e);
         }
 
         // 2026-07-14 — ongoing self-heal for the "connect-time regen ran before

@@ -36,6 +36,8 @@ import { classifyPlaidErrorForHealth, plaidErrorSummary } from "@/lib/plaid/erro
 import { notifyItemSyncFailed, notifyItemSyncComplete } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { backfillSpaceSnapshots } from "@/lib/snapshots/backfill";
+import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { refreshBalancesForItem } from "@/lib/plaid/refresh";
 import {
   regenerateWealthHistoryForAccounts,
   maxAvailableWealthWindow,
@@ -276,6 +278,24 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<boole
         `added ${r.added}, modified ${r.modified}, removed ${r.removed} ` +
         `(created ${r.created}, updatedByPlaidId ${r.updatedByPlaidId}, updatedByFingerprint ${r.updatedByFingerprint}, skippedMissingAccount ${r.skippedMissingAccount})`,
     );
+
+    // CONN-3 — L3 FRESHNESS. syncTransactionsForItem imports transactions but
+    // never refreshes FinancialAccount.balance or today's SpaceSnapshot, so a
+    // posted payment stayed invisible until a manual Refresh. Refresh current
+    // balances then regenerate today's snapshot from those FRESH balances —
+    // reusing the ONE balance authority + the existing snapshot authority (no new
+    // engine). Best-effort/non-fatal: a balance-refresh failure never fails the
+    // sync. (At connect this re-confirms balances exchange-token already wrote;
+    // on webhook it is the fix.)
+    try {
+      const bal = await refreshBalancesForItem(plaidItemId);
+      if (bal.updatedAccountIds.length > 0) {
+        await regenerateSnapshotsForAccounts(bal.updatedAccountIds);
+      }
+      console.log(`[plaid][CONN-3] refreshed balances + today's snapshot for item ${plaidItemId} (${bal.accountsUpdated} account(s))`);
+    } catch (e) {
+      console.error(`[plaid][CONN-3] balance/snapshot freshness failed for item ${plaidItemId} (non-fatal):`, e);
+    }
 
     // D2.x Slice 4 — reconstruct historical snapshots now that full history
     // exists. Best-effort/non-fatal and gated to new Spaces inside.

@@ -120,6 +120,94 @@ export interface RefreshItemResult {
   retryAfterSeconds?:     number;
 }
 
+interface ReconcileTarget { id: string; type: string; kind: "cash" | "card"; balanceBefore: number; balanceAfter: number }
+type AccountsGetData = Awaited<ReturnType<typeof plaidClient.accountsGet>>["data"];
+
+export interface ItemBalanceRefresh {
+  item:              NonNullable<Awaited<ReturnType<typeof db.plaidItem.findUnique>>>;
+  accessToken:       string;
+  plaidAccounts:     AccountsGetData["accounts"];
+  itemData:          AccountsGetData["item"];
+  accountsUpdated:   number;
+  updatedAccountIds: string[];
+  reconcileTargets:  ReconcileTarget[];
+}
+
+/**
+ * CONN-3 — THE single balance-refresh authority (extracted from refreshPlaidItem;
+ * behavior-preserving). accountsGet → write FinancialAccount.balance +
+ * availableBalance + creditLimit + balanceLastUpdatedAt + lastUpdated (the
+ * balance-VERIFIED stamp) + syncStatus. Never creates/restores/relinks an account
+ * (soft-deleted / unmatched accounts are skipped). Reused by refreshPlaidItem
+ * (manual Refresh) AND the background freshness paths (webhook, cron) so current
+ * balances become fresh on routine syncs — one authority, no duplicated accountsGet.
+ *
+ * @param plaidItemDbId  Our internal PlaidItem.id (primary key), not Plaid's item_id.
+ */
+export async function refreshBalancesForItem(plaidItemDbId: string): Promise<ItemBalanceRefresh> {
+  const item = await db.plaidItem.findUnique({ where: { id: plaidItemDbId } });
+  if (!item) {
+    throw new Error(`refreshBalancesForItem: PlaidItem ${plaidItemDbId} not found`);
+  }
+  const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
+
+  let accountsUpdated = 0;
+  const updatedAccountIds: string[] = [];
+  // M2 — per-account balance before/after for cash/card reconciliation (used by
+  // refreshPlaidItem only; carried through so the manual path is unchanged).
+  const reconcileTargets: ReconcileTarget[] = [];
+  const accountsRes = await withPlaidRetry(
+    () => plaidClient.accountsGet({ access_token: accessToken }),
+    "accountsGet",
+  );
+  const plaidAccounts = accountsRes.data.accounts;
+
+  for (const acct of plaidAccounts) {
+    // PROV-2 — canonical identity→legacy resolve. Refresh SKIPS soft-deleted
+    // matches: never restore or create during a refresh (relink owns that).
+    const fa = await resolvePlaidAccountByExternalId(acct.account_id);
+    if (!fa || fa.deletedAt) continue;
+
+    const availableBalance = acct.balances.available ?? undefined;
+    const creditLimit       = acct.balances.limit ?? undefined;
+    // D4 Balance Freshness Provenance — Plaid's institution-side balance time
+    // (AccountBalance.last_updated_datetime). Distinct from lastUpdated below,
+    // which is Fourth Meridian's write time. Always overwritten (incl. null) so
+    // the stored value reflects exactly what Plaid returned on this call.
+    const balanceLastUpdatedAt = acct.balances.last_updated_datetime
+      ? new Date(acct.balances.last_updated_datetime)
+      : null;
+
+    await db.financialAccount.update({
+      where: { id: fa.id },
+      data: {
+        // Fall back to the existing balance rather than 0 on a transient null.
+        balance: acct.balances.current ?? fa.balance,
+        availableBalance,
+        ...(creditLimit !== undefined && { creditLimit }),
+        balanceLastUpdatedAt,
+        lastUpdated: new Date(), // ← balance-verified stamp
+        syncStatus:  "synced",
+      },
+    });
+    accountsUpdated++;
+    updatedAccountIds.push(fa.id);
+
+    const rk = reconcileKind(fa);
+    if (rk) {
+      reconcileTargets.push({
+        id:            fa.id,
+        type:          fa.type,
+        kind:          rk,
+        balanceBefore: fa.balance,                          // stored (pre-update) balance
+        balanceAfter:  acct.balances.current ?? fa.balance, // fresh balance just written
+      });
+    }
+  }
+
+  return { item, accessToken, plaidAccounts, itemData: accountsRes.data.item, accountsUpdated, updatedAccountIds, reconcileTargets };
+}
+
 /**
  * Refreshes a single PlaidItem: balances, then holdings, then transactions.
  * Safe to call repeatedly — every step is idempotent (update-only balance
@@ -132,72 +220,9 @@ export async function refreshPlaidItem(
   plaidItemDbId: string,
   opts?: { deferSnapshot?: boolean },
 ): Promise<RefreshItemResult> {
-  const item = await db.plaidItem.findUnique({ where: { id: plaidItemDbId } });
-  if (!item) {
-    throw new Error(`refreshPlaidItem: PlaidItem ${plaidItemDbId} not found`);
-  }
-
-  const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
-
-  // ── 1. Balances / account metadata ────────────────────────────────────────
-  let accountsUpdated = 0;
-  const updatedAccountIds: string[] = [];
-  // M2 — per-account balance before/after for cash/card reconciliation.
-  const reconcileTargets: Array<{ id: string; type: string; kind: "cash" | "card"; balanceBefore: number; balanceAfter: number }> = [];
-  const accountsRes   = await withPlaidRetry(
-    () => plaidClient.accountsGet({ access_token: accessToken }),
-    "accountsGet"
-  );
-  const plaidAccounts = accountsRes.data.accounts;
-
-  for (const acct of plaidAccounts) {
-    // PROV-2 — canonical identity→legacy resolve (returns soft-deleted rows too;
-    // the warn is gated to active-only inside the resolver). Refresh then SKIPS
-    // any soft-deleted match: never restore or create during a refresh — that
-    // only happens via relink (exchange-token).
-    const fa = await resolvePlaidAccountByExternalId(acct.account_id);
-    if (!fa || fa.deletedAt) continue;
-
-    const availableBalance = acct.balances.available ?? undefined;
-    const creditLimit       = acct.balances.limit ?? undefined;
-    // D4 Balance Freshness Provenance — when Plaid says the institution last
-    // refreshed this balance (AccountBalance.last_updated_datetime). Distinct
-    // from lastUpdated below, which records when Fourth Meridian synced with
-    // Plaid. Always overwritten on every refresh — including with null — so
-    // the stored value faithfully represents what Plaid returned on this call,
-    // not a cached historical value from a previous call.
-    const balanceLastUpdatedAt = acct.balances.last_updated_datetime
-      ? new Date(acct.balances.last_updated_datetime)
-      : null;
-
-    await db.financialAccount.update({
-      where: { id: fa.id },
-      data: {
-        // Fall back to the existing balance rather than 0 if Plaid returns a
-        // transient null — avoids zeroing out a real balance on a hiccup.
-        balance: acct.balances.current ?? fa.balance,
-        availableBalance,
-        ...(creditLimit !== undefined && { creditLimit }),
-        balanceLastUpdatedAt,
-        lastUpdated: new Date(),
-        syncStatus:  "synced",
-      },
-    });
-    accountsUpdated++;
-    updatedAccountIds.push(fa.id);
-
-    // M2 — capture before/after balance for reconcilable account types.
-    const rk = reconcileKind(fa);
-    if (rk) {
-      reconcileTargets.push({
-        id:            fa.id,
-        type:          fa.type,
-        kind:          rk,
-        balanceBefore: fa.balance,                         // stored (pre-update) balance
-        balanceAfter:  acct.balances.current ?? fa.balance, // fresh balance just written
-      });
-    }
-  }
+  // ── 1. Balances / account metadata — the ONE balance authority (CONN-3) ───
+  const { item, accessToken, plaidAccounts, itemData, accountsUpdated, updatedAccountIds, reconcileTargets } =
+    await refreshBalancesForItem(plaidItemDbId);
 
   // ── 2. Investment holdings ──────────────────────────────────────────────
   // Best-effort/non-fatal — an institution with no investment accounts, or a
@@ -215,7 +240,7 @@ export async function refreshPlaidItem(
     plaidItemId:     plaidItemDbId,
     institutionName: item.institutionName,
     investmentAccounts: investmentPlaidAccounts,
-    item:            accountsRes.data.item,
+    item:            itemData,
     storedConsent:   item.investmentsConsent,
   });
   const holdingsUpdated = investmentsResult.holdingsSynced;

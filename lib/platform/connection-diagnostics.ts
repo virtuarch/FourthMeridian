@@ -176,7 +176,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
     const tx = txForConn(faIds);
     const state = deriveConnectionState({ status: p.status, syncIncompleteAt: p.syncIncompleteAt }) ?? "error";
     const intel = deriveConnectionIntelligence(
-      { provider: "PLAID", state, historySyncedAt: anchorByConn.get(p.id) ?? null, earliestTxDate: tx.min, connectedAt: p.createdAt, lastSyncedAt: p.lastSyncedAt },
+      { provider: "PLAID", state, historySyncedAt: anchorByConn.get(p.id) ?? null, earliestTxDate: tx.min, connectedAt: p.createdAt, lastSyncedAt: p.lastSyncedAt , balanceVerifiedAt: null },
       now,
     );
     out.push({
@@ -205,7 +205,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
     const tx = txForConn(faIds);
     const state = deriveWalletConnectionState({ status: w.status, lastSyncedAt: w.lastSyncedAt, errorCode: w.errorCode }) ?? "error";
     const intel = deriveConnectionIntelligence(
-      { provider: "WALLET", state, historySyncedAt: anchorByConn.get(w.id) ?? (state === "ready" ? w.lastSyncedAt : null), earliestTxDate: tx.min, connectedAt: w.createdAt, lastSyncedAt: w.lastSyncedAt },
+      { provider: "WALLET", state, historySyncedAt: anchorByConn.get(w.id) ?? (state === "ready" ? w.lastSyncedAt : null), earliestTxDate: tx.min, connectedAt: w.createdAt, lastSyncedAt: w.lastSyncedAt , balanceVerifiedAt: null },
       now,
     );
     out.push({
