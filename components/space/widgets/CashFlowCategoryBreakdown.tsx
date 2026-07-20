@@ -23,7 +23,7 @@ import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import type { CashFlowContribution } from "@/lib/transactions/cash-flow";
 import type { Transaction } from "@/types";
-import { TransactionSliceDrawer, type TransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
+import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 import { CHART_PALETTE } from "@/lib/charts/chart-palette";
 
 // The one shared categorical palette. This was a hand-kept third copy of the
@@ -42,6 +42,10 @@ interface Props {
    *  When provided, cards + strip segments open a TransactionSliceDrawer. */
   sliceFor?:      (item: CashFlowContribution) => Transaction[];
   sliceSubtitle?: string;
+  /** Identifies the time window these items describe (periodKey). A change
+   *  closes any open slice panel — the question it answered is gone. */
+  invalidationKey: string;
+
   /** Phase 2 — how many cards show on narrow/mobile widths before "Show more".
    *  Wide (≥sm) always shows all; this only truncates the stacked mobile grid. */
   mobileTopN?:    number;
@@ -60,10 +64,12 @@ export function CashFlowCategoryBreakdown({
   emptySubline  = "Spending by category appears once you have outflows.",
   sliceFor,
   sliceSubtitle,
+  invalidationKey,
   mobileTopN = 4,
   cardGridClassName = "grid grid-cols-1 sm:grid-cols-2 gap-2",
 }: Props) {
-  const [slice, setSlice] = useState<TransactionSlice | null>(null);
+  // Closes on a TimelineLens move — the window the slice described is gone.
+  const [slice, setSlice] = useTransactionSlice(invalidationKey);
   // Phase 2 — narrow/mobile truncation. Collapsed by default; wide screens (≥sm)
   // ignore this entirely (CSS below always shows every card at ≥sm). Ordering,
   // totals and drill-down are untouched — this only hides overflow cards on

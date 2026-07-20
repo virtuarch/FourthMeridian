@@ -39,8 +39,7 @@ import {
   periodRange,
   isExplicitPeriod,
   incomeSourceLabel,
-  type CashFlowPeriod,
-} from "@/lib/transactions/cash-flow";
+  type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import { formatDate } from "@/lib/format";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
@@ -216,6 +215,7 @@ export function CashFlowWorkspace({
     }
     return (
       <CashFlowCategoryLedger
+        invalidationKey={periodKey(period)}
         items={data.outflowByCategory}
         ctx={txCtx}
         totalLabel="Total spending"
@@ -241,6 +241,7 @@ export function CashFlowWorkspace({
       if (data.rows.length === 0) return <EmptyCard headline="No money moved in this period" sub="Cash in by source appears once cash arrives." />;
       return (
         <CashFlowCategoryLedger
+        invalidationKey={periodKey(period)}
           items={data.cashInByReason.map((l) => ({ id: l.reason, label: l.label, value: l.amount }))}
           ctx={txCtx}
           totalLabel="Total cash in"
@@ -262,6 +263,7 @@ export function CashFlowWorkspace({
     if (data.rows.length === 0) return <EmptyCard headline="No money moved in this period" sub="Income by source appears once you have inflows." />;
     return (
       <CashFlowCategoryLedger
+        invalidationKey={periodKey(period)}
         items={data.incomeBySource}
         ctx={txCtx}
         totalLabel="Total income"

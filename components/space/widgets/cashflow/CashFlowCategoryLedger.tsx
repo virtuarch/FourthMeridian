@@ -30,7 +30,7 @@ import type { Transaction } from "@/types";
 import { formatCurrency } from "@/lib/format";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { LeftPanel, RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
-import { TransactionSliceDrawer, type TransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
+import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 import { CashFlowCategoryDetail } from "./CashFlowCategoryDetail";
 
 // Matches CashFlowCategoryBreakdown's palette so spend/income colours stay consistent
@@ -59,6 +59,7 @@ export function CashFlowCategoryLedger({
   shareLabel = "Share of spending",
   sliceFor,
   sliceSubtitle,
+  invalidationKey,
   emptyHeadline = "No spending in this period",
   emptySubline = "Spending by category appears once you have outflows.",
   topN = DEFAULT_TOP_N,
@@ -81,6 +82,10 @@ export function CashFlowCategoryLedger({
   sliceFor:       (item: CashFlowContribution) => Transaction[];
   /** Drawer subtitle for the composed TransactionSliceDrawer. */
   sliceSubtitle?: string;
+  /** Identifies the time window these items describe (periodKey). A change
+   *  closes any open slice panel — the question it answered is gone. */
+  invalidationKey: string;
+
   emptyHeadline?: string;
   emptySubline?:  string;
   topN?:          number;
@@ -88,7 +93,8 @@ export function CashFlowCategoryLedger({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [slice, setSlice] = useState<TransactionSlice | null>(null);
+  // Closes on a TimelineLens move — the window the slice described is gone.
+  const [slice, setSlice] = useTransactionSlice(invalidationKey);
 
   const fmt = (v: number) => (ctx ? formatCurrency(v, ctx.target) : formatCurrency(v, DEFAULT_DISPLAY_CURRENCY));
 

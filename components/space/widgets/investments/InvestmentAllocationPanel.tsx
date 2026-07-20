@@ -23,9 +23,14 @@ import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/
 import { formatCurrency } from "@/lib/format";
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
 import type { ConcentrationClassification } from "@/lib/investments/concentration";
-import { computeAllocation, type AllocationSlice } from "@/lib/investments/investments-allocation-core";
+import {
+  computeAllocation, holdingsInSlice,
+  type AllocationSlice, type AllocationDimension,
+} from "@/lib/investments/investments-allocation-core";
+import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
+import { AllocationSliceDetail } from "./AllocationSliceDetail";
 
-type Dimension = "assetClass" | "sector" | "account" | "currency";
+type Dimension = AllocationDimension;
 
 const DIMENSIONS: { id: Dimension; label: string; noun: string }[] = [
   { id: "assetClass", label: "Asset class", noun: "asset class" },
@@ -65,11 +70,24 @@ export function InvestmentAllocationPanel({
   showConcentrationInsight?: boolean;
 }) {
   const [dimension, setDimension] = useState<Dimension>("assetClass");
+  // UX-CLOSE-3 — one selection, local to this card. Same idiom as the ledgers.
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
-  const allocation = useMemo(() => {
-    const accountNames = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
-    return computeAllocation(holdings, accountNames);
-  }, [holdings, accounts]);
+  const accountNames = useMemo(
+    () => Object.fromEntries(accounts.map((a) => [a.id, a.name])),
+    [accounts],
+  );
+  const allocation = useMemo(
+    () => computeAllocation(holdings, accountNames),
+    [holdings, accountNames],
+  );
+
+  // A key means a different thing on each axis ("EQUITY" vs an accountId), so a
+  // carried-over selection would resolve to nothing. Clear it with the axis.
+  const changeDimension = (next: Dimension) => {
+    setSelectedKey(null);
+    setDimension(next);
+  };
 
   // Nothing valued to break down (e.g. holdings present but all unvalued).
   if (allocation.valuedTotal <= 0) {
@@ -89,6 +107,11 @@ export function InvestmentAllocationPanel({
   const c = allocation.concentration;
   const conc = c.classification !== "INSUFFICIENT_DATA" ? CONCENTRATION_PRESENTATION[c.classification] : null;
   const noun = DIMENSIONS.find((d) => d.id === dimension)?.noun ?? "slice";
+
+  // Resolve the open selection against the CURRENT axis. Selecting through the
+  // shared key functions means these rows sum to the segment's value.
+  const selectedSlice = selectedKey != null ? slices.find((s) => s.key === selectedKey) ?? null : null;
+  const selectedRows = selectedSlice ? holdingsInSlice(holdings, dimension, selectedSlice.key) : [];
 
   return (
     <div>
@@ -111,7 +134,7 @@ export function InvestmentAllocationPanel({
       <select
         id="alloc-dim"
         value={dimension}
-        onChange={(e) => setDimension(e.target.value as Dimension)}
+        onChange={(e) => changeDimension(e.target.value as Dimension)}
         className="mb-3 w-full bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-lg px-2.5 py-1.5 text-xs text-[var(--text-secondary)] focus:border-[var(--meridian-400)] focus:outline-none"
       >
         {DIMENSIONS.map((d) => <option key={d.id} value={d.id}>By {d.label.toLowerCase()}</option>)}
@@ -126,6 +149,9 @@ export function InvestmentAllocationPanel({
         formatValue={(v) => formatCurrency(v, reportingCurrency)}
         emptyHeadline="Nothing to break down"
         emptySubline="No valued holdings on this axis."
+        onSelect={(i) => setSelectedKey(i.id)}
+        selectedId={selectedKey}
+        selectLabel={(i) => `${i.label} — show positions`}
       />
 
       {/* Honest unvalued remainder — disclosed, never folded into the shares. */}
@@ -134,6 +160,28 @@ export function InvestmentAllocationPanel({
           {allocation.unvaluedCount} position{allocation.unvaluedCount === 1 ? "" : "s"} couldn’t be valued and {allocation.unvaluedCount === 1 ? "is" : "are"} excluded from these shares.
         </p>
       )}
+
+      {/* INSPECT — the positions behind the selected slice. */}
+      <RightPanel open={selectedSlice != null} onClose={() => setSelectedKey(null)} ariaLabel="Allocation slice detail">
+        {selectedSlice && (
+          <>
+            <PanelHeader
+              eyebrow={DIMENSIONS.find((d) => d.id === dimension)?.label}
+              title={selectedSlice.label}
+            />
+            <PanelContent>
+              <AllocationSliceDetail
+                rows={selectedRows}
+                sliceValue={selectedSlice.value}
+                valuedTotal={allocation.valuedTotal}
+                reportingCurrency={reportingCurrency}
+                accountName={(id) => accountNames[id] ?? "Unknown account"}
+                showAccount={dimension !== "account"}
+              />
+            </PanelContent>
+          </>
+        )}
+      </RightPanel>
     </div>
   );
 }

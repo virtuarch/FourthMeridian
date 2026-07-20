@@ -18,7 +18,7 @@
  * value map.
  */
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
 const POS = "34,197,94";   // green-500
@@ -110,13 +110,44 @@ interface DayCellProps {
 function DayCell({ iso, day, net, bg, text, col, row, size, fmt, tooltipRows, onSelect }: DayCellProps) {
   const dateLabel = new Date(`${iso}T00:00:00`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 
+  /**
+   * UX-CLOSE-2B — preview is CONTROLLED, not `group-hover:`/`group-focus-within:`.
+   *
+   * Pure-CSS hover could not be dismissed, and clicking a day left it stuck: the
+   * detail panel portals to <body>, so the pointer never leaves the cell and no
+   * mouseleave fires, while `focus-within` was additionally held by the button
+   * the click had just focused. The tooltip then sat at z-50 under the panel's
+   * z-100 — visible beside the panel, describing a day the user had already
+   * opened.
+   *
+   * Hover and selection are now separate lifecycles: hover is transient preview,
+   * click is persistent detail, and a click ends the preview immediately.
+   *
+   * Keyboard focus still previews, but tracked via :focus-visible rather than
+   * focus-within — so a MOUSE click (which does not match :focus-visible) leaves
+   * no preview behind, while Tab still shows one. This also means focus
+   * returning to the cell when the panel closes re-previews only for keyboard
+   * users, which is where it is wanted.
+   */
+  const [hovering, setHovering] = useState(false);
+  const [keyboardFocus, setKeyboardFocus] = useState(false);
+  const previewing = hovering || keyboardFocus;
+
+  const endPreview = () => { setHovering(false); setKeyboardFocus(false); };
+
   return (
-    <div className={`group relative ${size === "full" ? "h-7" : "h-4"}`}>
+    <div
+      className={`group relative ${size === "full" ? "h-7" : "h-4"}`}
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
+    >
       <button
         type="button"
         aria-label={`${dateLabel}: net ${net >= 0 ? "+" : "−"}${fmt(Math.abs(net))}. Open transactions.`}
         onPointerDown={(e) => e.stopPropagation()}
-        onClick={onSelect ? () => onSelect(iso, dateLabel) : undefined}
+        onClick={onSelect ? () => { endPreview(); onSelect(iso, dateLabel); } : undefined}
+        onFocus={(e) => setKeyboardFocus(e.currentTarget.matches(":focus-visible"))}
+        onBlur={() => setKeyboardFocus(false)}
         className={`w-full h-full rounded flex items-center justify-center focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--meridian-400)] ${onSelect ? "cursor-pointer" : ""}`}
         style={{ background: bg }}
       >
@@ -124,12 +155,12 @@ function DayCell({ iso, day, net, bg, text, col, row, size, fmt, tooltipRows, on
       </button>
 
       {/* Tooltip — absolute, so it never changes layout or widget height. Placement
-          flips/shifts by cell position so it never clips outside the widget. Shows
-          on hover AND keyboard focus (focus-within). pointer-events-none keeps it
-          from stealing interaction / perturbing any drag source. */}
+          flips/shifts by cell position so it never clips outside the widget.
+          pointer-events-none keeps it from stealing interaction / perturbing any
+          drag source. */}
       <div
         role="tooltip"
-        className={`pointer-events-none absolute z-50 hidden group-hover:block group-focus-within:block ${tooltipPlacement(col, row)}`}
+        className={`pointer-events-none absolute z-50 ${previewing ? "block" : "hidden"} ${tooltipPlacement(col, row)}`}
       >
         <div
           className="rounded-lg px-2.5 py-1.5 whitespace-nowrap shadow-2xl"

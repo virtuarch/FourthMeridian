@@ -30,8 +30,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import {
   filterByPeriod,
-  type CashFlowPeriod,
-} from "@/lib/transactions/cash-flow";
+  type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import {
   classifyLiquidity,
   tierResolver,
@@ -43,7 +42,7 @@ import { groupCashFlowContext, type CashFlowContext } from "@/lib/transactions/c
 import { aggregateDayFacts, economicSpend, type CashFlowPerspective, type DayFacts } from "@/lib/transactions/cash-flow-projection";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import { CashFlowFilterControls, DEFAULT_FILTER_ID } from "@/components/space/widgets/CashFlowFilterControls";
-import { TransactionSliceDrawer, type TransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
+import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 
 function fmt(v: number, ctx?: ConversionContext): string {
   return ctx
@@ -169,7 +168,8 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
   const perspective = controlledPerspective ?? localPerspective;
   const changePerspective = (p: CashFlowPerspective, id: string) =>
     onPerspectiveChange ? onPerspectiveChange(p, id) : setLocalPerspective(p);
-  const [slice, setSlice] = useState<TransactionSlice | null>(null);
+  // Closes on a TimelineLens move — the window the slice described is gone.
+  const [slice, setSlice] = useTransactionSlice(periodKey(period));
 
   if (transactions == null) {
     return <p className="text-sm text-[var(--text-muted)] text-center py-8">Loading activity…</p>;

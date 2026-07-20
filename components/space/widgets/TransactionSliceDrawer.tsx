@@ -115,6 +115,36 @@ function groupByFlow(rows: Transaction[]): { key: string; label: string; rows: T
 }
 
 /**
+ * Slice state with TIME INVALIDATION (UX-CLOSE-2B).
+ *
+ * A slice answers a question asked of a specific window ("what moved on Jul 16",
+ * "what is in Dining this month"). When TimelineLens moves, that question is no
+ * longer the one on screen — the workspace behind the panel now describes a
+ * different period while the panel still shows the old one. Selection is not
+ * merely stale here, it is wrong.
+ *
+ * So the invariant is: a change in `invalidationKey` closes the panel. Callers
+ * pass whatever identifies their window (`periodKey(period)`); one hook means
+ * four call sites cannot each get it subtly different.
+ *
+ * Uses the sanctioned adjust-state-during-render pattern (no effect, no flash),
+ * matching CashFlowHistoryWidget's existing mode reset.
+ */
+export function useTransactionSlice(
+  invalidationKey: string,
+): [TransactionSlice | null, (next: TransactionSlice | null) => void] {
+  const [slice, setSlice] = useState<TransactionSlice | null>(null);
+  const [prevKey, setPrevKey] = useState(invalidationKey);
+
+  if (invalidationKey !== prevKey) {
+    setPrevKey(invalidationKey);
+    setSlice(null);
+  }
+
+  return [slice, setSlice];
+}
+
+/**
  * `slice` is now NULLABLE and the component is ALWAYS mounted, because Panel
  * animates on an `open` transition: `usePresence` seeds its settled state from
  * `open`, so a component mounted already-open plays neither entrance nor exit.

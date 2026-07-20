@@ -14,7 +14,7 @@
  * Drill-down reuses the shared TransactionSliceDrawer via CashFlowCategoryBreakdown.
  */
 
-import { filterByPeriod, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
+import { filterByPeriod, type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { convertMoney } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
@@ -63,6 +63,7 @@ export function DebtPaymentsWidget({ transactions, period, ctx, accounts, window
       totalLabel="Total debt payments"
       emptyHeadline="No debt payments in this period"
       emptySubline="Card and loan payments appear here once you make them."
+      invalidationKey={periodKey(period)}
       sliceSubtitle="Debt payments to this creditor"
       sliceFor={(item) => payments.filter((t) => normalizeCreditor(rawCreditorLabel(t)) === item.id)}
     />

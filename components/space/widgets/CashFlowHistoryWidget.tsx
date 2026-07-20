@@ -30,7 +30,7 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Transaction } from "@/types";
 import { CashFlowCalendar } from "@/components/space/widgets/CashFlowCalendar";
-import { TransactionSliceDrawer, type TransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
+import { TransactionSliceDrawer, useTransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
 import { tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import {
   bucketDayFacts, netOfMeasures, rowsForMeasures,
@@ -308,7 +308,8 @@ export function CashFlowHistoryWidget({ transactions, period, now, ctx, accounts
   const measures = activeFilter.measures;
 
   // Drill-down slice drawer (local, in-place — never navigates away).
-  const [slice, setSlice] = useState<TransactionSlice | null>(null);
+  // Closes on a TimelineLens move — the window the slice described is gone.
+  const [slice, setSlice] = useTransactionSlice(key);
 
   const historical = availableHistoricalPeriods(transactions ?? []);
   const activeKey  = isExplicitPeriod(period) ? key : "";

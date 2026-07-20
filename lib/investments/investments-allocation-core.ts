@@ -63,6 +63,45 @@ export interface AllocationResult {
 
 const UNKNOWN_KEY = "__unknown__";
 
+/** The four composition axes, as a value the UI can pass around. */
+export type AllocationDimension = "assetClass" | "sector" | "account" | "currency";
+
+/**
+ * How each axis buckets a row — the SINGLE definition of slice membership.
+ *
+ * `computeAllocation` reduces through these, and `holdingsInSlice` selects
+ * through these, so a slice's total and the rows a drill-down shows are the same
+ * set by construction. Re-deriving "the same" key in the UI is exactly how a
+ * segment and its detail panel drift apart.
+ *
+ * Aggregation is UNCHANGED by their extraction: these are the identical
+ * expressions the breakdowns already used, now named once.
+ */
+export const ALLOCATION_KEY_OF: Record<AllocationDimension, (r: ValuedHoldingRow) => string> = {
+  assetClass: (r) => r.assetClass || "UNKNOWN",
+  sector:     (r) => r.sector ?? UNKNOWN_KEY,
+  account:    (r) => r.accountId,
+  currency:   (r) => r.currency ?? UNKNOWN_KEY,
+};
+
+/**
+ * The valued holdings behind one slice, largest first.
+ *
+ * Applies the SAME valued-only filter the breakdowns apply, so the returned rows
+ * sum to that slice's `value`. Pure selection — no valuation, FX, or historical
+ * arithmetic is introduced here.
+ */
+export function holdingsInSlice(
+  holdings:  readonly ValuedHoldingRow[],
+  dimension: AllocationDimension,
+  key:       string,
+): ValuedHoldingRow[] {
+  const keyOf = ALLOCATION_KEY_OF[dimension];
+  return holdings
+    .filter((h) => h.reportingValue != null && keyOf(h) === key)
+    .sort((a, b) => (b.reportingValue as number) - (a.reportingValue as number));
+}
+
 /** Deterministic slice order: value desc, then key asc. */
 function sliceSort(a: AllocationSlice, b: AllocationSlice): number {
   if (a.value !== b.value) return b.value - a.value;
@@ -101,24 +140,26 @@ export function computeAllocation(
   const unvaluedCount = holdings.length - valued.length;
   const valuedTotal = valued.reduce((s, h) => s + (h.reportingValue as number), 0);
 
+  // Every axis reduces through ALLOCATION_KEY_OF — the same functions
+  // holdingsInSlice selects through, so totals and drill-downs cannot disagree.
   const byAssetClass = breakdown(
     valued, valuedTotal,
-    (r) => r.assetClass || "UNKNOWN",
+    ALLOCATION_KEY_OF.assetClass,
     (key) => ASSET_CLASS_LABEL[key] ?? key,
   );
   const bySector = breakdown(
     valued, valuedTotal,
-    (r) => r.sector ?? UNKNOWN_KEY,
+    ALLOCATION_KEY_OF.sector,
     (key) => (key === UNKNOWN_KEY ? "Unknown" : key),
   );
   const byAccount = breakdown(
     valued, valuedTotal,
-    (r) => r.accountId,
+    ALLOCATION_KEY_OF.account,
     (key) => accountNames[key] ?? "Unknown account",
   );
   const byCurrency = breakdown(
     valued, valuedTotal,
-    (r) => r.currency ?? UNKNOWN_KEY,
+    ALLOCATION_KEY_OF.currency,
     (key) => (key === UNKNOWN_KEY ? "Unknown" : key),
   );
 

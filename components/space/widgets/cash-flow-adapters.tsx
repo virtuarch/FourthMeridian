@@ -31,8 +31,7 @@ import {
   outflowByCategory,
   incomeBySource,
   incomeSourceLabel,
-  type CashFlowPeriod,
-} from "@/lib/transactions/cash-flow";
+  type CashFlowPeriod, periodKey } from "@/lib/transactions/cash-flow";
 import { isCostFlow, isRefund, isIncome } from "@/lib/transactions/flow-predicates";
 import { classifyLiquidity, tierResolver, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { groupLiquidityByReason } from "@/lib/transactions/liquidity-breakdown";
@@ -150,6 +149,7 @@ export function renderCashFlowByCategory(
   // the card's value — so the drawer's clamped spend total matches).
   return (
     <CashFlowCategoryBreakdown
+      invalidationKey={periodKey(period)}
       items={outflowByCategory(rows, ctx)}
       ctx={ctx}
       sliceSubtitle="Spending in this category"
@@ -188,6 +188,7 @@ export function renderIncomeBySource(
       <div className="space-y-2">
         <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Cash in by source</p>
         <CashFlowCategoryBreakdown
+      invalidationKey={periodKey(period)}
           items={cashIn.map((l) => ({ id: l.reason, label: l.label, value: l.amount }))}
           ctx={ctx}
           totalLabel="Total cash in"
@@ -208,6 +209,7 @@ export function renderIncomeBySource(
     <div className="space-y-2">
       <p className="text-[11px] font-semibold text-[var(--text-secondary)]">Income by source</p>
       <CashFlowCategoryBreakdown
+      invalidationKey={periodKey(period)}
         items={incomeBySource(rows, ctx)}
         ctx={ctx}
         totalLabel="Total income"
