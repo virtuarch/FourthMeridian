@@ -24,25 +24,77 @@ import {
 import { join } from "node:path";
 
 const ROOT = process.cwd();
-const SCAN_DIRS = ["components/dashboard", "components/space", "components/atlas"];
 const BASELINE = "lib/atlas/palette-ratchet.baseline.json";
 
-// No per-file allowlist entries remain (legacy components/ui/Card.tsx has been
-// retired). charts/admin are out of the initial scan by directory selection above.
+/**
+ * V25-CLOSE-2 — SCAN THE WHOLE RENDERED SURFACE, not three directories.
+ *
+ * Before this slice the fence covered components/{dashboard,space,atlas} only,
+ * so raw palette could accumulate freely in components/{ui,charts,security,
+ * notifications,admin} and in every route under app/. Both roots are scanned
+ * now; the exclusions below are the only carve-outs and each states its reason.
+ *
+ * Everything under these roots is product UI, an Atlas consumer, or a
+ * visualization component — the three things this ratchet exists to protect.
+ * `lib/` is deliberately NOT scanned: it holds no JSX, and design tokens that
+ * legitimately carry raw colour values (lib/charts/chart-palette.ts) live there.
+ */
+const SCAN_ROOTS = ["components", "app"];
+
+/**
+ * Excluded subtrees. Kept tiny and justified — an exclusion is a place drift can
+ * hide, so each one must earn itself.
+ */
+const EXCLUDED_PREFIXES: { prefix: string; why: string }[] = [
+  {
+    prefix: "components/atlas/vendor/",
+    why: "Vendored third-party source (see components/atlas/vendor/*/VENDORED.md), kept pristine and not subject to our design rules. eslint.config.mjs excludes it for the same reason.",
+  },
+  {
+    prefix: "app/prototype/",
+    why: "Design harnesses, untracked and non-shipping (V25-CLOSE-1 containment). Scanning them would put machine-local files in a shared baseline, so the guard would fail for anyone who does not have them.",
+  },
+];
+
+/**
+ * Per-file allowlist. Empty by design: baseline mode already tolerates existing
+ * violations file-by-file, so a blanket allowlist would only hide growth.
+ */
 const ALLOWLIST_FILES = new Set<string>([]);
 
+/**
+ * Forbidden raw-palette patterns.
+ *
+ * V25-CLOSE-2 closed a hole here as well: `text-{colour}` was matched but
+ * `bg-{colour}` / `border-{colour}` were matched for gray ONLY. That is why the
+ * baseline read `{}` while `bg-blue-500` and friends sat in already-scanned
+ * files — the fence looked clean because it was not looking. Backgrounds and
+ * borders now carry the same colour list as text.
+ *
+ * Deliberately NOT matched: raw hex / rgb(). Chart token modules legitimately
+ * define colour values, and matching hex would need its own burn-down with a
+ * real exemption story. Recorded as follow-up rather than half-enforced here.
+ */
+const COLOURS = "blue|red|emerald|green|violet|yellow|amber|purple";
 const PATTERNS: RegExp[] = [
   /\bbg-gray-\d{2,3}\b/g,
   /\bborder-gray-\d{2,3}\b/g,
   /\btext-gray-\d{2,3}\b/g,
-  /\btext-(?:blue|red|emerald|green|violet|yellow|amber|purple)-\d{2,3}\b/g,
+  new RegExp(`\\btext-(?:${COLOURS})-\\d{2,3}\\b`, "g"),
+  new RegExp(`\\bbg-(?:${COLOURS})-\\d{2,3}\\b`, "g"),
+  new RegExp(`\\bborder-(?:${COLOURS})-\\d{2,3}\\b`, "g"),
 ];
+
+function isExcluded(rel: string): boolean {
+  return EXCLUDED_PREFIXES.some((e) => rel.startsWith(e.prefix));
+}
 
 function walk(dir: string, acc: string[] = []): string[] {
   const abs = join(ROOT, dir);
   if (!existsSync(abs)) return acc;
   for (const name of readdirSync(abs)) {
     const rel = `${dir}/${name}`;
+    if (isExcluded(`${rel}/`) || isExcluded(rel)) continue;
     const s = statSync(join(ROOT, rel));
     if (s.isDirectory()) walk(rel, acc);
     else if (/\.(tsx?|jsx?)$/.test(name)) acc.push(rel);
@@ -58,7 +110,7 @@ function countViolations(file: string): number {
 }
 
 const current: Record<string, number> = {};
-for (const dir of SCAN_DIRS) {
+for (const dir of SCAN_ROOTS) {
   for (const file of walk(dir)) {
     if (ALLOWLIST_FILES.has(file)) continue;
     const n = countViolations(file);
