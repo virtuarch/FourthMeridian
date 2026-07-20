@@ -20,7 +20,7 @@
 
 import "server-only";
 
-import { ShareStatus } from "@prisma/client";
+import { ShareStatus, FlowType, TransactionCategory } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
 import type { Transaction } from "@/types";
 import { db } from "@/lib/db";
@@ -38,8 +38,10 @@ import {
   buildFilterWhere,
   nextCursorFrom,
   resolveCursor,
+  parseTransactionQuery,
   type TransactionQuery,
   type TransactionCursor,
+  type TransactionQueryParseResult,
 } from "@/lib/data/transaction-query-core";
 
 export type {
@@ -48,7 +50,28 @@ export type {
   TransactionSort,
   TransactionSource,
 } from "@/lib/data/transaction-query-core";
-export { MAX_TRANSACTION_PAGE_SIZE } from "@/lib/data/transaction-query-core";
+export { MAX_TRANSACTION_PAGE_SIZE, encodeCursor } from "@/lib/data/transaction-query-core";
+
+/**
+ * The live enum vocabularies the M3 parser validates against. The pure core stays
+ * free of generated-client coupling, so the vocabulary is supplied HERE (the
+ * server seam that already imports @prisma/client) and derived from the enums
+ * themselves — a new FlowType or TransactionCategory is accepted automatically, and
+ * the parser can never drift from the schema.
+ */
+export const TRANSACTION_QUERY_VOCABULARY = {
+  flowTypes:  Object.values(FlowType)  as readonly string[],
+  categories: Object.values(TransactionCategory) as readonly string[],
+} as const;
+
+/**
+ * Parse untrusted request search params into a validated `TransactionQuery`.
+ * The ONE entry point a route should use — it binds the live vocabulary so no
+ * route hand-rolls enum validation (and so none can forget to).
+ */
+export function parseTransactionQueryParams(params: URLSearchParams): TransactionQueryParseResult {
+  return parseTransactionQuery(params, TRANSACTION_QUERY_VOCABULARY);
+}
 
 export interface TransactionQueryResult {
   /** The bounded page of DTOs, in the requested sort order. */

@@ -76,7 +76,13 @@ console.log("WINDOW — explicit windowDays → correct UTC date floor; null →
 console.log("CONSUMER tripwires — shared consumers stay bounded");
 {
   const acct = code("app/api/accounts/[id]/transactions/route.ts");
-  check("per-account route is bounded (take + capFetched)", /take:\s*DEFAULT_TX_LIMIT\s*\+\s*1/.test(acct) && acct.includes("capFetched("));
+  // TX-3.2 — the per-account route is STILL bounded, but the bound moved rather
+  // than disappeared: it delegates to queryTransactions, whose page is clamped to
+  // MAX_TRANSACTION_PAGE_SIZE by clampLimit and fetched as `take: limit + 1`. The
+  // route therefore must not hand-roll a take/capFetched of its own — that would be
+  // a second, divergent bound. Assert the delegation IS the bound.
+  check("per-account route is bounded via the keyset authority (no hand-rolled cap)",
+    acct.includes("queryTransactions(") && !/\btake:/.test(acct) && !acct.includes("capFetched("));
   const view = code("app/api/money/view-context/route.ts");
   check("view-context no longer loads rows (uses groupBy, not getTransactions)",
     !view.includes("getTransactions(") && view.includes("groupBy"));
