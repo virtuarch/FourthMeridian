@@ -135,7 +135,9 @@ export function RequestAccessForm() {
           className="mb-1.5 block text-sm"
           style={{ color: "var(--text-secondary)" }}
         >
-          Anything you'd like us to know?{" "}
+          {/* &apos; not &rsquo;: marketing copy uses straight apostrophes throughout,
+              so the escape must not change the rendered glyph. */}
+          Anything you&apos;d like us to know?{" "}
           <span style={{ color: "var(--text-muted)" }}>(optional)</span>
         </label>
         <textarea

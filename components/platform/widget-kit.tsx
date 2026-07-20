@@ -28,8 +28,16 @@ export type PlatformSection = { id: string; key: string; label: string };
 /**
  * Self-fetch a platform read route. Same-origin so the session cookie rides
  * along; the route's own requirePlatformAccess gate is the authority. Aborts
- * cleanly on unmount / url change so a slow response never sets state on a
- * torn-down widget.
+ * cleanly on unmount so a slow response never sets state on a torn-down widget.
+ *
+ * CONTRACT — `url` is static for the lifetime of a mounted widget. Every call
+ * site passes a string literal, which is what lets the effect below fetch
+ * without first resetting `loading`/`error`: they are already `true`/`null` from
+ * the initial state, and no second run can occur. A dynamic `url` would break
+ * that (the widget would show the previous route's data as if it were current),
+ * so the invariant is enforced by widget-fetch-static-url.test.ts rather than
+ * left to a comment. Give a widget a changing url only by remounting it with a
+ * React `key`, which resets this state honestly.
  */
 export function useWidgetFetch<T>(url: string): { data: T | null; loading: boolean; error: string | null } {
   const [data, setData]       = useState<T | null>(null);
@@ -38,8 +46,6 @@ export function useWidgetFetch<T>(url: string): { data: T | null; loading: boole
 
   useEffect(() => {
     let alive = true;
-    setLoading(true);
-    setError(null);
     fetch(url, { credentials: "same-origin" })
       .then(async (r) => {
         if (!r.ok) throw new Error(r.status === 403 ? "Not authorized" : `Request failed (${r.status})`);

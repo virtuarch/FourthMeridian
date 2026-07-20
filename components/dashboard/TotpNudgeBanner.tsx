@@ -23,12 +23,61 @@
  * redundant and confusing for them.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { ShieldAlert, X } from "lucide-react";
 
 const DISMISS_KEY = "fm.totpNudge.dismissed";
+
+/**
+ * Per-browser dismissal lives in localStorage, which is an external store — so
+ * it is read with useSyncExternalStore rather than an effect that setStates on
+ * mount. Same visible behaviour (the server snapshot reports "dismissed", so the
+ * banner never flashes before the real value is known) without the extra render,
+ * and dismissing in one tab now settles the others too.
+ */
+const dismissListeners = new Set<() => void>();
+
+// Session fallback: if localStorage is unavailable, dismissing must still hide
+// the banner for this page session (the pre-existing behaviour — the old code
+// setState'd `true` before attempting to persist). Without this, a failed write
+// would leave the nudge on screen and the X button looking broken.
+let dismissedThisSession = false;
+
+function subscribeDismissed(onStoreChange: () => void): () => void {
+  dismissListeners.add(onStoreChange);
+  window.addEventListener("storage", onStoreChange); // other tabs
+  return () => {
+    dismissListeners.delete(onStoreChange);
+    window.removeEventListener("storage", onStoreChange);
+  };
+}
+
+function getDismissedSnapshot(): boolean {
+  if (dismissedThisSession) return true;
+  try {
+    return window.localStorage.getItem(DISMISS_KEY) === "1";
+  } catch {
+    return false; // localStorage unavailable — treat as not dismissed
+  }
+}
+
+// Server (and the hydrating first client render) assume dismissed, so the banner
+// cannot flash in before the stored value is readable.
+function getDismissedServerSnapshot(): boolean {
+  return true;
+}
+
+function persistDismissed(): void {
+  dismissedThisSession = true;
+  try {
+    window.localStorage.setItem(DISMISS_KEY, "1");
+  } catch {
+    /* ignore — dismissal simply won't persist */
+  }
+  for (const listener of dismissListeners) listener();
+}
 
 export function TotpNudgeBanner() {
   const { data: session } = useSession();
@@ -40,16 +89,11 @@ export function TotpNudgeBanner() {
 
   // `null` = still loading. Once resolved, holds the enabled flag.
   const [totpEnabled, setTotpEnabled] = useState<boolean | null>(null);
-  const [dismissed, setDismissed] = useState(true); // assume dismissed until localStorage read (avoids hydration flash)
-
-  // Read per-browser dismissal on mount.
-  useEffect(() => {
-    try {
-      setDismissed(window.localStorage.getItem(DISMISS_KEY) === "1");
-    } catch {
-      setDismissed(false); // localStorage unavailable — treat as not dismissed
-    }
-  }, []);
+  const dismissed = useSyncExternalStore(
+    subscribeDismissed,
+    getDismissedSnapshot,
+    getDismissedServerSnapshot,
+  );
 
   // Fetch TOTP status. Skip for SYSTEM_ADMIN (never rendered for them anyway).
   useEffect(() => {
@@ -71,12 +115,7 @@ export function TotpNudgeBanner() {
   }, [isSystemAdmin]);
 
   function dismiss() {
-    setDismissed(true);
-    try {
-      window.localStorage.setItem(DISMISS_KEY, "1");
-    } catch {
-      /* ignore — dismissal simply won't persist */
-    }
+    persistDismissed();
   }
 
   if (isSystemAdmin) return null;        // redundant for forced-TOTP admins

@@ -173,7 +173,7 @@ No secrets became tracked: the three real env files remain ignored, and `git sta
 | TimelineLens behaviour | unchanged — the Atlas primitive and its guards are untouched; only an untracked harness moved |
 | Concurrent work | excluded — committed with explicit pathspecs; no `git add -A`. Untracked files belonging to other sessions (`AGENTS.md`, five `docs/design/TIMELINE*` docs, two audit docs, `prototype/`) were left alone |
 
-### 9.1 Newly discovered: the CI lint gate is red
+### 9.1 Newly discovered: the CI lint gate is red — **resolved in V25-CLOSE-1A**
 
 `.github/workflows/ci.yml` runs `npm run lint` as a **blocking** gate. It currently exits `1` on **five tracked files, none touched by this slice**:
 
@@ -187,16 +187,18 @@ No secrets became tracked: the three real env files remain ignored, and `git sta
 
 An earlier pass in this session mistakenly reported lint as clean on tracked source. That was wrong: the ~6,124 total problems *are* dominated by the untracked `prototype/` tree (which never reaches CI), and isolating the tracked subset was what surfaced these five. Correcting it here rather than shipping the false claim, since the entire point of this slice is that the repository describes itself accurately.
 
-**Not fixed here, deliberately.** All five are React correctness rules in production component code; fixing them means changing production behaviour, which this slice explicitly forbids. Two of them (`setState` in effect, refs during render) are real render-correctness smells rather than cosmetic lint, so they want a considered fix, not a `--fix` sweep. Recorded as a **class A** item below — a red CI gate on the closure branch blocks closure independently of anything else on this list.
+**Not fixed here, deliberately.** All five are React correctness rules in production component code; fixing them means changing production behaviour, which this slice explicitly forbids. Two of them (`setState` in effect, refs during render) are real render-correctness smells rather than cosmetic lint, so they want a considered fix, not a `--fix` sweep.
+
+> **Resolved in V25-CLOSE-1A** — all five fixed, `npm run lint` now exits 0 with zero errors. Root causes and per-file classification are recorded in that slice; the structural finding worth carrying forward is that **local lint and CI lint did not mean the same thing**. CI lints only tracked files; locally the untracked `prototype/` tree contributed ~6,100 problems, so `npm run lint` had exited 1 for so long that a non-zero exit carried no information — which is how five real blocking errors in tracked components survived an entire release cycle. `eslint.config.mjs` now ignores both prototype trees, so the two signals agree.
 
 ---
 
 ## 10. Remaining v2.5 closure items
 
-**Class A — genuinely blocking closure (two items):**
+**Class A — genuinely blocking closure (one item remaining):**
 
 1. **Atlas palette-ratchet fence expansion.** `lib/atlas/palette-ratchet.test.ts:28` still scans only `components/dashboard`, `components/space`, `components/atlas`, with an empty `ALLOWLIST_FILES`. Expand to the unscoped trees and record explicit exemptions. → **V25-CLOSE-2**
-2. **Green the CI lint gate** — five pre-existing React correctness errors in tracked components (§9.1). A closure branch cannot close on a red blocking gate. Small, but it is production code, so it needs its own slice rather than riding along in a docs change.
+2. ~~**Green the CI lint gate**~~ — **done in V25-CLOSE-1A** (§9.1). Kept visible here because the *reason* it was invisible for a release cycle is a standing hazard, not a one-off: a gate that has been failing for unrelated reasons stops being a gate.
 
 **Strongly recommended alongside it (guards, class A/B boundary):**
 

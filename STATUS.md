@@ -25,12 +25,11 @@
 
 ## Next 3–5 steps
 
-1. **Green the CI lint gate** — `npm run lint` exits 1 on five pre-existing React correctness errors (`TotpNudgeBanner`, `widget-kit`, both `TurnstileWidget`s, `RequestAccessForm`); `ci.yml` runs it as a blocking step, so the closure branch is currently red. Production code, so it needs its own small slice.
-2. **V25-CLOSE-2 guards + Atlas ratchet** — expand the palette-ratchet fence to the unscoped trees (the last unstarted v2.5 exit criterion), add a guard that prototype routes cannot ship, and add the cross-authority parity guard for the three Space visibility resolvers.
-3. **OPS-1 LLM disclosure** (C-S2) — smallest copy closing the largest remaining gate; consent capture (C-S1) is already done.
-4. **OPS-1 ops floor + production config flips** (C-S3) — verify `invite_only` first, then Sentry, uptime, backup drill, Turnstile, Plaid.
-5. **AI5-0 / AI5-1** in a parallel worktree — failure-corpus reconstruction + window-characterization suite, bounds-not-dollars.
-6. **v2.5.5 convergence** — DayFacts sole-fold + named net measures (data-semantics only; see [ROADMAP](docs/plans/ROADMAP.md)). *Classifier v3 landed (CCPAY-2); the remaining CCPAY debt is the [recorded follow-ups](docs/initiatives/ccpay/CCPAY_FOLLOW_UPS.md) — btc-sync flow-authority convergence + the never-classified seed backlog.*
+1. **V25-CLOSE-2 guards + Atlas ratchet** — expand the palette-ratchet fence to the unscoped trees (the last unstarted v2.5 exit criterion), add a guard that prototype routes cannot ship, and add the cross-authority parity guard for the three Space visibility resolvers.
+2. **OPS-1 LLM disclosure** (C-S2) — smallest copy closing the largest remaining gate; consent capture (C-S1) is already done.
+3. **OPS-1 ops floor + production config flips** (C-S3) — verify `invite_only` first, then Sentry, uptime, backup drill, Turnstile, Plaid.
+4. **AI5-0 / AI5-1** in a parallel worktree — failure-corpus reconstruction + window-characterization suite, bounds-not-dollars.
+5. **v2.5.5 convergence** — DayFacts sole-fold + named net measures (data-semantics only; see [ROADMAP](docs/plans/ROADMAP.md)). *Classifier v3 landed (CCPAY-2); the remaining CCPAY debt is the [recorded follow-ups](docs/initiatives/ccpay/CCPAY_FOLLOW_UPS.md) — btc-sync flow-authority convergence + the never-classified seed backlog.*
 
 ## Where things stand
 

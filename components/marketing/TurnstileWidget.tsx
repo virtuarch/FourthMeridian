@@ -90,8 +90,16 @@ export function TurnstileWidget({
 }: TurnstileWidgetProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef  = useRef<string | null>(null);
+  // Keep the latest onToken without re-rendering the widget on every keystroke.
+  // The assignment lives in an effect, not in render: a render may be discarded
+  // (StrictMode double-render, a suspended or aborted concurrent render), and a
+  // ref written during a discarded render would survive it. `useRef(onToken)`
+  // already seeds the first value, so the ref is never stale before this runs —
+  // and every reader below fires asynchronously, after effects have committed.
   const onTokenRef = useRef(onToken);
-  onTokenRef.current = onToken;
+  useEffect(() => {
+    onTokenRef.current = onToken;
+  });
 
   useEffect(() => {
     let cancelled = false;
