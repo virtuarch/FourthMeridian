@@ -107,15 +107,30 @@ for (const f of PERSPECTIVES) {
     "SpaceDashboard imports the banner",
     dash.includes("CurrencyRevertedBanner"),
   );
+  // The banner gate must derive from the reverted verdict (directly, or via the
+  // dismissible `showCurrencyBanner` which is itself `currencyReverted && …`).
   check(
-    "SpaceDashboard renders the banner GATED on currencyReverted",
-    /currencyReverted\s*&&\s*[\s\S]{0,120}CurrencyRevertedBanner/.test(dash),
+    "SpaceDashboard renders the banner GATED on the reverted verdict",
+    /(showCurrencyBanner|currencyReverted)\s*&&\s*[\s\S]{0,120}CurrencyRevertedBanner/.test(dash) &&
+      /const\s+showCurrencyBanner\s*=\s*currencyReverted\s*&&/.test(dash),
     "the banner must be conditional on the reverted verdict, never unconditional",
   );
   check(
     "SpaceDashboard flips the display currency to the effective one when reverted",
     dash.includes("effectiveDisplay") && /DisplayCurrencyProvider\s+currency=\{effectiveDisplay\}/.test(dash),
     "reverted display must re-scope formatting to the effective (USD) currency",
+  );
+  // FIX-2 — dismissal is presentation-only and re-arms on a new failure event.
+  check(
+    "banner dismissal is presentation-only, session-scoped, and re-arms on change",
+    dash.includes("setDismissedCurrency") &&
+      /prevRequestedCurrency\s*!==\s*requestedCurrency[\s\S]{0,120}setDismissedCurrency\(null\)/.test(dash),
+    "closing must not persist and must re-show on a new requested currency (reopening the condition)",
+  );
+  check(
+    "banner dismissal does NOT touch currency/fallback/preference (presentation only)",
+    !/setDismissedCurrency[\s\S]{0,200}(reportingCurrency|PATCH|fetch\()/.test(dash),
+    "the dismiss handler must only set presentation state",
   );
 }
 // The "view as" selector must carry the REQUESTED currency (not the effective

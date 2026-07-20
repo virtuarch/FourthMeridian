@@ -11,13 +11,22 @@
  *   - balances remain accurate.
  *
  * It renders nothing on its own decision — the parent gates it on `reverted`.
+ *
+ * V25-CLOSE-3A-FIX-2 — it is informational, not blocking, so it carries a dismiss
+ * affordance. `onDismiss` controls ONLY presentation: the parent hides the banner
+ * for the current failure episode. It must not touch the currency, the fallback,
+ * or any stored preference, and the parent re-arms it on a NEW failure event.
  */
+import { X } from "lucide-react";
+
 export function CurrencyRevertedBanner({
   requested,
   effective,
+  onDismiss,
 }: {
   requested: string;
   effective: string;
+  onDismiss?: () => void;
 }) {
   return (
     <div
@@ -35,7 +44,7 @@ export function CurrencyRevertedBanner({
       >
         ⚠
       </span>
-      <p className="text-xs leading-relaxed text-[var(--text-secondary)]">
+      <p className="min-w-0 flex-1 text-xs leading-relaxed text-[var(--text-secondary)]">
         <span className="font-semibold text-[var(--text-primary)]">
           {requested} conversion is temporarily unavailable
         </span>{" "}
@@ -43,6 +52,16 @@ export function CurrencyRevertedBanner({
         your balances accurate. Your {requested} preference is saved and will resume
         automatically when rates are available.
       </p>
+      {onDismiss && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className="shrink-0 -mr-1 -mt-1 flex h-7 w-7 items-center justify-center rounded-xl text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-secondary)] transition-colors touch-manipulation"
+        >
+          <X size={15} />
+        </button>
+      )}
     </div>
   );
 }

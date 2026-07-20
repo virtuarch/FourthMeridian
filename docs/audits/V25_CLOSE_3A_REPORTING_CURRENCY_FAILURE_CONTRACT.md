@@ -240,3 +240,46 @@ stores `d.requested` (regressing to `d.target`/`d.effective` fails).
 - **Control:** USD → no banner.
 
 323/323 tests, lint 0, tsc clean.
+
+---
+
+# Follow-up fix (V25-CLOSE-3A-FIX-2) — banner dismiss lifecycle
+
+The disclosure is informational, not blocking, so it needed a dismiss affordance.
+
+**Investigation of existing patterns:** `components/atlas/InlineBanner.tsx` is the
+house status box but carries no close control; `TotpNudgeBanner` is the dismiss
+reference (an `X` button, `aria-label="Dismiss"`, ghost style) and persists its
+dismissal in `localStorage` because it nags about a *static* setting. No
+session-only banner-dismiss precedent existed.
+
+**Lifecycle decision — session-scoped presentation state, keyed to the requested
+currency.** The FX banner discloses a *live* condition (`reverted` for a specific
+currency), so its dismissal is:
+- **presentation-only** — closing sets React state at the composition root and
+  nothing else; the currency, the USD fallback, and the stored preference are all
+  unchanged (the revert still applies);
+- **keyed to `requestedCurrency`** and **re-armed on any change** via React's
+  "adjust state when a prop changes" pattern (reset during render, not in an
+  effect — the `react-hooks/set-state-in-effect` rule forbids the effect form).
+  A different currency failing, or the condition clearing (USD) and returning,
+  changes `requestedCurrency` and clears the dismissal, so a new failure event
+  always re-discloses;
+- **not persisted** — a refresh re-discloses a still-true condition (the safe
+  direction: over-disclose, never hide an accuracy warning).
+
+**Files changed:** `components/dashboard/CurrencyRevertedBanner.tsx` (adds an
+optional `onDismiss` + `X` close button, matching the `TotpNudgeBanner`
+convention); `components/dashboard/SpaceDashboard.tsx` (session dismiss state +
+render-time re-arm + gates the banner on `showCurrencyBanner`); guard assertions
+in `reporting-currency-failure-contract.test.ts` (dismissal is presentation-only
+and re-arms; the dismiss handler touches no currency/preference/fetch).
+
+**Browser-verified (all five steps):**
+1. Selected EUR → banner appeared **with a Dismiss (×) button**.
+2. Values in USD ($26,804 — a background sync bumped the figure; still `$`, never €).
+3. Clicked Dismiss → banner closed; **selector still "EUR"**, values still USD — currency, fallback, and preference all unchanged.
+4. Reopening — **new failure event**: switched dismissed-EUR → GBP → banner **reappeared** naming "GBP conversion is temporarily unavailable".
+5. Reopening — **condition cleared and returned**: GBP → USD (no banner) → EUR → the EUR banner **reappeared**. Values stayed in USD throughout.
+
+323/323 tests, lint 0, tsc clean. No FX resolver / provider / snapshot-writer change.

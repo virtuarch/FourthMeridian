@@ -313,6 +313,24 @@ export function SpaceDashboard({
     ? (effectiveCurrency ?? DEFAULT_DISPLAY_CURRENCY)
     : (snapshotCurrency ?? displayCurrency);
 
+  // V25-CLOSE-3A-FIX-2 — the banner is informational, so it is dismissible.
+  // Dismissal is PRESENTATION-ONLY, session-scoped, and keyed to the requested
+  // currency: closing it touches nothing (currency, fallback, and stored
+  // preference are all unchanged — the revert above still applies). It re-arms on
+  // any NEW failure event via React's "adjust state when a prop changes" pattern
+  // (reset during render, not in an effect): whenever the requested currency
+  // changes — a different currency failing, OR the condition clearing (USD) and
+  // returning — the dismissal clears, so "reopening the condition" always
+  // discloses again. Not persisted: a refresh re-discloses a still-true condition
+  // (the safe direction).
+  const [dismissedCurrency, setDismissedCurrency] = useState<string | null>(null);
+  const [prevRequestedCurrency, setPrevRequestedCurrency] = useState(requestedCurrency);
+  if (prevRequestedCurrency !== requestedCurrency) {
+    setPrevRequestedCurrency(requestedCurrency);
+    setDismissedCurrency(null);
+  }
+  const showCurrencyBanner = currencyReverted && requestedCurrency !== dismissedCurrency;
+
   // Data freshness — newest lastUpdated across this Space's shared accounts (no
   // new fetch). Surfaced in the header subtitle so no balance is read without
   // knowing how old it is. Client-only: `accounts` starts [] and populates
@@ -808,11 +826,13 @@ export function SpaceDashboard({
 
         {/* V25-CLOSE-3A — non-blocking disclosure when the requested reporting
             currency could not be satisfied and the display fell back to USD. One
-            banner at the composition root; no per-perspective handling. */}
-        {currencyReverted && (
+            banner at the composition root; no per-perspective handling.
+            FIX-2 — dismissible (presentation only; the revert above is unaffected). */}
+        {showCurrencyBanner && (
           <CurrencyRevertedBanner
             requested={requestedCurrency ?? "the selected currency"}
             effective={effectiveCurrency ?? DEFAULT_DISPLAY_CURRENCY}
+            onDismiss={() => setDismissedCurrency(requestedCurrency ?? null)}
           />
         )}
 
