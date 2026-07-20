@@ -1,12 +1,28 @@
 "use client";
 
 /**
- * app/admin/security/page.tsx — Security Admin Dashboard
+ * components/admin/AdminSecurityConsole.tsx — Security Admin Dashboard
  *
  * Sections:
  * 1. Platform Authentication Settings
  * 2. Current Admin 2FA Status + Active Sessions
  * 3. User Security Management (lookup + actions + sessions modal)
+ *
+ * PO-1A — extracted from app/admin/security/page.tsx, which is now a SERVER
+ * component that resolves the operator's TOTP enrolment phase first and mounts
+ * this console ONLY once enrolment is complete.
+ *
+ * Every fetch below hits /api/admin/security/*, which requireSystemAdmin()
+ * 403s for a session still pending forced enrolment. That is correct and must
+ * stay correct — which is exactly why this component must never be the surface
+ * a pending admin lands on. It previously was: the enrolment widget lived
+ * inside the `!adminStatus ? "Loading…" : (…)` branch below, and adminStatus is
+ * populated by one of those gated fetches, so a pending admin got a permanent
+ * "Loading…" and no way to enrol. The enrolment surface is now
+ * components/admin/AdminTotpEnrollment.tsx, which composes NO gated data.
+ *
+ * The <TotpSection /> retained here is the ENROLLED admin's ongoing 2FA
+ * management (regenerate codes, disable) — not the enrolment path.
  */
 
 import React, { useState, useEffect, useCallback, Suspense } from "react";
@@ -317,9 +333,13 @@ function UserSessionsModal({ user, onClose }: { user: SecurityUser; onClose: () 
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
-export default function AdminSecurityPage() {
+export function AdminSecurityConsole() {
   const [settings,       setSettings]       = useState<Settings | null>(null);
   const [adminStatus,    setAdminStatus]    = useState<AdminStatus | null>(null);
+  // 2FA truth for this card comes from <TotpSection /> — the component that
+  // actually mutates it — NOT from adminStatus. See the note on the 2FA card
+  // below; keeping a second copy here is what let the tiles go stale.
+  const [totpStatus,     setTotpStatus]     = useState<{ totpEnabled: boolean; recoveryCodesRemaining: number } | null>(null);
   const [adminSessions,  setAdminSessions]  = useState<SessionRow[]>([]);
   const [users,          setUsers]          = useState<SecurityUser[]>([]);
   const [userSearch,     setUserSearch]     = useState("");
@@ -521,6 +541,17 @@ export default function AdminSecurityPage() {
       </SectionCard>
 
       {/* ── 2: Admin 2FA Status ───────────────────────────────────────────────── */}
+      {/*
+        SINGLE OWNER — the two 2FA figures below and the warning banner all read
+        `totpStatus`, published by <TotpSection /> from /api/user/totp/status.
+        They previously read adminStatus.totpEnabled / .recoveryCodesRemaining
+        from /api/admin/security/admin-status, giving this one card two sources
+        of 2FA truth refreshed on different events: disabling 2FA or
+        regenerating codes in TotpSection refreshed only TotpSection, so these
+        tiles kept asserting the pre-change values while the widget directly
+        beneath them said otherwise. adminStatus is still the owner of what
+        TotpSection cannot know — sessions, last login, last code generation.
+      */}
       <SectionCard title="Your 2FA Status (SYSTEM_ADMIN)">
         {!adminStatus ? <p className="text-sm text-gray-600">Loading…</p> : (
           <div className="space-y-4">
@@ -528,16 +559,22 @@ export default function AdminSecurityPage() {
               <div className="bg-gray-800/40 rounded-xl p-3 space-y-1">
                 <p className="text-xs text-gray-500">TOTP status</p>
                 <div className="flex items-center gap-1.5">
-                  {adminStatus.totpEnabled
-                    ? <><ShieldCheck size={14} className="text-emerald-400" /><span className="text-sm font-semibold text-emerald-400">Enabled</span></>
-                    : <><ShieldOff   size={14} className="text-gray-600"    /><span className="text-sm font-semibold text-gray-400">Disabled</span></>}
+                  {!totpStatus
+                    ? <span className="text-sm text-gray-600">—</span>
+                    : totpStatus.totpEnabled
+                      ? <><ShieldCheck size={14} className="text-emerald-400" /><span className="text-sm font-semibold text-emerald-400">Enabled</span></>
+                      : <><ShieldOff   size={14} className="text-gray-600"    /><span className="text-sm font-semibold text-gray-400">Disabled</span></>}
                 </div>
               </div>
               <div className="bg-gray-800/40 rounded-xl p-3 space-y-1">
                 <p className="text-xs text-gray-500">Recovery codes</p>
-                <p className={`text-sm font-semibold ${adminStatus.recoveryCodesRemaining === 0 ? "text-red-400" : "text-white"}`}>
-                  {adminStatus.recoveryCodesRemaining} remaining
-                </p>
+                {!totpStatus ? (
+                  <p className="text-sm text-gray-600">—</p>
+                ) : (
+                  <p className={`text-sm font-semibold ${totpStatus.recoveryCodesRemaining === 0 ? "text-red-400" : "text-white"}`}>
+                    {totpStatus.recoveryCodesRemaining} remaining
+                  </p>
+                )}
               </div>
               <div className="bg-gray-800/40 rounded-xl p-3 space-y-1">
                 <p className="text-xs text-gray-500">Active sessions</p>
@@ -556,7 +593,7 @@ export default function AdminSecurityPage() {
 
             <div className="pt-2 border-t border-gray-800/60">
               <Suspense fallback={<div className="h-16 rounded-xl bg-gray-800 animate-pulse" />}>
-                <TotpSection />
+                <TotpSection onStatusChange={setTotpStatus} />
               </Suspense>
             </div>
             <div className="flex flex-wrap gap-2 pt-1">
@@ -568,7 +605,7 @@ export default function AdminSecurityPage() {
               </button>
             </div>
 
-            {!adminStatus.totpEnabled && (
+            {totpStatus && !totpStatus.totpEnabled && (
               <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/20">
                 <p className="text-xs text-red-400 font-semibold">Your admin account does not have 2FA enabled.</p>
                 <p className="text-xs text-gray-500 mt-0.5">Enable TOTP before requiring it for other users. This account has elevated privileges — secure it with an authenticator app.</p>

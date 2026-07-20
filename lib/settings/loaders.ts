@@ -20,6 +20,7 @@ import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { totpEnrollmentPathFor } from "@/lib/admin-totp-enrollment";
 import {
   getPreferenceMatrix,
   type PreferenceMatrixRow,
@@ -35,10 +36,33 @@ export interface SpaceOption {
  * Resolves the signed-in user id, redirecting to /login when absent.
  * cache()-wrapped so repeated calls within a single request (page + layout)
  * share one session lookup instead of re-running it.
+ *
+ * PO-1A — this guard used to check ONLY that a session existed, which made it
+ * the one authenticated read path in the app that ignored the forced-TOTP
+ * enrolment gate every helper in lib/session.ts enforces. proxy.ts allows a
+ * pending session into /dashboard/settings so it can enrol, so a pending user
+ * could load their profile, preferences and notification settings on the way
+ * past — a real, if narrow, hole in the "a pending session reaches nothing"
+ * invariant.
+ *
+ * It now honours the gate, with ONE deliberate opt-out: getSecurity(), which
+ * backs the page that hosts the enrolment widget itself. That is the same
+ * `allowTotpSetupPending` carve-out /api/user/totp/* takes, and it is required
+ * — gate the enrolment surface on enrolment and you rebuild the deadlock this
+ * slice exists to remove.
+ *
+ * Pending users are redirected to their role's enrolment surface rather than
+ * shown a 403: this is a page load, and the correct answer to "you have not
+ * enrolled" on a page load is to take them somewhere they CAN enrol.
  */
-const requireUserId = cache(async (): Promise<string> => {
+const requireUserId = cache(async (
+  opts?: { allowTotpSetupPending?: boolean },
+): Promise<string> => {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) redirect("/login");
+  if (session.requireTotpSetup && !opts?.allowTotpSetupPending) {
+    redirect(totpEnrollmentPathFor(session.user.role));
+  }
   return session.user.id;
 });
 
@@ -94,7 +118,9 @@ export interface SecurityData {
 }
 
 export async function getSecurity(): Promise<SecurityData> {
-  const userId = await requireUserId();
+  // PO-1A — the enrolment surface for USER/ADMIN accounts. Must load while
+  // enrolment is still pending; see requireUserId's note.
+  const userId = await requireUserId({ allowTotpSetupPending: true });
   const user = await db.user.findUnique({
     where:  { id: userId },
     select: { email: true },

@@ -51,8 +51,9 @@ import { NextResponse }          from "next/server";
 import { authOptions }           from "@/lib/auth";
 import { db }                    from "@/lib/db";
 import { setCachedRevocation }   from "@/lib/session-cache";
+import { decideAdminApiAccess }  from "@/lib/admin-totp-enrollment";
 import { UserRole,
-         SpaceMemberRole }   from "@prisma/client";
+         SpaceMemberRole }       from "@prisma/client";
 
 // ── Exported types ────────────────────────────────────────────────────────────
 
@@ -116,13 +117,22 @@ async function resolveUser(): Promise<SessionUser | null> {
  * Returns true when this session must be denied because the platform requires
  * TOTP enrolment it has not completed.
  *
- * WHY HERE: the browser middleware (proxy.ts) only redirects page navigations
- * (/dashboard/*, /admin/*) to the setup screen — its matcher never runs on
- * /api/*. Without this check a pending session (authenticated by password but
- * not yet enrolled) could call data/admin APIs directly. Enforcing at this
- * shared authorization layer closes that gap for every route that uses the
- * guards below. The enrolment endpoints themselves pass
- * { allowTotpSetupPending: true } so setup can still be completed.
+ * WHY HERE: the browser proxy (proxy.ts — Next.js 16's replacement for
+ * middleware.ts) redirects page navigations to the enrolment screen, but its
+ * matcher is ONLY ["/dashboard/:path*", "/admin/:path*"] — it never runs on
+ * /api/*, so it cannot protect a single API route. Without this check a pending
+ * session (authenticated by password but not yet enrolled) could call
+ * data/admin APIs directly. Enforcing at this shared authorization layer closes
+ * that gap for every route that uses the guards below. The enrolment endpoints
+ * themselves pass { allowTotpSetupPending: true } so setup can still be
+ * completed.
+ *
+ * PO-1A — the two are a PAIR, and the pairing is load-bearing: the proxy picks
+ * the enrolment SURFACE and this gate denies everything else. When a surface
+ * composed gated data (the old /admin/security did), the proxy sent the pending
+ * admin to a page whose own fetches this gate then 403'd — a deadlock. Surfaces
+ * reachable while pending must therefore compose ONLY /api/user/totp/* data;
+ * see lib/admin-totp-enrollment.ts.
  */
 function totpSetupPending(
   user: SessionUser,
@@ -196,14 +206,18 @@ export async function requireFreshUser(
  * Verifies the session and requires SYSTEM_ADMIN role.
  *
  * Returns `[user, null]` on success, an error response otherwise.
+ *
+ * PO-1A — the decision itself lives in decideAdminApiAccess() so it is provable
+ * without a session or a DB. Semantics are unchanged: role first, then the
+ * forced-enrolment gate, both 403. There is deliberately no options parameter —
+ * no admin route may ever opt out of the enrolment gate.
  */
 export async function requireSystemAdmin(): Promise<
   [SessionUser, null] | [null, NextResponse]
 > {
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
-  if (user.role !== UserRole.SYSTEM_ADMIN) return [null, forbidden()];
-  if (totpSetupPending(user)) return [null, forbidden()];
+  if (decideAdminApiAccess(user) !== "ALLOW") return [null, forbidden()];
   return [user, null];
 }
 
@@ -220,8 +234,7 @@ export async function requireFreshSystemAdmin(): Promise<
 > {
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
-  if (user.role !== UserRole.SYSTEM_ADMIN) return [null, forbidden()];
-  if (totpSetupPending(user)) return [null, forbidden()];
+  if (decideAdminApiAccess(user) !== "ALLOW") return [null, forbidden()];
   if (!user.sessionToken) return [null, unauthorized()];
 
   const t0 = Date.now();

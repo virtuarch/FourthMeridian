@@ -495,14 +495,55 @@ function DisableModal({ onClose, onDisabled }: { onClose: () => void; onDisabled
 
 // ── Main TotpSection ──────────────────────────────────────────────────────────
 
-export function TotpSection() {
+/**
+ * PO-1A — both props are optional and additive; existing call sites keep their
+ * exact prior behaviour by passing neither.
+ *
+ * enforced   — force the non-dismissable enrolment mode without relying on the
+ *              `setup2fa=true` query param. A caller that already KNOWS the
+ *              session is pending (the admin enrolment surface resolves it
+ *              server-side) should not have to round-trip that fact through the
+ *              URL, where a redirect can drop it. ORed with the param, never
+ *              replacing it.
+ * onEnrolled — fired after enrolment completes and the JWT has been updated.
+ *              Lets a server-rendered host re-resolve the surface it should be
+ *              showing now that the pending flag is cleared.
+ * onStatusChange
+ *            — fired on every resolved status read (mount, enable, disable,
+ *              regenerate). This component owns 2FA truth for its host: it is
+ *              the thing that MUTATES 2FA, so a host that also displays 2FA
+ *              state must derive it from here rather than keeping a second copy
+ *              from another endpoint. AdminSecurityConsole used to read
+ *              totpEnabled / recoveryCodesRemaining from
+ *              /api/admin/security/admin-status while this component read
+ *              /api/user/totp/status — two sources, refreshed on different
+ *              events, in the same card. Disabling 2FA or regenerating codes
+ *              here refreshed only this copy, so the console's tiles kept
+ *              asserting the pre-change values.
+ */
+export function TotpSection({
+  enforced: enforcedProp = false,
+  onEnrolled,
+  onStatusChange,
+}: {
+  enforced?: boolean;
+  onEnrolled?: () => void;
+  onStatusChange?: (status: TotpStatus) => void;
+} = {}) {
   const { update: updateSession } = useSession();
   const searchParams = useSearchParams();
-  const enforced     = searchParams.get("setup2fa") === "true";
+  const enforced     = enforcedProp || searchParams.get("setup2fa") === "true";
 
   const [status,  setStatus]  = useState<TotpStatus | null>(null);
   const [modal,   setModal]   = useState<"setup" | "disable" | "regenerate" | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Held in a ref, not a dependency: fetchStatus must keep an empty dep array.
+  // Hosts pass an inline arrow, so depending on the callback directly would
+  // rebuild fetchStatus every render and the mount effect below — which depends
+  // on fetchStatus — would refetch in a loop.
+  const onStatusChangeRef = useRef(onStatusChange);
+  useEffect(() => { onStatusChangeRef.current = onStatusChange; });
 
   const fetchStatus = useCallback(async () => {
     setLoading(true);
@@ -510,6 +551,7 @@ export function TotpSection() {
     const data = await res.json();
     setStatus(data);
     setLoading(false);
+    onStatusChangeRef.current?.(data);
   }, []);
 
   useEffect(() => {
@@ -526,12 +568,18 @@ export function TotpSection() {
 
   async function handleEnrolled() {
     fetchStatus();
-    // Clear requireTotpSetup from the JWT so middleware stops redirecting
+    // Clear requireTotpSetup from the JWT so proxy.ts stops redirecting to the
+    // enrolment surface (it reads token.requireTotpSetup on every page nav).
     await updateSession({ requireTotpSetup: false });
     // Remove the query param from the URL without a page reload
     const url = new URL(window.location.href);
     url.searchParams.delete("setup2fa");
     window.history.replaceState({}, "", url.toString());
+    // PO-1A — the flag is only now cleared, so a server-rendered host that
+    // branched on it (app/admin/security/page.tsx) must re-resolve. Fired last:
+    // the session update has to land before the server re-reads it, or the
+    // refresh would resolve ENROLLING again and bounce the admin back.
+    onEnrolled?.();
   }
 
   return (
