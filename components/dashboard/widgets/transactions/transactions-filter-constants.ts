@@ -48,16 +48,12 @@ export const SOURCE_LABELS: Record<SourceFilter, string> = {
   manual: "Manual",
 };
 
-// ── Group By / perspective — "none" is the flat List view ─────────────────────
-export type GroupBy = "none" | "flow" | "merchant" | "account" | "category";
-
-export const GROUP_BY_LABELS: Record<GroupBy, string> = {
-  none:     "No grouping",
-  flow:     "Flow type",
-  merchant: "Merchant",
-  account:  "Account",
-  category: "Category",
-};
+// ── Group By ─────────────────────────────────────────────────────────────────
+// TX-4 — the GroupBy vocabulary (`GROUP_BY_LABELS`, `type GroupBy`) was DELETED.
+// Its only consumer was the explorer's client-side pivot, removed in TX-3.3: a
+// pivot with per-bucket money totals is analytics over the whole set, which a
+// bounded page cannot produce honestly and which the Cash Flow projection layer
+// already owns. Recoverable at cd28478.
 
 // ── Transfer disposition (CF-1) — humanized canonical TransferDisposition ──────
 export const TRANSFER_DISPOSITION_LABEL: Record<string, string> = {

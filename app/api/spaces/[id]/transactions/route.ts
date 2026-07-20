@@ -35,10 +35,18 @@ export async function GET(
   const [, err] = await requireSpaceRole(spaceId, SpaceMemberRole.VIEWER);
   if (err) return err;
 
-  // TX-2 — bounded read (default cap + truncation sentinel). `truncated` rides
-  // the payload so the UI can honestly say "showing the most recent N" for a
-  // heavy account rather than silently implying completeness (server-side
-  // pagination is the TX-3 follow-up; this slice only removes the unbounded load).
+  // TX-2 — bounded read (default cap + truncation sentinel). `truncated` rides the
+  // payload so a consumer can honestly say "showing the most recent N" rather than
+  // silently implying completeness.
+  //
+  // TX-3.3 — this route is NO LONGER the browsing authority. The Transactions
+  // explorer moved to the keyset-paged sibling
+  // (GET /api/spaces/[id]/transactions/query, lib/data/transaction-query.ts), which
+  // is unbounded-safe and server-filtered. What still reads THIS route is the
+  // ANALYTICAL set: Cash Flow, Liquidity, the Overview doorway preview, and the
+  // workspace renderers, which fold the whole array and therefore keep the cap +
+  // truncation sentinel until their own projection migration. Do not add browsing
+  // features here.
   const { rows: transactions, truncated, limit } = await getTransactions({ spaceId });
 
   // MC1 Phase 4 Slice 6 (F-6, plan D-8) — a serialized conversion context

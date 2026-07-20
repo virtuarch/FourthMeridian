@@ -125,7 +125,7 @@ const BANKING_READS: { label: string; startMarker: string; endMarker: string }[]
   {
     label: "getDebtTransactions",
     startMarker: "export async function getDebtTransactions(",
-    endMarker: "export async function getInvestmentTransactions(",
+    endMarker: "function resolveAccountName(",
   },
 ];
 

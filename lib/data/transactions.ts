@@ -38,7 +38,6 @@ import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import {
   Transaction,
-  InvestmentTransaction,
   TransactionDetail,
   TransactionDetailAccount,
   TransactionDetailCounterparty,
@@ -51,10 +50,7 @@ import { ShareStatus, FlowType, Prisma } from "@prisma/client";
 import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 // TI-1: canonical row → DTO serialization (single derivation site — replaces
 // the three inline mappings this file previously duplicated).
-import {
-  serializeTransactionRow,
-  serializeInvestmentTransactionRow,
-} from "@/lib/transactions/serialize";
+import { serializeTransactionRow } from "@/lib/transactions/serialize";
 import { gatedCounterpartyId, chooseCounterpartyId } from "@/lib/transactions/counterparty-visibility";
 import { transactionDetailWhere } from "@/lib/transactions/detail-query";
 // TI5-2 — the pure read-time relationship engine. Candidate gathering stays in
@@ -324,35 +320,19 @@ export async function getDebtTransactions(
 }
 
 /**
- * Investment transactions (Buy/Sell/Dividend/Split/Fee), newest first.
+ * TX-4 — `getInvestmentTransactions()` was DELETED here.
  *
- * P2-2 scope note: this is the INVESTMENT partition read and currently has NO live
- * consumers (dead). Its `category ∈ {Buy,Sell,Dividend,Split,Fee}` gate is therefore
- * NOT a live semantic-population authority — nothing downstream depends on it. It is
- * left untouched here on purpose: it is investment-domain and owned by the concurrent
- * investment truth-spine track (P2-5/P2-6, current-positions / PositionObservation),
- * whose canonical migration will retire or re-express it. The P2-2 population
- * invariant (lib/data/transactions.population.test.ts) deliberately scopes to the
- * BANKING reads and does not police this line.
+ * It had no consumer (dead since P2-2) and, unlike every other transaction read in
+ * this file, it was UNBOUNDED — no `take`, no window. TX-1 flagged it as the one
+ * remaining unbounded loader and TX-2/CLEAN-0 both deferred its removal. Wiring it
+ * up would have reintroduced exactly the unbounded read this whole arc removed, so
+ * the dead code is gone rather than left as a loaded gun.
+ *
+ * The pure `serializeInvestmentTransactionRow` it used is deliberately KEPT: it is
+ * side-effect-free, has frozen golden coverage, and is owned by the concurrent
+ * investment truth-spine track (P2-5/P2-6), whose canonical migration will retire or
+ * re-express it. Recoverable at cd28478 if that track wants the loader back.
  */
-export async function getInvestmentTransactions(): Promise<InvestmentTransaction[]> {
-  const { spaceId } = await getSpaceContext();
-
-  const rows = await db.transaction.findMany({
-    where: {
-      // deletedAt: null + visibilityLevel (KD-15) — see getTransactions() above.
-      financialAccount: { deletedAt: null, spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE, visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY } } } },
-      // Transaction.deletedAt: null — D2 Step 4D-R, see getTransactions() above.
-      deletedAt: null,
-      category: { in: ["Buy","Sell","Dividend","Split","Fee"] as never[] },
-    },
-    orderBy: { date: "desc" },
-  });
-
-  // TI-1: canonical serialization — byte-identical to the previous inline
-  // mapping (pinned by lib/transactions/serialize.golden.test.ts).
-  return rows.map(serializeInvestmentTransactionRow);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TI-1 — single-transaction detail read
