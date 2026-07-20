@@ -9,10 +9,24 @@ The AI evolution ladder frames the whole roadmap: **v2.4.5 makes every answer ho
 Branch: `feature/v2.5-spaces-completion`.
 
 **Remaining exit criteria:**
-1. **Atlas/design-system closure** — a ruling + one cheap slice, not a migration: expand the palette-ratchet fence to the currently-unscoped trees and record explicit exemptions (`business_accounts`, admin/merchant-ops, marketing/public). Product surfaces already satisfy the criterion.
-2. **Hygiene** — `.env.example` drift (`AI_OUTPUT_VALIDATION_MODE`, `TIINGO_API_KEY`, `SECURITY_PRICES_ENABLED`, `INVESTMENT_IMPORTS_ENABLED`, `FLOWTYPE_SHADOW`) + the latent `.gitignore` `.env*` re-ignore ordering.
+1. **Atlas/design-system closure** — a ruling + one cheap slice, not a migration: expand the palette-ratchet fence to the currently-unscoped trees and record explicit exemptions (`business_accounts`, admin/merchant-ops, marketing/public). Product surfaces already satisfy the criterion. **This is the only unstarted scoped v2.5 exit criterion** (`lib/atlas/palette-ratchet.test.ts:28` still scans 3 dirs; `ALLOWLIST_FILES` empty). Slice: V25-CLOSE-2.
 
-*Already met:* **`SpaceDashboard.tsx` decomposition substantially complete** (the SD-x wave — SpaceShell, workspace registry, declarative loading, and standard/perspective workspace extraction all landed; host reduced ~3,731 → ~1,480 LOC; SD-8 census concluded the decomposition clean — see [../doctrine/spaces.md](../doctrine/spaces.md)); legacy `Account` physically retired; WorkspaceAccountShare retired; BALANCE_ONLY guarantee proven end-to-end; new surfaces ship in Atlas.
+*Already met:* **`SpaceDashboard.tsx` decomposition substantially complete** (the SD-x wave — SpaceShell, workspace registry, declarative loading, and standard/perspective workspace extraction all landed; host reduced ~3,731 → ~1,480 LOC; SD-8 census concluded the decomposition clean — see [../doctrine/spaces.md](../doctrine/spaces.md)); legacy `Account` physically retired; WorkspaceAccountShare retired; BALANCE_ONLY guarantee proven end-to-end; new surfaces ship in Atlas; **hygiene closed** — `.env.example` drift resolved and the latent `.gitignore` `.env*` re-ignore ordering fixed in V25-CLOSE-1.
+
+**Absorbed into v2.5 without a roadmap entry** (recorded here so the phase can account for its own scope): Transaction Explorer **TX-1→TX-4**; connection lifecycle **CONN-1→CONN-4A**; **TimelineLens v4** promotion to sole time selector; **PO-4A/PO-5/PO-5A** platform-ops and beta-gate work; marketing-boundary hardening; admin TOTP enrollment fix. Commit references in [STATUS.md](../../STATUS.md). *Process note: these shipped across 97 commits with no roadmap update — see the V25-CLOSE-1 audit for why the drift guard did not fire.*
+
+### Remaining-work classification
+
+Every open item below is classified. Nothing sits in an unlabelled "future" bucket.
+
+| Class | Meaning | Items |
+|---|---|---|
+| **A** | Must complete before v2.5 closure | Atlas palette-ratchet fence expansion (exit criterion 1) · **green the CI lint gate** — `npm run lint` exits 1 on five pre-existing React correctness errors in tracked components, and `ci.yml` runs it as a blocking step. *V25-CLOSE-1 closed the rest of class A: ledger reconciliation, prototype containment, test-discovery boundary, archive removal, `.gitignore` ordering.* |
+| **B** | Good v2.5 polish — improves honesty/safety, does not gate closure | FX rate-miss disclosure (`lib/money/convert.ts:59` passes native amounts through as target currency behind only an `≈`); audit + fresh-access on the three `app/api/admin/plaid/*` operator routes; cross-authority parity guard for the three Space visibility resolvers; Debt/Liquidity zero-data workspace states; Space template picker descriptions; dead-code sweep (~694 LOC). |
+| **C** | v2.6 work — do not pull forward | Conversation state / `conversationId` (v2.6a); `AiAdvice` write path KD-14 (v2.6b); `context-priority` planner activation; `comingSoon` lenses (tax/property/businessHealth); provider expansion. |
+| **D** | Later scaling work | TX-5 explorer query cost (gated on KD-15 boundary relocation); PROV-6 provider-neutral ingestion payload (correctly deferred until a second real ingesting provider); `SectionCard.tsx:160-163` legacy section-key data migration. |
+
+**Boundary note (binding):** the only v2.5-side obligations that v2.6 genuinely depends on are relocating `lib/ai/visibility.ts` out of the AI namespace (13 non-AI files import it, making the privacy predicate load-bearing for the financial data layer) and btc-sync flow-authority convergence. Everything conversational is additive and touches no financial code.
 
 ## v2.5.5 — Financial Intelligence — *convergence/doctrine closeout*
 

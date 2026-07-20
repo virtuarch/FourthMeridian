@@ -35,19 +35,23 @@ The connection experience was previously described as one undifferentiated "sync
 ```
 ✅ CONN-1 — Connection Lifecycle Experience            (LANDED 26c0a54)
 ⬇️
-🔜 CONN-2 — Financial Intelligence Reconstruction Experience
+✅ CONN-2 — Financial Intelligence Reconstruction      (LANDED 7f521de → 3412fb8)
 ⬇️
-🔜 CONN-3 — Financial Freshness Pipeline
+✅ CONN-3 — Financial Freshness Pipeline               (LANDED 25ef845)
 ⬇️
-🔜 PO-4B — Provider Authorization Lifecycle            (separate track — operator, not customer)
+✅ CONN-4 — Connection Removal Doctrine + CONN-4A      (LANDED da679b0, 9c9b4c0)
 ⬇️
-🛑 PO-5 — QA / Beta Hardening                          (gate before opening beta)
+⏸️ PO-4B — Provider Authorization Lifecycle            (separate track — paused, operator not customer)
+⬇️
+✅ PO-5 — QA / Beta Hardening                          (audit f1a0901; PO-5A gate hardening 630a84e)
 ```
+
+**Sequence status (reconciled V25-CLOSE-1):** the customer-facing CONN arc is complete. CONN-4A resolved the disconnect-lifecycle boundary decision that CONN-2 item 10 left open. PO-4B remains deliberately paused. What remains on the beta gate is not connection work — it is the LLM disclosure copy and the production ops/config floor tracked in [../audits/production-readiness.md](../audits/production-readiness.md).
 
 ### ✅ CONN-1 — Connection Lifecycle Experience *(complete — 26c0a54)*
 Investigation + presentation-only foundation. Established the single persisted source of truth per provider (`PlaidItem.syncIncompleteAt` / `Connection.lastSyncedAt`), the pure `ConnectionLifecycleStatus` projection (`lib/sync/lifecycle.ts`), truthful card copy, and the registration "check your inbox" screen. Documented the Phase-6 (Layer-3) balance-freshness root cause without touching financial authorities. See `docs/audits/CONN1_CONNECTION_LIFECYCLE_AUDIT.md`.
 
-### 🔜 CONN-2 — Financial Intelligence Reconstruction Experience
+### ✅ CONN-2 — Financial Intelligence Reconstruction Experience *(complete — `7f521de` roadmap correction + spinner fix → `d1d3d97` CONN-2A/C/G/H → `3412fb8` CONN-2B multi-account rebuild)*
 Make Layer 2 visible and controllable. Per-connection intelligence-readiness surface ("Transactions: complete · Intelligence: ready/incomplete · ~N available"), and a multi-account **"Rebuild selected intelligence"** control that reuses the existing batch authority (`refreshAllActiveItemsForUser`, with an additive `includeItemIds[]` filter — **never** a new `refreshMultipleAccounts()`). Progress is stage-based (Importing → Reconstructing → Finalizing → Ready), data-backed only, no fabricated percentages. See `docs/audits/CONN2_FINANCIAL_RECONSTRUCTION_AUDIT.md` + the implementation audit `docs/audits/CONN2_RECONSTRUCTION_IMPLEMENTATION_AUDIT.md`. **Constraints:** no new sync engine, no DayFacts/FlowType/valuation changes, no duplicate authorities.
 
 **Principle (amended):** a connection can have *complete transaction data* while *derived intelligence* (charts, trends, snapshots, insights) is still rebuilding. The experience must never imply "your transactions are missing" or "we're re-downloading your history" when the real operation is `Provider Data → Transaction Truth → Intelligence Reconstruction → Charts/Trends/Insights/Snapshots`.
@@ -62,20 +66,20 @@ Make Layer 2 visible and controllable. Per-connection intelligence-readiness sur
 7. **CONN-2F — operator diagnostics** in Platform Ops / Customer Success: per-connection provider sync, tx count, latest tx, last reconstruction, latest snapshot, health.
 8. **CONN-2G — completion semantics**: "Provider: Sync complete" ≠ "Fourth Meridian: Financial profile ready." The card says "You're ready" ONLY when acquisition + reconstruction complete.
 9. **CONN-2H — empty state**: explain the transformation ("Import transactions · Build your financial timeline · Generate cash-flow insights · Create your wealth picture").
-10. **Disconnect lifecycle** — a CONN-2/CONN-3 boundary decision (documented, likely deferred).
+10. ✅ **Disconnect lifecycle** — resolved in **CONN-4** (doctrine audit `da679b0`) and **CONN-4A** (`9c9b4c0`): Disconnect vs consent-gated Delete-data, soft-delete only, history preserved (Model A).
 
 **CONN-2E — architecture amendment (binding):** provider truth stays boring — `PlaidItemStatus`/`ConnectionStatus` remain `ACTIVE | NEEDS_REAUTH | ERROR | REVOKED`, NOT expanded into a workflow engine. A derived **`ConnectionLifecycleProjection`** (pure, no DB authority) computes the richer UI phases `IMPORTING | RECONSTRUCTING | READY | ACTION_REQUIRED | RETRYING | REMOVING`. Canonical facts, derived intelligence — the UI is smart without a second database authority.
 
 **Boundary (binding):** CONN-2 answers *"Is Fourth Meridian's intelligence built?"* CONN-3 answers *"Is today's financial state current?"* Do NOT touch freshness (balance/snapshot refresh authority, `FinancialAccount.balance` writes, current-value pipelines) in CONN-2 even though the bugs are related.
 
-### 🔜 CONN-3 — Financial Freshness Pipeline
+### ✅ CONN-3 — Financial Freshness Pipeline *(complete — `25ef845`)*
 Resolve the Layer-3 root cause: route the routine sync paths (webhook / cron) through a balance-refresh + today's-snapshot regeneration step the way `refreshPlaidItem` already does — reusing existing authorities, adding none. Surface the three freshness timestamps separately. **This is the slice that is permitted to touch the balance/snapshot refresh path** (behind its own tested, revertible change) — CONN-1/CONN-2 deliberately do not.
 
-### 🔜 PO-4B — Provider Authorization Lifecycle *(separate track)*
+### ⏸️ PO-4B — Provider Authorization Lifecycle *(separate track — paused; class C)*
 Operator-facing provider auth-age visibility + prompt-to-reauth (never auto-revoke). Distinct axis from CONN (customer intelligence): PO-4B is *platform operating the platform*. Remains paused until explicitly resumed. See `docs/audits/PO4_PLATFORM_OPERATIONS_CONTROL_INVESTIGATION.md` §4.
 
-### 🛑 PO-5 — QA / Beta Hardening
-The gate before opening beta: end-to-end verification of the connection → reconstruction → freshness experience across multi-account state, plus the OPS-1 operational floor. No new product surface.
+### ✅ PO-5 — QA / Beta Hardening *(audit `f1a0901`; PO-5A gate hardening `630a84e`)*
+The gate before opening beta: end-to-end verification of the connection → reconstruction → freshness experience across multi-account state, plus the OPS-1 operational floor. No new product surface. **The audit and the code half are done** (consent capture, lazy Plaid client with honest 503, operator email/job/provider health widgets). What is still open is the *operational* half — Sentry, uptime monitor, restore drill, and the production config flips — tracked in [../audits/production-readiness.md](../audits/production-readiness.md), not here.
 
 ---
 

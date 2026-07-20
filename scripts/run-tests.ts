@@ -48,12 +48,21 @@ const ROOT = process.cwd();
 const PRELOAD = path.join(ROOT, "scripts", "lib", "server-only-preload.cjs");
 const TSX_BIN = path.join(ROOT, "node_modules", ".bin", "tsx");
 
+// Directories whose tests are NOT production invariants and must never enter
+// this suite. `app/prototype/` holds local design harnesses (untracked — see
+// .gitignore); before V25-CLOSE-1 a prototype's private copy of the TimelineLens
+// tests ran here indistinguishably from the real guard, so a green suite implied
+// an invariant that production code never had to satisfy. Prototype experiments
+// stay runnable by hand; they just do not speak for production.
+const NON_PRODUCTION_DIRS = new Set<string>(["prototype"]);
+
 // Recursively collect files ending in ".test.ts" under a root dir. A hand-rolled
 // walk (vs. fs.globSync) keeps this fully typed under @types/node@20 and adds no
 // dependency. node_modules / .next are never under lib|app, so no prune needed.
 function collectTests(dir: string): string[] {
   const found: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() && NON_PRODUCTION_DIRS.has(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) found.push(...collectTests(full));
     else if (entry.name.endsWith(".test.ts")) found.push(path.relative(ROOT, full));

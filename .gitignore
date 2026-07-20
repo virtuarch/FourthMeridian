@@ -19,9 +19,7 @@ scripts/.backfill-logs/
 # next.js
 /.next/
 /out/
-prototype/**/.next/
-prototype/**/out/
-prototype/**/node_modules/
+# (prototype build output — now subsumed by the `prototype/` rule further down)
 
 # production / build outputs
 /build
@@ -38,7 +36,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files — real secrets, never commit
+# env files — real secrets, never commit.
+# ORDERING IS LOAD-BEARING: the negation must come after the patterns it
+# exempts, and no later rule may re-broaden them. A stray `.env*` lower in this
+# file silently re-ignored .env.example for the whole v2.0→v2.5 era (V25-CLOSE-1).
 .env
 .env.*
 # Allow the safe template — no real secrets inside
@@ -81,8 +82,16 @@ cloudflared/*.json
 cloudflared/*.pem
 cloudflared/cert.pem
 
-# Deprecated stub files (superseded by lib/plaid/ and lib/db.ts)
-.env*
+# Design prototypes / harnesses — local experiments only, NEVER shipped.
+# app/prototype/ sits under the App Router, so anything tracked there builds and
+# deploys as a public, unauthenticated route (/prototype/*) — it is outside the
+# proxy.ts auth matcher. Keeping the tree untracked is what stops that; the
+# experiments themselves stay on disk. See docs/audits/V25_CLOSE_1_LEDGER_RECONCILIATION.md.
+app/prototype/
+# Root prototype/ holds standalone Next apps (own package.json/next.config).
+# Previously only their build output was ignored, so `git add -A` would have
+# committed two nested applications into this repo.
+prototype/
 
 # scratch/backup artifacts
 _to_delete/
