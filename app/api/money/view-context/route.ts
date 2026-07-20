@@ -21,7 +21,7 @@ import { getSpaceContext } from "@/lib/space";
 import { getAccounts } from "@/lib/data/accounts";
 import { bankingTransactionWhere } from "@/lib/data/transactions";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
-import { serializeSpaceConversionContext } from "@/lib/money/server-context";
+import { resolveEffectiveSpaceConversionSerialized } from "@/lib/money/server-context";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 
@@ -56,7 +56,13 @@ export async function GET(req: NextRequest) {
   // transaction currencies + dates, plus the snapshot series — all targeted at
   // the requested view currency. Aggregate-derived coverage is equivalent to the
   // old row scan (same distinct currency/date sets).
-  const moneyCtx = await serializeSpaceConversionContext(
+  //
+  // V25-CLOSE-3A — resolve the EFFECTIVE currency here (the shared decision
+  // point): if `parsed.value` cannot be satisfied (every needed pair misses), the
+  // display reverts to USD and `reverted: true` is reported. `target` stays the
+  // effective currency for existing readers; `requested`/`reverted` are additive.
+  // Nothing is persisted.
+  const resolved = await resolveEffectiveSpaceConversionSerialized(
     { reportingCurrency: parsed.value },
     {
       currencies: [
@@ -72,5 +78,11 @@ export async function GET(req: NextRequest) {
     },
   );
 
-  return NextResponse.json({ target: parsed.value, moneyCtx });
+  return NextResponse.json({
+    target:    resolved.effective, // back-compat: existing readers use `target`
+    requested: resolved.requested,
+    effective: resolved.effective,
+    reverted:  resolved.reverted,
+    moneyCtx:  resolved.moneyCtx,
+  });
 }

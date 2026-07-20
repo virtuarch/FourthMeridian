@@ -48,7 +48,9 @@ import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { type HeroPoint } from "@/components/dashboard/widgets/SpaceTrendHero";
 import { RecentTransactionsPanel } from "@/components/dashboard/widgets/RecentTransactionsPanel";
 import { rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
-import { useDisplayCurrency } from "@/lib/currency-context";
+import { useDisplayCurrency, DisplayCurrencyProvider } from "@/lib/currency-context";
+import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { CurrencyRevertedBanner } from "@/components/dashboard/CurrencyRevertedBanner";
 import { getSpaceHeroDef } from "@/lib/space-hero";
 import type { Transaction } from "@/types";
 import { SectionCard } from "@/components/space/sections/SectionCard";
@@ -290,9 +292,26 @@ export function SpaceDashboard({
     moneyCtx: spaceMoneyCtx,
     widgetCtx,
     memberCount,
+    currencyReverted,
+    requestedCurrency,
+    effectiveCurrency,
     reloadSections,
     reloadAccounts,
   } = useSpaceData({ spaceId, displayCurrency, wantSnapshots, wantTransactions });
+
+  // V25-CLOSE-3A — the reporting-currency failure contract, resolved once at the
+  // shared /view-context boundary and applied here at the composition root. When
+  // the requested display currency cannot be satisfied, the WHOLE tree reverts to
+  // the effective (USD) currency for formatting AND snapshot nominal currency, and
+  // one banner explains it. No per-perspective handling; the stored preference is
+  // untouched. `displayCurrency` (the fetch target) is deliberately NOT changed —
+  // it is what lets /view-context keep detecting the unsatisfiable request.
+  const effectiveDisplay = currencyReverted
+    ? (effectiveCurrency ?? DEFAULT_DISPLAY_CURRENCY)
+    : displayCurrency;
+  const effectiveSnapshotCurrency = currencyReverted
+    ? (effectiveCurrency ?? DEFAULT_DISPLAY_CURRENCY)
+    : (snapshotCurrency ?? displayCurrency);
 
   // Data freshness — newest lastUpdated across this Space's shared accounts (no
   // new fetch). Surfaced in the header subtitle so no balance is read without
@@ -585,7 +604,7 @@ export function SpaceDashboard({
       const months = heroPoints[heroPoints.length - 1].value / monthlyExp;
       heroHeadlineOverride = `${months.toFixed(1)} months covered`;
       // MC1 QA Q4 — the config expense figure is Space-native; label follows.
-      heroSublineNote      = `at ${formatBalance(monthlyExp, displayCurrency)}/mo expenses`;
+      heroSublineNote      = `at ${formatBalance(monthlyExp, effectiveDisplay)}/mo expenses`;
     }
   }
 
@@ -640,7 +659,7 @@ export function SpaceDashboard({
     onAddGoal: () => setShowAddGoal(true),
     ctx: widgetCtx,
     snapshots,
-    snapshotCurrency: snapshotCurrency ?? displayCurrency,
+    snapshotCurrency: effectiveSnapshotCurrency,
   };
 
   // SD-2 closeout — the perspective render implementations moved to the
@@ -658,7 +677,7 @@ export function SpaceDashboard({
 
   const renderCtx: WorkspaceRenderCtx = {
     spaceId,
-    snapshotCurrency: snapshotCurrency ?? displayCurrency,
+    snapshotCurrency: effectiveSnapshotCurrency,
     ficoScore,
     ficoUpdatedAt,
     perspectiveTargetCurrency,
@@ -688,6 +707,12 @@ export function SpaceDashboard({
   };
 
   return (
+    // V25-CLOSE-3A — when the requested currency was unsatisfiable, a nested
+    // provider re-scopes EVERY descendant's aggregate formatting to the effective
+    // (USD) currency, overriding the ambient provider (which still carries the
+    // requested currency so /view-context keeps detecting the failure). No-op when
+    // not reverted (effectiveDisplay === displayCurrency).
+    <DisplayCurrencyProvider currency={effectiveDisplay}>
     <SpaceShell
       mobileOptimized
       // Global shell overlays — the shell owns WHERE they mount (above the
@@ -781,6 +806,16 @@ export function SpaceDashboard({
             no animation (the @media rule below). */}
         <div key={`${activeTab}:${activePerspectiveId ?? "networth"}`} className="fm-view-enter">
 
+        {/* V25-CLOSE-3A — non-blocking disclosure when the requested reporting
+            currency could not be satisfied and the display fell back to USD. One
+            banner at the composition root; no per-perspective handling. */}
+        {currencyReverted && (
+          <CurrencyRevertedBanner
+            requested={requestedCurrency ?? "the selected currency"}
+            effective={effectiveCurrency ?? DEFAULT_DISPLAY_CURRENCY}
+          />
+        )}
+
         {/* Settings is no longer an in-space tab (UX-CUST-1A correction):
             section show/hide and layout controls moved to ManageSpaceModal →
             Overview. Opened via the "Manage" button above. */}
@@ -855,7 +890,7 @@ export function SpaceDashboard({
                     canManage={canManage}
                     ctx={widgetCtx}
                     snapshots={snapshots}
-                    snapshotCurrency={snapshotCurrency ?? displayCurrency}
+                    snapshotCurrency={effectiveSnapshotCurrency}
                     transactions={spaceTransactions}
                     txCtx={txConversionCtx}
                     period={cashFlowPeriod}
@@ -977,7 +1012,7 @@ export function SpaceDashboard({
               heroPoints={heroPoints}
               heroHeadlineOverride={heroHeadlineOverride}
               heroSublineNote={heroSublineNote}
-              heroCurrency={displayCurrency}
+              heroCurrency={effectiveDisplay}
               snapshotsLoading={snapshots === null}
               sectionsForTab={sectionsForTab}
               card={sectionCardBundle}
@@ -1028,5 +1063,6 @@ export function SpaceDashboard({
           }
         `}</style>
     </SpaceShell>
+    </DisplayCurrencyProvider>
   );
 }

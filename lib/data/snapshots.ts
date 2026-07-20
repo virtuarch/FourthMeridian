@@ -16,7 +16,7 @@
 
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { buildSpaceConversionContext } from "@/lib/money/server-context";
+import { buildSpaceConversionContext, resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { convertStampedValues } from "@/lib/snapshots/stamp-conversion";
 import type { ConversionContext } from "@/lib/money/types";
 import { Snapshot } from "@/types";
@@ -35,19 +35,32 @@ async function resolveStampContext(
     where:  { id: spaceId },
     select: { reportingCurrency: true },
   });
-  const target = space?.reportingCurrency ?? "USD";
+  const requested = space?.reportingCurrency ?? "USD";
 
-  const offStamp = rows.filter((r) => (r.reportingCurrency ?? "USD") !== target);
-  if (offStamp.length === 0) return { target, ctx: null };
+  const offStamp = rows.filter((r) => (r.reportingCurrency ?? "USD") !== requested);
+  if (offStamp.length === 0) return { target: requested, ctx: null };
 
-  const ctx = await buildSpaceConversionContext(
-    { reportingCurrency: target },
+  // V25-CLOSE-3A — resolve the EFFECTIVE display currency. When the requested
+  // currency cannot be satisfied for these off-stamp rows (e.g. the Space was
+  // switched to a currency the archive has no rates for), the display reverts to
+  // USD. History then reads in USD: rows stamped USD become on-stamp (fast path,
+  // no false fxMiss), so the Wealth/Debt/Liquidity trends render honestly rather
+  // than collapsing to a fabricated "No history yet". The stored currency is not
+  // touched — this is read-time only.
+  const resolved = await resolveEffectiveSpaceConversion(
+    { reportingCurrency: requested },
     {
       currencies: [...new Set(offStamp.map((r) => r.reportingCurrency ?? null))],
       dates:      [...new Set(offStamp.map((r) => r.date.toISOString().slice(0, 10)))],
     },
   );
-  return { target, ctx };
+  const target = resolved.effective;
+
+  // Re-derive off-stamp against the EFFECTIVE target (under USD, USD-stamped rows
+  // are on-stamp). If nothing is off-stamp now, take the fast path.
+  const offStampEff = rows.filter((r) => (r.reportingCurrency ?? "USD") !== target);
+  if (offStampEff.length === 0) return { target, ctx: null };
+  return { target, ctx: resolved.ctx };
 }
 
 /**

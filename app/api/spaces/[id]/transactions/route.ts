@@ -24,7 +24,7 @@ import { SpaceMemberRole }           from "@prisma/client";
 import { requireSpaceRole }          from "@/lib/session";
 import { getTransactions }           from "@/lib/data/transactions";
 import { db }                        from "@/lib/db";
-import { serializeSpaceConversionContext } from "@/lib/money/server-context";
+import { resolveEffectiveSpaceConversionSerialized } from "@/lib/money/server-context";
 
 export async function GET(
   req: NextRequest,
@@ -60,8 +60,12 @@ export async function GET(
     where:  { id: spaceId },
     select: { reportingCurrency: true },
   });
-  const moneyCtx = space
-    ? await serializeSpaceConversionContext(space, {
+  // V25-CLOSE-3A — resolve the EFFECTIVE currency (shared decision point): the
+  // Spend/In summary converts through the reverted (USD) context when the stored
+  // currency is unsatisfiable, so it never shows native amounts under a foreign
+  // symbol. Rows stay native either way. Stored currency untouched.
+  const resolved = space
+    ? await resolveEffectiveSpaceConversionSerialized(space, {
         currencies: transactions.map((t) => t.currency ?? null),
         dates:      transactions.map((t) => t.date),
       })
@@ -70,5 +74,12 @@ export async function GET(
   // TX-2A — `limit` rides alongside `truncated` so the workspace honesty note can
   // say the real cap ("the most recent 5,000") rather than a client-side magic
   // number. Presentation metadata only; no calculation depends on it.
-  return NextResponse.json({ transactions, moneyCtx, truncated, limit });
+  return NextResponse.json({
+    transactions,
+    moneyCtx:  resolved?.moneyCtx,
+    reverted:  resolved?.reverted ?? false,
+    effective: resolved?.effective,
+    truncated,
+    limit,
+  });
 }

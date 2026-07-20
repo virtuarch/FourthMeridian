@@ -156,6 +156,62 @@ export function serializeContext(
 }
 
 /**
+ * V25-CLOSE-3A — the coverage verdict for a whole context, read from the
+ * resolution table `buildConversionContext` already produced (via its serialized
+ * form). PURE; introduces NO new FX resolution — it counts the hits/misses that
+ * were computed once at build time.
+ *
+ * `satisfiable` is the display-honesty test behind the reporting-currency
+ * failure contract: a target is UNSATISFIABLE only when conversions are needed
+ * AND every one of them missed (the "€100,000 that is really $100,000" case —
+ * the whole display would be native amounts mislabelled as the target). Partial
+ * coverage (some pairs resolved) stays satisfiable — those surfaces keep the
+ * existing per-value `estimated`/`unavailable` disclosure. An all-identity /
+ * all-USD context needs no conversion (`needed === 0`) and is always satisfiable.
+ */
+export interface FxCoverage {
+  /** Distinct (non-target, non-null) currency×date pairs the Space needs converted. */
+  needed:      number;
+  /** How many of those resolved to a RateMiss (no rate applied). */
+  missed:      number;
+  /** false only when needed > 0 AND every needed pair missed. */
+  satisfiable: boolean;
+}
+
+export function fxCoverageOf(s: SerializedConversionContext): FxCoverage {
+  const values = Object.values(s.entries);
+  const needed = values.length;
+  const missed = values.filter((r) => r.kind === "miss").length;
+  return { needed, missed, satisfiable: needed === 0 || missed < needed };
+}
+
+/** The requested/effective/reverted decision for a display currency. */
+export interface EffectiveCurrencyDecision {
+  requested: string;
+  effective: string;
+  reverted:  boolean;
+}
+
+/**
+ * PURE decision behind the reporting-currency failure contract (V25-CLOSE-3A).
+ * Kept separate from the DB-bound context build so it is unit-testable without
+ * an archive: given the requested currency and its coverage verdict, decide the
+ * effective display currency. Reverts to `fallback` (USD) ONLY when the request
+ * is unsatisfiable AND is not already the fallback (nothing better to fall back
+ * to ⇒ not a "revert"). Never persists — the caller applies it at read time.
+ */
+export function decideEffectiveCurrency(
+  requested: string,
+  coverage: FxCoverage,
+  fallback: string,
+): EffectiveCurrencyDecision {
+  if (coverage.satisfiable || requested === fallback) {
+    return { requested, effective: requested, reverted: false };
+  }
+  return { requested, effective: fallback, reverted: true };
+}
+
+/**
  * Rebuild a synchronous ConversionContext from its serialized form. Pure and
  * client-safe; frozen like the server-built original; unserialized pairs
  * resolve to a deterministic RateMiss (⇒ native + estimated downstream) —

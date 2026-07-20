@@ -69,6 +69,16 @@ export interface SpaceData {
   moneyCtx:     SerializedConversionContext | undefined;
   widgetCtx:    ConversionContext | undefined;
   memberCount:  number | null;
+  /**
+   * V25-CLOSE-3A — the reporting-currency failure verdict for the active display
+   * currency, from the shared /view-context decision. `reverted` is true when the
+   * requested currency could not be satisfied and the display fell back to
+   * `effectiveCurrency` (USD). Undefined `effectiveCurrency` until the fetch
+   * resolves. The stored Space.reportingCurrency is never changed by this.
+   */
+  currencyReverted:  boolean;
+  requestedCurrency: string | undefined;
+  effectiveCurrency: string | undefined;
   /** Re-fetch sections / accounts (ManageSpaceModal's onRefresh). */
   reloadSections: () => Promise<void>;
   reloadAccounts: () => Promise<void>;
@@ -90,6 +100,10 @@ export function useSpaceData({
   const [transactionsMeta, setTransactionsMeta] = useState<TransactionsCoverage | null>(null);
   const [moneyCtx,     setMoneyCtx]     = useState<SerializedConversionContext | undefined>(undefined);
   const [widgetMoneyCtx, setWidgetMoneyCtx] = useState<SerializedConversionContext | undefined>(undefined);
+  // V25-CLOSE-3A — reporting-currency failure verdict from /view-context.
+  const [currencyReverted,  setCurrencyReverted]  = useState(false);
+  const [requestedCurrency, setRequestedCurrency] = useState<string | undefined>(undefined);
+  const [effectiveCurrency, setEffectiveCurrency] = useState<string | undefined>(undefined);
 
   // MC1 QA Q6 — a reporting-currency change re-runs the currency-keyed fetches
   // (snapshots + transactions). All-USD: the event never fires, so nothing here
@@ -104,8 +118,21 @@ export function useSpaceData({
     let active = true;
     fetch(`/api/money/view-context?target=${encodeURIComponent(displayCurrency)}`)
       .then((r) => (r.ok ? r.json() : null))
-      .then((data) => { if (active) setWidgetMoneyCtx(data?.moneyCtx ?? undefined); })
-      .catch(() => { if (active) setWidgetMoneyCtx(undefined); });
+      .then((data) => {
+        if (!active) return;
+        setWidgetMoneyCtx(data?.moneyCtx ?? undefined);
+        // V25-CLOSE-3A — carry the failure verdict to the composition root.
+        setCurrencyReverted(!!data?.reverted);
+        setRequestedCurrency(data?.requested ?? undefined);
+        setEffectiveCurrency(data?.effective ?? undefined);
+      })
+      .catch(() => {
+        if (!active) return;
+        setWidgetMoneyCtx(undefined);
+        setCurrencyReverted(false);
+        setRequestedCurrency(undefined);
+        setEffectiveCurrency(undefined);
+      });
     return () => { active = false; };
   }, [displayCurrency]);
   const widgetCtx = useMemo(
@@ -238,6 +265,9 @@ export function useSpaceData({
     moneyCtx,
     widgetCtx,
     memberCount,
+    currencyReverted,
+    requestedCurrency,
+    effectiveCurrency,
     reloadSections,
     reloadAccounts,
   };

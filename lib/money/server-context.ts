@@ -24,7 +24,7 @@ import { fxArchive } from "@/lib/fx/archive";
 import { FX_BASE } from "@/lib/fx/config";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { buildConversionContext } from "./context";
-import { identityContext, serializeContext, type SerializedConversionContext } from "./convert";
+import { decideEffectiveCurrency, fxCoverageOf, identityContext, serializeContext, type SerializedConversionContext } from "./convert";
 import { revalidateFxIfStale, shouldTrigger, type FxFreshnessGate } from "./fx-freshness";
 import type { ConversionContext } from "./types";
 
@@ -139,6 +139,69 @@ export async function buildSpaceConversionContextById(
   });
   if (!space) return identityContext(DEFAULT_DISPLAY_CURRENCY);
   return buildSpaceConversionContext(space, opts);
+}
+
+// ── V25-CLOSE-3A — reporting-currency failure contract (the ONE canonical path) ──
+//
+// INVARIANT: a reporting currency is never DISPLAYED as active unless the archive
+// can actually satisfy the conversion. When it cannot (every needed pair misses),
+// the DISPLAY reverts to USD — the stored Space.reportingCurrency is untouched.
+//
+// This is the single decision point the display readers share (view-context,
+// transactions summary, snapshot reader). It reuses buildSpaceConversionContext +
+// fxCoverageOf — NO new FX math, no provider change, no writer change. Writers
+// (snapshot regenerate/backfill) keep calling buildSpaceConversionContext directly
+// and stay on the intended currency; only DISPLAY reads resolve the effective one.
+
+/** The outcome of resolving a Space's EFFECTIVE display currency (may differ from requested). */
+export interface EffectiveSpaceConversion {
+  /** What the Space asked to display in (its stored reportingCurrency, or a "view as" target). */
+  requested: string;
+  /** What the display will ACTUALLY use — requested, or USD when requested is unsatisfiable. */
+  effective: string;
+  /** True when the display fell back to USD because requested could not be satisfied. */
+  reverted:  boolean;
+  /** The context for `effective` — safe to serialize/consume; conversions in it resolve. */
+  ctx:       ConversionContext;
+}
+
+/**
+ * Resolve the effective display currency for a Space. Builds the requested
+ * context, reads its coverage verdict, and — only when the requested target is
+ * wholly unsatisfiable — rebuilds against USD and reports `reverted: true`. USD
+ * is the guaranteed floor (base currency; identity for USD-denominated data).
+ */
+export async function resolveEffectiveSpaceConversion(
+  space: { reportingCurrency: string },
+  opts: SpaceConversionOptions,
+): Promise<EffectiveSpaceConversion> {
+  const requested = space.reportingCurrency;
+  const ctx = await buildSpaceConversionContext(space, opts);
+  const coverage = fxCoverageOf(serializeContext(ctx, opts.currencies, opts.dates));
+  const decision = decideEffectiveCurrency(requested, coverage, DEFAULT_DISPLAY_CURRENCY);
+  if (!decision.reverted) {
+    return { requested, effective: decision.effective, reverted: false, ctx };
+  }
+  // Fallback: display in USD. Do NOT persist — this is a read-time resolution.
+  const usdCtx = await buildSpaceConversionContext(
+    { reportingCurrency: decision.effective },
+    opts,
+  );
+  return { requested, effective: decision.effective, reverted: true, ctx: usdCtx };
+}
+
+/** Serialized form of {@link resolveEffectiveSpaceConversion} for transport to the client. */
+export async function resolveEffectiveSpaceConversionSerialized(
+  space: { reportingCurrency: string },
+  opts: SpaceConversionOptions,
+): Promise<{ requested: string; effective: string; reverted: boolean; moneyCtx: SerializedConversionContext }> {
+  const r = await resolveEffectiveSpaceConversion(space, opts);
+  return {
+    requested: r.requested,
+    effective: r.effective,
+    reverted:  r.reverted,
+    moneyCtx:  serializeContext(r.ctx, opts.currencies, opts.dates),
+  };
 }
 
 /**
