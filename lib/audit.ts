@@ -34,12 +34,24 @@
  * (per-connection resync, membership actions) emit through this one shape so the
  * operator audit feed is uniform from birth.
  *
- * buildAuditData() is PURE (unit-tested). recordAuditEvent() is the thin adapter
- * that writes one row; it accepts an optional transaction client so a security
- * event can be persisted atomically alongside its state change.
+ * buildAuditData() is PURE (unit-tested) and IS the one audit-shape authority —
+ * consumed by lib/auth.ts and pinned by lib/security-surface.test.ts.
+ *
+ * V25-CLOSE-3 Part 4 — audit-authority decision. A thin `recordAuditEvent()`
+ * adapter used to sit here with ZERO production callers while ~80 sites wrote
+ * `db.auditLog.create` directly. Per the project's own rule — never ship an
+ * authority without a clear consumer (TX-3) — the unadopted adapter was REMOVED
+ * rather than promoted: full promotion would mean migrating every direct writer,
+ * an architecture migration out of scope for an honesty slice, and leaving it in
+ * place presented a false "adopted authority." What remains is exactly one shape
+ * helper with real consumers. New operator/admin audit writes follow the
+ * established sibling pattern — `db.auditLog.create({ data: { performedByAdminId,
+ * action, metadata } })` (see app/api/platform/platform-ops/.../request-reauth) —
+ * or fold their shape through buildAuditData() as the auth/security family does.
+ * The guard `lib/audit-authority.test.ts` pins this: no recordAuditEvent revival
+ * without a consumer.
  */
 
-import { db } from "@/lib/db";
 import { Prisma } from "@prisma/client";
 import type { AuditActionType } from "@/lib/audit-actions";
 
@@ -99,19 +111,4 @@ export function buildAuditData(input: AuditEventInput): Prisma.AuditLogUnchecked
     ...(performedByAdminId ? { performedByAdminId } : {}),
     metadata: mergedMetadata as unknown as Prisma.InputJsonValue,
   };
-}
-
-/** Either the shared client or a $transaction client — mirrors lib/events/emit.ts. */
-type DbClient = Prisma.TransactionClient | typeof db;
-
-/**
- * ADAPTER — write one audit row. Pass a transaction client to include the write
- * in a surrounding db.$transaction (preserves atomicity with the state change
- * being audited); otherwise it writes on the shared client.
- */
-export async function recordAuditEvent(
-  input: AuditEventInput,
-  client: DbClient = db,
-): Promise<void> {
-  await client.auditLog.create({ data: buildAuditData(input) });
 }

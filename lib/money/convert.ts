@@ -26,7 +26,23 @@
  */
 
 import type { Resolution } from "@/lib/fx/types";
-import type { ConversionContext, ConvertedMoney, ConvertedTotal, DatedMoney, Money } from "./types";
+import type { ConversionContext, ConvertedMoney, ConvertedTotal, DatedMoney, FxDisclosure, Money } from "./types";
+
+/**
+ * Classify one converted value's honesty (V25-CLOSE-3). PURE — derived entirely
+ * from the fields convertMoney already sets, so it introduces NO new FX authority
+ * and no math. The distinction it recovers is the one the single `estimated`
+ * boolean loses:
+ *   - not estimated                     → "exact"      (identity / exact rate)
+ *   - estimated AND a rate was applied  → "estimated"  (walked-back / stale)
+ *   - estimated AND conversion === null → "unavailable" (native pass-through:
+ *                                         rate missing or null-residue currency —
+ *                                         the amount is native units mislabelled)
+ */
+export function fxDisclosureOf(c: ConvertedMoney): FxDisclosure {
+  if (!c.estimated) return "exact";
+  return c.conversion === null ? "unavailable" : "estimated";
+}
 
 /**
  * The rate-free context (plan D-2): identity for the target currency,
@@ -88,12 +104,16 @@ export function convertMoney(money: Money, dateISO: string, ctx: ConversionConte
 export function convertAndSum(items: readonly DatedMoney[], ctx: ConversionContext): ConvertedTotal {
   let amount = 0;
   let estimated = false;
+  let unconverted = false;
   for (const it of items) {
     const c = convertMoney(it.money, it.dateISO, ctx);
     amount += c.amount;
     estimated = estimated || c.estimated;
+    // Preserve the stronger "no rate applied" fact through the fold (V25-CLOSE-3),
+    // so an aggregate can disclose FX-unavailable, not merely "estimated".
+    unconverted = unconverted || fxDisclosureOf(c) === "unavailable";
   }
-  return { amount, currency: ctx.target, estimated };
+  return { amount, currency: ctx.target, estimated, unconverted };
 }
 
 // ─── Serialization (MC1 Phase 3 Slice 2, plan D-6) ────────────────────────────

@@ -238,7 +238,22 @@ async function resolveOwnWalletAddresses(
   return new Map(rows.map((r) => [r.externalAccountId, r.financialAccountId]));
 }
 
-/** Map one normalized movement to a Transaction createMany row (with INTERNAL resolution). */
+/**
+ * Map one normalized movement to a Transaction createMany row (with INTERNAL resolution).
+ *
+ * FLOW-CLASSIFIER-EXCEPTION (btc-sync). This is the ONE sanctioned path that
+ * writes persisted flow classification (flowType / flowDirection / category /
+ * classificationReason) WITHOUT lib/transactions/flow-classifier.ts, and so
+ * writes NO classifierVersion (NULL = a distinct authority, not "stale"). It is
+ * allowed because on-chain movements carry none of the banking evidence the
+ * classifier's ladder needs — no PFC, no descriptor, no counterparty name — so
+ * routing them through classifyFlow would pass `undefined` for nearly every
+ * input and yield UNKNOWN. The rationale is stated at length in
+ * flow-classifier.ts (§ OWNERSHIP, not merely staleness) and the exception is
+ * made executable policy — not a comment anyone can quietly copy — by
+ * lib/transactions/flow-classifier-authority.test.ts, which fails if this marker
+ * is removed OR if any OTHER file starts hand-writing flowType off-classifier.
+ */
 function buildTransactionRow(
   financialAccountId: string,
   m: NormalizedBtcMovement,

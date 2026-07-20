@@ -7,8 +7,9 @@ import { Snapshot } from "@/types";
 import { Interval, cutoffForInterval } from "./NetWorthChart";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { useDisplayCurrency } from "@/lib/currency-context";
-import { convertMoney } from "@/lib/money/convert";
+import { convertMoney, fxDisclosureOf } from "@/lib/money/convert";
 import type { ConversionContext } from "@/lib/money/types";
+import { FxUnavailableNote } from "@/components/ui/FxUnavailableNote";
 import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 
 interface Props {
@@ -106,11 +107,14 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
   // context (Personal "view as" override) before formatting. No ctx ⇒ raw
   // stamped values, unchanged. Identity (target === snapshotCurrency) is a
   // no-op; a rate miss returns native + estimated (D-3), surfaced below.
-  const { data, conversionEstimated } = useMemo(() => {
-    const conv = (raw: number, date: string): { amount: number; estimated: boolean } => {
-      if (!ctx || !snapshotCurrency) return { amount: raw, estimated: false };
+  const { data, conversionEstimated, conversionUnavailable } = useMemo(() => {
+    // V25-CLOSE-3 — carry the finer FX disclosure, not just a boolean. "unavailable"
+    // (no rate applied, native amount shown) is disclosed unmistakably below;
+    // "estimated" (a real but walked-back rate) keeps the quiet marker.
+    const conv = (raw: number, date: string): { amount: number; estimated: boolean; unavailable: boolean } => {
+      if (!ctx || !snapshotCurrency) return { amount: raw, estimated: false, unavailable: false };
       const c = convertMoney({ amount: raw, currency: snapshotCurrency }, date, ctx);
-      return { amount: c.amount, estimated: c.estimated };
+      return { amount: c.amount, estimated: c.estimated, unavailable: fxDisclosureOf(c) === "unavailable" };
     };
     const rows = filtered.map((s) => {
       const nw = conv(s.netWorth, s.date);
@@ -122,9 +126,14 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
         totalAssets: ta.amount,
         totalDebt:   td.amount,
         estimated:   nw.estimated || ta.estimated || td.estimated,
+        unavailable: nw.unavailable || ta.unavailable || td.unavailable,
       };
     });
-    return { data: rows, conversionEstimated: rows.some((r) => r.estimated) };
+    return {
+      data: rows,
+      conversionEstimated:   rows.some((r) => r.estimated),
+      conversionUnavailable: rows.some((r) => r.unavailable),
+    };
   }, [filtered, ctx, snapshotCurrency]);
 
   const ticks = useMemo(() => evenTicks(data.map((d) => d.date), 15), [data]);
@@ -207,11 +216,15 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
             ))}
           </div>
 
-          {conversionEstimated && (
+          {/* V25-CLOSE-3 — unmistakable when a rate was UNAVAILABLE (native amount
+              shown); the quiet marker only for the softer walked-back "estimated". */}
+          {conversionUnavailable ? (
+            <FxUnavailableNote />
+          ) : conversionEstimated ? (
             <p className="text-[11px] text-[var(--text-muted)]">
-              ≈ Some values are estimated — no FX rate available for those dates.
+              ≈ Some values use an estimated (older) exchange rate.
             </p>
-          )}
+          ) : null}
         </div>
       }
     >

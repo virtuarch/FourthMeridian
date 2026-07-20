@@ -36,10 +36,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSystemAdmin } from "@/lib/session";
 import { db } from "@/lib/db";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 
 export async function POST(req: NextRequest) {
-  const [, err] = await requireSystemAdmin();
+  // Capture the acting admin so the retirement is attributable. requireSystemAdmin
+  // returns BEFORE any state mutation, so a rejected caller can never reach the
+  // audit write below (no misleading record for a failed authorization).
+  const [admin, err] = await requireSystemAdmin();
   if (err) return err;
 
   // ── Parse body ────────────────────────────────────────────────────────────
@@ -114,6 +118,23 @@ export async function POST(req: NextRequest) {
   console.log(
     `[admin][retire-superseded-item] retired ${oldPlaidItemId} → superseded by ${newItem.id}`,
   );
+
+  // Forensic record (V25-CLOSE-3 Part 3). Operational metadata only — item ids,
+  // the institution, and the connection count. No tokens, no financial values.
+  await db.auditLog.create({
+    data: {
+      performedByAdminId: admin.id,
+      action:             AuditAction.ADMIN_PLAID_ITEM_RETIRED,
+      metadata: {
+        oldPlaidItemId,
+        newPlaidItemId:     newItem.id,
+        ownerUserId:        oldItem.userId,
+        institutionId:      oldItem.institutionId,
+        deletedConnections,
+        result:             "SUCCESS",
+      },
+    },
+  });
 
   return NextResponse.json({
     retired:        true,

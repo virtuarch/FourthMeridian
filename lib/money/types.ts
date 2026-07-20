@@ -50,7 +50,28 @@ export interface ConvertedTotal {
   amount:    number;
   currency:  string;
   estimated: boolean;
+  /**
+   * V25-CLOSE-3 — stronger than `estimated`. True when AT LEAST ONE member was
+   * an *unconverted native pass-through* (rate missing or null-residue), i.e. its
+   * amount is native units labelled as the target currency and can be wrong by
+   * orders of magnitude — not merely converted with a stale rate. `unconverted`
+   * implies `estimated`; surfaces render an unmistakable "FX unavailable" note
+   * for it rather than the quiet "est." marker. (The per-member distinction lives
+   * on ConvertedMoney via `fxDisclosureOf`; this preserves it through the fold.)
+   */
+  unconverted: boolean;
 }
+
+/**
+ * How honest a converted value is, derived purely from a ConvertedMoney
+ * (`fxDisclosureOf`). Ordered by severity:
+ *   - "exact"       — identity or an exact applied rate; show as authoritative.
+ *   - "estimated"   — a real rate was applied but walked back in time (stale).
+ *   - "unavailable" — NO rate applied; the amount is native units shown as the
+ *                     target currency (rate missing or null-residue currency).
+ *                     This is the case that must be disclosed unmistakably.
+ */
+export type FxDisclosure = "exact" | "estimated" | "unavailable";
 
 /**
  * The conversion seam (plan D-2, resolving roadmap open decision #3):

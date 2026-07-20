@@ -193,6 +193,17 @@ export const AuditAction = {
   CONNECTION_RESYNC_TRIGGERED: "CONNECTION_RESYNC_TRIGGERED",
   CONNECTION_REAUTH_REQUESTED: "CONNECTION_REAUTH_REQUESTED",
 
+  // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
+  // Plaid item. These mutate real customer infrastructure (create a fresh link
+  // token, exchange a public_token into a new PlaidItem under the OWNER's
+  // context, retire the superseded item via /item/remove) and previously left
+  // no forensic record. All three carry performedByAdminId (the acting admin)
+  // and operational metadata ONLY — item ids, institution, outcome counts —
+  // never a public_token, access_token, link_token, or any financial value.
+  ADMIN_PLAID_HISTORY_TOKEN_CREATED:   "ADMIN_PLAID_HISTORY_TOKEN_CREATED",
+  ADMIN_PLAID_HISTORY_TOKEN_EXCHANGED: "ADMIN_PLAID_HISTORY_TOKEN_EXCHANGED",
+  ADMIN_PLAID_ITEM_RETIRED:            "ADMIN_PLAID_ITEM_RETIRED",
+
   // ── Platform access (PO1.0) ─────────────────────────────────────────────
   // Grant lifecycle on a platform area (user × area × level). Never free
   // strings — the SECOPS vocabulary lesson applied from birth. Written

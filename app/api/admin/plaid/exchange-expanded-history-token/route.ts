@@ -46,10 +46,13 @@ import { db } from "@/lib/db";
 import { resolveSpaceContext } from "@/lib/space";
 import { performPlaidTokenExchange, parsePlaidError } from "@/lib/plaid/exchangeToken";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
+import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 
 export async function POST(req: NextRequest) {
-  const [, err] = await requireSystemAdmin();
+  // Capture the acting admin for attribution. The guard returns before any state
+  // change, so a rejected caller never reaches the success-path audit write.
+  const [admin, err] = await requireSystemAdmin();
   if (err) return err;
 
   // ── Parse body ────────────────────────────────────────────────────────────
@@ -164,6 +167,26 @@ export async function POST(req: NextRequest) {
       retireErr,
     );
   }
+
+  // Forensic record (V25-CLOSE-3 Part 3). This is the highest-impact operation of
+  // the three — it creates a new PlaidItem under the OWNER's context. Metadata is
+  // ids + counts only; the public_token and the resulting access_token are NEVER
+  // logged.
+  await db.auditLog.create({
+    data: {
+      performedByAdminId: admin.id,
+      action:             AuditAction.ADMIN_PLAID_HISTORY_TOKEN_EXCHANGED,
+      metadata: {
+        oldPlaidItemId,
+        newPlaidItemId:     result.plaidItemId,
+        ownerUserId:        oldItem.userId,
+        institutionId:      oldItem.institutionId,
+        imported:           result.imported,
+        transactionsSynced: result.transactionsSynced,
+        result:             "SUCCESS",
+      },
+    },
+  });
 
   return NextResponse.json({
     success:             true,
