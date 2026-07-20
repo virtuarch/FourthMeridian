@@ -228,15 +228,15 @@ console.log("8. Canonical → display derivations");
   check("a null comparison renders as an empty field",
     deriveBoundaries({ ...s, compareTo: null }).compareTo === "");
 
-  check("summary uses the editorial label", summarize(s).periodLabel === "Last 12 months");
-  check("summary shows the full range", summarize(s).rangeLabel.includes("→"));
+  check("summary uses the editorial label", summarize(s, TODAY).periodLabel === "Last 12 months");
+  check("summary shows the full range", summarize(s, TODAY).rangeLabel.includes("→"));
   check("CUSTOM summarises as Custom range",
-    summarize({ preset: "CUSTOM", asOf: TODAY, compareTo: "2020-01-01" }).periodLabel === "Custom range");
+    summarize({ preset: "CUSTOM", asOf: TODAY, compareTo: "2020-01-01" }, TODAY).periodLabel === "Custom range");
   check("no comparison reads as point-in-time, not a fabricated range",
-    summarize({ ...s, compareTo: null }).comparisonLabel === "Point-in-time · no opening date" &&
-    summarize({ ...s, compareTo: null }).rangeLabel.startsWith("As of"));
+    summarize({ ...s, compareTo: null }, TODAY).comparisonLabel === "Point-in-time · no opening date" &&
+    summarize({ ...s, compareTo: null }, TODAY).rangeLabel.startsWith("As of"));
   check("a real comparison adds no redundant second line",
-    summarize(s).comparisonLabel === null);
+    summarize(s, TODAY).comparisonLabel === null);
 }
 
 // ── 9. Capability gating mirrors the existing rule ───────────────────────────
@@ -250,6 +250,44 @@ console.log("9. Capability gating");
     capabilityForLens({ asOf: "partial", compareTo: "partial", period: "none" }).custom === true);
   check("comparison affordances need BOTH axes",
     capabilityForLens({ asOf: "full", compareTo: "none", period: "none" }).comparison === false);
+}
+
+// ── 10. TIME-1A/1B — anchor naming and the return-to-present escape hatch ────
+console.log("10. Anchor semantics (TIME-1A/1B)");
+{
+  const present: PerspectiveTimeState = { preset: "MTD", asOf: TODAY, compareTo: "2026-07-01" };
+  const historical: PerspectiveTimeState = { preset: "YTD", asOf: "2026-03-31", compareTo: "2026-01-01" };
+
+  // 1B — the anchor is NAMED, always.
+  check("present anchor is named 'As of today'", summarize(present, TODAY).anchorLabel === "As of today");
+  check("present anchor reports anchoredToPresent", summarize(present, TODAY).anchoredToPresent === true);
+  check("historical anchor is named with its date",
+    summarize(historical, TODAY).anchorLabel === "As of Mar 31, 2026", summarize(historical, TODAY).anchorLabel);
+  check("historical anchor reports NOT anchoredToPresent", summarize(historical, TODAY).anchoredToPresent === false);
+
+  // 1B — no label may assert the present tense; that was the falsehood.
+  for (const o of PERIOD_OPTIONS) {
+    check(`option "${o.id}" label makes no present-tense claim`, !/^This\b/.test(o.label), o.label);
+  }
+  check("to-date presets read as 'to date'", PERIOD_OPTIONS.find((o) => o.id === "MTD")?.label === "Month to date");
+
+  // 1A — the escape hatch maps onto an EXISTING action, and actually escapes.
+  const r = shellActionForIntent({ type: "returnToPresent" }, ADAPTER_CTX);
+  check("returnToPresent produces an action", r.ok);
+  check("...and it is the existing setAsOf, not a new authority",
+    r.ok && r.action.type === "setAsOf" && r.action.asOf === TODAY);
+
+  const returned = applyIntent(historical, { type: "returnToPresent" });
+  check("returning moves the anchor to today", returned.asOf === TODAY, show(returned));
+  check("...preserving the active preset", returned.preset === "YTD");
+  check("...and re-deriving its window from the NEW anchor", returned.compareTo === "2026-01-01");
+  check("returning is reported as anchored to the present",
+    summarize(returned, TODAY).anchoredToPresent === true);
+
+  // The doctrine it exists to serve: presets do NOT free you.
+  const stillAnchored = applyIntent(historical, { type: "period", optionId: "MTD", intent: "MTD" });
+  check("a preset does NOT return you to the present (that is what the hatch is for)",
+    stillAnchored.asOf === "2026-03-31");
 }
 
 if (failures > 0) {

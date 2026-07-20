@@ -72,8 +72,16 @@ export function TimelineLens({
         </span>
 
         <span id={summaryId} className="grid min-w-0 gap-1">
-          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
-            Viewing
+          {/* The eyebrow names the VANTAGE POINT, not a generic verb. A bare
+              range shows both dates without saying which one you are standing
+              on; this resolves that. Emphasised when the anchor is historical,
+              because that is the state a user can otherwise forget they are in. */}
+          <span
+            className={`text-[10px] font-semibold uppercase tracking-[0.14em] ${
+              summary.anchoredToPresent ? "text-[var(--text-faint)]" : "text-[var(--meridian-400)]"
+            }`}
+          >
+            {summary.anchorLabel}
           </span>
           <strong className="truncate text-[19px] font-normal leading-[1.15] tracking-[-0.01em] text-[var(--text-primary)]">
             {summary.periodLabel}

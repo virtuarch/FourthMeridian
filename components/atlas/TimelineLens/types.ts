@@ -32,7 +32,16 @@ export type TimelineIntent =
   /** Exchange the two boundaries. */
   | { type: "swap" }
   /** Drop the comparison boundary entirely. */
-  | { type: "clearComparison" };
+  | { type: "clearComparison" }
+  /**
+   * Return the anchor to the present.
+   *
+   * NOT a period — "today" is not a window, it is where you are standing. It is
+   * an intent because the component must not decide what "the present" means;
+   * the adapter resolves it to the canonical today. Maps to the existing
+   * setAsOf action, so no new authority is introduced.
+   */
+  | { type: "returnToPresent" };
 
 export interface TimelinePeriodOption {
   id: string;
@@ -49,7 +58,20 @@ export interface TimelinePeriodOption {
 }
 
 export interface TimelineLensSummary {
-  /** "Last 12 months" / "Custom range" */
+  /**
+   * Names the vantage point: "As of today" / "As of Mar 31, 2026".
+   *
+   * ALWAYS present. asOf is meaningful at every moment — its present-day value
+   * is not "unset", it is "anchored to now". A bare range ("Mar 1 → Mar 31")
+   * shows the anchor without saying which end it is; this says it.
+   */
+  anchorLabel: string;
+  /**
+   * False when the anchor sits in the past. Drives the return-to-present
+   * affordance. The parent decides this — the component owns no notion of today.
+   */
+  anchoredToPresent: boolean;
+  /** "Month to date" / "Custom range" — the WINDOW, measured back from the anchor. */
   periodLabel: string;
   /** "Jul 19, 2025 → Jul 19, 2026" */
   rangeLabel: string;

@@ -148,7 +148,7 @@ export function PerspectiveShell(props: Props) {
             <TimelineLens
               activeOptionId={deriveActiveOptionId(props.timeState)}
               boundaries={deriveBoundaries(props.timeState)}
-              summary={summarize(props.timeState)}
+              summary={summarize(props.timeState, props.today)}
               periodOptions={PERIOD_OPTIONS}
               capability={capabilityForLens(props.temporalCapability)}
               maxDate={props.today}

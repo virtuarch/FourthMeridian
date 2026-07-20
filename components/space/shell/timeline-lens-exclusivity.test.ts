@@ -32,11 +32,11 @@ const TODAY = "2026-07-19";
 const TIME: PerspectiveTimeState = { preset: "MTD", asOf: TODAY, compareTo: "2026-07-01" };
 
 const noop = () => {};
-function render(activePerspectiveId: string | null) {
+function render(activePerspectiveId: string | null, time: PerspectiveTimeState = TIME) {
   return renderToStaticMarkup(
     h(PerspectiveShell as never, {
-      asOf: TIME.asOf,
-      compareTo: TIME.compareTo,
+      asOf: time.asOf,
+      compareTo: time.compareTo,
       today: TODAY,
       onAsOfChange: noop,
       onCompareToChange: noop,
@@ -45,7 +45,7 @@ function render(activePerspectiveId: string | null) {
       presetValue: "MTD",
       onSelectPreset: noop,
       temporalCapability: { asOf: "full", compareTo: "full", period: "none" },
-      timeState: TIME,
+      timeState: time,
       activePerspectiveId,
       tabs: [],
       activeTabId: activePerspectiveId,
@@ -137,6 +137,21 @@ console.log("4. One authority — the lens path adds no competing control");
   check("exactly one lens trigger", (wealth.match(/aria-label="Change time period"/g) ?? []).length === 1);
   check("no date input renders alongside the lens trigger",
     !wealth.includes('type="date"'), "a boundary input escaped the panel");
+}
+
+// ── 5. TIME-1B — the anchor is named on EVERY Perspective ───────────────────
+console.log("5. Anchor visibility across all five Perspectives");
+{
+  const HISTORICAL: PerspectiveTimeState = { preset: "YTD", asOf: "2026-03-31", compareTo: "2026-01-01" };
+  for (const id of ["wealth", "cashFlow", "investments", "debt", "liquidity"]) {
+    const present = render(id, TIME);
+    const past = render(id, HISTORICAL);
+    check(`${id}: names the anchor at the present`, present.includes("As of today"));
+    check(`${id}: names the anchor when historical`, past.includes("As of Mar 31, 2026"));
+    check(`${id}: still states the resolved window`, past.includes("Jan 1, 2026"));
+    // The label must not assert the present over a historical window.
+    check(`${id}: no present-tense period claim`, !/>This (week|month|quarter|year)</.test(past));
+  }
 }
 
 if (failures > 0) {

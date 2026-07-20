@@ -143,9 +143,28 @@ console.log("5. Contract — intent surface and prior-iteration regressions");
 {
   const types = sources.find((s) => s.file === "types.ts")?.src ?? "";
   const panel = sources.find((s) => s.file === "TimelineLensPanel.tsx")?.src ?? "";
+  const lens = sources.find((s) => s.file === "TimelineLens.tsx")?.src ?? "";
 
-  check("TimelineIntent exposes exactly the four mapped variants",
-    ['"period"', '"customBoundary"', '"swap"', '"clearComparison"'].every((v) => types.includes(v)));
+  check("TimelineIntent exposes exactly the mapped variants",
+    ['"period"', '"customBoundary"', '"swap"', '"clearComparison"', '"returnToPresent"'].every((v) => types.includes(v)));
+
+  // TIME-1A: the anchor is persistent, so there must ALWAYS be one explicit way
+  // back to the present. Selecting a preset deliberately does NOT free the user
+  // (TIME-1 doctrine), so this affordance is the only exit.
+  check("the panel offers a return-to-present escape hatch",
+    panel.includes('type: "returnToPresent"'));
+  check("the escape hatch is NOT capability-gated (a trap must always have an exit)",
+    /Anchor[\s\S]{0,900}returnToPresent/.test(panel));
+
+  // TIME-1B: "today" is not a period. It must never appear as a window option.
+  check("returnToPresent is an anchor action, never a period option",
+    !/optionId:\s*["'`]today["'`]/i.test(panel));
+
+  // TIME-1B: the anchor must be NAMED, not merely visible as a range endpoint.
+  check("the summary names the anchor", /anchorLabel:\s*string/.test(types));
+  check("the closed readout renders the anchor label", lens.includes("summary.anchorLabel"));
+  check("the readout no longer shows a generic verb in place of the anchor",
+    !lens.includes(">\n            Viewing"));
   check("props carry maxDate", /maxDate:\s*string/.test(types));
 
   // A rejected boundary must be attributable to the field the user touched. An

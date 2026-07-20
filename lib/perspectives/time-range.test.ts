@@ -186,6 +186,77 @@ console.log("shellTimeReducer — the §3.3 transition table");
   check("active YTD is preferred over QTD on the same boundary", fromYtd.preset === "YTD");
 }
 
+// ── TIME-1C — THE ANCHOR INVARIANT, on a HISTORICAL As Of ────────────────────
+//
+// asOf is a PERSISTENT TEMPORAL ANCHOR. A preset defines the window RELATIVE TO
+// THAT ANCHOR — never relative to today. Selecting a preset must not move it.
+//
+// Every pre-existing selectPreset assertion above is degenerate for this: their
+// fixtures are defaultPerspectiveTimeState(TODAY), so asOf === today and the
+// checks pass identically under "preserve the anchor" AND "reset to today".
+// Reversing the reducer used to break zero tests. These fixtures are the first
+// that can tell the two models apart.
+//
+// Doctrine: docs/audits/TIME1_PRESET_ANCHOR_SEMANTICS_AUDIT.md
+console.log("TIME-1C — selectPreset preserves a HISTORICAL As Of anchor");
+{
+  const ANCHOR: string = "2026-03-31";   // deliberately NOT the file's TODAY
+  const ctx: { today: string; coverageFrom: string | null } = { today: TODAY, coverageFrom: "2025-03-04" };
+  // Deliberately arrived at from CUSTOM, the way a user reaches a historical
+  // anchor: type a date, then reach for a preset.
+  const anchored: PerspectiveTimeState = { preset: "CUSTOM", asOf: ANCHOR, compareTo: "2025-11-02" };
+  const sel = (preset: Exclude<TimePreset, "CUSTOM">, c = ctx) =>
+    shellTimeReducer(anchored, { type: "selectPreset", preset }, c);
+
+  check("fixture is non-degenerate (anchor ≠ today)", ANCHOR !== TODAY);
+
+  // Historical YTD — the window opens at the start of the anchor's year.
+  const ytd = sel("YTD");
+  check("historical YTD keeps the anchor", ytd.asOf === ANCHOR, ytd.asOf);
+  check("historical YTD opens at Jan 1 of the ANCHOR's year", ytd.compareTo === "2026-01-01", `${ytd.compareTo}`);
+
+  // Historical rolling — the window walks back FROM the anchor.
+  const pastYear = sel("PAST_YEAR");
+  check("historical PAST_YEAR keeps the anchor", pastYear.asOf === ANCHOR, pastYear.asOf);
+  check("historical PAST_YEAR opens one year BEFORE THE ANCHOR", pastYear.compareTo === "2025-03-31", `${pastYear.compareTo}`);
+
+  // ALL — resolves from coverage, still ending at the anchor.
+  const all = sel("ALL");
+  check("historical ALL keeps the anchor", all.asOf === ANCHOR, all.asOf);
+  check("historical ALL opens at the coverage date", all.compareTo === "2025-03-04", `${all.compareTo}`);
+  check("historical ALL never falls back to today", all.compareTo !== TODAY && all.asOf !== TODAY);
+
+  const allNoCoverage = sel("ALL", { today: TODAY, coverageFrom: null });
+  check("historical ALL with no coverage keeps the anchor", allNoCoverage.asOf === ANCHOR);
+  check("historical ALL with no coverage fabricates NO opening date", allNoCoverage.compareTo === null);
+
+  // Every remaining preset: the anchor survives, and the derived boundary is the
+  // one the ANCHOR implies — not the one today would imply.
+  const anchorImplied: Record<string, string> = {
+    WTD: "2026-03-29", MTD: "2026-03-01", QTD: "2026-01-01",
+    PAST_WEEK: "2026-03-24", PAST_MONTH: "2026-02-28",
+    PAST_QUARTER: "2025-12-31", PAST_6_MONTHS: "2025-09-30",
+  };
+  for (const [preset, expected] of Object.entries(anchorImplied)) {
+    const s = sel(preset as Exclude<TimePreset, "CUSTOM">);
+    check(`historical ${preset} keeps the anchor`, s.asOf === ANCHOR, s.asOf);
+    check(`historical ${preset} derives ${expected} from the ANCHOR`, s.compareTo === expected, `${s.compareTo}`);
+    // The decisive assertion: the result must differ from what today would give.
+    const todayAnchored: PerspectiveTimeState = { preset: "CUSTOM", asOf: TODAY, compareTo: null };
+    const fromToday = shellTimeReducer(
+      todayAnchored,
+      { type: "selectPreset", preset: preset as Exclude<TimePreset, "CUSTOM"> }, ctx,
+    );
+    check(`historical ${preset} is NOT the today-anchored result`, s.compareTo !== fromToday.compareTo);
+  }
+
+  // The anchor moves ONLY by an explicit anchor action (TIME-1A's escape hatch).
+  const returned = shellTimeReducer(ytd, { type: "setAsOf", asOf: TODAY }, ctx);
+  check("setAsOf(today) returns to the present", returned.asOf === TODAY);
+  check("...and the active preset survives the return", returned.preset === "YTD");
+  check("...re-deriving its boundary from the NEW anchor", returned.compareTo === "2026-01-01");
+}
+
 console.log("URL serialize/hydrate round-trip + invalid fallback");
 {
   const ctx = { today: TODAY, coverageFrom: "2025-03-04" };

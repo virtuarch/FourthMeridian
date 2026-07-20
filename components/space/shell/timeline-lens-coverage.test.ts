@@ -58,8 +58,8 @@ console.log("1. Space WITH a coverage date");
   check("compareTo resolves to the coverage date", s.compareTo === COVERAGE, show(s));
   check("preset is ALL", s.preset === "ALL");
   check("the ALL option reads as active", deriveActiveOptionId(s) === "ALL");
-  check("readout shows the real span", summarize(s).rangeLabel.includes("→"));
-  check("no point-in-time caveat is shown", summarize(s).comparisonLabel === null);
+  check("readout shows the real span", summarize(s, TODAY).rangeLabel.includes("→"));
+  check("no point-in-time caveat is shown", summarize(s, TODAY).comparisonLabel === null);
   check("boundary fields carry the coverage date", deriveBoundaries(s).compareTo === COVERAGE);
 }
 
@@ -71,7 +71,7 @@ console.log("2. Space with NO coverage (empty / brand-new)");
   check("preset is still ALL (the user's choice is honoured)", s.preset === "ALL");
   check("the ALL option still reads as active", deriveActiveOptionId(s) === "ALL");
 
-  const sum = summarize(s);
+  const sum = summarize(s, TODAY);
   check("readout does NOT claim a range", !sum.rangeLabel.includes("→"), sum.rangeLabel);
   check("readout is point-in-time instead", sum.rangeLabel.startsWith("As of"), sum.rangeLabel);
   check("the caveat is stated explicitly", sum.comparisonLabel === "Point-in-time · no opening date");
@@ -86,14 +86,14 @@ console.log("3. Coverage arrives AFTER the user picked ALL");
   const t0 = pickAll(START, null);
   check("t0 — no fabricated compareTo during the async window", t0.compareTo === null, show(t0));
   check("t0 — the readout is honest, not a wrong range",
-    summarize(t0).comparisonLabel === "Point-in-time · no opening date");
+    summarize(t0, TODAY).comparisonLabel === "Point-in-time · no opening date");
 
   // t1: coverage lands. This mirrors usePerspectiveShellState's re-derive effect
   // exactly: re-run selectPreset ALL against the NEW ctx.
   const t1 = shellTimeReducer(t0, { type: "selectPreset", preset: "ALL" }, { today: TODAY, coverageFrom: COVERAGE });
   check("t1 — compareTo becomes the coverage date", t1.compareTo === COVERAGE, show(t1));
-  check("t1 — readout updates to the real span", summarize(t1).rangeLabel.includes("→"));
-  check("t1 — the caveat disappears", summarize(t1).comparisonLabel === null);
+  check("t1 — readout updates to the real span", summarize(t1, TODAY).rangeLabel.includes("→"));
+  check("t1 — the caveat disappears", summarize(t1, TODAY).comparisonLabel === null);
   check("t1 — ALL is still the active option", deriveActiveOptionId(t1) === "ALL");
   check("t1 — asOf never moved across the transition", t1.asOf === t0.asOf);
 
@@ -116,7 +116,7 @@ console.log("4. Deep link ?preset=ALL while coverage is still loading");
   check("the lens reads it as ALL, not as a custom range",
     deriveActiveOptionId(hydratedNoCoverage) === "ALL");
   check("the readout is honest at first paint",
-    summarize(hydratedNoCoverage).comparisonLabel === "Point-in-time · no opening date");
+    summarize(hydratedNoCoverage, TODAY).comparisonLabel === "Point-in-time · no opening date");
 
   const hydratedWithCoverage = hydrateShellTimeState(
     { asOf: TODAY, compareTo: null, preset: "ALL" },
@@ -152,7 +152,7 @@ console.log("6. Empty Space (no accounts, no coverage) — every preset");
       check(`${preset} — still derives its own opening boundary`, s.compareTo !== null, show(s));
     }
     // Nothing may produce a summary that claims a range it does not have.
-    const sum = summarize(s);
+    const sum = summarize(s, TODAY);
     check(`${preset} — range copy matches whether a boundary exists`,
       sum.rangeLabel.includes("→") === (s.compareTo !== null), `${sum.rangeLabel} vs ${show(s)}`);
   }

@@ -48,10 +48,17 @@ import {
  * so this file can never become a second preset vocabulary.
  */
 const EDITORIAL: Record<RelativeCashFlowPeriod, { label: string; supportingLabel: string }> = {
-  WTD:           { label: "This week",     supportingLabel: "Week to date" },
-  MTD:           { label: "This month",    supportingLabel: "Month to date" },
-  QTD:           { label: "This quarter",  supportingLabel: "Quarter to date" },
-  YTD:           { label: "This year",     supportingLabel: "Year to date" },
+  // To-date presets: anchor-NEUTRAL. "Month to date" is true at any anchor —
+  // it means "from the start of the containing month, up to the anchor", which
+  // is exactly compareToForPreset's rule. The former "This month" asserted the
+  // present and was simply false when anchored historically (TIME-1B).
+  WTD:           { label: "Week to date",    supportingLabel: "From the start of the week" },
+  MTD:           { label: "Month to date",   supportingLabel: "From the start of the month" },
+  QTD:           { label: "Quarter to date", supportingLabel: "From the start of the quarter" },
+  YTD:           { label: "Year to date",    supportingLabel: "From January 1" },
+  // Rolling presets keep "Last N" — that reads as relative to the ANCHOR, which
+  // is what it is, and no rolling label asserted the present. Renaming them to
+  // "Trailing N" would be churn with no falsehood to fix.
   PAST_WEEK:     { label: "Last 7 days",   supportingLabel: "Rolling week" },
   PAST_MONTH:    { label: "Last 30 days",  supportingLabel: "Rolling month" },
   PAST_QUARTER:  { label: "Last 90 days",  supportingLabel: "Rolling quarter" },
@@ -119,6 +126,12 @@ export function shellActionForIntent(intent: TimelineIntent, ctx: AdapterContext
     case "clearComparison":
       return { ok: true, action: { type: "setCompareTo", compareTo: null } };
 
+    // The anchor moves ONLY by an explicit anchor action. This is that action —
+    // and it is the ONLY way out of a historical anchor, since selecting a
+    // preset deliberately preserves it (TIME-1 doctrine).
+    case "returnToPresent":
+      return { ok: true, action: { type: "setAsOf", asOf: ctx.today } };
+
     case "customBoundary": {
       const { boundary, value } = intent;
 
@@ -172,9 +185,14 @@ function formatDate(value: string): string {
  * BOUNDARY, not a "previous period" dataset — so the lens says only what is
  * true, and says nothing at all when the range line already carries it.
  */
-export function summarize(state: PerspectiveTimeState): TimelineLensSummary {
+export function summarize(state: PerspectiveTimeState, today: string): TimelineLensSummary {
   const option = PERIOD_OPTIONS.find((o) => o.id === deriveActiveOptionId(state));
+  const anchoredToPresent = state.asOf >= today;
   return {
+    // The vantage point, always named. A window is only meaningful once you know
+    // where you are standing to look at it.
+    anchorLabel: anchoredToPresent ? "As of today" : `As of ${formatDate(state.asOf)}`,
+    anchoredToPresent,
     periodLabel: option?.label ?? "Custom range",
     rangeLabel: state.compareTo
       ? `${formatDate(state.compareTo)} → ${formatDate(state.asOf)}`

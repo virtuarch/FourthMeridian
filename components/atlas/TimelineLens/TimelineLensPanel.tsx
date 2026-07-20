@@ -13,7 +13,7 @@
  */
 
 import { useId, type KeyboardEvent } from "react";
-import { ArrowLeftRight, Check, X } from "lucide-react";
+import { ArrowLeftRight, Check, RotateCcw, X } from "lucide-react";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { Field, Input } from "@/components/atlas/fields";
 import { LeftPanel, PanelContent, PanelFooter, PanelHeader } from "@/components/atlas/panels";
@@ -148,6 +148,43 @@ export function TimelineLensPanel({
       <PanelHeader eyebrow="Perspective" title="Time period" />
 
       <PanelContent className="pt-1">
+        {/* ANCHOR — first, because it frames everything below it. The presets are
+            windows measured back FROM this date; showing them first would teach
+            the wrong model. Rendered ungated: when the anchor is historical this
+            is the only way back to the present, so it must never be capability-
+            gated away on a lens that cannot otherwise edit dates. */}
+        <section className="mb-7 grid gap-2">
+          <h4 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">
+            Anchor
+          </h4>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span
+              className={`text-sm ${
+                summary.anchoredToPresent ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]"
+              }`}
+            >
+              {summary.anchorLabel}
+            </span>
+            {!summary.anchoredToPresent && (
+              <GlassButton
+                type="button"
+                tone="meridian"
+                size="sm"
+                onClick={() => onIntent({ type: "returnToPresent" })}
+                className="min-h-11 gap-1.5"
+              >
+                <RotateCcw size={13} aria-hidden />
+                Return to today
+              </GlassButton>
+            )}
+          </div>
+          {!summary.anchoredToPresent && (
+            <p className="text-[11px] leading-relaxed text-[var(--text-faint)]">
+              Every period below is measured back from this date, not from today.
+            </p>
+          )}
+        </section>
+
         <div role="radiogroup" aria-labelledby={groupId} onKeyDown={onRadioKeyDown} className="grid gap-6">
           <h3 id={groupId} className="sr-only">
             Time period
