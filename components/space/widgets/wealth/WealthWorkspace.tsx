@@ -205,10 +205,10 @@ export function WealthWorkspace({
             the two Blocks' headers line up when they sit side by side. */}
         <div className="grid gap-6 lg:grid-cols-12 lg:gap-8 items-start">
           <div id="wealth-composition" className="scroll-mt-20 min-w-0 lg:col-span-7">
-            <WealthCompositionCard result={result} currency={displayCurrency} accounts={accounts} ctx={ctx} />
+            <WealthCompositionCard result={result} currency={displayCurrency} accounts={accounts} ctx={ctx} metric={metric} />
           </div>
           <div id="wealth-ledger" className="scroll-mt-20 min-w-0 lg:col-span-5">
-            <WealthChangeLedger result={result} currency={displayCurrency} />
+            <WealthChangeLedger result={result} currency={displayCurrency} metric={metric} />
           </div>
         </div>
 

@@ -35,6 +35,8 @@ import {
   wealthAccountRows,
   type WealthAdapterAccount,
 } from "@/components/space/widgets/wealth-adapters";
+import { renderDebtByAccount } from "@/components/space/widgets/debt-perspective-adapters";
+import { renderLiquidityLadder } from "@/components/space/widgets/liquidity-adapters";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import {
   InstitutionCompositionDetail,
@@ -44,6 +46,12 @@ import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate, wealthCompositionItems } from "@/lib/wealth/wealth-time-machine";
 import { Surface, Block } from "@/components/atlas/Surface";
 import { WealthUnavailable, formatSigned } from "./wealth-ui";
+import type { WealthMetricKey } from "./WealthTrendChart";
+import {
+  METRIC_COMPOSITION_REGIME,
+  METRIC_DRIVER_COMPONENTS,
+  showsLiabilityContribution,
+} from "./wealth-metric-facets";
 
 type CompositionMode = "class" | "institution" | "account" | "concentration";
 
@@ -63,18 +71,37 @@ export function WealthCompositionCard({
   currency,
   accounts = [],
   ctx,
+  metric = "netWorth",
 }: {
   result:    WealthResult;
   currency:  string;
   /** Live accounts for the institution/account/concentration modes. */
   accounts?: WealthAdapterAccount[];
   ctx?:      ConversionContext;
+  /** Selected wealth metric — drives which composition REGIME renders. */
+  metric?:   WealthMetricKey;
 }) {
   const [mode, setMode] = useState<CompositionMode>("class");
   // UX-CLOSE-2 — one selection, scoped to this card. No provider, no event bus:
   // the same local-useState idiom the five ledgers already use.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const { asOfState, drivers } = result;
+
+  // V25-CLOSE-4A — the composition REGIME follows the selected metric. Assets and
+  // Net Worth share the asset donut (Net Worth additionally shows a liabilities
+  // row); Liabilities and Liquid render present-day debt / liquidity composition
+  // from the EXISTING adapters — never an assets donut.
+  const regime = METRIC_COMPOSITION_REGIME[metric];
+
+  // Changing metric changes what the card is ABOUT, so any open asset-drill panel
+  // and the (asset-only) grouping mode no longer apply — clear both. Adjust-state-
+  // during-render (no effect, no flash), the same idiom the slice drawers use.
+  const [prevMetric, setPrevMetric] = useState(metric);
+  if (metric !== prevMetric) {
+    setPrevMetric(metric);
+    setSelectedId(null);
+    setMode("class");
+  }
 
   // Both drills read the SAME authority the charts render from, so a segment and
   // its panel cannot disagree about membership or converted value.
@@ -99,9 +126,16 @@ export function WealthCompositionCard({
     setMode(next);
   };
 
-  // The mode switcher — a compact dropdown (four modes shouldn't eat a rail of
-  // width, and it keeps this card's header aligned with its neighbour).
-  const switcher = <Dropdown options={MODES} value={mode} onChange={changeMode} ariaLabel="Composition grouping" />;
+  // The mode switcher — a compact dropdown. Its four modes (class / institution /
+  // account / concentration) are ASSET concepts, so it is shown only in the asset
+  // regime; Liabilities and Liquid render a single present-day composition.
+  const switcher = regime === "assets"
+    ? <Dropdown options={MODES} value={mode} onChange={changeMode} ariaLabel="Composition grouping" />
+    : undefined;
+
+  // The metric's driver components — filters the per-class change chips so Assets
+  // mode never shows a liabilities chip.
+  const metricComponents = new Set<string>(METRIC_DRIVER_COMPONENTS[metric]);
 
   const c = asOfState.composition;
   // Colours pinned to the CLASS, not its position. wealthCompositionItems drops
@@ -115,12 +149,39 @@ export function WealthCompositionCard({
       }))
     : [];
 
-  // Resolve the header hint + the mode's body ONCE, so the whole card is a single
-  // Block whose content fades on a mode change (the "switch slices" animation).
+  // Resolve the header hint + the body ONCE, so the whole card is a single Block
+  // whose content fades on a metric/mode change (the "switch slices" animation).
   let hint: ReactNode;
   let content: ReactNode;
 
-  if (mode !== "class") {
+  if (regime === "liabilities") {
+    // ── Liabilities — present-day debt composition, NEVER an assets donut. ────────
+    // Reuses the existing debt adapter (per-creditor / per-account bars). Snapshots
+    // store only a debt scalar, so there is no historical per-creditor breakdown;
+    // this is honestly badged current-only.
+    hint = <span className="text-[11px] text-[var(--text-muted)]">Current classification</span>;
+    content = (
+      <Surface className="px-4 py-4">
+        <p className="text-[11px] text-[var(--text-muted)] mb-3 leading-relaxed">
+          Current classification — your debts today, by creditor. Per-account debt
+          history isn&apos;t tracked, so this reflects now, not the selected As Of date.
+        </p>
+        {renderDebtByAccount(accounts, ctx)}
+      </Surface>
+    );
+  } else if (regime === "liquid") {
+    // ── Liquid — present-day reachability ladder from the liquidity adapter. ──────
+    hint = <span className="text-[11px] text-[var(--text-muted)]">Current classification</span>;
+    content = (
+      <Surface className="px-4 py-4">
+        <p className="text-[11px] text-[var(--text-muted)] mb-3 leading-relaxed">
+          Current classification — where your money sits by how quickly you can
+          reach it. Reflects today&apos;s accounts, not the selected As Of date.
+        </p>
+        {renderLiquidityLadder(accounts, ctx)}
+      </Surface>
+    );
+  } else if (mode !== "class") {
     // ── Live-account modes — "Current classification", never historical. ──────────
     hint = <span className="text-[11px] text-[var(--text-muted)]">Current classification</span>;
     content = (
@@ -178,7 +239,9 @@ export function WealthCompositionCard({
           <WealthUnavailable message="This snapshot recorded no asset balances." />
         )}
 
-        {c.liabilities > 0 && (
+        {/* Liabilities contribution — shown ONLY in Net Worth mode. In Assets mode
+            the card is assets-only, so the liabilities row is removed. */}
+        {showsLiabilityContribution(metric) && c.liabilities > 0 && (
           <div
             className="mt-3 flex items-center justify-between rounded-[var(--radius-lg)] px-3 py-2 border"
             style={{ background: "var(--surface-hover)", borderColor: "var(--border-hairline)" }}
@@ -190,10 +253,12 @@ export function WealthCompositionCard({
           </div>
         )}
 
-        {/* Per-class change chips — real component deltas, only when comparing. */}
-        {drivers && drivers.length > 0 && (
+        {/* Per-class change chips — real component deltas, only when comparing,
+            filtered to the selected metric's components (Assets omits the
+            liabilities chip; Net Worth shows all). */}
+        {drivers && drivers.some((d) => metricComponents.has(d.id)) && (
           <div className="mt-3 flex flex-wrap gap-1.5">
-            {drivers.map((d) => (
+            {drivers.filter((d) => metricComponents.has(d.id)).map((d) => (
               <span
                 key={d.id}
                 className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] tabular-nums border"
@@ -213,9 +278,9 @@ export function WealthCompositionCard({
 
   return (
     <Block label="Where it sits" hint={hint} action={switcher}>
-      {/* Keyed on mode ⇒ the slices fade/re-focus on a switch (the same in-place
-          "re-aim" the Lens selector uses), rather than snapping. */}
-      <div key={mode} className="motion-safe:animate-[wcomp-fade_220ms_var(--ease-standard)_both]">
+      {/* Keyed on metric+mode ⇒ the body fades/re-focuses on either switch (the
+          same in-place "re-aim" the Lens selector uses), rather than snapping. */}
+      <div key={`${metric}:${mode}`} className="motion-safe:animate-[wcomp-fade_220ms_var(--ease-standard)_both]">
         {content}
       </div>
       <style>{`@keyframes wcomp-fade { from { opacity: 0 } to { opacity: 1 } }`}</style>
