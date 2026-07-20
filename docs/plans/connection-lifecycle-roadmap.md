@@ -46,7 +46,7 @@ The connection experience was previously described as one undifferentiated "sync
 ✅ PO-5 — QA / Beta Hardening                          (audit f1a0901; PO-5A gate hardening 630a84e)
 ```
 
-**Sequence status (reconciled V25-CLOSE-1):** the customer-facing CONN arc is complete. CONN-4A resolved the disconnect-lifecycle boundary decision that CONN-2 item 10 left open. PO-4B remains deliberately paused. What remains on the beta gate is not connection work — it is the LLM disclosure copy and the production ops/config floor tracked in [../audits/production-readiness.md](../audits/production-readiness.md).
+**Sequence status (reconciled V25-CLOSE-1):** the customer-facing CONN arc is complete. CONN-4A resolved the disconnect-lifecycle boundary decision that CONN-2 item 10 left open. PO-4B remains deliberately paused. What remains on the beta gate is not connection work — it is the LLM disclosure copy and the production ops/config floor tracked in [../audits/production-readiness.md](../operations/production-readiness.md).
 
 ### ✅ CONN-1 — Connection Lifecycle Experience *(complete — 26c0a54)*
 Investigation + presentation-only foundation. Established the single persisted source of truth per provider (`PlaidItem.syncIncompleteAt` / `Connection.lastSyncedAt`), the pure `ConnectionLifecycleStatus` projection (`lib/sync/lifecycle.ts`), truthful card copy, and the registration "check your inbox" screen. Documented the Phase-6 (Layer-3) balance-freshness root cause without touching financial authorities. See `docs/audits/CONN1_CONNECTION_LIFECYCLE_AUDIT.md`.
@@ -79,7 +79,7 @@ Resolve the Layer-3 root cause: route the routine sync paths (webhook / cron) th
 Operator-facing provider auth-age visibility + prompt-to-reauth (never auto-revoke). Distinct axis from CONN (customer intelligence): PO-4B is *platform operating the platform*. Remains paused until explicitly resumed. See `docs/audits/PO4_PLATFORM_OPERATIONS_CONTROL_INVESTIGATION.md` §4.
 
 ### ✅ PO-5 — QA / Beta Hardening *(audit `f1a0901`; PO-5A gate hardening `630a84e`)*
-The gate before opening beta: end-to-end verification of the connection → reconstruction → freshness experience across multi-account state, plus the OPS-1 operational floor. No new product surface. **The audit and the code half are done** (consent capture, lazy Plaid client with honest 503, operator email/job/provider health widgets). What is still open is the *operational* half — Sentry, uptime monitor, restore drill, and the production config flips — tracked in [../audits/production-readiness.md](../audits/production-readiness.md), not here.
+The gate before opening beta: end-to-end verification of the connection → reconstruction → freshness experience across multi-account state, plus the OPS-1 operational floor. No new product surface. **The audit and the code half are done** (consent capture, lazy Plaid client with honest 503, operator email/job/provider health widgets). What is still open is the *operational* half — Sentry, uptime monitor, restore drill, and the production config flips — tracked in [../audits/production-readiness.md](../operations/production-readiness.md), not here.
 
 ---
 

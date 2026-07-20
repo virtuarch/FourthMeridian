@@ -8,11 +8,11 @@
 | **Active branch** | `feature/v2.5-spaces-completion` (pushed; in sync with origin) |
 | **Deployed** | Vercel (sin1) + Supabase Postgres |
 | **Recently landed** | **v2.5 architectural completion wave.** **Transaction Explorer TX-1→TX-4** — read-scale investigation (`8d3823a`), bounded loaders + completeness note (`b241cc2`, `be836db`), keyset `queryTransactions()` authority (`537b817`, hardened `4cf86a0`), consumer migration and the closed find→inspect→act loop (`b1c9550`, `cd28478`, `5761892`), parity matrix + analytics cleanup (`6061966`) — [systems/transactions.md](docs/systems/transactions.md). **CONN-1→CONN-4A connection lifecycle** — lifecycle projection (`26c0a54`), financial-intelligence reconstruction (`7f521de`→`3412fb8`), freshness pipeline (`25ef845`), disconnect doctrine + Model A (`da679b0`, `9c9b4c0`) — [plans/connection-lifecycle-roadmap.md](docs/plans/connection-lifecycle-roadmap.md). **TimelineLens v4** promoted to sole canonical time selector (`05c7c80`→`8665d64`, exclusivity-guarded). **Platform Ops foundations** — operator connection controls (`5184c8b`), beta-readiness audit (`f1a0901`), beta launch-gate hardening (`630a84e`). **Admin TOTP enrollment lifecycle** fixed (`22810da`). **Marketing boundary** hardened to structural rules (`04c416d`). |
-| **Active initiative** | **v2.5 closure (V25-CLOSE-x) + OPS-1 beta-readiness**, running with early zero-schema **AI-5** foundation work in parallel (neither is convergence-gated). **The V25-CLOSE-x arc is complete** — [CLOSE-1 ledger + containment](docs/audits/V25_CLOSE_1_LEDGER_RECONCILIATION.md), CLOSE-1A CI green, [CLOSE-2 guard hardening](docs/audits/V25_CLOSE_2_GUARD_HARDENING.md). v2.5 architecture is closed; the remaining gate is beta config/ops. |
+| **Active initiative** | **v2.5 closure (V25-CLOSE-x) + OPS-1 beta-readiness**, running with early zero-schema **AI-5** foundation work in parallel (neither is convergence-gated). **The V25-CLOSE-x arc is complete** — [CLOSE-1 ledger + containment](docs/archive/completed-plans/documentation-audit-pre-migration.md), CLOSE-1A CI green, [CLOSE-2 guard hardening](docs/archive/completed-plans/documentation-audit-pre-migration.md). v2.5 architecture is closed; the remaining gate is beta config/ops. |
 
 ## Production readiness
 
-**Not ready for external users.** The binding gap is verification / configuration / operations, not feature construction. Full blocker list: [audits/production-readiness.md](docs/audits/production-readiness.md). The most urgent single act is verifying production `registration_mode=invite_only` (DB default is `open`).
+**Not ready for external users.** The binding gap is verification / configuration / operations, not feature construction. Full blocker list: [audits/production-readiness.md](docs/operations/production-readiness.md). The most urgent single act is verifying production `registration_mode=invite_only` (DB default is `open`).
 
 ## Blockers (beta gate)
 
@@ -28,7 +28,7 @@
 1. **OPS-1 LLM disclosure** (C-S2) — smallest copy closing the largest remaining gate; consent capture (C-S1) is already done.
 2. **OPS-1 ops floor + production config flips** (C-S3) — verify `invite_only` first, then Sentry, uptime, backup drill, Turnstile, Plaid.
 3. **AI5-0 / AI5-1** in a parallel worktree — failure-corpus reconstruction + window-characterization suite, bounds-not-dollars.
-4. **v2.5.5 convergence** — DayFacts sole-fold + named net measures (data-semantics only; see [ROADMAP](docs/plans/ROADMAP.md)). *Classifier v3 landed (CCPAY-2); the remaining CCPAY debt is the [recorded follow-ups](docs/initiatives/ccpay/CCPAY_FOLLOW_UPS.md) — btc-sync flow-authority convergence + the never-classified seed backlog.*
+4. **v2.5.5 convergence** — DayFacts sole-fold + named net measures (data-semantics only; see [ROADMAP](docs/plans/ROADMAP.md)). *Classifier v3 landed (CCPAY-2); the remaining CCPAY debt is the [recorded follow-ups](docs/plans/ccpay-follow-ups.md) — btc-sync flow-authority convergence + the never-classified seed backlog.*
 
 ## Where things stand
 
@@ -55,14 +55,17 @@ Active tickets only (fixed defects live in git history):
 
 ## Documentation map
 
+*(The documentation tree was restructured into a specification — start at [`docs/README.md`](docs/README.md) and [`docs/architecture/README.md`](docs/architecture/README.md).)*
+
 | Looking for… | Read |
 |---|---|
 | Current state | **this file** |
-| The rules that bind the code | [`docs/doctrine/`](docs/doctrine/) (financial-semantics · money-and-fx · historical-data · spaces · platform-and-security · intelligence) |
-| Why a subsystem exists & its contracts | [`docs/systems/`](docs/systems/) (investments, wealth, cash-flow, liquidity, debt, transactions, spaces, connections, platform-ops, ai) |
-| Decision records | [`docs/architecture/`](docs/architecture/) (PHASE_2_DECISION_MATRIX, PHASE_2_DOCTRINE, DEC-0, initiative-naming) |
+| What is Fourth Meridian / how it all fits | [`docs/architecture/FOURTH_MERIDIAN_DOCTRINE.md`](docs/architecture/FOURTH_MERIDIAN_DOCTRINE.md) |
+| The rules that bind the code | [`docs/architecture/`](docs/architecture/) (Financial Truth Spine · Space Architecture · Security Model · Time Model · UI Interaction Model) |
+| Why a subsystem exists & its contracts | [`docs/systems/`](docs/systems/) (transactions, investments, wealth, cash-flow, liquidity, debt, connections, money-and-fx, historical-data, ai-foundation, platform-operations) |
+| Decisions & rejected alternatives (ADRs) | [`docs/decisions/`](docs/decisions/) |
 | Roadmap / active plans / parked ideas | [`docs/plans/`](docs/plans/) |
-| Runbooks / deploy / checklists | [`docs/operations/`](docs/operations/) |
+| Runbooks / deploy / admin ops / readiness | [`docs/operations/`](docs/operations/) |
 | What shipped per version | [`docs/releases/`](docs/releases/) |
-| Living audits (architecture · security · production-readiness) | [`docs/audits/`](docs/audits/) |
-| Design language / Atlas | [`docs/design/`](docs/design/), [`docs/design-system/`](docs/design-system/) |
+| Design language / Atlas | [`docs/design-system/`](docs/design-system/) |
+| Historical decision context | [`docs/archive/completed-plans/`](docs/archive/completed-plans/) |
