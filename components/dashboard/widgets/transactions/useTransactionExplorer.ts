@@ -22,8 +22,13 @@
  *     visible duplicate.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Transaction } from "@/types";
+import {
+  subscribeTransactionMutations,
+  getTransactionMutationVersion,
+  getServerTransactionMutationVersion,
+} from "@/components/transactions/transaction-mutation-signal";
 
 /** The question. Every field maps to a validated server query param. */
 export interface ExplorerQuery {
@@ -116,8 +121,6 @@ export interface ExplorerState {
   loadingMore: boolean;
   error: string | null;
   loadMore: () => void;
-  /** Re-ask the current question from scratch (used after a mutation). */
-  refresh: () => void;
 }
 
 const PAGE_SIZE = 50; // mobile-friendly; server clamps to MAX_TRANSACTION_PAGE_SIZE
@@ -132,7 +135,16 @@ export function useTransactionExplorer(spaceId: string, query: ExplorerQuery): E
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
+
+  // TX-3.4 — the invalidation seam. A correction made in the detail drawer (a SIBLING
+  // tree, so there is no prop path) bumps this version; the question is then re-asked
+  // through the same authority. That is what keeps a recategorized row from lingering
+  // in a list it no longer belongs to. The signal carries no data — only a version.
+  const mutationVersion = useSyncExternalStore(
+    subscribeTransactionMutations,
+    getTransactionMutationVersion,
+    getServerTransactionMutationVersion,
+  );
 
   // Guards against a stale in-flight response overwriting a newer question's
   // answer — the classic filter-race that makes a list show the wrong rows.
@@ -205,7 +217,7 @@ export function useTransactionExplorer(spaceId: string, query: ExplorerQuery): E
     return () => { active = false; };
     // fetchPageData is recreated with `query`, which `key` already tracks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, spaceId, nonce]);
+  }, [key, spaceId, mutationVersion]);
 
   const loadMore = useCallback(() => {
     if (!hasMore || loading || loadingMore || cursor === null || inFlight.current) return;
@@ -218,7 +230,5 @@ export function useTransactionExplorer(spaceId: string, query: ExplorerQuery): E
       .finally(() => { inFlight.current = false; setLoadingMore(false); });
   }, [hasMore, loading, loadingMore, cursor, fetchPageData, applyPage]);
 
-  const refresh = useCallback(() => setNonce((n) => n + 1), []);
-
-  return { rows, count, hasMore, loading, loadingMore, error, loadMore, refresh };
+  return { rows, count, hasMore, loading, loadingMore, error, loadMore };
 }

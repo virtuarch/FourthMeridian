@@ -95,3 +95,70 @@ test('drawer/hook reference no AI, serializer, exports, or Daily Brief code', ()
     assert.ok(!hook.includes(banned), `hook must not reference ${banned}`);
   }
 });
+
+// ── TX-3.4 — the ACT step of find → inspect → act ────────────────────────────
+
+const correction = read('components/transactions/TransactionCorrection.tsx');
+const signal = read('components/transactions/transaction-mutation-signal.ts');
+const explorerHook = read('components/dashboard/widgets/transactions/useTransactionExplorer.ts');
+
+test('correction surfaces the PRE-EXISTING endpoint (no new mutation endpoint)', () => {
+  assert.match(correction, /fetch\(`\/api\/transactions\/\$\{detail\.id\}\/correct`/);
+  assert.match(correction, /method: "POST"/);
+});
+
+test('correction sends only the two CATEGORY paths the endpoint implements', () => {
+  // "override" = this row only; "category" = mint a USER MerchantRule. The third
+  // endpoint path (merchant identity, with its 409 confirm round-trip) is
+  // deliberately not driven from here — see the component header.
+  assert.match(correction, /\["override", "category"\]/);
+  assert.ok(!correction.includes('correction: "merchant"'),
+    'merchant identity correction needs a candidate/confirm flow — not surfaced in TX-3.4');
+});
+
+test('correction derives NO truth of its own — it renders what the server returns', () => {
+  // The endpoint responds with the fresh TransactionDetail; the drawer adopts it
+  // verbatim. No local recomputation of category/flow/amount anywhere.
+  assert.match(correction, /onCorrected\(data\.transaction\)/);
+  for (const banned of ['recomputeFlow', 'sumByFlowType', 'convertMoney', 'bankingTransactionWhere']) {
+    assert.ok(!correction.includes(banned), `correction must not compute ${banned}`);
+  }
+});
+
+test('drawer adopts the returned detail in place (no refetch, no stale panel)', () => {
+  assert.match(drawer, /onCorrected=\{\(fresh\) => setState\(\{ status: "loaded", detail: fresh \}\)\}/);
+});
+
+test('a correction notifies the sibling list so it re-asks its question', () => {
+  assert.match(correction, /notifyTransactionMutated\(\)/);
+  assert.match(explorerHook, /subscribeTransactionMutations/);
+  // The version must actually drive the fetch effect — otherwise the signal is
+  // decorative and a corrected row would linger in a list it no longer matches.
+  assert.match(explorerHook, /\}, \[key, spaceId, mutationVersion\]\)/);
+});
+
+test('the mutation signal is a notification, never a data store or authority', () => {
+  // It carries a version and nothing else. If transaction data ever appears here,
+  // a second client-side truth model has been created.
+  assert.ok(!/Transaction\b/.test(signal.replace(/notifyTransactionMutated|TransactionMutation\w*|transaction/gi, '')),
+    'signal must not carry transaction data');
+  for (const banned of ['fetch(', 'useState', 'db.', 'filter(', 'sort(']) {
+    assert.ok(!signal.includes(banned), `signal must not contain ${banned}`);
+  }
+});
+
+test('URL-driven selection is unchanged by the act step', () => {
+  // The correction must not navigate, replace, or otherwise touch the param that
+  // owns which transaction is open.
+  for (const banned of ['router.push', 'router.replace', 'useSearchParams', 'transaction=']) {
+    assert.ok(!correction.includes(banned), `correction must not touch routing (${banned})`);
+  }
+});
+
+test('correction respects the TI DTO boundary (no undisclosed fields rendered)', () => {
+  // categorySource / raw provider ids are deliberately NOT on the DTO
+  // (lib/transactions/detail-sections.ts). The correction UI must not assume them.
+  for (const banned of ['categorySource', 'pfcPrimary', 'plaidTransactionId', 'merchantEntityId']) {
+    assert.ok(!correction.includes(banned), `correction must not read ${banned} (not on the DTO)`);
+  }
+});

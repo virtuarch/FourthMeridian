@@ -16,6 +16,12 @@
  * TransactionDetailContent) — facts, account, classification, provenance,
  * relationships. Empty sections are never rendered.
  *
+ * TX-3.4 completes the find → inspect → ACT loop: the correction surface for the
+ * pre-existing POST /api/transactions/[id]/correct (which had shipped with no UI).
+ * The endpoint returns the FRESH TransactionDetail, so a correction updates this
+ * panel in place with no refetch — and notifies the sibling explorer list to re-ask
+ * its question, since a recategorized row may no longer match the active filters.
+ *
  * The AI slot is a RESERVED FUTURE region — no AI call, no fabricated explanation.
  * It only links into the existing AI destination; per-transaction explanations are
  * a later backend initiative (v2.6). See the roadmap in docs/audits.
@@ -32,6 +38,7 @@ import { Figure } from "@/components/atlas/Surface";
 import type { TransactionDetail } from "@/types";
 import { useTransactionDrawer } from "./useTransactionDrawer";
 import { TransactionDetailContent } from "./TransactionDetailContent";
+import { TransactionCorrection } from "./TransactionCorrection";
 
 type LoadState =
   | { status: "loading" }
@@ -124,6 +131,12 @@ function TransactionDetailFetcher({ id }: { id: string }) {
                 Intelligence / Relationships / Provenance / Reporting. Projection +
                 wording live in the pure lib/transactions/detail-sections.ts. */}
             <TransactionDetailContent detail={detail} />
+            {/* ACT. The endpoint is the only authority for what the transaction now
+                is: we render whatever detail it hands back, never a local guess. */}
+            <TransactionCorrection
+              detail={detail}
+              onCorrected={(fresh) => setState({ status: "loaded", detail: fresh })}
+            />
             <AiExplanationSlot />
           </div>
         ) : (
