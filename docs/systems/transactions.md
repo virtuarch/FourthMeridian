@@ -13,14 +13,24 @@ to re-derive that from provider category strings.
 
 ## Authority
 
-- `lib/data/transactions.ts` — the canonical server-only row readers:
-  `getTransactions` (banking list), `getDebtTransactions` (debt-account
-  banking activity), `getInvestmentTransactions` (investment partition, no live
-  consumers today), and `getTransactionDetail` (single-row detail). These are
-  the only sanctioned entry points into the `Transaction` table for read.
-- `lib/transactions/flow-classifier.ts` — `classifyFlow`, the single source of
-  truth for FlowType/FlowDirection semantics. Pure, deterministic, Prisma-free,
-  never throws.
+- `lib/data/transaction-query.ts` — `queryTransactions`, the canonical filtered,
+  paginated transaction read authority. It owns account-scope resolution
+  (`resolveVisibleAccountIds`), filtering semantics, and keyset pagination. It
+  does NOT re-derive population or visibility: it composes `bankingTransactionWhere`
+  (below) and the pure filter/keyset core (`lib/data/transaction-query-core.ts`),
+  returning a bounded page of DTOs plus a continuation cursor. Every filtered read
+  surface routes through it, so no consumer builds a parallel query.
+- `lib/data/transactions.ts` — the shared population/visibility authority plus the
+  bounded loaders that consume it. `bankingTransactionWhere` is the ONE WHERE
+  fragment (banking population + KD-15 transaction-detail visibility + soft-delete)
+  that every read composes. `getTransactions` (banking list) and
+  `getDebtTransactions` (debt-account activity) are BOUNDED loaders over it;
+  `getTransactionDetail` is the single-row detail read. Together with
+  `queryTransactions` these are the only sanctioned entry points into the
+  `Transaction` table for read — no consumer queries the table directly.
+- `lib/transactions/flow-classifier.ts` — `classifyFlow`, the single semantic
+  authority for FlowType / FlowDirection / classificationReason. Pure,
+  deterministic, Prisma-free, never throws.
 - `lib/transactions/flow-predicates.ts` — the single authority for FlowType
   *membership* predicates (`isBankingPopulation`, `isCostFlow`, `isSpendLedgerFlow`,
   `isNonEconomicResidue`, `isDebtPayment`, …) and the per-flow aggregation
@@ -66,15 +76,53 @@ to re-derive that from provider category strings.
   (`null`) rows, which Prisma scalar `not` returns. The row-level statement is
   `isBankingPopulation(flowType)` (`flow-predicates.ts`); the two are pinned in
   lockstep by `lib/data/transactions.population.test.ts`.
+- **Flow classification is the single semantic authority.** `classifyFlow`
+  decides KIND + DIRECTION at write time and persists `flowType`, `flowDirection`,
+  `classificationReason`, and `classifierVersion`. That persisted verdict is the
+  economic meaning of the row. No consumer re-derives meaning from provider
+  categories, merchant names, or raw transaction metadata — those are inputs to
+  the classifier, resolved once, never re-interpreted downstream.
 - **FlowType write/read split.** `classifyFlow` decides KIND+DIRECTION at write
   time; the persisted `flowType` VALUE (a plain string at runtime) is what
   every read predicate consumes. Predicates never re-run the classifier.
+- **The on-chain (btc-sync) classifier exception.** `lib/crypto/btc-sync.ts` is
+  the ONE sanctioned path that persists flow classification WITHOUT
+  `classifyFlow` (and so stamps a null `classifierVersion`, marking a distinct
+  authority — not a stale row). It is allowed because on-chain movements carry
+  none of the banking evidence the classifier's ladder needs (no PFC, no
+  descriptor, no counterparty name), so routing them through `classifyFlow` would
+  yield only `UNKNOWN`. The exception is executable policy, not a comment: it is
+  fenced by `lib/transactions/flow-classifier-authority.test.ts`, which fails if
+  the marker is removed OR if any OTHER file begins hand-writing `flowType`
+  off-classifier. It must never become a second uncontrolled authority; any future
+  exception requires the same explicit, guarded treatment.
 - **Non-economic residue.** `isNonEconomicResidue` (`null | UNKNOWN | ADJUSTMENT`)
   names the rows that are IN the banking population (visible for review) but
   carry no economic bucket — they must never fold into income/spend/transfer/
   debt totals.
 - **Provenance source precedence** is defined once (`deriveSource`) and shared
   by the list read and the detail read; the two callers must not diverge.
+- **One read path, composed not copied.** Every consumer reads through the same
+  pipeline:
+
+  ```
+  provider transaction data (Plaid sync / import / manual / on-chain)
+      ↓
+  canonical Transaction model (persisted flow columns)
+      ↓
+  bankingTransactionWhere  (population + visibility, one authority)
+      ↓
+  queryTransactions        (account scope + filters + keyset pagination)
+      ↓
+  consumers: Transaction Explorer · Cash Flow · Liquidity ·
+             Calendar / activity · future analytics
+  ```
+
+  A consumer must NOT: query the `Transaction` table directly; recreate the
+  visibility predicate (`TRANSACTION_DETAIL_VISIBILITY`); or build a parallel
+  transaction population. New meaning is added in the classifier and read back
+  through `queryTransactions` / the bounded loaders — never re-derived at the
+  call site.
 
 ## Persistence
 
@@ -84,7 +132,7 @@ to re-derive that from provider category strings.
   `buildFlowWriteFields`; classification failure writes `NULL_FLOW_WRITE_FIELDS`
   so the row still persists and never blocks the sync.
 - `classifierVersion` is stamped per row (`FLOW_CLASSIFIER_VERSION`, currently
-  `2`). Bumping the constant lets a later classifier re-run over only stale rows
+  `4`). Bumping the constant lets a later classifier re-run over only stale rows
   (`WHERE classifierVersion < FLOW_CLASSIFIER_VERSION`) without disturbing
   higher-confidence ones.
 - `counterpartyAccountId` is deliberately NOT persisted by the classifier
@@ -95,7 +143,8 @@ to re-derive that from provider category strings.
 ## Consumers
 
 Read through the canonical loaders: `app/api/spaces/[id]/transactions/route.ts`,
-`app/api/transactions/[id]/route.ts` (+ `/correct`),
+`app/api/spaces/[id]/transactions/query/route.ts` (the Transaction Explorer,
+via `queryTransactions`), `app/api/transactions/[id]/route.ts` (+ `/correct`),
 `app/api/money/view-context/route.ts`, `app/api/ai/chat/route.ts`,
 `app/(shell)/dashboard/page.tsx`, `app/(shell)/dashboard/credit/page.tsx`,
 `components/dashboard/widgets/SpaceTransactionsPanel.tsx` and sibling panels,
@@ -126,9 +175,12 @@ assemblers, `lib/debt.ts`, and the Cash Flow engine (`lib/transactions/`).
   is deliberately EXCLUDED from `TRANSACTION_DETAIL_VISIBILITY`; the predicate
   fails closed (over-redacts) if such a row ever appears. Re-audit before
   widening the list.
-- `getInvestmentTransactions` still gates on a `category ∈ {Buy,Sell,Dividend,
-  Split,Fee}` allow-list rather than FlowType, and currently has no live
-  consumers; it is owned by the investment truth-spine track and left untouched.
+- There is no investment-partition row loader. The former
+  `getInvestmentTransactions` was removed as dead, unbounded code (no consumer,
+  no `take` or window); its pure `serializeInvestmentTransactionRow` is retained
+  under frozen golden coverage for the investment truth-spine track to re-express.
+  Investment security-activity (`FlowType.INVESTMENT`) is deliberately outside the
+  banking population every read here serves.
 - The Plaid PFC classification branch (`classifyFromPfc`) is exercised only on
   the write path where PFC is in memory; no persisted read path passes PFC.
 - `counterpartyAccountId` is resolved read-time (persisted provider-confirmed

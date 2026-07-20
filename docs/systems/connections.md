@@ -10,6 +10,26 @@ balances, valuations, or Space visibility tiers. Its job is to answer "what have
 I connected, is it healthy, and which accounts did it produce" for the owning
 user.
 
+A **Connection** is an ingestion relationship with an external provider — it is
+NOT the financial account itself. A single provider can expose many accounts, and
+each account participates in Spaces independently of the connection that produced
+it. Every provider normalizes into ONE canonical spine:
+
+```
+provider (Plaid · wallet · future aggregators / exchanges / imports)
+    ↓
+Connection            (the provider-agnostic ingestion credential/relationship)
+    ↓
+ProviderAccountIdentity  (one row per (provider, externalAccountId))
+    ↓
+FinancialAccount      (the account the money view reads)
+    ↓
+SpaceAccountLink      (per-Space visibility grant — set independently)
+```
+
+Plaid is one implementation on this spine, not the architecture; wallets ride the
+same spine today, and new providers plug into it without changing the shape.
+
 ## Authority
 
 - `lib/connections/space-data.ts` (PCS-2) — THE canonical loader behind the
@@ -67,11 +87,34 @@ user.
   `FinancialAccount.syncStatus`) are compatibility mirrors, not authoritative.
 - **Lifecycle doctrine:** `connect → automatic initial sync → ready`. Initial
   sync happens automatically and immediately after connect; manual Refresh/Sync
-  is recovery or freshness, never the happy path. Ready state surfaces
-  consistently as `synced` / `pending` / `error`. Any new provider must
-  implement this same lifecycle and ride the shared spine
-  (`Connection → ProviderAccountIdentity → FinancialAccount → Holding/Transaction`).
+  is recovery or freshness, never the happy path. Any new provider must implement
+  this same lifecycle and ride the shared spine
+  (`Connection → ProviderAccountIdentity → FinancialAccount → SpaceAccountLink`,
+  then `Holding` / `Transaction`). The conceptual states, and the concrete values
+  they surface as, are:
 
+  | Conceptual state       | `Connection.status` | Surfaced sync state       |
+  | ---------------------- | ------------------- | ------------------------- |
+  | created / authenticated| `ACTIVE`            | building (`importing`)    |
+  | syncing                | `ACTIVE`            | building (`importing`)    |
+  | active                 | `ACTIVE`            | `ready` (`synced`)        |
+  | degraded               | `NEEDS_REAUTH` / `ERROR` | `needs_reauth` / `error` |
+  | disconnected / removed | `REVOKED`           | (soft-deleted, hidden)    |
+
+  Ready state surfaces consistently as `synced` / `pending` / `error`; sync-state
+  derivation lives in exactly one place (`lib/sync/status.ts`).
+
+- **Disconnect and Delete are not the same operation.** DISCONNECT (the one
+  primitive `lib/accounts/disconnect.ts`, exposed at
+  `POST /api/connections/[id]/disconnect`) stops synchronization: it soft-deletes
+  the connection's accounts, revokes ACTIVE `SpaceAccountLink`s, and revokes
+  provider access when the item is orphaned — but it NEVER hard-deletes data and
+  does not touch historical snapshots, so financial truth and auditability are
+  preserved and a reconnect revives the same rows by identity/fingerprint.
+  DELETE / purge is a separate, destructive, controlled path (account deletion →
+  `jobs/process-deletions`) that requires appropriate authorization. Both are
+  owner-gated. They must never be treated as equivalent: disconnect is reversible
+  and preserves history; delete is not.
 - **One writer for the shared spine middle (PROV-4).** `persistAccountSpine`
   (`lib/accounts/persist-account-spine.ts`) is the SINGLE writer of the
   per-account `AccountConnection` + `SpaceAccountLink` pair, committed atomically.
