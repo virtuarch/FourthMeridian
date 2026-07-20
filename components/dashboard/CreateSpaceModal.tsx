@@ -360,15 +360,25 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
                 type="button"
                 onClick={() => setTemplateId(selected ? null : tpl.id)}
                 className={[
-                  "flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-sm)] border text-left transition-[transform,background-color,border-color] active:scale-[0.97]",
+                  "flex items-start gap-2 px-3 py-2.5 rounded-[var(--radius-sm)] border text-left transition-[transform,background-color,border-color] active:scale-[0.97]",
                   chipTone(selected),
                 ].join(" ")}
               >
-                <span className={selected ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)]"}>
+                <span className={`mt-0.5 shrink-0 ${selected ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)]"}`}>
                   <CategoryIcon name={tpl.icon} />
                 </span>
-                <span className={`text-xs truncate ${selected ? "text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)]"}`}>
-                  {tpl.name}
+                <span className="min-w-0 flex-1">
+                  <span className={`block text-xs truncate ${selected ? "text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)]"}`}>
+                    {tpl.name}
+                  </span>
+                  {/* V25-CLOSE-4: the description already exists on the template
+                      (registry → CATEGORY_DESCRIPTIONS); surfaced here so the
+                      picker names each Space type's actual purpose. */}
+                  {tpl.description && (
+                    <span className="mt-0.5 block text-[10px] leading-snug text-[var(--text-faint)] line-clamp-2">
+                      {tpl.description}
+                    </span>
+                  )}
                 </span>
               </button>
             );

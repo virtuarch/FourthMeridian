@@ -437,9 +437,15 @@ const PERSPECTIVES_BY_CATEGORY: Record<string, string[]> = {
   FAMILY:          ["overview", "wealth", "cashFlow", "liquidity", "goals", "debt"],
   RETIREMENT:      ["overview", "wealth", "retirement", "investments", "cashFlow"],
   INVESTMENT:      ["overview", "investments", "wealth", "cashFlow"],
-  PROPERTY:        ["overview", "property", "cashFlow", "wealth"],
+  // V25-CLOSE-4: `property` / `businessHealth` removed. They are comingSoon
+  // lenses with no workspace, so as the 2nd id they led the Perspectives doorway
+  // with a non-clickable "Soon" card — a template leading with something the user
+  // cannot access. The equity hero (Property) and the cash-position hero +
+  // cashFlow/liquidity lenses (Business) already carry each Space's story. Re-add
+  // each id here only when its real workspace ships.
+  PROPERTY:        ["overview", "cashFlow", "wealth"],
   VEHICLE:         ["overview", "wealth", "cashFlow"],
-  BUSINESS:        ["overview", "businessHealth", "cashFlow", "liquidity", "wealth"],
+  BUSINESS:        ["overview", "cashFlow", "liquidity", "wealth"],
   DEBT_PAYOFF:     ["overview", "debt", "cashFlow", "wealth"],
   // Emergency funds exist to BE liquidity — the lens sits right up front.
   EMERGENCY_FUND:  ["overview", "liquidity", "wealth", "goals", "cashFlow"],
