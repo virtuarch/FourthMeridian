@@ -80,7 +80,8 @@ import { usePlaid } from "@/context/PlaidContext";
 // only; hidden templates like `personal`/`goal` are excluded by
 // getLiveTemplates). Template metadata (name/icon/featured) comes from the
 // registry — nothing is duplicated here.
-import { getLiveTemplates } from "@/lib/space-templates/registry";
+import { getLiveTemplates, getComingSoonTemplates } from "@/lib/space-templates/registry";
+import type { SpaceTemplate } from "@/lib/space-templates/types";
 import { CategoryIcon } from "@/components/dashboard/SpacesClient";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
@@ -99,6 +100,63 @@ function chipTone(selected: boolean): string {
   return selected
     ? "border-[rgba(125,168,255,.4)] bg-[rgba(59,130,246,.10)]"
     : "border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:bg-[var(--surface-hover)]";
+}
+
+/**
+ * One Space-type option (V25-CLOSE-4B). `comingSoon` renders it visible but
+ * DISABLED — a real `disabled` <button> (not a click-swallowing div), so it is
+ * unselectable by mouse, keyboard, and assistive tech, and carries a "Soon"
+ * badge naming it as planned. Selectable chips show name + description and
+ * toggle selection.
+ */
+function TemplateChip({
+  tpl,
+  selected = false,
+  comingSoon = false,
+  onSelect,
+}: {
+  tpl:         SpaceTemplate;
+  selected?:   boolean;
+  comingSoon?: boolean;
+  onSelect?:   () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={comingSoon ? undefined : onSelect}
+      disabled={comingSoon}
+      aria-disabled={comingSoon || undefined}
+      className={[
+        "flex items-start gap-2 px-3 py-2.5 rounded-[var(--radius-sm)] border text-left transition-[transform,background-color,border-color]",
+        comingSoon
+          ? "border-[var(--border-hairline)] opacity-60 cursor-not-allowed"
+          : "active:scale-[0.97] " + chipTone(selected),
+      ].join(" ")}
+    >
+      <span className={`mt-0.5 shrink-0 ${selected ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)]"}`}>
+        <CategoryIcon name={tpl.icon} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          <span className={`block text-xs truncate ${selected ? "text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)]"}`}>
+            {tpl.name}
+          </span>
+          {comingSoon && (
+            <span className="shrink-0 rounded-full border border-[var(--border-hairline)] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+              Soon
+            </span>
+          )}
+        </span>
+        {/* Description already exists on the template (registry →
+            CATEGORY_DESCRIPTIONS); surfaced so each type names its purpose. */}
+        {tpl.description && (
+          <span className="mt-0.5 block text-[10px] leading-snug text-[var(--text-faint)] line-clamp-2">
+            {tpl.description}
+          </span>
+        )}
+      </span>
+    </button>
+  );
 }
 
 type Step = "create" | "accounts" | "invite" | "done";
@@ -178,7 +236,6 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
   const [description, setDescription] = useState("");
   const [isPublic, setIsPublic] = useState(false);
   const [templateId, setTemplateId] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -207,15 +264,16 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
   // did, now without a bespoke keydown listener.
   if (!open) return null;
 
-  const liveTemplates    = getLiveTemplates();
-  const visibleTemplates = showAll ? liveTemplates : liveTemplates.filter((t) => t.featured);
+  // V25-CLOSE-4B — selectable templates first, then planned concepts shown
+  // disabled so the roadmap stays visible without being creatable.
+  const liveTemplates       = getLiveTemplates();
+  const comingSoonTemplates = getComingSoonTemplates();
 
   function resetForm() {
     setName("");
     setDescription("");
     setIsPublic(false);
     setTemplateId(null);
-    setShowAll(false);
     setError("");
     setStep("create");
     setNewSpace(null);
@@ -351,46 +409,31 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
 
       <div>
         <label className="text-xs font-medium text-[var(--text-secondary)] mb-3 block">Space Type</label>
+        {/* Selectable today. */}
         <div className="grid grid-cols-2 gap-2.5">
-          {visibleTemplates.map((tpl) => {
-            const selected = templateId === tpl.id;
-            return (
-              <button
-                key={tpl.id}
-                type="button"
-                onClick={() => setTemplateId(selected ? null : tpl.id)}
-                className={[
-                  "flex items-start gap-2 px-3 py-2.5 rounded-[var(--radius-sm)] border text-left transition-[transform,background-color,border-color] active:scale-[0.97]",
-                  chipTone(selected),
-                ].join(" ")}
-              >
-                <span className={`mt-0.5 shrink-0 ${selected ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)]"}`}>
-                  <CategoryIcon name={tpl.icon} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className={`block text-xs truncate ${selected ? "text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)]"}`}>
-                    {tpl.name}
-                  </span>
-                  {/* V25-CLOSE-4: the description already exists on the template
-                      (registry → CATEGORY_DESCRIPTIONS); surfaced here so the
-                      picker names each Space type's actual purpose. */}
-                  {tpl.description && (
-                    <span className="mt-0.5 block text-[10px] leading-snug text-[var(--text-faint)] line-clamp-2">
-                      {tpl.description}
-                    </span>
-                  )}
-                </span>
-              </button>
-            );
-          })}
+          {liveTemplates.map((tpl) => (
+            <TemplateChip
+              key={tpl.id}
+              tpl={tpl}
+              selected={templateId === tpl.id}
+              onSelect={() => setTemplateId(templateId === tpl.id ? null : tpl.id)}
+            />
+          ))}
         </div>
-        <button
-          type="button"
-          onClick={() => setShowAll((p) => !p)}
-          className="w-full text-left text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] mt-2 py-1.5 transition-colors"
-        >
-          {showAll ? "Show fewer types" : "Show more types →"}
-        </button>
+        {/* Planned concepts — visible so the roadmap is legible, disabled so they
+            cannot be selected or created (V25-CLOSE-4B). */}
+        {comingSoonTemplates.length > 0 && (
+          <>
+            <p className="mt-4 mb-2 text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+              Coming soon
+            </p>
+            <div className="grid grid-cols-2 gap-2.5">
+              {comingSoonTemplates.map((tpl) => (
+                <TemplateChip key={tpl.id} tpl={tpl} comingSoon />
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
       <div>

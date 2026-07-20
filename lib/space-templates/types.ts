@@ -21,13 +21,18 @@ import type { SectionPreset, SpaceCategory } from "../space-presets";
 
 /**
  * Exposure state of a template.
- *  - "live"   — offered wherever templates are listed (e.g. the future
- *               SP-2 creation selector via getLiveTemplates()).
- *  - "hidden" — resolvable by id/category (fallback paths) but never listed.
- *               Covers non-picker categories today (PERSONAL, legacy GOAL)
- *               and future deferred/internal templates.
+ *  - "live"      — offered and SELECTABLE in the create picker
+ *                  (getLiveTemplates()); the create route accepts it by id.
+ *  - "comingSoon" — SHOWN in the create picker but DISABLED: the concept is
+ *                  visible so users know it's planned, but it cannot be selected
+ *                  or created (the create route rejects any non-"live" id).
+ *                  (getComingSoonTemplates()).
+ *  - "hidden"    — resolvable by id/category (so existing Spaces of that
+ *                  category still materialize/render) but never listed in the
+ *                  picker. Covers PERSONAL/legacy GOAL and templates retired
+ *                  from the picker.
  */
-export type TemplateStatus = "live" | "hidden";
+export type TemplateStatus = "live" | "comingSoon" | "hidden";
 
 export interface SpaceTemplate {
   /** Stable slug identity (e.g. "debt-payoff"). Never rename once shipped. */

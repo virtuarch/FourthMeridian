@@ -10,9 +10,10 @@
  * byte-identical to what POST /api/spaces already materializes today
  * (proven by the parity test in registry.test.ts).
  *
- * Runtime note (SP-1): nothing in the app reads this registry yet.
- * getPresetsForCategory() remains the runtime source for the create route;
- * rewiring the route through getTemplateForCategory() is SP-2.
+ * Runtime note: this registry IS now the runtime source. The create picker
+ * lists templates via getLiveTemplates() / getComingSoonTemplates(), and POST
+ * /api/spaces resolves the template via getTemplate()/getTemplateForCategory()
+ * (SP-2). Exposure (live / comingSoon / hidden) is the picker's product truth.
  */
 
 import {
@@ -27,8 +28,7 @@ import type { SpaceTemplate, TemplateStatus } from "./types";
 function makeTemplate(
   id: string,
   category: SpaceCategory,
-  status: TemplateStatus = "live",
-  featured = false
+  status: TemplateStatus = "live"
 ): SpaceTemplate {
   return {
     id,
@@ -39,39 +39,47 @@ function makeTemplate(
     sections:    getPresetsForCategory(category),
     version:     1,
     status,
-    featured,
   };
 }
 
 /**
- * The built-in template set.
+ * The built-in template set (V25-CLOSE-4B — picker product truth).
  *
- * live   — exactly the categories exposed in the create picker today
- *          (PRIMARY_CATEGORIES + SECONDARY_CATEGORIES order).
- * hidden — categories that have presets but are not user-selectable:
- *          PERSONAL (created at registration, renders through the shared
- *          SpaceDashboard shell) and GOAL (legacy — kept for the
- *          SpaceDashboard fallback path).
+ * The picker now reflects only concepts that are real today, while keeping
+ * planned concepts visible-but-disabled:
+ *
+ *   live       — SELECTABLE. Only the two concepts that fully work today:
+ *                Family (Household merged in — identical composition) and Custom.
+ *   comingSoon — SHOWN DISABLED so the roadmap is visible: Retirement, Business,
+ *                Property, Vehicle, Trip. Not creatable (the create route rejects
+ *                any non-"live" id).
+ *   hidden     — not in the picker, still resolvable for existing Spaces:
+ *                Household (merged into Family), the retired Debt Payoff /
+ *                Emergency Fund / Investment / Equipment / Other, plus the
+ *                never-picker PERSONAL and legacy GOAL.
+ *
+ * Array order is the picker's display order within each status group.
  */
 export const SPACE_TEMPLATES: readonly SpaceTemplate[] = [
-  // Primary picker row (featured — SP-2.2: mirrors the former PRIMARY_CATEGORIES)
-  makeTemplate("household",      SpaceCategory.HOUSEHOLD,      "live", true),
-  makeTemplate("family",         SpaceCategory.FAMILY,         "live", true),
-  makeTemplate("debt-payoff",    SpaceCategory.DEBT_PAYOFF,    "live", true),
-  makeTemplate("emergency-fund", SpaceCategory.EMERGENCY_FUND, "live", true),
-  makeTemplate("retirement",     SpaceCategory.RETIREMENT,     "live", true),
-  makeTemplate("investment",     SpaceCategory.INVESTMENT,     "live", true),
-  // Secondary picker row
-  makeTemplate("business",       SpaceCategory.BUSINESS),
-  makeTemplate("property",       SpaceCategory.PROPERTY),
-  makeTemplate("vehicle",        SpaceCategory.VEHICLE),
-  makeTemplate("trip",           SpaceCategory.TRIP),
-  makeTemplate("equipment",      SpaceCategory.EQUIPMENT),
-  makeTemplate("custom",         SpaceCategory.CUSTOM),
-  makeTemplate("other",          SpaceCategory.OTHER),
-  // Not exposed in the picker
-  makeTemplate("personal",       SpaceCategory.PERSONAL, "hidden"),
-  makeTemplate("goal",           SpaceCategory.GOAL,     "hidden"),
+  // Selectable today
+  makeTemplate("family",         SpaceCategory.FAMILY,         "live"),
+  makeTemplate("custom",         SpaceCategory.CUSTOM,         "live"),
+  // Visible in the picker, disabled — planned concepts
+  makeTemplate("retirement",     SpaceCategory.RETIREMENT,     "comingSoon"),
+  makeTemplate("business",       SpaceCategory.BUSINESS,       "comingSoon"),
+  makeTemplate("property",       SpaceCategory.PROPERTY,       "comingSoon"),
+  makeTemplate("vehicle",        SpaceCategory.VEHICLE,        "comingSoon"),
+  makeTemplate("trip",           SpaceCategory.TRIP,           "comingSoon"),
+  // Retired from the picker — still resolvable so existing Spaces materialize
+  makeTemplate("household",      SpaceCategory.HOUSEHOLD,      "hidden"),
+  makeTemplate("debt-payoff",    SpaceCategory.DEBT_PAYOFF,    "hidden"),
+  makeTemplate("emergency-fund", SpaceCategory.EMERGENCY_FUND, "hidden"),
+  makeTemplate("investment",     SpaceCategory.INVESTMENT,     "hidden"),
+  makeTemplate("equipment",      SpaceCategory.EQUIPMENT,      "hidden"),
+  makeTemplate("other",          SpaceCategory.OTHER,          "hidden"),
+  // Never exposed in the picker
+  makeTemplate("personal",       SpaceCategory.PERSONAL,       "hidden"),
+  makeTemplate("goal",           SpaceCategory.GOAL,           "hidden"),
 ];
 
 /** Look up a template by its stable id. Resolves hidden templates too. */
@@ -79,9 +87,15 @@ export function getTemplate(id: string): SpaceTemplate | undefined {
   return SPACE_TEMPLATES.find((t) => t.id === id);
 }
 
-/** Templates offered for selection — excludes status "hidden". */
+/** Selectable templates — status "live". These are creatable. */
 export function getLiveTemplates(): SpaceTemplate[] {
   return SPACE_TEMPLATES.filter((t) => t.status === "live");
+}
+
+/** Planned templates shown DISABLED in the picker — status "comingSoon".
+ *  Visible so the roadmap is legible; never creatable. */
+export function getComingSoonTemplates(): SpaceTemplate[] {
+  return SPACE_TEMPLATES.filter((t) => t.status === "comingSoon");
 }
 
 /**

@@ -24,7 +24,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { getPerspectivesForCategory } from "../perspectives";
-import { getLiveTemplates } from "./registry";
+import { getLiveTemplates, getComingSoonTemplates, getTemplate } from "./registry";
 import { SpaceCategory, CATEGORY_DESCRIPTIONS } from "../space-presets";
 
 let failures = 0;
@@ -78,6 +78,31 @@ function main(): void {
     check(`${cat} description drops "${phrase}"`,
       !CATEGORY_DESCRIPTIONS[cat as SpaceCategory].toLowerCase().includes(phrase));
   }
+
+  console.log("5. V25-CLOSE-4B — coming-soon templates are SHOWN but DISABLED");
+  const soon = getComingSoonTemplates();
+  check("there is a coming-soon set to show", soon.length > 0);
+  check("coming-soon templates carry descriptions too",
+    soon.every((t) => t.description.trim().length > 0));
+  // The modal must list BOTH groups, and render the coming-soon group through a
+  // real disabled control (not a click-swallowing div) so it cannot be selected.
+  check("modal lists the selectable set via getLiveTemplates()", modal.includes("getLiveTemplates()"));
+  check("modal lists the disabled set via getComingSoonTemplates()", modal.includes("getComingSoonTemplates()"));
+  check("the coming-soon chip is a real disabled button",
+    /disabled=\{comingSoon\}/.test(modal));
+  check("a coming-soon chip has no click handler",
+    /onClick=\{comingSoon \? undefined : onSelect\}/.test(modal));
+  check("coming-soon is labelled as planned (Soon badge)",
+    modal.includes("Coming soon") || modal.includes(">Soon<") || modal.includes("Soon\n"));
+
+  console.log("6. removed templates are gone from the picker but still resolvable");
+  const pickerIds = new Set([...live, ...soon].map((t) => t.id));
+  for (const id of ["household", "debt-payoff", "emergency-fund", "investment", "equipment", "other"]) {
+    check(`"${id}" is not offered in the picker`, !pickerIds.has(id));
+    check(`"${id}" still resolves (existing Spaces materialize)`, getTemplate(id) !== undefined);
+  }
+  check("Household was merged into Family (Family is selectable)",
+    live.some((t) => t.id === "family") && !pickerIds.has("household"));
 
   console.log(failures === 0 ? "\nPASS" : `\nFAIL — ${failures} check(s)`);
   process.exit(failures === 0 ? 0 : 1);

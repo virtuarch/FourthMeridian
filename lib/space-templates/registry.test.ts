@@ -17,11 +17,11 @@ import path from "node:path";
 import {
   SpaceCategory,
   getPresetsForCategory,
-  PRIMARY_CATEGORIES,
-  SECONDARY_CATEGORIES,
 } from "../space-presets";
 import { WIDGET_REGISTRY } from "../widget-registry";
-import { SPACE_TEMPLATES, getTemplate, getLiveTemplates, getTemplateForCategory } from "./registry";
+import {
+  SPACE_TEMPLATES, getTemplate, getLiveTemplates, getComingSoonTemplates, getTemplateForCategory,
+} from "./registry";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -33,7 +33,11 @@ function check(name: string, ok: boolean, detail?: string): void {
 }
 
 const CATEGORY_VALUES = new Set<string>(Object.values(SpaceCategory));
-const EXPOSED_CATEGORIES = [...PRIMARY_CATEGORIES, ...SECONDARY_CATEGORIES];
+
+// V25-CLOSE-4B — the picker's product truth, as template ids by exposure.
+const EXPECTED_LIVE        = ["family", "custom"];
+const EXPECTED_COMING_SOON = ["retirement", "business", "property", "vehicle", "trip"];
+const EXPECTED_HIDDEN      = ["household", "debt-payoff", "emergency-fund", "investment", "equipment", "other", "personal", "goal"];
 
 // 1. Unique, stable slug ids.
 const ids = SPACE_TEMPLATES.map((t) => t.id);
@@ -53,7 +57,7 @@ for (const t of SPACE_TEMPLATES) {
       t.icon.trim().length > 0 &&
       Number.isInteger(t.version) &&
       t.version >= 1 &&
-      (t.status === "live" || t.status === "hidden") &&
+      (t.status === "live" || t.status === "comingSoon" || t.status === "hidden") &&
       Array.isArray(t.sections)
   );
   // 4. Every template maps to a valid SpaceCategory.
@@ -63,28 +67,35 @@ for (const t of SPACE_TEMPLATES) {
   );
 }
 
-// 3. Live templates exclude hidden templates.
-const live = getLiveTemplates();
+// 3. Exposure — the three status groups are exactly the V25-CLOSE-4B picker model.
+const live       = getLiveTemplates();
+const comingSoon = getComingSoonTemplates();
+const sortIds = (a: string[]) => [...a].sort();
 check(
-  "getLiveTemplates() excludes hidden templates",
-  live.every((t) => t.status === "live") &&
-    live.length === SPACE_TEMPLATES.filter((t) => t.status === "live").length
+  "getLiveTemplates() is exactly the selectable set",
+  sortIds(live.map((t) => t.id)).join() === sortIds(EXPECTED_LIVE).join(),
+  `got ${live.map((t) => t.id).join(", ")}`
 );
+check("every live template has status live", live.every((t) => t.status === "live"));
 check(
-  "hidden templates are still resolvable by id",
-  getTemplate("personal")?.status === "hidden" && getTemplate("goal")?.status === "hidden"
+  "getComingSoonTemplates() is exactly the planned/disabled set",
+  sortIds(comingSoon.map((t) => t.id)).join() === sortIds(EXPECTED_COMING_SOON).join(),
+  `got ${comingSoon.map((t) => t.id).join(", ")}`
 );
-
-// 5. Every exposed category has exactly one live template; live set matches exposure.
-for (const cat of EXPOSED_CATEGORIES) {
-  const matches = live.filter((t) => t.category === cat);
-  check(`exposed category ${cat} has exactly one live template`, matches.length === 1);
+check("every comingSoon template has status comingSoon", comingSoon.every((t) => t.status === "comingSoon"));
+for (const id of EXPECTED_HIDDEN) {
+  check(`retired/hidden template "${id}" is hidden but still resolvable`,
+    getTemplate(id)?.status === "hidden");
 }
+// The three groups partition the whole registry (nothing stranded in a 4th state).
 check(
-  "no live template exists for a non-exposed category",
-  live.every((t) => (EXPOSED_CATEGORIES as string[]).includes(t.category)),
-  `offenders: ${live.filter((t) => !(EXPOSED_CATEGORIES as string[]).includes(t.category)).map((t) => t.id).join(", ")}`
+  "live + comingSoon + hidden partition the registry",
+  live.length + comingSoon.length + SPACE_TEMPLATES.filter((t) => t.status === "hidden").length === SPACE_TEMPLATES.length
 );
+// Every SELECTABLE and every SHOWN template still resolves the category it needs.
+for (const t of [...live, ...comingSoon]) {
+  check(`picker template "${t.id}" resolves its category`, getTemplateForCategory(t.category)?.id !== undefined);
+}
 
 // 6. Widget-key referential integrity — every section key exists in
 //    WIDGET_REGISTRY and is not a deprecated alias.
@@ -107,27 +118,9 @@ for (const t of SPACE_TEMPLATES) {
   check(`template "${t.id}" has no duplicate section keys`, new Set(keys).size === keys.length);
 }
 
-// SP-2.2 — featured is presentation metadata for the create picker: only
-// live templates may be featured, and the featured set mirrors the former
-// PRIMARY_CATEGORIES row exactly.
-const featured = SPACE_TEMPLATES.filter((t) => t.featured === true);
-check(
-  "featured templates are all live",
-  featured.every((t) => t.status === "live")
-);
-check(
-  "featured set matches the primary picker categories",
-  featured.length === PRIMARY_CATEGORIES.length &&
-    (PRIMARY_CATEGORIES as string[]).every((cat) =>
-      featured.some((t) => t.category === cat)
-    )
-);
-check(
-  "non-featured live templates match the secondary picker categories",
-  live
-    .filter((t) => t.featured !== true)
-    .every((t) => (SECONDARY_CATEGORIES as string[]).includes(t.category))
-);
+// V25-CLOSE-4B — the featured/PRIMARY-vs-SECONDARY two-row split is retired.
+// Exposure is now the three-status model asserted above; the picker shows the
+// selectable set then the disabled coming-soon set, with no "show more" toggle.
 
 // 11. Parity — for every SpaceCategory, the category's template sections
 //     deep-equal getPresetsForCategory(category). This is the SP-1 core

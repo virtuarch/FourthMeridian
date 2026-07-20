@@ -456,7 +456,7 @@ export const CATEGORY_LABELS: Record<SpaceCategory, string> = {
 export const CATEGORY_DESCRIPTIONS: Record<SpaceCategory, string> = {
   [SpaceCategory.PERSONAL]:       "Track your personal finances, net worth, and spending.",
   [SpaceCategory.HOUSEHOLD]:      "Manage shared finances with a partner or housemates.",
-  [SpaceCategory.FAMILY]:         "Coordinate budgets and savings across your family.",
+  [SpaceCategory.FAMILY]:         "Shared finances for your family or household — one net worth across everyone's accounts.",
   [SpaceCategory.BUSINESS]:       "Oversee cash flow and accounts for a business or LLC.",
   [SpaceCategory.PROPERTY]:       "See your equity — property value minus what you owe — over time.",
   [SpaceCategory.VEHICLE]:        "Group a vehicle's accounts and track its net worth over time.",
