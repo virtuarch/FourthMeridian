@@ -21,7 +21,7 @@
  * A date before coverage shows an honest unavailable state in class mode.
  */
 
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { formatCurrency } from "@/lib/format";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import { WEALTH_CLASS_COLOR, DEFAULT_CHART_COLOR } from "@/lib/charts/chart-palette";
@@ -31,8 +31,15 @@ import {
   renderInstitutionAllocation,
   renderWealthByAccount,
   renderWealthConcentration,
+  wealthInstitutionGroups,
+  wealthAccountRows,
   type WealthAdapterAccount,
 } from "@/components/space/widgets/wealth-adapters";
+import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
+import {
+  InstitutionCompositionDetail,
+  AccountCompositionDetail,
+} from "./WealthCompositionDetail";
 import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate, wealthCompositionItems } from "@/lib/wealth/wealth-time-machine";
 import { Surface, Block } from "@/components/atlas/Surface";
@@ -64,11 +71,37 @@ export function WealthCompositionCard({
   ctx?:      ConversionContext;
 }) {
   const [mode, setMode] = useState<CompositionMode>("class");
+  // UX-CLOSE-2 — one selection, scoped to this card. No provider, no event bus:
+  // the same local-useState idiom the five ledgers already use.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const { asOfState, drivers } = result;
+
+  // Both drills read the SAME authority the charts render from, so a segment and
+  // its panel cannot disagree about membership or converted value.
+  const institutionGroups = useMemo(
+    () => wealthInstitutionGroups(accounts, ctx),
+    [accounts, ctx],
+  );
+  const accountRows = useMemo(() => wealthAccountRows(accounts, ctx), [accounts, ctx]);
+  const totalAssets = useMemo(
+    () => accountRows.reduce((s, a) => s + a.value, 0),
+    [accountRows],
+  );
+
+  const selectedGroup   = mode === "institution" ? institutionGroups.find((g) => g.id === selectedId) ?? null : null;
+  const selectedAccount = mode === "account"     ? accountRows.find((a) => a.id === selectedId) ?? null : null;
+  const detailOpen = selectedGroup != null || selectedAccount != null;
+
+  // Switching grouping changes what an id MEANS ("Chase" vs an account id), so a
+  // carried-over selection would resolve to nothing. Clear it with the mode.
+  const changeMode = (next: CompositionMode) => {
+    setSelectedId(null);
+    setMode(next);
+  };
 
   // The mode switcher — a compact dropdown (four modes shouldn't eat a rail of
   // width, and it keeps this card's header aligned with its neighbour).
-  const switcher = <Dropdown options={MODES} value={mode} onChange={setMode} ariaLabel="Composition grouping" />;
+  const switcher = <Dropdown options={MODES} value={mode} onChange={changeMode} ariaLabel="Composition grouping" />;
 
   const c = asOfState.composition;
   // Colours pinned to the CLASS, not its position. wealthCompositionItems drops
@@ -96,9 +129,9 @@ export function WealthCompositionCard({
           Current classification — reflects today&apos;s connected accounts, not the selected As Of date.
         </p>
         {mode === "institution"
-          ? renderInstitutionAllocation(accounts, ctx)
+          ? renderInstitutionAllocation(accounts, ctx, { onSelect: setSelectedId, selectedId })
           : mode === "account"
-            ? renderWealthByAccount(accounts, ctx)
+            ? renderWealthByAccount(accounts, ctx, { onSelect: setSelectedId, selectedId })
             : renderWealthConcentration(accounts, ctx)}
       </Surface>
     );
@@ -186,6 +219,36 @@ export function WealthCompositionCard({
         {content}
       </div>
       <style>{`@keyframes wcomp-fade { from { opacity: 0 } to { opacity: 1 } }`}</style>
+
+      {/* INSPECT — "what is inside the thing I selected". Right edge, matching
+          the ledgers. The browse counterpart (pick from the full set) would be a
+          LeftPanel; this card's chart already is that set, so none is needed. */}
+      <RightPanel open={detailOpen} onClose={() => setSelectedId(null)} ariaLabel="Composition detail">
+        {selectedGroup && (
+          <>
+            <PanelHeader eyebrow="Institution" title={selectedGroup.label} />
+            <PanelContent>
+              <InstitutionCompositionDetail
+                group={selectedGroup}
+                totalAssets={totalAssets}
+                currency={ctx?.target ?? currency}
+              />
+            </PanelContent>
+          </>
+        )}
+        {selectedAccount && (
+          <>
+            <PanelHeader eyebrow={selectedAccount.institution} title={selectedAccount.name} />
+            <PanelContent>
+              <AccountCompositionDetail
+                account={selectedAccount}
+                totalAssets={totalAssets}
+                currency={ctx?.target ?? currency}
+              />
+            </PanelContent>
+          </>
+        )}
+      </RightPanel>
     </Block>
   );
 }

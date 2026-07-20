@@ -5,9 +5,25 @@
  *
  * Cash Flow drill-down (UX-PER-3). A generic slice viewer: given the label of a
  * clicked visual element (a calendar day, a history bucket card, a spending
- * category, an income source) and the transactions that produced it, it opens a
- * GlassModal showing that slice's income / spending / net totals and the
- * underlying transaction rows.
+ * category, an income source) and the transactions that produced it, it shows
+ * that slice's income / spending / net totals and the underlying transaction
+ * rows.
+ *
+ * ── Surface (UX-CLOSE-2) ──────────────────────────────────────────────────────
+ * This is a PANEL, not a modal. It was a centered GlassModal, which claimed
+ * "pause and complete a decision" for what is actually "tell me more about what
+ * I selected" — the file has always been named Drawer.
+ *
+ * The spatial language it now obeys:
+ *   LEFT   browse — pick from a set ("all categories")
+ *   CENTER the workspace
+ *   RIGHT  inspect — what is inside the one thing I selected
+ *
+ * A transaction slice is INSPECT, so it docks right, exactly like the ledger
+ * detail panels. Content does not decide the edge — role does: this renders a
+ * LIST, but the question is "what produced this number", not "which one do I
+ * want". Opened from inside a category detail it simply stacks one level
+ * deeper via the shared PanelStack.
  *
  * It owns NO data of its own — the caller passes the already-loaded, already-
  * filtered Cash Flow rows for the slice, and the drawer only presents them. All
@@ -19,7 +35,7 @@
  */
 
 import { useState } from "react";
-import { GlassModal } from "@/components/dashboard/widgets/GlassModal";
+import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
@@ -98,32 +114,59 @@ function groupByFlow(rows: Transaction[]): { key: string; label: string; rows: T
     .map((k) => ({ key: k, label: FLOW_GROUP_LABEL[k] ?? k, rows: byFlow.get(k)! }));
 }
 
+/**
+ * `slice` is now NULLABLE and the component is ALWAYS mounted, because Panel
+ * animates on an `open` transition: `usePresence` seeds its settled state from
+ * `open`, so a component mounted already-open plays neither entrance nor exit.
+ * Conditional mounting would therefore have made the panel appear and vanish
+ * instantly — a regression against the modal it replaces.
+ *
+ * Consequence handled here: with a persistent mount, per-slice state no longer
+ * resets via remount. `lastSlice` keeps the previous content painted through the
+ * exit (so the panel does not blank as it slides away), and `showAll` is reset
+ * whenever the slice identity changes — otherwise "Show all activity" would leak
+ * from one day into the next. Both use the sanctioned adjust-state-during-render
+ * pattern (no effect, no flash), matching CashFlowHistoryWidget's period reset.
+ */
 export function TransactionSliceDrawer({
   slice, ctx, onClose,
 }: {
-  slice:   TransactionSlice;
+  slice:   TransactionSlice | null;
   ctx?:    ConversionContext;
   onClose: () => void;
 }) {
   const [showAll, setShowAll] = useState(false);
+  const [lastSlice, setLastSlice] = useState<TransactionSlice | null>(slice);
+
+  if (slice && slice !== lastSlice) {
+    setLastSlice(slice);
+    setShowAll(false);
+  }
+
+  const shown = slice ?? lastSlice;
+
   // "Show all activity" is offered only when the full day/bucket set has MORE rows
   // than the measure-filtered slice (otherwise the toggle is a no-op).
-  const canShowAll = !!slice.allRows && slice.allRows.length > slice.rows.length;
+  const canShowAll = !!shown?.allRows && shown.allRows.length > shown.rows.length;
   const viewingAll = showAll && canShowAll;
-  const displayRows = viewingAll ? slice.allRows! : slice.rows;
+  const displayRows = shown ? (viewingAll ? shown.allRows! : shown.rows) : [];
 
   const { income, spend, net } = economicTotals(displayRows, ctx);
 
   return (
-    <GlassModal title={slice.title} subtitle={slice.subtitle} icon={Waves} onClose={onClose} size="md">
+    <RightPanel open={slice != null} onClose={onClose} ariaLabel="Transaction slice">
+      {shown && (
+      <>
+      <PanelHeader eyebrow={shown.subtitle} title={shown.title} />
+      <PanelContent>
       {/* Totals — reuse the exact Cash Flow doctrine so they match the source. */}
       <div className="flex items-center gap-4 flex-wrap px-1 pb-2 text-sm">
         {/* Explicit reconciling total for neutral-flow slices (debt payments,
             cash-in-by-reason) where income/spend are both 0. Matches the clicked
             value, so the drawer visibly reconciles with what opened it. */}
-        {income <= 0 && spend <= 0 && slice.total != null && !viewingAll && (
+        {income <= 0 && spend <= 0 && shown.total != null && !viewingAll && (
           <span className="text-[var(--text-secondary)]">
-            {slice.totalLabel ?? "Total"} <span className="font-semibold text-[var(--text-primary)]">{money(slice.total, ctx)}</span>
+            {shown.totalLabel ?? "Total"} <span className="font-semibold text-[var(--text-primary)]">{money(shown.total, ctx)}</span>
           </span>
         )}
         {income > 0 && (
@@ -159,10 +202,10 @@ export function TransactionSliceDrawer({
             style={{ background: "rgba(59,130,246,.12)", border: "1px solid rgba(125,168,255,.32)" }}
           >
             {viewingAll ? <ListFilter size={12} /> : <Layers size={12} />}
-            {viewingAll ? `Show only ${slice.measureLabel ?? "the selected measure"}` : "Show all activity"}
+            {viewingAll ? `Show only ${shown.measureLabel ?? "the selected measure"}` : "Show all activity"}
           </button>
           <span className="text-[10px] text-[var(--text-faint)]">
-            {viewingAll ? "Every transaction this day, grouped by type" : `Filtered to ${slice.measureLabel ?? "the selected measure"}`}
+            {viewingAll ? "Every transaction this day, grouped by type" : `Filtered to ${shown.measureLabel ?? "the selected measure"}`}
           </span>
         </div>
       )}
@@ -192,6 +235,9 @@ export function TransactionSliceDrawer({
           </div>
         </div>
       )}
-    </GlassModal>
+      </PanelContent>
+      </>
+      )}
+    </RightPanel>
   );
 }

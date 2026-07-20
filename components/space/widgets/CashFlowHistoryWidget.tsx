@@ -382,7 +382,7 @@ export function CashFlowHistoryWidget({ transactions, period, now, ctx, accounts
           )
           : <CardsView rows={rows} period={period} ctx={ctx} accounts={accounts} measures={measures} onOpenBucket={openBucket} factsBuckets={buckets} />}
 
-      {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}
+      <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />
     </div>
   );
 }

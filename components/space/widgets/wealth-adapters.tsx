@@ -55,9 +55,73 @@ function inDisp(amount: number, currency: string | null | undefined, ctx?: Conve
   return convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx).amount;
 }
 
+// ─── Composition rows — the shared authority behind chart AND detail panel ────
+//
+// UX-CLOSE-2. Selecting a segment must show the accounts that PRODUCED it, so
+// the chart and the panel have to agree by construction, not by two call sites
+// happening to filter and convert the same way. Both now read these functions.
+
+/** One asset account, display-converted. */
+export interface WealthCompositionAccount {
+  id:          string;
+  name:        string;
+  institution: string;
+  type:        string;
+  value:       number;
+}
+
+/** A named portion of the asset total, plus the accounts that make it up. */
+export interface WealthCompositionGroup {
+  id:       string;
+  label:    string;
+  value:    number;
+  accounts: WealthCompositionAccount[];
+}
+
+/** The bucket an account with no institution falls into. */
+export const NO_INSTITUTION_LABEL = "Other";
+
 /** Assets only — liabilities (debt) are never part of the Wealth question. */
 function assetAccounts(accounts: WealthAdapterAccount[]): WealthAdapterAccount[] {
   return accounts.filter((a) => a.type !== "debt");
+}
+
+/** Positive-value asset accounts in display currency, largest first. */
+export function wealthAccountRows(
+  accounts: WealthAdapterAccount[],
+  ctx?:     ConversionContext,
+): WealthCompositionAccount[] {
+  return assetAccounts(accounts)
+    .map((a) => ({
+      id:          a.id,
+      name:        a.name,
+      institution: a.institution?.trim() || NO_INSTITUTION_LABEL,
+      type:        a.type,
+      value:       inDisp(a.balance, a.currency, ctx),
+    }))
+    .filter((a) => a.value > 0)
+    .sort((x, y) => y.value - x.value);
+}
+
+/** Asset accounts grouped by institution, largest group first; accounts within
+ *  a group also largest first. The group's value is the sum of its accounts, so
+ *  a segment and its detail panel always reconcile. */
+export function wealthInstitutionGroups(
+  accounts: WealthAdapterAccount[],
+  ctx?:     ConversionContext,
+): WealthCompositionGroup[] {
+  const groups = new Map<string, WealthCompositionAccount[]>();
+  for (const row of wealthAccountRows(accounts, ctx)) {
+    groups.set(row.institution, [...(groups.get(row.institution) ?? []), row]);
+  }
+  return [...groups.entries()]
+    .map(([label, rows]) => ({
+      id:       label,
+      label,
+      value:    rows.reduce((s, r) => s + r.value, 0),
+      accounts: rows,
+    }))
+    .sort((x, y) => y.value - x.value);
 }
 
 /** Value formatter honoring the display currency when a context is present;
@@ -66,25 +130,39 @@ function valueFormatterProps(ctx?: ConversionContext) {
   return ctx ? { formatValue: (v: number) => formatCurrency(v, ctx.target) } : {};
 }
 
+/** Optional selection wiring threaded into an adapter. Absent ⇒ inert chart,
+ *  which is what the legacy SectionRegistry path passes. */
+export interface WealthSelection {
+  onSelect?:   (id: string) => void;
+  selectedId?: string | null;
+}
+
 const EMPTY_HEADLINE = "No assets yet";
 const EMPTY_SUBLINE  = "Connect or add asset accounts to see where your money sits.";
 
 // ─── 1. Wealth by Account (hero) ──────────────────────────────────────────────
 
-/** Horizontal ranked bars: every asset account by balance, largest first. */
+/**
+ * Horizontal ranked bars: every asset account by balance, largest first.
+ *
+ * Deliberately NOT a donut (UX-CLOSE-2). Account count is unbounded — a mature
+ * Space holds 30–60 — and a donut of that many slices is unreadable: the ring
+ * is consumed by inter-segment gaps and the legend becomes the actual chart.
+ * Ranked bars stay legible at any cardinality, so composition here is expressed
+ * by bar LENGTH. Rows are selectable regardless; interrogability does not
+ * require a donut.
+ */
 export function renderWealthByAccount(
   accounts: WealthAdapterAccount[],
   ctx?:     ConversionContext,
+  sel:      WealthSelection = {},
 ): React.ReactElement {
-  const items: BreakdownItem[] = assetAccounts(accounts)
-    .map((a) => ({
-      id:    a.id,
-      label: a.name,
-      value: inDisp(a.balance, a.currency, ctx),
-      meta:  a.institution || undefined,
-    }))
-    .filter((i) => i.value > 0)
-    .sort((x, y) => y.value - x.value);
+  const items: BreakdownItem[] = wealthAccountRows(accounts, ctx).map((a) => ({
+    id:    a.id,
+    label: a.name,
+    value: a.value,
+    meta:  a.institution === NO_INSTITUTION_LABEL ? undefined : a.institution,
+  }));
 
   return (
     <BreakdownWidget
@@ -93,6 +171,9 @@ export function renderWealthByAccount(
       itemNoun="account"
       emptyHeadline={EMPTY_HEADLINE}
       emptySubline={EMPTY_SUBLINE}
+      onSelect={sel.onSelect ? (i) => sel.onSelect?.(i.id) : undefined}
+      selectedId={sel.onSelect ? sel.selectedId ?? null : undefined}
+      selectLabel={(i) => `${i.label} — show account detail`}
       {...valueFormatterProps(ctx)}
     />
   );
@@ -203,30 +284,35 @@ export function renderWealthAccountCards(
 
 // ─── 2. Institution Allocation ────────────────────────────────────────────────
 
-/** Ranked bars: assets grouped by institution — institution-level concentration. */
+/**
+ * Donut: assets grouped by institution (UX-CLOSE-2 — was ranked bars).
+ *
+ * This is a COMPOSITION, not a ranking — "how is my money spread across the
+ * institutions holding it" — and institution count is naturally bounded (a
+ * handful), so the ring stays readable where By Account would not.
+ */
 export function renderInstitutionAllocation(
   accounts: WealthAdapterAccount[],
   ctx?:     ConversionContext,
+  sel:      WealthSelection = {},
 ): React.ReactElement {
-  const byInstitution = new Map<string, number>();
-  for (const a of assetAccounts(accounts)) {
-    const value = inDisp(a.balance, a.currency, ctx);
-    if (value <= 0) continue;
-    const key = a.institution?.trim() || "Other";
-    byInstitution.set(key, (byInstitution.get(key) ?? 0) + value);
-  }
-
-  const items: BreakdownItem[] = [...byInstitution.entries()]
-    .map(([label, value]) => ({ id: label, label, value }))
-    .sort((x, y) => y.value - x.value);
+  const items: BreakdownItem[] = wealthInstitutionGroups(accounts, ctx).map((g) => ({
+    id:    g.id,
+    label: g.label,
+    value: g.value,
+    meta:  `${g.accounts.length} ${g.accounts.length === 1 ? "account" : "accounts"}`,
+  }));
 
   return (
     <BreakdownWidget
       items={items}
-      viewMode="bar"
+      viewMode="donut"
       itemNoun="institution"
       emptyHeadline={EMPTY_HEADLINE}
       emptySubline={EMPTY_SUBLINE}
+      onSelect={sel.onSelect ? (i) => sel.onSelect?.(i.id) : undefined}
+      selectedId={sel.onSelect ? sel.selectedId ?? null : undefined}
+      selectLabel={(i) => `${i.label} — show contributing accounts`}
       {...valueFormatterProps(ctx)}
     />
   );

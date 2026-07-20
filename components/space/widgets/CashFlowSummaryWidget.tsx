@@ -340,7 +340,7 @@ export function CashFlowSummaryWidget({ transactions, period, ctx, accounts, per
         </div>
       )}
 
-      {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}
+      <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />
     </div>
   );
 }

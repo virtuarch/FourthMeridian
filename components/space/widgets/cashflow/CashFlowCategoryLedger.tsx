@@ -209,7 +209,7 @@ export function CashFlowCategoryLedger({
       </RightPanel>
 
       {/* The EXISTING drill surface — composed, not re-implemented. */}
-      {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}
+      <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />
     </div>
   );
 }

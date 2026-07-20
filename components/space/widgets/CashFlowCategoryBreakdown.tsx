@@ -181,7 +181,7 @@ export function CashFlowCategoryBreakdown({
         </button>
       )}
 
-      {slice && <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />}
+      <TransactionSliceDrawer slice={slice} ctx={ctx} onClose={() => setSlice(null)} />
     </div>
   );
 }

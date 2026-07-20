@@ -130,6 +130,17 @@ function assignColors(items: BreakdownItem[]): ColoredItem[] {
 const defaultFmt = (v: number) =>
   formatCurrency(v, DEFAULT_DISPLAY_CURRENCY);
 
+/**
+ * Pluralise the donut's centre noun. A bare `+ "s"` rendered "3 asset classs"
+ * on the Wealth card, and would have produced "categorys" the moment a caller
+ * passed `itemNoun="category"`. Sibilants take -es, consonant+y takes -ies.
+ */
+function pluralize(noun: string): string {
+  if (/(s|x|z|ch|sh)$/i.test(noun))  return `${noun}es`;
+  if (/[^aeiou]y$/i.test(noun))      return `${noun.slice(0, -1)}ies`;
+  return `${noun}s`;
+}
+
 // ─── Selection plumbing ───────────────────────────────────────────────────────
 
 /** The optional selection seam, passed down to whichever view is rendering. */
@@ -327,7 +338,7 @@ function DonutView({
   const hovered       = hoveredIdx !== null ? segments[hoveredIdx] : null;
   // Centre label uses first item colour when showing totals (matches original red-gradient behaviour)
   const totalColor    = items[0]?.color ?? DEFAULT_CHART_COLOR;
-  const pluralNoun    = items.length === 1 ? itemNoun : `${itemNoun}s`;
+  const pluralNoun    = items.length === 1 ? itemNoun : pluralize(itemNoun);
 
   return (
     <div className="space-y-4">
