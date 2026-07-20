@@ -53,7 +53,15 @@ export function ViewCurrencyOverride({
         setError(d.error ?? "Could not load rates for that currency");
       } else {
         const d = await res.json();
-        onChange({ currency: d.target, moneyCtx: d.moneyCtx });
+        // V25-CLOSE-3A-FIX — carry the REQUESTED currency, not the effective one.
+        // When the request was unsatisfiable the server reverts (`d.target` /
+        // `d.effective` = USD); storing that here would silently snap the control
+        // back to USD and hide the failure. Storing the requested currency routes
+        // the override's display currency back through useSpaceData → the shared
+        // /view-context verdict → the ONE composition-root CurrencyRevertedBanner,
+        // exactly as the persisted-currency path does. `moneyCtx` is already the
+        // effective (USD) context, so values stay accurate either way.
+        onChange({ currency: d.requested ?? d.target, moneyCtx: d.moneyCtx });
       }
     } catch {
       setError("Network error");

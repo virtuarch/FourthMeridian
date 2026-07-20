@@ -211,3 +211,32 @@ Nothing writes `Space.reportingCurrency` on the failure path — verified in cod
 
 - The **ephemeral "view as" override (T1)** shares the same canonical mechanism (an override target flows through `/view-context` → the same revert), so the main display reverts identically — but I browser-verified the **persisted (T2)** path (the ticket's Scenario A/B, which survives refresh); T1 was not driven end-to-end because its native `<select>` doesn't render in screenshots. A minor known residual under an *active* override: the override control still shows the requested currency as selected and `perspectiveTargetCurrency` still carries it to the lens metrics, while the main display reverts. Not the ticket's scenario; recorded rather than silently accepted.
 - The verdict's inputs differ slightly between `/view-context` (accounts+tx+snapshot legs) and `getRecentSnapshots` (snapshot stamp legs); they agree for a genuinely all-miss currency (the failure case). Partial-coverage currencies stay satisfiable in both and keep per-value disclosure.
+
+---
+
+# Follow-up fix (V25-CLOSE-3A-FIX) — selector-path disclosure
+
+Follow-up verification found the fallback worked but **no banner appeared when a
+user picked an unavailable currency from the "view as" selector** (the T1
+residual noted above). Root cause: `ViewCurrencyOverride` stored
+`currency: d.target`, and the response `target` is the **effective** currency
+(USD on revert). So the control silently snapped to USD, `useSpaceData` then
+re-requested USD, saw `reverted: false`, and the composition-root banner never
+fired — the user was not told why the currency changed.
+
+**Fix (disclosure layer only — resolver/FX untouched):** the selector now stores
+`currency: d.requested`. An unsatisfiable pick keeps the requested currency as the
+display target, so it routes back through the shared `/view-context` verdict and
+lights the **same** composition-root `CurrencyRevertedBanner` the persisted path
+uses. `moneyCtx` is already the effective (USD) context, so values stay accurate.
+No new banner, no per-perspective notification, no second signal.
+
+Guard added: `reporting-currency-failure-contract.test.ts` pins that the selector
+stores `d.requested` (regressing to `d.target`/`d.effective` fails).
+
+**Browser-verified (both paths):**
+- **Selector (T1):** picking EUR → banner appears verbatim, selector shows "EUR · PREVIEW", values USD $26,716; refresh clears the ephemeral override → no banner (correct).
+- **Persisted (T2):** `reportingCurrency = EUR` → banner appears (selector "EUR", no PREVIEW — it is saved), values USD; refresh → banner persists, DB still `EUR`.
+- **Control:** USD → no banner.
+
+323/323 tests, lint 0, tsc clean.

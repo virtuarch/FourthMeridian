@@ -118,6 +118,18 @@ for (const f of PERSPECTIVES) {
     "reverted display must re-scope formatting to the effective (USD) currency",
   );
 }
+// The "view as" selector must carry the REQUESTED currency (not the effective
+// one), so an unsatisfiable pick routes back through /view-context and lights the
+// composition-root banner — instead of silently snapping to the effective
+// currency with no disclosure (V25-CLOSE-3A-FIX).
+{
+  const sel = stripComments(read("components/dashboard/widgets/ViewCurrencyOverride.tsx"));
+  check(
+    "ViewCurrencyOverride stores the requested currency (so a reverted pick still discloses)",
+    /currency:\s*d\.requested/.test(sel),
+    "the selector must store d.requested, not d.target/d.effective — otherwise a reverted pick shows no banner",
+  );
+}
 {
   const banner = read("components/dashboard/CurrencyRevertedBanner.tsx");
   // The four required meanings.
