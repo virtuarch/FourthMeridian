@@ -9,9 +9,9 @@
  *
  *   Container 2 — "the lens" (lighter, --border-hairline):
  *     PerspectiveTabs (one SegmentedControl track)
- *   Container 1 — "time & trust" (heaviest chrome, --border-hairline-strong):
- *     Row A  ShellContextRow (As of · ⇄ · Compare to · Completeness · Evidence)
- *     Row B  the preset segmented controls (to-date left · rolling right)
+ *   Container 1 — "time & trust":
+ *     TimelineLens (the ONE canonical time selector) · ShellTrustRow
+ *       (Completeness · Evidence · orthogonal warnings)
  *
  * SHELL_NAV redesign (§2.2): the lens tab track now sits ABOVE the time/trust +
  * period-preset block — you pick the lens first, then read/adjust time beneath
@@ -26,9 +26,8 @@ import { useState } from "react";
 import type { CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import type { PerspectiveTimeState } from "@/lib/perspectives/time-range";
-import { temporalControlVisibility, type TemporalCapability } from "@/lib/perspectives";
+import type { TemporalCapability } from "@/lib/perspectives";
 import { TimelineLens, type TimelineBoundaryError, type TimelineIntent } from "@/components/atlas/TimelineLens";
-import { CashFlowPeriodSelector } from "@/components/space/widgets/CashFlowPeriodSelector";
 import {
   PERIOD_OPTIONS,
   capabilityForLens,
@@ -37,32 +36,32 @@ import {
   shellActionForIntent,
   summarize,
 } from "./perspective-time-adapter";
-import { usesTimelineLens } from "./timeline-lens-rollout";
-import { ShellContextRow } from "./ShellContextRow";
 import { ShellTrustRow } from "./ShellTrustRow";
 import { PerspectiveTabs, type PerspectiveTabItem } from "./PerspectiveTabs";
 
 interface Props {
-  // Row A — time & trust context.
-  asOf:              string;
-  compareTo:         string | null;
-  today:             string;
+  today: string;
+  /**
+   * The canonical time MUTATION callbacks.
+   *
+   * These are NOT legacy selector plumbing — they are the behavioral adapter
+   * seam. handleTimelineIntent resolves a TimelineIntent into a sanctioned
+   * ShellTimeAction and then dispatches it through exactly these, so the host's
+   * handlers run unchanged: onSelectPreset still reaches handleSelectSlice
+   * (including its Cash-Flow-override clearing), onCompareToChange still
+   * re-infers. Removing them would strand cashFlowExplicitPeriod.
+   */
   onAsOfChange:      (v: string) => void;
   onCompareToChange: (v: string | null) => void;
   onSwap:            () => void;
+  onSelectPreset:    (p: CashFlowPeriod) => void;
   /** The active perspective's trust envelope (from the S3 registry). */
-  envelope:          PerspectiveEnvelope;
-  // Row B — presets (value is null under CUSTOM: no segment highlighted).
-  presetValue:    CashFlowPeriod | null;
-  onSelectPreset: (p: CashFlowPeriod) => void;
-  /** The engaged lens's temporal capability — gates which time controls render.
-   *  Undefined ⇒ render all (pre-declaration default). */
+  envelope: PerspectiveEnvelope;
+  /** The engaged lens's temporal capability — gates the explicit boundary fields. */
   temporalCapability?: TemporalCapability;
-  /** Canonical time, for the TimelineLens path. Read-only: the shell derives its
-   *  entire display from this and never stores a copy. */
+  /** Canonical time. Read-only: the shell derives its entire display from this
+   *  and never stores a copy. */
   timeState: PerspectiveTimeState;
-  /** Engaged Perspective id — decides which time UI renders (rollout allowlist). */
-  activePerspectiveId: string | null;
   // Container 2 — the lens.
   tabs:        PerspectiveTabItem[];
   activeTabId: string | null;
@@ -108,13 +107,6 @@ export function PerspectiveShell(props: Props) {
     }
   }
 
-  // The EXPLICIT point-in-time inputs (As-of / Compare-to) are capability-gated —
-  // hidden for a lens that exposes no literal date input (e.g. Cash Flow). The
-  // preset/time slicer below is UNIVERSAL: it is how every Perspective selects
-  // canonical {preset, asOf, compareTo}, so it always renders (never gated by
-  // temporalCapability — the `period` axis describes interpretation, not the slicer).
-  const vis = temporalControlVisibility(props.temporalCapability);
-  const useLens = usesTimelineLens(props.activePerspectiveId);
   return (
     <div className="space-y-3">
       {/* Container 2 — the lens. Rendered FIRST (SHELL_NAV §2.2: pick the lens
@@ -139,41 +131,28 @@ export function PerspectiveShell(props: Props) {
           a dashboard control deck. Nothing about asOf/compareTo/evidence semantics
           changes; this is purely the surrounding chrome. */}
       <div className="space-y-3 px-1">
-        {useLens ? (
-          /* TimelineLens path (rollout allowlist). One control replaces the
-             As-of/⇄/Compare-to row AND the preset strip; the trust chips move
-             beside it, unchanged — data honesty and time window are separate
-             concerns and the chips were never temporally gated. */
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <TimelineLens
-              activeOptionId={deriveActiveOptionId(props.timeState)}
-              boundaries={deriveBoundaries(props.timeState)}
-              summary={summarize(props.timeState, props.today)}
-              periodOptions={PERIOD_OPTIONS}
-              capability={capabilityForLens(props.temporalCapability)}
-              maxDate={props.today}
-              boundaryError={boundaryError}
-              onIntent={handleTimelineIntent}
-            />
-            <ShellTrustRow envelope={props.envelope} className="" />
-          </div>
-        ) : (
-          <>
-            <ShellContextRow
-              asOf={props.asOf}
-              onAsOfChange={props.onAsOfChange}
-              compareTo={props.compareTo}
-              onCompareToChange={props.onCompareToChange}
-              onSwap={props.onSwap}
-              today={props.today}
-              envelope={props.envelope}
-              showAsOf={vis.asOf}
-              showCompareTo={vis.compareTo}
-            />
-            {/* Universal canonical time slicer — every Perspective selects time here. */}
-            <CashFlowPeriodSelector value={props.presetValue} onChange={props.onSelectPreset} />
-          </>
-        )}
+        {/* ONE canonical time selector, unconditionally. The As-of/⇄/Compare-to
+            row and the preset strip both collapsed into TimelineLens; the trust
+            chips sit beside it, unchanged — data honesty and time window are
+            separate concerns and the chips were never temporally gated.
+
+            temporalCapability still gates the lens's explicit boundary fields
+            (capabilityForLens), exactly as it gated the old date inputs. The
+            period choice itself remains UNIVERSAL — never capability-gated,
+            because the `period` axis describes interpretation, not availability. */}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <TimelineLens
+            activeOptionId={deriveActiveOptionId(props.timeState)}
+            boundaries={deriveBoundaries(props.timeState)}
+            summary={summarize(props.timeState, props.today)}
+            periodOptions={PERIOD_OPTIONS}
+            capability={capabilityForLens(props.temporalCapability)}
+            maxDate={props.today}
+            boundaryError={boundaryError}
+            onIntent={handleTimelineIntent}
+          />
+          <ShellTrustRow envelope={props.envelope} className="" />
+        </div>
       </div>
     </div>
   );

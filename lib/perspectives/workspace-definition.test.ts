@@ -242,10 +242,8 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
   );
 
   // 1. The shell still owns a universal canonical time selector.
-  const SHELL_SELECTORS = ["<CashFlowPeriodSelector", "<TimelineLens"];
-  check("PerspectiveShell renders a canonical time selector",
-    SHELL_SELECTORS.some((s) => shellSrc.includes(s)),
-    "expected one of: " + SHELL_SELECTORS.join(", "));
+  check("PerspectiveShell renders the canonical time selector",
+    shellSrc.includes("<TimelineLens"));
 
   // 2. It is UNIVERSAL — never behind a temporalCapability / vis.period gate. The
   //    `period` axis describes interpretation, not slicer availability.
@@ -299,15 +297,14 @@ check("empty id fails safe (undefined)", getWorkspaceDefinition("") === undefine
     }
   }
 
-  // 4. The rollout allowlist is a MIGRATION device, not a permanent fork: exactly
-  //    one time UI renders per Perspective, and the legacy path must survive
-  //    until the rollout completes (a clean rollback while the canary runs).
-  check("PerspectiveShell branches on the rollout allowlist",
-    shellSrc.includes("usesTimelineLens"));
-  check("the legacy control path is still present (rollback path intact)",
-    shellSrc.includes("<CashFlowPeriodSelector") && shellSrc.includes("<ShellContextRow"));
-  check("the two time UIs are mutually exclusive (never both rendered)",
-    /useLens\s*\?/.test(shellSrc));
+  // 4. PHASE 2 — the rollout device and the legacy path are GONE. The migration
+  //    is complete, so there is nothing to branch on and nothing to fall back to.
+  //    (Deletion itself is proved by components/space/shell/timeline-lens-exclusivity.test.ts,
+  //    which renders the shell; these are the source-level companions.)
+  check("the rollout allowlist is gone (migration complete, not a permanent fork)",
+    !shellSrc.includes("usesTimelineLens"));
+  check("the legacy control path is gone", !shellSrc.includes("<CashFlowPeriodSelector") && !shellSrc.includes("<ShellContextRow"));
+  check("no conditional selector branch remains", !/useLens\s*\?/.test(shellSrc));
 }
 
 // ── envelope source matches resolvePerspectiveEnvelope's switch ──────────────────

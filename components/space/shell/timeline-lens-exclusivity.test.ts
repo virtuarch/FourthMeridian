@@ -1,25 +1,26 @@
 /**
  * components/space/shell/timeline-lens-exclusivity.test.ts
  *
- * Slice 4 doctrine guard — ONE canonical time selector, ever.
+ * Phase 2 deletion guard — ONE canonical time selector, unconditionally.
  *
- * This RENDERS PerspectiveShell (renderToStaticMarkup) rather than scanning its
- * source, because the property worth protecting is about what reaches the user:
- * a Perspective must never show two time selectors, and which one it shows must
- * depend on nothing but the rollout allowlist.
+ * Before deletion this file proved the two paths were mutually exclusive. That
+ * question is gone: there is no second path. It now proves the stronger property
+ * — the legacy controls are deleted, cannot return, and TimelineLens renders for
+ * every Perspective with no branch to take.
  *
- * Source scanning cannot prove that — both selectors legitimately appear in the
- * file, in exclusive branches. Only rendering distinguishes "present in source"
- * from "present on screen".
+ * It RENDERS PerspectiveShell rather than scanning it, because the property is
+ * about what reaches the user, and rendering is the only thing that distinguishes
+ * "present in source" from "present on screen".
  *
  * Pure, DB-free:  npx tsx components/space/shell/timeline-lens-exclusivity.test.ts
  */
 
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
 import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PerspectiveTimeState } from "@/lib/perspectives/time-range";
 import { PerspectiveShell } from "./PerspectiveShell";
-import { TIMELINE_LENS_PERSPECTIVES, usesTimelineLens } from "./timeline-lens-rollout";
 
 let failures = 0;
 function check(label: string, cond: boolean, detail = "") {
@@ -28,134 +29,147 @@ function check(label: string, cond: boolean, detail = "") {
   failures++;
 }
 
+const ROOT = process.cwd();
 const TODAY = "2026-07-19";
 const TIME: PerspectiveTimeState = { preset: "MTD", asOf: TODAY, compareTo: "2026-07-01" };
+const HISTORICAL: PerspectiveTimeState = { preset: "YTD", asOf: "2026-03-31", compareTo: "2026-01-01" };
+const PERSPECTIVES = ["wealth", "cashFlow", "investments", "debt", "liquidity"];
 
 const noop = () => {};
-function render(activePerspectiveId: string | null, time: PerspectiveTimeState = TIME) {
+function render(
+  time: PerspectiveTimeState = TIME,
+  temporalCapability: unknown = { asOf: "full", compareTo: "full", period: "none" },
+) {
   return renderToStaticMarkup(
     h(PerspectiveShell as never, {
-      asOf: time.asOf,
-      compareTo: time.compareTo,
       today: TODAY,
       onAsOfChange: noop,
       onCompareToChange: noop,
       onSwap: noop,
-      envelope: {},
-      presetValue: "MTD",
       onSelectPreset: noop,
-      temporalCapability: { asOf: "full", compareTo: "full", period: "none" },
+      envelope: {},
+      temporalCapability,
       timeState: time,
-      activePerspectiveId,
       tabs: [],
-      activeTabId: activePerspectiveId,
+      activeTabId: null,
       onSelectTab: noop,
     } as never),
   );
 }
 
-/** Signatures that identify each control in the rendered output. */
 const LENS = (html: string) => html.includes('aria-label="Change time period"');
 const LEGACY_SLICER = (html: string) => html.includes('aria-label="Cash flow period');
 const LEGACY_DATES = (html: string) => html.includes('aria-label="As of date"');
 const LEGACY_SWAP = (html: string) => html.includes('aria-label="Swap As of and Compare to dates"');
 
-// ── 1. Exactly one selector, chosen only by the flag ─────────────────────────
-console.log("1. Exclusivity — a Perspective never shows two time selectors");
+// ── 1. The legacy files are gone and cannot come back ────────────────────────
+console.log("1. Deleted — the legacy controls no longer exist");
 {
-  // Pick a fixture that is genuinely NOT allowlisted, whatever the rollout state,
-  // so this test keeps testing exclusivity rather than a stale membership snapshot.
-  const legacyId = ["cashFlow", "investments", "debt", "liquidity"].find((id) => !usesTimelineLens(id)) ?? null;
-  const wealth = render("wealth");
-  const cashFlow = render(legacyId);
-  const none = render(null);
-
-  check("wealth is on the allowlist (fixture precondition)", usesTimelineLens("wealth"));
-  check("a non-allowlisted fixture exists while the flag lives", legacyId !== null || TIMELINE_LENS_PERSPECTIVES.size === 5);
-
-  // Flag ON
-  check("wealth renders TimelineLens", LENS(wealth));
-  check("wealth renders NO legacy preset slicer", !LEGACY_SLICER(wealth));
-  check("wealth renders NO legacy date inputs", !LEGACY_DATES(wealth));
-  check("wealth renders NO legacy swap", !LEGACY_SWAP(wealth));
-
-  // Flag OFF
-  check("cashFlow renders the legacy slicer", LEGACY_SLICER(cashFlow));
-  check("cashFlow renders the legacy date inputs", LEGACY_DATES(cashFlow));
-  check("cashFlow renders NO TimelineLens", !LENS(cashFlow));
-
-  // Unknown / null falls back to legacy — fail safe, never "no time control".
-  check("a null perspective falls back to the legacy control", LEGACY_SLICER(none) && !LENS(none));
-  check("an unknown perspective falls back to the legacy control",
-    LEGACY_SLICER(render("not-a-real-perspective")));
-
-  // The core doctrine, stated directly.
-  for (const [id, html] of [["wealth", wealth], ["cashFlow", cashFlow], ["null", none]] as const) {
-    const count = [LENS(html), LEGACY_SLICER(html)].filter(Boolean).length;
-    check(`${id} renders EXACTLY ONE canonical time selector`, count === 1, `found ${count}`);
+  const DELETED = [
+    "components/space/widgets/CashFlowPeriodSelector.tsx",
+    "components/space/shell/ShellContextRow.tsx",
+    "components/space/shell/timeline-lens-rollout.ts",
+  ];
+  for (const rel of DELETED) {
+    check(`${rel} is deleted`, !existsSync(path.join(ROOT, rel)));
   }
+
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === ".next" || entry.name === "prototype") continue;
+        walk(full);
+      } else if (/\.tsx?$/.test(entry.name) && !full.endsWith("exclusivity.test.ts")) {
+        const src = readFileSync(full, "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+        if (/from\s+"[^"]*(CashFlowPeriodSelector|ShellContextRow|timeline-lens-rollout)"/.test(src)) {
+          offenders.push(path.relative(ROOT, full));
+        }
+      }
+    }
+  };
+  for (const d of ["components", "app", "lib"]) walk(path.join(ROOT, d));
+  check("nothing imports the deleted modules", offenders.length === 0, offenders.join(", "));
 }
 
-// ── 2. Trust surfaces survive both paths ─────────────────────────────────────
-console.log("2. Trust surfaces are independent of the time control");
+// ── 2. TimelineLens renders unconditionally — there is no branch ─────────────
+console.log("2. One selector, no branch");
 {
-  // The chips were never temporally gated; swapping the time UI must not drop them.
-  for (const id of ["wealth", "cashFlow"]) {
-    const html = render(id);
-    check(`${id} still renders the Completeness chip`, html.includes("Completeness"));
-    check(`${id} still renders the Evidence chip`, html.includes("Evidence"));
+  const shellSrc = readFileSync(path.join(ROOT, "components/space/shell/PerspectiveShell.tsx"), "utf8");
+  const stripped = shellSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+
+  check("PerspectiveShell renders TimelineLens", stripped.includes("<TimelineLens"));
+  check("no rollout flag remains", !stripped.includes("usesTimelineLens"));
+  check("no conditional selector branch remains", !/useLens\s*\?/.test(stripped));
+
+  for (const time of [TIME, HISTORICAL]) {
+    const html = render(time);
+    const label = time === TIME ? "present" : "historical";
+    check(`${label}: renders TimelineLens`, LENS(html));
+    check(`${label}: renders NO legacy preset slicer`, !LEGACY_SLICER(html));
+    check(`${label}: renders NO legacy date inputs`, !LEGACY_DATES(html));
+    check(`${label}: renders NO legacy swap`, !LEGACY_SWAP(html));
+    check(`${label}: exactly one lens trigger`,
+      (html.match(/aria-label="Change time period"/g) ?? []).length === 1);
   }
+
+  // Capability still gates the explicit boundary fields, never the selector itself.
+  const gated = render(TIME, { asOf: "none", compareTo: "none", period: "full" });
+  check("a lens with no explicit date axis STILL gets the selector", LENS(gated));
 }
 
-// ── 3. The rollout is a migration device, not a permanent fork ───────────────
-console.log("3. Rollout allowlist shape");
+// ── 3. The behavioral adapter seam survived the deletion ─────────────────────
+console.log("3. Intent callbacks preserved — adapters, not legacy plumbing");
 {
-  check("the allowlist is non-empty (the rollout is running)", TIMELINE_LENS_PERSPECTIVES.size > 0);
+  // The load-bearing distinction of Phase 2. These four LOOK like legacy selector
+  // plumbing but are how every TimelineIntent reaches the host: the adapter
+  // resolves an intent into a sanctioned ShellTimeAction and the shell dispatches
+  // it through exactly these. Losing onSelectPreset would bypass handleSelectSlice
+  // and strand cashFlowExplicitPeriod — Cash Flow would stay pinned to a drilled
+  // month while every other Perspective moved.
+  const shellSrc = readFileSync(path.join(ROOT, "components/space/shell/PerspectiveShell.tsx"), "utf8");
+  for (const cb of ["onSelectPreset", "onAsOfChange", "onCompareToChange", "onSwap"]) {
+    check(`${cb} is still a prop`, new RegExp(`${cb}:\\s*\\(`).test(shellSrc));
+    check(`${cb} is still dispatched by handleTimelineIntent`, new RegExp(`props\\.${cb}\\(`).test(shellSrc));
+  }
+  check("every ShellTimeAction the adapter can emit has a dispatch arm",
+    ["selectPreset", "setAsOf", "setCompareTo", "swap", "clearCompareTo"]
+      .every((a) => shellSrc.includes(`case "${a}":`)));
 
-  // The allowlist may only ever contain REAL temporal Perspectives. This is the
-  // durable property; the specific membership changes as the rollout advances, so
-  // pinning an exact set would just be a chore that gets edited away rather than a
-  // guard. Wealth is the canary and must stay in for as long as the flag exists.
-  const TEMPORAL = ["wealth", "cashFlow", "investments", "debt", "liquidity"];
-  check("every allowlisted id is a real temporal Perspective",
-    [...TIMELINE_LENS_PERSPECTIVES].every((id) => TEMPORAL.includes(id)),
-    [...TIMELINE_LENS_PERSPECTIVES].join(","));
-  check("Wealth (the validated canary) is on the allowlist", TIMELINE_LENS_PERSPECTIVES.has("wealth"));
-  check("no NON-temporal workspace was allowlisted (transactions/activity must never be)",
-    !TIMELINE_LENS_PERSPECTIVES.has("transactions") && !TIMELINE_LENS_PERSPECTIVES.has("activity") &&
-    !TIMELINE_LENS_PERSPECTIVES.has("accounts") && !TIMELINE_LENS_PERSPECTIVES.has("overview"));
-  check("null/undefined never enables the lens",
-    !usesTimelineLens(null) && !usesTimelineLens(undefined) && !usesTimelineLens(""));
+  const host = readFileSync(path.join(ROOT, "components/dashboard/SpaceDashboard.tsx"), "utf8");
+  check("the host still routes presets through handleSelectSlice",
+    /onSelectPreset=\{handleSelectSlice\}/.test(host));
+  check("handleSelectSlice still clears the Cash-Flow override",
+    /isExplicitPeriod\(slice\)[\s\S]{0,400}setCashFlowExplicitPeriod\(null\)/.test(host));
 }
 
-// ── 4. No second time authority reaches the user ─────────────────────────────
-console.log("4. One authority — the lens path adds no competing control");
+// ── 4. Trust surfaces survived ───────────────────────────────────────────────
+console.log("4. Trust surfaces are independent of the time control");
 {
-  const wealth = render("wealth");
-  // Exactly one element carries the lens trigger, and no stray date input exists
-  // outside the lens panel (the panel is portalled and absent from this markup).
-  check("exactly one lens trigger", (wealth.match(/aria-label="Change time period"/g) ?? []).length === 1);
-  check("no date input renders alongside the lens trigger",
-    !wealth.includes('type="date"'), "a boundary input escaped the panel");
+  const html = render();
+  check("Completeness chip still renders", html.includes("Completeness"));
+  check("Evidence chip still renders", html.includes("Evidence"));
 }
 
-// ── 5. TIME-1B — the anchor is named on EVERY Perspective ───────────────────
-console.log("5. Anchor visibility across all five Perspectives");
+// ── 5. The anchor is named for every declared capability shape ───────────────
+console.log("5. Anchor visibility (TIME-1B)");
 {
-  const HISTORICAL: PerspectiveTimeState = { preset: "YTD", asOf: "2026-03-31", compareTo: "2026-01-01" };
-  for (const id of ["wealth", "cashFlow", "investments", "debt", "liquidity"]) {
-    const present = render(id, TIME);
-    const past = render(id, HISTORICAL);
+  for (const id of PERSPECTIVES) {
+    const cap = id === "debt" || id === "liquidity"
+      ? { asOf: "partial", compareTo: "partial", period: "none" }
+      : { asOf: "full", compareTo: "full", period: id === "cashFlow" ? "full" : "none" };
+    const present = render(TIME, cap);
+    const past = render(HISTORICAL, cap);
     check(`${id}: names the anchor at the present`, present.includes("As of today"));
     check(`${id}: names the anchor when historical`, past.includes("As of Mar 31, 2026"));
     check(`${id}: still states the resolved window`, past.includes("Jan 1, 2026"));
-    // The label must not assert the present over a historical window.
     check(`${id}: no present-tense period claim`, !/>This (week|month|quarter|year)</.test(past));
   }
 }
 
 if (failures > 0) {
-  console.error(`\n${failures} exclusivity check(s) failed.`);
+  console.error(`\n${failures} deletion-guard check(s) failed.`);
   process.exit(1);
 }
-console.log("\nOne canonical time selector, chosen only by the rollout flag.");
+console.log("\nLegacy controls deleted; TimelineLens is the only canonical time selector.");

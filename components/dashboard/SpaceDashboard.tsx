@@ -805,8 +805,6 @@ export function SpaceDashboard({
                 Completeness/Evidence envelope; other Perspectives leave them as
                 neutral placeholders until their engines drive them. */}
             <PerspectiveShell
-              asOf={asOf}
-              compareTo={compareTo}
               today={shellToday}
               onAsOfChange={handleAsOfChange}
               onCompareToChange={handleCompareToChange}
@@ -814,7 +812,6 @@ export function SpaceDashboard({
               // SD-9B — the resolved envelope from useActiveEnvelope (workspace-backed
               // → emitted; lens-only → resolvePerspectiveEnvelope). No host selection.
               envelope={activeEnvelope}
-              presetValue={timePreset === "CUSTOM" ? null : timePreset}
               onSelectPreset={handleSelectSlice}
               // Temporal-capability gating: the shell renders only the time controls
               // the engaged lens actually consumes (As-of/Compare-to vs Period).
@@ -825,7 +822,6 @@ export function SpaceDashboard({
               // reflected without it knowing they happened. Every intent it emits
               // comes back through the handlers above — same actions, same order.
               timeState={shell.state}
-              activePerspectiveId={activePerspectiveId}
               tabs={lensSelectorItems}
               activeTabId={activeLensId}
               onSelectTab={selectLens}
