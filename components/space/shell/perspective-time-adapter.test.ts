@@ -290,6 +290,51 @@ console.log("10. Anchor semantics (TIME-1A/1B)");
     stillAnchored.asOf === "2026-03-31");
 }
 
+// ── 11. RESOLVED: exactly ONE sanctioned path back to the present ────────────
+//
+// Open since Slice 4: should an emptied As-of field silently become today (what
+// the legacy control did) or be rejected?
+//
+// RESOLVED — rejected. Not merely on "no silent fabricated dates", but because
+// TIME-1A introduced an EXPLICIT "Return to today". If clearing the field also
+// landed on today, there would be two paths to the present: one deliberate and
+// labelled, one silent and accidental. A user who cleared the field and arrived
+// at today would reasonably conclude that is how you return — and the labelled
+// affordance becomes noise. Coherence requires exactly one.
+//
+// Doctrine: docs/architecture/CANONICAL_TIME_DOCTRINE.md
+console.log("11. One sanctioned return to the present (RESOLVED)");
+{
+  const historical: PerspectiveTimeState = { preset: "YTD", asOf: "2026-03-31", compareTo: "2026-01-01" };
+
+  // The sanctioned path.
+  const viaHatch = shellActionForIntent({ type: "returnToPresent" }, ADAPTER_CTX);
+  check("returnToPresent reaches the present", viaHatch.ok && viaHatch.action.type === "setAsOf" && viaHatch.action.asOf === TODAY);
+
+  // The rejected path — deliberately NOT a second route.
+  const viaEmpty = shellActionForIntent({ type: "customBoundary", boundary: "asOf", value: "" }, ADAPTER_CTX);
+  check("clearing As-of does NOT silently return you to the present", !viaEmpty.ok);
+  check("...it explains itself instead", !viaEmpty.ok && viaEmpty.error.length > 0);
+  check("...and produces no action, so canonical time cannot move", !viaEmpty.ok && !("action" in viaEmpty));
+
+  // Nothing else may reach today implicitly. Every other intent either leaves the
+  // anchor alone or moves it only to a date the user typed.
+  const anchorMovers = [
+    { type: "period", optionId: "YTD", intent: "YTD" },
+    { type: "swap" },
+    { type: "clearComparison" },
+  ] as const;
+  for (const intent of anchorMovers) {
+    const next = applyIntent(historical, intent);
+    check(`${intent.type} does not quietly jump the anchor to today`, next.asOf !== TODAY, show(next));
+  }
+
+  // The empty COMPARISON boundary is a different case and stays legitimate — it
+  // means "no comparison", exactly what the old ✕ button meant.
+  const clearedCompare = shellActionForIntent({ type: "customBoundary", boundary: "compareTo", value: "" }, ADAPTER_CTX);
+  check("an empty COMPARE-TO is still a legitimate clear, not an error", clearedCompare.ok);
+}
+
 if (failures > 0) {
   console.error(`\n${failures} adapter parity check(s) failed.`);
   process.exit(1);

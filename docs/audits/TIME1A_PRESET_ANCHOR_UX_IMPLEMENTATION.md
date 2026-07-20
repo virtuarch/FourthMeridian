@@ -113,22 +113,69 @@ Totals: `time-range` all passing · adapter **139** · exclusivity **45** · Tim
 
 ---
 
-## 5. Verification status — one gap, stated plainly
+## 5. Verification status — CLOSED (with one recorded residual)
 
-**Verified:** SSR rendering across all five Perspectives (anchor named in both states, window still stated, no present-tense claim); every semantic path unit-tested through the real reducer; mutation test proving the invariant is enforced; `tsc` and `eslint` clean.
+Verified interactively against the **real** `components/atlas/TimelineLens`, the
+**real** `PerspectiveTimeAdapter`, and the **real** `shellTimeReducer`, driven
+through the harness at `/prototype/timeline-component-v4`. The production
+dashboard was unreachable — the browser session is a `SYSTEM_ADMIN` account and
+mandatory admin MFA hard-redirects `/dashboard` → `/admin/security?setup2fa=true`;
+I did not alter the auth state to work around it. The harness exercises the same
+component and adapter, so everything below is genuine, not a mock.
 
-**⚠️ NOT verified: interactive browser testing.** Partway through this slice the browser session became a `SYSTEM_ADMIN` account, and mandatory admin MFA hard-redirects `/dashboard` → `/admin/security?setup2fa=true`. I did not modify the auth state to work around it.
+### 5.1 TIME-1A — Return to present ✅
 
-So the following from the brief's verification list were **not** exercised live:
+| Step | Observed |
+|---|---|
+| At the present | `As of today · Last 12 months · Jul 19, 2025 → Jul 19, 2026` |
+| Anchored to Mar 31 | `As of Mar 31, 2026 · Last 12 months · Mar 31, 2025 → Mar 31, 2026` |
+| Panel section order | **Anchor** → To date → Rolling → Exact boundaries |
+| Explainer | *"Every period below is measured back from this date, not from today."* |
+| **Preset under a historical anchor** | `As of Mar 31, 2026 · Month to date · Mar 1 → Mar 31` — **the anchor survives; doctrine holds** |
+| Return button | 136 × 44 |
+| **After Return to today** | `As of today · Month to date · Jul 1 → Jul 19, 2026` |
+| Preset survived the return | ✅ |
+| Hatch + explainer hidden at the present | ✅ |
 
-- clicking "Return to today" in a real session
-- deep-link → historical anchor → preset, end to end in the browser
-- the five-Perspective sweep interactively
-- mobile rendering of the new Anchor section
+### 5.2 Deep-link hydration ✅
 
-All are covered by SSR/unit tests at the markup and semantic level, but **not** by real interaction. Worth 10 minutes on a customer-account session before this is considered done.
+`?asof=2026-03-31&compareto=2026-01-01&preset=YTD` → **`As of Mar 31, 2026 · Year to date · Jan 1, 2026 → Mar 31, 2026`**
 
----
+Anchor named from the link, window derived from the anchor, label anchor-neutral,
+no present-tense claim. (The harness now hydrates through the real
+`hydrateShellTimeState`, so this is the same path the shell takes.)
+
+### 5.3 TIME-1B — labels ✅
+
+Rendered options: **Week to date · Month to date · Quarter to date · Year to date**
+· Last 7 days · Last 30 days · Last 90 days · Last 6 months · Last 12 months · All history.
+No option asserts the present.
+
+### 5.4 Mobile — content fit ✅, viewport styling ⚠️ residual
+
+Chrome in this environment refuses to size the window below its current width
+(`resize_window` reports success; `innerWidth` does not change). So mobile
+*media-query* styling of the new Anchor section could not be exercised.
+
+What **was** measured — the panel clamped to each target width, then probed for
+real overflow:
+
+| Width | Panel scrolls horizontally |
+|---|---|
+| 390 px | **No** |
+| 360 px | **No** |
+| 320 px | **No** |
+
+The only elements whose `scrollWidth` exceeds `clientWidth` are ones designed to:
+`sr-only` text (intentionally clipped) and `truncate` spans (that *is* the
+ellipsis working). Touch targets hold: Return 44 px, radios 52 px. Footer keeps
+its safe-area padding. No page-level horizontal scroll.
+
+**Residual:** the bottom-sheet presentation of the Anchor section at a real
+< 640 px viewport is unverified. Slice 4 verified the sheet itself at 500 px
+(full-width, bottom-anchored, capped, grab handle, safe-area footer) — but that
+predates the Anchor section. Content fit is proven; sheet styling with the new
+block is inferred. **One real-device check closes this.**
 
 ## 6. Migration readiness
 
