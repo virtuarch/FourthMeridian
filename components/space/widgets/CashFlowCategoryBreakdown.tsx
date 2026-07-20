@@ -24,13 +24,12 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { CashFlowContribution } from "@/lib/transactions/cash-flow";
 import type { Transaction } from "@/types";
 import { TransactionSliceDrawer, type TransactionSlice } from "@/components/space/widgets/TransactionSliceDrawer";
+import { CHART_PALETTE } from "@/lib/charts/chart-palette";
 
-// Matches BreakdownWidget's DEFAULT_PALETTE so spend colors stay consistent
-// with the rest of the product; cycles for >8 categories.
-const PALETTE = [
-  "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6",
-  "#ec4899", "#06b6d4", "#f97316", "#84cc16",
-];
+// The one shared categorical palette. This was a hand-kept third copy of the
+// same eight hues ("matches BreakdownWidget's DEFAULT_PALETTE") — a comment is
+// not a constraint, so it could drift silently. Imported now instead.
+const PALETTE = CHART_PALETTE;
 
 interface Props {
   items: CashFlowContribution[];   // descending, value > 0 (from outflowByCategory / incomeBySource)

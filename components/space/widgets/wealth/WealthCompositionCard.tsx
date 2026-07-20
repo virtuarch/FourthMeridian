@@ -24,6 +24,7 @@
 import { useState, type ReactNode } from "react";
 import { formatCurrency } from "@/lib/format";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
+import { WEALTH_CLASS_COLOR, DEFAULT_CHART_COLOR } from "@/lib/charts/chart-palette";
 import { Dropdown } from "@/components/atlas/Dropdown";
 import type { ConversionContext } from "@/lib/money/types";
 import {
@@ -70,7 +71,16 @@ export function WealthCompositionCard({
   const switcher = <Dropdown options={MODES} value={mode} onChange={setMode} ariaLabel="Composition grouping" />;
 
   const c = asOfState.composition;
-  const items: BreakdownItem[] = asOfState.found ? wealthCompositionItems(c) : [];
+  // Colours pinned to the CLASS, not its position. wealthCompositionItems drops
+  // zero-value classes, so index-assigned colour meant a portfolio without (say)
+  // crypto drew "Real World Assets" in crypto's amber — and disagreed with the
+  // treemap/strip modes, which have always pinned these values.
+  const items: BreakdownItem[] = asOfState.found
+    ? wealthCompositionItems(c).map((i) => ({
+        ...i,
+        color: WEALTH_CLASS_COLOR[i.id] ?? DEFAULT_CHART_COLOR,
+      }))
+    : [];
 
   // Resolve the header hint + the mode's body ONCE, so the whole card is a single
   // Block whose content fades on a mode change (the "switch slices" animation).

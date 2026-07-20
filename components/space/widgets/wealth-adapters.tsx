@@ -24,6 +24,7 @@
 
 import { useState } from "react";
 import { BreakdownWidget, type BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
+import { WEALTH_CLASS_COLOR, DEFAULT_CHART_COLOR } from "@/lib/charts/chart-palette";
 import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
@@ -236,8 +237,13 @@ export function renderInstitutionAllocation(
 /** Assets-only class breakdown items (Cash / Investments / Crypto / Real assets),
  *  filtered to positive values. Single source of truth shared by the donut
  *  renderer and the multi-mode allocation experiment below, so every mode reports
- *  identical totals, percentages, and classes. Colors are deliberately omitted so
- *  the donut keeps BreakdownWidget's DEFAULT_PALETTE assignment untouched. */
+ *  identical totals, percentages, and classes.
+ *
+ *  Colours are now carried EXPLICITLY. They used to be omitted so the donut would
+ *  take BreakdownWidget's index-assigned palette — but this list drops empty
+ *  classes, so a missing class shifted every later one onto the wrong colour
+ *  while treemap/strip stayed pinned. Passing the identity colour makes all three
+ *  modes agree for every portfolio shape, not just complete ones. */
 function assetClassItems(
   accounts: WealthAdapterAccount[],
   ctx?:     ConversionContext,
@@ -248,7 +254,9 @@ function assetClassItems(
     { id: "investments", label: "Investments", value: c.totalInvestments },
     { id: "crypto",      label: "Crypto",      value: c.totalDigitalAssets },
     { id: "real",        label: "Real assets", value: c.totalRealAssets },
-  ].filter((i) => i.value > 0);
+  ]
+    .filter((i) => i.value > 0)
+    .map((i) => ({ ...i, color: ASSET_CLASS_COLOR[i.id] ?? DEFAULT_CLASS_COLOR }));
 }
 
 /** Donut by asset class — assets only (Cash / Investments / Crypto / Real
@@ -282,16 +290,14 @@ export function renderAssetAllocation(
 
 type AllocationMode = "treemap" | "donut" | "strip";
 
-/** Colors matching what the Donut mode actually renders (BreakdownWidget's
- *  DEFAULT_PALETTE, assigned by item index cash→investments→crypto→real), so all
- *  three modes are visually consistent and Donut still matches the old widget. */
-const ASSET_CLASS_COLOR: Record<string, string> = {
-  cash:        "#3b82f6", // blue-500    (DEFAULT_PALETTE[0])
-  investments: "#10b981", // emerald-500 (DEFAULT_PALETTE[1])
-  crypto:      "#f59e0b", // amber-500   (DEFAULT_PALETTE[2])
-  real:        "#8b5cf6", // violet-500  (DEFAULT_PALETTE[3])
-};
-const DEFAULT_CLASS_COLOR = "#3b82f6";
+/** Asset-class colour identity. Previously restated BreakdownWidget's palette
+ *  BY INDEX (cash→investments→crypto→real), which only held for a COMPLETE set:
+ *  `assetClassItems` drops zero-value classes, so a portfolio without crypto
+ *  shifted the donut up a slot while treemap/strip kept these pinned values —
+ *  the same class drawn in two colours on one card. Now one identity map, shared
+ *  with the donut via explicit item colours. */
+const ASSET_CLASS_COLOR = WEALTH_CLASS_COLOR;
+const DEFAULT_CLASS_COLOR = DEFAULT_CHART_COLOR;
 
 /** Binary-partition treemap layout. Splits the item set into two value-balanced
  *  halves and slices the rectangle along its longer axis in proportion, recursing
