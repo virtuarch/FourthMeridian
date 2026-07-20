@@ -893,15 +893,13 @@ export function SpaceDashboard({
             hence the scope note. */}
         {activeTab === "TRANSACTIONS" && (
           <TransactionsWorkspace
-            transactions={spaceTransactions}
+            // TX-3.3 — the explorer queries the server itself (keyset-paged,
+            // server-filtered), so it needs only the Space identity. The host's
+            // shared transaction array still feeds the analytical surfaces.
+            spaceId={spaceId}
             accounts={accounts}
-            // MC1 view-as: summary totals convert through the override context when
-            // active; the panel's rows stay native either way.
-            moneyCtx={transactionsMoneyCtxOverride ?? spaceMoneyCtx}
             // Banking→Transactions retarget — deep-link account pre-filter.
             initialAccountFilter={initialAccountFilter}
-            // TX-2A — coverage honesty when the read was capped (no-op when complete).
-            transactionsMeta={transactionsMeta}
           />
         )}
 

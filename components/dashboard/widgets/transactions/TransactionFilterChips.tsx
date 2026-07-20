@@ -21,7 +21,6 @@ import {
   CAT_CHIP,
   PENDING_LABELS,
   SOURCE_LABELS,
-  TRANSFER_DISPOSITION_LABEL,
   type PendingFilter,
   type SourceFilter,
 } from "./transactions-filter-constants";
@@ -33,14 +32,13 @@ interface Props {
   setCatFilter: Dispatch<SetStateAction<TransactionCategory | null>>;
   flowFilter: string | null;
   setFlowFilter: Dispatch<SetStateAction<string | null>>;
-  dispositionFilter: string | null;
-  setDispositionFilter: Dispatch<SetStateAction<string | null>>;
   sourceFilter: SourceFilter;
   setSourceFilter: Dispatch<SetStateAction<SourceFilter>>;
-  merchantFilter: string | null;
-  setMerchantFilter: Dispatch<SetStateAction<string | null>>;
-  needsReviewOnly: boolean;
-  setNeedsReviewOnly: Dispatch<SetStateAction<boolean>>;
+  /** TX-3.3 merchant PIVOT — the display name of the pinned merchant, or null.
+   *  Set by "More from this merchant" on a row; the query itself filters on the
+   *  resolved Merchant.id the row carries. */
+  merchantLabel: string | null;
+  onClearMerchant: () => void;
   pendingFilter: PendingFilter;
   setPendingFilter: Dispatch<SetStateAction<PendingFilter>>;
   activeCount: number;
@@ -61,10 +59,8 @@ export function TransactionFilterChips(props: Props) {
     selectedAccount, setAccountFilter,
     catFilter, setCatFilter,
     flowFilter, setFlowFilter,
-    dispositionFilter, setDispositionFilter,
     sourceFilter, setSourceFilter,
-    merchantFilter, setMerchantFilter,
-    needsReviewOnly, setNeedsReviewOnly,
+    merchantLabel, onClearMerchant,
     pendingFilter, setPendingFilter,
     activeCount, onClearAll, onAddFilter,
   } = props;
@@ -93,28 +89,16 @@ export function TransactionFilterChips(props: Props) {
           <Dismiss onClick={() => setFlowFilter(null)} label="flow type" />
         </span>
       )}
-      {dispositionFilter && (
-        <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
-          {TRANSFER_DISPOSITION_LABEL[dispositionFilter] ?? dispositionFilter}
-          <Dismiss onClick={() => setDispositionFilter(null)} label="movement" />
-        </span>
-      )}
       {sourceFilter !== "all" && (
         <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
           {SOURCE_LABELS[sourceFilter]}
           <Dismiss onClick={() => setSourceFilter("all")} label="source" />
         </span>
       )}
-      {merchantFilter && (
+      {merchantLabel && (
         <span className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${CAT_CHIP}`}>
-          {merchantFilter}
-          <Dismiss onClick={() => setMerchantFilter(null)} label="merchant" />
-        </span>
-      )}
-      {needsReviewOnly && (
-        <span className="text-xs border px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: "var(--surface-inset)", color: "var(--accent-warning)", borderColor: "var(--border-hairline)" }}>
-          Needs review
-          <Dismiss onClick={() => setNeedsReviewOnly(false)} label="needs review" />
+          {merchantLabel}
+          <Dismiss onClick={onClearMerchant} label="merchant" />
         </span>
       )}
       {pendingFilter !== "all" && (

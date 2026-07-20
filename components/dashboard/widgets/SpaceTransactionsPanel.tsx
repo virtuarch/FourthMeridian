@@ -1,33 +1,53 @@
 "use client";
 
 /**
- * SpaceTransactionsPanel
+ * SpaceTransactionsPanel — the Transaction EXPLORER  (TX-3.3)
  *
- * Renders the full transaction list for a Space — search, category, account,
- * date-range, and pending/cleared filters — using the transactions and accounts
- * data already fetched by the parent DashboardClient (no extra server round-trip).
+ * An INVESTIGATION surface: question → answer → inspect → act. Not a ledger table,
+ * not a spreadsheet.
  *
- * Data path: getTransactions() → DashboardClient props → this component.
- * Account lookup (name + institution) mirrors BankingClient: match tx.accountId
- * to Account.id, which is FinancialAccount.id for Plaid-synced rows (normalized
- * by getAccounts() and getTransactions()).
+ * WHAT CHANGED IN TX-3.3
+ *   This panel used to receive one array of up to 5,000 rows and run a complete
+ *   query engine in the browser: `filter()` for every predicate, `sort()` for every
+ *   ordering, `slice()` for pagination. That made the browser the BROWSING AUTHORITY
+ *   over a silently partial population — the answer looked complete and wasn't.
+ *
+ *   Now the SERVER answers the question:
+ *     - filters + search  → validated query params (lib/data/transaction-query-core)
+ *     - ordering          → server sort (newest / oldest)
+ *     - paging            → KEYSET cursor + infinite scroll, never offset
+ *     - "N results"       → countTransactions, built from the SAME filter
+ *                           construction as the row query, so the figure cannot
+ *                           drift from the list
+ *   This component performs NO filtering, NO sorting, and NO slicing. If a
+ *   `.filter(` or `.sort(` appears here over `rows`, the browser has quietly become
+ *   the browsing authority again — there is a test that fails if it does.
+ *
+ * WHAT WAS DELIBERATELY REMOVED (and where it went)
+ *   - Group By pivot, Calendar heat-map, per-flow-type money totals: client-derived
+ *     ANALYTICS over the full array. A 100-row page cannot produce them honestly, and
+ *     their semantic authority (conversion + classification doctrine) belongs to the
+ *     Cash Flow projection layer, not to the explorer. TX-3 does not redesign them;
+ *     they stay available on their own surfaces via their own authorities.
+ *   - Numbered/offset pagination: keyset cursors page forward, not to "page 7 of 154".
+ *   - Largest / Smallest / Merchant A–Z sorts: see TX3_1B_CONTRACT_HARDENING.md §2 —
+ *     the product's "largest" is `Math.abs(FX-converted)`, which SQL cannot order by.
+ *   - transferDisposition / needsClassification filters: derived at read time and
+ *     never persisted (schema.prisma:1710,1881), so they cannot be server predicates.
+ *     Deferred as a future intelligence projection.
+ *
+ * PRESERVED: the editorial day-grouped ledger, the detail drawer (URL-driven
+ * selection via `?transaction=<id>`), the toolbar/filter/chip visual identity, and
+ * the KD-15 scope note.
  */
 
-import { useState, useMemo, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Account, Transaction, TransactionCategory } from "@/types";
 import { DataCard } from "@/components/atlas/DataCard";
-import {
-  Search, X, SlidersHorizontal, CalendarDays, ChevronRight, ChevronLeft, ArrowDownUp, ArrowLeftRight,
-} from "lucide-react";
-import { SegmentedControl } from "@/components/atlas/SegmentedControl";
+import { Search, X, SlidersHorizontal, CalendarDays, ChevronRight, ArrowDownUp, ArrowLeftRight, Loader2 } from "lucide-react";
 import { ToolbarMenuButton } from "@/components/dashboard/widgets/transactions/ToolbarMenuButton";
 import { QuickFlowPills } from "@/components/dashboard/widgets/transactions/QuickFlowPills";
-import { TransactionSummaryCards } from "@/components/dashboard/widgets/transactions/TransactionSummaryCards";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { useDisplayCurrency } from "@/lib/currency-context";
-import { convertMoney, rehydrateContext, type SerializedConversionContext } from "@/lib/money/convert";
-import { FLOW_TYPE_LABEL, UNCLASSIFIED_FLOW_KEY, sumByFlowType } from "@/lib/transactions/flow-predicates";
-import { TransactionsCalendarHeatmap } from "@/components/dashboard/widgets/transactions/TransactionsCalendarHeatmap";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 import { TransactionDate } from "@/components/ui/TransactionDate";
@@ -39,12 +59,17 @@ import {
   inputStyle,
   type PendingFilter,
   type SourceFilter,
-  type GroupBy,
 } from "@/components/dashboard/widgets/transactions/transactions-filter-constants";
 import { TransactionFilterChips } from "@/components/dashboard/widgets/transactions/TransactionFilterChips";
+import {
+  useTransactionExplorer,
+  activeFilterCount as countActiveFilters,
+  type ExplorerQuery,
+} from "@/components/dashboard/widgets/transactions/useTransactionExplorer";
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
-// MC1 QA Q3 — itemized transaction rows pass the ROW's own currency.
+// MC1 QA Q3 — itemized transaction rows pass the ROW's own currency. Explorer rows
+// render NATIVE (unchanged); converted money figures are the analytics layer's job.
 const fmt = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
   new Intl.NumberFormat("en-US", {
     style:                 "currency",
@@ -52,13 +77,7 @@ const fmt = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
     maximumFractionDigits: 2,
   }).format(Math.abs(n));
 
-// FlowType P5 Slice 2 / TI1 — money-out cost flows that count toward the "Spend"
-// chip. Membership now lives in the single-authority predicate module.
-
 // ── Date-range filter ─────────────────────────────────────────────────────────
-// Redesign Slice 2 — "custom" adds an explicit [from, to] window (both optional)
-// alongside the rolling presets. The predicate stays a pure date comparison over
-// the already-fetched list; no query/API change.
 type DateRange = "all" | "90d" | "30d" | "7d" | "custom";
 
 const DATE_RANGE_LABELS: Record<DateRange, string> = {
@@ -69,154 +88,121 @@ const DATE_RANGE_LABELS: Record<DateRange, string> = {
   custom: "Custom",
 };
 
-// ── Sort (Slice 7) ────────────────────────────────────────────────────────────
-// Pure client-side reorder of the already-fetched, already-filtered list — the
-// same "no refetch" philosophy as Group By. "newest" returns the list untouched
-// so the default order is byte-identical to the pre-redesign behavior (the data
-// arrives date-desc from getTransactions()).
-type SortBy = "newest" | "oldest" | "largest" | "smallest" | "merchant";
+type SortBy = "newest" | "oldest";
+const SORT_LABELS: Record<SortBy, string> = { newest: "Newest", oldest: "Oldest" };
 
-const SORT_LABELS: Record<SortBy, string> = {
-  newest:   "Newest",
-  oldest:   "Oldest",
-  largest:  "Largest",
-  smallest: "Smallest",
-  merchant: "Merchant A–Z",
-};
+/** YYYY-MM-DD `days` before today, in UTC (matches the server's @db.Date encoding). */
+function isoDaysAgo(days: number): string {
+  const d = new Date();
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - days))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** The [from, to] the toolbar's time selector implies. */
+function rangeBounds(range: DateRange, customStart: string, customEnd: string): { from: string | null; to: string | null } {
+  switch (range) {
+    case "7d":  return { from: isoDaysAgo(7),  to: null };
+    case "30d": return { from: isoDaysAgo(30), to: null };
+    case "90d": return { from: isoDaysAgo(90), to: null };
+    case "custom": return { from: customStart || null, to: customEnd || null };
+    case "all":
+    default: return { from: null, to: null };
+  }
+}
 
 // ── Day-header formatter (editorial timeline) ────────────────────────────────
-// The ledger's temporal spine: rows group under the day they occurred. Parsed at
-// local midnight (append T00:00:00, no trailing Z) so a YYYY-MM-DD never drifts a
-// day across time zones. Presentation only — no new data.
+// Parsed at local midnight (append T00:00:00, no trailing Z) so a YYYY-MM-DD never
+// drifts a day across time zones. Presentation only.
 function formatDayHeader(iso: string): string {
   const d = new Date(`${iso}T00:00:00`);
   return d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
 }
 
-// ── Pagination (table redesign follow-up) ─────────────────────────────────────
-// Page-size options — default 25, capped at 100 (product decision). Pure
-// client-side slicing of the already-filtered/sorted list; no query change.
-// Scoped to the flat Table view: Group By keeps rendering full buckets, since
-// paginating across group boundaries is a separate, unrequested feature.
-type PageSize = 25 | 50 | 100;
-const PAGE_SIZE_OPTIONS: readonly PageSize[] = [25, 50, 100];
-
-/** Compact page-number sequence with "…" gaps, e.g. [1, "…", 4, 5, 6, "…", 154]. */
-function paginationRange(current: number, total: number): (number | "…")[] {
-  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
-  const keep = new Set([1, total, current - 1, current, current + 1]);
-  const sortedPages = [...keep].filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
-  const out: (number | "…")[] = [];
-  sortedPages.forEach((p, i) => {
-    if (i > 0 && p - (sortedPages[i - 1] as number) > 1) out.push("…");
-    out.push(p);
-  });
-  return out;
+/**
+ * Group the ALREADY-ORDERED server rows under their day. This is presentation only:
+ * it preserves the server's sequence exactly (a Map keyed in insertion order) and
+ * never reorders or filters. It is not a client query.
+ */
+function groupByDay(rows: Transaction[]): [string, Transaction[]][] {
+  const map = new Map<string, Transaction[]>();
+  for (const tx of rows) {
+    const bucket = map.get(tx.date);
+    if (bucket) bucket.push(tx);
+    else map.set(tx.date, [tx]);
+  }
+  return [...map.entries()];
 }
 
-// Friendly subtitle for the KPI cards (Slice 4) — reflects the active window.
-const RANGE_SUBTITLE: Record<DateRange, string> = {
-  all:  "All time",
-  "90d": "Last 90 days",
-  "30d": "Last 30 days",
-  "7d":  "Last 7 days",
-  custom: "Custom range",
-};
-
-function cutoffForRange(r: DateRange): string | null {
-  if (r === "all" || r === "custom") return null;
-  const d = new Date();
-  d.setDate(d.getDate() - (r === "90d" ? 90 : r === "30d" ? 30 : 7));
-  return d.toISOString().split("T")[0];
-}
-
-// Pending / Source / Group By / Movement vocabulary + shared input styling now
-// live in ./transactions/transactions-filter-constants (shared with the Filters
-// overlay). Group By stays a table-only sub-mode — "none" is the flat List view.
-
-// ── Props ─────────────────────────────────────────────────────────────────────
-interface Props {
-  transactions: Transaction[];
-  accounts:     Account[];
-  /** Honesty label for shared Spaces, where KD-15 makes the list
-   *  structurally partial (FULL-visibility shares only) — e.g. "Showing
-   *  transactions from fully shared accounts only". Omit on Personal. */
-  scopeNote?:   string;
-  /**
-   * MC1 Phase 3 Slice 6 (F-1, D-6) — serialized Space conversion context.
-   * Optional: absent => context-less native sums (the kill switch).
-   * Provided by DashboardClient (server-page props) and — since MC1 Phase 4
-   * Slice 6 closed F-6 — by SpaceDashboard via the transactions API payload.
-   */
-  moneyCtx?:    SerializedConversionContext;
-  /**
-   * Banking→Transactions retarget — deep-link seed for the account filter.
-   * When the tab is opened via `?tab=transactions&account=<id>` (e.g.
-   * AccountsPerspective's "View transactions" row action), the host reads the
-   * param and passes it here so the list lands pre-scoped to that account. It
-   * only seeds the initial state — the filter select stays fully changeable.
-   */
+export function SpaceTransactionsPanel({
+  spaceId,
+  accounts,
+  scopeNote,
+  initialAccountFilter,
+}: {
+  /** The Space whose transactions this explorer queries. */
+  spaceId: string;
+  accounts: Account[];
+  scopeNote?: string;
+  /** Banking→Transactions retarget — deep-link account pre-filter. */
   initialAccountFilter?: string | null;
-}
-
-// ── Main component ─────────────────────────────────────────────────────────────
-export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, moneyCtx, initialAccountFilter }: Props) {
-  // TI5-3C — shared opener; rows call it to open the shell-mounted detail drawer.
+}) {
   const openTransaction = useOpenTransaction();
-  // MC1 P3 Slice 6 — rehydrated once; per-row conversion at each row's own
-  // date (identical math for all-USD Spaces / absent context).
-  const conversionCtx = useMemo(
-    () => (moneyCtx ? rehydrateContext(moneyCtx) : undefined),
-    [moneyCtx],
-  );
-  // MC1 Phase 4 Slice 1 (D-1) — summary totals format in the display
-  // currency; transaction rows keep the constant (itemized rule).
-  const displayCurrency = useDisplayCurrency();
-  const fmtAgg = (n: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: displayCurrency, maximumFractionDigits: 2 }).format(Math.abs(n));
-  const rowAmount = useCallback(
-    (t: Transaction): number =>
-      conversionCtx
-        ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, conversionCtx).amount
-        : t.amount,
-    [conversionCtx],
-  );
-  const [search,        setSearch]        = useState("");
-  const [catFilter,     setCatFilter]     = useState<TransactionCategory | null>(null);
-  const [accountFilter, setAccountFilter] = useState<string | null>(initialAccountFilter ?? null);
-  const [dateRange,     setDateRange]     = useState<DateRange>("all");
-  // Custom [from, to] window (ISO YYYY-MM-DD, both optional) — only consulted
-  // when dateRange === "custom".
-  const [customStart,   setCustomStart]   = useState<string>("");
-  const [customEnd,     setCustomEnd]     = useState<string>("");
-  const [pendingFilter, setPendingFilter] = useState<PendingFilter>("all");
-  // Transactions Tab Phase 1 — pivot the existing ledger by the FlowType already
-  // on every row (no new query). null = all flow types.
-  const [flowFilter,    setFlowFilter]    = useState<string | null>(null);
-  // TE-2B needs-review: reuse the existing per-row needsClassification boolean
-  // as-is (no confidence tiers, no new copy). false = show all rows.
-  const [needsReviewOnly, setNeedsReviewOnly] = useState(false);
-  // CF-1 transfer disposition — filter TRANSFER rows by their canonical
-  // disposition (already on every row). null = all dispositions.
-  const [dispositionFilter, setDispositionFilter] = useState<string | null>(null);
-  // Provenance source — backed by the list-level `source` field.
+
+  // ── The question ─────────────────────────────────────────────────────────
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");           // debounced → server
+  const [catFilter, setCatFilter] = useState<TransactionCategory | null>(null);
+  const [flowFilter, setFlowFilter] = useState<string | null>(null);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
-  // Merchant filter — distinct resolved-merchant names present in the fetched
-  // list (client-side; no new query). null = all merchants.
-  const [merchantFilter, setMerchantFilter] = useState<string | null>(null);
-  // Group By / perspective (see GroupBy above). "none" = the flat List view.
-  const [groupBy, setGroupBy] = useState<GroupBy>("none");
-  // §2.4 — top-level view switch. "table" = the list/grouped view (Group By
-  // applies); "calendar" = the day heat-map over the same filtered set. One
-  // control, not two — Group By is a table-only sub-mode, Calendar is a peer view.
-  const [viewMode, setViewMode] = useState<"table" | "calendar">("table");
-  // Redesign Slice 1 — the wall of dropdowns now lives in one on-demand overlay.
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  // Redesign Slice 7 — client-side sort. "newest" leaves the list untouched.
+  const [pendingFilter, setPendingFilter] = useState<PendingFilter>("all");
+  const [accountFilter, setAccountFilter] = useState<string | null>(initialAccountFilter ?? null);
+  const [merchantId, setMerchantId] = useState<string | null>(null);
+  const [merchantLabel, setMerchantLabel] = useState<string | null>(null);
+  const [dateRange, setDateRange] = useState<DateRange>("all");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
   const [sortBy, setSortBy] = useState<SortBy>("newest");
-  // Table redesign follow-up — page size + current page (flat Table view only).
-  const [pageSize, setPageSize] = useState<PageSize>(25);
-  const [page, setPage] = useState(1);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // Debounce the search box so a server query is not issued per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  const query: ExplorerQuery = useMemo(() => {
+    const { from, to } = rangeBounds(dateRange, customStart, customEnd);
+    return {
+      text: search,
+      dateFrom: from,
+      dateTo: to,
+      accountId: accountFilter,
+      category: catFilter,
+      flowType: flowFilter,
+      source: sourceFilter === "all" ? null : sourceFilter,
+      pending: pendingFilter === "all" ? null : pendingFilter === "pending",
+      merchantId,
+      sort: sortBy,
+    };
+  }, [search, dateRange, customStart, customEnd, accountFilter, catFilter, flowFilter, sourceFilter, pendingFilter, merchantId, sortBy]);
+
+  // ── The answer ───────────────────────────────────────────────────────────
+  const { rows, count, hasMore, loading, loadingMore, error, loadMore } =
+    useTransactionExplorer(spaceId, query);
+
+  // ── Infinite scroll (mobile-first; the same sentinel drives desktop) ──────
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || !hasMore) return;
+    const io = new IntersectionObserver(
+      (entries) => { if (entries.some((e) => e.isIntersecting)) loadMore(); },
+      { rootMargin: "600px 0px" }, // begin the next page before the user hits the end
+    );
+    io.observe(node);
+    return () => io.disconnect();
+  }, [hasMore, loadMore]);
 
   // ── Account lookup helpers ───────────────────────────────────────────────
   const accountMap = useMemo(() => {
@@ -225,228 +211,52 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
     return m;
   }, [accounts]);
 
-  const acctName = useCallback(
-    (id: string) => accountMap.get(id)?.name ?? "Unknown Account",
-    [accountMap],
-  );
-  const acctInst = useCallback(
-    (id: string) => accountMap.get(id)?.institution ?? "",
-    [accountMap],
-  );
+  const acctName = useCallback((id: string) => accountMap.get(id)?.name ?? "Unknown Account", [accountMap]);
+  const acctInst = useCallback((id: string) => accountMap.get(id)?.institution ?? "", [accountMap]);
 
-  // ── Institution groups for account filter dropdown ───────────────────────
-  // Only includes institutions that have at least one transaction.
-  const txAccountIds = useMemo(
-    () => new Set(transactions.map((t) => t.accountId)),
-    [transactions],
-  );
-
+  // Institution → accounts for the account filter. Built from the Space's ACCOUNTS
+  // (not from the fetched rows): under server paging one page cannot enumerate the
+  // Space's accounts, and the account list is already loaded and authoritative.
   const institutionGroups = useMemo(() => {
     const groups = new Map<string, Account[]>();
-    accounts
-      .filter((a) => txAccountIds.has(a.id))
-      .forEach((a) => {
-        const inst = a.institution;
-        if (!groups.has(inst)) groups.set(inst, []);
-        groups.get(inst)!.push(a);
-      });
-    return groups;
-  }, [accounts, txAccountIds]);
-
-  // ── Distinct merchants for the merchant filter dropdown ───────────────────
-  // Resolved display name (MI M6) with raw fallback; only merchants that appear
-  // in the fetched list, sorted for a stable dropdown. No new query.
-  const merchantOptions = useMemo(() => {
-    const names = new Set<string>();
-    transactions.forEach((t) => names.add(t.merchantDisplayName ?? t.merchant));
-    return [...names].sort((a, b) => a.localeCompare(b));
-  }, [transactions]);
-
-  // ── Filtering ────────────────────────────────────────────────────────────
-  const cutoff = cutoffForRange(dateRange);
-
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-    return transactions.filter((tx) => {
-      if (catFilter     && tx.category   !== catFilter)     return false;
-      if (flowFilter    && tx.flowType   !== flowFilter)    return false;
-      if (dispositionFilter && tx.transferDisposition !== dispositionFilter) return false;
-      if (sourceFilter !== "all" && tx.source !== sourceFilter) return false;
-      if (merchantFilter && (tx.merchantDisplayName ?? tx.merchant) !== merchantFilter) return false;
-      if (needsReviewOnly && !tx.needsClassification)       return false;
-      if (accountFilter && tx.accountId  !== accountFilter) return false;
-      if (dateRange === "custom") {
-        if (customStart && tx.date < customStart) return false;
-        if (customEnd   && tx.date > customEnd)   return false;
-      } else if (cutoff && tx.date < cutoff)                return false;
-      if (pendingFilter === "cleared" &&  tx.pending)       return false;
-      if (pendingFilter === "pending" && !tx.pending)       return false;
-      if (q && !tx.merchant.toLowerCase().includes(q) && !(tx.merchantDisplayName ?? "").toLowerCase().includes(q) /* MI M6 — alias-aware */ && !(tx.description ?? "").toLowerCase().includes(q)) {
-        return false;
-      }
-      return true;
+    accounts.forEach((a) => {
+      const inst = a.institution;
+      if (!groups.has(inst)) groups.set(inst, []);
+      groups.get(inst)!.push(a);
     });
-  }, [transactions, catFilter, flowFilter, dispositionFilter, sourceFilter, merchantFilter, needsReviewOnly, accountFilter, cutoff, dateRange, customStart, customEnd, pendingFilter, search]);
+    return groups;
+  }, [accounts]);
 
-  // ── Sort (Slice 7) ─────────────────────────────────────────────────────────
-  // Reorders the RENDERED rows only. "newest" returns `filtered` unchanged (its
-  // date-desc order is the pre-redesign default); every other mode sorts a copy.
-  // Summary math reads `filtered` (order-independent), so totals never shift.
-  const sorted = useMemo(() => {
-    if (sortBy === "newest") return filtered;
-    const arr = [...filtered];
-    switch (sortBy) {
-      case "oldest":
-        arr.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-        break;
-      case "largest":
-        arr.sort((a, b) => Math.abs(rowAmount(b)) - Math.abs(rowAmount(a)));
-        break;
-      case "smallest":
-        arr.sort((a, b) => Math.abs(rowAmount(a)) - Math.abs(rowAmount(b)));
-        break;
-      case "merchant":
-        arr.sort((a, b) =>
-          (a.merchantDisplayName ?? a.merchant).localeCompare(b.merchantDisplayName ?? b.merchant),
-        );
-        break;
-    }
-    return arr;
-  }, [filtered, sortBy, rowAmount]);
+  const dayGroups = useMemo(() => groupByDay(rows), [rows]);
 
-  // Never strand the user on a page past the end when the visible set reshuffles
-  // (a new filter, a new sort, a new page size). Adjusted DURING render, not in
-  // an effect — react-hooks/set-state-in-effect (this repo's eslint config)
-  // flags setState-in-effect as a cascading-render risk; this is React's own
-  // documented "storing information from previous renders" alternative.
-  const pageResetKey = `${filtered.length}|${sortBy}|${pageSize}|${groupBy}|${viewMode}`;
-  const [prevPageResetKey, setPrevPageResetKey] = useState(pageResetKey);
-  if (pageResetKey !== prevPageResetKey) {
-    setPrevPageResetKey(pageResetKey);
-    setPage(1);
-  }
-
-  // ── Pagination (flat Table view only — see PAGE_SIZE_OPTIONS comment) ──────
-  const totalPages  = Math.max(1, Math.ceil(sorted.length / pageSize));
-  const currentPage = Math.min(page, totalPages);
-  const paged = useMemo(
-    () => sorted.slice((currentPage - 1) * pageSize, (currentPage - 1) * pageSize + pageSize),
-    [sorted, currentPage, pageSize],
-  );
-  const pageStart = sorted.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
-  const pageEnd    = Math.min(currentPage * pageSize, sorted.length);
-
-  // ── Shared per-FlowType aggregation (§2.3.1) ───────────────────────────────
-  // ONE sumByFlowType map drives BOTH the summary chips and the "By Flow Type"
-  // Group By bucket totals — they can never drift (§9.8). Amount accessor = the
-  // row's own converted magnitude, identical to the pre-existing summary math.
-  const flowSums = useMemo(
-    () => sumByFlowType(filtered, (t) => Math.abs(rowAmount(t))),
-    [filtered, rowAmount],
-  );
-  const sumOf = useCallback((k: string) => flowSums.get(k) ?? 0, [flowSums]);
-
-  // ── Group By (client-side pivot over the filtered list) ────────────────────
-  // First-appearance order (filtered is date-desc) — no re-sort, no refetch.
-  const groups = useMemo(() => {
-    if (groupBy === "none") return null;
-    const map = new Map<string, { label: string; rows: Transaction[] }>();
-    for (const tx of sorted) {
-      let key: string;
-      let label: string;
-      switch (groupBy) {
-        case "flow":
-          key = tx.flowType ?? UNCLASSIFIED_FLOW_KEY;
-          label = tx.flowType ? (FLOW_TYPE_LABEL[tx.flowType] ?? tx.flowType) : "Unclassified";
-          break;
-        case "merchant":
-          label = tx.merchantDisplayName ?? tx.merchant;
-          key = label;
-          break;
-        case "account":
-          key = tx.accountId;
-          label = [acctInst(tx.accountId), acctName(tx.accountId)].filter(Boolean).join(" · ") || "Unknown Account";
-          break;
-        case "category":
-        default:
-          key = tx.category;
-          label = tx.category;
-          break;
-      }
-      const bucket = map.get(key) ?? { label, rows: [] };
-      bucket.rows.push(tx);
-      map.set(key, bucket);
-    }
-    // Per-bucket total. "By Flow Type" reads the SHARED sumByFlowType map (never a
-    // second reduce — §9.8); other axes sum their own rows with the same accessor.
-    return [...map.entries()].map(([key, g]) => ({
-      key,
-      ...g,
-      sum: groupBy === "flow"
-        ? (flowSums.get(key) ?? 0)
-        : g.rows.reduce((s, t) => s + Math.abs(rowAmount(t)), 0),
-    }));
-  }, [sorted, groupBy, acctInst, acctName, flowSums, rowAmount]);
-
-  // ── Editorial day grouping (default List view) ─────────────────────────────
-  // With no explicit pivot and a chronological sort, the flat list reads as a
-  // ledger: rows grouped under their day with a sticky day header (the prototype's
-  // temporal spine). Amount/merchant sorts stay flat — day headers only make sense
-  // in date order. Groups the CURRENT page, so pagination is unaffected.
-  const chronological = sortBy === "newest" || sortBy === "oldest";
-  const dayGroups = useMemo(() => {
-    if (groupBy !== "none" || !chronological) return null;
-    const map = new Map<string, Transaction[]>();
-    for (const tx of paged) {
-      const bucket = map.get(tx.date);
-      if (bucket) bucket.push(tx);
-      else map.set(tx.date, [tx]);
-    }
-    return [...map.entries()];
-  }, [paged, groupBy, chronological]);
-
-  // ── Summary totals (§2.3.1) ────────────────────────────────────────────────
-  // Composed from the shared flowSums map above (same source as Group By).
-  // Spend = SPENDING + FEE + INTEREST (cost flows) minus REFUND, clamped ≥ 0 —
-  // reproduces the pre-existing figure exactly, now composed from the shared map.
-  const grossSpend  = sumOf("SPENDING") + sumOf("FEE") + sumOf("INTEREST");
-  const totalRefund = sumOf("REFUND");
-  const totalSpend  = Math.max(0, grossSpend - totalRefund);
-  const totalIn     = sumOf("INCOME");
-  const totalTransfer   = sumOf("TRANSFER");
-  const totalDebtPmt    = sumOf("DEBT_PAYMENT");
-  const totalInvestment = sumOf("INVESTMENT");
-
-  // ── Active filter chip helpers ─────────────────────────────────────────
   const selectedAccount = accountFilter ? accountMap.get(accountFilter) : null;
+  const activeFilterCount = countActiveFilters(query);
 
   const clearAll = useCallback(() => {
+    setSearchInput("");
     setSearch("");
     setCatFilter(null);
     setFlowFilter(null);
-    setDispositionFilter(null);
     setSourceFilter("all");
-    setMerchantFilter(null);
-    setNeedsReviewOnly(false);
+    setPendingFilter("all");
     setAccountFilter(null);
+    setMerchantId(null);
+    setMerchantLabel(null);
     setDateRange("all");
     setCustomStart("");
     setCustomEnd("");
-    setPendingFilter("all");
   }, []);
 
-  // Count of active filter GROUPS inside the Filters overlay — drives the
-  // "Filters (N)" badge. Search, time range, view, and grouping are toolbar-level
-  // concerns and are deliberately excluded (they have their own controls).
-  const activeFilterCount =
-    (catFilter ? 1 : 0) +
-    (flowFilter ? 1 : 0) +
-    (dispositionFilter ? 1 : 0) +
-    (sourceFilter !== "all" ? 1 : 0) +
-    (merchantFilter ? 1 : 0) +
-    (needsReviewOnly ? 1 : 0) +
-    (accountFilter ? 1 : 0) +
-    (pendingFilter !== "all" ? 1 : 0);
+  /** The inspect→query pivot: "show me everything from this merchant". */
+  const pivotToMerchant = useCallback((id: string, label: string) => {
+    setMerchantId(id);
+    setMerchantLabel(label);
+  }, []);
+
+  const clearMerchant = useCallback(() => {
+    setMerchantId(null);
+    setMerchantLabel(null);
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -462,13 +272,8 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
       </div>
 
       {/* ── Primary toolbar + Quick Flow ────────────────────────────────────── */}
-      {/* One wrapping flex row whose `order` yields the intended hierarchy at
-          each breakpoint:
-            mobile  → Search · Quick Flow · Controls  (stacked, order 1·2·3)
-            desktop → Search + Controls on one row, Quick Flow beneath.
-          Search is the dominant affordance (~half width on desktop). */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* Search */}
+        {/* Search — debounced, then answered by the server. */}
         <div className="relative w-full lg:w-[52%] order-1">
           <Search
             size={16}
@@ -478,15 +283,15 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
           <input
             type="text"
             placeholder="Search transactions…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             aria-label="Search transactions"
             className={`w-full pl-10 pr-9 py-3 text-[15px] ${INPUT_BASE}`}
             style={inputStyle}
           />
-          {search && (
+          {searchInput && (
             <button
-              onClick={() => setSearch("")}
+              onClick={() => setSearchInput("")}
               aria-label="Clear search"
               className="absolute right-3 top-1/2 -translate-y-1/2 hover:text-[var(--text-primary)]"
               style={{ color: "var(--text-muted)" }}
@@ -496,21 +301,8 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
           )}
         </div>
 
-        {/* Right cluster — view, time, filters, sort. */}
+        {/* Right cluster — time, filters, sort. */}
         <div className="w-full lg:w-auto lg:flex-1 order-3 lg:order-2 flex items-center gap-2 flex-wrap lg:flex-nowrap lg:justify-end">
-          {/* Table / Calendar — a segmented control, visually distinct from the
-              Time selector so the two don't compete (§2.4). */}
-          <SegmentedControl
-            options={[
-              { id: "table", label: "List" },
-              { id: "calendar", label: "Calendar" },
-            ]}
-            value={viewMode}
-            onChange={setViewMode}
-            aria-label="View mode"
-          />
-
-          {/* Time selector — presets + a Custom [from, to] window. */}
           <ToolbarMenuButton
             icon={<CalendarDays size={14} />}
             triggerLabel={DATE_RANGE_LABELS[dateRange]}
@@ -548,9 +340,6 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             )}
           </ToolbarMenuButton>
 
-          {/* Filters — the wall of dropdowns now lives in one grouped, on-demand
-              overlay (Slice 1). All filter semantics are unchanged; only their
-              location moved. The badge counts active filter groups. */}
           <button
             type="button"
             onClick={() => setFiltersOpen(true)}
@@ -565,30 +354,28 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
             <span>Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</span>
           </button>
 
-          {/* Sort — pure client-side reorder of the filtered list (Slice 7). */}
+          {/* Sort — a SERVER ordering. Only the two date sorts exist; see the
+              header note and TX3_1B_CONTRACT_HARDENING.md §2. */}
           <ToolbarMenuButton
             icon={<ArrowDownUp size={14} />}
             triggerLabel={SORT_LABELS[sortBy]}
-            options={(["newest", "oldest", "largest", "smallest", "merchant"] as SortBy[]).map((s) => ({ id: s, label: SORT_LABELS[s] }))}
+            options={(["newest", "oldest"] as SortBy[]).map((s) => ({ id: s, label: SORT_LABELS[s] }))}
             value={sortBy}
             onChange={setSortBy}
             aria-label="Sort transactions"
           />
         </div>
 
-        {/* Quick Flow shortcuts — common FlowType filters as pills; they drive the
-            same flowFilter state. Sits beneath the toolbar on desktop, and between
-            search and the toolbar on mobile (order-2). */}
         <div className="w-full order-2 lg:order-3">
           <QuickFlowPills value={flowFilter} onChange={setFlowFilter} />
         </div>
       </div>
 
-      {/* Filters overlay — centered dialog on desktop, bottom sheet on mobile. */}
+      {/* Filters overlay — every control here is a server query param. */}
       <TransactionsFilterOverlay
         open={filtersOpen}
         onClose={() => setFiltersOpen(false)}
-        resultCount={filtered.length}
+        resultCount={count ?? rows.length}
         activeCount={activeFilterCount}
         onClearAll={clearAll}
         catFilter={catFilter}
@@ -597,25 +384,14 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
         setFlowFilter={setFlowFilter}
         accountFilter={accountFilter}
         setAccountFilter={setAccountFilter}
-        dispositionFilter={dispositionFilter}
-        setDispositionFilter={setDispositionFilter}
         sourceFilter={sourceFilter}
         setSourceFilter={setSourceFilter}
-        merchantFilter={merchantFilter}
-        setMerchantFilter={setMerchantFilter}
-        needsReviewOnly={needsReviewOnly}
-        setNeedsReviewOnly={setNeedsReviewOnly}
         pendingFilter={pendingFilter}
         setPendingFilter={setPendingFilter}
-        groupBy={groupBy}
-        setGroupBy={setGroupBy}
         institutionGroups={institutionGroups}
-        merchantOptions={merchantOptions}
-        showGrouping={viewMode === "table"}
       />
 
       {/* ── Active filter chips ─────────────────────────────────────────────── */}
-      {/* Only rendered when a filter group is active (reduce noise). */}
       <TransactionFilterChips
         selectedAccount={selectedAccount}
         setAccountFilter={setAccountFilter}
@@ -623,14 +399,10 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
         setCatFilter={setCatFilter}
         flowFilter={flowFilter}
         setFlowFilter={setFlowFilter}
-        dispositionFilter={dispositionFilter}
-        setDispositionFilter={setDispositionFilter}
         sourceFilter={sourceFilter}
         setSourceFilter={setSourceFilter}
-        merchantFilter={merchantFilter}
-        setMerchantFilter={setMerchantFilter}
-        needsReviewOnly={needsReviewOnly}
-        setNeedsReviewOnly={setNeedsReviewOnly}
+        merchantLabel={merchantLabel}
+        onClearMerchant={clearMerchant}
         pendingFilter={pendingFilter}
         setPendingFilter={setPendingFilter}
         activeCount={activeFilterCount}
@@ -638,189 +410,86 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
         onAddFilter={() => setFiltersOpen(true)}
       />
 
-      {/* ── Summary KPI cards (§2.3.1) ──────────────────────────────────────────
-          Same shared-map math as before, re-presented as KPI cards. Zero-count
-          discipline (§9.7) is preserved inside TransactionSummaryCards: a money
-          card renders only when its figure > 0 — never a fabricated "$0.00".
-          Spend stays net of refunds while Refund is disclosed as its own figure,
-          so no dollar is double-counted; transfers / debt payments / investments
-          are movements shown in neutral ink. */}
-      <TransactionSummaryCards
-        count={filtered.length}
-        spend={totalSpend}
-        income={totalIn}
-        transfers={totalTransfer}
-        debtPayments={totalDebtPmt}
-        investments={totalInvestment}
-        refunds={totalRefund}
-        fmt={fmtAgg}
-        rangeLabel={RANGE_SUBTITLE[dateRange]}
-      />
+      {/* ── The answer's size ───────────────────────────────────────────────────
+          `count` is the server's exact count for THIS question, built from the same
+          filter construction as the rows — so it cannot drift from the list as it
+          scrolls. It is a count, not a money figure: converted totals are the Cash
+          Flow projection layer's authority, not the explorer's. */}
+      {!loading && count !== null && (
+        <p className="px-1 text-xs" style={{ color: "var(--text-muted)" }}>
+          {count.toLocaleString()} {count === 1 ? "transaction" : "transactions"}
+          {rows.length < count ? ` · showing ${rows.length.toLocaleString()}` : ""}
+        </p>
+      )}
 
       {/* ── Transaction list ─────────────────────────────────────────────────── */}
-      {transactions.length === 0 ? (
-        <div className="rounded-2xl border py-14 text-center" style={{ borderColor: "var(--border-hairline)", background: "var(--surface-muted)" }}>
-          <p className="text-sm" style={{ color: "var(--text-muted)" }}>No transactions found for this Space.</p>
-          <p className="text-xs mt-1" style={{ color: "var(--text-faint)" }}>
-            Connect a bank account to start seeing transactions here.
-          </p>
-        </div>
-      ) : (
-        <>
-          <DataCard padding="0" className="overflow-hidden">
-            {filtered.length === 0 ? (
-              <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>
-                No transactions match your filters.
+      <DataCard padding="0" className="overflow-hidden">
+        {loading ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 size={18} className="animate-spin" style={{ color: "var(--text-faint)" }} />
+          </div>
+        ) : error ? (
+          <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>{error}</p>
+        ) : rows.length === 0 ? (
+          <div className="py-14 text-center">
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+              {activeFilterCount > 0 || search ? "No transactions match your filters." : "No transactions found for this Space."}
+            </p>
+            {activeFilterCount === 0 && !search && (
+              <p className="text-xs mt-1" style={{ color: "var(--text-faint)" }}>
+                Connect a bank account to start seeing transactions here.
               </p>
-            ) : viewMode === "calendar" ? (
-              // §2.4 — day heat-map over the same filtered set (net in − out), the
-              // amount accessor + formatter shared with the summary chips. Calendar
-              // authority (TransactionsCalendarHeatmap / CalendarHeatmapGrid) preserved.
-              <TransactionsCalendarHeatmap transactions={filtered} amountOf={rowAmount} fmt={fmtAgg} />
-            ) : groups ? (
-              // Explicit pivot (flow / merchant / account / category) — a header per
-              // bucket, then its rows. Not paginated (see PAGE_SIZE_OPTIONS comment):
-              // every matching row renders. Rows share the editorial TxRow.
-              <div className="divide-y divide-[var(--border-hairline)]">
-                {groups.map((g) => (
-                  <div key={g.key}>
-                    <div
-                      className="flex items-center justify-between gap-2 px-4 sm:px-5 py-2.5 sticky top-0 z-10 border-b"
-                      style={{ background: "color-mix(in srgb, var(--surface-muted) 88%, transparent)", color: "var(--text-secondary)", borderColor: "var(--border-hairline)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
-                    >
-                      <span className="text-xs font-semibold uppercase tracking-wide truncate">{g.label}</span>
-                      <span className="text-xs shrink-0 flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
-                        {/* By-Flow-Type sum comes from the shared sumByFlowType map (§9.8). */}
-                        <span className="tabular-nums" style={{ color: "var(--text-secondary)" }}>{fmtAgg(g.sum)}</span>
-                        <span>·</span>
-                        <span>{g.rows.length}</span>
-                      </span>
-                    </div>
-                    <div className="divide-y divide-[var(--border-hairline)]">
-                      {g.rows.map((tx) => (
-                        <TxRow
-                          key={tx.id}
-                          tx={tx}
-                          acctName={acctName(tx.accountId)}
-                          acctInst={acctInst(tx.accountId)}
-                          onOpen={() => openTransaction(tx.id)}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : dayGroups ? (
-              // Editorial default — the ledger grouped by DAY with sticky day headers.
-              // The date lives in the header, so rows drop their own date (showDate=false).
-              <div className="divide-y divide-[var(--border-hairline)]">
-                {dayGroups.map(([date, rows]) => (
-                  <div key={date}>
-                    <div
-                      className="flex items-center justify-between gap-2 px-4 sm:px-5 py-2.5 sticky top-0 z-10 border-b"
-                      style={{ background: "color-mix(in srgb, var(--surface-muted) 88%, transparent)", color: "var(--text-secondary)", borderColor: "var(--border-hairline)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
-                    >
-                      <span className="text-xs font-semibold uppercase tracking-wide truncate">{formatDayHeader(date)}</span>
-                      <span className="text-xs shrink-0" style={{ color: "var(--text-muted)" }}>{rows.length}</span>
-                    </div>
-                    <div className="divide-y divide-[var(--border-hairline)]">
-                      {rows.map((tx) => (
-                        <TxRow
-                          key={tx.id}
-                          tx={tx}
-                          acctName={acctName(tx.accountId)}
-                          acctInst={acctInst(tx.accountId)}
-                          showDate={false}
-                          onOpen={() => openTransaction(tx.id)}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              // Non-chronological sort (largest / smallest / merchant) — a flat ledger,
-              // each row carrying its own date since there are no day headers.
-              <div className="divide-y divide-[var(--border-hairline)]">
-                {paged.map((tx) => (
-                  <TxRow
-                    key={tx.id}
-                    tx={tx}
-                    acctName={acctName(tx.accountId)}
-                    acctInst={acctInst(tx.accountId)}
-                    onOpen={() => openTransaction(tx.id)}
-                  />
-                ))}
-              </div>
             )}
-          </DataCard>
-
-          {/* Pagination footer — flat Table view only. Page-size choice always
-              visible once there are any rows; the numbered nav only appears once
-              there is more than one page. */}
-          {viewMode === "table" && groupBy === "none" && sorted.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-3 px-1">
-              <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-                Showing {pageStart} to {pageEnd} of {sorted.length} transactions
-              </p>
-              <div className="flex items-center gap-3">
-                {totalPages > 1 && (
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      disabled={currentPage === 1}
-                      aria-label="Previous page"
-                      className="flex items-center justify-center h-7 w-7 rounded-lg border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[var(--surface-hover)] transition-colors"
-                      style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}
-                    >
-                      <ChevronLeft size={14} />
-                    </button>
-                    {paginationRange(currentPage, totalPages).map((p, i) =>
-                      p === "…" ? (
-                        <span key={`gap-${i}`} className="px-1 text-xs" style={{ color: "var(--text-faint)" }}>…</span>
-                      ) : (
-                        <button
-                          key={p}
-                          type="button"
-                          onClick={() => setPage(p)}
-                          aria-current={p === currentPage ? "page" : undefined}
-                          className="flex items-center justify-center h-7 min-w-7 px-1.5 rounded-lg text-xs font-semibold transition-colors"
-                          style={p === currentPage
-                            ? { background: "var(--meridian-400)", color: "#fff" }
-                            : { color: "var(--text-secondary)" }}
-                        >
-                          {p}
-                        </button>
-                      ),
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                      disabled={currentPage === totalPages}
-                      aria-label="Next page"
-                      className="flex items-center justify-center h-7 w-7 rounded-lg border disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[var(--surface-hover)] transition-colors"
-                      style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}
-                    >
-                      <ChevronRight size={14} />
-                    </button>
-                  </div>
-                )}
-                <select
-                  value={pageSize}
-                  onChange={(e) => setPageSize(Number(e.target.value) as PageSize)}
-                  aria-label="Transactions per page"
-                  className={`px-2 py-1.5 ${INPUT_BASE}`}
-                  style={inputStyle}
+          </div>
+        ) : (
+          // The editorial ledger, grouped by DAY with sticky day headers. The date
+          // lives in the header, so rows drop their own date (showDate=false).
+          <div className="divide-y divide-[var(--border-hairline)]">
+            {dayGroups.map(([date, dayRows]) => (
+              <div key={date}>
+                <div
+                  className="flex items-center justify-between gap-2 px-4 sm:px-5 py-2.5 sticky top-0 z-10 border-b"
+                  style={{ background: "color-mix(in srgb, var(--surface-muted) 88%, transparent)", color: "var(--text-secondary)", borderColor: "var(--border-hairline)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}
                 >
-                  {PAGE_SIZE_OPTIONS.map((n) => (
-                    <option key={n} value={n}>{n} per page</option>
+                  <span className="text-xs font-semibold uppercase tracking-wide truncate">{formatDayHeader(date)}</span>
+                  <span className="text-xs shrink-0" style={{ color: "var(--text-muted)" }}>{dayRows.length}</span>
+                </div>
+                <div className="divide-y divide-[var(--border-hairline)]">
+                  {dayRows.map((tx) => (
+                    <TxRow
+                      key={tx.id}
+                      tx={tx}
+                      acctName={acctName(tx.accountId)}
+                      acctInst={acctInst(tx.accountId)}
+                      showDate={false}
+                      onOpen={() => openTransaction(tx.id)}
+                      onPivotMerchant={pivotToMerchant}
+                    />
                   ))}
-                </select>
+                </div>
               </div>
-            </div>
-          )}
-        </>
+            ))}
+          </div>
+        )}
+      </DataCard>
+
+      {/* ── Continuation ────────────────────────────────────────────────────────
+          Infinite scroll via the sentinel; the button is the accessible, explicit
+          fallback (and what keyboard users reach). Keyset paging goes forward only —
+          there is no "page 7 of 154" to jump to, by design. */}
+      {!loading && hasMore && (
+        <div ref={sentinelRef} className="flex justify-center py-2">
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loadingMore}
+            className={`flex items-center gap-2 px-4 py-2.5 text-sm ${INPUT_BASE}`}
+            style={inputStyle}
+          >
+            {loadingMore ? <Loader2 size={14} className="animate-spin" /> : null}
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
+        </div>
       )}
     </div>
   );
@@ -831,8 +500,6 @@ export function SpaceTransactionsPanel({ transactions, accounts, scopeNote, mone
 // width — the row reflows, it does not become a spreadsheet). Merchant on top;
 // category · disposition · account beneath; amount right-aligned. Transfers get a
 // glyph, not a colour — moving your own money is structural, neither gain nor loss.
-// A hover accent rail signals the row opens a detail. `showDate` is dropped in the
-// day-grouped timeline (the day header carries the date) and kept in flat/pivot views.
 // Keeps role="button" + Enter/Space for keyboard access (the shared-opener contract).
 function TxRow({
   tx,
@@ -840,16 +507,20 @@ function TxRow({
   acctInst,
   showDate = true,
   onOpen,
+  onPivotMerchant,
 }: {
   tx:        Transaction;
   acctName:  string;
   acctInst:  string;
   showDate?: boolean;
   onOpen:    () => void;
+  /** TX-3.3 — the inspect→query pivot, enabled by the merchantId the DTO now carries. */
+  onPivotMerchant?: (merchantId: string, label: string) => void;
 }) {
   const isTransfer = tx.flowType === "TRANSFER";
   const isCredit   = tx.amount > 0 && !isTransfer;
   const title      = tx.merchantDisplayName ?? tx.merchant; // MI M6 — resolved name, raw fallback
+  const canPivot   = !!tx.merchantId && !!onPivotMerchant;
 
   return (
     <div
@@ -892,6 +563,18 @@ function TxRow({
           <span className="text-xs truncate" style={{ color: "var(--text-faint)" }}>
             {acctInst}{acctInst && acctName ? " · " : ""}{acctName}
           </span>
+          {/* The investigation loop: inspect a row, then re-ask the question scoped
+              to its merchant. Stops propagation so it never opens the drawer. */}
+          {canPivot && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onPivotMerchant!(tx.merchantId!, title); }}
+              className="text-xs underline underline-offset-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+              style={{ color: "var(--text-muted)" }}
+            >
+              More from this merchant
+            </button>
+          )}
         </div>
       </div>
 

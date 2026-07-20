@@ -26,13 +26,10 @@ import type { Account, TransactionCategory } from "@/types";
 import { FLOW_TYPE_LABEL } from "@/lib/transactions/flow-predicates";
 import {
   BANKING_CATEGORIES,
-  GROUP_BY_LABELS,
   INPUT_BASE,
   PENDING_LABELS,
   SOURCE_LABELS,
-  TRANSFER_DISPOSITION_LABEL,
   inputStyle,
-  type GroupBy,
   type PendingFilter,
   type SourceFilter,
 } from "./transactions-filter-constants";
@@ -52,25 +49,15 @@ interface Props {
   setFlowFilter: Dispatch<SetStateAction<string | null>>;
   accountFilter: string | null;
   setAccountFilter: Dispatch<SetStateAction<string | null>>;
-  dispositionFilter: string | null;
-  setDispositionFilter: Dispatch<SetStateAction<string | null>>;
   sourceFilter: SourceFilter;
   setSourceFilter: Dispatch<SetStateAction<SourceFilter>>;
-  merchantFilter: string | null;
-  setMerchantFilter: Dispatch<SetStateAction<string | null>>;
-  needsReviewOnly: boolean;
-  setNeedsReviewOnly: Dispatch<SetStateAction<boolean>>;
   pendingFilter: PendingFilter;
   setPendingFilter: Dispatch<SetStateAction<PendingFilter>>;
-  groupBy: GroupBy;
-  setGroupBy: Dispatch<SetStateAction<GroupBy>>;
 
-  /** Institution → accounts, only those with transactions (built by the panel). */
+  /** Institution → accounts for this Space (built by the panel from the account
+   *  list, NOT from the fetched rows — under server paging one page cannot
+   *  enumerate the Space's accounts). */
   institutionGroups: Map<string, Account[]>;
-  /** Distinct resolved-merchant names present in the fetched list. */
-  merchantOptions: string[];
-  /** Grouping is a table-only sub-mode; hidden while the calendar view is active. */
-  showGrouping: boolean;
 }
 
 /** One labeled filter group — uppercase label above its control. */
@@ -99,21 +86,11 @@ export function TransactionsFilterOverlay({
   setFlowFilter,
   accountFilter,
   setAccountFilter,
-  dispositionFilter,
-  setDispositionFilter,
   sourceFilter,
   setSourceFilter,
-  merchantFilter,
-  setMerchantFilter,
-  needsReviewOnly,
-  setNeedsReviewOnly,
   pendingFilter,
   setPendingFilter,
-  groupBy,
-  setGroupBy,
   institutionGroups,
-  merchantOptions,
-  showGrouping,
 }: Props) {
   return (
     <OverlaySurface
@@ -193,38 +170,6 @@ export function TransactionsFilterOverlay({
           </select>
         </Group>
 
-        {/* Merchants */}
-        <Group label="Merchants">
-          <select
-            value={merchantFilter ?? ""}
-            onChange={(e) => setMerchantFilter(e.target.value || null)}
-            className={SELECT_CLASS}
-            style={inputStyle}
-            aria-label="Filter by merchant"
-          >
-            <option value="">All merchants</option>
-            {merchantOptions.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-        </Group>
-
-        {/* Movements (transfer disposition) */}
-        <Group label="Movements">
-          <select
-            value={dispositionFilter ?? ""}
-            onChange={(e) => setDispositionFilter(e.target.value || null)}
-            className={SELECT_CLASS}
-            style={inputStyle}
-            aria-label="Filter by movement"
-          >
-            <option value="">All movements</option>
-            {Object.entries(TRANSFER_DISPOSITION_LABEL).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
-        </Group>
-
         {/* Sources (provenance) */}
         <Group label="Sources">
           <select
@@ -255,37 +200,6 @@ export function TransactionsFilterOverlay({
           </select>
         </Group>
 
-        {/* Review status — reuses the TE-2B needsClassification boolean as-is. */}
-        <Group label="Review status">
-          <button
-            type="button"
-            onClick={() => setNeedsReviewOnly((v) => !v)}
-            aria-pressed={needsReviewOnly}
-            className={`w-full px-3 py-2.5 text-left rounded-xl text-sm border transition-colors touch-manipulation ${INPUT_BASE}`}
-            style={needsReviewOnly
-              ? { background: "var(--surface-inset)", borderColor: "var(--accent-warning)", color: "var(--accent-warning)" }
-              : inputStyle}
-          >
-            {needsReviewOnly ? "Needs review only" : "All review statuses"}
-          </button>
-        </Group>
-
-        {/* Grouping — table-only sub-mode ("none" = the flat List view). */}
-        {showGrouping && (
-          <Group label="Grouping">
-            <select
-              value={groupBy}
-              onChange={(e) => setGroupBy(e.target.value as GroupBy)}
-              className={SELECT_CLASS}
-              style={inputStyle}
-              aria-label="Group by"
-            >
-              {(["none", "flow", "merchant", "account", "category"] as GroupBy[]).map((g) => (
-                <option key={g} value={g}>{g === "none" ? "No grouping" : GROUP_BY_LABELS[g]}</option>
-              ))}
-            </select>
-          </Group>
-        )}
       </div>
     </OverlaySurface>
   );

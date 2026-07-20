@@ -59,8 +59,13 @@ console.log("PROPAGATION — the sentinel is not discarded on the path");
 
   const host = code("components/dashboard/SpaceDashboard.tsx");
   check("host threads transactionsMeta into renderCtx", host.includes("transactionsMeta"));
-  check("host passes transactionsMeta to the Transactions tab",
-    /transactionsMeta=\{transactionsMeta\}/.test(host));
+  // TX-3.3 — the Transactions tab no longer receives transactionsMeta, and that is
+  // the POINT: the explorer is server-paged over the full population, so it is not
+  // capped and the "most recent N" caveat would be FALSE there. The flag still has
+  // to reach the surfaces that DO read the capped array (Cash Flow, Liquidity),
+  // which the renderer-ctx check below pins.
+  check("host still threads transactionsMeta to the analytical consumers (render ctx)",
+    /^\s*transactionsMeta,\s*$/m.test(host));
 
   const rend = code("components/space/workspaces/workspaceRenderers.tsx");
   check("renderer ctx carries transactionsMeta to Cash Flow + Liquidity",
@@ -73,8 +78,13 @@ console.log("SURFACES — the note is gated on truncation, not always-on");
   check("the note returns null when coverageMessage is null (no always-on warning)",
     note.includes("if (!message) return null"));
 
+  // TX-3.3 — the Transactions EXPLORER must NOT render a coverage caveat: it pages
+  // the full population via the keyset authority, so claiming "showing the most
+  // recent N" would be a false admission. Inverted deliberately, so re-adding a
+  // capped browse read to this surface without re-thinking the note fails here.
   const tx = code("components/space/workspaces/TransactionsWorkspace.tsx");
-  check("Transactions tab renders the browse note", /TransactionCoverageNote[\s\S]*variant="browse"/.test(tx));
+  check("Transactions explorer renders NO coverage note (it is not capped)",
+    !/TransactionCoverageNote/.test(tx));
   const cf = code("components/space/widgets/cashflow/CashFlowWorkspace.tsx");
   check("Cash Flow renders the history note", /TransactionCoverageNote[\s\S]*variant="history"/.test(cf));
   const lq = code("components/space/widgets/liquidity/LiquidityWorkspace.tsx");

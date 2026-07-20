@@ -217,9 +217,15 @@ check(
   "the category filter options must still exist (presentation, not population)",
 );
 const PANEL = ["components", "dashboard", "widgets", "SpaceTransactionsPanel.tsx"];
+// TX-3.3 — the user-selected category filter is still applied, but it MOVED: the
+// explorer no longer evaluates `tx.category !== catFilter` over a client array, it
+// sends `category` as a validated server query param. The invariant this guard
+// protects (the presentation-only category filter must survive the population
+// cutover) is unchanged; only its mechanism is. Assert the state AND its wiring
+// into the server query, so deleting the filter still fails here.
 check(
-  "SpaceTransactionsPanel still applies the user-selected category display filter",
-  /tx\.category\s*!==\s*catFilter/.test(codeOf(PANEL)),
+  "SpaceTransactionsPanel still applies the user-selected category filter (now a server param)",
+  /setCatFilter/.test(codeOf(PANEL)) && /category:\s*catFilter/.test(codeOf(PANEL)),
   "the presentation-only category filter must not be removed by the population cutover",
 );
 
