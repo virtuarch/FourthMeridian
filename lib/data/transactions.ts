@@ -165,6 +165,12 @@ export async function projectTransactionListRows(
     }),
     ...contextFields(r, resolvedCp),
     source: deriveSource(r),
+    // TX-3.1b (review M6) — the resolved Merchant id. The explorer's `merchantId`
+    // filter was previously unusable: it filtered on a real, indexed, persisted
+    // authority (Merchant) that no row ever exposed, so no consumer could supply a
+    // value. One additive field turns "more from this merchant" into a real pivot.
+    // Null for an unresolved row; the display NAME stays the presentation field.
+    merchantId: r.merchantId,
   }));
 }
 

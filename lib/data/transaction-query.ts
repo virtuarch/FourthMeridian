@@ -37,6 +37,7 @@ import {
   keysetWhere,
   buildFilterWhere,
   nextCursorFrom,
+  resolveCursor,
   type TransactionQuery,
   type TransactionCursor,
 } from "@/lib/data/transaction-query-core";
@@ -45,6 +46,7 @@ export type {
   TransactionQuery,
   TransactionCursor,
   TransactionSort,
+  TransactionSource,
 } from "@/lib/data/transaction-query-core";
 export { MAX_TRANSACTION_PAGE_SIZE } from "@/lib/data/transaction-query-core";
 
@@ -55,6 +57,13 @@ export interface TransactionQueryResult {
   nextCursor: TransactionCursor | null;
   /** Whether another page exists (a `limit + 1` sentinel was fetched). */
   hasMore: boolean;
+  /**
+   * M2 — true when the supplied cursor did not belong to the requested sort and was
+   * DROPPED (this page is therefore the first page of the new sort). Surfaced rather
+   * than hidden: a consumer appending pages must RESET its accumulated list when it
+   * sees this, or it would concatenate two different orderings.
+   */
+  cursorReset: boolean;
 }
 
 /**
@@ -91,6 +100,10 @@ export async function queryTransactions(args: {
   const query = args.query;
   const limit = clampLimit(query.limit);
 
+  // M2 — a cursor is only valid under the sort it was minted from. A mismatch drops
+  // the cursor and is REPORTED, never silently misapplied.
+  const { cursor, reset: cursorReset } = resolveCursor(query.sort, query.cursor);
+
   // Account isolation: constrain an explicit accountIds filter to the visible set.
   // The population join already prevents leakage; this makes the intersection
   // explicit and lets an all-invisible request short-circuit to an empty page.
@@ -98,14 +111,14 @@ export async function queryTransactions(args: {
   if (accountIds && accountIds.length > 0) {
     const visible = await resolveVisibleAccountIds(spaceId);
     accountIds = accountIds.filter((id) => visible.has(id));
-    if (accountIds.length === 0) return { rows: [], nextCursor: null, hasMore: false };
+    if (accountIds.length === 0) return { rows: [], nextCursor: null, hasMore: false, cursorReset };
   }
 
   const where: Prisma.TransactionWhereInput = {
     AND: [
       bankingTransactionWhere(spaceId),
       buildFilterWhere({ ...query, accountIds }),
-      keysetWhere(query.sort, query.cursor),
+      keysetWhere(query.sort, cursor ?? undefined),
     ].filter((w): w is Prisma.TransactionWhereInput => w != null),
   };
 
@@ -118,5 +131,5 @@ export async function queryTransactions(args: {
 
   const { pageRows, nextCursor, hasMore } = nextCursorFrom(fetched, query.sort, limit);
   const rows = await projectTransactionListRows(pageRows, spaceId);
-  return { rows, nextCursor, hasMore };
+  return { rows, nextCursor, hasMore, cursorReset };
 }

@@ -150,6 +150,11 @@ check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test
     "lib/transactions/serialize.ts",
     "lib/data/transactions.ts",
     "lib/ai/assemblers/transactions.ts",
+    // TX-3.1b — the explorer's pure query contract. Its `merchantId:` occurrences
+    // are a WHERE fragment (filter by resolved merchant) and a contract field, not
+    // a stamp: this module has no db handle at all and cannot write. Same category
+    // as the three above.
+    "lib/data/transaction-query-core.ts",
   ]);
   // The shared writer + the designated write sites that stamp MI onto a
   // Transaction (live paths + the M5 correction workflow). Any OTHER module

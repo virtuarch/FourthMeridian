@@ -201,6 +201,18 @@ export interface Transaction {
   // reads that omit it (e.g. getDebtTransactions, the account-modal route) leave
   // it undefined. Presentation only — no calculation reads it.
   source?: TransactionProvenanceSource | null;
+
+  /**
+   * TX-3.1b — the resolved `Merchant.id` behind `merchantDisplayName`, when the row
+   * resolved to one. Additive/optional (reads that omit it leave it undefined).
+   *
+   * This exists so the explorer's merchant PIVOT is real: `TransactionQuery.merchantId`
+   * filters on the persisted, indexed Merchant authority, and before this the DTO
+   * exposed only the display NAME — so no consumer could ever supply a value. Identity
+   * for querying; `merchantDisplayName` remains the presentation field. Never render
+   * this.
+   */
+  merchantId?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
