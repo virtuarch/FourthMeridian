@@ -26,12 +26,17 @@
  * gone from Plaid, which is the end state we want.
  *
  * ── Scope ───────────────────────────────────────────────────────────────────
- * Database cleanup mirrors disconnectAccounts() (CONN-4A), the primitive
- * DELETE /api/accounts/[id] uses: soft-delete the FinancialAccounts, close their
- * AccountConnections, revoke ACTIVE SpaceAccountLinks — one transaction, same
- * order. An earlier version closed only the connections, which left the accounts
- * and their Space links live, so the institution kept rendering in the app after
- * a "successful" removal.
+ * Database cleanup is CONNECTION-scoped, not account-scoped. It closes this
+ * item's AccountConnections, then soft-deletes and unlinks only the accounts left
+ * with NO remaining live connection.
+ *
+ * This differs from disconnectAccounts() (CONN-4A) on purpose. That primitive is
+ * account-scoped — correct for "delete these accounts", wrong for "remove this
+ * connection". Relinking an institution reuses the SAME FinancialAccount rows
+ * (the reconciler matches on provider identity), so updating by financialAccountId
+ * also closes a SIBLING item's connections to those accounts. On 2026-07-23 that
+ * turned "remove the dead Amex" into "sever the working one too": all three Amex
+ * items ended with zero live accounts.
  *
  * It does NOT regenerate today's SpaceSnapshot, which the primitive does: that
  * call sits behind the same "server-only" import wall described at STEP 2. Today's
@@ -181,26 +186,49 @@ async function main(): Promise<void> {
     if (faIds.length > 0) {
       const now = new Date();
       const links = await db.$transaction(async (tx) => {
-        await tx.financialAccount.updateMany({
-          where: { id: { in: faIds }, deletedAt: null },
+        // Close ONLY this item's connections — scoped by plaidItemDbId, never by
+        // financialAccountId. Relinking an institution reuses the SAME
+        // FinancialAccount rows (the reconciler matches on provider identity), so
+        // an account-scoped update also closes a SIBLING item's live connections
+        // to those accounts. That is how removing a dead Amex severed the working
+        // one on 2026-07-23, leaving every Amex item with zero live accounts.
+        await tx.accountConnection.updateMany({
+          where: { plaidItemDbId: item.id, deletedAt: null },
           data:  { deletedAt: now },
         });
-        await tx.accountConnection.updateMany({
-          where: { financialAccountId: { in: faIds }, deletedAt: null },
+
+        // An account is only orphaned if NOTHING else still connects it. Anything
+        // still reachable through another item belongs to that item and must be
+        // left completely alone.
+        const stillConnected = await tx.accountConnection.findMany({
+          where:  { financialAccountId: { in: faIds }, deletedAt: null },
+          select: { financialAccountId: true },
+        });
+        const keep = new Set(stillConnected.map((c) => c.financialAccountId));
+        const orphaned = faIds.filter((id) => !keep.has(id));
+        if (orphaned.length === 0) return { active: [], orphaned };
+
+        await tx.financialAccount.updateMany({
+          where: { id: { in: orphaned }, deletedAt: null },
           data:  { deletedAt: now },
         });
         const active = await tx.spaceAccountLink.findMany({
-          where:  { financialAccountId: { in: faIds }, status: ShareStatus.ACTIVE },
+          where:  { financialAccountId: { in: orphaned }, status: ShareStatus.ACTIVE },
           select: { spaceId: true },
         });
         await tx.spaceAccountLink.updateMany({
-          where: { financialAccountId: { in: faIds }, status: ShareStatus.ACTIVE },
+          where: { financialAccountId: { in: orphaned }, status: ShareStatus.ACTIVE },
           data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: item.userId },
         });
-        return active;
+        return { active, orphaned };
       });
-      const spaceCount = new Set(links.map((l) => l.spaceId)).size;
-      console.log(`    ✓ soft-deleted ${faIds.length} account(s), revoked links in ${spaceCount} space(s)`);
+      const spaceCount = new Set(links.active.map((l) => l.spaceId)).size;
+      const shared = faIds.length - links.orphaned.length;
+      console.log(
+        `    \u2713 closed this item's connections; soft-deleted ${links.orphaned.length} orphaned account(s)` +
+        (shared > 0 ? `, left ${shared} still connected elsewhere` : "") +
+        `, revoked links in ${spaceCount} space(s)`,
+      );
     }
     await setPlaidItemHealth(item.id, { status: PlaidItemStatus.REVOKED });
     console.log(`    ✓ marked REVOKED\n`);
