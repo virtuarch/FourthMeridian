@@ -52,6 +52,7 @@ import { authOptions }           from "@/lib/auth";
 import { db }                    from "@/lib/db";
 import { setCachedRevocation }   from "@/lib/session-cache";
 import { decideAdminApiAccess }  from "@/lib/admin-totp-enrollment";
+import { env }                    from "@/lib/env";
 import { UserRole,
          SpaceMemberRole }       from "@prisma/client";
 
@@ -217,8 +218,22 @@ export async function requireSystemAdmin(): Promise<
 > {
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
-  if (decideAdminApiAccess(user) !== "ALLOW") return [null, forbidden()];
+  if (adminApiAccess(user) !== "ALLOW") return [null, forbidden()];
   return [user, null];
+}
+
+/**
+ * V25-FINAL-2 — the single runtime call into the admin-access authority. Reads
+ * the DISABLE_SYSTEM_ADMIN kill switch HERE (env.isSystemAdminDisabled) and
+ * feeds it to the pure rule, so both guards enforce it identically and no route
+ * reads the env flag itself. The rule owns the decision; this owns the read.
+ */
+function adminApiAccess(user: SessionUser) {
+  return decideAdminApiAccess({
+    role:                user.role,
+    requireTotpSetup:    user.requireTotpSetup,
+    systemAdminDisabled: env.isSystemAdminDisabled,
+  });
 }
 
 // ── requireFreshSystemAdmin ───────────────────────────────────────────────────
@@ -234,7 +249,7 @@ export async function requireFreshSystemAdmin(): Promise<
 > {
   const user = await resolveUser();
   if (!user) return [null, unauthorized()];
-  if (decideAdminApiAccess(user) !== "ALLOW") return [null, forbidden()];
+  if (adminApiAccess(user) !== "ALLOW") return [null, forbidden()];
   if (!user.sessionToken) return [null, unauthorized()];
 
   const t0 = Date.now();

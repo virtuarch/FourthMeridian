@@ -76,6 +76,32 @@ check(
       decideAdminApiAccess({ role, requireTotpSetup }) !== "ALLOW")),
 );
 
+// ── V25-FINAL-2: DISABLE_SYSTEM_ADMIN kill switch binds the runtime decision ──
+console.log("\n3b. DISABLE_SYSTEM_ADMIN denies even an enrolled SYSTEM_ADMIN");
+check(
+  "kill switch ON ⇒ enrolled SYSTEM_ADMIN is FORBIDDEN_DISABLED (not ALLOW)",
+  decideAdminApiAccess({ role: UserRole.SYSTEM_ADMIN, requireTotpSetup: false, systemAdminDisabled: true }) === "FORBIDDEN_DISABLED",
+);
+check(
+  "kill switch ON ⇒ still ALLOW is impossible for a SYSTEM_ADMIN in any enrolment state",
+  [true, false].every((requireTotpSetup) =>
+    decideAdminApiAccess({ role: UserRole.SYSTEM_ADMIN, requireTotpSetup, systemAdminDisabled: true }) !== "ALLOW"),
+);
+check(
+  "kill switch is checked AFTER role — a non-admin is still FORBIDDEN_ROLE, not FORBIDDEN_DISABLED (leaks nothing)",
+  NON_ADMIN_ROLES.every((role) =>
+    decideAdminApiAccess({ role, requireTotpSetup: false, systemAdminDisabled: true }) === "FORBIDDEN_ROLE"),
+);
+check(
+  "kill switch OFF/absent ⇒ prior behavior byte-for-byte (enrolled admin ALLOW)",
+  decideAdminApiAccess({ role: UserRole.SYSTEM_ADMIN, requireTotpSetup: false, systemAdminDisabled: false }) === "ALLOW" &&
+  decideAdminApiAccess({ role: UserRole.SYSTEM_ADMIN, requireTotpSetup: false }) === "ALLOW",
+);
+check(
+  "kill switch precedes the enrolment gate (emergency lockout is not evadable via enrolment state)",
+  decideAdminApiAccess({ role: UserRole.SYSTEM_ADMIN, requireTotpSetup: true, systemAdminDisabled: true }) === "FORBIDDEN_DISABLED",
+);
+
 // ── The surface choice agrees with the API decision ──────────────────────────
 console.log("\n4. The rendered surface agrees with the API decision");
 check(

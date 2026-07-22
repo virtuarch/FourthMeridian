@@ -92,17 +92,30 @@ export function resolveAdminTotpPhase(input: AdminTotpPhaseInput): AdminTotpPhas
 
 /**
  * FORBIDDEN_ROLE     — not a SYSTEM_ADMIN.
+ * FORBIDDEN_DISABLED — a SYSTEM_ADMIN whose emergency access is switched OFF at
+ *                      runtime by DISABLE_SYSTEM_ADMIN (V25-FINAL-2). The user's
+ *                      persistent role is unchanged; only effective access is
+ *                      denied. This is what makes the kill switch bind
+ *                      already-issued sessions, not just new logins.
  * FORBIDDEN_PENDING  — a SYSTEM_ADMIN who has not completed forced enrolment.
- * ALLOW              — an enrolled SYSTEM_ADMIN.
+ * ALLOW              — an enrolled SYSTEM_ADMIN with emergency access enabled.
  *
- * Both FORBIDDEN_* map to an identical 403 on the wire; they are distinguished
+ * Every FORBIDDEN_* maps to an identical 403 on the wire; they are distinguished
  * here only so tests can prove WHICH rule rejected, never to tell a caller.
  */
-export type AdminApiAccess = "ALLOW" | "FORBIDDEN_ROLE" | "FORBIDDEN_PENDING";
+export type AdminApiAccess = "ALLOW" | "FORBIDDEN_ROLE" | "FORBIDDEN_DISABLED" | "FORBIDDEN_PENDING";
 
 export interface AdminApiAccessInput {
   role:             UserRole;
   requireTotpSetup: boolean;
+  /**
+   * V25-FINAL-2 — the DISABLE_SYSTEM_ADMIN kill switch, read at request time
+   * (env.isSystemAdminDisabled) and INJECTED here so the rule stays pure. When
+   * true, no SYSTEM_ADMIN reaches the admin surface regardless of a valid,
+   * already-issued session or a fresh JWT. Optional so existing callers/tests
+   * default to "enabled" (false) with no behavior change.
+   */
+  systemAdminDisabled?: boolean;
 }
 
 /**
@@ -113,9 +126,14 @@ export interface AdminApiAccessInput {
  * There is NO opt-out parameter, by design. The enrolment endpoints
  * (/api/user/totp/*) are ordinary-user surfaces guarded by requireUser({
  * allowTotpSetupPending: true }) — no admin route may ever take that path.
+ *
+ * Order is deliberate: role FIRST (a non-admin learns nothing about admin
+ * state), then the runtime kill switch (emergency lockout precedes and cannot
+ * be evaded by enrolment state), then the forced-enrolment gate.
  */
 export function decideAdminApiAccess(input: AdminApiAccessInput): AdminApiAccess {
   if (input.role !== UserRole.SYSTEM_ADMIN) return "FORBIDDEN_ROLE";
+  if (input.systemAdminDisabled)            return "FORBIDDEN_DISABLED";
   if (input.requireTotpSetup)               return "FORBIDDEN_PENDING";
   return "ALLOW";
 }

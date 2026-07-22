@@ -61,6 +61,23 @@ The employee/operator tier is expressed **today** as a normal `USER` account + o
 
 ---
 
+## The `DISABLE_SYSTEM_ADMIN` kill switch — persistent role vs. effective emergency access (V25-FINAL-2)
+
+**Invariant: `DISABLE_SYSTEM_ADMIN` withdraws effective emergency access at runtime without touching the persistent identity — and it binds already-issued sessions.**
+
+Two distinct things must not be conflated on the Emergency axis:
+
+- **`User.role === SYSTEM_ADMIN` is persistent identity/role state.** It is who the account *is*, stored in the database and carried in the JWT.
+- **`DISABLE_SYSTEM_ADMIN` (env, `env.isSystemAdminDisabled`) is a runtime control over whether that role has *effective* emergency access right now.** It is a piece of environment/runtime configuration, not identity.
+
+Enabling the switch does **not** mutate the user's stored role, demote the account, or rewrite the persistent identity. Instead, the **canonical emergency-access authorization seam evaluates the kill switch on every protected request**: the pure rule `decideAdminApiAccess()` (`lib/admin-totp-enrollment.ts`) takes a `systemAdminDisabled` input and returns `FORBIDDEN_DISABLED`; both `requireSystemAdmin()` and `requireFreshSystemAdmin()` (`lib/session.ts`) feed it `env.isSystemAdminDisabled` through the single `adminApiAccess()` seam, and the `/admin/*` page shell (`app/admin/layout.tsx`) redirects on the same getter. Because the flag is read **at request time — not at login** — an **already-issued `SYSTEM_ADMIN` session loses effective emergency access the moment the switch is enabled**; refreshing the JWT does not restore it (the role in the token is unchanged and irrelevant to the runtime decision). Login is also refused while the switch is on (`lib/auth.ts` `authorize()`), so both new and existing sessions are covered.
+
+The decision order is deliberate — role → kill switch → forced-enrolment — so a non-admin still resolves to `FORBIDDEN_ROLE` (learns nothing), and the emergency lockout cannot be evaded through enrolment state. **Disabling the switch restores eligibility subject to the normal `SYSTEM_ADMIN` requirements** — mandatory MFA/TOTP (above) and the `requireFreshSystemAdmin` live-revocation/freshness rules — none of which the switch weakens.
+
+**Axis isolation holds:** `DISABLE_SYSTEM_ADMIN` acts only on the Emergency axis. It does **not** affect `PlatformGrant`/operator authorization (the Operator axis) or ordinary customer access (the Customer axis); those are separate policy modules and are untouched by the kill switch.
+
+---
+
 ## Operator audit foundation (PO-1)
 
 **Decision: `AuditLog` IS the audit foundation — extended, not duplicated.** No second table or parallel event store was introduced (that would duplicate the platform's strongest primitive: append-only, `SET NULL`-on-delete, indexed on `(action, createdAt)`, `performedByAdminId` for on-behalf actions). The required operator-audit fields map onto the existing model:

@@ -85,6 +85,15 @@ const _e = {
   DISABLE_SYSTEM_ADMIN: process.env.DISABLE_SYSTEM_ADMIN,
   NODE_ENV:             process.env.NODE_ENV,
 
+  // V25-FINAL-2 (Area A) — error-monitoring (Sentry) DSN. PUBLISHABLE, not a
+  // secret: it identifies the ingest project, not an auth credential, hence the
+  // NEXT_PUBLIC_ prefix (inlined into client bundles so instrumentation-client.ts
+  // can read it). Mirrored here for server-side "is monitoring configured?"
+  // checks, getEnvReport, and the PRODUCTION gate (PROD_REQUIRED_KEYS) — the
+  // instrumentation init points read the shared client-safe config directly.
+  // Absent ⇒ SDK disabled (dev/test/preview stay silent, no network calls).
+  NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
+
   // MI2 S2 — the designated Merchant Operations Space id. Optional: absent means
   // the merge-review surface fails CLOSED (no one is a member of "no space"), so
   // access is a deliberate SYSTEM_ADMIN act of creating the Space, setting this,
@@ -155,6 +164,11 @@ const PROD_REQUIRED_KEYS: (keyof typeof _e)[] = [
   "NEXT_PUBLIC_APP_URL",
   "RESEND_API_KEY",
   "CRON_SECRET",
+  // V25-FINAL-2 (Area A) — production error monitoring is a pre-beta requirement
+  // (docs/operations/production-readiness.md). Without a DSN a prod deploy would
+  // run BLIND to serious failures, so boot fails fast rather than start silently
+  // unmonitored. Dev/test/preview do not require it (SDK simply stays disabled).
+  "NEXT_PUBLIC_SENTRY_DSN",
 ];
 
 // ── Structured report (PO1.2 — additive; names only, never values) ─────────────
@@ -257,6 +271,26 @@ export function validateEnv(): EnvReport {
       `[env] Missing required environment variable${missing.length > 1 ? "s" : ""}:\n` +
       missing.map((k) => `  • ${k}`).join("\n") +
       `\n\nSee .env.example for setup instructions.`
+    );
+  }
+
+  // V25-FINAL-2 — a production deployment must not silently run against Plaid
+  // SANDBOX. Plaid is an OPTIONAL integration (a prod deploy with NO credentials
+  // runs with Plaid disabled — env.isPlaidEnabled false, routes return 503), and
+  // that supported mode is untouched. But when Plaid IS configured in production
+  // (both credentials present ⇒ real ingestion is expected), PLAID_ENV must be an
+  // explicit "production": otherwise the app talks to sandbox with real users
+  // (PLAID_ENV unset defaults to "sandbox" at the accessor), or hits an unguarded
+  // 500 on first call. Fail fast at boot instead. Dev/preview/test never reach
+  // this branch (isProd gate) and keep using sandbox freely.
+  if (isProd && _e.PLAID_CLIENT_ID && _e.PLAID_SECRET && _e.PLAID_ENV !== "production") {
+    const shown = _e.PLAID_ENV ? `"${_e.PLAID_ENV}"` : "unset (defaults to sandbox)";
+    throw new Error(
+      `[env] Plaid is configured in production (PLAID_CLIENT_ID + PLAID_SECRET present) but ` +
+      `PLAID_ENV is ${shown}. A production deployment must set PLAID_ENV="production" — ` +
+      `refusing to start against Plaid sandbox with real users.\n\n` +
+      `Fix: set PLAID_ENV="production", or unset PLAID_CLIENT_ID/PLAID_SECRET to run with ` +
+      `Plaid disabled.`
     );
   }
 
@@ -397,6 +431,9 @@ export const env = {
   /** CAPTCHA verification is active when the Turnstile secret is set (see lib/captcha.ts).
    *  When false, verifyCaptchaToken skips and returns true (dev/test/unconfigured). */
   get isCaptchaEnabled()  { return !!_e.TURNSTILE_SECRET_KEY; },
+  /** V25-FINAL-2 — error monitoring (Sentry) is active when the DSN is set. Production
+   *  requires it (PROD_REQUIRED_KEYS); the SDK stays disabled without it elsewhere. */
+  get isErrorMonitoringConfigured() { return !!_e.NEXT_PUBLIC_SENTRY_DSN; },
 
   // ── Runtime ───────────────────────────────────────────────────────────────
   get isDev()    { return _e.NODE_ENV === "development"; },

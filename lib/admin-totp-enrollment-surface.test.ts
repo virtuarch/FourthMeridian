@@ -121,14 +121,26 @@ for (const guard of ["requireSystemAdmin", "requireFreshSystemAdmin"]) {
   const start = session.indexOf(`export async function ${guard}(`);
   const body  = session.slice(start, session.indexOf("\n}", start));
   check(
-    `${guard} decides via decideAdminApiAccess`,
-    start !== -1 && body.includes('decideAdminApiAccess(user) !== "ALLOW"'),
+    `${guard} decides via the admin-access authority`,
+    // V25-FINAL-2 — both guards route through adminApiAccess(user), the single
+    // seam that feeds the DISABLE_SYSTEM_ADMIN kill switch into decideAdminApiAccess.
+    start !== -1 && body.includes('adminApiAccess(user) !== "ALLOW"'),
   );
   check(
     `${guard} takes no options parameter (cannot be opted out of the gate)`,
     start !== -1 && session.slice(start).startsWith(`export async function ${guard}(): Promise<`),
   );
 }
+// V25-FINAL-2 — the kill switch is read ONCE, at the shared seam, and injected
+// into the pure rule — never scattered as raw process.env reads across guards.
+check(
+  "adminApiAccess feeds env.isSystemAdminDisabled into decideAdminApiAccess",
+  /function adminApiAccess[\s\S]*decideAdminApiAccess\(\{[\s\S]*systemAdminDisabled:\s*env\.isSystemAdminDisabled/.test(session),
+);
+check(
+  "the guards do not read process.env.DISABLE_SYSTEM_ADMIN directly (one authority)",
+  !session.includes("DISABLE_SYSTEM_ADMIN"),
+);
 check(
   "the shared enrolment gate still exists for the non-admin guards",
   session.includes("function totpSetupPending("),

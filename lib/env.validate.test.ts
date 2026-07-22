@@ -24,10 +24,12 @@ const CORE = {
   ENCRYPTION_KEY:  "ab".repeat(32),
 };
 const PROD_EXTRA = {
-  NEXTAUTH_URL:        "https://example.com",
-  NEXT_PUBLIC_APP_URL: "https://example.com",
-  RESEND_API_KEY:      "re_test",
-  CRON_SECRET:         "cron-test",
+  NEXTAUTH_URL:           "https://example.com",
+  NEXT_PUBLIC_APP_URL:    "https://example.com",
+  RESEND_API_KEY:         "re_test",
+  CRON_SECRET:            "cron-test",
+  // V25-FINAL-2 (Area A) — production error monitoring is now a required key.
+  NEXT_PUBLIC_SENTRY_DSN: "https://examplePublicKey@o0.ingest.sentry.io/0",
 };
 
 // ── Child mode: import lib/env under the env this process was given ──────────
@@ -92,6 +94,37 @@ if (process.argv[2] === "child") {
     out4.includes("rate limiting is DISABLED"),
     out4.slice(0, 200),
   );
+
+  // ── V25-FINAL-2 — production Plaid configuration gate ──────────────────────
+  const PLAID = { PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec" };
+
+  console.log("5. Production + Plaid creds + PLAID_ENV=production → passes");
+  const out5 = run({ ...CORE, ...PROD_EXTRA, ...PLAID, PLAID_ENV: "production", NODE_ENV: "production" });
+  check("VALIDATE_OK", out5.includes("VALIDATE_OK"), out5.slice(0, 300));
+
+  console.log("6. Production + Plaid creds + PLAID_ENV=sandbox → THROWS (no silent sandbox in prod)");
+  const out6 = run({ ...CORE, ...PROD_EXTRA, ...PLAID, PLAID_ENV: "sandbox", NODE_ENV: "production" });
+  check("throws", out6.includes("VALIDATE_THREW"), out6.slice(0, 300));
+  check("names PLAID_ENV / sandbox", out6.includes("PLAID_ENV") && /sandbox/i.test(out6));
+
+  console.log("7. Production + Plaid creds + PLAID_ENV UNSET → THROWS (default-sandbox hazard)");
+  const out7 = run({ ...CORE, ...PROD_EXTRA, ...PLAID, NODE_ENV: "production" });
+  check("throws", out7.includes("VALIDATE_THREW"), out7.slice(0, 300));
+  check("explains it defaults to sandbox", /defaults to sandbox/i.test(out7));
+
+  console.log("8. Production with Plaid DISABLED (no creds) → passes (supported Plaid-off prod mode)");
+  const out8 = run({ ...CORE, ...PROD_EXTRA, NODE_ENV: "production" });
+  check("VALIDATE_OK", out8.includes("VALIDATE_OK"), out8.slice(0, 300));
+
+  console.log("9. Dev/test + Plaid sandbox → passes (never over-constrain non-prod)");
+  const out9 = run({ ...CORE, ...PLAID, PLAID_ENV: "sandbox", NODE_ENV: "test" });
+  check("VALIDATE_OK", out9.includes("VALIDATE_OK"), out9.slice(0, 300));
+
+  console.log("10. Production + one Plaid cred only (not fully enabled) → not gated on PLAID_ENV");
+  // Only CLIENT_ID present ⇒ isPlaidEnabled is false ⇒ ingestion not expected ⇒ the
+  // sandbox gate must not fire (it keys on BOTH creds, matching env.isPlaidEnabled).
+  const out10 = run({ ...CORE, ...PROD_EXTRA, PLAID_CLIENT_ID: "cid", PLAID_ENV: "sandbox", NODE_ENV: "production" });
+  check("VALIDATE_OK", out10.includes("VALIDATE_OK"), out10.slice(0, 300));
 
   console.log(failures === 0 ? "\nAll env-validation tests passed." : `\n${failures} failure(s).`);
   process.exit(failures === 0 ? 0 : 1);
