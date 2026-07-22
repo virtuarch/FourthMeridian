@@ -177,7 +177,16 @@ export async function performPlaidTokenExchange(
   // CH-2 — flip to healthy through the chokepoint. Records a transition row only
   // when this relink actually recovered a NEEDS_REAUTH/ERROR item (no row for a
   // brand-new item, which is already ACTIVE from the create above).
-  await setPlaidItemHealth(plaidItem.id, { status: PlaidItemStatus.ACTIVE, errorCode: null });
+  // allowReactivation: a successful token exchange is the ONE event permitted to
+  // bring an item out of REVOKED (relinking a connection the user removed). Every
+  // other caller only classifies a sync outcome and must never resurrect one.
+  await setPlaidItemHealth(
+    plaidItem.id,
+    { status: PlaidItemStatus.ACTIVE, errorCode: null },
+    undefined,
+    undefined,
+    { allowReactivation: true },
+  );
 
   // OPS-3 S5 Wave 3 — a relink through Link update mode resolves an open
   // SYNC_FAILED condition immediately (don't wait for the next sync): retire

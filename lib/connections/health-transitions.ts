@@ -65,12 +65,39 @@ export async function setPlaidItemHealth(
    * than reaching past the seam to the real database.
    */
   client: Pick<typeof db, "plaidItem" | "auditLog"> = db,
+  opts: {
+    /**
+     * Permit a transition OUT of REVOKED. Only the token exchange sets this: a
+     * successful re-link is the one event that legitimately revives a revoked
+     * connection. Every other caller classifies the outcome of a sync, and must
+     * not be able to resurrect one.
+     */
+    allowReactivation?: boolean;
+  } = {},
 ): Promise<void> {
   const prior = await client.plaidItem.findUnique({
     where:  { id: itemId },
     select: { userId: true, status: true, errorCode: true },
   });
   if (!prior) return; // item vanished — nothing to update or record.
+
+  // REVOKED is TERMINAL. Removing a connection revokes it at Plaid and here, but
+  // a sync already in flight finishes afterwards, fails (ITEM_NOT_FOUND — the
+  // Item really is gone), and classifies that failure as ERROR. Writing it would
+  // flip the row out of REVOKED and the removed connection reappears in the UI as
+  // a broken card — observed 2026-07-22: a removed Amex came back alongside its
+  // replacement, giving the user two cards for one institution, the ghost one
+  // showing a sync error for an Item that no longer exists.
+  //
+  // A late failure is not new information about a connection the user already
+  // removed, so it is dropped rather than recorded.
+  if (prior.status === PlaidItemStatus.REVOKED && health.status !== PlaidItemStatus.REVOKED && !opts.allowReactivation) {
+    console.log(
+      `[health-transitions] ignoring ${health.status} for REVOKED item ${itemId}` +
+        `${health.errorCode ? ` (${health.errorCode})` : ""} — revocation is terminal.`,
+    );
+    return;
+  }
 
   const data: Prisma.PlaidItemUpdateInput = { ...(extra ?? {}), status: health.status };
   if (health.errorCode !== undefined) data.errorCode = health.errorCode;
