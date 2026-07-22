@@ -194,15 +194,32 @@ async function main(): Promise<void> {
     const vercel = readFileSync("vercel.json", "utf8");
     const cronPaths = [...vercel.matchAll(/"path":\s*"([^"]+)"/g)].map((m) => m[1]);
     const schedules = [...vercel.matchAll(/"schedule":\s*"([^"]+)"/g)].map((m) => m[1]);
-    check("vercel.json has exactly ONE cron — the dispatcher",
-      cronPaths.length === 1 && cronPaths[0] === "/api/jobs/dispatch");
-    check("the single cron is the paid-tier multi-slot schedule (off Hobby)",
-      schedules.length === 1 && schedules[0] === ACTIVE_SCHEDULE);
+    // The invariant is NO DUPLICATE PATHS (the deploy risk this guard names),
+    // and that ALL REGISTRY-DRIVEN work goes through the one dispatcher entry —
+    // not that vercel.json may only ever hold a single cron.
+    //
+    // Relaxed 2026-07-23 for /api/jobs/resume-stale-imports. That job cannot live
+    // in the registry: dueJobs() matches a whole half-hour slot, so a dispatcher
+    // firing often enough to be a user-facing backstop (every 5 min) would run
+    // every daily job six times per slot. And a backstop measured in hours is not
+    // a backstop for an import a user is watching — which is exactly what failed
+    // that day, a Schwab import stalled behind a closed browser tab with nothing
+    // server-side to finish it.
+    //
+    // So: exactly one DISPATCHER entry, no duplicate paths, and any additional
+    // cron must be a distinct non-registry path.
+    check("no duplicate cron paths in vercel.json",
+      new Set(cronPaths).size === cronPaths.length);
+    check("exactly one dispatcher cron entry",
+      cronPaths.filter((p) => p === "/api/jobs/dispatch").length === 1);
+    const dispatcherIdx = cronPaths.indexOf("/api/jobs/dispatch");
+    check("the dispatcher cron is the paid-tier multi-slot schedule (off Hobby)",
+      schedules[dispatcherIdx] === ACTIVE_SCHEDULE);
     check("the once/day Hobby schedule is retired from the active config",
       !vercel.includes(HOBBY_SCHEDULE));
     // Every hour any registered entry fires at must appear in the cron's hour
     // field, or that job would silently never run on cron.
-    const cronHours = new Set((schedules[0].split(/\s+/)[1] ?? "").split(",").map(Number));
+    const cronHours = new Set((schedules[dispatcherIdx].split(/\s+/)[1] ?? "").split(",").map(Number));
     const registeredHours = new Set(
       SCHEDULED_JOBS.flatMap((j) => (Array.isArray(j.hourUTC) ? j.hourUTC : [j.hourUTC])),
     );

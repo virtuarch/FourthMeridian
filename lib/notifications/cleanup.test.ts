@@ -190,11 +190,16 @@ async function run(): Promise<void> {
     // still consumes NO cron slot of its own (the F7 intent, unchanged). On the
     // current Vercel Hobby (free) tier that single entry runs once per day
     // ("0 6 * * *"); the count-of-one invariant below is unchanged either way.
+    // The F7 intent is that CLEANUP consumes no cron slot of its own — it runs
+    // as a dispatcher registration. That is asserted directly (no "notification"
+    // path in vercel.json), rather than by counting total crons: since
+    // 2026-07-23 an unrelated non-registry backstop
+    // (/api/jobs/resume-stale-imports) also has its own entry, and a raw count
+    // would fail on a change that has nothing to do with cleanup.
     const vercel = readFileSync("vercel.json", "utf8");
-    const crons = (vercel.match(/"path"/g) ?? []).length;
     check(
-      "no cron slot consumed by cleanup (single dispatcher entry)",
-      crons === 1 && vercel.includes("/api/jobs/dispatch") && !vercel.includes("notification"),
+      "no cron slot consumed by cleanup (it is a dispatcher registration)",
+      vercel.includes("/api/jobs/dispatch") && !vercel.includes("notification"),
     );
 
     // Since OPS-4 S3, cleanup is its OWN dispatcher registration (the move
