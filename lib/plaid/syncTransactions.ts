@@ -680,6 +680,27 @@ export async function syncTransactionsForItem(
     });
   }
 
+  // ── When is a first-run import actually DONE? ─────────────────────────────
+  // Not on the first completed loop. Plaid prepares history asynchronously and
+  // keeps delivering for minutes afterwards, so the first loop routinely returns
+  // having seen only part of it (or nothing at all). Clearing the marker there
+  // flipped the connection card to "ready" while data was still arriving — it
+  // settled, then quietly grew.
+  //
+  // So a first-run import holds `syncIncompleteAt` until a SECOND loop has
+  // completed, even if that one finds nothing: "nothing new twice" is evidence,
+  // "nothing new once" is not. Holding the existing marker is deliberate — it
+  // needs no new state machine, because the resume machinery (client poll →
+  // /api/plaid/resume-sync, and the webhook pipeline) already drives exactly one
+  // more pass off it, and that pass clears it.
+  //
+  // Gated on the item ALREADY being mid-import: a routine sync of a settled
+  // connection (syncIncompleteAt === null) never re-arms it, so this can only
+  // ever extend a first run, never resurrect a finished one.
+  const nextCompletedSyncCount = (item.completedSyncCount ?? 0) + 1;
+  const stillFirstRun = item.syncIncompleteAt !== null && nextCompletedSyncCount < 2;
+  const settledSyncIncompleteAt = stillFirstRun ? item.syncIncompleteAt : null;
+
   // CH-2 — the success/recovery health flip (ACTIVE, errorCode cleared) goes
   // through the chokepoint: it writes the same live columns and appends a
   // durable transition row ONLY when the item was actually broken before (a
@@ -690,7 +711,8 @@ export async function syncTransactionsForItem(
   await setPlaidItemHealth(
     plaidItemDbId,
     { status: PlaidItemStatus.ACTIVE, errorCode: null },
-    { cursor: cursor ?? null, lastSyncedAt: new Date(), syncIncompleteAt: null,
+    { cursor: cursor ?? null, lastSyncedAt: new Date(),
+      syncIncompleteAt: settledSyncIncompleteAt, completedSyncCount: nextCompletedSyncCount,
       syncImportedCount: importedSoFar() },
     database,
   );

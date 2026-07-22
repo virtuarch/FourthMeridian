@@ -687,6 +687,13 @@ model PlaidItem {
   // than restarting at zero. Reset to 0 only when a fresh import begins
   // (cursor == null). Meaningful only while state = "importing".
   syncImportedCount   Int                      @default(0)
+  // Number of sync loops that have run to completion for this item. A first-run
+  // import is not considered settled until TWO have completed: Plaid keeps
+  // delivering history for minutes after the first loop returns, so clearing
+  // "importing" on the first completion declared victory while data was still
+  // arriving. Existing rows were backfilled to 2 by the migration so no
+  // already-settled connection flips back to importing.
+  completedSyncCount  Int                      @default(0)
   // Webhook concurrency guard — set while a sync/deferred pipeline is running
   // for this item, cleared when it finishes. A conditional claim on this column
   // serializes syncs so a duplicated/racing SYNC_UPDATES_AVAILABLE webhook can
