@@ -36,13 +36,20 @@ import {
 import type { ConnectionsSyncView } from "@/lib/connections/space-data";
 
 const POLL_INTERVAL_MS = 4000;
-const MAX_POLLS = 45; // ~3 min safety cap, then stop polling.
+// Must outlast ONE server-side sync budget (maxDuration = 300s) plus margin,
+// or the poller gives up in the middle of a pass that is still running and the
+// card freezes on a stale count. 120 × 4s = ~8 min.
+const MAX_POLLS = 120;
 
 // D2.x resume tuning. Grace is comfortably past the 60s connect/background
 // budget so a healthy sync finishes on its own before we ever intervene; the
 // server's own min-age gate (RESUME_MIN_AGE_MS) is the real anti-collision
 // guard. After the grace, resume once per interval, capped, then defer to cron.
-const RESUME_GRACE_MS = 90_000;
+// Mirrors RESUME_MIN_AGE_MS in app/api/plaid/resume-sync/route.ts. The server
+// rejects a resume younger than that (it would race the in-flight connect
+// sync), so firing earlier only burns rate-limit budget on calls that cannot
+// succeed. Keep the two in lockstep.
+const RESUME_GRACE_MS = 315_000;
 const RESUME_INTERVAL_MS = 30_000;
 const MAX_RESUME_ATTEMPTS = 5;
 

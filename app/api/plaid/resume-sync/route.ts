@@ -33,14 +33,20 @@ import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { limitByUser } from "@/lib/rate-limit";
 
 // Resuming a large remaining history can take a while — same budget as the
-// connect flow and the daily cron.
-export const maxDuration = 60;
+// connect flow and the daily cron. Raised 60→300 (Vercel Pro ceiling) after
+// 2026-07-22, when both this route and the webhook died on "Task timed out
+// after 60 seconds" mid-import: each attempt burned a full budget, advanced a
+// few pages, and left the customer staring at a stalled "importing" card.
+// COUPLED: sync-lock LOCK_TTL_MS and RESUME_MIN_AGE_MS below must both stay
+// ABOVE this budget, or a still-running sync is judged stale and raced.
+export const maxDuration = 300;
 
 // Minimum age of the syncIncompleteAt marker before a resume is allowed. Set
-// slightly above the 60s connect/background budget so a resume can never run
-// concurrently with the in-flight post-connect sync, and so repeated attempts
-// on a genuinely stalled item stay ~one budget apart.
-export const RESUME_MIN_AGE_MS = 75_000;
+// slightly above the connect/background budget (maxDuration above) so a resume
+// can never run concurrently with the in-flight post-connect sync, and so
+// repeated attempts on a genuinely stalled item stay ~one budget apart.
+// Tracks maxDuration: 60s budget → 75s, 300s budget → 315s.
+export const RESUME_MIN_AGE_MS = 315_000;
 
 interface ResumeBody {
   plaidItemId?: string;

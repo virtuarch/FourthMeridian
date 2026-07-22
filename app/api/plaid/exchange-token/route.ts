@@ -51,7 +51,7 @@ import { limitByUser } from "@/lib/rate-limit";
 // fast-slice 30 to 60 (parity with the sync-banks cron) to give the background
 // syncTransactionsForItem room to complete. Anything exceeding this budget is
 // finished by the standing daily cron — no manual Refresh required.
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {

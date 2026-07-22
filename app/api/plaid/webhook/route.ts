@@ -28,8 +28,9 @@ import { verifyPlaidWebhook } from "@/lib/plaid/webhook-verify";
 import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
 
 // The deferred pipeline runs here (post-response, same invocation), so give it
-// the same budget as the connect flow / daily cron.
-export const maxDuration = 60;
+// the same budget as the connect flow / daily cron. Raised 60→300 with them
+// (see resume-sync/route.ts) — this route was timing out mid-import too.
+export const maxDuration = 300;
 
 // TRANSACTIONS webhook codes that mean "there is transaction data to pull".
 // SYNC_UPDATES_AVAILABLE is the one that fires for /transactions/sync (which

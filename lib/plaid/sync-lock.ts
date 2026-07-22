@@ -40,7 +40,11 @@ import type { Prisma } from "@prisma/client";
  * budget every guarded route/job runs under, so it never pre-empts a genuinely
  * live sync.
  */
-export const LOCK_TTL_MS = 180_000; // 3 minutes
+// MUST exceed the longest sync budget (maxDuration = 300s on exchange-token,
+// webhook and resume-sync). A TTL below that budget would declare a sync that
+// is still legitimately running "stale", letting a second pipeline claim the
+// lock and race the cursor — the one thing this lock exists to prevent.
+export const LOCK_TTL_MS = 360_000; // 6 minutes — one budget (300s) plus headroom
 
 export interface PlaidItemSyncLockClient {
   plaidItem: {
