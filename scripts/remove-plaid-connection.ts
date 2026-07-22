@@ -25,16 +25,32 @@
  * ITEM_NOT_FOUND / INVALID_ACCESS_TOKEN count as success: the Item is already
  * gone from Plaid, which is the end state we want.
  *
- * ── What this does NOT do ───────────────────────────────────────────────────
- * It does not delete FinancialAccounts, transactions, or history. It soft-deletes
- * the AccountConnection rows and marks the PlaidItem REVOKED — enough to stop
- * syncing and to re-link the institution cleanly. To erase the underlying data,
- * use the app's consent-gated "Delete data" flow, which is the authority for
- * that and records the consent the flow requires.
+ * ── Scope ───────────────────────────────────────────────────────────────────
+ * Database cleanup mirrors disconnectAccounts() (CONN-4A), the primitive
+ * DELETE /api/accounts/[id] uses: soft-delete the FinancialAccounts, close their
+ * AccountConnections, revoke ACTIVE SpaceAccountLinks — one transaction, same
+ * order. An earlier version closed only the connections, which left the accounts
+ * and their Space links live, so the institution kept rendering in the app after
+ * a "successful" removal.
+ *
+ * It does NOT regenerate today's SpaceSnapshot, which the primitive does: that
+ * call sits behind the same "server-only" import wall described at STEP 2. Today's
+ * row may therefore still include the removed accounts' value until the next sync
+ * or the daily cron rewrites it. The accounts themselves disappear from the app
+ * immediately, because that reads through the soft-delete.
+ *
+ * Soft-delete, not erasure: transactions and history rows remain. That is enough
+ * to stop syncing and re-link the institution cleanly. To erase the underlying
+ * data, use the app's consent-gated "Delete data" flow, which is the authority
+ * for that and records the consent it requires.
+ *
+ * Idempotent: account ids are gathered from ALL AccountConnection rows for the
+ * item, including already-soft-deleted ones, and REVOKED items still match — so
+ * re-running finishes a partially-completed removal.
  */
 
 import { db } from "@/lib/db";
-import { PlaidItemStatus } from "@prisma/client";
+import { PlaidItemStatus, ShareStatus } from "@prisma/client";
 import { plaidClient, PLAID_ENV } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
@@ -77,10 +93,9 @@ async function main(): Promise<void> {
   const items = await db.plaidItem.findMany({
     where: itemRef
       ? { OR: [{ id: itemRef }, { externalItemId: itemRef }] }
-      : { institutionName: { contains: institution!, mode: "insensitive" },
-          status: { not: PlaidItemStatus.REVOKED } },
+      : { institutionName: { contains: institution!, mode: "insensitive" } },
     select: {
-      id: true, externalItemId: true, institutionName: true, status: true,
+      id: true, userId: true, externalItemId: true, institutionName: true, status: true,
       encryptedToken: true, createdAt: true,
     },
   });
@@ -106,7 +121,8 @@ async function main(): Promise<void> {
     console.log(`    live accounts  ${conns}`);
 
     if (!apply) {
-      console.log(`    → would revoke at Plaid, soft-delete ${conns} connection(s), mark REVOKED\n`);
+      console.log(`    → would revoke at Plaid, soft-delete its accounts, revoke their`);
+      console.log(`      Space links, and mark the item REVOKED\n`);
       continue;
     }
 
@@ -139,13 +155,55 @@ async function main(): Promise<void> {
       }
     }
 
-    // STEP 2 — only now close it out on our side.
-    const softDeleted = await db.accountConnection.updateMany({
-      where: { plaidItemDbId: item.id, deletedAt: null },
-      data:  { deletedAt: new Date() },
+    // STEP 2 — mirror disconnectAccounts() (CONN-4A), the primitive
+    // DELETE /api/accounts/[id] uses: soft-delete the FinancialAccounts, close
+    // their AccountConnections, revoke ACTIVE SpaceAccountLinks — in ONE
+    // transaction, exactly as it does. Closing only the connections (this
+    // script's first version) left the accounts and Space links live, so the
+    // institution kept rendering in the app after a "successful" removal.
+    //
+    // Duplicated rather than imported, deliberately and reluctantly: that module
+    // reaches lib/email/send.ts through snapshots/regenerate → data/accounts →
+    // space → auth, and that file imports "server-only", which is a Next
+    // build-time alias with no package behind it — so tsx cannot load this
+    // script at all if it imports the primitive. Keep the transaction below in
+    // step with lib/accounts/disconnect.ts if that one changes.
+    //
+    // Account ids come from ALL AccountConnection rows for this item, including
+    // already-soft-deleted ones, so a half-finished removal can be completed by
+    // re-running this script.
+    const allConns = await db.accountConnection.findMany({
+      where:  { plaidItemDbId: item.id },
+      select: { financialAccountId: true },
     });
+    const faIds = [...new Set(allConns.map((c) => c.financialAccountId))];
+
+    if (faIds.length > 0) {
+      const now = new Date();
+      const links = await db.$transaction(async (tx) => {
+        await tx.financialAccount.updateMany({
+          where: { id: { in: faIds }, deletedAt: null },
+          data:  { deletedAt: now },
+        });
+        await tx.accountConnection.updateMany({
+          where: { financialAccountId: { in: faIds }, deletedAt: null },
+          data:  { deletedAt: now },
+        });
+        const active = await tx.spaceAccountLink.findMany({
+          where:  { financialAccountId: { in: faIds }, status: ShareStatus.ACTIVE },
+          select: { spaceId: true },
+        });
+        await tx.spaceAccountLink.updateMany({
+          where: { financialAccountId: { in: faIds }, status: ShareStatus.ACTIVE },
+          data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: item.userId },
+        });
+        return active;
+      });
+      const spaceCount = new Set(links.map((l) => l.spaceId)).size;
+      console.log(`    ✓ soft-deleted ${faIds.length} account(s), revoked links in ${spaceCount} space(s)`);
+    }
     await setPlaidItemHealth(item.id, { status: PlaidItemStatus.REVOKED });
-    console.log(`    ✓ soft-deleted ${softDeleted.count} connection(s), marked REVOKED\n`);
+    console.log(`    ✓ marked REVOKED\n`);
   }
 
   if (!apply) console.log("  Re-run with --apply to perform the removal.\n");
