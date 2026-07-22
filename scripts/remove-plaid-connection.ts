@@ -55,6 +55,25 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Fail fast on a half-loaded environment. Exporting only the database vars is
+  // the easy mistake: PLAID_ENV then falls back to its "sandbox" default and the
+  // credentials are absent, so every itemRemove fails against the wrong
+  // environment with an opaque error. Cheaper to refuse than to explain.
+  if (!process.env.PLAID_CLIENT_ID || !process.env.PLAID_SECRET) {
+    console.error("\n  ✗ PLAID_CLIENT_ID / PLAID_SECRET are not set — itemRemove cannot succeed.");
+    console.error("    Load the app env FIRST, then override the database target:");
+    console.error("      set -a && . ./.env.local && set +a");
+    console.error("      export DATABASE_URL='<prod>' DIRECT_URL='<prod>' ENCRYPTION_KEY='<prod>'\n");
+    process.exit(1);
+  }
+  if (PLAID_ENV !== "production") {
+    console.error(`\n  ⚠  PLAID_ENV is "${PLAID_ENV}", not "production".`);
+    console.error("     An Item created in production cannot be removed from another environment.");
+    console.error("     Re-run with the production Plaid credentials, or pass --allow-env-mismatch");
+    console.error("     if you genuinely mean to act on a non-production Item.\n");
+    if (!process.argv.includes("--allow-env-mismatch")) process.exit(1);
+  }
+
   const items = await db.plaidItem.findMany({
     where: itemRef
       ? { OR: [{ id: itemRef }, { externalItemId: itemRef }] }
@@ -98,11 +117,22 @@ async function main(): Promise<void> {
       await plaidClient.itemRemove({ access_token: accessToken });
       console.log(`    ✓ revoked at Plaid`);
     } catch (e: unknown) {
-      const code = (e as { response?: { data?: { error_code?: string } } })?.response?.data?.error_code;
+      const data = (e as {
+        response?: { status?: number; data?: { error_code?: string; error_message?: string } };
+      })?.response;
+      const code = data?.data?.error_code;
       if (code === "ITEM_NOT_FOUND" || code === "INVALID_ACCESS_TOKEN") {
         console.log(`    ✓ already gone from Plaid (${code})`);
       } else {
-        console.error(`    ✗ Plaid itemRemove FAILED (${code ?? "unknown"}) — database left UNTOUCHED.`);
+        // Surface everything we have. A bare "(unknown)" sent a real debugging
+        // session down the wrong path: the actual cause was a missing credential,
+        // which Plaid reports as an HTTP 400 with no error_code at all.
+        const detail =
+          data?.data?.error_message ??
+          (e instanceof Error ? e.message : String(e));
+        console.error(`    ✗ Plaid itemRemove FAILED — database left UNTOUCHED.`);
+        console.error(`      env ${PLAID_ENV} · http ${data?.status ?? "?"} · code ${code ?? "none"}`);
+        console.error(`      ${detail}`);
         console.error(`      Fix the cause and re-run; the item is still removable because its`);
         console.error(`      token is intact. Do NOT wipe this database before it succeeds.\n`);
         continue;
