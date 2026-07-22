@@ -38,6 +38,7 @@ export type PlaidLifecycleStageKey =
   | "accountsDiscovered"
   | "balancesImported"
   | "transactionsImported"
+  | "historyBuilt"
   | "ready";
 
 export type WalletLifecycleStageKey =
@@ -62,6 +63,10 @@ const PLAID_STAGES: PlaidLifecycleStageKey[] = [
   "accountsDiscovered",
   "balancesImported",
   "transactionsImported",
+  // The wealth-history rebuild. A real phase, not a label: it runs after the
+  // transactions land and used to be invisible, so the card appeared to settle
+  // while the history it was about to show was still being written.
+  "historyBuilt",
   "ready",
 ];
 
@@ -101,12 +106,22 @@ function project(keys: LifecycleStageKey[], activeIndex: number): LifecycleStage
  * the rest is pending. The card renders dedicated content for these states, so
  * this representation is a truthful fallback, not the rendered surface.
  */
-function activeIndexFor(provider: SyncProvider, state: SyncConnectionState): number {
+function activeIndexFor(
+  provider: SyncProvider,
+  state: SyncConnectionState,
+  buildingHistory = false,
+): number {
   const keys = provider === "WALLET" ? WALLET_STAGES : PLAID_STAGES;
   switch (state) {
     case "ready":
       return keys.length; // all done
     case "importing":
+      // "importing" covers TWO Plaid phases. Once the wealth-history rebuild is
+      // in flight the transactions have already landed, so the active node must
+      // advance — otherwise the card says "Transaction history importing…" while
+      // it is really building history, which is the same class of lie this
+      // stepper exists to avoid.
+      if (provider === "PLAID" && buildingHistory) return PLAID_STAGES.indexOf("historyBuilt");
       // The long-pole stage: transactions (Plaid) / discovery (wallet).
       return provider === "WALLET"
         ? WALLET_STAGES.indexOf("addressesDiscovered")
@@ -125,9 +140,12 @@ function activeIndexFor(provider: SyncProvider, state: SyncConnectionState): num
  * appropriate to its `status`.
  */
 export function deriveConnectionLifecycle(
-  connection: Pick<SyncConnection, "provider" | "state">,
+  connection: Pick<SyncConnection, "provider" | "state"> & Partial<Pick<SyncConnection, "historyBuild">>,
 ): LifecycleStage[] {
   const keys: LifecycleStageKey[] =
     connection.provider === "WALLET" ? WALLET_STAGES : PLAID_STAGES;
-  return project(keys, activeIndexFor(connection.provider, connection.state));
+  return project(
+    keys,
+    activeIndexFor(connection.provider, connection.state, connection.historyBuild != null),
+  );
 }

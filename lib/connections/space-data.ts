@@ -104,6 +104,9 @@ const PLAID_ITEM_SELECT = {
   status:             true,
   syncIncompleteAt:   true, // derivation only — buildSyncStatus never forwards it
   syncImportedCount:  true, // live "N imported" progress while state = importing
+  historyBuildStartedAt: true, // A9 rebuild phase — keeps state = importing
+  historyBuildTotalDays: true,
+  historyBuildDoneDays:  true,
   lastSyncedAt:       true,
   errorCode:          true,
   investmentsConsent: true, // → client-safe `investments` capability only

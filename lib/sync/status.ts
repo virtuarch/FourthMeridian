@@ -60,6 +60,15 @@ export interface SyncConnection {
    */
   importedCount: number | null;
   /**
+   * Wealth-history rebuild progress, or null when no rebuild is in flight.
+   *
+   * This is the ONE phase here that supports a determinate bar: the day window is
+   * fixed before the work begins, so `total` is real and never moves — unlike the
+   * transaction import, where the provider never exposes a total and any
+   * denominator would be invented.
+   */
+  historyBuild: { doneDays: number; totalDays: number } | null;
+  /**
    * Investments capability for this connection, or null when not applicable
    * (unsupported, unknown, or non-Plaid). Never carries the raw access token
    * or any credential — a pure display-capability enum.
@@ -112,6 +121,10 @@ export interface PlaidItemStateInput {
    * existing callers/fixtures that predate the column keep type-checking.
    */
   syncImportedCount?: number | null;
+  /** A9 rebuild in flight (non-null) — see historyBuild on SyncConnection. */
+  historyBuildStartedAt?: Date | null;
+  historyBuildTotalDays?: number | null;
+  historyBuildDoneDays?:  number | null;
   lastSyncedAt:    Date | null;
   errorCode:       string | null;
   /**
@@ -142,7 +155,7 @@ export function deriveInvestmentsCapability(
  * the connection should be excluded from the surface entirely (REVOKED).
  */
 export function deriveConnectionState(
-  item: Pick<PlaidItemStateInput, "status" | "syncIncompleteAt">,
+  item: Pick<PlaidItemStateInput, "status" | "syncIncompleteAt" | "historyBuildStartedAt">,
 ): SyncConnectionState | null {
   switch (item.status) {
     case "REVOKED":
@@ -156,7 +169,12 @@ export function deriveConnectionState(
       // loop completes, so a non-null value on an ACTIVE item = first-run
       // history still importing (or a prior attempt was interrupted and is
       // awaiting resume).
-      return item.syncIncompleteAt !== null ? "importing" : "ready";
+      // A first run is not finished when the transactions stop arriving — the
+      // wealth history is then rebuilt across the window those transactions
+      // support. Treating that as "ready" is what made the card settle while the
+      // history it was about to show was still being written.
+      if (item.syncIncompleteAt !== null) return "importing";
+      return item.historyBuildStartedAt != null ? "importing" : "ready";
     default:
       // Unknown/unexpected status — omit rather than guess.
       return null;
@@ -184,6 +202,10 @@ export function buildSyncStatus(items: PlaidItemStateInput[]): SyncStatus {
       investments:  deriveInvestmentsCapability(item.investmentsConsent),
       // Progress is only meaningful mid-import — see the field's contract.
       importedCount: state === "importing" ? (item.syncImportedCount ?? 0) : null,
+      historyBuild:
+        item.historyBuildStartedAt != null && (item.historyBuildTotalDays ?? 0) > 0
+          ? { doneDays: item.historyBuildDoneDays ?? 0, totalDays: item.historyBuildTotalDays! }
+          : null,
     });
   }
 
@@ -245,6 +267,7 @@ export function buildWalletSyncStatus(inputs: WalletConnectionStateInput[]): Syn
       // Self-custody wallets have no paged provider import to count through —
       // there is no honest number to show, so the progress line stays absent.
       importedCount: null,
+      historyBuild:  null,
       // Investments (Plaid Holdings) is a Plaid-only capability — self-custody
       // wallets never surface it.
       investments:  null,

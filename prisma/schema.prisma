@@ -694,6 +694,21 @@ model PlaidItem {
   // arriving. Existing rows were backfilled to 2 by the migration so no
   // already-settled connection flips back to importing.
   completedSyncCount  Int                      @default(0)
+  // History-rebuild progress (A9). Transactions landing is only half of a first
+  // run: the wealth history is then rebuilt day by day across the window those
+  // transactions support. That phase had NO representation — the card jumped
+  // from "importing" to "Ready" while it was still running, which is the silent
+  // gap users read as "it settled but nothing is there yet".
+  //
+  // Unlike the transaction counter, this one supports a REAL progress bar:
+  // maxAvailableWealthWindow() fixes the date range BEFORE the work starts, so
+  // the denominator is known up front and never moves.
+  //
+  // historyBuildStartedAt non-null = a rebuild is in flight (also what keeps the
+  // connection in an "importing" state). Cleared when it finishes.
+  historyBuildStartedAt DateTime?
+  historyBuildTotalDays Int?
+  historyBuildDoneDays  Int?
   // Webhook concurrency guard — set while a sync/deferred pipeline is running
   // for this item, cleared when it finishes. A conditional claim on this column
   // serializes syncs so a duplicated/racing SYNC_UPDATES_AVAILABLE webhook can

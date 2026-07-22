@@ -58,34 +58,37 @@ check("finalize: building false when all settled",
   finalizeSyncStatus(cards.filter((c) => c.state !== "importing")).building === false);
 check("finalize merges plaid + wallet connection lists",
   finalizeSyncStatus([
-    { id: "p1", provider: "PLAID", institution: "Chase", state: "ready", lastSyncedAt: null, errorCode: null, investments: null, importedCount: null },
+    { id: "p1", provider: "PLAID", institution: "Chase", state: "ready", lastSyncedAt: null, errorCode: null, investments: null, importedCount: null, historyBuild: null },
     ...cards,
   ]).connections.length === 3);
 
-// ── Error-card policy: wallets never auto-resync ─────────────────────────────
-// The load-bearing invariant (not the exact marketing copy): the error card is
-// PROVIDER-GATED, and the wallet arm must NOT promise a background retry that
-// doesn't exist — self-custody wallets have no scheduled crypto sync, so retry
-// is user-initiated. Plaid IS retried daily by sync-banks, so its background-
-// retry promise is accurate and lives on the Plaid arm. Assert the semantics of
-// the branch, not the wording of either sentence (which is free to churn).
-const card = readFileSync(join(process.cwd(), "components", "connections", "ConnectionCard.tsx"), "utf8");
+// ── Error-card policy: NEITHER provider promises a retry that doesn't happen ──
+// Originally this asserted a CONTRAST: wallets promise nothing, Plaid promises a
+// daily retry. That contrast was false. sync-banks selects `status: ACTIVE` and
+// the error card renders only for ERROR, so an errored Plaid connection is
+// skipped by every scheduled run — the copy asked users to wait for something
+// that was never going to run (fixed 2026-07-23).
+//
+// Comments are STRIPPED before scanning: this file's own prose quotes the retired
+// copy, and an un-stripped scan passes on the explanation rather than the code —
+// which is exactly how this guard survived the behaviour change that invalidated it.
+const cardRaw = readFileSync(join(process.cwd(), "components", "connections", "ConnectionCard.tsx"), "utf8");
+const card = cardRaw
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
 
 check("error card is provider-gated on a wallet branch (isWallet ? … : …)",
   /const isWallet\s*=\s*provider === "WALLET"/.test(card) && /isWallet\s*\?/.test(card));
 
-// Capture the wallet arm — a plain double-quoted string in the `isWallet ? … : …`
-// error copy. (We don't parse the Plaid arm: its template literal nests backticks.)
 const walletArm = /isWallet\s*\?\s*"([^"]*)"/.exec(card)?.[1] ?? "";
 const promisesBackgroundRetry = (s: string) => /keep retrying|we['’]ll[^.]*retr/i.test(s);
 
 check("wallet error arm makes NO background-retry promise (wallets never auto-resync)",
   walletArm.length > 0 && !promisesBackgroundRetry(walletArm));
-// The only background-retry promise in the card lives on the Plaid arm — accurate,
-// since sync-banks retries Plaid daily. It's present in the card but NOT in the
-// wallet arm, so the honest contrast holds.
-check("Plaid arm keeps its accurate background-retry promise (contrast is real)",
-  promisesBackgroundRetry(card) && !promisesBackgroundRetry(walletArm));
+check("NO arm promises a background retry — nothing retries an ERROR connection",
+  !promisesBackgroundRetry(card));
+check("ITEM_NOT_FOUND gets terminal copy directing the user to reconnect",
+  /ITEM_NOT_FOUND/.test(card) && /no longer exists at your provider/i.test(card));
 
 console.log(`\nwallet-status: ${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

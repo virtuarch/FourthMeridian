@@ -79,6 +79,13 @@ interface Stage {
   label:  string;
   value?: string;
   status: StageStatus;
+  /**
+   * Determinate progress, 0..1. ONLY set where the denominator is real: the
+   * wealth-history rebuild knows its day window before it starts. The
+   * transaction import deliberately has none — Plaid never exposes a total, so a
+   * bar there could only move backwards as the true size was discovered.
+   */
+  progress?: number;
 }
 
 function StageStepper({ stages }: { stages: Stage[] }) {
@@ -122,6 +129,20 @@ function StageStepper({ stages }: { stages: Stage[] }) {
                 {s.label}
               </span>
               {s.value && <span className="text-sm text-[var(--text-muted)]"> · {s.value}</span>}
+              {s.status === "active" && s.progress !== undefined && (
+                <div
+                  className="mt-1.5 h-1 w-full max-w-[220px] overflow-hidden rounded-full bg-[var(--border-hairline)]"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(s.progress * 100)}
+                >
+                  <div
+                    className="h-full rounded-full bg-[var(--meridian-400)] transition-[width] duration-500"
+                    style={{ width: `${Math.max(2, Math.round(s.progress * 100))}%` }}
+                  />
+                </div>
+              )}
             </div>
           </li>
         );
@@ -315,6 +336,21 @@ function ImportingContent({
               : undefined,
           status: s.status,
         };
+      case "historyBuilt": {
+        const hb = connection.historyBuild;
+        if (s.status === "active" && hb && hb.totalDays > 0) {
+          return {
+            label:    "Building your history",
+            value:    `${hb.doneDays.toLocaleString()} of ${hb.totalDays.toLocaleString()} days`,
+            status:   s.status,
+            progress: Math.min(1, hb.doneDays / hb.totalDays),
+          };
+        }
+        return {
+          label:  s.status === "active" ? "Building your history" : "History built",
+          status: s.status,
+        };
+      }
       default: // "ready"
         return { label: "Ready", status: s.status };
     }

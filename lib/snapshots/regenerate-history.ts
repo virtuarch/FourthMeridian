@@ -70,6 +70,17 @@ function todayUTC(now: Date): Date {
 
 export interface RegenerateWealthHistoryArgs {
   spaceId:  string;
+  /**
+   * Optional progress reporter for long rebuilds. Called with (daysDone,
+   * daysTotal) as the per-day loop advances, THROTTLED to ~20 calls across the
+   * whole run — a callback that writes to the database must not fire 730 times.
+   *
+   * `daysTotal` is known before the loop starts (the candidate-day set is fixed
+   * up front), which is what makes an honest determinate progress bar possible
+   * here — unlike the transaction import, where the provider never reveals a
+   * total. Purely observational: it can neither change nor fail the rebuild.
+   */
+  onProgress?: (daysDone: number, daysTotal: number) => void | Promise<void>;
   fromDate: string; // YYYY-MM-DD inclusive
   toDate:   string; // YYYY-MM-DD inclusive (should be ≤ yesterday; today's live row is frozen)
   dryRun?:  boolean;
@@ -323,6 +334,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   }
   // One conversion context over every candidate day (each day converts at its own rate).
   const candidateDates = [...dayList].filter((d) => d >= fromDate && d <= toDate && d < todayISO).sort();
+  // Progress denominators, fixed before the day loop starts — this is exactly
+  // why a determinate bar is honest for the rebuild and dishonest for the import.
+  const progressTotal = candidateDates.length;
+  const progressStep  = Math.max(1, Math.floor(progressTotal / 20));
   const ctx = await buildSpaceConversionContext(space, { currencies: accounts.map((a) => a.currency ?? null), dates: candidateDates });
 
   // HIST-1C — value the whole window's investments in ONE position/price/FX read
@@ -459,6 +474,13 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
 
     const res = regenerateDay(input);
     result.considered++;
+
+    // Throttled progress. progressStep is derived from the total so the number of
+    // callbacks stays ~constant regardless of window size, and the final day
+    // always reports so the bar cannot finish short of 100%.
+    if (args.onProgress && (result.considered % progressStep === 0 || result.considered === progressTotal)) {
+      await args.onProgress(result.considered, progressTotal);
+    }
     if (res.action === "skip-frozen") result.skippedFrozen++;
     else if (res.action === "skip-unsupported") result.skippedUnsupported++;
     else if (res.action === "skip-membership-changed") result.skippedMembershipChanged++;
@@ -594,6 +616,15 @@ export async function maxAvailableWealthWindow(
 export async function regenerateWealthHistoryForAccounts(
   financialAccountIds: string[],
   window: { fromDate: string; toDate: string; now?: Date },
+  /**
+   * Forwarded to each space's rebuild. With more than one space the reported
+   * numbers describe the space CURRENTLY rebuilding — they restart per space
+   * rather than spanning the set. A cross-space denominator would have to
+   * pre-compute every space's candidate days before starting, which is most of
+   * the work itself; per-space is honest about what it is measuring, and the
+   * common case (one PERSONAL space) is exact.
+   */
+  onProgress?: (daysDone: number, daysTotal: number) => void | Promise<void>,
 ): Promise<string[]> {
   if (financialAccountIds.length === 0) return [];
   const links = await db.spaceAccountLink.findMany({
@@ -603,7 +634,7 @@ export async function regenerateWealthHistoryForAccounts(
   const spaceIds = [...new Set(links.map((l) => l.spaceId))];
   for (const spaceId of spaceIds) {
     try {
-      await regenerateWealthHistory({ spaceId, fromDate: window.fromDate, toDate: window.toDate, now: window.now });
+      await regenerateWealthHistory({ spaceId, fromDate: window.fromDate, toDate: window.toDate, now: window.now, onProgress });
     } catch (err) {
       console.warn(`[wealth-regen] space ${spaceId} regeneration failed (non-fatal): ${err instanceof Error ? err.message : err}`);
     }

@@ -111,13 +111,46 @@ export async function regenerateWealthHistoryForItem(
     // regenerateWealthHistory clamps per-account to its own earliest-tx floor,
     // so no history is fabricated beyond what was actually imported.
     const window = await maxAvailableWealthWindow(faIds);
-    const spaces = await regenerateWealthHistoryForAccounts(faIds, window);
+
+    // Publish the rebuild as a visible phase. Until now this ran silently AFTER
+    // the transaction import cleared "importing", so the card read Ready while
+    // the history it was about to show was still being written. historyBuildStartedAt
+    // both marks the phase and keeps the connection in a building state; the day
+    // counts drive a genuine progress bar, since the window fixes the denominator
+    // before any work starts.
+    const totalDays = Math.max(
+      1,
+      Math.round(
+        (Date.parse(`${window.toDate}T00:00:00Z`) - Date.parse(`${window.fromDate}T00:00:00Z`))
+          / 86_400_000,
+      ) + 1,
+    );
+    await db.plaidItem.update({
+      where: { id: plaidItemId },
+      data:  { historyBuildStartedAt: new Date(), historyBuildTotalDays: totalDays, historyBuildDoneDays: 0 },
+    }).catch(() => {}); // progress reporting must never fail the rebuild
+
+    const spaces = await regenerateWealthHistoryForAccounts(faIds, window, async (done, total) => {
+      await db.plaidItem.update({
+        where: { id: plaidItemId },
+        data:  { historyBuildDoneDays: done, historyBuildTotalDays: total },
+      }).catch(() => {});
+    });
     console.log(
       `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over ` +
         `[${window.fromDate} … ${window.toDate}] (item ${plaidItemId}, ${faIds.length} account(s), MAX available)`,
     );
   } catch (e) {
     console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
+  } finally {
+    // ALWAYS clear the in-flight marker — in `finally`, not the success path.
+    // A rebuild that threw would otherwise leave the connection pinned in a
+    // building state forever, which is a worse failure than the silent gap this
+    // whole phase exists to remove.
+    await db.plaidItem.update({
+      where: { id: plaidItemId },
+      data:  { historyBuildStartedAt: null },
+    }).catch(() => {});
   }
 }
 

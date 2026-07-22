@@ -31,9 +31,13 @@ const statusOf = (s: LifecycleStage[], k: string) => s.find((x) => x.key === k)?
 console.log("Plaid — stage set + importing long pole");
 {
   const p = conn({ provider: "PLAID", state: "importing" });
-  check("Plaid stage set is connected→accounts→balances→transactions→ready",
+  // historyBuilt added 2026-07-23: the wealth-history rebuild runs after the
+  // transactions land and was previously invisible, so the card reached "Ready"
+  // while the history it was about to show was still being written.
+  check("Plaid stage set is connected→accounts→balances→transactions→history→ready",
     JSON.stringify(keys(p)) === JSON.stringify([
-      "connected", "accountsDiscovered", "balancesImported", "transactionsImported", "ready",
+      "connected", "accountsDiscovered", "balancesImported", "transactionsImported",
+      "historyBuilt", "ready",
     ]));
   check("importing: transactions is the active stage", active(p) === "transactionsImported");
   check("importing: connected/accounts/balances all done",
@@ -85,6 +89,22 @@ console.log("Monotonic ordering — done* active? pending* (never out of order)"
       check(`${provider}/${state}: statuses are monotonic + ≤1 active`, monotonic && atMostOneActive);
     }
   }
+}
+
+console.log("Plaid — history rebuild advances the active node past transactions");
+{
+  const p = conn({
+    provider: "PLAID",
+    state: "importing",
+    historyBuild: { doneDays: 40, totalDays: 730 },
+  } as Pick<SyncConnection, "provider" | "state"> & Pick<SyncConnection, "historyBuild">);
+  check("rebuilding: historyBuilt is the active stage", active(p) === "historyBuilt");
+  check("rebuilding: transactions already done", statusOf(p, "transactionsImported") === "done");
+  check("rebuilding: ready still pending", statusOf(p, "ready") === "pending");
+  // Without historyBuild the same state must still point at transactions —
+  // otherwise every ordinary import would claim to be building history.
+  const plain = conn({ provider: "PLAID", state: "importing" });
+  check("importing without a rebuild stays on transactions", active(plain) === "transactionsImported");
 }
 
 console.log("Invariant — no fabricated intelligenceReady stage");
