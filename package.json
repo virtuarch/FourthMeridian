@@ -16,6 +16,8 @@
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "db:reset": "tsx scripts/db-guard.ts && npm run db:backup && prisma migrate reset --force",
+    "db:wipe": "tsx scripts/db-wipe.ts",
+    "admin:promote": "tsx scripts/admin-promote.ts",
     "backfill:ai-agents": "tsx scripts/backfill-ai-agents.ts",
     "backfill:snapshots": "tsx scripts/backfill-snapshots.ts",
     "backfill:merchant-intelligence": "tsx scripts/backfill-merchant-intelligence.ts",
