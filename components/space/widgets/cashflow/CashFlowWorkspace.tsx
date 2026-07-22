@@ -151,9 +151,13 @@ export function CashFlowWorkspace({
   );
   // ONE trust envelope from the stamp — shared by the shell (onEnvelopeChange) and the
   // hero's TrustIndicator, so the two can never disagree.
+  // V25-FINAL-1 — carry the window's FX-exclusion flag (a foreign row with no rate
+  // was excluded from income/spend/net) so the hero + shell chip disclose the total
+  // is a partial. Same `unconverted` the headline authority (economicTotals) computes.
+  const fxUnconverted = data?.unconverted ?? false;
   const envelope = useMemo(
-    () => resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", cashFlowStamp: stamp }),
-    [stamp],
+    () => resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", cashFlowStamp: stamp, fxUnconverted }),
+    [stamp, fxUnconverted],
   );
   useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
 

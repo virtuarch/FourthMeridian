@@ -24,6 +24,8 @@ import { aggregateDayFacts, projectDailyFacts, bucketDayFacts, type DayFacts } f
 import { cashFlowStamp } from "./cash-flow-compare";
 import { tierResolver, type LiquidityTx } from "./liquidity";
 import type { Transaction } from "@/types";
+import type { ConversionContext } from "@/lib/money/types";
+import type { Resolution } from "@/lib/fx/types";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -96,6 +98,28 @@ check("dataYears === dataBearingYears(FULL) incl. 2025 & 2026", JSON.stringify(d
 // ── Pre-coverage window ⇒ stamp incomplete (coverage is a data property) ──
 const pre = buildCashFlowSpaceData({ transactions: TX, accounts: ACCOUNTS, period: "PAST_YEAR", now: NOW });
 check("PAST_YEAR reaches before earliest data ⇒ incomplete", pre.stamp.completeness.tier === "incomplete", pre.stamp.completeness.tier);
+
+// ── V25-FINAL-1 — FX-unconverted flag propagates to the workspace contract ──
+console.log("CashFlowSpaceData — FX-unconverted disclosure flag");
+{
+  // No conversion context (all-USD path) ⇒ nothing excluded ⇒ unconverted false.
+  check("no ctx ⇒ unconverted false (nothing excluded)", data.unconverted === false);
+
+  // A window with a foreign row that has NO acceptable rate: the row is excluded
+  // from the reporting-currency totals and the flag flips true.
+  const missCtx: ConversionContext = {
+    target: "USD",
+    resolve: (from, dateISO): Resolution => ({ kind: "miss", quote: from, requestedDateISO: dateISO }),
+  };
+  const foreignTx: Transaction[] = [
+    { id: "f1", accountId: "chk", date: "2026-06-03", merchant: "Tokyo Store", category: "Shopping", amount: -50000, pending: false, flowType: "SPENDING", currency: "JPY" },
+    { id: "f2", accountId: "chk", date: "2026-06-04", merchant: "Local", category: "Groceries", amount: -30, pending: false, flowType: "SPENDING", currency: "USD" },
+  ];
+  const withMiss = buildCashFlowSpaceData({ transactions: foreignTx, accounts: ACCOUNTS, period: "MTD", now: NOW, moneyCtx: missCtx });
+  check("foreign row with no rate ⇒ unconverted true (total is a partial)", withMiss.unconverted === true);
+  // And the JPY native magnitude never entered the spend total (excluded, not blended).
+  check("excluded JPY magnitude NOT in the total (spend excludes the 50000)", withMiss.summary.spendGross === 30, String(withMiss.summary.spendGross));
+}
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nAll CashFlowSpaceData checks passed");

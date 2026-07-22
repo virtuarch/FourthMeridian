@@ -230,12 +230,15 @@ type MonthlyRow = Pick<TxnRow, 'date' | 'amount' | 'currency' | 'category' | 'fl
 function amountInTarget(
   txn: { amount: number; currency: string | null; date: Date },
   ctx: ConversionContext,
-): { amount: number; estimated: boolean } {
+): { amount: number | null; estimated: boolean } {
   const c = convertMoney(
     { amount: txn.amount, currency: txn.currency },
     txn.date.toISOString().slice(0, 10),
     ctx,
   );
+  // V25-FINAL-1 — `amount` is null when the conversion is UNAVAILABLE (no rate):
+  // callers EXCLUDE the row from their totals (never a native magnitude / fake 0);
+  // `estimated` is already true so the bucket's approximate-disclosure still fires.
   return { amount: c.amount, estimated: c.estimated };
 }
 
@@ -301,12 +304,14 @@ export function accumulateNeedsClassification(
 
     count += 1;
     const { amount } = amountInTarget(r, ctx);
+    // V25-FINAL-1 — count the row, but EXCLUDE an unconvertible amount from the
+    // money sub-total (never a native magnitude / fake 0).
     if (res.reason === 'UNKNOWN_INFLOW_SOURCE') {
       unknownInflowCount += 1;
-      unknownInflowTotal += amount;
+      if (amount !== null) unknownInflowTotal += amount;
     } else if (res.reason === 'UNKNOWN_PAYMENT_APP_PURPOSE') {
       unknownPaymentAppCount += 1;
-      unknownPaymentAppTotal += Math.abs(amount);
+      if (amount !== null) unknownPaymentAppTotal += Math.abs(amount);
     }
   }
 
@@ -495,8 +500,12 @@ async function assembleTransactions(
     // accumulator and comparison below; MC1 P3 Slice 4 — the same conversion
     // carries the estimated taint into the window flag.
     const conv = amountInTarget(txn, moneyCtx);
-    const amt = conv.amount;
     if (conv.estimated) windowEstimated = true;
+    // V25-FINAL-1 — an unconvertible row has no reporting value: EXCLUDE it from
+    // every money fold below (never a native magnitude / fake 0). windowEstimated
+    // is already set so the window is disclosed as approximate.
+    if (conv.amount === null) continue;
+    const amt = conv.amount;
 
     // Category bucket accumulator
     const entry = categoryMap.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
@@ -568,8 +577,9 @@ async function assembleTransactions(
     if (isNonEconomicResidue(txn.flowType)) continue;
     // MC1 P2 Slice 4 threading; P3 Slice 4 real context + taint.
     const conv = amountInTarget(txn, moneyCtx);
-    const amt = conv.amount;
     if (conv.estimated) windowEstimated = true;
+    if (conv.amount === null) continue; // V25-FINAL-1 — unconvertible pending row excluded
+    const amt = conv.amount;
     if (amt > 0) {
       pendingCreditCount++;
       pendingCreditTotal += amt;
@@ -897,8 +907,11 @@ export function buildMonthlyBreakdown(
     let amt = txn.amount;
     if (ctx) {
       const c = amountInTarget(txn, ctx);
-      amt = c.amount;
       if (c.estimated) b.estimated = true;
+      // V25-FINAL-1 — unconvertible row: counted above, but EXCLUDED from this
+      // month's money/category folds (never a native magnitude / fake 0).
+      if (c.amount === null) continue;
+      amt = c.amount;
     }
     const agg = b.categoryAgg.get(txn.category) ?? { debitTotal: 0, creditTotal: 0, count: 0 };
     if (amt < 0) agg.debitTotal += Math.abs(amt);
@@ -1047,7 +1060,10 @@ export function buildMerchantRollup(
     const { key: canonicalKey, name: canonicalName } = merchantGroupOf(txn);
     const iso  = txn.date.toISOString().split('T')[0];
     const conv = amountInTarget(txn, ctx);
-    const abs  = Math.abs(conv.amount);
+    // V25-FINAL-1 — occurrence is still evidence the merchant exists, but an
+    // unconvertible amount is EXCLUDED from `total` (never a native magnitude /
+    // fake 0); `estimated` discloses the partial.
+    const abs  = conv.amount === null ? null : Math.abs(conv.amount);
 
     const agg = merchantMap.get(canonicalKey) ?? {
       canonicalName,
@@ -1059,7 +1075,7 @@ export function buildMerchantRollup(
       categoryCount: new Map<string, { count: number; absTotal: number }>(),
     };
 
-    agg.total       += abs;
+    if (abs !== null) agg.total += abs;
     agg.occurrences += 1;
     if (conv.estimated) agg.estimated = true;
     if (iso < agg.firstSeen) agg.firstSeen = iso;
@@ -1067,7 +1083,7 @@ export function buildMerchantRollup(
 
     const cat = agg.categoryCount.get(txn.category) ?? { count: 0, absTotal: 0 };
     cat.count    += 1;
-    cat.absTotal += abs;
+    if (abs !== null) cat.absTotal += abs;
     agg.categoryCount.set(txn.category, cat);
 
     merchantMap.set(canonicalKey, agg);
@@ -1142,7 +1158,7 @@ export function buildIncomeSourceRollup(
       estimated:   false,
     };
 
-    agg.total       += conv.amount;
+    if (conv.amount !== null) agg.total += conv.amount; // V25-FINAL-1 — exclude unconvertible; occurrence still counted
     agg.occurrences += 1;
     if (conv.estimated) agg.estimated = true;
     if (iso < agg.firstSeen) agg.firstSeen = iso;
@@ -1175,26 +1191,33 @@ export function buildRecurringCandidates(
   settled: readonly RollupRow[],
   ctx:     ConversionContext,
 ): RecurringCandidate[] {
-  const merchantMap = new Map<string, { amounts: number[]; category: string; estimated: boolean }>();
+  // V25-FINAL-1 — `count` is the ACTUAL occurrence count (recurrence signal);
+  // `amounts` holds only the CONVERTIBLE legs (the mean is over these). An
+  // unconvertible leg still counts as an occurrence but contributes no amount, so
+  // a recurring merchant with a missing-rate leg is still detected and flagged
+  // estimated rather than silently dropped or blended with a fake 0.
+  const merchantMap = new Map<string, { amounts: number[]; count: number; category: string; estimated: boolean }>();
 
   for (const txn of settled) {
     if (isTransfer(txn.flowType) || isDebtPayment(txn.flowType)) continue;
     const key   = txn.merchant.trim().toLowerCase();
-    const group = merchantMap.get(key) ?? { amounts: [], category: txn.category, estimated: false };
+    const group = merchantMap.get(key) ?? { amounts: [], count: 0, category: txn.category, estimated: false };
     const conv  = amountInTarget(txn, ctx);
-    group.amounts.push(conv.amount);
+    group.count += 1;
+    if (conv.amount !== null) group.amounts.push(conv.amount);
     if (conv.estimated) group.estimated = true;
     merchantMap.set(key, group);
   }
 
   const out: RecurringCandidate[] = [];
   for (const [merchant, group] of merchantMap) {
-    if (group.amounts.length < 2) continue;
+    // Recurring needs ≥2 sightings AND at least one convertible leg for a mean.
+    if (group.count < 2 || group.amounts.length === 0) continue;
     const sum = group.amounts.reduce((s, a) => s + a, 0);
     const avg = sum / group.amounts.length;
     out.push({
       merchant,
-      occurrences:   group.amounts.length,
+      occurrences:   group.count,
       typicalAmount: Math.round(avg * 100) / 100,
       category:      group.category,
       ...(group.estimated ? { estimated: true } : {}),
@@ -1372,12 +1395,18 @@ async function assembleDrilldown(
   });
   // One converted magnitude per row drives matchedTotal, the "largest" sort, and
   // each serialized amount — never a native amount beside a converted total.
-  const converted = capped.map((r) => {
+  const convertedAll = capped.map((r) => {
     const c = amountInTarget(r, drillCtx);
     return { row: r, amount: c.amount, estimated: c.estimated };
   });
   let drilldownEstimated = false;
-  for (const c of converted) if (c.estimated) drilldownEstimated = true;
+  for (const c of convertedAll) if (c.estimated) drilldownEstimated = true;
+  // V25-FINAL-1 — rows with no acceptable rate have NO reporting value; they are
+  // EXCLUDED from the drilldown evidence rather than shown as a native amount
+  // beside converted figures. `drilldownEstimated` (set above) discloses the gap.
+  const converted = convertedAll.filter(
+    (c): c is { row: (typeof convertedAll)[number]["row"]; amount: number; estimated: boolean } => c.amount !== null,
+  );
 
   // matchedTotal / totalCount describe the matching set actually aggregated. When
   // fetchTruncated they are a lower bound (older rows beyond the cap are omitted);

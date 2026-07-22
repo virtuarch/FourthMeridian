@@ -70,7 +70,10 @@ interface FallbackAccount {
 function toDisplay(amount: number, currency: string | null | undefined, ctx?: ConversionContext): { amount: number; estimated: boolean } {
   if (!ctx) return { amount, estimated: false };
   const c = convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx);
-  return { amount: c.amount, estimated: c.estimated };
+  // V25-FINAL-1 — an unavailable balance is EXCLUDED (0) from the ledger's
+  // assets/liabilities summary, never a native magnitude; `estimated` (true on a
+  // miss) rides through so the summary is disclosed as approximate/incomplete.
+  return { amount: c.amount ?? 0, estimated: c.estimated };
 }
 
 interface DisplayRow {

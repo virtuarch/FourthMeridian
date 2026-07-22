@@ -42,6 +42,7 @@ import {
   type WealthResult,
 } from "@/lib/wealth/wealth-time-machine";
 import { convertWealthSnapshots } from "@/lib/wealth/display-conversion";
+import { classifyAccounts } from "@/lib/account-classifier";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import type { ConversionContext } from "@/lib/money/types";
@@ -119,12 +120,23 @@ export function WealthWorkspace({
     [convertedSnapshots, asOf, compareTo, displayCurrency],
   );
 
+  // V25-FINAL-1 — FX incompleteness of the CURRENT net-worth composition: true when
+  // an account's native currency has no acceptable rate to the display currency, so
+  // classifyAccounts excluded it from the totals (a partial). Read from the SAME
+  // canonical classifier + display ctx the composition donut uses, so the hero
+  // caveat and the composition can never disagree. Identity path (all-same-currency)
+  // ⇒ false, so the common case raises no warning.
+  const fxUnconverted = useMemo(
+    () => (ctx && accounts && accounts.length > 0 ? classifyAccounts(accounts, ctx).unconverted : false),
+    [accounts, ctx],
+  );
+
   // Trust envelope — resolved from THIS workspace's own result (currency-consistent),
   // emitted up to the shell chip (the Investments onEnvelopeChange bridge). Memoized so
   // the effect only fires when the envelope actually changes (no re-render loop).
   const envelope = useMemo(
-    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency }),
-    [result, displayCurrency],
+    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted }),
+    [result, displayCurrency, fxUnconverted],
   );
   useEffect(() => { onEnvelopeChange(envelope); }, [envelope, onEnvelopeChange]);
 

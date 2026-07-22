@@ -97,21 +97,39 @@ export const COMPLETENESS_PRESENTATION: Record<CompletenessTier, { label: string
 };
 
 /**
- * The FX warning — a single orthogonal caveat emitted when a conversion-aware lens
- * reports `estimated` (a rate was walked back from a nearby date or missing). It is
- * NEVER folded into the completeness tier (the pre-convergence bug this slice fixes).
+ * The FX warning — a single orthogonal caveat, NEVER folded into the completeness
+ * tier. Two severities (V25-FINAL-1):
+ *   - `unconverted` (STRONGER): at least one balance had NO acceptable exchange
+ *     rate, so it was EXCLUDED from the totals — the displayed total is a partial.
+ *     This is the honest disclosure the FX-honesty contract requires.
+ *   - `estimated` (softer): a real rate was applied but walked back from a nearby
+ *     date. The amount WAS converted, just not at an exact same-day rate.
+ * `unconverted` wins when both are set (it is the more serious statement).
  */
-function fxWarnings(estimated: boolean | undefined): EnvelopeWarning[] | undefined {
-  if (!estimated) return undefined;
-  return [
-    {
-      kind:  "fx",
-      label: "Some FX rates estimated",
-      tone:  "warning",
-      detail:
-        "Some amounts were converted using an exchange rate walked back from a nearby date rather than an exact same-day rate.",
-    },
-  ];
+function fxWarnings(estimated?: boolean, unconverted?: boolean): EnvelopeWarning[] | undefined {
+  if (unconverted) {
+    return [
+      {
+        kind:  "fx",
+        label: "Some balances excluded — no exchange rate",
+        tone:  "warning",
+        detail:
+          "One or more balances could not be converted to the reporting currency because no exchange rate was available, so they are excluded from this total. The figure shown is a partial total of the balances that could be converted.",
+      },
+    ];
+  }
+  if (estimated) {
+    return [
+      {
+        kind:  "fx",
+        label: "Some FX rates estimated",
+        tone:  "warning",
+        detail:
+          "Some amounts were converted using an exchange rate walked back from a nearby date rather than an exact same-day rate.",
+      },
+    ];
+  }
+  return undefined;
 }
 
 const WEALTH_DETAIL: Record<CompletenessTier, string> = {
@@ -122,7 +140,7 @@ const WEALTH_DETAIL: Record<CompletenessTier, string> = {
   unknown:    "Trust for this date could not be determined.",
 };
 
-function wealthEnvelope(r: WealthResult, currency: string): PerspectiveEnvelope {
+function wealthEnvelope(r: WealthResult, currency: string, fxUnconverted?: boolean): PerspectiveEnvelope {
   const c = r.completeness;
   const completeness: EnvelopeCompleteness = {
     tier:   c.tier,
@@ -141,7 +159,10 @@ function wealthEnvelope(r: WealthResult, currency: string): PerspectiveEnvelope 
         })),
       }
     : undefined;
-  return { completeness, evidence };
+  // V25-FINAL-1 — when the current composition excludes an account that could not
+  // be converted to the display currency, the net-worth total is a partial: surface
+  // it as an orthogonal FX warning (never folded into the completeness tier).
+  return { completeness, evidence, warnings: fxWarnings(false, fxUnconverted) };
 }
 
 /** The static honest boundary the Cash Flow chip shows when no stamp is supplied
@@ -163,7 +184,11 @@ const CASH_FLOW_STATIC: EnvelopeCompleteness = {
  * unchanged (no parallel-vocabulary collapse). No fabricated counts — evidence
  * stays with the shell.
  */
-function cashFlowEnvelope(stamp: CashFlowStamp): PerspectiveEnvelope {
+function cashFlowEnvelope(stamp: CashFlowStamp, fxUnconverted?: boolean): PerspectiveEnvelope {
+  // V25-FINAL-1 — a Cash Flow window that excluded one or more foreign rows for
+  // lack of an exchange rate is a partial total; surface it as an FX warning
+  // orthogonal to the transaction-depth completeness tier.
+  const warnings = fxWarnings(false, fxUnconverted);
   const t = stamp.completeness.tier;
   if (t === "observed") {
     return {
@@ -173,6 +198,7 @@ function cashFlowEnvelope(stamp: CashFlowStamp): PerspectiveEnvelope {
           ? `${CASH_FLOW_STATIC.detail} Latest transaction on file: ${stamp.dataAsOf}.`
           : CASH_FLOW_STATIC.detail,
       },
+      warnings,
     };
   }
   return {
@@ -182,6 +208,7 @@ function cashFlowEnvelope(stamp: CashFlowStamp): PerspectiveEnvelope {
       tone: "warning",
       detail: stamp.completeness.reason,
     },
+    warnings,
   };
 }
 
@@ -254,7 +281,9 @@ function lensEnvelope(lens: LensResult): PerspectiveEnvelope {
         (p.dataAsOf ? `Live account balances, as of ${p.dataAsOf.slice(0, 10)}.` : preset.detail),
     },
     evidence: n > 0 ? { label: `${n} account${n === 1 ? "" : "s"}` } : undefined,
-    warnings: fxWarnings(lens.estimated),
+    // V25-FINAL-1 — `unconverted` (a balance excluded for lack of a rate) is the
+    // stronger caveat and wins over the softer walked-back "estimated".
+    warnings: fxWarnings(lens.estimated, lens.unconverted),
   };
 }
 
@@ -272,12 +301,22 @@ export function resolvePerspectiveEnvelope(args: {
   cashFlowStamp?: CashFlowStamp | null;
   /** A10 — the host-fetched Investments Time Machine result. Absent ⇒ empty envelope. */
   investmentsResult?: InvestmentsTimeMachineResult | null;
+  /**
+   * V25-FINAL-1 — true when the perspective's displayed total EXCLUDES one or more
+   * balances that had no acceptable exchange rate (a partial reporting-currency
+   * total). Consumed by wealth/cashFlow to raise the stronger FX warning. Orthogonal
+   * to completeness; ignored by perspectives that carry FX taint on their own result
+   * (liquidity/debt read it from the LensResult).
+   */
+  fxUnconverted?: boolean;
 }): PerspectiveEnvelope {
   switch (args.perspectiveId) {
     case "wealth":
-      return args.wealthResult ? wealthEnvelope(args.wealthResult, args.currency ?? "USD") : {};
+      return args.wealthResult ? wealthEnvelope(args.wealthResult, args.currency ?? "USD", args.fxUnconverted) : {};
     case "cashFlow":
-      return args.cashFlowStamp ? cashFlowEnvelope(args.cashFlowStamp) : { completeness: CASH_FLOW_STATIC };
+      return args.cashFlowStamp
+        ? cashFlowEnvelope(args.cashFlowStamp, args.fxUnconverted)
+        : { completeness: CASH_FLOW_STATIC, warnings: fxWarnings(false, args.fxUnconverted) };
     case "investments":
       return args.investmentsResult ? investmentsEnvelope(args.investmentsResult) : {};
     case "liquidity":

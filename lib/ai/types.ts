@@ -203,14 +203,28 @@ export interface AccountSummaryItem {
    * across mixed currencies (FINANCIAL_SEMANTIC_AUTHORITIES — reporting-currency
    * comparison invariant). Equal to `balance` for all-USD / same-currency accounts.
    */
-  reportingBalance: number;
+  /**
+   * `balance` converted to the Space reporting currency. V25-FINAL-1 — **`null`
+   * when the conversion is UNAVAILABLE** (native currency had no acceptable rate):
+   * there is no reporting-currency value, and the account is EXCLUDED from the
+   * section totals rather than shown as a fake 0. `null` is deliberate so no
+   * consumer can read an unavailable balance as "worth 0" — the true value is the
+   * native `balance`/`currency` above. A real number otherwise (equals `balance`
+   * for same-currency accounts).
+   */
+  reportingBalance: number | null;
   /**
    * P2-7D — true when the reportingBalance conversion was estimated (rate walked
-   * back / missing / null-residue provenance), mirroring
-   * AccountsSectionData.totalsEstimated. Omitted when false. Data-only until Phase 4;
-   * consumers must not claim an exact cross-currency figure when this is set.
+   * back / null-residue provenance), mirroring AccountsSectionData.totalsEstimated.
+   * Omitted when false; consumers must not claim an exact cross-currency figure.
    */
   reportingBalanceEstimated?: boolean;
+  /**
+   * V25-FINAL-1 — true when the conversion was UNAVAILABLE (see `reportingBalance:
+   * null`). Redundant with `reportingBalance === null` but explicit for the
+   * serializer/consumers. Omitted when false.
+   */
+  reportingBalanceUnavailable?: boolean;
   lastUpdated:           string;      // ISO-8601 — when FM last wrote this row from Plaid
   /** D4 Balance Freshness Provenance. ISO-8601 timestamp Plaid reports for when
    *  the balance was last fetched from the institution. Null when Plaid does not
@@ -286,9 +300,18 @@ export interface AccountsSectionData {
   /**
    * MC1 Phase 3 Slice 4 (D-7) — true when any converted balance in the totals
    * above was estimated (rate walked back / missing, or null-residue
-   * provenance). Data-only: no prompt or serializer consumes it until Phase 4.
+   * provenance).
    */
   totalsEstimated:    boolean;
+  /**
+   * V25-FINAL-1 — true when at least one account was FX-UNAVAILABLE (known
+   * foreign currency, no rate) and therefore EXCLUDED from the totals above
+   * (contributed 0, never its native magnitude). Stronger than `totalsEstimated`:
+   * the totals are an honest PARTIAL over the convertible accounts. The
+   * serializer discloses this to the model as "incomplete", not merely
+   * "approximate".
+   */
+  totalsUnconverted:  boolean;
   counts: {
     liquid:       number;
     investments:  number;

@@ -129,16 +129,18 @@ function emptyFacts(): DayFacts {
   return { cashIn: 0, cashOut: 0, unresolved: 0, byReason: {}, income: 0, spendGross: 0, refunds: 0, creditCardSpending: 0, directSpending: 0, cashWithdrawals: 0 };
 }
 
-function rowMagnitude(t: LiquidityTx, ctx?: ConversionContext): number {
-  const amt = ctx
-    ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount
-    : t.amount;
-  return Math.abs(amt);
+// V25-FINAL-1 — `null` when the row's conversion is UNAVAILABLE (no rate); the
+// fold EXCLUDES such rows rather than blending a native magnitude or a fake 0.
+function rowMagnitude(t: LiquidityTx, ctx?: ConversionContext): number | null {
+  if (!ctx) return Math.abs(t.amount);
+  const amt = convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount;
+  return amt === null ? null : Math.abs(amt);
 }
 
 /** Fold one row into an accumulator, reading BOTH canonical axes exactly once. */
 function foldDayFacts(acc: DayFacts, t: LiquidityTx, liqCtx: LiquidityContext, moneyCtx?: ConversionContext): void {
   const amt = rowMagnitude(t, moneyCtx);
+  if (amt === null) return; // V25-FINAL-1 — unconvertible row excluded from the day fold (no fake 0)
   const ft = t.flowType ?? null;
 
   // ── Liquidity axis (spendable-cash effect) ──

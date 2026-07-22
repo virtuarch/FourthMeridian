@@ -161,7 +161,13 @@ function reporting(d: TransactionDetail): DetailSection | null {
   const r = d.reporting;
   if (!r) return null; // clean identity — no conversion to show
   const rows: DetailRow[] = [];
-  pushIf(rows, "Reporting amount", `${money(r.amount, r.currency)}${r.estimated ? " (≈ est.)" : ""}`);
+  // V25-FINAL-1 — an unavailable conversion has NO reporting amount: disclose it as
+  // unavailable rather than render a fake 0 or a native magnitude in the target label.
+  if (r.amount === null || r.unavailable) {
+    pushIf(rows, "Reporting amount", `Unavailable — no exchange rate to ${r.currency}`);
+  } else {
+    pushIf(rows, "Reporting amount", `${money(r.amount, r.currency)}${r.estimated ? " (≈ est.)" : ""}`);
+  }
   if (r.rate != null) pushIf(rows, "Rate", String(r.rate));
   if (r.effectiveDateISO) pushIf(rows, "As of", r.effectiveDateISO);
   return { title: "Reporting", rows };

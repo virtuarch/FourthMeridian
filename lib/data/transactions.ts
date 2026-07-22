@@ -467,9 +467,12 @@ export async function getTransactionDetail(
     conv.conversion === null && !conv.estimated
       ? null // clean identity — the block adds no information
       : {
+          // V25-FINAL-1 — null when unavailable (no rate); never a native magnitude
+          // relabeled as the reporting currency.
           amount:           conv.amount,
           currency:         conv.currency,
           estimated:        conv.estimated,
+          unavailable:      conv.amount === null,
           rate:             conv.conversion?.rate ?? null,
           effectiveDateISO: conv.conversion?.effectiveDateISO ?? null,
         };

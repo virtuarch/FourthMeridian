@@ -123,7 +123,9 @@ export function DebtPayoffSection({
   const inDisp = (amount: number, currency: string | null | undefined): { amount: number; estimated: boolean } => {
     if (!ctx) return { amount, estimated: false };
     const c = convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx);
-    return { amount: c.amount, estimated: c.estimated };
+    // V25-FINAL-1 — unavailable conversion excluded (0), never native; `estimated`
+    // (true on a miss) discloses the payoff figures are approximate/incomplete.
+    return { amount: c.amount ?? 0, estimated: c.estimated };
   };
   // Sort by balance descending so color ranks match the breakdown chart
   const sortedDebtAccounts = [...debtAccounts].sort((a, b) => b.balance - a.balance);

@@ -87,7 +87,8 @@ export function renderDebtBreakdownChart(
   const inDisp = (amount: number, currency: string | null | undefined): { amount: number; estimated: boolean } => {
     if (!ctx) return { amount, estimated: false };
     const c = convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx);
-    return { amount: c.amount, estimated: c.estimated };
+    // V25-FINAL-1 — unavailable conversion excluded (0) from the donut, never native.
+    return { amount: c.amount ?? 0, estimated: c.estimated };
   };
 
   const converted = accounts

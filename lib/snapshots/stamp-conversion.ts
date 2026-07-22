@@ -64,7 +64,11 @@ export function convertStampedValues<K extends string>(
 
   const out = {} as Record<K, number>;
   for (const key of Object.keys(values) as K[]) {
-    out[key] = convertMoney({ amount: values[key], currency: stamp }, dateISO, ctx).amount;
+    // V25-FINAL-1 — when the stamp can't be converted (missed), convertMoney returns
+    // null; this row is `missed` and DROPPED by the caller (fxMiss), so keep the
+    // native magnitude in the dropped row rather than emit a fake 0.
+    const c = convertMoney({ amount: values[key], currency: stamp }, dateISO, ctx);
+    out[key] = c.amount ?? values[key];
   }
   // Off-stamp display conversion is ALWAYS flagged estimated: even an
   // exact-rate conversion of a summed total is an approximation of what the

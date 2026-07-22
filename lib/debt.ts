@@ -55,11 +55,14 @@ export interface DebtPaymentTxnLike {
 function rowAmount(
   t: DebtPaymentTxnLike,
   ctx?: ConversionContext,
-  flag?: { estimated: boolean },
-): number {
+  flag?: { estimated: boolean; unconverted?: boolean },
+): number | null {
   if (!ctx) return t.amount;
   const c = convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.dateISO ?? "", ctx);
   if (c.estimated && flag) flag.estimated = true; // MC1 P3 Slice 2 — taint (D-7)
+  // V25-FINAL-1 — no acceptable rate ⇒ no target value: signal it and return null
+  // so callers EXCLUDE it (never a fake 0, never the native magnitude).
+  if (c.amount === null) { if (flag) flag.unconverted = true; return null; }
   return c.amount;
 }
 
@@ -76,7 +79,10 @@ function rowAmount(
 export function totalDebtPaid(txs: DebtPaymentTxnLike[], ctx?: ConversionContext): number {
   let sum = 0;
   for (const t of txs) {
-    if (isDebtPayment(t.flowType)) sum += Math.abs(rowAmount(t, ctx));
+    if (!isDebtPayment(t.flowType)) continue;
+    const a = rowAmount(t, ctx);
+    if (a === null) continue; // V25-FINAL-1 — unavailable row excluded from the partial total
+    sum += Math.abs(a);
   }
   return sum;
 }
@@ -88,10 +94,15 @@ export interface DebtPaymentRollupEntry {
   count: number;
   /**
    * MC1 Phase 3 Slice 2 (plan D-7) — true when any converted row in this
-   * entry was estimated (walk-back / miss / null-residue). Always emitted;
-   * false on the context-less path. Rendered nowhere until Phase 4.
+   * entry was estimated (walk-back / null-residue). Always emitted;
+   * false on the context-less path.
    */
   estimated: boolean;
+  /**
+   * V25-FINAL-1 — true when a row in this entry had no acceptable FX rate and
+   * was EXCLUDED from `total` (never a fake 0). `total` is then a partial.
+   */
+  unconverted: boolean;
 }
 
 /**
@@ -109,13 +120,15 @@ export function rollupDebtPaymentsByAccount(
     if (!isDebtPayment(t.flowType)) continue;
     let entry = byAccount.get(t.accountId);
     if (!entry) {
-      entry = { accountId: t.accountId, total: 0, count: 0, estimated: false };
+      entry = { accountId: t.accountId, total: 0, count: 0, estimated: false, unconverted: false };
       byAccount.set(t.accountId, entry);
     }
-    const flag = { estimated: false };
-    entry.total += Math.abs(rowAmount(t, ctx, flag));
+    const flag = { estimated: false, unconverted: false };
+    const a = rowAmount(t, ctx, flag);
     entry.count += 1;
     if (flag.estimated) entry.estimated = true;
+    if (flag.unconverted) entry.unconverted = true;
+    if (a !== null) entry.total += Math.abs(a); // V25-FINAL-1 — exclude unavailable from the partial
   }
   return [...byAccount.values()].sort((a, b) => b.total - a.total);
 }

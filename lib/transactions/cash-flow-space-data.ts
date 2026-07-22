@@ -46,6 +46,7 @@ import {
   type AvailableHistoricalPeriods,
   outflowByCategory,
   incomeBySource,
+  economicTotals,
 } from "@/lib/transactions/cash-flow";
 import {
   aggregateDayFacts,
@@ -106,14 +107,24 @@ export interface CashFlowSpaceData {
   available: AvailableHistoricalPeriods;
   /** Years that bear data — the All-Time calendar nav (over full history). */
   dataYears: number[];
+
+  /**
+   * V25-FINAL-1 — true when one or more windowed rows had no acceptable exchange
+   * rate and were therefore EXCLUDED from the reporting-currency totals (income /
+   * spend / net). The displayed totals are then a partial over the convertible
+   * rows; the workspace raises an FX warning. Computed by the same `economicTotals`
+   * authority that produces the headline figures, so flag and figures agree.
+   */
+  unconverted: boolean;
 }
 
-/** Converted absolute magnitude of a row at its own date; absent ctx ⇒ raw abs. */
-function magnitude(t: Transaction, ctx?: ConversionContext): number {
-  const amt = ctx
-    ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount
-    : t.amount;
-  return Math.abs(amt);
+/** Converted absolute magnitude of a row at its own date; absent ctx ⇒ raw abs.
+ *  V25-FINAL-1 — `null` when the conversion is UNAVAILABLE, so the consumer
+ *  EXCLUDES the row (never a native magnitude, never a fake 0). */
+function magnitude(t: Transaction, ctx?: ConversionContext): number | null {
+  if (!ctx) return Math.abs(t.amount);
+  const amt = convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount;
+  return amt === null ? null : Math.abs(amt);
 }
 
 /**
@@ -172,5 +183,8 @@ export function buildCashFlowSpaceData(input: {
     stamp: cashFlowStamp({ transactions, period, now }),
     available: availableHistoricalPeriods(transactions),
     dataYears: dataBearingYears(transactions),
+    // V25-FINAL-1 — the same authority that computes the headline income/spend/net
+    // reports whether any windowed row was excluded for lack of an FX rate.
+    unconverted: economicTotals(windowed, moneyCtx).unconverted,
   };
 }

@@ -7,6 +7,8 @@
 
 import { resolvePerspectiveEnvelope } from "./envelope";
 import { computeWealthTimeMachine } from "@/lib/wealth/wealth-time-machine";
+import { classifyAccounts } from "@/lib/account-classifier";
+import { identityContext } from "@/lib/money/convert";
 import type { Snapshot } from "@/types";
 import type { LensResult, CompletenessTier, Completeness } from "@/lib/perspective-engine/types";
 import type { CashFlowStamp } from "@/lib/transactions/cash-flow-compare";
@@ -148,6 +150,63 @@ console.log("Lens-provenance envelopes (Liquidity/Debt) — tier from completene
   // A conflict still forces a warning tone even at a good tier (unchanged doctrine).
   const conflict = resolvePerspectiveEnvelope({ perspectiveId: "liquidity", lensResult: lens({ ids: ["a"], completeness: { tier: "observed", conflict: true, reason: "" } }) });
   check("conflict ⇒ warning tone even at observed", conflict.completeness?.tier === "observed" && conflict.completeness?.tone === "warning");
+}
+
+console.log("V25-FINAL-1 — FX-unconverted partial-total disclosure (Wealth / Cash Flow / lens)");
+{
+  const isFx = (env: ReturnType<typeof resolvePerspectiveEnvelope>) => env.warnings?.find((w) => w.kind === "fx");
+  const excludedCopy = (w: { label: string; detail?: string } | undefined) =>
+    !!w && /exclud/i.test(`${w.label} ${w.detail ?? ""}`) && !/estimated/i.test(w.label);
+
+  // ── Wealth: partial net-worth total (an account could not be converted) ──
+  const series = [snap("2026-07-01")];
+  const wr = computeWealthTimeMachine({ snapshots: series, asOf: "2026-07-05", compareTo: null, currency: "USD" });
+  const wClean = resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: wr, currency: "USD", fxUnconverted: false });
+  const wPartial = resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: wr, currency: "USD", fxUnconverted: true });
+  check("wealth: convertible-only ⇒ NO fx warning", isFx(wClean) === undefined);
+  check("wealth: fxUnconverted ⇒ an fx warning that says EXCLUDED (not merely 'estimated')", excludedCopy(isFx(wPartial)));
+  check("wealth: the fx warning is orthogonal — completeness tier is unchanged by it",
+    wPartial.completeness?.tier === wClean.completeness?.tier);
+
+  // ── Cash Flow: partial totals (a foreign row excluded) — both stamp + fallback ──
+  const cfPartial = resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", fxUnconverted: true });
+  const cfClean = resolvePerspectiveEnvelope({ perspectiveId: "cashFlow", fxUnconverted: false });
+  check("cashFlow: fxUnconverted ⇒ an EXCLUDED fx warning", excludedCopy(isFx(cfPartial)));
+  check("cashFlow: no exclusion ⇒ no fx warning", isFx(cfClean) === undefined);
+
+  // ── Lens: `unconverted` gives the STRONGER 'excluded' copy over walked-back 'estimated' ──
+  const lensU = (o: { estimated?: boolean; unconverted?: boolean }): LensResult => ({
+    lensId: "liquidity", lensVersion: 1, scope: { spaceId: "s", userId: "u" }, computedAt: "2026-07-01T00:00:00Z",
+    status: "ok", estimated: o.estimated ?? false, unconverted: o.unconverted ?? false, metrics: [], assumptions: [],
+    provenance: { accountIds: ["a"], tierCounts: { full: 1, balanceOnly: 0, summaryOnly: 0 }, dataAsOf: "2026-07-01T00:00:00Z", redactions: [] },
+  });
+  const estOnly = resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lensU({ estimated: true }) });
+  const unconv  = resolvePerspectiveEnvelope({ perspectiveId: "debt", lensResult: lensU({ estimated: true, unconverted: true }) });
+  check("lens: estimated-only ⇒ softer 'estimated' fx warning", /estimated/i.test(isFx(estOnly)?.label ?? ""));
+  check("lens: unconverted ⇒ stronger 'excluded' fx warning wins over estimated", excludedCopy(isFx(unconv)));
+
+  // ── Wealth INTEGRATION — mirrors WealthWorkspace's exact derivation ──
+  // identityContext(USD) resolves every non-USD currency as a miss, so a mixed
+  // composition yields classifyAccounts(...).unconverted === true → the same
+  // fxUnconverted the workspace feeds the wealth envelope.
+  const usdCtx = identityContext("USD");
+  const mixedAccts = [
+    { type: "checking", balance: 1000, currency: "USD" },
+    { type: "savings",  balance: 40000, currency: "EUR" }, // no rate under identity → excluded
+  ];
+  const allUsdAccts = [{ type: "checking", balance: 1000, currency: "USD" }];
+  const cMixed = classifyAccounts(mixedAccts, usdCtx);
+  const cUsd   = classifyAccounts(allUsdAccts, usdCtx);
+  check("wealth-integration: mixed composition ⇒ classifyAccounts.unconverted true, EUR excluded (netWorth 1000 not 41000)",
+    cMixed.unconverted === true && cMixed.netWorth === 1000);
+  check("wealth-integration: all-USD composition ⇒ unconverted false", cUsd.unconverted === false);
+  const wEnvMixed = resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: wr, currency: "USD", fxUnconverted: cMixed.unconverted });
+  const wEnvUsd   = resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: wr, currency: "USD", fxUnconverted: cUsd.unconverted });
+  check("wealth-integration: mixed ⇒ hero envelope carries the EXCLUDED fx warning", excludedCopy(isFx(wEnvMixed)));
+  check("wealth-integration: all-USD ⇒ no fx warning", isFx(wEnvUsd) === undefined);
+  // The headline number is the convertible partial total; the display currency
+  // (ctx.target) is unchanged — the reporting-currency preference is never mutated.
+  check("wealth-integration: display currency (preference) not mutated by exclusion", usdCtx.target === "USD");
 }
 
 console.log("Absent inputs ⇒ empty envelope (inert placeholders, never fabricated)");

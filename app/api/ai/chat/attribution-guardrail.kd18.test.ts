@@ -64,7 +64,7 @@ function accountsData(): AccountsSectionData {
   const accounts = [debtAcct('A', 'Card A', 10000, 10), debtAcct('B', 'Card B', 5000, 20)];
   return {
     totalCount: accounts.length, totalAssets: 0, totalLiabilities: 15000, netWorth: -15000,
-    totalLiquid: 0, totalInvestments: 0, totalDigitalAssets: 0, totalRealAssets: 0, totalsEstimated: false,
+    totalLiquid: 0, totalInvestments: 0, totalDigitalAssets: 0, totalRealAssets: 0, totalsEstimated: false, totalsUnconverted: false,
     counts: { liquid: 0, investments: 0, digitalAssets: 0, realAssets: 0, liabilities: accounts.length },
     health: { errorCount: 0, staleCount: 0, needsReauthCount: 0, errorAccountNames: [], staleAccountNames: [], needsReauthAccountNames: [] },
     knowledgeGaps: [], accounts,

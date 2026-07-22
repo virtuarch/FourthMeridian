@@ -23,12 +23,33 @@ export interface Money {
 /**
  * The result of converting one Money into the context's target currency.
  * `conversion: null` means no rate was applied — identity (native === target),
- * null-residue pass-through, or a RateMiss pass-through; `estimated`
- * distinguishes the honest cases (true) from clean identity (false).
+ * null-residue pass-through, or a RateMiss; `estimated` distinguishes the
+ * honest cases (true) from clean identity (false).
+ *
+ * V25-FINAL-1 (FX Honesty) — the UNAVAILABLE case (a KNOWN foreign currency
+ * with no acceptable rate) no longer relabels the native magnitude as the
+ * target currency. `amount` is forced to 0 so the value contributes NOTHING to
+ * any target-currency sum (exclusion by construction — the ~20 hand-rolled
+ * aggregate consumers become truthful without a per-consumer change), and the
+ * real native value is carried on `native` for honest display. This closes the
+ * "¥1,000,000 surfaces as $1,000,000 estimated" false-unit hole. The
+ * null-residue case (currency unknown) is deliberately NOT excluded — it has no
+ * known source currency to mislabel, so it keeps the legacy assume-target
+ * passthrough (documented, out of V25-FINAL-1 scope).
  */
 export interface ConvertedMoney {
-  amount:    number;
-  /** Always the context target — what the amount is now denominated in. */
+  /**
+   * The value denominated in the context target. A REAL converted number for
+   * exact/estimated conversions and identity; **`null` for the unavailable case**
+   * (known foreign currency, no rate). `null` is deliberately NOT `0`: a value
+   * that cannot be expressed in the target currency is not the same financial
+   * statement as a value worth zero. The type forces every consumer to decide
+   * what an unavailable value means for its surface (exclude + disclose, or show
+   * native) rather than silently summing a fake zero. Read `native` for the
+   * untouched source value.
+   */
+  amount:    number | null;
+  /** Always the context target — what `amount` is denominated in. */
   currency:  string;
   /** True when: rate was walked back, rate was missing, or native currency was null-residue. */
   estimated: boolean;
@@ -43,6 +64,15 @@ export interface ConvertedMoney {
     /** Provenance when known (not exposed by the Phase 1 resolver today; reserved). */
     source?:          string;
   };
+  /**
+   * V25-FINAL-1 — present ONLY for the UNAVAILABLE case (known foreign currency,
+   * no acceptable rate). When set, `amount` is 0 and this carries the untouched
+   * native value so a display surface can honestly show it in its own currency
+   * ("¥1,000,000, rate unavailable") instead of a mislabeled target figure or a
+   * bare "$0". Absent on every convertible/identity/null-residue result, so the
+   * all-USD path serializes byte-identically (the field is simply not emitted).
+   */
+  native?: { amount: number; currency: string };
 }
 
 /** An aggregate in the target currency. `estimated` = any member was estimated (taint propagation). */
@@ -52,14 +82,21 @@ export interface ConvertedTotal {
   estimated: boolean;
   /**
    * V25-CLOSE-3 — stronger than `estimated`. True when AT LEAST ONE member was
-   * an *unconverted native pass-through* (rate missing or null-residue), i.e. its
-   * amount is native units labelled as the target currency and can be wrong by
-   * orders of magnitude — not merely converted with a stale rate. `unconverted`
-   * implies `estimated`; surfaces render an unmistakable "FX unavailable" note
-   * for it rather than the quiet "est." marker. (The per-member distinction lives
-   * on ConvertedMoney via `fxDisclosureOf`; this preserves it through the fold.)
+   * FX-unavailable (rate missing on a known currency, or null-residue), so the
+   * total is known to be incomplete rather than merely converted with a stale
+   * rate. `unconverted` implies `estimated`; surfaces render an unmistakable
+   * "FX unavailable" note for it rather than the quiet "est." marker. (The
+   * per-member distinction lives on ConvertedMoney via `fxDisclosureOf`.)
    */
   unconverted: boolean;
+  /**
+   * V25-FINAL-1 — how many members were EXCLUDED from `amount` because their
+   * (known) currency had no acceptable rate. These contributed 0 to the sum
+   * (their native magnitude is never blended in), so `amount` is an honest
+   * partial total over the convertible members and `excluded` quantifies the
+   * coverage gap for disclosure.
+   */
+  excluded:  number;
 }
 
 /**

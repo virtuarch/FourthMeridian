@@ -64,6 +64,12 @@ function convMetric(
 ): { metric: LensMetric; estimated: boolean } {
   if (m.format !== "currency" || typeof m.value !== "number") return { metric: m, estimated: false };
   const c = convertMoney({ amount: m.value, currency: from }, dateISO, ctx);
+  // V25-FINAL-1 — if this "view as" conversion is UNAVAILABLE (no rate), there is no
+  // display-currency value. The whole-context reversion (server-context) handles the
+  // common fully-unsatisfiable case by not selecting this currency at all; for a
+  // residual per-metric miss we keep the metric flagged estimated rather than emit a
+  // fake 0 (the lens already carries `unconverted` for the incompleteness signal).
+  if (c.amount === null) return { metric: m, estimated: true };
   return { metric: { ...m, value: c.amount }, estimated: c.estimated };
 }
 

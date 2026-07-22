@@ -76,15 +76,21 @@ const pending = [row("2026-06-06", -25, "SPENDING", "Food", "USD", true)];
 // ── residue/mixed: numbers identical, month flags honest ─────────────────────
 
 {
-  const mixed = [
-    ...pureUsd,
-    row("2026-06-02", -10,  "SPENDING", "Food", null),   // Phase 0 null-residue → June flagged
-    row("2026-06-07", -200, "SPENDING", "Food", "EUR"),  // unresolved under identity → June flagged
-  ];
+  const residueRow = row("2026-06-02", -10,  "SPENDING", "Food", null);  // null-residue → passthrough (kept)
+  const eurRow      = row("2026-06-07", -200, "SPENDING", "Food", "EUR"); // unavailable under identity → excluded to 0
+  const mixed = [...pureUsd, residueRow, eurRow];
   const a = buildMonthlyBreakdown(mixed, [], "2026-05-01", "2026-06-30", null);
   const b = buildMonthlyBreakdown(mixed, [], "2026-05-01", "2026-06-30", null, CTX);
-  check("mixed: numbers identical under identity (flags aside)",
-    JSON.stringify(numbersOf(a)) === JSON.stringify(numbersOf(b)));
+  // V25-FINAL-1 — under identity the unavailable EUR row (200) is EXCLUDED from
+  // the reporting-currency month total (contributes 0), so the with-context June
+  // expense is exactly 200 LESS than the context-less raw addition, which blends
+  // the EUR native magnitude in. The null-residue (10) still passes through in both.
+  const aJune = a.find((m) => m.month === "2026-06")!.expenseTotal;
+  const bJune = b.find((m) => m.month === "2026-06")!.expenseTotal;
+  check("mixed: unavailable EUR (200) excluded from the reporting-currency month total",
+    bJune === aJune - 200, `raw ${aJune}, reporting ${bJune}`);
+  check("mixed: the excluded EUR native magnitude is NOT summed (reporting differs from raw)",
+    bJune !== aJune);
   check("mixed: month with residue/non-USD rows flagged with context, May stays exact",
     b.find((m) => m.month === "2026-06")?.estimated === true &&
     b.find((m) => m.month === "2026-05")?.estimated === false);
@@ -113,8 +119,8 @@ const pending = [row("2026-06-06", -25, "SPENDING", "Food", "USD", true)];
   check("real: EUR spending converts at row date (200 × 1.5 = 300), exact ⇒ month not estimated",
     m[0].expenseTotal === 300 && m[0].estimated === false);
   const mm = buildMonthlyBreakdown([row("2026-06-07", -100, "SPENDING", "Food", "SAR")], [], "2026-06-01", "2026-06-30", null, realCtx);
-  check("real: missed rate stays native + month estimated (D-3)",
-    mm[0].expenseTotal === 100 && mm[0].estimated === true);
+  check("real: missed rate EXCLUDED to 0 + month estimated (V25-FINAL-1, not native 100)",
+    mm[0].expenseTotal === 0 && mm[0].estimated === true);
 }
 
 // ── TI2-W1: needs-classification aggregate (additive; disclosure-only) ────────

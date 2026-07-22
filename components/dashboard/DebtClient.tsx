@@ -437,10 +437,13 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
   // figures re-denominate). Map-then-reduce, no closure mutation; taint
   // drives the quiet "est." indicator. Per-card rows below stay native.
   const { totalUsed, totalLimit, totalAvailable, overallUtil, utilizationEstimated } = useMemo(() => {
-    const conv = (amount: number, currency: string | null | undefined) =>
-      conversionCtx
-        ? convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), conversionCtx)
-        : { amount, estimated: false };
+    const conv = (amount: number, currency: string | null | undefined): { amount: number; estimated: boolean } => {
+      if (!conversionCtx) return { amount, estimated: false };
+      const c = convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), conversionCtx);
+      // V25-FINAL-1 — unavailable conversion excluded (0) from the credit-card
+      // totals/utilization, never native; `estimated` (true on a miss) discloses it.
+      return { amount: c.amount ?? 0, estimated: c.estimated };
+    };
     const usedConv  = cards.map((a) => conv(Math.max(0, a.balance), a.currency));
     const limitConv = limitedCards.map((a) => conv(a.creditLimit ?? 0, a.currency));
     const owedConv  = owedCards.map((a) => conv(a.balance, a.currency));

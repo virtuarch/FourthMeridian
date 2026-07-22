@@ -95,7 +95,7 @@ async function readCryptoHoldings(
   canonicalAccountIds: ReadonlySet<string>,
 ): Promise<CryptoHoldingsInput> {
   const empty: CryptoHoldingsInput = {
-    total: 0, invested: 0, cash: 0, fullPositions: [], anyEstimated: false, hasAny: false,
+    total: 0, invested: 0, cash: 0, fullPositions: [], anyEstimated: false, anyUnconverted: false, hasAny: false,
   };
 
   const bridgePositions = await readLegacyCryptoWalletPositions({ spaceId });
@@ -112,9 +112,14 @@ async function readCryptoHoldings(
   );
   const closeISO = yesterdayUTCISO();
   let anyEstimated = false;
-  const toTarget = (value: number, currency: string | null): number => {
+  let anyUnconverted = false;
+  // V25-FINAL-1 — returns null when the position's currency has no acceptable
+  // rate: the position is EXCLUDED from the portfolio totals (never a fake 0) and
+  // `anyUnconverted` is set so the total is disclosed as an incomplete partial.
+  const toTarget = (value: number, currency: string | null): number | null => {
     const c = convertMoney({ amount: value, currency: currency ?? null }, closeISO, moneyCtx);
     if (c.estimated) anyEstimated = true;
+    if (c.amount === null) { anyUnconverted = true; return null; }
     return c.amount;
   };
 
@@ -124,6 +129,7 @@ async function readCryptoHoldings(
   for (const p of positions) {
     if (p.value == null) continue;
     const v = toTarget(p.value, p.currency);
+    if (v === null) continue; // unavailable — excluded from the partial portfolio total
     total += v;
     if (p.isCash) { cash += v; continue; } // crypto is not cash, but respect the flag
     invested += v;
@@ -137,7 +143,7 @@ async function readCryptoHoldings(
   return {
     total, invested, cash,
     fullPositions: [...fullBySymbol.values()],
-    anyEstimated, hasAny: true,
+    anyEstimated, anyUnconverted, hasAny: true,
   };
 }
 

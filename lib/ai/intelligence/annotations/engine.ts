@@ -203,7 +203,10 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
         hasNullAPR = true;
       } else {
         fullVisWithAPR++;
-        if (acct.apr > 0) {
+        // V25-FINAL-1 — only accounts with a reporting-currency value can enter the
+        // cross-account interest-burden sum; an unconvertible balance (null) is
+        // excluded (disclosed via totalsUnconverted) rather than summed as a fake 0.
+        if (acct.apr > 0 && acct.reportingBalance !== null) {
           // P2-7D — reporting-currency balance: monthlyInterestBurden and the
           // APR-weighting denominator sum across accounts, so mixed-currency
           // native balances would be an invalid sum. APR stays dimensionless.

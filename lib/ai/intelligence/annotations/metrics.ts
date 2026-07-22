@@ -349,8 +349,16 @@ export function computeDebtStrategy(
   // candidate balances must be currency-commensurable. APR stays dimensionless and
   // is untouched. Native balance/currency remain on AccountSummaryItem for detail.
 
+  // V25-FINAL-1 — cross-account balance comparisons need a reporting-currency
+  // value; an account whose balance could NOT be converted (reportingBalance null)
+  // is excluded from ranking/weighting (it would otherwise poison Math.abs). This
+  // is disclosed via AccountsSectionData.totalsUnconverted.
+  const valuedDebt = debtAccounts.filter(
+    (a): a is typeof a & { reportingBalance: number } => a.reportingBalance !== null,
+  );
+
   // Avalanche target: highest APR — FULL visibility, APR known and positive.
-  const fullWithApr = [...debtAccounts]
+  const fullWithApr = [...valuedDebt]
     .filter((a) => a.visibilityLevel === 'FULL' && a.apr != null && a.apr > 0)
     .sort((a, b) => (b.apr ?? 0) - (a.apr ?? 0));
 
@@ -361,7 +369,7 @@ export function computeDebtStrategy(
   // Snowball target: lowest absolute REPORTING balance — any debt account. Ranking
   // native magnitudes here would compare unlike currencies (e.g. AED 20,000 vs
   // USD 10,000) and pick the wrong "smallest" account.
-  const byBalance = [...debtAccounts].sort(
+  const byBalance = [...valuedDebt].sort(
     (a, b) => Math.abs(a.reportingBalance) - Math.abs(b.reportingBalance),
   );
   const snowballCandidate: DebtCandidate | null = byBalance.length > 0

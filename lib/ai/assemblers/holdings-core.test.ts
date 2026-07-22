@@ -35,7 +35,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 const approx = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) <= eps;
 
 const NO_CRYPTO: CryptoHoldingsInput = {
-  total: 0, invested: 0, cash: 0, fullPositions: [], anyEstimated: false, hasAny: false,
+  total: 0, invested: 0, cash: 0, fullPositions: [], anyEstimated: false, anyUnconverted: false, hasAny: false,
 };
 function agg(over: Partial<AllScopeAggregate> = {}): AllScopeAggregate {
   return { valuedSubtotal: 0, cashValue: 0, anyFxEstimated: false, hasAny: true, ...over };
@@ -170,7 +170,7 @@ console.log("6. crypto compatibility preserved (transitional)");
   const crypto: CryptoHoldingsInput = {
     total: 30000, invested: 30000, cash: 0,
     fullPositions: [{ symbol: "BTC", name: "Bitcoin", value: 30000 }],
-    anyEstimated: false, hasAny: true,
+    anyEstimated: false, anyUnconverted: false, hasAny: true,
   };
   const out = buildHoldingsSummary({
     scopeHint: "full",
@@ -240,7 +240,7 @@ console.log("8. crypto dedup — canonical wins, dedup boundary is the wallet ac
     invested: kept.reduce((s, p) => s + p.value, 0),
     cash: 0,
     fullPositions: kept.map((p) => ({ symbol: p.symbol, name: p.name, value: p.value })),
-    anyEstimated: false, hasAny: kept.length > 0,
+    anyEstimated: false, anyUnconverted: false, hasAny: kept.length > 0,
   };
   const out = buildHoldingsSummary({
     scopeHint: "full",

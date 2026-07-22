@@ -14,9 +14,11 @@
  *   - mixed USD+EUR+AED → totals reconcile in ONE reporting currency, converted
  *     per-row at each row's OWN date (historical FX by date).
  *   - same nominal amount, different currency → different converted totals.
- *   - missing FX → native pass-through + `estimated: true` (never zeroed).
+ *   - missing FX → UNAVAILABLE: excluded to 0 + `estimated: true` (V25-FINAL-1 —
+ *     the native magnitude is never summed into a reporting-currency total as
+ *     though it had been converted).
  *   - ordering is by CONVERTED magnitude (a small-native / high-rate row can
- *     outrank a large-native / low-rate one).
+ *     outrank a large-native / low-rate one; an unavailable row sinks to 0).
  *
  * Harness mirrors transactions.golden.test.ts (plain tsx, no test runner).
  * NOTE: importing the assembler transitively constructs the Prisma client —
@@ -46,8 +48,8 @@ const IDENTITY = identityContext(DEFAULT_DISPLAY_CURRENCY);
 /**
  * Reporting currency = USD. EUR converts at a DATE-DEPENDENT rate (1.20 before
  * 2026-06-15, 1.10 on/after) so we exercise "historical FX by row date"; AED is
- * a flat 0.27; every other currency (e.g. SAR) MISSES → native pass-through +
- * estimated, per plan D-3.
+ * a flat 0.27; every other currency (e.g. SAR) MISSES → UNAVAILABLE: excluded to
+ * 0 + estimated (V25-FINAL-1, superseding D-3's native pass-through).
  */
 const usdCtx: ConversionContext = {
   target: "USD",
@@ -89,7 +91,8 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
   // Amazon appears twice: USD 100 (→100) + EUR 100 @1.20 (→120) = 220 exact.
   // Ikea: EUR 100 @1.10 (later date → different historical rate) = 110.
   // Carrefour: AED 1000 @0.27 = 270 (native 1000 would have dwarfed everything).
-  // Souq: SAR 500 → MISS → native 500 + estimated.
+  // Souq: SAR 500 → MISS → UNAVAILABLE, excluded to 0 + estimated (V25-FINAL-1:
+  // the native 500 must never be summed into a USD total as though converted).
   const spend: RollupRow[] = [
     row("Amazon",    -100, "USD", "2026-06-10", "SPENDING"),
     row("Amazon",    -100, "EUR", "2026-06-10", "SPENDING"),
@@ -107,12 +110,12 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
   check("merchant: Amazon exact ⇒ no estimated flag", by.get("Amazon")?.estimated === undefined);
   check("merchant: Ikea EUR @1.10 (date ≥ 06-15) = 110 (historical FX by date)", by.get("Ikea")?.total === 110);
   check("merchant: Carrefour AED 1000 @0.27 = 270", by.get("Carrefour")?.total === 270);
-  check("merchant: Souq SAR missing rate ⇒ native 500 + estimated", by.get("Souq")?.total === 500 && by.get("Souq")?.estimated === true);
+  check("merchant: Souq SAR missing rate ⇒ excluded to 0 + estimated (not native 500)", by.get("Souq")?.total === 0 && by.get("Souq")?.estimated === true);
   check("merchant: payroll/transfer never surface as spending merchants", !by.has("Payroll") && !by.has("Move"));
 
-  // Ordering is by CONVERTED magnitude: Souq(500) > Carrefour(270) > Amazon(220) > Ikea(110).
-  check("merchant: ranked by converted total, not native",
-    m.map((x) => x.canonicalName).join(",") === "Souq,Carrefour,Amazon,Ikea",
+  // Ordering is by CONVERTED magnitude: Carrefour(270) > Amazon(220) > Ikea(110) > Souq(0, excluded).
+  check("merchant: ranked by converted total; the unavailable row sinks to 0 (never native-inflated)",
+    m.map((x) => x.canonicalName).join(",") === "Carrefour,Amazon,Ikea,Souq",
     m.map((x) => `${x.canonicalName}:${x.total}`).join(" "));
 }
 
@@ -136,7 +139,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
     row("Acme",       2000, "USD", "2026-06-10", "INCOME", "Income"),
     row("Acme",       1000, "EUR", "2026-06-10", "INCOME", "Income"), // @1.20 → 1200 (Acme = 3200)
     row("Dividends",  1000, "AED", "2026-06-10", "INCOME", "Income"), // @0.27 → 270
-    row("Mystery",     100, "SAR", "2026-06-10", "INCOME", "Income"), // miss → 100 + estimated
+    row("Mystery",     100, "SAR", "2026-06-10", "INCOME", "Income"), // miss → excluded to 0 + estimated
     // A negative INCOME row (refunded payroll) must be excluded (sign gate).
     row("Acme",       -50, "USD", "2026-06-10", "INCOME", "Income"),
     // Spending rows never appear as income sources.
@@ -147,7 +150,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 
   check("income: Acme = 2000 + 1200 = 3200 (per-row converted, negative excluded)", by.get("Acme")?.total === 3200);
   check("income: Dividends AED = 270", by.get("Dividends")?.total === 270);
-  check("income: Mystery SAR missing ⇒ native 100 + estimated", by.get("Mystery")?.total === 100 && by.get("Mystery")?.estimated === true);
+  check("income: Mystery SAR missing ⇒ excluded to 0 + estimated (not native 100)", by.get("Mystery")?.total === 0 && by.get("Mystery")?.estimated === true);
   check("income: spending merchant never appears as income source", !by.has("Amazon"));
   check("income: ranked by converted total (Acme > Dividends > Mystery)",
     s.map((x) => x.canonicalName).join(",") === "Acme,Dividends,Mystery");

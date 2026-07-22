@@ -35,7 +35,9 @@ interface Props {
 }
 
 function magnitude(t: Transaction, ctx?: ConversionContext): number {
-  const amt = ctx ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount : t.amount;
+  // V25-FINAL-1 — an unavailable conversion (no rate) contributes 0 to this widget's
+  // display sum (excluded, never a native magnitude / relabel).
+  const amt = ctx ? (convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount ?? 0) : t.amount;
   return Math.abs(amt);
 }
 

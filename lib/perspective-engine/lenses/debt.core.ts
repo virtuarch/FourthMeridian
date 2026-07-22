@@ -115,13 +115,20 @@ export function computeDebt(
 
   // Latest close relative to the INJECTED clock (pure, fixture-deterministic).
   const valuationDateISO = ctx ? minusDaysISO(toISODateUTC(options.now()), 1) : undefined;
-  const estFlag = { estimated: false };
+  const estFlag = { estimated: false, unconverted: false };
 
-  /** Money amount in the context target (native + taint per D-3 when unresolvable). */
+  /**
+   * Money amount in the context target. V25-FINAL-1 — an UNAVAILABLE conversion
+   * (no rate) has no target value: it is EXCLUDED from the sums (returns 0 here,
+   * a within-lens exclusion) and recorded on `estFlag.unconverted`, which the
+   * LensResult carries so the workspace discloses an incomplete total. It is
+   * never the native magnitude relabeled, and never a real zero.
+   */
   const inTarget = (amount: number, currency: string | null | undefined): number => {
     if (!ctx) return amount;
     const c = convertMoney({ amount, currency: currency ?? null }, valuationDateISO!, ctx);
     if (c.estimated) estFlag.estimated = true;
+    if (c.amount === null) { estFlag.unconverted = true; return 0; }
     return c.amount;
   };
   const base = {
@@ -333,6 +340,8 @@ export function computeDebt(
     // MC1 QA Q2 (D-7) — emitted only when a context was supplied, so
     // context-less results serialize byte-identically (kill switch).
     ...(ctx ? { estimated: estFlag.estimated } : {}),
+    ...(ctx && estFlag.unconverted ? { unconverted: true } : {}), // V25-FINAL-1 — incomplete total
+
     assumptions,
     provenance,
   };

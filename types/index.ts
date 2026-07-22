@@ -273,9 +273,14 @@ export interface TransactionDetailCounterparty {
  * null on estimated pass-throughs (rate miss / null-residue currency).
  */
 export interface TransactionDetailReporting {
-  amount:           number;
+  /** V25-FINAL-1 — `null` when the conversion is UNAVAILABLE (no rate): there is no
+   *  reporting-currency amount. The drawer shows "unavailable", never a fake 0 or a
+   *  native magnitude under the reporting-currency label. */
+  amount:           number | null;
   currency:         string;
   estimated:        boolean;
+  /** V25-FINAL-1 — true when the conversion could not be performed (amount is null). */
+  unavailable:      boolean;
   rate:             number | null;
   effectiveDateISO: string | null;
 }

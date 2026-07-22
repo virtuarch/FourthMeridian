@@ -13,7 +13,11 @@
  *   - All-USD data through a REAL (serialized+rehydrated) USD context equals
  *     legacy numerically with `estimated: false` — the "flip is a no-op for
  *     USD users" gate.
- *   - Walk-back ⇒ estimated; miss ⇒ native amount + estimated.
+ *   - Walk-back ⇒ estimated. V25-FINAL-1 — a KNOWN-currency miss is now
+ *     UNAVAILABLE: EXCLUDED from the totals (contributes 0, never its native
+ *     magnitude) and flagged `unconverted`, NOT blended in as native-as-target.
+ *     Null-residue (unknown denomination) keeps the legacy assume-target
+ *     passthrough (numbers unchanged) — it is not a false unit.
  *
  * Composition surfaces unchanged from Phase 2: snapshot writer fields
  * (regenerate.ts derivation) and AI accounts-section rows; liquidity lens
@@ -99,19 +103,26 @@ const pureUsd: ClassifiableAccount[] = [
     withCtx.estimated === true && without.estimated === false);
 }
 
-// ── mixed non-USD under identity: numbers identical, flagged ─────────────────
-
+// ── mixed non-USD under identity: unavailable rows EXCLUDED (V25-FINAL-1) ─────
+// Under identityContext there is no rate table, so a KNOWN foreign currency is
+// unavailable. It must NOT be blended in as native-labelled-target (the false
+// unit); it is excluded from the totals and flagged `unconverted`.
 {
   const mixed: ClassifiableAccount[] = [
     ...pureUsd,
-    { type: "savings", balance: 40000, currency: "EUR" },
-    { type: "debt",    balance: 1200,  currency: "SAR" },
+    { type: "savings", balance: 40000, currency: "EUR" }, // no rate ⇒ excluded from totalSavings
+    { type: "debt",    balance: 1200,  currency: "SAR" }, // no rate ⇒ excluded from totalLiabilities
   ];
-  const a = classifyAccounts(mixed);
-  const b = classifyAccounts(mixed, CTX);
-  check("mixed: totals numerically identical under identityContext (native pass-through)",
-    JSON.stringify(totals(a)) === JSON.stringify(totals(b)));
+  const base = classifyAccounts(pureUsd, CTX);
+  const b    = classifyAccounts(mixed, CTX);
+  check("mixed: unavailable EUR savings excluded — totalSavings unchanged from the USD-only base",
+    b.totalSavings === base.totalSavings);
+  check("mixed: unavailable SAR debt excluded — totalLiabilities unchanged from the USD-only base",
+    b.totalLiabilities === base.totalLiabilities);
+  check("mixed: the ¥1M-as-$1M relabel is impossible — EUR 40000 never inflated a USD total",
+    b.totalSavings !== base.totalSavings + 40000);
   check("mixed: estimated TRUE with context (unresolved non-USD rows)", b.estimated === true);
+  check("mixed: unconverted TRUE — surface can disclose an incomplete total", b.unconverted === true);
 }
 
 // ── all-USD through a REAL context == legacy (the no-op-for-USD-users gate) ──
@@ -141,14 +152,15 @@ const pureUsd: ClassifiableAccount[] = [
   };
   const c = classifyAccounts(
     [
-      { type: "savings", balance: 100, currency: "EUR" },  // walked-back rate
-      { type: "savings", balance: 50,  currency: "SAR" },  // miss → native
-      { type: "savings", balance: 10,  currency: "USD" },  // identity
+      { type: "savings", balance: 100, currency: "EUR" },  // walked-back rate → 125
+      { type: "savings", balance: 50,  currency: "SAR" },  // miss → EXCLUDED (0), not native
+      { type: "savings", balance: 10,  currency: "USD" },  // identity → 10
     ],
     realCtx,
   );
-  check("walk-back: converts and flags (100×1.25 + 50 native + 10 = 185)", c.totalSavings === 185);
+  check("walk-back: converts; miss EXCLUDED not blended (100×1.25 + 0 + 10 = 135)", c.totalSavings === 135);
   check("walk-back/miss: estimated TRUE", c.estimated === true);
+  check("miss: unconverted TRUE (the SAR row was excluded)", c.unconverted === true);
   const clamp = classifyAccounts([{ type: "debt", balance: -100, currency: "EUR" }], realCtx);
   check("convert-then-clamp: card credits still excluded", clamp.totalLiabilities === 0);
 }
@@ -175,8 +187,8 @@ const pureUsd: ClassifiableAccount[] = [
     classifyAccounts(eur, datedCtx, jan).totalSavings === 125);
   check("valuation date: explicit June date converts at June's rate",
     classifyAccounts(eur, datedCtx, jun).totalSavings === 150);
-  check("valuation date: default (latest close) misses the fixture → native + estimated",
-    classifyAccounts(eur, datedCtx).totalSavings === 100 && classifyAccounts(eur, datedCtx).estimated === true);
+  check("valuation date: default (latest close) misses the fixture → EXCLUDED (0) + estimated",
+    classifyAccounts(eur, datedCtx).totalSavings === 0 && classifyAccounts(eur, datedCtx).estimated === true);
 }
 
 // ── AI accounts-section composition rows (pure-USD, byte-identical) ──────────
@@ -199,7 +211,7 @@ const pureUsd: ClassifiableAccount[] = [
   let rng = 424242;
   const rand = () => (rng = (rng * 1103515245 + 12345) % 2147483648) / 2147483648;
 
-  let usdByteEqual = true, mixedNumericEqual = true;
+  let usdByteEqual = true, mixedExclusionEqual = true;
   for (let i = 0; i < 200; i++) {
     const n = Math.floor(rand() * 12);
     const mixedFixture: ClassifiableAccount[] = Array.from({ length: n }, () => ({
@@ -211,13 +223,18 @@ const pureUsd: ClassifiableAccount[] = [
     if (JSON.stringify(classifyAccounts(usdFixture)) !== JSON.stringify(classifyAccounts(usdFixture, CTX))) {
       usdByteEqual = false; break;
     }
-    if (JSON.stringify(totals(classifyAccounts(mixedFixture))) !==
-        JSON.stringify(totals(classifyAccounts(mixedFixture, CTX)))) {
-      mixedNumericEqual = false; break;
+    // V25-FINAL-1 invariant under identityContext: a KNOWN foreign currency has
+    // no rate ⇒ excluded (0). So the totals of the full fixture must EQUAL the
+    // totals of just its convertible rows (USD + null-residue passthrough); the
+    // known-foreign rows contribute nothing and can never inflate a total.
+    const convertibleOnly = mixedFixture.filter((a) => a.currency == null || a.currency === "USD");
+    if (JSON.stringify(totals(classifyAccounts(mixedFixture, CTX))) !==
+        JSON.stringify(totals(classifyAccounts(convertibleOnly, CTX)))) {
+      mixedExclusionEqual = false; break;
     }
   }
   check("random: 200 pure-USD fixtures byte-identical", usdByteEqual);
-  check("random: 200 mixed fixtures numerically identical under identity", mixedNumericEqual);
+  check("random: 200 mixed fixtures — known-foreign rows excluded, totals == convertible-only totals", mixedExclusionEqual);
 }
 
 // ── Report ────────────────────────────────────────────────────────────────────

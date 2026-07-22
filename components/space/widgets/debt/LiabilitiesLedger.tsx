@@ -59,7 +59,9 @@ function buildRows(accounts: DebtPerspectiveAccount[], ctx?: ConversionContext):
   const conv = (amount: number, currency: string | null | undefined) => {
     if (!ctx) return { amount, estimated: false };
     const c = convertMoney({ amount, currency: currency ?? null }, asOf, ctx);
-    return { amount: c.amount, estimated: c.estimated };
+    // V25-FINAL-1 — unavailable conversion excluded (0) from the ledger's share math,
+    // never a native magnitude; `estimated` (true on a miss) discloses the partial.
+    return { amount: c.amount ?? 0, estimated: c.estimated };
   };
 
   const prepared = accounts

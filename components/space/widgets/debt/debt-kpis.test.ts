@@ -93,8 +93,9 @@ console.log("6. Mixed-currency ⇒ estimated taint (identityContext USD + EUR ro
     debt({ balance: 500,  currency: "EUR", interestRate: 10, minimumPayment: 20, creditLimit: 1000 }),
   ], ctx);
   check("estimated = true (EUR row missed the rate)", k.estimated === true);
-  // Native pass-through under a RateMiss ⇒ arithmetic is the raw sum.
-  check("totalDebt = 1500 (native pass-through)", k.totalDebt === 1500, `${k.totalDebt}`);
+  // V25-FINAL-1 — an unavailable EUR balance is EXCLUDED (never blended in as
+  // native-labelled-USD), so the total is the honest USD-only figure.
+  check("totalDebt = 1000 (EUR excluded, not relabeled to USD)", k.totalDebt === 1000, `${k.totalDebt}`);
   const pure = computeDebtKpis([debt({ balance: 1000, currency: "USD", interestRate: 20 })]);
   check("no-ctx result is never estimated", pure.estimated === false);
 }

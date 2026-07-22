@@ -80,9 +80,12 @@ export function convertPortfolioValueSeries(
   ctx:     ConversionContext,
   dateISO: string,
 ): PortfolioValuePoint[] {
-  return series.map((p) => {
-    if (p.currency === ctx.target) return p;
+  return series.flatMap((p) => {
+    if (p.currency === ctx.target) return [p];
     const c = convertMoney({ amount: p.value, currency: p.currency }, dateISO, ctx);
-    return { date: p.date, value: c.amount, currency: ctx.target, estimated: p.estimated || c.estimated };
+    // V25-FINAL-1 — a point with no acceptable rate has no reporting value; DROP it
+    // (never plot a native magnitude or a fake 0 beside converted points).
+    if (c.amount === null) return [];
+    return [{ date: p.date, value: c.amount, currency: ctx.target, estimated: p.estimated || c.estimated }];
   });
 }

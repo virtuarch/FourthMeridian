@@ -46,7 +46,18 @@ import type { InvestmentsTrustSummary } from "./investments-trust";
 type Conv = (amount: number) => number;
 
 function makeConv(from: string, dateISO: string, ctx: ConversionContext): Conv {
-  return (amount: number) => convertMoney({ amount, currency: from }, dateISO, ctx).amount;
+  return (amount: number) => {
+    const c = convertMoney({ amount, currency: from }, dateISO, ctx);
+    // V25-FINAL-1 — this is the "view as" DISPLAY re-conversion of an already-
+    // computed reporting-currency aggregate. The whole-context reversion
+    // (server-context) guarantees a currency is only offered when its conversion
+    // is satisfiable, so a miss here is a defensive edge (unprefetched pair): keep
+    // the source figure rather than emit a fake 0. The PRIMARY valuation path
+    // (valuation-core) already represents FX-unavailable positions as
+    // reportingValue null + overallTier "unknown" — that is where portfolio
+    // incompleteness is derived, not here.
+    return c.amount ?? amount;
+  };
 }
 
 /** Convert one valued holding row: only `reportingValue` is reporting-currency.

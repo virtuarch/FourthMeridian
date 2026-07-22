@@ -77,13 +77,17 @@ export interface DebtPaymentGroup {
  */
 export function groupDebtPaymentsByCreditor(
   payments: Transaction[],
-  magnitude: (t: Transaction) => number,
+  // V25-FINAL-1 — the extractor may return `null` for an FX-unavailable row; such
+  // rows are EXCLUDED from the creditor group (never a native magnitude / fake 0).
+  magnitude: (t: Transaction) => number | null,
 ): DebtPaymentGroup[] {
   const by = new Map<string, { value: number; count: number }>();
   for (const t of payments) {
+    const m = magnitude(t);
+    if (m === null) continue;
     const key = normalizeCreditor(rawCreditorLabel(t));
     const g = by.get(key) ?? { value: 0, count: 0 };
-    g.value += magnitude(t);
+    g.value += m;
     g.count += 1;
     by.set(key, g);
   }

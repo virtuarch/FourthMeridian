@@ -106,7 +106,10 @@ async function main(): Promise<void> {
     check("e2e: 80 EUR @ (1/0.8) = 100 USD via prefetched context",
       c.amount === 80 * (1 / 0.8) && c.estimated === false && c.conversion?.from === "EUR");
     const sar = convertMoney({ amount: 100, currency: "SAR" }, D, ctx);
-    check("e2e: miss → native + estimated through the same seam", sar.amount === 100 && sar.estimated === true);
+    // V25-FINAL-1 — a known-currency miss is UNAVAILABLE: excluded to 0 (never
+    // relabeled), native value preserved, estimated flagged.
+    check("e2e: miss → excluded (amount 0) + native + estimated through the same seam",
+      sar.amount === null && sar.native?.amount === 100 && sar.estimated === true);
   }
 
   // ── determinism ─────────────────────────────────────────────────────────────

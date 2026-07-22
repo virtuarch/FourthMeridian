@@ -153,6 +153,15 @@ export interface AccountClassification<T extends ClassifiableAccount = Classifia
    * Carried to props/AI data only — rendered nowhere until Phase 4.
    */
   estimated:          boolean;
+  /**
+   * V25-FINAL-1 — true when AT LEAST ONE account was FX-UNAVAILABLE (a known
+   * foreign currency with no acceptable rate). Such accounts contribute 0 to
+   * every total above (their native magnitude is never blended in), so the
+   * totals are an honest PARTIAL sum and this flag tells a surface to disclose
+   * "some balances could not be converted" rather than the softer "≈ est."
+   * `unconverted` implies `estimated`; false on the context-less path.
+   */
+  unconverted:        boolean;
 }
 
 // ─── Implementation ───────────────────────────────────────────────────────────
@@ -171,12 +180,16 @@ function sumBalances(
   accounts: ClassifiableAccount[],
   ctx: ConversionContext | undefined,
   valuationDateISO: string | undefined,
-  flag: { estimated: boolean },
+  flag: { estimated: boolean; unconverted: boolean },
 ): number {
   if (!ctx) return accounts.reduce((s, a) => s + a.balance, 0);
   return accounts.reduce((s, a) => {
     const c = convertMoney({ amount: a.balance, currency: a.currency ?? null }, valuationDateISO!, ctx);
     if (c.estimated) flag.estimated = true; // MC1 P3 Slice 2 — taint propagation (D-7)
+    // V25-FINAL-1 — an unavailable member has NO target value (amount null): it is
+    // EXCLUDED from the partial total (never a fake 0, never its native magnitude)
+    // and recorded so the total is disclosed as an honest partial.
+    if (c.amount === null) { flag.unconverted = true; return s; }
     return s + c.amount;
   }, 0);
 }
@@ -228,8 +241,9 @@ export function classifyAccounts<T extends ClassifiableAccount>(
   const effectiveValuationDateISO = ctx ? (valuationDateISO ?? yesterdayUTCISO()) : undefined;
 
   // MC1 Phase 3 Slice 2 (D-7) — mutable taint flag shared by every summed
-  // bucket; stays false on the context-less kill-switch path.
-  const flag = { estimated: false };
+  // bucket; stays false on the context-less kill-switch path. V25-FINAL-1 adds
+  // `unconverted` (a member was FX-unavailable ⇒ excluded from the totals).
+  const flag = { estimated: false, unconverted: false };
 
   const totalChecking      = sumBalances(checking, ctx, effectiveValuationDateISO, flag);
   const totalSavings       = sumBalances(savings, ctx, effectiveValuationDateISO, flag);
@@ -244,6 +258,7 @@ export function classifyAccounts<T extends ClassifiableAccount>(
     ? liabilities.reduce((s, a) => {
         const c = convertMoney({ amount: a.balance, currency: a.currency ?? null }, effectiveValuationDateISO!, ctx);
         if (c.estimated) flag.estimated = true;
+        if (c.amount === null) { flag.unconverted = true; return s; } // V25-FINAL-1 — excluded, not native, not a fake 0
         return s + Math.max(0, c.amount);
       }, 0)
     : liabilities.reduce((s, a) => s + Math.max(0, a.balance), 0);
@@ -266,5 +281,6 @@ export function classifyAccounts<T extends ClassifiableAccount>(
     totalAssets,
     netWorth,
     estimated: flag.estimated,
+    unconverted: flag.unconverted,
   };
 }

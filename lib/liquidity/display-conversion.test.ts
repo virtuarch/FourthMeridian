@@ -119,7 +119,16 @@ function metric(l: LensResult | null, id: string): number {
   check("delta is NOT the reporting number relabeled (1000)", !approx(out.delta!.cashNow, 1000));
 }
 
-// ── 5. Rate MISS ⇒ estimated passthrough (honest, never silent) ──────────────
+// ── 5. Rate MISS on the "view as" display path (V25-FINAL-1) ─────────────────
+// This is the SECONDARY display re-conversion (a member picked "view as EUR").
+// It is guarded upstream: server-context resolveEffectiveSpaceConversion reverts
+// the effective currency to USD when EUR is unsatisfiable, and this transform
+// short-circuits (identity) when target === reporting — so in production a fully
+// unavailable endpoint never reaches convMetric. When FORCED (as here), the
+// single-currency lens cannot express the value in EUR, so convMetric retains the
+// value and raises `estimated` for disclosure rather than fabricate a rate. The
+// per-value FX-honesty invariant (no fake 0, no null-as-target) is enforced at the
+// canonical convertMoney authority; this path's honesty rests on the reversion.
 {
   const data = assembleLiquiditySpaceData({
     asOf: "2026-01-15", compareTo: null, reportingCurrency: "USD",
@@ -127,9 +136,9 @@ function metric(l: LensResult | null, id: string): number {
     atAsOf: lens({ cashNow: 10000, marketable: 0, illiquid: 0 }, DERIVED),
   });
   const out = convertLiquiditySpaceData(data, eurCtx()); // asOf 2026-01-15 has NO rate
-  check("miss: reporting amount passes through (10000, not fabricated)", approx(metric(out.atAsOf, "cashNow"), 10000));
-  check("miss: endpoint flagged estimated (≈), never a silent relabel", out.atAsOf?.estimated === true);
-  check("miss: currency still restamped to target (honest label + estimated)", out.reportingCurrency === "EUR");
+  check("view-as miss: endpoint flagged estimated (≈) — never a silent, unflagged relabel", out.atAsOf?.estimated === true);
+  check("view-as miss: no fabricated rate applied (value retained, not multiplied by a guessed factor)",
+    approx(metric(out.atAsOf, "cashNow"), 10000));
 }
 
 if (failures > 0) { console.error(`\ndisplay-conversion.test.ts: ${failures} failure(s)`); process.exit(1); }

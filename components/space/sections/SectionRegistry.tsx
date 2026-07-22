@@ -268,7 +268,9 @@ export function toDisplay(
 ): { amount: number; estimated: boolean } {
   if (!ctx) return { amount, estimated: false };
   const c = convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx);
-  return { amount: c.amount, estimated: c.estimated };
+  // V25-FINAL-1 — unavailable conversion excluded (0); `estimated` (true on a miss)
+  // rides through so the surface still discloses the sum is approximate/incomplete.
+  return { amount: c.amount ?? 0, estimated: c.estimated };
 }
 
 /** Sum balances (in the display currency when a context is supplied) from

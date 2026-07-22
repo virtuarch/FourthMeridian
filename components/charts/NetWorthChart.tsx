@@ -108,7 +108,10 @@ export function NetWorthChart({ snapshots, interval, onIntervalChange, cashMode 
     const s = snapshots[0];
     const raw = cashMode ? s.totalCash : s.netWorth;
     const value = ctx && snapshotCurrency
-      ? convertMoney({ amount: raw, currency: snapshotCurrency }, s.date, ctx).amount
+      // V25-FINAL-1 — first-day placeholder: if the conversion is unavailable, fall
+      // back to the native first-day figure (chart already discloses FX gaps) rather
+      // than a fake 0.
+      ? (convertMoney({ amount: raw, currency: snapshotCurrency }, s.date, ctx).amount ?? raw)
       : raw;
     return (
       <ChartFirstDayPlaceholder

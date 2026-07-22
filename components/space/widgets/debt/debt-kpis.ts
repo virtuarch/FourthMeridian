@@ -55,7 +55,9 @@ function inDisp(
 ): { amount: number; estimated: boolean } {
   if (!ctx) return { amount, estimated: false };
   const c = convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx);
-  return { amount: c.amount, estimated: c.estimated };
+  // V25-FINAL-1 — unavailable conversion excluded (0) from the KPI sums, never a
+  // native magnitude; `estimated` (true on a miss) discloses the KPIs are approximate.
+  return { amount: c.amount ?? 0, estimated: c.estimated };
 }
 
 /**

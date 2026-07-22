@@ -89,7 +89,8 @@ export function convertCashHistory(
   const from = slice.currency;
   const points = slice.points.flatMap((p) => {
     const c = convertMoney({ amount: p.cashNow, currency: from }, p.date, ctx);
-    if (c.estimated) return [];
+    // Drop unavailable (amount null) or estimated points rather than plot a fake 0 / mixed unit.
+    if (c.amount === null || c.estimated) return [];
     return [{ ...p, cashNow: c.amount }];
   });
   return { ...slice, points, currency: ctx.target };

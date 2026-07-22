@@ -91,16 +91,29 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
     `All totals are in ${reportingCur} (this Space's reporting currency); ` +
     `per-account values are shown in their native currency.`
   );
-  const accountsEstimated =
-    (ctx.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData | undefined)?.totalsEstimated === true;
+  const accountsData = ctx.domains[FinanceDomains.ACCOUNTS]?.data as AccountsSectionData | undefined;
+  const accountsEstimated = accountsData?.totalsEstimated === true;
   const txnEstimated = getTransactionsSummary(ctx)?.estimated === true;
   const holdingsEstimated =
     (ctx.domains[FinanceDomains.HOLDINGS_SUMMARY]?.data as { totalsEstimated?: boolean } | undefined)
       ?.totalsEstimated === true;
+  // V25-FINAL-1 — an UNAVAILABLE conversion is stronger than "approximate": the
+  // affected balances could not be converted at all, so they are EXCLUDED from
+  // the totals (never relabeled at their native magnitude). Disclose that
+  // honestly so the model treats the totals as incomplete, not merely fuzzy.
+  const accountsUnconverted = accountsData?.totalsUnconverted === true;
   if (accountsEstimated || txnEstimated || holdingsEstimated) {
     lines.push(
       'Some converted totals are approximate (missing or dated exchange rates); ' +
       'treat affected figures as estimates.'
+    );
+  }
+  if (accountsUnconverted) {
+    lines.push(
+      `Some balances could not be converted to ${reportingCur} (no exchange rate) and are ` +
+      'EXCLUDED from the account totals above — those totals are therefore incomplete. The ' +
+      'affected accounts appear with their native balance and currency; do not treat their ' +
+      'reporting value as 0.'
     );
   }
   lines.push('');

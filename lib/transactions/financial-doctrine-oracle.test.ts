@@ -49,7 +49,8 @@
  *      partition) are ANDed ON TOP and never re-interpret the row's semantics.
  *  A6. Currency: the canonical rule is per-row conversion at the row's own date;
  *      ABSENT a ConversionContext, raw native amounts (the permanent kill switch).
- *      Missing FX degrades to native + `estimated`, never dropped (Part 5).
+ *      With a context, an unavailable known-currency row is EXCLUDED to 0 +
+ *      `estimated` (V25-FINAL-1 FX honesty), never relabeled as target (Part 5).
  *
  * ── Organization (Part 7) ──────────────────────────────────────────────────────
  *  Part 1  the doctrine matrix (34+ fixtures × the authorities above)
@@ -679,8 +680,9 @@ console.log("── Part 4 — payment-app / liability doctrine ──");
 // PART 5 — MULTI-CURRENCY DOCTRINE (frozen contract for P2-7C)
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// FROZEN RULE (A6): per-row conversion at the row's own date; missing FX degrades
-// to native + `estimated`, never dropped. DayFacts / drilldowns / AI aggregates /
+// FROZEN RULE (A6): per-row conversion at the row's own date; an unavailable
+// known-currency row is EXCLUDED to 0 + `estimated` (V25-FINAL-1), never
+// relabeled as target. DayFacts / drilldowns / AI aggregates /
 // merchant-category-source totals must all obey it. This section pins what is
 // ASSERTABLE today and states the CONTRACT P2-7C must satisfy.
 
@@ -714,16 +716,20 @@ const usdRows: LiquidityTx[] = [
   check("EUR −100 @1.1 → cashOut 110 (reporting currency)", approx(df.cashOut, 110) && approx(df.spendGross, 110));
 }
 
-// missing FX: native pass-through (never dropped), and convertMoney flags estimated.
+// missing FX (known currency): UNAVAILABLE — excluded to 0, native on `native`,
+// estimated flagged (V25-FINAL-1, superseding D-3's native pass-through). The
+// row is not DROPPED from the ledger, but its reporting-currency magnitude is 0
+// so it can never inflate a target total with a native amount.
 {
   const idc = identityContext("USD");
   const c = convertMoney({ amount: -100, currency: "EUR" }, "2026-02-27", idc);
-  check("missing FX: native amount passes through (−100)", c.amount === -100);
+  check("missing FX: amount is null, never native-as-target (−100 does not become any USD number)", c.amount === null);
+  check("missing FX: native magnitude preserved on `native`", c.native?.amount === -100 && c.native?.currency === "EUR");
   check("missing FX: convertMoney flags estimated=true (honesty valve)", c.estimated === true);
   const eur = [toTx({ id: "e2", title: "", own: "chk", amount: -100, flowType: "SPENDING", currency: "EUR",
     pop: true, econ: "spend", effect: "CASH_OUT", reason: "REAL_COST" })];
   const df = aggregateDayFacts(eur, ctx, idc);
-  check("missing FX: DayFacts uses the native magnitude (100), row never dropped", approx(df.cashOut, 100));
+  check("missing FX: DayFacts excludes the unavailable EUR magnitude (cashOut 0, not native 100)", approx(df.cashOut, 0));
 }
 
 // null-currency residue: treated as target, estimated (Phase-0 doctrine).

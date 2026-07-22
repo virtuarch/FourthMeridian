@@ -126,9 +126,17 @@ export function valueInstrumentAsOf(
     conflicted:   input.conflicted,
   };
 
-  /** Convert a native value into the reporting currency at asOf; derive the FX tier. */
-  const toReporting = (nativeValue: number): { reportingValue: number; fxTier: CompletenessTier } => {
+  /**
+   * Convert a native value into the reporting currency at asOf; derive the FX tier.
+   * V25-FINAL-1 — when FX is UNAVAILABLE (no rate) there is no reporting value: the
+   * reporting value is `null` (native value stays preserved on the InstrumentValuation
+   * for evidence) and the FX tier is "unknown", so `overallTier` degrades to
+   * incomplete and the position is excluded from the portfolio subtotal rather than
+   * counted as a real 0.
+   */
+  const toReporting = (nativeValue: number): { reportingValue: number | null; fxTier: CompletenessTier } => {
     const c = convertMoney({ amount: nativeValue, currency: input.nativeCurrency }, asOf, ctx);
+    if (c.amount === null) return { reportingValue: null, fxTier: "unknown" };
     return { reportingValue: c.amount, fxTier: c.estimated ? "estimated" : "observed" };
   };
 

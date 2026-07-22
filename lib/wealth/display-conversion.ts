@@ -43,6 +43,10 @@ function convertSnapshot(s: Snapshot, from: string, ctx: ConversionContext): Sna
   const conv = (amount: number): number => {
     const m = convertMoney({ amount, currency: from }, s.date, ctx);
     if (m.estimated) missed = true;
+    // V25-FINAL-1 — unavailable (amount null): this row becomes fxMiss below and is
+    // DROPPED by the Time Machine, so its value is never plotted. Keep the native
+    // magnitude in the (dropped) row rather than a fake 0.
+    if (m.amount === null) { missed = true; return amount; }
     return m.amount;
   };
   // Every absolute figure on the row (netWorth is stored, not re-derived here, so it

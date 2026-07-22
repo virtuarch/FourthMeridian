@@ -78,11 +78,12 @@ function movedLabel(disposition: TransferDisposition, amount: number): { key: st
   }
 }
 
-function magnitude(t: LiquidityTx, ctx?: ConversionContext): number {
-  const amt = ctx
-    ? convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount
-    : t.amount;
-  return Math.abs(amt);
+// V25-FINAL-1 — `null` when the row's conversion is UNAVAILABLE (no rate); the
+// caller EXCLUDES such rows rather than blending a native magnitude or a fake 0.
+function magnitude(t: LiquidityTx, ctx?: ConversionContext): number | null {
+  if (!ctx) return Math.abs(t.amount);
+  const amt = convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount;
+  return amt === null ? null : Math.abs(amt);
 }
 
 function upsert(map: Map<string, CashFlowContextRow>, key: string, label: string, t: LiquidityTx, amt: number): void {
@@ -107,6 +108,7 @@ export function groupCashFlowContext(
 
   for (const t of transactions) {
     const amt = magnitude(t, moneyCtx);
+    if (amt === null) continue; // V25-FINAL-1 — unconvertible row excluded from the context groups
     const disposition = (t as { transferDisposition?: TransferDisposition | null }).transferDisposition ?? null;
     const needsClassification = (t as { needsClassification?: boolean }).needsClassification ?? false;
 

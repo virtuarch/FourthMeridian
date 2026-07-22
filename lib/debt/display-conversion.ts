@@ -44,10 +44,10 @@ export function convertDebtHistory(
   const from = slice.currency;
   const points = slice.points.flatMap((p) => {
     const c = convertMoney({ amount: p.totalDebt, currency: from }, p.date, ctx);
-    // Estimated (rate walked back / missing) ⇒ mixed-unit relative to the converted
-    // series; drop the point (Wealth's fxMiss-drop semantics for a plotted series)
-    // rather than blend a native magnitude in beside converted ones.
-    if (c.estimated) return [];
+    // Estimated (rate walked back) or UNAVAILABLE (no rate ⇒ amount null) ⇒
+    // mixed-unit relative to the converted series; drop the point (Wealth's
+    // fxMiss-drop semantics) rather than blend a native magnitude or a fake 0.
+    if (c.amount === null || c.estimated) return [];
     return [{ ...p, totalDebt: c.amount }];
   });
   return { ...slice, points, currency: ctx.target };

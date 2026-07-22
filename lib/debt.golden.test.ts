@@ -51,17 +51,26 @@ const pureUsd: DebtPaymentTxnLike[] = [
 // ── residue/mixed: numbers identical under identity, flags honest ─────────────
 
 {
+  const eurPayment = { accountId: "cardD", amount: -500, flowType: "DEBT_PAYMENT", currency: "EUR", dateISO: "2026-06-10" } as const;
   const mixed: DebtPaymentTxnLike[] = [
     ...pureUsd,
-    { accountId: "cardD", amount: -500, flowType: "DEBT_PAYMENT", currency: "EUR", dateISO: "2026-06-10" },
-    { accountId: "cardD", amount: -75,  flowType: "DEBT_PAYMENT", currency: null },   // null-residue
-    { accountId: "cardE", amount: -120, flowType: "DEBT_PAYMENT" },                    // bare legacy shape
+    eurPayment,                                                                        // EUR miss → excluded under identity
+    { accountId: "cardD", amount: -75,  flowType: "DEBT_PAYMENT", currency: null },   // null-residue → passthrough (kept)
+    { accountId: "cardE", amount: -120, flowType: "DEBT_PAYMENT" },                    // bare legacy shape → null-residue (kept)
   ];
-  check("mixed: totalDebtPaid numerically identical under identity",
-    totalDebtPaid(mixed) === totalDebtPaid(mixed, CTX));
-  check("mixed: rollup numbers identical under identity (flags aside)",
-    JSON.stringify(numbersOf(rollupDebtPaymentsByAccount(mixed))) ===
-    JSON.stringify(numbersOf(rollupDebtPaymentsByAccount(mixed, CTX))));
+  // V25-FINAL-1 — the unavailable EUR payment (500) is EXCLUDED (contributes 0)
+  // under identity, but the row is still PRESENT (2 occurrences on cardD). So the
+  // with-context cardD total is the null-residue 75 alone, NOT 575, while the
+  // context-less raw addition still blends the EUR native 500 in.
+  const cardDWithCtx = rollupDebtPaymentsByAccount(mixed, CTX).find((e) => e.accountId === "cardD")!.total;
+  const cardDRaw     = rollupDebtPaymentsByAccount(mixed).find((e) => e.accountId === "cardD")!.total;
+  check("mixed: cardD reporting total EXCLUDES the unavailable EUR 500 (75, not 575)",
+    cardDWithCtx === 75, `got ${cardDWithCtx}`);
+  check("mixed: raw addition still blends the EUR native magnitude in (575)",
+    cardDRaw === 575, `got ${cardDRaw}`);
+  check("mixed: totalDebtPaid also excludes the EUR (context differs from raw addition)",
+    totalDebtPaid(mixed) !== totalDebtPaid(mixed, CTX) &&
+    totalDebtPaid(mixed) - totalDebtPaid(mixed, CTX) === 500);
   const withCtx = rollupDebtPaymentsByAccount(mixed, CTX);
   check("mixed: EUR/null entries flagged estimated with context",
     withCtx.find((e) => e.accountId === "cardD")?.estimated === true &&
@@ -89,9 +98,9 @@ const pureUsd: DebtPaymentTxnLike[] = [
   const rollup = rollupDebtPaymentsByAccount(rows, realCtx);
   check("real: EUR converts at its row date (500 × 1.2 = 600), exact ⇒ not estimated",
     rollup[0].total === 600 && rollup[0].estimated === false);
-  check("real: missed SAR stays native + estimated (D-3, never excluded)",
-    rollup[1].total === 100 && rollup[1].estimated === true);
-  check("real: totalDebtPaid includes both (600 + 100)", totalDebtPaid(rows, realCtx) === 700);
+  check("real: missed SAR EXCLUDED to 0 + estimated (V25-FINAL-1, not native 100)",
+    rollup[1].total === 0 && rollup[1].estimated === true);
+  check("real: totalDebtPaid is the convertible-only sum (600 + 0)", totalDebtPaid(rows, realCtx) === 600);
 }
 
 // ── base rollup semantics (merged from lib/debt.test.ts, TEST-2) ──────────────

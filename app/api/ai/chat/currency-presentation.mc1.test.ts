@@ -37,11 +37,12 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
-function accountsData(estimated: boolean): AccountsSectionData {
+function accountsData(estimated: boolean, unconverted = false): AccountsSectionData {
   return {
     totalCount: 1, totalAssets: 100, totalLiabilities: 0, netWorth: 100,
     totalLiquid: 100, totalInvestments: 0, totalDigitalAssets: 0, totalRealAssets: 0,
     totalsEstimated: estimated,
+    totalsUnconverted: unconverted,
     counts: { liquid: 1, investments: 0, digitalAssets: 0, realAssets: 0, liabilities: 0 },
     health: { errorCount: 0, staleCount: 0, needsReauthCount: 0, errorAccountNames: [], staleAccountNames: [], needsReauthAccountNames: [] },
     knowledgeGaps: [],
@@ -71,11 +72,12 @@ function txnData(estimated: boolean): TransactionsSummaryData {
 function makeCtx(opts: {
   currency?: string | undefined;
   accountsEstimated?: boolean;
+  accountsUnconverted?: boolean;
   txnEstimated?: boolean;
   holdingsEstimated?: boolean;
 }): SpaceContext_AI {
   const domains: SpaceContext_AI['domains'] = {
-    [FinanceDomains.ACCOUNTS]: { domain: 'accounts', assembledAt: 'x', data: accountsData(opts.accountsEstimated ?? false) },
+    [FinanceDomains.ACCOUNTS]: { domain: 'accounts', assembledAt: 'x', data: accountsData(opts.accountsEstimated ?? false, opts.accountsUnconverted ?? false) },
   };
   if (opts.txnEstimated !== undefined) {
     domains[FinanceDomains.TRANSACTIONS_SUMMARY] =
@@ -124,6 +126,18 @@ function makeCtx(opts: {
       serializeContextBlock(makeCtx({ accountsEstimated: true, txnEstimated: true, holdingsEstimated: true })),
       TAIL,
     ) === 1);
+}
+
+// ── V25-FINAL-1: FX-UNAVAILABLE totals disclosed as INCOMPLETE (not just fuzzy) ─
+{
+  const EXCLUDED = 'EXCLUDED from the account totals';
+  check("not unconverted → NO exclusion disclosure",
+    !serializeContextBlock(makeCtx({ accountsUnconverted: false })).includes(EXCLUDED));
+  check("accounts unconverted → exclusion disclosure emitted (totals incomplete)",
+    serializeContextBlock(makeCtx({ accountsUnconverted: true })).includes(EXCLUDED));
+  check("exclusion disclosure names the reporting currency (EUR), telling the model not to read 0",
+    serializeContextBlock(makeCtx({ currency: 'EUR', accountsUnconverted: true })).includes('to EUR') &&
+    serializeContextBlock(makeCtx({ currency: 'EUR', accountsUnconverted: true })).includes('do not treat their'));
 }
 
 // ── envelope plumbing (DB-coupled builder → minimal source check) ──────────────

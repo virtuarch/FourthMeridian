@@ -37,7 +37,8 @@ function fmtMoney(v: number, ctx?: ConversionContext): string {
 }
 function inDisp(amount: number, currency: string | null | undefined, ctx?: ConversionContext): number {
   if (!ctx) return amount;
-  return convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx).amount;
+  // V25-FINAL-1 — unavailable conversion excluded (0), never a native magnitude.
+  return convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx).amount ?? 0;
 }
 
 const ROWS_PER_TIER = 4;

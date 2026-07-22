@@ -43,7 +43,7 @@ function makeCtx(): SpaceContext_AI {
   const totalLiabilities = 15000;
   const data: AccountsSectionData = {
     totalCount: accounts.length, totalAssets: 0, totalLiabilities, netWorth: -totalLiabilities,
-    totalLiquid: 0, totalInvestments: 0, totalDigitalAssets: 0, totalRealAssets: 0, totalsEstimated: false,
+    totalLiquid: 0, totalInvestments: 0, totalDigitalAssets: 0, totalRealAssets: 0, totalsEstimated: false, totalsUnconverted: false,
     counts: { liquid: 0, investments: 0, digitalAssets: 0, realAssets: 0, liabilities: accounts.length },
     health: { errorCount: 0, staleCount: 0, needsReauthCount: 0, errorAccountNames: [], staleAccountNames: [], needsReauthAccountNames: [] },
     knowledgeGaps: [], accounts,

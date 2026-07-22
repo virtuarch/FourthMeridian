@@ -2,8 +2,9 @@
  * lib/money/fx-disclosure.test.ts — V25-CLOSE-3 Part 1
  *
  * Proves the FX honesty upgrade:
- *   1. `fxDisclosureOf` distinguishes "unavailable" (no rate applied, native
- *      amount shown) from "estimated" (real rate, walked back) from "exact".
+ *   1. `fxDisclosureOf` distinguishes "unavailable" (no rate applied — V25-FINAL-1
+ *      excludes it to amount 0 with the truth on `native`) from "estimated"
+ *      (real rate, walked back) from "exact".
  *   2. `convertAndSum` preserves the "unavailable" fact through the fold.
  *   3. SUCCESSFUL conversions are UNCHANGED — same amount, and never classified
  *      as unavailable/estimated when the rate was exact.
@@ -24,7 +25,7 @@ function check(name: string, ok: boolean, detail?: string): void {
 
 // ── Test contexts (all target USD) ────────────────────────────────────────────
 
-/** Every non-USD resolves MISS → native pass-through + estimated (the doctrine D-3 case). */
+/** Every non-USD resolves MISS → unavailable: excluded to 0, native preserved (V25-FINAL-1). */
 const missCtx: ConversionContext = {
   target: "USD",
   resolve: (from, dateISO): Resolution => ({ kind: "miss", quote: from, requestedDateISO: dateISO }),
@@ -59,7 +60,7 @@ check("identity → exact", fxDisclosureOf(convertMoney({ amount: 100, currency:
 {
   const c = convertMoney({ amount: 1_000_000, currency: "JPY" }, D, exactCtx);
   check("exact rate → exact", fxDisclosureOf(c) === "exact");
-  check("exact rate converts the amount (¥1,000,000 → $6,500)", Math.abs(c.amount - 6500) < 1e-9, `amount=${c.amount}`);
+  check("exact rate converts the amount (¥1,000,000 → $6,500)", c.amount !== null && Math.abs(c.amount - 6500) < 1e-9, `amount=${c.amount}`);
   check("exact rate is not estimated", c.estimated === false);
 }
 
@@ -67,21 +68,22 @@ check("identity → exact", fxDisclosureOf(convertMoney({ amount: 100, currency:
 {
   const c = convertMoney({ amount: 1_000_000, currency: "JPY" }, D, staleCtx);
   check("walked-back rate → estimated (NOT unavailable)", fxDisclosureOf(c) === "estimated");
-  check("walked-back still applied the rate (amount converted, not native)", Math.abs(c.amount - 6500) < 1e-9, `amount=${c.amount}`);
+  check("walked-back still applied the rate (amount converted, not native)", c.amount !== null && Math.abs(c.amount - 6500) < 1e-9, `amount=${c.amount}`);
 }
 
-// rate miss: unavailable — native amount shown, mislabelled as target
+// rate miss: unavailable — V25-FINAL-1: NOT relabeled. Excluded to 0, native kept.
 {
   const c = convertMoney({ amount: 1_000_000, currency: "JPY" }, D, missCtx);
   check("rate miss → unavailable", fxDisclosureOf(c) === "unavailable");
-  check("rate miss passes NATIVE amount through unchanged (¥1,000,000 stays 1,000,000)", c.amount === 1_000_000, `amount=${c.amount}`);
+  check("rate miss is NOT relabeled — amount is null (¥1,000,000 never becomes any USD number)", c.amount === null, `amount=${c.amount}`);
+  check("rate miss preserves the native magnitude on `native`", c.native?.amount === 1_000_000 && c.native?.currency === "JPY");
   check("rate miss has no conversion metadata", c.conversion === null);
 }
 
 // null-residue currency: unavailable
 {
   const c = convertMoney({ amount: 42, currency: null }, D, exactCtx);
-  check("null-residue currency → unavailable", fxDisclosureOf(c) === "unavailable");
+  check("null-residue currency → estimated (assume-target passthrough; amount is NOT null)", fxDisclosureOf(c) === "estimated");
   check("null-residue passes the raw amount through", c.amount === 42);
 }
 

@@ -52,7 +52,11 @@ export interface WealthAdapterAccount {
  *  (identity pass-through otherwise — the all-USD / kill-switch path). */
 function inDisp(amount: number, currency: string | null | undefined, ctx?: ConversionContext): number {
   if (!ctx) return amount;
-  return convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx).amount;
+  // V25-FINAL-1 — an unavailable conversion (no rate) has no display value; it is
+  // EXCLUDED from this visual breakdown (contributes 0 to the slice). It is never a
+  // native magnitude relabeled. The authoritative net-worth total and its
+  // incompleteness disclosure come from classifyAccounts (`unconverted`), not here.
+  return convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx).amount ?? 0;
 }
 
 // ─── Composition rows — the shared authority behind chart AND detail panel ────

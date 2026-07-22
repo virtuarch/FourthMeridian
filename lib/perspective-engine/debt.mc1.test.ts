@@ -84,10 +84,10 @@ const usdRows: DebtAccountRow[] = [
   check("non-USD: minPayments convert (100×1.25 = 125)", metric(r, "minPayments") === 125);
   check("non-USD: exact rates ⇒ estimated false", r.estimated === false);
 
-  // miss ⇒ native + estimated
+  // miss ⇒ UNAVAILABLE: excluded to 0 + estimated (V25-FINAL-1, not native)
   const missRows = [row("sar", 1000, { currency: "SAR" })];
   const m = computeDebt(scope, options, missRows, realCtx);
-  check("miss: native amount kept (D-3)", metric(m, "totalDebt") === 1000);
+  check("miss: excluded to 0, never native-as-target (V25-FINAL-1)", metric(m, "totalDebt") === 0);
   check("miss: estimated true", m.estimated === true);
 }
 

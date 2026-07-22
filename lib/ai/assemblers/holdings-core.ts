@@ -97,6 +97,8 @@ export interface CryptoHoldingsInput {
   fullPositions: ReadonlyArray<{ symbol: string; name: string; value: number }>;
   /** any crypto value conversion was estimated. */
   anyEstimated:  boolean;
+  /** V25-FINAL-1 — any crypto position was FX-unavailable and EXCLUDED from the totals. */
+  anyUnconverted: boolean;
   /** any crypto holding present at all. */
   hasAny:        boolean;
 }

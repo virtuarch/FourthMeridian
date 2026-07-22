@@ -217,12 +217,21 @@ export interface LensResult {
   headline?: LensMetric;
   /**
    * MC1 Phase 3 Slice 5 (D-7) — true when any converted amount in this
-   * lens's sums was estimated (rate walked back / missing, or null-residue
-   * currency). Emitted only by conversion-aware lenses when a
-   * ConversionContext was supplied; absent otherwise (context-less results
-   * stay byte-identical — the kill switch). Data-only until Phase 4.
+   * lens's sums was estimated (rate walked back, or null-residue currency).
+   * Emitted only by conversion-aware lenses when a ConversionContext was
+   * supplied; absent otherwise (context-less results stay byte-identical — the
+   * kill switch).
    */
   estimated?: boolean;
+  /**
+   * V25-FINAL-1 — stronger than `estimated`: true when at least one account in
+   * this lens's sums had NO acceptable FX rate and was therefore EXCLUDED from
+   * the totals (its native magnitude was never blended in, and it is NOT a real
+   * zero). The lens totals are then an honest PARTIAL and the workspace must
+   * disclose incompleteness, not merely the softer "≈ est." marker. Implies
+   * `estimated`. Rides the same channel as `estimated`.
+   */
+  unconverted?: boolean;
   /**
    * A5-S1 — the trust envelope. Present whenever `asOf` was supplied (may be
    * present otherwise); absent on every current context-less call, so existing

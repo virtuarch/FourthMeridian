@@ -239,8 +239,14 @@ export function filterByPeriod(
 
 // ─── Money ────────────────────────────────────────────────────────────────────
 
-/** Converted magnitude of a row at its own date; absent ctx ⇒ raw amount. */
-function rowAmount(t: Transaction, ctx?: ConversionContext): number {
+/**
+ * Converted magnitude of a row at its own date; absent ctx ⇒ raw amount.
+ * V25-FINAL-1 — returns `null` when the row's currency has no acceptable rate
+ * (the conversion is UNAVAILABLE): there is no reporting-currency value, so
+ * callers EXCLUDE the row from the total rather than blend a native magnitude or
+ * a fake 0.
+ */
+function rowAmount(t: Transaction, ctx?: ConversionContext): number | null {
   if (!ctx) return t.amount;
   return convertMoney({ amount: t.amount, currency: t.currency ?? null }, t.date, ctx).amount;
 }
@@ -252,6 +258,14 @@ export interface CashFlowTotals {
   spend:   number;   // COST_FLOWS minus REFUND, clamped ≥ 0
   refunds: number;   // Σ|amount| where REFUND (disclosed separately)
   net:     number;   // income − spend
+  /**
+   * V25-FINAL-1 — true when at least one row had no acceptable FX rate and was
+   * EXCLUDED from these totals (its native magnitude was never blended in). The
+   * totals are then an honest PARTIAL over the convertible rows. (Cash Flow has
+   * no other completeness channel today; a workspace badge is a bounded
+   * follow-up — see report.)
+   */
+  unconverted: boolean;
 }
 
 // ─── The single economic-fold authority (P2-1) ────────────────────────────────
@@ -305,11 +319,14 @@ export function clampEconomicSpend(spendGross: number, refunds: number): number 
  */
 export function economicTotals(transactions: Transaction[], ctx?: ConversionContext): CashFlowTotals {
   const acc: EconomicAccumulator = { income: 0, spendGross: 0, refunds: 0 };
+  let unconverted = false;
   for (const t of transactions) {
-    foldEconomicRow(acc, t.flowType ?? null, Math.abs(rowAmount(t, ctx)));
+    const a = rowAmount(t, ctx);
+    if (a === null) { unconverted = true; continue; } // V25-FINAL-1 — exclude the unconvertible row
+    foldEconomicRow(acc, t.flowType ?? null, Math.abs(a));
   }
   const spend = clampEconomicSpend(acc.spendGross, acc.refunds);
-  return { income: acc.income, spend, refunds: acc.refunds, net: acc.income - spend };
+  return { income: acc.income, spend, refunds: acc.refunds, net: acc.income - spend, unconverted };
 }
 
 // ─── History (time buckets) ───────────────────────────────────────────────────
@@ -442,7 +459,9 @@ export function outflowByCategory(transactions: Transaction[], ctx?: ConversionC
   const byCategory = new Map<string, number>();
   for (const t of transactions) {
     const flow = t.flowType ?? null;
-    const amt = Math.abs(rowAmount(t, ctx));
+    const raw = rowAmount(t, ctx);
+    if (raw === null) continue; // V25-FINAL-1 — unconvertible row excluded from the category rollup
+    const amt = Math.abs(raw);
     if (isCostFlow(flow)) byCategory.set(t.category, (byCategory.get(t.category) ?? 0) + amt);
     else if (isRefund(flow)) byCategory.set(t.category, (byCategory.get(t.category) ?? 0) - amt);
   }
@@ -485,7 +504,9 @@ export function incomeBySource(transactions: Transaction[], ctx?: ConversionCont
   const bySource = new Map<string, number>();
   for (const t of transactions) {
     if (!isIncome(t.flowType ?? null)) continue;
-    const amt = Math.abs(rowAmount(t, ctx));
+    const raw = rowAmount(t, ctx);
+    if (raw === null) continue; // V25-FINAL-1 — unconvertible income row excluded
+    const amt = Math.abs(raw);
     const source = incomeSourceLabel(t);
     bySource.set(source, (bySource.get(source) ?? 0) + amt);
   }

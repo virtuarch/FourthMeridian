@@ -7,9 +7,16 @@
  *   - READ-TIME ONLY, ZERO MUTATION: pure functions over values — this module
  *     imports no database, no network, no fx service (types only). Stored
  *     financial facts are never touched.
- *   - NEVER EXCLUDE, NEVER THROW on data conditions (plan D-3): a missing
- *     rate or a null-residue currency passes the NATIVE amount through with
- *     `estimated: true` — today's blended behavior made honest.
+ *   - NEVER THROW on data conditions (plan D-3): a missing rate never throws.
+ *   - FX HONESTY (V25-FINAL-1, supersedes D-3's "never exclude" for the
+ *     KNOWN-foreign miss): a KNOWN foreign currency with no acceptable rate is
+ *     UNAVAILABLE. It must not be relabeled as the target — "¥1,000,000" must
+ *     never surface (or sum) as "$1,000,000 estimated". So convertMoney returns
+ *     `amount: 0` (contributes nothing to any target total — exclusion by
+ *     construction) with the untouched native value on `native` for honest
+ *     display, and `estimated: true` / `conversion: null` so it reads as
+ *     "unavailable". Null-residue (currency unknown) is NOT a false unit —
+ *     nothing to mislabel — so it keeps the legacy assume-target passthrough.
  *   - NO ROUNDING (plan D-4): full f64 precision end to end; display rounding
  *     belongs to the existing formatting boundary (lib/currency.ts /
  *     lib/format.ts). This module never formats (plan D-5).
@@ -35,13 +42,15 @@ import type { ConversionContext, ConvertedMoney, ConvertedTotal, DatedMoney, FxD
  * boolean loses:
  *   - not estimated                     → "exact"      (identity / exact rate)
  *   - estimated AND a rate was applied  → "estimated"  (walked-back / stale)
- *   - estimated AND conversion === null → "unavailable" (native pass-through:
- *                                         rate missing or null-residue currency —
- *                                         the amount is native units mislabelled)
+ *   - estimated AND conversion === null → "unavailable" (no rate applied:
+ *                                         a known-currency miss — `amount` is 0
+ *                                         and the truth is on `native`; or a
+ *                                         null-residue assume-target passthrough)
  */
 export function fxDisclosureOf(c: ConvertedMoney): FxDisclosure {
+  if (c.amount === null) return "unavailable"; // no valid target-currency value (known-currency miss)
   if (!c.estimated) return "exact";
-  return c.conversion === null ? "unavailable" : "estimated";
+  return "estimated"; // real rate walked back, OR null-residue assume-target passthrough
 }
 
 /**
@@ -72,9 +81,19 @@ export function convertMoney(money: Money, dateISO: string, ctx: ConversionConte
 
   const res = ctx.resolve(money.currency, dateISO);
 
-  // RateMiss → native amount, flagged (plan D-3: never exclude, never throw).
+  // RateMiss on a KNOWN foreign currency → UNAVAILABLE (V25-FINAL-1). The native
+  // magnitude must NOT be relabeled as the target, and must NOT masquerade as a
+  // real zero: `amount` is `null` (there is NO valid target-currency value), and
+  // the true value rides on `native` for honest display / evidence. `estimated`
+  // stays true and `conversion` null so existing taint checks keep firing.
   if (res.kind === "miss") {
-    return { amount: money.amount, currency: ctx.target, estimated: true, conversion: null };
+    return {
+      amount:     null,
+      currency:   ctx.target,
+      estimated:  true,
+      conversion: null,
+      native:     { amount: money.amount, currency: money.currency },
+    };
   }
 
   // The applied rate's true data vintage is the OLDER of the two cross-rate
@@ -100,20 +119,32 @@ export function convertMoney(money: Money, dateISO: string, ctx: ConversionConte
  * then accumulate in the target currency. `estimated` on the total is the OR
  * of the members (taint propagation) — an aggregate is only exact when every
  * member converted exactly.
+ *
+ * V25-FINAL-1 — an UNAVAILABLE member (known foreign currency, no rate) now
+ * contributes `amount: 0`, so its native magnitude can never inflate the total;
+ * `excluded` counts how many were dropped this way, so the caller can disclose
+ * that the total is a partial sum over the convertible members.
  */
 export function convertAndSum(items: readonly DatedMoney[], ctx: ConversionContext): ConvertedTotal {
   let amount = 0;
   let estimated = false;
   let unconverted = false;
+  let excluded = 0;
   for (const it of items) {
     const c = convertMoney(it.money, it.dateISO, ctx);
+    // An unavailable member has NO target-currency value: it is EXCLUDED from the
+    // partial total (never its native magnitude, never a fake 0) and counted so
+    // the caller can disclose the total is incomplete.
+    if (c.amount === null) {
+      unconverted = true;
+      excluded += 1;
+      estimated = true; // an incomplete total is at best an estimate
+      continue;
+    }
     amount += c.amount;
     estimated = estimated || c.estimated;
-    // Preserve the stronger "no rate applied" fact through the fold (V25-CLOSE-3),
-    // so an aggregate can disclose FX-unavailable, not merely "estimated".
-    unconverted = unconverted || fxDisclosureOf(c) === "unavailable";
   }
-  return { amount, currency: ctx.target, estimated, unconverted };
+  return { amount, currency: ctx.target, estimated, unconverted, excluded };
 }
 
 // ─── Serialization (MC1 Phase 3 Slice 2, plan D-6) ────────────────────────────

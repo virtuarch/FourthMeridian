@@ -52,7 +52,7 @@ import { ShareStatus, PlaidItemStatus, VisibilityLevel } from '@prisma/client';
 
 import { classifyAccounts, type ClassifiableAccount } from '@/lib/account-classifier';
 import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
-import { identityContext, convertMoney } from '@/lib/money/convert';
+import { identityContext, convertMoney, fxDisclosureOf } from '@/lib/money/convert';
 import { buildSpaceConversionContext } from '@/lib/money/server-context';
 import { yesterdayUTCISO } from '@/lib/fx/config';
 import { genericAccountName } from '@/lib/account-privacy';
@@ -238,9 +238,12 @@ async function assembleAccounts(
   // value (FINANCIAL_SEMANTIC_AUTHORITIES reporting-currency invariant). Missing
   // FX degrades to the native amount + estimated taint (P2-7C conversion contract).
   const valuationDateISO = yesterdayUTCISO();
-  const toReporting = (fa: { balance: number; currency: string }): { reportingBalance: number; estimated: boolean } => {
+  const toReporting = (fa: { balance: number; currency: string }): { reportingBalance: number | null; estimated: boolean; unavailable: boolean } => {
     const c = convertMoney({ amount: fa.balance, currency: fa.currency }, valuationDateISO, moneyCtx);
-    return { reportingBalance: c.amount, estimated: c.estimated };
+    // V25-FINAL-1 — an unavailable known-currency balance has NO reporting value:
+    // reportingBalance is null (never a fake 0), so the AI reads the native balance
+    // and the `unavailable` flag, and can never treat it as "worth 0".
+    return { reportingBalance: c.amount, estimated: c.estimated, unavailable: c.amount === null };
   };
 
   // ── Health summary ────────────────────────────────────────────────────────
@@ -368,6 +371,7 @@ async function assembleAccounts(
           currency:        fa.currency,
           reportingBalance: rep.reportingBalance,
           ...(rep.estimated ? { reportingBalanceEstimated: true } : {}),
+          ...(rep.unavailable ? { reportingBalanceUnavailable: true } : {}),
           lastUpdated:          fa.lastUpdated.toISOString(),
           balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
           syncStatus:      fa.syncStatus,
@@ -415,6 +419,7 @@ async function assembleAccounts(
         currency:        fa.currency,
         reportingBalance: rep.reportingBalance,
         ...(rep.estimated ? { reportingBalanceEstimated: true } : {}),
+        ...(rep.unavailable ? { reportingBalanceUnavailable: true } : {}),
         lastUpdated:          fa.lastUpdated.toISOString(),
         balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
         syncStatus:      fa.syncStatus,
@@ -487,6 +492,7 @@ async function assembleAccounts(
     totalDigitalAssets: classification.totalDigitalAssets,
     totalRealAssets:    classification.totalRealAssets,
     totalsEstimated:    classification.estimated, // MC1 P3 Slice 4 (D-7) — data-only
+    totalsUnconverted:  classification.unconverted, // V25-FINAL-1 — a balance was excluded (no rate)
 
     counts: {
       liquid:        classification.liquid.length,

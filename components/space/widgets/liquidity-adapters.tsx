@@ -50,7 +50,10 @@ export interface LiquidityAdapterAccount {
 
 function inDisp(amount: number, currency: string | null | undefined, ctx?: ConversionContext): number {
   if (!ctx) return amount;
-  return convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx).amount;
+  // V25-FINAL-1 — unavailable conversion excluded from the visual breakdown (0
+  // contribution, never a native magnitude); the Liquidity lens carries the
+  // authoritative total + `unconverted` disclosure.
+  return convertMoney({ amount, currency: currency ?? null }, yesterdayUTCISO(), ctx).amount ?? 0;
 }
 
 function fmtMoney(v: number, ctx?: ConversionContext): string {

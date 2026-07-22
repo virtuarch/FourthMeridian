@@ -155,9 +155,21 @@ test('Provenance: source always; import fields when import', () => {
 
 test('Reporting section omitted when null; present when set', () => {
   assert.equal(find(buildTransactionDetailSections(detail()), 'Reporting'), undefined);
-  const rep = detail({ reporting: { amount: 11.2, currency: 'EUR', estimated: true, rate: 0.9, effectiveDateISO: '2026-06-01' } });
+  const rep = detail({ reporting: { amount: 11.2, currency: 'EUR', estimated: true, unavailable: false, rate: 0.9, effectiveDateISO: '2026-06-01' } });
   const rows = find(buildTransactionDetailSections(rep), 'Reporting')!.rows!;
   assert.match(rows.find((r) => r.label === 'Reporting amount')!.value, /€11\.20.*est/);
+});
+
+// V25-FINAL-1 — the RENDERED transaction-detail surface must expose an unavailable
+// conversion as unavailable, never as a fake 0 or a native magnitude under the
+// reporting-currency label.
+test('Reporting section: FX-unavailable renders "Unavailable", never a 0 or native amount', () => {
+  const rep = detail({ reporting: { amount: null, currency: 'EUR', estimated: true, unavailable: true, rate: null, effectiveDateISO: null } });
+  const rows = find(buildTransactionDetailSections(rep), 'Reporting')!.rows!;
+  const shown = rows.find((r) => r.label === 'Reporting amount')!.value;
+  assert.match(shown, /Unavailable/i);
+  assert.match(shown, /no exchange rate/i);
+  assert.doesNotMatch(shown, /0\.00|€0\b/); // never a fabricated zero
 });
 
 test('Needs classification: hidden by default; shown with case-appropriate wording; no jargon', () => {

@@ -114,7 +114,12 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
     const conv = (raw: number, date: string): { amount: number; estimated: boolean; unavailable: boolean } => {
       if (!ctx || !snapshotCurrency) return { amount: raw, estimated: false, unavailable: false };
       const c = convertMoney({ amount: raw, currency: snapshotCurrency }, date, ctx);
-      return { amount: c.amount, estimated: c.estimated, unavailable: fxDisclosureOf(c) === "unavailable" };
+      // V25-FINAL-1 — an unavailable conversion returns amount 0; this surface
+      // already discloses "native amounts" via FxUnavailableNote, so plot the
+      // native value (c.native) rather than a misleading 0 dip. Converted points
+      // still use c.amount.
+      const unavailable = fxDisclosureOf(c) === "unavailable";
+      return { amount: unavailable && c.native ? c.native.amount : (c.amount ?? 0), estimated: c.estimated, unavailable };
     };
     const rows = filtered.map((s) => {
       const nw = conv(s.netWorth, s.date);

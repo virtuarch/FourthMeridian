@@ -70,7 +70,7 @@ function debtAcct(o: {
 function makeCtx(accounts: AccountSummaryItem[]): SpaceContext_AI {
   const totalLiabilities = accounts
     .filter((a) => a.type === 'debt')
-    .reduce((s, a) => s + Math.max(0, a.reportingBalance), 0);
+    .reduce((s, a) => s + Math.max(0, a.reportingBalance ?? 0), 0);
 
   const data: AccountsSectionData = {
     totalCount:         accounts.length,
@@ -82,6 +82,7 @@ function makeCtx(accounts: AccountSummaryItem[]): SpaceContext_AI {
     totalDigitalAssets: 0,
     totalRealAssets:    0,
     totalsEstimated:    accounts.some((a) => a.reportingBalanceEstimated === true),
+    totalsUnconverted:  accounts.some((a) => a.reportingBalanceUnavailable === true),
     counts:  { liquid: 0, investments: 0, digitalAssets: 0, realAssets: 0, liabilities: accounts.length },
     health:  { errorCount: 0, staleCount: 0, needsReauthCount: 0, errorAccountNames: [], staleAccountNames: [], needsReauthAccountNames: [] },
     knowledgeGaps: [],

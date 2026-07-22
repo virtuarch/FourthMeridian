@@ -52,13 +52,16 @@ const row = { netWorth: 1000, cash: 400, debt: 100, netLiquid: 300 };
   check("successful resolution is NOT a miss (values converted, not native)", r.missed === false);
 }
 
-// ── miss ⇒ native + estimated + missed (D-3 / Q4b) ───────────────────────────
+// ── miss ⇒ excluded to 0 + estimated + missed (V25-FINAL-1 / Q4b) ────────────
+// The point is dropped by the caller (fxMiss, driven by `missed`), so the
+// zeroed values are never plotted — but the authority no longer relabels the
+// native magnitude as the target currency even here.
 {
   const r = convertStampedValues(row, "SAR", "2026-01-15", ctx);
-  check("missing rate: stored values pass through unchanged", r.values.netWorth === 1000 && r.values.cash === 400);
+  check("missing rate: values keep native in the (dropped) row, never a fake 0", r.values.netWorth === 1000 && r.values.cash === 400);
   check("missing rate: estimated flag set", r.estimated === true);
-  // Q4b: `missed` discriminates the genuine native pass-through (mixed unit)
-  // from an exact-but-approximate conversion — the guard drops only these.
+  // Q4b: `missed` discriminates the genuine unavailable row (dropped by the
+  // hero-series guard) from an exact-but-approximate conversion.
   check("missing rate: missed flag set (drives the hero-series guard)", r.missed === true);
 }
 

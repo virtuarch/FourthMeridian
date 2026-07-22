@@ -77,13 +77,15 @@ const usdRows: LiquidityAccountRow[] = [
   };
   const mixed: LiquidityAccountRow[] = [
     row("a", "checking", 100,  "EUR"),               // converts: 125
-    row("b", "checking", 50,   "SAR"),               // miss → native 50, estimated
-    row("c", "savings",  10),                        // currency undefined → null-residue, estimated
+    row("b", "checking", 50,   "SAR"),               // miss → UNAVAILABLE, excluded to 0
+    row("c", "savings",  10),                        // currency undefined → null-residue passthrough, kept
     row("d", "debt",     -100, "EUR", { creditLimit: 1100 }), // headroom 1000 EUR → 1250 USD
   ];
   const r = computeLiquidity(scope, options, mixed, realCtx);
-  check("non-USD: EUR converts at the derived close date (100×1.25 + 50 + 10 = 185)",
-    metric(r, "cashNow") === 185);
+  // V25-FINAL-1 — the SAR checking (50) is EXCLUDED (no rate), never blended as
+  // native-labelled-USD; the null-residue savings (10) still passes through.
+  check("non-USD: EUR converts, SAR excluded, null-residue kept (100×1.25 + 0 + 10 = 135)",
+    metric(r, "cashNow") === 135);
   check("non-USD: credit headroom converts in native currency (1000 EUR → 1250)",
     metric(r, "availableCredit") === 1250);
   check("non-USD: miss + null-residue taint → estimated true", r.estimated === true);
