@@ -220,6 +220,18 @@ const LIFECYCLE_META: Record<string, { kind: string; outcome: ConvergenceEvent["
   BETA_ACCESS_DENIED: { kind: "beta-denied", outcome: "info", detail: "beta access denied" },
   ACCOUNT_DEACTIVATED: { kind: "account-deactivated", outcome: "action", detail: "user account deactivated" },
   ACCOUNT_REACTIVATED: { kind: "account-reactivated", outcome: "recovery", detail: "user account reactivated" },
+  // PRE-BETA-OPS-CLOSE Phase 3 — provider-revocation evidence.
+  ACCOUNT_DELETION_REVOCATION_FAILED: {
+    kind: "revocation-failed", outcome: "degraded",
+    detail: "account deletion HELD — upstream Plaid revocation failed, retrying daily",
+  },
+  // The critical one. It means a user's data is gone from Fourth Meridian while
+  // their bank consent may still be live at Plaid, and only a human can now
+  // revoke it. It must never read as a routine lifecycle event.
+  ACCOUNT_DELETED_UNREVOKED: {
+    kind: "deleted-unrevoked", outcome: "failure",
+    detail: "CRITICAL — account deleted WITHOUT confirmed provider revocation; manual Plaid revocation required",
+  },
 };
 
 const lifecycleParticipant: ConvergenceParticipant = {

@@ -163,7 +163,7 @@ export function SpaceDashboard({
   // param, and currency invalidation all live in that hook now. null = not loaded /
   // fetch failed; cards then render their static description (the widget's contract).
   // A SEPARATE seam from useSpaceData (perspective-engine output, not structural data).
-  const { lensResults } = useSpaceLensResults({ spaceId, targetCurrency: perspectiveTargetCurrency });
+  const { lensResults, syncIncomplete } = useSpaceLensResults({ spaceId, targetCurrency: perspectiveTargetCurrency });
 
   // The dashboard layout mounts DisplayCurrencyProvider with this Space's
   // reportingCurrency (this component only renders as the active Space), so
@@ -461,7 +461,7 @@ export function SpaceDashboard({
   // the authority stays resolvePerspectiveEnvelope / PerspectiveEnvelope /
   // CompletenessTier. The host only wires onEnvelopeChange into the render context
   // and hands `activeEnvelope` to the shell.
-  const { envelope: activeEnvelope, onEnvelopeChange } = useActiveEnvelope({ activePerspectiveId, lensResults });
+  const { envelope: activeEnvelope, onEnvelopeChange } = useActiveEnvelope({ activePerspectiveId, lensResults, syncIncomplete });
   // SD-6C — the Cash Flow / Spending perspective + measure filter is now OWNED by
   // CashFlowWorkspace (workspace-local semantic slice), no longer host state. SD-6
   // gate — the completeness stamp AND its trust envelope are now workspace-owned too

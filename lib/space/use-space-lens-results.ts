@@ -31,10 +31,22 @@ export interface UseSpaceLensResultsArgs {
 export interface SpaceLensResults {
   /** lensId → result. null = not loaded / fetch failed (cards fall back to static). */
   lensResults: Record<string, LensResult> | null;
+  /**
+   * PRE-BETA-OPS-CLOSE — true when a provider connection behind THIS Space's
+   * accounts is mid-sync, so balances may be ahead of transactions/history.
+   * Rides this seam because it qualifies the very verdicts fetched alongside it.
+   *
+   * `null` = no claim (not loaded, fetch failed, or the server could not
+   * determine it). Deliberately NOT collapsed to `false`: asserting "fully
+   * synced" from a failed lookup is the quiet false-reassurance this whole
+   * initiative removes. Consumers render the caveat only on an explicit `true`.
+   */
+  syncIncomplete: boolean | null;
 }
 
 export function useSpaceLensResults({ spaceId, targetCurrency }: UseSpaceLensResultsArgs): SpaceLensResults {
   const [lensResults, setLensResults] = useState<Record<string, LensResult> | null>(null);
+  const [syncIncomplete, setSyncIncomplete] = useState<boolean | null>(null);
 
   // Currency-refresh nonce: a reporting-currency change bumps this so the converted
   // lens metrics re-fetch, exactly as the former host-local currencyNonce did. Same
@@ -66,12 +78,16 @@ export function useSpaceLensResults({ spaceId, targetCurrency }: UseSpaceLensRes
         setLensResults(
           results.length ? Object.fromEntries(results.map((res) => [res.lensId, res])) : null,
         );
+        // Only an explicit boolean is a claim. Anything else (absent field, an
+        // older server, a `null` the server sent because it could not tell)
+        // stays `null` — no claim either way.
+        setSyncIncomplete(typeof data?.syncIncomplete === "boolean" ? data.syncIncomplete : null);
       })
-      .catch(() => { if (active) setLensResults(null); });
+      .catch(() => { if (active) { setLensResults(null); setSyncIncomplete(null); } });
     return () => { active = false; };
     // currencyNonce: refetch converted lens metrics after a currency change.
     // targetCurrency: refetch when the "view as" override changes.
   }, [spaceId, currencyNonce, targetCurrency]);
 
-  return { lensResults };
+  return { lensResults, syncIncomplete };
 }

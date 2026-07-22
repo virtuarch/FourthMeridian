@@ -44,6 +44,19 @@ export const AuditAction = {
   ACCOUNT_DELETION_REQUESTED: "ACCOUNT_DELETION_REQUESTED",
   ACCOUNT_DELETION_CANCELLED: "ACCOUNT_DELETION_CANCELLED",
   ACCOUNT_DELETED:            "ACCOUNT_DELETED",
+  // PRE-BETA-OPS-CLOSE Phase 3 — bounded provider-revocation retry evidence.
+  // One row per FAILED daily revocation attempt during deletion processing.
+  // Carries provider + safe item id + institution + attempt number + a sanitized
+  // error classification. NEVER an access token. `AuditLog.userId` is SetNull on
+  // user delete, so these rows SURVIVE the deletion they describe — which is the
+  // whole point: they are the only remaining record that an upstream consent was
+  // never confirmed revoked.
+  ACCOUNT_DELETION_REVOCATION_FAILED: "ACCOUNT_DELETION_REVOCATION_FAILED",
+  // Terminal: the deletion completed after the daily attempt budget was spent
+  // WITHOUT confirmed upstream revocation. Deliberately a distinct action from
+  // ACCOUNT_DELETED so no consumer can read a successful deletion as a
+  // successful revocation.
+  ACCOUNT_DELETED_UNREVOKED:  "ACCOUNT_DELETED_UNREVOKED",
 
   // ── Password ─────────────────────────────────────────────────────────────────
   PASSWORD_CHANGED:         "PASSWORD_CHANGED",

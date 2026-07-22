@@ -68,6 +68,40 @@ export function CsSyncIssuesWidget({ section }: { section: PlatformSection }) {
           {data.unresolvedTotal === 0 ? (
             <p className="text-xs text-[var(--text-secondary)]">Nothing needs attention — no unresolved sync issues.</p>
           ) : (
+            <>
+            {/* PRE-BETA-OPS-CLOSE Phase 1 — a STALLED item is categorically
+                different from "some issues exist": the cursor-safety invariant
+                is holding this item's page, and it will not advance until the
+                failure clears. Shown first, in critical tone, with the two
+                counts labelled distinctly (attempts = failed sync RUNS,
+                unpersisted = transactions still unwritten). */}
+            {data.stalled.length > 0 && (
+              <ul className="-mx-1 mb-2 flex flex-col gap-1.5 border-b border-[var(--border-hairline)] pb-2">
+                {data.stalled.map((s) => (
+                  <li key={s.plaidItemId} className="px-1">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="truncate text-xs font-medium" style={{ color: "var(--accent-negative)" }}>
+                        {s.institution} — stalled {s.stalledFor}
+                      </span>
+                      <span className="shrink-0 text-[10px] uppercase tracking-wide" style={{ color: "var(--accent-negative)" }}>
+                        held
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                      {s.attempts} failed attempt{s.attempts === 1 ? "" : "s"}
+                      {" · "}
+                      {s.unpersistedCount} transaction{s.unpersistedCount === 1 ? "" : "s"} unpersisted
+                      {s.legacyFailureCount > 0 && (
+                        <> {" · "}{s.legacyFailureCount} legacy (attempts unknown)</>
+                      )}
+                    </p>
+                    <p className="mt-0.5 text-[10px] text-[var(--text-faint)]">
+                      since {new Date(s.stalledSince).toLocaleString()} · latest {timeAgo(s.latestFailure)} ago
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
             <ul className="-mx-1 flex flex-col">
               {data.byKind.map((k) => (
                 <li key={`${k.severity}:${k.domain}:${k.kind}`}>
@@ -96,6 +130,7 @@ export function CsSyncIssuesWidget({ section }: { section: PlatformSection }) {
                 </li>
               ))}
             </ul>
+            </>
           )}
 
           <RightPanel open={selected != null} onClose={() => setSelectedKind(null)} ariaLabel="Sync issue kind detail">

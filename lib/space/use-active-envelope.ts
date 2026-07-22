@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useState } from "react";
-import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
+import { resolvePerspectiveEnvelope, SYNC_INCOMPLETE_WARNING, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { WORKSPACE_RENDERERS } from "@/components/space/workspaces/workspaceRenderers";
 import type { LensResult } from "@/lib/perspective-engine/types";
 
@@ -33,6 +33,11 @@ export interface UseActiveEnvelopeArgs {
   /** The batch present-day lens results — the fallback source for a lens-only
    *  perspective that emits no workspace envelope. */
   lensResults: Record<string, LensResult> | null;
+  /**
+   * PRE-BETA-OPS-CLOSE — Space-scoped partial-convergence fact, from the same
+   * seam as `lensResults` (/api/spaces/[id]/perspectives). `null` = no claim.
+   */
+  syncIncomplete?: boolean | null;
 }
 
 export interface ActiveEnvelope {
@@ -42,20 +47,37 @@ export interface ActiveEnvelope {
   onEnvelopeChange: (env: PerspectiveEnvelope) => void;
 }
 
-export function useActiveEnvelope({ activePerspectiveId, lensResults }: UseActiveEnvelopeArgs): ActiveEnvelope {
+export function useActiveEnvelope({ activePerspectiveId, lensResults, syncIncomplete }: UseActiveEnvelopeArgs): ActiveEnvelope {
   // The engaged workspace emits its OWN trust envelope into this state.
   const [emitted, setEmitted] = useState<PerspectiveEnvelope>({});
   const onEnvelopeChange = useCallback((env: PerspectiveEnvelope) => setEmitted(env), []);
 
   // A lens without a workspace (e.g. goals) falls through to the canonical resolver;
   // the registry keys (WORKSPACE_RENDERERS) decide which source is authoritative.
-  const envelope: PerspectiveEnvelope =
+  const base: PerspectiveEnvelope =
     activePerspectiveId && WORKSPACE_RENDERERS[activePerspectiveId]
       ? emitted
       : resolvePerspectiveEnvelope({
           perspectiveId: activePerspectiveId ?? "",
           lensResult: activePerspectiveId ? lensResults?.[activePerspectiveId] ?? null : null,
         });
+
+  // PRE-BETA-OPS-CLOSE — partial convergence is a property of the SPACE'S
+  // CONNECTIONS, not of any one lens's math, so it is applied HERE: this is the
+  // single point both envelope sources pass through (a workspace-emitted
+  // envelope and the lens-only fallback). Applying it in each workspace instead
+  // would mean five copies of the same rule and a guaranteed drift.
+  //
+  // It rides the existing orthogonal `warnings[]` channel — the same one FX
+  // already uses — so `completeness` still answers "how was this value obtained"
+  // and this answers "has the provider's picture fully arrived". No second trust
+  // framework, and the shell renders it through the TrustIndicator unchanged.
+  //
+  // Only an explicit `true` warns: `null` is "could not determine", and
+  // inventing reassurance OR alarm from an unknown would both be dishonest.
+  const envelope: PerspectiveEnvelope = syncIncomplete === true
+    ? { ...base, warnings: [...(base.warnings ?? []), ...SYNC_INCOMPLETE_WARNING] }
+    : base;
 
   return { envelope, onEnvelopeChange };
 }

@@ -21,6 +21,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { classifySyncIssue, isActiveIncident, type SyncIssueDomain, type SyncIssueSeverity } from "@/lib/platform/sync-issue-semantics";
+import { projectItemStall, formatStallDuration } from "@/lib/platform/stall-projection";
 
 export const runtime = "nodejs";
 
@@ -44,6 +45,28 @@ export interface SyncIssueRecent {
   at:   string; // ISO createdAt
 }
 
+/**
+ * PRE-BETA-OPS-CLOSE Phase 1 — one persistently stalled Plaid item. Present only
+ * for items that are BOTH sync-incomplete AND carrying an unresolved
+ * cursor-blocking condition; a normally-syncing item never appears here.
+ */
+export interface StalledItem {
+  plaidItemId:  string;
+  institution:  string;
+  /** ISO — when this stall began (earliest unresolved cursor-blocking failure). */
+  stalledSince: string;
+  /** ISO — most recent failure. */
+  latestFailure: string;
+  /** Pre-formatted coarse duration, e.g. "3d 4h". */
+  stalledFor:   string;
+  /** DISTINCT failed sync RUNS — never the row count. */
+  attempts:     number;
+  /** Failed persistence OBLIGATIONS (transactions still unwritten). */
+  unpersistedCount: number;
+  /** Unresolved pre-cursor-safety failures; attempt depth unknowable. */
+  legacyFailureCount: number;
+}
+
 export interface PlatformSyncIssuesResponse {
   /**
    * Phase 4 — the count of ACTIVE incidents, not of `resolved: false` rows.
@@ -55,6 +78,8 @@ export interface PlatformSyncIssuesResponse {
   scanTruncated:   boolean;
   byKind:          SyncIssueKindCount[];
   recent:          SyncIssueRecent[];
+  /** Phase 1 — items currently held by the cursor-safety invariant. */
+  stalled:         StalledItem[];
 }
 
 export async function GET() {
@@ -114,6 +139,41 @@ export async function GET() {
     })
     .sort((a, b) => b.count - a.count);
 
+  // ── Stalled items (Phase 1) ────────────────────────────────────────────────
+  // A stall needs BOTH an unresolved cursor-blocking condition AND a still-
+  // incomplete sync, so this reads PlaidItem.syncIncompleteAt rather than
+  // inferring a stall from issue rows alone (historical rows may all have
+  // recovered). Scoped to items that actually appear in the unresolved set.
+  const stalledCandidateIds = [...new Set(
+    unresolved.filter((r) => r.plaidItemId !== null).map((r) => r.plaidItemId as string),
+  )];
+  const stalledItems = stalledCandidateIds.length
+    ? await db.plaidItem.findMany({
+        where:  { id: { in: stalledCandidateIds } },
+        select: { id: true, institutionName: true, syncIncompleteAt: true },
+      })
+    : [];
+  const now = new Date();
+  const stalled: StalledItem[] = [];
+  for (const item of stalledItems) {
+    const rows = unresolved
+      .filter((r) => r.plaidItemId === item.id)
+      .map((r) => ({ kind: r.kind, provider: r.provider, detail: r.detail, createdAt: r.createdAt, resolved: r.resolved }));
+    const s = projectItemStall({ syncIncompleteAt: item.syncIncompleteAt, issues: rows, now });
+    if (!s.stalled || s.stalledSince === null) continue;
+    stalled.push({
+      plaidItemId:        item.id,
+      institution:        item.institutionName,
+      stalledSince:       s.stalledSince.toISOString(),
+      latestFailure:      (s.latestFailure ?? s.stalledSince).toISOString(),
+      stalledFor:         formatStallDuration(s.stalledForMs ?? 0),
+      attempts:           s.attempts,
+      unpersistedCount:   s.unpersistedCount,
+      legacyFailureCount: s.legacyFailureCount,
+    });
+  }
+  stalled.sort((a, b) => a.stalledSince.localeCompare(b.stalledSince));
+
   return NextResponse.json({
     unresolvedTotal: active.length,
     scanTruncated:   unresolved.length === ACTIVE_SCAN_CAP,
@@ -122,5 +182,6 @@ export async function GET() {
       const { domain, severity } = classifySyncIssue({ kind: r.kind, provider: r.provider, detail: r.detail });
       return { id: r.id, kind: r.kind as string, domain, severity, at: r.createdAt.toISOString() };
     }),
+    stalled,
   } satisfies PlatformSyncIssuesResponse);
 }

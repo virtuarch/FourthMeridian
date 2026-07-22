@@ -35,12 +35,23 @@ import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
+import { getPlaidErrorCode } from "@/lib/plaid/errors";
+import {
+  classifyRevocationFailure, decideRevocation, countPriorFailureDays,
+  MAX_REVOCATION_ATTEMPT_DAYS,
+} from "@/lib/account-deletion/revocation";
 import { ShareStatus, PlaidItemStatus, SpaceMemberRole, SpaceMemberStatus } from "@prisma/client";
 
 export interface PurgeResult {
   userId:          string;
   purged:          boolean;
-  skipped?:        "already-deleted" | "not-due";
+  /**
+   * PRE-BETA-OPS-CLOSE Phase 3 — "pending-provider-revocation" means the purge
+   * ran but was deliberately HELD: upstream Plaid revocation failed retryably
+   * and the daily attempt budget is not spent. The User row, the PlaidItem and
+   * its encrypted token all survive so the next cron run can retry.
+   */
+  skipped?: "already-deleted" | "not-due" | "pending-provider-revocation";
   providerRevoked: number;
   providerFailed:  number;
   deletedAccounts: number;
@@ -78,23 +89,141 @@ export async function purgeUser(userId: string): Promise<PurgeResult> {
   // to each ACTIVE item directly. A failure is logged and counted, never fatal.
   const items = await db.plaidItem.findMany({
     where:  { userId, status: PlaidItemStatus.ACTIVE },
-    select: { id: true, encryptedToken: true },
+    select: { id: true, encryptedToken: true, institutionName: true },
   });
+
+  // PRE-BETA-OPS-CLOSE Phase 3 — BOUNDED revocation retry.
+  //
+  // Previously a failure here was counted, logged, and the item was marked
+  // REVOKED anyway — which also excluded it from THIS job's own `status: ACTIVE`
+  // filter, so the retry loop could never pick it up again — and then the purge
+  // completed, cascading the encrypted token away. Revocation became impossible
+  // and the upstream consent stayed live forever.
+  //
+  // Now: only a CONFIRMED revocation (or a proven already-absent item) marks
+  // REVOKED. A retryable failure leaves the item ACTIVE and holds the deletion,
+  // so the existing daily cron — already documented as idempotent and resumable
+  // — retries it tomorrow with the token still intact.
+  const retryableFailures: { itemId: string; institution: string; reason: string }[] = [];
+
   for (const item of items) {
+    let revoked = false;
+    let failure: { reason: string } | null = null;
     try {
       const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
       await plaidClient.itemRemove({ access_token: accessToken });
+      revoked = true;
       base.providerRevoked++;
     } catch (err) {
-      base.providerFailed++;
-      console.error(`[purge] Plaid itemRemove failed for item ${item.id} (non-fatal):`, err);
+      const code = getPlaidErrorCode(err);
+      if (classifyRevocationFailure(code) === "already-gone") {
+        // ITEM_NOT_FOUND: Plaid invalidates the token on a successful
+        // /item/remove, so the item is definitively absent upstream. Nothing
+        // left to revoke — reconciled, not failed.
+        revoked = true;
+        base.providerRevoked++;
+        console.log(`[purge] Plaid item ${item.id} already absent upstream (${code}) — treated as revoked.`);
+      } else {
+        base.providerFailed++;
+        // Sanitized: a Plaid error_code or a generic label. Never a token, and
+        // never a raw provider payload that might embed one.
+        failure = { reason: code ?? "PLAID_ITEM_REMOVE_FAILED" };
+        console.error(`[purge] Plaid itemRemove failed for item ${item.id} (code=${code ?? "unknown"}) — deletion held for retry.`);
+      }
     }
-    // Mark REVOKED regardless — keeps state honest so a resumed run does not
-    // re-attempt itemRemove on an already-removed item (the ACTIVE filter above).
-    try {
-      await db.plaidItem.update({ where: { id: item.id }, data: { status: PlaidItemStatus.REVOKED } });
-    } catch { /* row will be cascade-deleted at step 8 regardless */ }
+
+    if (revoked) {
+      // Mark REVOKED only on a CONFIRMED outcome. Keeps the ACTIVE filter above
+      // an honest work-list for the next run.
+      try {
+        await db.plaidItem.update({ where: { id: item.id }, data: { status: PlaidItemStatus.REVOKED } });
+      } catch { /* row will be cascade-deleted at step 8 regardless */ }
+    } else if (failure) {
+      retryableFailures.push({ itemId: item.id, institution: item.institutionName, reason: failure.reason });
+    }
   }
+
+  // ── Bounded-attempt decision ───────────────────────────────────────────────
+  // Attempts are counted in DISTINCT CALENDAR DAYS of prior failure, not audit
+  // rows: the policy is "3 daily attempts", and day-counting makes a duplicate
+  // or manually re-run cron on the same day ONE attempt-day. A concurrent run
+  // therefore cannot burn the budget early and dump the user into terminal
+  // deletion after ~24h instead of ~72h.
+  const priorFailureAudits = await db.auditLog.findMany({
+    where:  { userId, action: AuditAction.ACCOUNT_DELETION_REVOCATION_FAILED },
+    select: { createdAt: true },
+  });
+  const priorFailureDays = countPriorFailureDays(priorFailureAudits.map((a) => a.createdAt), now);
+  const decision = decideRevocation({ retryableFailures: retryableFailures.length, priorFailureDays });
+
+  if (decision.action !== "proceed") {
+    // One durable, non-secret record per failed item for THIS attempt.
+    for (const f of retryableFailures) {
+      await db.auditLog.create({
+        data: {
+          userId,
+          action:   AuditAction.ACCOUNT_DELETION_REVOCATION_FAILED,
+          metadata: {
+            provider:    "PLAID",
+            plaidItemId: f.itemId,
+            institution: f.institution,
+            attemptDay:  decision.attemptDay,
+            maxAttempts: MAX_REVOCATION_ATTEMPT_DAYS,
+            reason:      f.reason,
+          },
+        },
+      });
+    }
+  }
+
+  if (decision.action === "hold") {
+    // HOLD: do NOT delete the User, do NOT destroy the token, do NOT clear
+    // deletionScheduledAt. Sessions are already revoked (step 1), so the user
+    // cannot use the account meanwhile — deletion is genuinely in progress, and
+    // the next daily run retries with the token intact.
+    console.warn(
+      `[purge] user ${userId} — deletion HELD pending provider revocation ` +
+      `(attempt ${decision.attemptDay}/${MAX_REVOCATION_ATTEMPT_DAYS}, ${retryableFailures.length} item(s) unrevoked). Retrying next run.`,
+    );
+    return { ...base, skipped: "pending-provider-revocation" };
+  }
+
+  if (decision.action === "proceed-unrevoked") {
+    // TERMINAL: the budget is spent. Complete the deletion the user asked for —
+    // a provider outage must not hold their data hostage — but record honestly
+    // that upstream revocation was NEVER confirmed. This row is written BEFORE
+    // the User delete and survives it (AuditLog.userId is SetNull), carrying
+    // enough non-secret detail for an operator to revoke by hand in the Plaid
+    // dashboard. It is a DISTINCT action from ACCOUNT_DELETED precisely so no
+    // reader can mistake a completed deletion for a completed revocation.
+    await db.auditLog.create({
+      data: {
+        userId,
+        action:   AuditAction.ACCOUNT_DELETED_UNREVOKED,
+        metadata: {
+          provider:       "PLAID",
+          attemptDays:    decision.attemptDay,
+          unrevokedItems: retryableFailures.map((f) => ({
+            plaidItemId: f.itemId, institution: f.institution, reason: f.reason,
+          })),
+          note: "Local deletion completed. Upstream Plaid consent was NOT confirmed revoked — manual revocation required.",
+        },
+      },
+    });
+    console.error(
+      `[purge][CRITICAL] user ${userId} — deletion COMPLETING WITHOUT CONFIRMED PROVIDER REVOCATION ` +
+      `after ${decision.attemptDay} daily attempts. Unrevoked items: ${retryableFailures.map((f) => f.itemId).join(", ")}. ` +
+      `Manual revocation required in the Plaid dashboard.`,
+    );
+    // Mark them REVOKED locally now — not a claim about upstream (the audit row
+    // above is the truth), just local state consistency before the cascade.
+    for (const f of retryableFailures) {
+      try {
+        await db.plaidItem.update({ where: { id: f.itemId }, data: { status: PlaidItemStatus.REVOKED } });
+      } catch { /* cascade-deleted below regardless */ }
+    }
+  }
+
   // MANUAL / WALLET Connections have nothing to revoke upstream (S5) — no-op.
 
   // ── 3. Revoke SALs the user added, in surviving Spaces ─────────────────────

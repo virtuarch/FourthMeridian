@@ -271,6 +271,37 @@ export async function refreshPlaidItem(
   const reconcileIds = reconcileTargets.map((t) => t.id);
   const txnSumBefore = await txnSumByAccount(reconcileIds);
 
+  // PRE-BETA-OPS-CLOSE Phase 2 — PARTIAL CONVERGENCE IS EXPLICIT HERE.
+  //
+  // This call THROWS (PlaidSyncIncompleteError) when a page could not be fully
+  // persisted, and that throw is deliberately NOT caught:
+  //
+  //   • Everything below — the balance↔transaction reconciliation and the
+  //     SpaceSnapshot regeneration — is SKIPPED, on purpose.
+  //   • `syncIncompleteAt` stays set, so the item reads as "importing", the
+  //     client auto-resume and the daily cron keep retrying it, and Platform Ops
+  //     reports it as stalled (lib/platform/stall-projection.ts).
+  //   • The caller records the failure (runDeferredHistorySync stamps health,
+  //     refreshAllActiveItemsForUser records ok:false). Re-catching it here would
+  //     only duplicate that contract — or worse, downgrade it to success.
+  //
+  // Why skipping is CORRECT rather than merely convenient:
+  //   • Reconciliation compares a balance delta against a transaction-sum delta.
+  //     With transactions knowingly incomplete it would fire a
+  //     BALANCE_TX_MISMATCH describing a gap we already recorded, with less
+  //     precision — noise on top of a known incident.
+  //   • Snapshot regeneration would bake the fresh balance into HISTORY without
+  //     the transactions that explain it, mixing bases in the one place the
+  //     posted-basis invariant forbids it.
+  //
+  // The honest consequence, stated plainly: balances were already written at
+  // step 1, so FinancialAccount.balance can be NEWER than this item's
+  // transactions and its last converged snapshot until a later sync succeeds.
+  // That is not corruption — the balance is true; it is provider truth arriving
+  // on two endpoints with independent freshness, which Plaid does not offer
+  // atomically. Ordering is therefore NOT changed. What that state requires is
+  // DISCLOSURE on the surfaces that mix the two (see the sync-incomplete trust
+  // warning in lib/perspectives/envelope.ts).
   const txSync = await syncTransactionsForItem(plaidItemDbId);
 
   // ── 3b. Balance↔transaction reconciliation (M2) ──────────────────────────

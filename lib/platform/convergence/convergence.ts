@@ -215,7 +215,17 @@ function realReaders(now: Date): ConvergenceReaders {
     async lifecycleEvents(from, to) {
       const rows = await db.auditLog.findMany({
         where: {
-          action: { in: [AuditAction.BETA_ACCESS_APPROVED, AuditAction.BETA_ACCESS_DENIED, AuditAction.BETA_ACCESS_REDEEMED, AuditAction.ACCOUNT_DEACTIVATED, AuditAction.ACCOUNT_REACTIVATED] },
+          action: { in: [
+            AuditAction.BETA_ACCESS_APPROVED, AuditAction.BETA_ACCESS_DENIED, AuditAction.BETA_ACCESS_REDEEMED,
+            AuditAction.ACCOUNT_DEACTIVATED, AuditAction.ACCOUNT_REACTIVATED,
+            // PRE-BETA-OPS-CLOSE Phase 3 — provider-revocation evidence. These
+            // rows SURVIVE the user deletion they describe (AuditLog.userId is
+            // SetNull), which is exactly why they belong on an operator surface:
+            // after the User is gone they are the only remaining record that an
+            // upstream Plaid consent was never confirmed revoked.
+            AuditAction.ACCOUNT_DELETION_REVOCATION_FAILED,
+            AuditAction.ACCOUNT_DELETED_UNREVOKED,
+          ] },
           createdAt: { gte: from, lte: to },
         },
         orderBy: { createdAt: "asc" },

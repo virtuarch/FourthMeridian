@@ -51,7 +51,16 @@ export interface EnvelopeCompleteness {
  * FX rate). Kept as a separate dimension so "observed + missing FX" and
  * "reconstructed + no FX issue" never collapse onto the same tier.
  */
-export type EnvelopeWarningKind = "fx";
+export type EnvelopeWarningKind =
+  | "fx"
+  /**
+   * PRE-BETA-OPS-CLOSE Phase 2 — one or more linked provider items are
+   * sync-incomplete, so CURRENT balances may be ahead of transaction- and
+   * history-derived views. Orthogonal to `completeness`, exactly like `fx`:
+   * completeness answers "how was this value obtained", this answers "is the
+   * provider's picture of it fully arrived yet".
+   */
+  | "sync-incomplete";
 
 export interface EnvelopeWarning {
   kind:    EnvelopeWarningKind;
@@ -106,6 +115,40 @@ export const COMPLETENESS_PRESENTATION: Record<CompletenessTier, { label: string
  *     date. The amount WAS converted, just not at an exact same-day rate.
  * `unconverted` wins when both are set (it is the more serious statement).
  */
+/**
+ * PRE-BETA-OPS-CLOSE Phase 2 — the partial-convergence caveat.
+ *
+ * Plaid delivers balances and transactions on separate endpoints with
+ * independent freshness, and the cursor-safety invariant deliberately holds a
+ * page rather than lose a transaction. So an item can legitimately sit with a
+ * CURRENT balance and BEHIND transactions/history until a later sync converges.
+ *
+ * The wording is deliberately NOT "your data is wrong". Nothing here is wrong:
+ * the balance is true, the history is the last state that fully converged, and
+ * the gap between them is real and temporary. Flattening that into a generic
+ * error would train users to ignore a signal that is usually benign — and would
+ * be a lie about the balance, which is the freshest figure on screen.
+ */
+export const SYNC_INCOMPLETE_WARNING: readonly EnvelopeWarning[] = [
+  {
+    kind:  "sync-incomplete",
+    label: "Sync incomplete",
+    tone:  "warning",
+    detail:
+      "Some connected data is still syncing. Balances may be current while recent transactions and history are still catching up.",
+  },
+];
+
+function syncIncompleteWarning(syncIncomplete?: boolean): EnvelopeWarning[] {
+  return syncIncomplete ? [...SYNC_INCOMPLETE_WARNING] : [];
+}
+
+/** Merge the orthogonal caveat channels into one list (undefined when empty). */
+function mergeWarnings(...groups: (EnvelopeWarning[] | undefined)[]): EnvelopeWarning[] | undefined {
+  const all = groups.flatMap((g) => g ?? []);
+  return all.length > 0 ? all : undefined;
+}
+
 function fxWarnings(estimated?: boolean, unconverted?: boolean): EnvelopeWarning[] | undefined {
   if (unconverted) {
     return [
@@ -308,6 +351,30 @@ export function resolvePerspectiveEnvelope(args: {
    * to completeness; ignored by perspectives that carry FX taint on their own result
    * (liquidity/debt read it from the LensResult).
    */
+  fxUnconverted?: boolean;
+  /**
+   * PRE-BETA-OPS-CLOSE Phase 2 — true when a linked provider item is currently
+   * sync-incomplete. Threaded exactly like `fxUnconverted`: an orthogonal
+   * host-known caveat that every perspective carries, resolved into the SAME
+   * warnings[] channel the shell already renders. No second trust framework.
+   */
+  syncIncomplete?: boolean;
+}): PerspectiveEnvelope {
+  const env = resolveBase(args);
+  // Applied uniformly AFTER the per-perspective resolution: partial convergence
+  // is a property of the Space's connections, not of any one lens's math, so it
+  // must not depend on which perspective happens to be open.
+  const sync = syncIncompleteWarning(args.syncIncomplete);
+  return sync.length > 0 ? { ...env, warnings: mergeWarnings(env.warnings, sync) } : env;
+}
+
+function resolveBase(args: {
+  perspectiveId:  string;
+  wealthResult?:  WealthResult | null;
+  lensResult?:    LensResult | null;
+  currency?:      string;
+  cashFlowStamp?: CashFlowStamp | null;
+  investmentsResult?: InvestmentsTimeMachineResult | null;
   fxUnconverted?: boolean;
 }): PerspectiveEnvelope {
   switch (args.perspectiveId) {

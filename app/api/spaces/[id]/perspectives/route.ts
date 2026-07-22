@@ -31,6 +31,7 @@ import { withApiHandler }            from "@/lib/api";
 import { computePerspectives }       from "@/lib/perspective-engine";
 import type { LensResult }           from "@/lib/perspective-engine";
 import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
+import { resolveSpaceSyncCompleteness } from "@/lib/spaces/sync-completeness";
 
 // Lens registrations — imported for module side effects (house pattern:
 // lib/ai/assemblers/* register the same way). A lens is computable only
@@ -60,5 +61,14 @@ export const GET = withApiHandler(async (
   // ── Compute — always as the requesting viewer ──────────────────────────────
   const results: LensResult[] = await computePerspectives({ spaceId, userId }, { targetCurrency });
 
-  return NextResponse.json({ results });
+  // ── Space-scoped sync completeness (PRE-BETA-OPS-CLOSE) ───────────────────
+  // Rides THIS route rather than a new one: it is per-Space, membership-gated,
+  // and already the trust/perspective seam the envelope resolves from — the
+  // same request that carries the lens verdicts should carry the caveat that
+  // qualifies them. A boolean only; no item id, institution, or error detail
+  // crosses to a customer surface. `null` means "could not determine" and is
+  // NOT downgraded to "fully synced" (see resolveSpaceSyncCompleteness).
+  const syncIncomplete = await resolveSpaceSyncCompleteness(spaceId);
+
+  return NextResponse.json({ results, syncIncomplete });
 }, "GET /api/spaces/[id]/perspectives");
