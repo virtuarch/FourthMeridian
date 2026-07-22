@@ -26,6 +26,7 @@ import { db } from "@/lib/db";
 import { withApiHandler } from "@/lib/api";
 import { PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { regenerateWealthHistoryForItem } from "@/lib/plaid/backgroundHistorySync";
 import { classifyPlaidErrorForHealth, plaidErrorSummary } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
@@ -110,6 +111,18 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       return NextResponse.json({ resumed: false, reason: "in-flight" });
     }
     // syncTransactionsForItem cleared syncIncompleteAt on a full completion.
+
+    // A9 — the import just finished, so NOW recompute the wealth-history window.
+    // This route drives syncTransactionsForItem directly (for the lock semantics
+    // documented above) and therefore never ran the deferred pipeline's
+    // regeneration. That left the window frozen at whatever connect-time
+    // computed — and at connect Plaid has delivered nothing yet, so it is always
+    // the 30-day fallback. This is the point where MIN(transaction.date) finally
+    // reflects the history that actually arrived. Best-effort by contract: it
+    // swallows its own failures and can never turn a successful resume into a
+    // failed one.
+    await regenerateWealthHistoryForItem(item.id);
+
     return NextResponse.json({ resumed: true, complete: true });
   } catch (e) {
     console.error(`[plaid][resume-sync] resume failed for item ${item.id}: ${plaidErrorSummary(e)}`, e);

@@ -67,6 +67,60 @@ const PRICE_BACKFILL_BUDGET_MS = 25_000;
  * backfillSpaceSnapshots() makes existing Spaces no-ops. Runs only on a
  * successful sync (full transaction history is required first).
  */
+/**
+ * A9 — rebuild wealth history for one item's accounts over the MAXIMUM window
+ * their transactions actually support (earliest real transaction → yesterday).
+ *
+ * WHY THIS IS CALLABLE ON ITS OWN, and why calling it once at connect is wrong.
+ * The window comes from maxAvailableWealthWindow(), which reads MIN(transaction
+ * .date) for these accounts. At connect that set is EMPTY — Plaid prepares
+ * history asynchronously and delivers it over the following minutes — so the
+ * lookup returns null and wealthWindowFromEarliest() falls back to
+ * recentWealthWindow(): exactly 30 days. The log line then reports that
+ * fallback as "MAX available", which is how a two-year connection kept
+ * presenting as a 30-day one (observed 2026-07-22 on both a Chase and an Amex
+ * connect, each logging a 30-day window seconds after link, with 146
+ * transactions arriving on a resume minutes later).
+ *
+ * So this must run AGAIN once the import genuinely finishes. The connect-time
+ * call stays — it is what makes the first paint non-empty — it simply stops
+ * being the last word. Callers that complete an import (the deferred pipeline
+ * below, and the resume route, which drives syncTransactionsForItem directly
+ * and therefore never reached this code at all) call it at their completion
+ * point, when MIN(date) finally reflects the real history.
+ *
+ * Best-effort by contract: a regeneration failure must never fail the sync that
+ * triggered it. `faIds` may be passed by a caller that already resolved them.
+ */
+export async function regenerateWealthHistoryForItem(
+  plaidItemId: string,
+  knownAccountIds?: string[],
+): Promise<void> {
+  if (!wealthRegenerationEnabled()) return;
+  try {
+    let faIds = knownAccountIds;
+    if (!faIds) {
+      const conns = await db.accountConnection.findMany({
+        where:  { plaidItemDbId: plaidItemId, deletedAt: null },
+        select: { financialAccountId: true },
+      });
+      faIds = conns.map((c) => c.financialAccountId);
+    }
+    if (faIds.length === 0) return;
+
+    // regenerateWealthHistory clamps per-account to its own earliest-tx floor,
+    // so no history is fabricated beyond what was actually imported.
+    const window = await maxAvailableWealthWindow(faIds);
+    const spaces = await regenerateWealthHistoryForAccounts(faIds, window);
+    console.log(
+      `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over ` +
+        `[${window.fromDate} … ${window.toDate}] (item ${plaidItemId}, ${faIds.length} account(s), MAX available)`,
+    );
+  } catch (e) {
+    console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, e);
+  }
+}
+
 async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
   try {
     const conns = await db.accountConnection.findMany({
@@ -184,25 +238,7 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
     // WEALTH_REGENERATION_ENABLED; jobs/sync-banks.ts calls this same
     // function after every daily sync too, so if evidence still isn't there
     // yet, this keeps self-healing on its own without a manual re-run.
-    if (wealthRegenerationEnabled()) {
-      try {
-        // CONN-2 — build the MAXIMUM available intelligence at connect, not an
-        // arbitrary 30-day window. The window spans each account's earliest real
-        // transaction → yesterday (today's live row is frozen). This is the SAME
-        // window + authority the manual recovery path uses, so a new user's charts
-        // are complete immediately instead of shallow-until-manually-restored.
-        // regenerateWealthHistory clamps per-account to its own earliest-tx floor,
-        // so no history is fabricated beyond what was imported.
-        const window = await maxAvailableWealthWindow(faIds);
-        const spaces = await regenerateWealthHistoryForAccounts(faIds, window);
-        console.log(
-          `[plaid][A9] regenerated wealth history for ${spaces.length} space(s) over ` +
-            `[${window.fromDate} … ${window.toDate}] (item ${plaidItemId}, ${faIds.length} account(s), MAX available)`,
-        );
-      } catch (e) {
-        console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, e);
-      }
-    }
+    await regenerateWealthHistoryForItem(plaidItemId, faIds);
   } catch (e) {
     console.error(`[plaid][D2x-slice4] snapshot backfill resolution failed for item ${plaidItemId} (non-fatal):`, e);
   }
