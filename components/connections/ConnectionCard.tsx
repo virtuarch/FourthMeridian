@@ -31,9 +31,6 @@ import {
   Building2,
   AlertTriangle,
   Info,
-  Clock,
-  Sparkles,
-  Brain,
 } from "lucide-react";
 import { DataCard } from "@/components/atlas/DataCard";
 import { AtlasLiquidCard } from "@/components/atlas/AtlasLiquidCard";
@@ -130,17 +127,6 @@ function StageStepper({ stages }: { stages: Stage[] }) {
         );
       })}
     </ol>
-  );
-}
-
-/** Forward-looking marker — explicitly NOT complete. Unlocks when history finishes. */
-function NextRow({ label, icon: Icon }: { label: string; icon: typeof Sparkles }) {
-  return (
-    <li className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
-      <Icon size={15} className="opacity-50 shrink-0" />
-      <span>{label}</span>
-      <span className="text-xs italic text-[var(--text-muted)]">ready next</span>
-    </li>
   );
 }
 
@@ -343,11 +329,11 @@ function ImportingContent({
 
       <StageStepper stages={stages} />
 
-      <ul className="mt-2 space-y-1.5">
-        <NextRow label="Timeline"    icon={Clock} />
-        <NextRow label="Daily Brief" icon={Sparkles} />
-        <NextRow label="AI insights" icon={Brain} />
-      </ul>
+      {/* The "ready next" list (Timeline · Daily Brief · AI insights) was removed
+          here: those are roadmap promises, not work this import is doing or
+          tracking. A progress card should report what is happening right now —
+          anything else is a commitment the card cannot verify and the user
+          cannot act on. Re-add a row only when there is a real signal behind it. */}
       {slow && (
         // CONN-1 — truthful framing once live polling has paused (past the ~3-min
         // budget). The import genuinely continues server-side; completion is
