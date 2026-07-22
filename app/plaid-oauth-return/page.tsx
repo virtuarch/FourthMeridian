@@ -18,7 +18,12 @@
  * Requirements:
  *   - PLAID_REDIRECT_URI must point to this page (e.g. https://xyz.ngrok.io/plaid-oauth-return)
  *   - That URI must be registered in Plaid Dashboard → Team → API → Allowed redirect URIs
- *   - The original link token must be in sessionStorage (stored by PlaidContext before opening Link)
+ *   - The original link token must be in localStorage (stored by PlaidContext
+ *     before opening Link). localStorage rather than sessionStorage because the
+ *     latter is per-tab: on mobile the OAuth return frequently lands in a NEW
+ *     tab with an empty sessionStorage, so the token vanished and this page
+ *     reported "Link session expired" — desktop worked only because it returns
+ *     in the same tab.
  */
 
 import { useEffect, useRef, useState, startTransition } from "react";
@@ -34,7 +39,7 @@ export default function PlaidOAuthReturn() {
   const [status,          setStatus]           = useState<"loading" | "ready" | "importing" | "error">("loading");
   const [errorMessage,    setErrorMessage]     = useState("");
   // True when this OAuth round-trip completes a connection-specific Investments
-  // consent (update mode) rather than a normal connect. Set from sessionStorage
+  // consent (update mode) rather than a normal connect. Set from localStorage
   // on mount (written by PlaidContext.openInvestmentsConsent before redirect).
   const [isInvestments,   setIsInvestments]    = useState(false);
   const hasOpened = useRef(false);
@@ -43,9 +48,9 @@ export default function PlaidOAuthReturn() {
   // startTransition avoids the "setState in effect" lint rule — these are
   // non-urgent UI updates that don't need to block the browser paint.
   useEffect(() => {
-    const token = sessionStorage.getItem("plaid_link_token");
+    const token = localStorage.getItem("plaid_link_token");
     const uri   = window.location.href;
-    const mode  = sessionStorage.getItem("plaid_link_mode");
+    const mode  = localStorage.getItem("plaid_link_mode");
 
     startTransition(() => {
       if (!token) {
@@ -66,11 +71,11 @@ export default function PlaidOAuthReturn() {
     // ── Investments-consent completion (update mode) ──────────────────────────
     // Same access_token — no exchange. Run the existing holdings refresh via the
     // dedicated enable route, then return to Connections. No duplicate Item.
-    if (sessionStorage.getItem("plaid_link_mode") === "investments") {
-      const plaidItemId = sessionStorage.getItem("plaid_investments_item_id") ?? "";
-      sessionStorage.removeItem("plaid_link_token");
-      sessionStorage.removeItem("plaid_link_mode");
-      sessionStorage.removeItem("plaid_investments_item_id");
+    if (localStorage.getItem("plaid_link_mode") === "investments") {
+      const plaidItemId = localStorage.getItem("plaid_investments_item_id") ?? "";
+      localStorage.removeItem("plaid_link_token");
+      localStorage.removeItem("plaid_link_mode");
+      localStorage.removeItem("plaid_investments_item_id");
       try {
         const res = await fetch("/api/plaid/investments/enable", {
           method:  "POST",
@@ -89,7 +94,7 @@ export default function PlaidOAuthReturn() {
       return;
     }
 
-    sessionStorage.removeItem("plaid_link_token");
+    localStorage.removeItem("plaid_link_token");
 
     try {
       const res = await fetch("/api/plaid/exchange-token", {
@@ -126,10 +131,10 @@ export default function PlaidOAuthReturn() {
     console.log("link_session_id:", metadata?.link_session_id ?? null);
     console.groupEnd();
 
-    const investmentsMode = sessionStorage.getItem("plaid_link_mode") === "investments";
-    sessionStorage.removeItem("plaid_link_token");
-    sessionStorage.removeItem("plaid_link_mode");
-    sessionStorage.removeItem("plaid_investments_item_id");
+    const investmentsMode = localStorage.getItem("plaid_link_mode") === "investments";
+    localStorage.removeItem("plaid_link_token");
+    localStorage.removeItem("plaid_link_mode");
+    localStorage.removeItem("plaid_investments_item_id");
 
     if (err) {
       setStatus("error");

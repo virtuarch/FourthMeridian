@@ -72,10 +72,20 @@ const PlaidContext = createContext<PlaidContextValue>({
   isOpen:     false,
 });
 
-// sessionStorage keys shared with app/plaid-oauth-return/page.tsx so an OAuth
-// institution (which redirects out of this component and back to a different
-// page) still resolves to the correct post-Link action. Absent mode = normal
-// connect/reconnect (exchange-token).
+// localStorage keys shared with app/plaid-oauth-return/page.tsx so an OAuth
+// round-trip can resume the Link session.
+//
+// localStorage, NOT sessionStorage: sessionStorage is scoped to ONE TAB. Desktop
+// Plaid Link usually returns from the bank in the same tab, so it survived there
+// — but on mobile the OAuth hand-off commonly lands in a NEW tab (or returns via
+// the bank's app), which gets a fresh, empty sessionStorage. The return page then
+// found no link token and showed "Link session expired", which is why connecting
+// worked on desktop and failed on phones. localStorage is shared across tabs of
+// the same origin, so the token survives the hand-off either way. Every path
+// below still clears these keys on success, exit and error, so nothing lingers.
+// The mode key exists so an OAuth institution — which redirects out of this
+// component and back to a different page — still resolves to the correct
+// post-Link action. Absent mode = normal connect/reconnect (exchange-token).
 const PLAID_MODE_KEY     = "plaid_link_mode";
 const PLAID_INV_ITEM_KEY = "plaid_investments_item_id";
 
@@ -103,11 +113,11 @@ export function PlaidProvider({ children }: { children: React.ReactNode }) {
       // holdings refresh, which re-derives consent (→ ENABLED) and imports
       // holdings. Branch first so the normal path below is byte-for-byte
       // unchanged for every reconnect/new-link session.
-      if (sessionStorage.getItem(PLAID_MODE_KEY) === "investments") {
-        const plaidItemId = sessionStorage.getItem(PLAID_INV_ITEM_KEY) ?? "";
-        sessionStorage.removeItem("plaid_link_token");
-        sessionStorage.removeItem(PLAID_MODE_KEY);
-        sessionStorage.removeItem(PLAID_INV_ITEM_KEY);
+      if (localStorage.getItem(PLAID_MODE_KEY) === "investments") {
+        const plaidItemId = localStorage.getItem(PLAID_INV_ITEM_KEY) ?? "";
+        localStorage.removeItem("plaid_link_token");
+        localStorage.removeItem(PLAID_MODE_KEY);
+        localStorage.removeItem(PLAID_INV_ITEM_KEY);
         const handlers = investmentsHandlersRef.current;
         investmentsHandlersRef.current = undefined;
         handlers?.onSyncing?.();
@@ -136,7 +146,7 @@ export function PlaidProvider({ children }: { children: React.ReactNode }) {
       setImporting(true);
       setError("");
       setCancelled(false);
-      sessionStorage.removeItem("plaid_link_token");
+      localStorage.removeItem("plaid_link_token");
       try {
         const res = await fetch("/api/plaid/exchange-token", {
           method:  "POST",
@@ -176,7 +186,7 @@ export function PlaidProvider({ children }: { children: React.ReactNode }) {
     setLinkToken(null);
     setFetching(false);
     onDoneRef.current = undefined;
-    sessionStorage.removeItem("plaid_link_token");
+    localStorage.removeItem("plaid_link_token");
 
     // ── Safe diagnostic log — never logs tokens or secrets ────────────────────
     console.group("[Plaid] onExit");
@@ -194,9 +204,9 @@ export function PlaidProvider({ children }: { children: React.ReactNode }) {
     // ── Investments-consent flow: route terminal state to the card's handler ──
     // Cancel is non-destructive (the Item is untouched); a real error surfaces
     // to the card only. Never sets the shared error/cancelled state.
-    if (sessionStorage.getItem(PLAID_MODE_KEY) === "investments") {
-      sessionStorage.removeItem(PLAID_MODE_KEY);
-      sessionStorage.removeItem(PLAID_INV_ITEM_KEY);
+    if (localStorage.getItem(PLAID_MODE_KEY) === "investments") {
+      localStorage.removeItem(PLAID_MODE_KEY);
+      localStorage.removeItem(PLAID_INV_ITEM_KEY);
       const handlers = investmentsHandlersRef.current;
       investmentsHandlersRef.current = undefined;
       if (err) {
@@ -264,8 +274,8 @@ export function PlaidProvider({ children }: { children: React.ReactNode }) {
     // Normal connect/reconnect — never carries the Investments-consent mode.
     // Clear any stale flag so a prior cancelled Investments attempt can't leak
     // into this session.
-    sessionStorage.removeItem(PLAID_MODE_KEY);
-    sessionStorage.removeItem(PLAID_INV_ITEM_KEY);
+    localStorage.removeItem(PLAID_MODE_KEY);
+    localStorage.removeItem(PLAID_INV_ITEM_KEY);
     try {
       const url  = plaidItemId
         ? `/api/plaid/link-token?plaidItemId=${encodeURIComponent(plaidItemId)}`
@@ -275,7 +285,7 @@ export function PlaidProvider({ children }: { children: React.ReactNode }) {
       if (!res.ok) throw new Error(data.error ?? "Could not start Plaid Link.");
       // Store in sessionStorage so /plaid-oauth-return can re-initialise Link
       // after an OAuth bank redirect. Cleared after onSuccess or onExit.
-      sessionStorage.setItem("plaid_link_token", data.link_token);
+      localStorage.setItem("plaid_link_token", data.link_token);
       setLinkToken(data.link_token);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to connect.");
@@ -293,19 +303,19 @@ export function PlaidProvider({ children }: { children: React.ReactNode }) {
       investmentsHandlersRef.current = handlers;
       // Set the mode BEFORE opening Link so both this component's onSuccess and
       // the OAuth-return page resolve to the enable action (not exchange-token).
-      sessionStorage.setItem(PLAID_MODE_KEY, "investments");
-      sessionStorage.setItem(PLAID_INV_ITEM_KEY, plaidItemId);
+      localStorage.setItem(PLAID_MODE_KEY, "investments");
+      localStorage.setItem(PLAID_INV_ITEM_KEY, plaidItemId);
       try {
         const res  = await fetch(
           `/api/plaid/link-token?plaidItemId=${encodeURIComponent(plaidItemId)}&consent=investments`,
         );
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "Could not start Plaid Link.");
-        sessionStorage.setItem("plaid_link_token", data.link_token);
+        localStorage.setItem("plaid_link_token", data.link_token);
         setLinkToken(data.link_token);
       } catch (err) {
-        sessionStorage.removeItem(PLAID_MODE_KEY);
-        sessionStorage.removeItem(PLAID_INV_ITEM_KEY);
+        localStorage.removeItem(PLAID_MODE_KEY);
+        localStorage.removeItem(PLAID_INV_ITEM_KEY);
         investmentsHandlersRef.current = undefined;
         handlers?.onResult?.(false, err instanceof Error ? err.message : "Could not start Plaid Link.");
       } finally {
