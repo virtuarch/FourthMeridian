@@ -21,6 +21,7 @@
  */
 
 import type { SpaceMemberRole } from '@prisma/client';
+import type { LiabilityState } from '@/lib/debt/balance-semantics';
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -234,6 +235,24 @@ export interface AccountSummaryItem {
   syncStatus?:      string | null;
   needsReauth:      boolean;
   visibilityLevel:  'FULL' | 'BALANCE_ONLY';
+
+  // ── Liability semantics (V25-SIDE-1) ──────────────────────────────────────
+  // Emitted for type === 'debt' rows at EVERY visibility level (they describe
+  // the balance the row already carries, so they reveal nothing extra).
+  //
+  // WHY: `balance` uses the provider sign convention, where a NEGATIVE value on
+  // a credit card means the ISSUER OWES THE USER. Sending that number alone left
+  // the model to infer the convention, and it could reasonably narrate
+  // "you have −$124.04 in debt". These derived fields state the meaning outright
+  // so no inference is required. All three come from the one canonical authority
+  // (lib/debt/balance-semantics.ts) and are stated in the account's NATIVE
+  // currency, matching `balance`.
+  /** Outstanding debt owed by the user. 0 when settled or in credit — never negative. */
+  amountOwed?:            number;
+  /** Credit the issuer owes the user, as a positive magnitude. 0 unless in credit. */
+  creditBalance?:         number;
+  /** 'owed' | 'settled' | 'credit' — the canonical state of this liability. */
+  liabilityState?:        LiabilityState;
 
   // ── Debt metadata (FULL visibility, debt-type accounts only) ──────────────
   // Resolved from DebtProfile (preferred) → FinancialAccount flat fields (fallback).

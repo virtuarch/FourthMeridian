@@ -43,7 +43,7 @@ const usdRows: LiquidityAccountRow[] = [
   row("b", "savings",    5000,    "USD"),
   row("c", "investment", 30000,   "USD"),
   row("d", "other",      90000,   "USD"),
-  row("e", "debt",       -450,    "USD", { creditLimit: 5000 }),
+  row("e", "debt",        450,    "USD", { creditLimit: 5000 }),
 ];
 
 // ── kill switch: context-less result byte-identical to pre-flip shape ────────
@@ -79,7 +79,7 @@ const usdRows: LiquidityAccountRow[] = [
     row("a", "checking", 100,  "EUR"),               // converts: 125
     row("b", "checking", 50,   "SAR"),               // miss → UNAVAILABLE, excluded to 0
     row("c", "savings",  10),                        // currency undefined → null-residue passthrough, kept
-    row("d", "debt",     -100, "EUR", { creditLimit: 1100 }), // headroom 1000 EUR → 1250 USD
+    row("d", "debt",      100, "EUR", { creditLimit: 1100 }), // headroom 1000 EUR → 1250 USD
   ];
   const r = computeLiquidity(scope, options, mixed, realCtx);
   // V25-FINAL-1 — the SAR checking (50) is EXCLUDED (no rate), never blended as

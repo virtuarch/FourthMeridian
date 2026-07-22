@@ -60,7 +60,7 @@ function main(): void {
     row({ id: "fa_inv", type: "investment", balance: 40_000 }),
     row({ id: "fa_cry", type: "crypto",     balance: 12_000 }),
     row({ id: "fa_oth", type: "other",      balance: 300_000 }),
-    row({ id: "fa_cc",  type: "debt",       balance: -4_000, creditLimit: 10_000 }),
+    row({ id: "fa_cc",  type: "debt",       balance: 4_000, creditLimit: 10_000 }),
   ];
   const r1 = computeLiquidity(SCOPE, OPTS, fullRows);
 
@@ -94,7 +94,7 @@ function main(): void {
     row({ id: "fa_mine", type: "checking", balance: 5_000 }),
     row({ id: "fa_bo",   type: "savings",  balance: 2_000, visibilityLevel: "BALANCE_ONLY" }),
     // BALANCE_ONLY debt: even if a creditLimit somehow appeared, tier gate must ignore it.
-    row({ id: "fa_bocc", type: "debt", balance: -1_000, creditLimit: 9_999, visibilityLevel: "BALANCE_ONLY" }),
+    row({ id: "fa_bocc", type: "debt", balance: 1_000, creditLimit: 9_999, visibilityLevel: "BALANCE_ONLY" }),
   ];
   const r2 = computeLiquidity(SCOPE, OPTS, boRows);
   check("balance-only balance feeds cash tier (7,000)", r2.headline?.value === 7_000);
@@ -148,7 +148,7 @@ function main(): void {
   check("empty result passes validator", validateLensResult(rEmpty).length === 0);
 
   const rDebtOnly = computeLiquidity(SCOPE, OPTS, [
-    row({ id: "fa_d1", type: "debt", balance: -2_000, creditLimit: 5_000 }),
+    row({ id: "fa_d1", type: "debt", balance: 2_000, creditLimit: 5_000 }),
   ]);
   check("debt-only → ok with zero-funds verdict (not empty)",
     rDebtOnly.status === "ok" && rDebtOnly.verdict === "No readily accessible funds in this Space.");

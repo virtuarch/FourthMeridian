@@ -25,7 +25,7 @@ import { getWidgetMeta } from "@/lib/widget-registry";
 import { AssetValueWidget, type AssetValueConfig } from "@/components/space/widgets/AssetValueWidget";
 import { ProgressWidget, type ProgressStat } from "@/components/space/widgets/ProgressWidget";
 import { type BreakdownViewMode } from "@/components/space/widgets/BreakdownWidget";
-import { SummaryWidget } from "@/components/space/widgets/SummaryWidget";
+import { SummaryWidget, type SummaryColor } from "@/components/space/widgets/SummaryWidget";
 // Unified Space Widget Layout (slice 1) — Personal Overview lede widgets, now
 // section-backed (net_worth_chart + allocation).
 import { NetWorthChart, type Interval } from "@/components/charts/NetWorthChart";
@@ -33,6 +33,7 @@ import { NetWorthChartModal } from "@/components/charts/NetWorthChartModal";
 import { RebuildHistoryButton } from "@/components/dashboard/RebuildHistoryButton";
 import { AllocationChart } from "@/components/charts/AllocationChart";
 import { classifyAccounts } from "@/lib/account-classifier";
+import { amountOwed, creditBalance, liabilityState } from "@/lib/debt/balance-semantics";
 import { formatBalance } from "@/lib/currency";
 import { GoalsCard } from "@/components/space/sections/goals/GoalsCard";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
@@ -319,12 +320,16 @@ function projectFV(
 const renderNetWorth = (p: SectionRenderProps): React.ReactElement => {
   // MC1 QA Q4 — aggregates convert into the Space's reporting currency
   // (map-then-reduce keeps the taint); labels follow via ctx.target.
-  const assetConv = p.accounts.filter((a) => a.type !== "debt").map((a) => toDisplay(a.balance, a.currency, p.ctx));
-  const debtConv  = p.accounts.filter((a) => a.type === "debt").map((a) => toDisplay(a.balance, a.currency, p.ctx));
-  const assets = assetConv.reduce((s, c) => s + c.amount, 0);
-  const debt   = debtConv.reduce((s, c) => s + c.amount, 0);
-  const net    = assets - debt;
-  const est    = assetConv.some((c) => c.estimated) || debtConv.some((c) => c.estimated) ? "≈ " : "";
+  // V25-SIDE-1 — net worth is the CLASSIFIER's answer, not a second one computed
+  // here. This block used to raw-sum debt balances, so a credit balance rendered
+  // "Total debt: −$149.81" and overstated net worth by the same amount — a
+  // parallel authority that disagreed with classifyAccounts (which has always
+  // floored liabilities at zero) and therefore with every stored snapshot.
+  const c      = classifyAccounts(p.accounts, p.ctx);
+  const assets = c.totalAssets;
+  const debt   = c.totalLiabilities;
+  const net    = c.netWorth;
+  const est    = c.estimated ? "≈ " : "";
   // M3 Design Lab convergence — an accounts-derived subline (count + distinct
   // currencies), read from the SAME `accounts` source, no new authority.
   const currencyCount = new Set(p.accounts.map((a) => a.currency)).size;
@@ -354,12 +359,15 @@ const renderNetWorth = (p: SectionRenderProps): React.ReactElement => {
 };
 
 const renderDebtSummary = (p: SectionRenderProps): React.ReactElement => {
-  const debts = p.accounts.filter((a) => a.type === "debt");
-  // MC1 QA Q4 — headline total converts (labels follow); per-account rows
-  // below stay native (itemized doctrine, already labeled with a.currency).
-  const conv  = debts.map((a) => toDisplay(a.balance, a.currency, p.ctx));
-  const total = conv.reduce((s, c) => s + c.amount, 0);
-  const est   = conv.some((c) => c.estimated) ? "≈ " : "";
+  // V25-SIDE-1 — "Total outstanding debt" IS classifyAccounts' totalLiabilities:
+  // one aggregation path, so this headline can never disagree with net worth or
+  // with a stored snapshot. The former raw sum could render a NEGATIVE total.
+  // MC1 QA Q4 — the headline converts (labels follow); per-account rows below
+  // stay native (itemized doctrine, already labeled with a.currency).
+  const c     = classifyAccounts(p.accounts, p.ctx);
+  const debts = c.liabilities;
+  const total = c.totalLiabilities;
+  const est   = c.estimated ? "≈ " : "";
   return (
     <SummaryWidget
       primary={debts.length > 0 ? {
@@ -368,13 +376,20 @@ const renderDebtSummary = (p: SectionRenderProps): React.ReactElement => {
         color: "red",
         size:  "2xl",
       } : undefined}
-      rows={debts.map((a) => ({
-        id:         a.id,
-        label:      a.name,
-        sublabel:   a.institution || undefined,
-        value:      formatBalance(a.balance, a.currency),
-        valueColor: "red" as const,
-      }))}
+      // Rows keep every liability (membership is structural — a paid-off card is
+      // still a debt account) and state what each amount MEANS.
+      rows={debts.map((a) => {
+        const isCredit = liabilityState(a.balance) === "credit";
+        return {
+          id:         a.id,
+          label:      a.name,
+          sublabel:   a.institution || undefined,
+          value:      isCredit
+            ? `${formatBalance(creditBalance(a.balance), a.currency)} credit`
+            : formatBalance(amountOwed(a.balance), a.currency),
+          valueColor: (isCredit ? "green" : "red") as SummaryColor,
+        };
+      })}
       emptyHeadline="No debt accounts shared"
       emptySubline="Share debt accounts from the Spaces page."
       emptyIcon={<CreditCard size={22} className="text-[var(--text-faint)]" />}

@@ -28,19 +28,30 @@
  *                  counted in tierCounts + a redaction line. Fails closed.
  *
  * ── Money semantics ──────────────────────────────────────────────────────────
- *   totalDebt       = Σ |balance| over countable (FULL + BALANCE_ONLY) debt rows
- *   monthlyInterest = Σ |balance| × APR/100/12 over FULL rows with a known
- *                     APR — always flagged estimated (issuer accrual varies)
- *   blendedApr      = balance-weighted mean APR over the same rows
- *   minPayments     = Σ minimumPayment over FULL rows that have one; flagged
- *                     estimated when any contributor is an estimate
- *                     (lib/debt.ts heuristic, resolved by the data layer)
+ * Every figure below is DEBT OWED, so each reads the balance through
+ * `amountOwed` (lib/debt/balance-semantics.ts) — the canonical authority. A
+ * credit balance (issuer owes the user) is therefore ZERO debt, contributing no
+ * principal, no interest, and no APR weight. It is NOT `Math.abs`: absolute
+ * value would turn money the user is OWED into phantom debt they carry, which
+ * is what this lens did before V25-SIDE-1.
+ *
+ *   totalDebt       = Σ amountOwed(balance) over countable (FULL + BALANCE_ONLY)
+ *                     debt rows
+ *   monthlyInterest = Σ amountOwed(balance) × APR/100/12 over FULL rows with a
+ *                     known APR — always flagged estimated (accrual varies)
+ *   blendedApr      = owed-weighted mean APR over the same rows
+ *   minPayments     = Σ minimumPayment over FULL rows that have one AND carry
+ *                     outstanding debt (nothing is due on a settled or
+ *                     credit-balance account); flagged estimated when any
+ *                     contributor is an estimate (lib/debt.ts heuristic,
+ *                     resolved by the data layer)
  *   promoEnds       = earliest FUTURE DebtProfile.promoAprEndDate among
  *                     FULL rows (relative to options.now) — a promo that
  *                     already lapsed is not "ending"
  */
 
 import { formatCurrency } from "@/lib/format";
+import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { convertMoney } from "@/lib/money/convert";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
@@ -54,8 +65,11 @@ import type {
 
 // ── Version & static copy ─────────────────────────────────────────────────────
 
-/** Bump whenever this lens's math or verdict semantics change. */
-export const DEBT_LENS_VERSION = 1;
+/** Bump whenever this lens's math or verdict semantics change.
+ *  v2 (V25-SIDE-1): debt owed reads through `amountOwed` instead of `Math.abs`,
+ *  so a credit balance no longer contributes phantom debt/interest/APR weight,
+ *  and minimums are counted only for accounts that actually owe. */
+export const DEBT_LENS_VERSION = 2;
 
 /** Static empty copy — safe whether accounts are absent or invisible (§5.8). */
 export const DEBT_EMPTY = {
@@ -220,7 +234,7 @@ export function computeDebt(
 
   // ── Sums (fail closed: metadata read from FULL rows only) ─────────────────
   // MC1 QA Q2 — balances convert per row; APRs are rates (never converted).
-  const totalDebt = countable.reduce((s, r) => s + Math.abs(inTarget(r.balance, r.currency)), 0);
+  const totalDebt = countable.reduce((s, r) => s + amountOwed(inTarget(r.balance, r.currency)), 0);
 
   let monthlyInterest = 0;
   let rateWeighted = 0;
@@ -233,7 +247,7 @@ export function computeDebt(
   const todayIsoDate = computedAt.slice(0, 10); // YYYY-MM-DD from the injected clock
 
   for (const r of fullRows) {
-    const bal = Math.abs(inTarget(r.balance, r.currency));
+    const bal = amountOwed(inTarget(r.balance, r.currency));
     if (typeof r.interestRate === "number") {
       monthlyInterest  += bal * (r.interestRate / 100 / 12);
       rateWeighted     += bal * r.interestRate;
@@ -241,7 +255,9 @@ export function computeDebt(
     } else {
       unknownRateFullCount++;
     }
-    if (typeof r.minimumPayment === "number") {
+    // V25-SIDE-1 — nothing is DUE on a settled or credit-balance account, so a
+    // stale stored minimum must not inflate the monthly obligation.
+    if (typeof r.minimumPayment === "number" && hasOutstandingDebt(r.balance)) {
       minPayments += inTarget(r.minimumPayment, r.currency);
       minPaymentsKnown = true;
       if (r.minimumPaymentIsEstimated) anyMinEstimated = true;
@@ -321,7 +337,10 @@ export function computeDebt(
   }
 
   // ── Verdict (deterministic template — amounts and counts, never names) ────
-  const n = countable.length;
+  // V25-SIDE-1 — the count must describe the accounts the STATED TOTAL is spread
+  // across, i.e. those that actually owe. Using every countable row would read
+  // "$2,100 of debt across 4 accounts" when three of them owe nothing.
+  const n = countable.filter((r) => hasOutstandingDebt(r.balance)).length;
   let verdict: string;
   if (totalDebt === 0) {
     verdict = "No outstanding debt balances in this Space.";

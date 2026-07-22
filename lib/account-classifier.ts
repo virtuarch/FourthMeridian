@@ -32,6 +32,7 @@
 // ─── Minimum required fields ──────────────────────────────────────────────────
 
 import { convertMoney } from "@/lib/money/convert";
+import { amountOwed } from "@/lib/debt/balance-semantics";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 
@@ -252,6 +253,11 @@ export function classifyAccounts<T extends ClassifiableAccount>(
   const totalDigitalAssets = sumBalances(digitalAssets, ctx, effectiveValuationDateISO, flag);
   const totalRealAssets    = sumBalances(realAssets, ctx, effectiveValuationDateISO, flag);
   // Only positive balances count as owed — negative = they owe you.
+  // V25-SIDE-1 — that rule is now NAMED: `amountOwed` (lib/debt/balance-semantics.ts)
+  // is the canonical authority, and this reads it rather than restating the
+  // clamp. Behaviour is unchanged (this module has always floored at zero, which
+  // is why stored snapshots need no migration); the clamp simply stops being one
+  // of several private copies of the same rule.
   // Convert-then-clamp: with positive rates, sign is preserved, so this is
   // equivalent to clamp-then-convert and byte-identical under identity.
   const totalLiabilities   = ctx
@@ -259,9 +265,9 @@ export function classifyAccounts<T extends ClassifiableAccount>(
         const c = convertMoney({ amount: a.balance, currency: a.currency ?? null }, effectiveValuationDateISO!, ctx);
         if (c.estimated) flag.estimated = true;
         if (c.amount === null) { flag.unconverted = true; return s; } // V25-FINAL-1 — excluded, not native, not a fake 0
-        return s + Math.max(0, c.amount);
+        return s + amountOwed(c.amount);
       }, 0)
-    : liabilities.reduce((s, a) => s + Math.max(0, a.balance), 0);
+    : liabilities.reduce((s, a) => s + amountOwed(a.balance), 0);
   const totalAssets        = totalLiquid + totalInvestments + totalDigitalAssets + totalRealAssets;
   const netWorth           = totalAssets - totalLiabilities;
 

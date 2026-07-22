@@ -20,6 +20,7 @@ import { DebtPayoffSection, type DebtPayoffAccount } from "@/components/space/se
 import { formatBalance } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
 import { convertMoney } from "@/lib/money/convert";
+import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 
@@ -91,9 +92,17 @@ export function renderDebtBreakdownChart(
     return { amount: c.amount ?? 0, estimated: c.estimated };
   };
 
+  // V25-SIDE-1 — a donut/bar of DEBT is a magnitude surface: slices are amount
+  // OWED (never a raw signed balance, which would render a credit as a negative
+  // slice), and accounts owing nothing carry no slice. They remain visible as
+  // rows in LiabilitiesLedger — this chart is not the membership surface.
   const converted = accounts
     .filter((a) => a.type === "debt")
-    .map((a) => ({ a, bal: inDisp(a.balance, a.currency) }));
+    .map((a) => {
+      const conv = inDisp(a.balance, a.currency);
+      return { a, bal: { amount: amountOwed(conv.amount), estimated: conv.estimated }, owes: hasOutstandingDebt(conv.amount) };
+    })
+    .filter((x) => x.owes);
   // Sort by the display-currency value so colour ranking matches the visual share.
   const sorted = [...converted].sort((x, y) => y.bal.amount - x.bal.amount);
   const n = sorted.length;

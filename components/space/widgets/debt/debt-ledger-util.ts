@@ -11,6 +11,7 @@
  * line). Unknown ⇒ "Other" — we never guess from the name (a claim is a claim).
  */
 
+import { amountOwed, type LiabilityState } from "@/lib/debt/balance-semantics";
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
 
 /**
@@ -21,8 +22,15 @@ import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-per
 export interface LiabilityRow {
   account:        DebtPerspectiveAccount;
   cls:            DebtClass;
-  /** Display-currency balance. */
+  /** V25-SIDE-1 — the canonical state of this liability (owed / settled / credit).
+   *  Decides how the row PRESENTS; never whether the row exists. */
+  state:          LiabilityState;
+  /** Display-currency amount OWED (`amountOwed`) — zero for settled and credit
+   *  rows. This is the figure of record for totals, shares, and interest. */
   value:          number;
+  /** Display-currency CREDIT held with the issuer, as a positive magnitude.
+   *  Zero unless `state === "credit"`. Never a negative `value`. */
+  credit:         number;
   /** value / total-owed, clamped 0–1 (the weight-bar length). */
   share:          number;
   /** Display-currency credit limit, or null. */
@@ -77,9 +85,11 @@ export function classifyDebt(a: DebtPerspectiveAccount): DebtClass {
   return "other";
 }
 
-/** Utilization % for a revolving line (balance / limit), or null when no usable
- *  limit exists. Currency-agnostic (both native to the same account). */
+/** Utilization % for a revolving line (owed / limit), or null when no usable
+ *  limit exists. Currency-agnostic (both native to the same account).
+ *  V25-SIDE-1 — the numerator is `amountOwed`, so a credit balance reads 0%
+ *  used rather than a negative utilization. */
 export function accountUtilization(a: DebtPerspectiveAccount): number | null {
   if (a.creditLimit == null || a.creditLimit <= 0) return null;
-  return (Math.max(0, a.balance) / a.creditLimit) * 100;
+  return (amountOwed(a.balance) / a.creditLimit) * 100;
 }

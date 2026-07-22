@@ -11,7 +11,13 @@
  *
  * Currency-agnostic: a balance/limit ratio is unitless (both native to the same
  * account), so no ConversionContext is needed here.
+ *
+ * V25-SIDE-1: the numerator is the canonical amount OWED
+ * (lib/debt/balance-semantics.ts), never the raw signed balance — a credit
+ * balance is 0% used, never negative utilization.
  */
+
+import { amountOwed } from "@/lib/debt/balance-semantics";
 
 export interface UtilizationInputAccount {
   id:           string;
@@ -55,7 +61,9 @@ export function creditUtilization(accounts: UtilizationInputAccount[]): CreditUt
     .filter((a) => a.creditLimit != null && a.creditLimit > 0)
     .map((a) => {
       const limit = a.creditLimit as number;
-      const pct = (Math.max(0, a.balance) / limit) * 100;
+      // V25-SIDE-1 — numerator is the canonical amount OWED, so a credit balance
+      // reads 0% used instead of a negative utilization.
+      const pct = (amountOwed(a.balance) / limit) * 100;
       return {
         id:      a.id,
         name:    a.name,

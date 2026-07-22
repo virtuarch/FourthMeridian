@@ -50,11 +50,29 @@ export function DebtAccountDetail({ row, currency }: { row: LiabilityRow; curren
 
   return (
     <div className="min-w-0">
-      {/* Headline balance. */}
-      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Current balance</p>
-      <p className="mt-1 text-3xl font-semibold tabular-nums text-[var(--accent-negative)]">
-        {approx}{formatCurrency(row.value, currency)}
+      {/* Headline balance. V25-SIDE-1 — the eyebrow names WHICH figure this is,
+          so a credit balance reads as money in the user's favour rather than as
+          a negative debt. `row.value` is amount OWED and is never negative. */}
+      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+        {row.state === "credit" ? "Credit balance" : "Amount owed"}
       </p>
+      {row.state === "credit" ? (
+        // EXACT — a credit is typically small, and this is the figure of record.
+        <p className="mt-1 text-3xl font-semibold tabular-nums text-[var(--accent-positive)]">
+          {approx}{formatCurrencyExact(row.credit, currency)}
+        </p>
+      ) : (
+        <p className="mt-1 text-3xl font-semibold tabular-nums text-[var(--accent-negative)]">
+          {approx}{formatCurrency(row.value, currency)}
+        </p>
+      )}
+      {row.state !== "owed" && (
+        <p className="mt-1 text-xs text-[var(--accent-positive)]">
+          {row.state === "settled"
+            ? "Paid off — nothing owed."
+            : `${a.institution || "The issuer"} owes you this amount. It counts as no debt.`}
+        </p>
+      )}
       <p className="mt-1 text-xs text-[var(--text-muted)]">
         {debtSubtypeLabel(a)}{a.institution ? ` · ${a.institution}` : ""}
       </p>

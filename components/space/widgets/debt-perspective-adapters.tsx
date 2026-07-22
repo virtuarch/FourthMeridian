@@ -24,6 +24,7 @@ import { debtColor } from "@/components/space/widgets/debt-adapters";
 import { KnowledgeAcquisitionCard, type GapEntry } from "@/components/dashboard/KnowledgeAcquisitionCard";
 import { FicoCard } from "@/components/dashboard/FicoCard";
 import { creditUtilization } from "@/lib/accounts/credit-utilization";
+import { amountOwed } from "@/lib/debt/balance-semantics";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { formatCurrency } from "@/lib/format";
@@ -83,8 +84,13 @@ export function renderDebtByAccount(
   accounts: DebtPerspectiveAccount[],
   ctx?:     ConversionContext,
 ): React.ReactElement {
+  // V25-SIDE-1 — this is a MAGNITUDE surface (ranked bars of what is owed), not
+  // the membership surface: a zero-length bar says nothing. Accounts with no
+  // outstanding debt are therefore absent HERE by design — they remain fully
+  // visible as rows in LiabilitiesLedger, which is where account identity lives.
+  // The exclusion is decided by the canonical helper, never a local sign rule.
   const debts = debtAccounts(accounts)
-    .map((a) => ({ a, bal: inDisp(a.balance, a.currency, ctx) }))
+    .map((a) => ({ a, bal: amountOwed(inDisp(a.balance, a.currency, ctx)) }))
     .filter((x) => x.bal > 0);
 
   const anyApr = debts.some((x) => x.a.interestRate != null);
@@ -126,7 +132,9 @@ export function renderDebtCost(
   accounts: DebtPerspectiveAccount[],
   ctx?:     ConversionContext,
 ): React.ReactElement {
-  const debts = debtAccounts(accounts).map((a) => ({ a, bal: inDisp(a.balance, a.currency, ctx) })).filter((x) => x.bal > 0);
+  // V25-SIDE-1 — magnitude surface (see renderDebtByAccount). `bal` is amount
+  // OWED, so a credit balance can never generate phantom interest here.
+  const debts = debtAccounts(accounts).map((a) => ({ a, bal: amountOwed(inDisp(a.balance, a.currency, ctx)) })).filter((x) => x.bal > 0);
   const rated = debts.filter((x) => x.a.interestRate != null && x.a.interestRate > 0);
   const missing = debts.length - rated.length;
 

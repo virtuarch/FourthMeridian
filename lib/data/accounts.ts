@@ -21,6 +21,7 @@ import { getSpaceContext } from "@/lib/space";
 import { Account, Holding } from "@/types";
 import { ShareStatus, PlaidItemStatus, type VisibilityLevel } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
+import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 // KD-19 — visibility-tier enforcement on the UI account/holdings read paths.
 // grantsAccountDetail + TRANSACTION_DETAIL_VISIBILITY share the FULL gate the
 // AI assemblers use, so no read surface can disagree; sanitizeForBalanceOnly
@@ -175,8 +176,12 @@ export async function getAccountsWithVisibility(
 
     // Only estimate when the user gave us an APR but no real minimum payment —
     // never overrides a manually-entered or issuer-provided value.
-    if (minimumPayment === undefined && effectiveApr !== undefined && r.balance) {
-      minimumPayment = estimateMinimumPayment(Math.abs(r.balance), effectiveApr);
+    // V25-SIDE-1 — estimate from the canonical amount OWED, and only when
+    // something IS owed. `Math.abs` previously invented a minimum payment for an
+    // overpaid card, and the heuristic's $35 floor would otherwise manufacture a
+    // payment due on an account with no debt at all.
+    if (minimumPayment === undefined && effectiveApr !== undefined && hasOutstandingDebt(r.balance)) {
+      minimumPayment = estimateMinimumPayment(amountOwed(r.balance), effectiveApr);
       minimumPaymentIsEstimated = true;
     }
 

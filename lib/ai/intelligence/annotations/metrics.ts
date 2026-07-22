@@ -33,6 +33,7 @@ import {
 import type { SpaceContext_AI, TransactionsSummaryData, MonthlyBreakdownEntry, SnapshotSectionData, AccountsSectionData, GoalsSectionData } from '@/lib/ai/types';
 import { FinanceDomains } from '@/lib/ai/types';
 import { classifyFlow, isExcludedFromSpending } from '@/lib/transactions/flow-classifier';
+import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
 
 export function getTxnData(ctx: SpaceContext_AI): TransactionsSummaryData | null {
   const section = ctx.domains[FinanceDomains.TRANSACTIONS_SUMMARY];
@@ -353,8 +354,15 @@ export function computeDebtStrategy(
   // value; an account whose balance could NOT be converted (reportingBalance null)
   // is excluded from ranking/weighting (it would otherwise poison Math.abs). This
   // is disclosed via AccountsSectionData.totalsUnconverted.
+  // V25-SIDE-1 — PAYOFF ELIGIBILITY. Only accounts that actually OWE may be
+  // ranked as payoff targets. The former `Math.abs(reportingBalance)` ordering
+  // made an OVERPAID card the smallest "balance" and therefore the recommended
+  // first snowball target — telling the user to pay off a card that already owes
+  // THEM money. Settled and credit-balance accounts are excluded here (from
+  // TARGETING only — they remain full members of the Debt workspace).
   const valuedDebt = debtAccounts.filter(
-    (a): a is typeof a & { reportingBalance: number } => a.reportingBalance !== null,
+    (a): a is typeof a & { reportingBalance: number } =>
+      a.reportingBalance !== null && hasOutstandingDebt(a.reportingBalance),
   );
 
   // Avalanche target: highest APR — FULL visibility, APR known and positive.
@@ -363,29 +371,29 @@ export function computeDebtStrategy(
     .sort((a, b) => (b.apr ?? 0) - (a.apr ?? 0));
 
   const avalancheCandidate: DebtCandidate | null = fullWithApr.length > 0
-    ? { accountName: fullWithApr[0].name, balance: Math.abs(fullWithApr[0].reportingBalance), apr: fullWithApr[0].apr! }
+    ? { accountName: fullWithApr[0].name, balance: amountOwed(fullWithApr[0].reportingBalance), apr: fullWithApr[0].apr! }
     : null;
 
-  // Snowball target: lowest absolute REPORTING balance — any debt account. Ranking
-  // native magnitudes here would compare unlike currencies (e.g. AED 20,000 vs
-  // USD 10,000) and pick the wrong "smallest" account.
+  // Snowball target: lowest REPORTING amount owed — any indebted debt account.
+  // Ranking native magnitudes here would compare unlike currencies (e.g. AED
+  // 20,000 vs USD 10,000) and pick the wrong "smallest" account.
   const byBalance = [...valuedDebt].sort(
-    (a, b) => Math.abs(a.reportingBalance) - Math.abs(b.reportingBalance),
+    (a, b) => amountOwed(a.reportingBalance) - amountOwed(b.reportingBalance),
   );
   const snowballCandidate: DebtCandidate | null = byBalance.length > 0
     ? {
         accountName: byBalance[0].name,
-        balance:     Math.abs(byBalance[0].reportingBalance),
+        balance:     amountOwed(byBalance[0].reportingBalance),
         apr:         byBalance[0].apr ?? null,
       }
     : null;
 
   // Weighted average APR across accounts where APR is known — weighted by REPORTING
-  // balance so a larger true (reporting-currency) balance carries more weight.
+  // amount owed so a larger true (reporting-currency) debt carries more weight.
   let totalWeighted    = 0;
   let totalForWeighting = 0;
   for (const a of fullWithApr) {
-    const bal         = Math.abs(a.reportingBalance);
+    const bal         = amountOwed(a.reportingBalance);
     totalWeighted    += (a.apr ?? 0) * bal;
     totalForWeighting += bal;
   }

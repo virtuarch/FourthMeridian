@@ -14,6 +14,7 @@ import { CreditCard, X } from "lucide-react";
 import { DEFAULT_DISPLAY_CURRENCY, formatBalance, currencySymbol } from "@/lib/currency";
 import { formatMonthYear } from "@/lib/format";
 import { convertMoney } from "@/lib/money/convert";
+import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import { useBodyScrollLock } from "@/components/atlas/useBodyScrollLock";
@@ -179,17 +180,26 @@ export function DebtPayoffSection({
   // MC1 QA Q4 — planner aggregates in the display currency (map-then-reduce
   // so the taint survives the sum). Without a context inDisp passes native
   // amounts through, so this is the original raw addition byte-for-byte.
-  const filteredConv = filtered.map((a) => ({ a, bal: inDisp(a.balance, a.currency) }));
+  // V25-SIDE-1 — the planner projects a PAYOFF, so every figure is amount OWED
+  // (lib/debt/balance-semantics.ts). A credit balance contributes nothing: it
+  // must not net against another card's obligation, carry APR weight, or imply
+  // a minimum payment.
+  const filteredConv = filtered.map((a) => {
+    const conv = inDisp(a.balance, a.currency);
+    return { a, bal: { amount: amountOwed(conv.amount), estimated: conv.estimated }, owes: hasOutstandingDebt(conv.amount) };
+  });
   const total        = filteredConv.reduce((s, r) => s + r.bal.amount, 0);
 
-  const withRate    = filteredConv.filter((r) => r.a.interestRate != null && r.a.balance > 0);
+  const withRate    = filteredConv.filter((r) => r.a.interestRate != null && r.owes);
   const weightedApr = withRate.length > 0
     ? withRate.reduce((s, r) => s + (r.a.interestRate! * r.bal.amount), 0)
       / withRate.reduce((s, r) => s + r.bal.amount, 0)
     : null;
   const hasRates = weightedApr != null;
 
-  const minPaymentConv = filtered.map((a) => inDisp(a.minimumPayment ?? 0, a.currency));
+  const minPaymentConv = filteredConv
+    .filter((r) => r.owes)
+    .map((r) => inDisp(r.a.minimumPayment ?? 0, r.a.currency));
   const minPayment     = minPaymentConv.reduce((s, c) => s + c.amount, 0);
 
   // Aggregate taint — any unresolvable row marks every derived projection.

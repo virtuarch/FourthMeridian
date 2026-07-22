@@ -42,6 +42,7 @@ import { deriveHeuristics, derivePriorities } from './rules';
 import { computeCapitalAllocation, computeGoalAlignment, computeInvestmentReadiness, computeRiskOpportunities } from './engines';
 import type { SpaceContext_AI } from '@/lib/ai/types';
 import { MATERIAL_UNIDENTIFIED_INFLOW_SHARE, deriveUnidentifiedInflowShare } from '@/lib/ai/types';
+import { amountOwed, hasOutstandingDebt } from '@/lib/debt/balance-semantics';
 
 export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
   const txn   = getTxnData(ctx);
@@ -206,11 +207,14 @@ export function computeAssessment(ctx: SpaceContext_AI): FinancialAssessment {
         // V25-FINAL-1 — only accounts with a reporting-currency value can enter the
         // cross-account interest-burden sum; an unconvertible balance (null) is
         // excluded (disclosed via totalsUnconverted) rather than summed as a fake 0.
-        if (acct.apr > 0 && acct.reportingBalance !== null) {
+        // V25-SIDE-1 — only real outstanding debt accrues interest. A credit
+        // balance previously entered here via Math.abs and generated phantom
+        // interest burden on money the issuer owes the USER.
+        if (acct.apr > 0 && acct.reportingBalance !== null && hasOutstandingDebt(acct.reportingBalance)) {
           // P2-7D — reporting-currency balance: monthlyInterestBurden and the
           // APR-weighting denominator sum across accounts, so mixed-currency
           // native balances would be an invalid sum. APR stays dimensionless.
-          const balance   = Math.abs(acct.reportingBalance);
+          const balance   = amountOwed(acct.reportingBalance);
           interestBurden   += balance * acct.apr / 100 / 12;
           totalDebtWithAPR += balance;
         }

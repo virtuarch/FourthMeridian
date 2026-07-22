@@ -133,7 +133,24 @@ export function DebtWorkspace({
   const displayCurrency = ctx?.target ?? DEFAULT_DISPLAY_CURRENCY;
   const historical = asOf < today;
   const hasDebt = kpis.totalDebt > 0;
-  const liabilityCount = kpis.ratedCount + kpis.unratedCount;
+  // V25-SIDE-1 — the STRUCTURAL count, so this hint matches the number of rows
+  // the Liabilities ledger actually renders (paid-off cards included). It used
+  // to be ratedCount + unratedCount, which now scope to indebted accounts only.
+  // The HERO instead takes kpis.owingCount: it reads "<total debt> across N
+  // liabilities", so its N must be the count that contributes to that total.
+  const liabilityCount = kpis.accountCount;
+
+  // Structural summary for the Liabilities header — states WHAT the section
+  // holds, in the same "counts, never names" register as the rest of the
+  // workspace. Only the non-zero facets appear, so an all-owed Space reads
+  // exactly as it did before this slice.
+  const liabilitySummary = useMemo(() => {
+    const parts: string[] = [];
+    if (kpis.owingCount > 0)   parts.push(`${kpis.owingCount} with a balance owed`);
+    if (kpis.settledCount > 0) parts.push(`${kpis.settledCount} paid off`);
+    if (kpis.creditCount > 0)  parts.push(`${kpis.creditCount} in credit`);
+    return parts.join(" · ");
+  }, [kpis.owingCount, kpis.settledCount, kpis.creditCount]);
 
   // Balance-history WINDOW delta for the hero (snapshot basis — the same figure the
   // chart states). Only real when ≥2 in-window points exist; never invented.
@@ -173,7 +190,7 @@ export function DebtWorkspace({
         <DebtHero
           kpis={kpis}
           currency={displayCurrency}
-          liabilityCount={liabilityCount}
+          liabilityCount={kpis.owingCount}
           asOf={asOf}
           today={today}
           historical={historical}
@@ -200,18 +217,31 @@ export function DebtWorkspace({
         )}
       </div>
 
+      {/* ③ Liabilities — the PERSISTENT account browser. V25-SIDE-1: this Block
+          used to sit inside the `hasDebt` gate below, so paying every card off
+          made the entire section — and with it every trace of those accounts —
+          disappear from the Debt Perspective. Its population is STRUCTURAL
+          ("what liability accounts do I have, and what state are they in"),
+          which is a different question from the debt-magnitude widgets beneath
+          it ("how much do I owe"). It therefore renders whenever the Space has
+          a liability account at all, regardless of amount owed. */}
+      {liabilityCount > 0 && (
+        <Block
+          id="debt-liabilities"
+          label="Liabilities"
+          hint={<span className="text-[11px] tabular-nums text-[var(--text-faint)]">{liabilityCount}</span>}
+          action={
+            <span className="text-[11px] text-[var(--text-faint)]">
+              {liabilitySummary}{historical ? " · current" : ""}
+            </span>
+          }
+        >
+          <LiabilitiesLedger accounts={accounts} ctx={ctx} currency={displayCurrency} />
+        </Block>
+      )}
+
       {hasDebt && (
         <>
-          {/* ③ Liabilities — grouped weight-bar ledger → Left/Right panels. */}
-          <Block
-            id="debt-liabilities"
-            label="Liabilities"
-            hint={<span className="text-[11px] tabular-nums text-[var(--text-faint)]">{liabilityCount}</span>}
-            action={<span className="text-[11px] text-[var(--text-faint)]">Bar shows share of debt{historical ? " · current" : ""}</span>}
-          >
-            <LiabilitiesLedger accounts={accounts} ctx={ctx} currency={displayCurrency} />
-          </Block>
-
           {/* ④ Cost & risk — utilization + estimated interest (present-day). */}
           <Block id="debt-costrisk" label="Cost & risk">
             <div className="grid gap-4 lg:grid-cols-2 items-start min-w-0">

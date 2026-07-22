@@ -11,7 +11,7 @@
  * The bar IS the concentration view, folded into the ledger where it's already relevant
  * ("a few cards carry most of this" is visible at a glance — no second chart). It is a
  * NEUTRAL rule (share of debt is neither good nor bad nor a category, so it carries no
- * colour). The ledger shows the MOST IMPORTANT liabilities up front; "View all N debts →"
+ * colour). The ledger shows the MOST IMPORTANT liabilities up front; "View all N →"
  * opens the full grouped list in a LeftPanel ("what am I operating in"). A row — in
  * either place — opens its detail in a RightPanel ("tell me more about what I selected"),
  * stacked above the LeftPanel via the shared PanelStack.
@@ -19,12 +19,27 @@
  * DUAL-AUTHORITY (plan §1.4): every figure of record is display-converted here from the
  * accounts array (the SAME source as the KPIs / payoff), never the lens. Debt is
  * present-day — these are current balances (the block header says so when historical).
+ *
+ * ── V25-SIDE-1: this is the PERSISTENT ACCOUNT BROWSER ───────────────────────
+ * Two different questions live in the Debt Perspective, and this Surface owns the
+ * second one:
+ *   • the KPIs / charts / payoff planner answer "HOW MUCH DO I OWE?" — they are
+ *     magnitude surfaces and are correct to go quiet at zero;
+ *   • this ledger answers "WHAT LIABILITY ACCOUNTS DO I HAVE, AND IN WHAT
+ *     STATE?" — a structural question whose answer does not depend on any
+ *     amount.
+ * So membership here is `type === "debt"` and nothing else, and the workspace
+ * renders this Block outside its `hasDebt` gate. Paying every card off must not
+ * erase the cards. Each row states its own semantics via the canonical authority
+ * (lib/debt/balance-semantics.ts): "$X owed", "$0 owed · Paid off", or
+ * "$X credit" in a favourable tone — never a raw negative balance.
  */
 
 import { useMemo, useState } from "react";
 import { convertMoney } from "@/lib/money/convert";
+import { amountOwed, creditBalance, liabilityState } from "@/lib/debt/balance-semantics";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatCurrencyExact } from "@/lib/format";
 import type { ConversionContext } from "@/lib/money/types";
 import { Surface } from "@/components/atlas/Surface";
 import {
@@ -64,36 +79,48 @@ function buildRows(accounts: DebtPerspectiveAccount[], ctx?: ConversionContext):
     return { amount: c.amount ?? 0, estimated: c.estimated };
   };
 
+  // V25-SIDE-1 — MEMBERSHIP is structural (`type === "debt"`) and nothing more.
+  // The former `.filter((r) => r.value > 0)` here made a paid-off card VANISH
+  // from the ledger: it decided the account did not exist because nothing was
+  // currently owed. Balance now decides only how a row PRESENTS (its
+  // LiabilityState), never whether it is present.
   const prepared = accounts
     .filter((a) => a.type === "debt")
     .map((a) => {
       const bal = conv(a.balance, a.currency);
+      const owed = amountOwed(bal.amount);
+      const credit = creditBalance(bal.amount);
       const limit = a.creditLimit != null ? conv(a.creditLimit, a.currency) : null;
       const min = a.minimumPayment != null ? conv(a.minimumPayment, a.currency) : null;
+      // No principal ⇒ no interest. A credit balance accrues nothing.
       const estInterest =
-        a.interestRate != null && a.interestRate > 0 && bal.amount > 0
-          ? bal.amount * (a.interestRate / 100) / 12
+        a.interestRate != null && a.interestRate > 0 && owed > 0
+          ? owed * (a.interestRate / 100) / 12
           : null;
       const estimated = bal.estimated || (limit?.estimated ?? false) || (min?.estimated ?? false);
       return {
         account: a,
         cls: classifyDebt(a),
-        value: bal.amount,
+        state: liabilityState(bal.amount),
+        value: owed,
+        credit,
         limit: limit?.amount ?? null,
-        minPayment: min?.amount ?? null,
+        // Nothing is due on a settled or credit-balance account.
+        minPayment: owed > 0 ? min?.amount ?? null : null,
         estInterest,
         utilizationPct: accountUtilization(a),
         estimated,
         share: 0, // filled after the total is known
       } as LiabilityRow;
-    })
-    .filter((r) => r.value > 0);
+    });
 
   const total = prepared.reduce((s, r) => s + r.value, 0);
   for (const r of prepared) r.share = total > 0 ? Math.max(0, Math.min(1, r.value / total)) : 0;
 
-  // Most important first (largest balance), stable across groups.
-  return prepared.sort((x, y) => y.value - x.value);
+  // Most important first (largest amount owed), stable across groups. Rows with
+  // nothing owed sort last among themselves by credit size — they remain
+  // visible, they are simply not what the workspace is about.
+  return prepared.sort((x, y) => (y.value - x.value) || (y.credit - x.credit));
 }
 
 export function LiabilitiesLedger({
@@ -113,7 +140,10 @@ export function LiabilitiesLedger({
   if (rows.length === 0) {
     return (
       <Surface className="px-4 py-8">
-        <p className="text-center text-sm text-[var(--text-muted)]">No liabilities to show — nothing owed in this Space.</p>
+        {/* V25-SIDE-1 — reachable ONLY when the Space has no debt-type account at
+            all. "Nothing owed" is no longer a reason for absence: a paid-off or
+            credit-balance card is a liability account and still renders a row. */}
+        <p className="text-center text-sm text-[var(--text-muted)]">No liability accounts in this Space.</p>
       </Surface>
     );
   }
@@ -131,7 +161,7 @@ export function LiabilitiesLedger({
             onClick={() => setAllOpen(true)}
             className="flex w-full items-center justify-between border-t border-[var(--border-hairline)] px-4 py-3 text-left text-[13px] font-medium text-[var(--meridian-400)] transition-colors hover:bg-[var(--surface-hover)]"
           >
-            View all {rows.length} debts
+            View all {rows.length} liability accounts
             <span aria-hidden>→</span>
           </button>
         )}
@@ -139,7 +169,7 @@ export function LiabilitiesLedger({
 
       {/* Full list — the context surface ("what am I operating in"). */}
       <LeftPanel open={allOpen} onClose={() => setAllOpen(false)} ariaLabel="All liabilities">
-        <PanelHeader eyebrow="Liabilities" title={`All ${rows.length} debts`} />
+        <PanelHeader eyebrow="Liabilities" title={`All ${rows.length} liability accounts`} />
         <PanelContent>
           <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border-hairline)]">
             <GroupedRows rows={rows} currency={currency} onOpen={setSelectedId} />
@@ -218,18 +248,51 @@ function LedgerRow({ row, currency, onOpen }: { row: LiabilityRow; currency: str
 
       <div className="relative min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-[var(--text-primary)]">{a.name}</p>
+        {/* V25-SIDE-1 — the meta line names WHAT this account is (subtype), so a
+            settled or credit row still identifies itself when it carries no
+            amount to describe it. APR is shown only where it bites: a rate on an
+            account owing nothing costs the user nothing this month. */}
         <p className="mt-0.5 truncate text-[11px] text-[var(--text-muted)]">
-          {a.institution && <span>{a.institution}</span>}
-          {a.interestRate != null && <span className="text-[var(--text-faint)]">{a.institution ? " · " : ""}{a.interestRate.toFixed(2)}% APR</span>}
+          <span>{debtSubtypeLabel(a)}</span>
+          {a.institution && <span className="text-[var(--text-faint)]"> · {a.institution}</span>}
+          {a.interestRate != null && row.state === "owed" && (
+            <span className="text-[var(--text-faint)]"> · {a.interestRate.toFixed(2)}% APR</span>
+          )}
         </p>
       </div>
 
       <div className="relative shrink-0 text-right">
-        <p className="tabular-nums text-sm text-[var(--accent-negative)]">{approx}{formatCurrency(row.value, currency)}</p>
-        {util != null ? (
-          <p className="mt-0.5 tabular-nums text-[11px]" style={{ color: UTIL_COLOR[utilLevel(util)] }}>{util.toFixed(0)}% used</p>
+        {/* V25-SIDE-1 — the amount states its MEANING, never the provider's raw
+            sign. A credit is money in the user's favour, so it is positive-toned
+            and never rendered as "−$124.04" in the negative/problem colour. */}
+        {row.state === "credit" ? (
+          // EXACT, not the ledger's usual whole-dollar rounding: an issuer credit
+          // is characteristically a small amount, where rounding destroys the
+          // figure ($25.77 would read "$26"). Debt balances are large enough that
+          // the house rounding costs nothing, so they keep it.
+          <p className="tabular-nums text-sm text-[var(--accent-positive)]">
+            {approx}{formatCurrencyExact(row.credit, currency)} credit
+          </p>
+        ) : row.state === "settled" ? (
+          // Paid off — stated in the ledger's own money column so the row still
+          // reads as an account with a balance, in a NEUTRAL tone (nothing owed
+          // is neither a problem nor a gain).
+          <p className="tabular-nums text-sm text-[var(--text-secondary)]">
+            {formatCurrency(0, currency)} owed
+          </p>
         ) : (
+          <p className="tabular-nums text-sm text-[var(--accent-negative)]">
+            {approx}{formatCurrency(row.value, currency)} owed
+          </p>
+        )}
+        {row.state === "owed" && util != null ? (
+          <p className="mt-0.5 tabular-nums text-[11px]" style={{ color: UTIL_COLOR[utilLevel(util)] }}>{util.toFixed(0)}% used</p>
+        ) : row.state === "owed" ? (
           <p className="mt-0.5 tabular-nums text-[11px] text-[var(--text-faint)]">{(row.share * 100).toFixed(0)}%</p>
+        ) : (
+          <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+            {row.state === "settled" ? "Paid off" : "Nothing owed"}
+          </p>
         )}
       </div>
     </button>

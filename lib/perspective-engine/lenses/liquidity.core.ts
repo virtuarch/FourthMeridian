@@ -35,9 +35,12 @@
  *   marketable = Σ balance   (investment, crypto) — "could be raised by
  *                selling", always with the before-tax/penalty assumption
  *   illiquid   = Σ balance   (other — manual/real assets)
- *   credit     = Σ max(creditLimit − |balance|, 0)  (FULL debt rows with a
- *                known limit) — borrowing capacity, NEVER counted as
- *                liquidity and never in the headline or verdict sums
+ *   credit     = Σ max(creditLimit − amountOwed(balance), 0)  (FULL debt rows
+ *                with a known limit) — borrowing capacity, NEVER counted as
+ *                liquidity and never in the headline or verdict sums.
+ *                V25-SIDE-1: the subtrahend is what is OWED, not |balance| —
+ *                an issuer credit must not eat into available headroom, and is
+ *                not itself liquidity.
  * Balances are used as last reported (the data layer does not expose
  * availableBalance; stated as an assumption). Sums mirror the dashboard's
  * classifyAccounts() behavior: raw addition on the context-less kill-switch
@@ -49,6 +52,7 @@
  */
 
 import { formatCurrency } from "@/lib/format";
+import { amountOwed } from "@/lib/debt/balance-semantics";
 import { convertMoney } from "@/lib/money/convert";
 import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
@@ -188,7 +192,12 @@ export function computeLiquidity(
       // clamped headroom converts as one native amount (convert-then-clamp
       // would be equivalent under positive rates; clamp-then-convert keeps
       // the existing max() shape byte-identical without a context).
-      credit += inTarget(Math.max(r.creditLimit - Math.abs(r.balance), 0), r.currency);
+      // V25-SIDE-1 — headroom is limit MINUS WHAT IS OWED. `Math.abs` made an
+      // overpayment REDUCE available credit (a −$124 balance read as $124 used),
+      // which is backwards. A credit balance now consumes no headroom. It is
+      // deliberately NOT added to headroom either, and never becomes cash: this
+      // lens still treats an issuer credit as neither liquid nor an asset.
+      credit += inTarget(Math.max(r.creditLimit - amountOwed(r.balance), 0), r.currency);
       creditKnown = true;
     }
   }

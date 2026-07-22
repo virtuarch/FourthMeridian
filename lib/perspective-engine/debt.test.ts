@@ -51,8 +51,8 @@ function main(): void {
   // ── 1. Cost math over FULL rows ──────────────────────────────────────────
   console.log("1. Cost math (all FULL)");
   const fullRows: DebtAccountRow[] = [
-    row({ id: "fa_cc",   balance: -4_000,  interestRate: 24, minimumPayment: 120 }),
-    row({ id: "fa_loan", balance: -19_400, interestRate: 6,  minimumPayment: 300, lastUpdated: "2026-06-25T00:00:00.000Z" }),
+    row({ id: "fa_cc",   balance: 4_000,  interestRate: 24, minimumPayment: 120 }),
+    row({ id: "fa_loan", balance: 19_400, interestRate: 6,  minimumPayment: 300, lastUpdated: "2026-06-25T00:00:00.000Z" }),
     row({ id: "fa_chk",  type: "checking", balance: 9_999_999 }), // non-debt: ignored by every metric
   ];
   const r1 = computeDebt(SCOPE, OPTS, fullRows);
@@ -84,8 +84,8 @@ function main(): void {
   // ── 2. Estimated minimums + unknown-rate knowledge gap (FULL only) ───────
   console.log("2. Estimates and knowledge gaps");
   const r2 = computeDebt(SCOPE, OPTS, [
-    row({ id: "fa_est",  balance: -1_000, interestRate: 12, minimumPayment: 45, minimumPaymentIsEstimated: true }),
-    row({ id: "fa_gap",  balance: -500 }), // FULL, no rate on file
+    row({ id: "fa_est",  balance: 1_000, interestRate: 12, minimumPayment: 45, minimumPaymentIsEstimated: true }),
+    row({ id: "fa_gap",  balance: 500 }), // FULL, no rate on file
   ]);
   check("estimated minimum flagged on metric + assumption",
     r2.metrics.find((m) => m.id === "minPayments")?.estimated === true &&
@@ -100,9 +100,9 @@ function main(): void {
   console.log("3. BALANCE_ONLY");
   const SENTINEL_APR = 77.77;
   const r3 = computeDebt(SCOPE, OPTS, [
-    row({ id: "fa_full", balance: -2_000, interestRate: 12 }),
+    row({ id: "fa_full", balance: 2_000, interestRate: 12 }),
     // Over-supplied metadata on a shared row must be IGNORED (defense in depth):
-    row({ id: "fa_bo", balance: -3_000, visibilityLevel: "BALANCE_ONLY", interestRate: SENTINEL_APR, minimumPayment: 4_242, promoAprEndDate: "2026-09-01" }),
+    row({ id: "fa_bo", balance: 3_000, visibilityLevel: "BALANCE_ONLY", interestRate: SENTINEL_APR, minimumPayment: 4_242, promoAprEndDate: "2026-09-01" }),
   ]);
   check("balance-only balance counts toward total (5,000)", r3.headline?.value === 5_000);
   check("balance-only APR/minimum/promo never used or serialized",
@@ -119,9 +119,9 @@ function main(): void {
   console.log("4. SUMMARY_ONLY / unknown tiers");
   const LEAK = 888_888;
   const r4 = computeDebt(SCOPE, OPTS, [
-    row({ id: "fa_full", balance: -2_000, interestRate: 12 }),
-    row({ id: "fa_so",  balance: -LEAK, visibilityLevel: "SUMMARY_ONLY" }),
-    row({ id: "fa_leg", balance: -LEAK, visibilityLevel: "SHARED" }), // legacy → fail closed
+    row({ id: "fa_full", balance: 2_000, interestRate: 12 }),
+    row({ id: "fa_so",  balance: LEAK, visibilityLevel: "SUMMARY_ONLY" }),
+    row({ id: "fa_leg", balance: LEAK, visibilityLevel: "SHARED" }), // legacy → fail closed
   ]);
   check("summary-only/unknown balances excluded from totals", r4.headline?.value === 2_000);
   check("excluded balances never appear in result JSON", !JSON.stringify(r4).includes(String(LEAK)));
@@ -133,7 +133,7 @@ function main(): void {
     r4.provenance.redactions.some((s) => s.includes("excluded from all totals")));
 
   const rAllSo = computeDebt(SCOPE, OPTS, [
-    row({ id: "fa_so1", balance: -LEAK, visibilityLevel: "SUMMARY_ONLY" }),
+    row({ id: "fa_so1", balance: LEAK, visibilityLevel: "SUMMARY_ONLY" }),
   ]);
   check("all-summary-only: withheld verdict, NO totals claimed (not even $0)",
     rAllSo.status === "ok" &&
@@ -145,9 +145,9 @@ function main(): void {
   // ── 5. Promo expiry uses the injected clock ──────────────────────────────
   console.log("5. Promotional APR expiry");
   const r5 = computeDebt(SCOPE, OPTS, [
-    row({ id: "fa_p1", balance: -100, promoAprEndDate: "2026-08-15" }), // future
-    row({ id: "fa_p2", balance: -100, promoAprEndDate: "2026-07-20" }), // future, earlier
-    row({ id: "fa_p3", balance: -100, promoAprEndDate: "2026-06-01" }), // past → ignored
+    row({ id: "fa_p1", balance: 100, promoAprEndDate: "2026-08-15" }), // future
+    row({ id: "fa_p2", balance: 100, promoAprEndDate: "2026-07-20" }), // future, earlier
+    row({ id: "fa_p3", balance: 100, promoAprEndDate: "2026-06-01" }), // past → ignored
   ]);
   const promo = r5.metrics.find((m) => m.id === "promoEnds");
   check("earliest FUTURE promo end surfaces (2026-07-20), past ignored",
@@ -162,7 +162,7 @@ function main(): void {
     computeDebt(SCOPE, OPTS, [row({ id: "d", balance: 0, interestRate: 20 })]).verdict ===
       "No outstanding debt balances in this Space.");
   check("no rates on file → rate-free verdict",
-    computeDebt(SCOPE, OPTS, [row({ id: "d", balance: -750 })]).verdict ===
+    computeDebt(SCOPE, OPTS, [row({ id: "d", balance: 750 })]).verdict ===
       "You carry $750 of debt across 1 account; no interest rates are on file yet.");
   const rEmpty = computeDebt(SCOPE, OPTS, []);
   check("no rows → status empty with static safe copy",
@@ -171,8 +171,8 @@ function main(): void {
 
   const big = [
     ...fullRows,
-    row({ id: "fa_bo", balance: -3_000, visibilityLevel: "BALANCE_ONLY" }),
-    row({ id: "fa_so", balance: -LEAK, visibilityLevel: "SUMMARY_ONLY" }),
+    row({ id: "fa_bo", balance: 3_000, visibilityLevel: "BALANCE_ONLY" }),
+    row({ id: "fa_so", balance: LEAK, visibilityLevel: "SUMMARY_ONLY" }),
   ];
   check("byte-identical JSON across runs",
     JSON.stringify(computeDebt(SCOPE, OPTS, big)) === JSON.stringify(computeDebt(SCOPE, OPTS, big)));

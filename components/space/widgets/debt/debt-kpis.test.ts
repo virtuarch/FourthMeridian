@@ -35,15 +35,25 @@ console.log("1. Totals — balance / interest / utilization / minimums");
   const accounts: DebtPerspectiveAccount[] = [
     debt({ balance: 1000, interestRate: 20, minimumPayment: 50, creditLimit: 2000 }),
     debt({ balance: 500,  interestRate: 10, minimumPayment: 25, creditLimit: 1000 }),
-    debt({ balance: 0,    interestRate: 30, minimumPayment: 99, creditLimit: 500 }), // zero-bal ignored
+    // V25-SIDE-1 — a paid-off card contributes NO debt but is still a member:
+    // it keeps its row, and its credit LIMIT still counts toward utilization.
+    debt({ balance: 0,    interestRate: 30, minimumPayment: 99, creditLimit: 500 }),
     { id: "chk", name: "Checking", type: "checking", institution: "Bank", balance: 9999, currency: "USD" }, // non-debt ignored
   ];
   const k = computeDebtKpis(accounts);
   check("totalDebt = 1500", k.totalDebt === 1500, `${k.totalDebt}`);
   check("estMonthlyInterest = 1000·20%/12 + 500·10%/12", approx(k.estMonthlyInterest, 1000 * 0.2 / 12 + 500 * 0.1 / 12), `${k.estMonthlyInterest}`);
-  check("ratedCount = 2", k.ratedCount === 2, `${k.ratedCount}`);
+  check("ratedCount = 2 (indebted rows only)", k.ratedCount === 2, `${k.ratedCount}`);
   check("unratedCount = 0", k.unratedCount === 0, `${k.unratedCount}`);
-  check("utilizationPct = 1500/3000 = 50", approx(k.utilizationPct ?? -1, 50), `${k.utilizationPct}`);
+  check("accountCount = 3 — membership is structural", k.accountCount === 3, `${k.accountCount}`);
+  check("owingCount = 2", k.owingCount === 2, `${k.owingCount}`);
+  // V25-SIDE-1 behavioural change (a CORRECTION, not a regression): the paid-off
+  // card's $500 limit now sits in the denominator — 1500/3500, not 1500/3000.
+  // Available credit on a settled card is real available credit, which is also
+  // how credit bureaus compute utilization. Previously the card was dropped
+  // entirely, overstating utilization.
+  check("utilizationPct = 1500/3500 (paid-off card's limit counts)",
+    approx(k.utilizationPct ?? -1, (1500 / 3500) * 100), `${k.utilizationPct}`);
   check("utilizationLevel = moderate", k.utilizationLevel === "moderate", `${k.utilizationLevel}`);
   check("minPayments = 75", k.minPayments === 75, `${k.minPayments}`);
   check("missingMinCount = 0", k.missingMinCount === 0, `${k.missingMinCount}`);

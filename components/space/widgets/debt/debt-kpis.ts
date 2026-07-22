@@ -20,27 +20,42 @@
  */
 
 import { convertMoney } from "@/lib/money/convert";
+import { amountOwed, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { utilizationLevel, type UtilizationLevel } from "@/lib/accounts/credit-utilization";
 import type { ConversionContext } from "@/lib/money/types";
 import type { DebtPerspectiveAccount } from "@/components/space/widgets/debt-perspective-adapters";
 
 export interface DebtKpis {
-  /** Σ converted debt balances (type === "debt", balance > 0). */
+  /** Σ converted amount OWED (`amountOwed`) over type === "debt" rows. Credit
+   *  balances contribute 0 — never negative debt, never phantom debt. */
   totalDebt: number;
-  /** Σ balance × APR/100/12 over rated rows. */
+  /** Σ owed × APR/100/12 over rated rows. */
   estMonthlyInterest: number;
-  /** Debts (balance > 0) carrying a positive APR. */
+  /** V25-SIDE-1 — ALL debt accounts, structurally. Membership never depends on
+   *  balance, so this is the number of rows the Liabilities ledger renders. */
+  accountCount: number;
+  /** Debt accounts carrying outstanding debt (`amountOwed > 0`). */
+  owingCount: number;
+  /** Debt accounts at exactly zero — paid off, still open. */
+  settledCount: number;
+  /** Debt accounts carrying an issuer credit (`creditBalance > 0`). */
+  creditCount: number;
+  /** INDEBTED accounts carrying a positive APR. Scoped to accounts that owe,
+   *  because these two counts exist to explain the est.-interest figure — a
+   *  paid-off card accrues nothing either way, so listing its missing APR as a
+   *  gap would be noise. `accountCount` is the structural count. */
   ratedCount: number;
-  /** Debts (balance > 0) without a usable APR (excluded from est. interest). */
+  /** Indebted accounts without a usable APR (excluded from est. interest). */
   unratedCount: number;
   /** Aggregate revolving utilization %, or null when no credit limits are on file. */
   utilizationPct: number | null;
   /** Level of `utilizationPct` per the landed thresholds, or null. */
   utilizationLevel: UtilizationLevel | null;
-  /** Σ converted minimum payments (missing ones treated as 0). */
+  /** Σ converted minimum payments over accounts that actually OWE (missing ones
+   *  treated as 0). Nothing is due on a settled or credit-balance account. */
   minPayments: number;
-  /** Debts (balance > 0) without a minimum payment on file. */
+  /** Debts WITH outstanding balance but no minimum payment on file. */
   missingMinCount: number;
   /** True when any converted amount above was FX-estimated (⇒ `≈` prefix). */
   estimated: boolean;
@@ -71,27 +86,42 @@ export function computeDebtKpis(
   let estimated = false;
   const mark = (c: { estimated: boolean }) => { if (c.estimated) estimated = true; };
 
-  // Debt rows with a positive converted balance — the adapters' own filter.
+  // V25-SIDE-1 — MEMBERSHIP is structural; `bal` is the canonical amount OWED.
+  // The former `.filter((x) => x.bal > 0)` dropped paid-off and credit-balance
+  // cards out of every KPI. They are still debt accounts, so they stay in
+  // `debts` (and in the counts below) and simply contribute zero owed.
   const debts = accounts
     .filter((a) => a.type === "debt")
     .map((a) => {
       const bal = inDisp(a.balance, a.currency, ctx);
       mark(bal);
-      return { a, bal: bal.amount };
-    })
-    .filter((x) => x.bal > 0);
+      return {
+        a,
+        bal: amountOwed(bal.amount),
+        owes: hasOutstandingDebt(bal.amount),
+        state: liabilityState(bal.amount),
+      };
+    });
 
   // ── Total Debt ──────────────────────────────────────────────────────────────
   const totalDebt = debts.reduce((s, x) => s + x.bal, 0);
 
-  // ── Est. Interest / month (rated rows only) ─────────────────────────────────
-  const rated = debts.filter((x) => x.a.interestRate != null && (x.a.interestRate as number) > 0);
+  // ── Est. Interest / month (rated, INDEBTED rows only) ───────────────────────
+  // V25-SIDE-1 — the rated/unrated split explains the interest figure, so it is
+  // scoped to accounts that actually owe. `accountCount` below is the structural
+  // membership count and includes paid-off / credit-balance cards.
+  const owing = debts.filter((x) => x.owes);
+  const rated = owing.filter((x) => x.a.interestRate != null && (x.a.interestRate as number) > 0);
   const estMonthlyInterest = rated.reduce(
     (s, x) => s + x.bal * ((x.a.interestRate as number) / 100) / 12,
     0,
   );
+  const accountCount = debts.length;
+  const owingCount = owing.length;
+  const settledCount = debts.filter((x) => x.state === "settled").length;
+  const creditCount = debts.filter((x) => x.state === "credit").length;
   const ratedCount = rated.length;
-  const unratedCount = debts.length - ratedCount;
+  const unratedCount = owingCount - ratedCount;
 
   // ── Aggregate Utilization (converted balances ÷ converted limits) ───────────
   // Mixed-currency ratios are dishonest, so both sides convert before the ratio.
@@ -102,7 +132,9 @@ export function computeDebtKpis(
     let sumBal = 0;
     let sumLimit = 0;
     for (const x of revolving) {
-      const bal = inDisp(Math.max(0, x.a.balance), x.a.currency, ctx);
+      // V25-SIDE-1 — numerator is amount OWED, so a credit balance contributes 0
+      // used (never a negative numerator) while its limit still counts below.
+      const bal = inDisp(amountOwed(x.a.balance), x.a.currency, ctx);
       const lim = inDisp(x.a.creditLimit as number, x.a.currency, ctx);
       mark(bal); mark(lim);
       sumBal += bal.amount;
@@ -115,9 +147,12 @@ export function computeDebtKpis(
   }
 
   // ── Minimum payments ────────────────────────────────────────────────────────
+  // V25-SIDE-1 — nothing is DUE on a settled or credit-balance account, and a
+  // missing minimum on one is not a data gap worth reporting.
   let minPayments = 0;
   let missingMinCount = 0;
   for (const x of debts) {
+    if (!x.owes) continue;
     if (x.a.minimumPayment == null) { missingMinCount++; continue; }
     const min = inDisp(x.a.minimumPayment, x.a.currency, ctx);
     mark(min);
@@ -127,6 +162,10 @@ export function computeDebtKpis(
   return {
     totalDebt,
     estMonthlyInterest,
+    accountCount,
+    owingCount,
+    settledCount,
+    creditCount,
     ratedCount,
     unratedCount,
     utilizationPct,
@@ -139,7 +178,9 @@ export function computeDebtKpis(
 
 /** The aggregate inputs the interactive planner feeds simulatePayoff. */
 export interface DebtPayoffAggregate {
-  /** Σ converted debt balances (ALL debt rows — the planner does not drop 0-balance rows). */
+  /** Σ converted amount OWED over ALL debt rows. Settled and credit-balance rows
+   *  are retained as members but contribute 0 — issuer credits never net against
+   *  another account's payoff obligation. */
   total: number;
   /** Blended monthly rate: weightedApr/100/12; 0 when no rates are known. */
   monthlyRate: number;
@@ -169,12 +210,16 @@ export function computePayoffAggregate(
   const conv = debts.map((a) => {
     const bal = inDisp(a.balance, a.currency, ctx);
     mark(bal);
-    return { a, bal: bal.amount };
+    return { a, bal: amountOwed(bal.amount), owes: hasOutstandingDebt(bal.amount) };
   });
 
+  // V25-SIDE-1 — NO CROSS-ACCOUNT NETTING. The former raw sum let a credit
+  // balance on one card silently reduce the payoff obligation on an unrelated
+  // card; an issuer credit is spendable only at that issuer, so it cannot
+  // discharge someone else's debt. Each row contributes `amountOwed` or nothing.
   const total = conv.reduce((s, r) => s + r.bal, 0);
 
-  const withRate = conv.filter((r) => r.a.interestRate != null && r.a.balance > 0);
+  const withRate = conv.filter((r) => r.a.interestRate != null && r.owes);
   const weightedApr = withRate.length > 0
     ? withRate.reduce((s, r) => s + (r.a.interestRate as number) * r.bal, 0)
       / withRate.reduce((s, r) => s + r.bal, 0)
@@ -182,8 +227,9 @@ export function computePayoffAggregate(
   const monthlyRate = weightedApr != null ? (weightedApr / 100) / 12 : 0;
 
   let minPayment = 0;
-  for (const a of debts) {
-    const min = inDisp(a.minimumPayment ?? 0, a.currency, ctx);
+  for (const r of conv) {
+    if (!r.owes) continue; // nothing due on a settled / credit-balance account
+    const min = inDisp(r.a.minimumPayment ?? 0, r.a.currency, ctx);
     mark(min);
     minPayment += min.amount;
   }

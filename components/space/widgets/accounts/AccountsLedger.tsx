@@ -40,6 +40,7 @@ import { yesterdayUTCISO } from "@/lib/fx/config";
 import { formatCurrency } from "@/lib/format";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import type { ConversionContext } from "@/lib/money/types";
+import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 import { Surface, Block, Figure } from "@/components/atlas/Surface";
 import {
@@ -151,7 +152,11 @@ export function AccountsLedger({
     const institutions = new Set<string>();
     for (const d of display) {
       if (d.row.institution) institutions.add(d.row.institution);
-      if (d.row.type === "debt") { liabilities += Math.abs(d.display.amount); liabEst ||= d.display.estimated; }
+      // V25-SIDE-1 — a liability contributes what is OWED. `Math.abs` made the
+      // summary count a credit balance as $124 of liability while the row above
+      // it read "−$124.04" — the two disagreed on screen about the same account.
+      // Both now read the canonical authority, so they cannot diverge.
+      if (d.row.type === "debt") { liabilities += amountOwed(d.display.amount); liabEst ||= d.display.estimated; }
       else { assets += d.display.amount; assetsEst ||= d.display.estimated; }
     }
     const hasDebt = display.some((d) => d.row.type === "debt");
@@ -381,7 +386,13 @@ function LedgerRow({
 }) {
   const { row } = d;
   const share = total > 0 ? d.magnitude / total : 0;
-  const negative = d.display.amount < 0;
+  // V25-SIDE-1 — for a LIABILITY, a negative display amount is not "a negative
+  // number", it is a CREDIT the issuer owes the user. Render the meaning, not
+  // the provider's sign convention, and never in the negative/problem colour.
+  const isDebt = row.type === "debt";
+  const credit = isDebt ? creditBalance(d.display.amount) : 0;
+  const isCredit = credit > 0;
+  const negative = !isCredit && d.display.amount < 0;
   const approx = d.display.estimated ? "≈ " : "";
   const foreign = row.currency !== currency;
   const chip = healthChip(row.connectionState);
@@ -424,9 +435,15 @@ function LedgerRow({
       </div>
 
       <div className="relative shrink-0 text-right">
-        <p className={`tabular-nums text-sm ${negative ? "text-[var(--accent-negative)]" : "text-[var(--text-primary)]"}`}>
-          {approx}{formatCurrency(d.display.amount, currency)}
-        </p>
+        {isCredit ? (
+          <p className="tabular-nums text-sm text-[var(--accent-positive)]">
+            {approx}{formatCurrency(credit, currency)} credit
+          </p>
+        ) : (
+          <p className={`tabular-nums text-sm ${negative ? "text-[var(--accent-negative)]" : "text-[var(--text-primary)]"}`}>
+            {approx}{formatCurrency(d.display.amount, currency)}
+          </p>
+        )}
         {foreign && (
           <p className="mt-0.5 tabular-nums text-[11px] text-[var(--text-faint)]">{formatCurrency(row.balance, row.currency)}</p>
         )}

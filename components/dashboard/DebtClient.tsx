@@ -22,6 +22,7 @@ import {
   totalDebtPaid as computeTotalDebtPaid,
   rollupDebtPaymentsByAccount,
 } from "@/lib/debt";
+import { amountOwed, creditBalance, hasOutstandingDebt, liabilityState } from "@/lib/debt/balance-semantics";
 // TI5-3C — rows open the shared Transaction Detail drawer (mounted in DashboardChrome).
 import { useOpenTransaction } from "@/components/transactions/useTransactionDrawer";
 
@@ -405,8 +406,10 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
     // show a stale/blank value until the next refresh lands.
     let minimumPayment = dpOverride ? (dpOverride.minimumPayment ?? undefined) : a.minimumPayment;
     let minimumPaymentIsEstimated = dpOverride ? false : (a.minimumPaymentIsEstimated ?? false);
-    if (dpOverride && dpOverride.minimumPayment == null && apr != null && a.balance) {
-      minimumPayment = estimateMinimumPayment(Math.abs(a.balance), apr);
+    // V25-SIDE-1 — mirrors lib/data/accounts.ts: estimate from amount OWED, and
+    // only when something is owed (no invented minimum on a paid-off/credit card).
+    if (dpOverride && dpOverride.minimumPayment == null && apr != null && hasOutstandingDebt(a.balance)) {
+      minimumPayment = estimateMinimumPayment(amountOwed(a.balance), apr);
       minimumPaymentIsEstimated = true;
     }
 
@@ -430,7 +433,9 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
 
   // Only revolving accounts (credit cards, LOC, HELOC) factor into utilization
   const limitedCards   = cards.filter((c) => isRevolving(c.debtSubtype) && c.creditLimit && c.creditLimit > 0);
-  const owedCards      = limitedCards.filter((c) => c.balance > 0);
+  // V25-SIDE-1 — an UTILIZATION-numerator scope (cards that actually owe), via
+  // the canonical predicate. Never a membership rule: `cards` keeps every card.
+  const owedCards      = limitedCards.filter((c) => hasOutstandingDebt(c.balance));
   // MC1 QA Q2 (F-7) — utilization aggregates convert into the reporting
   // currency at the latest close (limit and balance share a card's native
   // currency, so the utilization RATIO is unchanged by conversion; the money
@@ -444,9 +449,9 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
       // totals/utilization, never native; `estimated` (true on a miss) discloses it.
       return { amount: c.amount ?? 0, estimated: c.estimated };
     };
-    const usedConv  = cards.map((a) => conv(Math.max(0, a.balance), a.currency));
+    const usedConv  = cards.map((a) => conv(amountOwed(a.balance), a.currency));
     const limitConv = limitedCards.map((a) => conv(a.creditLimit ?? 0, a.currency));
-    const owedConv  = owedCards.map((a) => conv(a.balance, a.currency));
+    const owedConv  = owedCards.map((a) => conv(amountOwed(a.balance), a.currency));
     const used  = usedConv.reduce((s, c) => s + c.amount, 0);
     const limit = limitConv.reduce((s, c) => s + c.amount, 0);
     const owed  = owedConv.reduce((s, c) => s + c.amount, 0);
@@ -692,7 +697,10 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
       )}
 
       {/* ── 5. Payoff planner (shared widget, same as space debt dashboard) ── */}
-      {accounts.filter((a) => a.balance > 0).length > 0 && (
+      {/* V25-SIDE-1 — the planner is shown only when there is something to pay
+          off; canonical predicate, not a local sign rule. Section 6 below still
+          renders every card regardless of balance. */}
+      {accounts.some((a) => hasOutstandingDebt(a.balance)) && (
         <section className="space-y-3">
           <p className="text-xs font-semibold uppercase tracking-widest px-1" style={{ color: "var(--text-muted)" }}>Payoff Planner</p>
           <div className="border rounded-2xl overflow-hidden" style={{ background: "var(--surface-muted)", borderColor: "var(--border-hairline)" }}>
@@ -707,12 +715,15 @@ export function DebtClient({ initialFico, lastUpdatedAt, accounts, transactions,
           <p className="text-xs font-semibold uppercase tracking-widest px-1" style={{ color: "var(--text-muted)" }}>Cards</p>
           <div className="space-y-3">
             {cards.map((card) => {
-              const isCredit       = card.balance < 0;
-              const used           = Math.abs(card.balance);
+              // V25-SIDE-1 — state and magnitudes from the canonical authority.
+              // `used` is the amount OWED; `credit` is what the issuer owes back.
+              const state          = liabilityState(card.balance);
+              const isCredit       = state === "credit";
+              const used           = isCredit ? creditBalance(card.balance) : amountOwed(card.balance);
               const limit          = card.creditLimit;
               const revolving      = isRevolving(card.debtSubtype);
-              const util           = revolving && !isCredit && limit && limit > 0 ? (card.balance / limit) * 100 : null;
-              const available      = revolving && !isCredit && limit ? limit - card.balance : null;
+              const util           = revolving && !isCredit && limit && limit > 0 ? (amountOwed(card.balance) / limit) * 100 : null;
+              const available      = revolving && !isCredit && limit ? limit - amountOwed(card.balance) : null;
               const isSelected     = selectedCardId === card.id;
               const isEditingLimit = editingLimitId === card.id;
               const isEditingType  = editingSubtypeId === card.id;

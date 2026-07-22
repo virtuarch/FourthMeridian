@@ -56,6 +56,7 @@ import { identityContext, convertMoney, fxDisclosureOf } from '@/lib/money/conve
 import { buildSpaceConversionContext } from '@/lib/money/server-context';
 import { yesterdayUTCISO } from '@/lib/fx/config';
 import { genericAccountName } from '@/lib/account-privacy';
+import { amountOwed, creditBalance, liabilityState } from '@/lib/debt/balance-semantics';
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
@@ -361,6 +362,18 @@ async function assembleAccounts(
 
       const rep = toReporting(fa);
 
+      // V25-SIDE-1 — derived liability semantics, so the model never has to infer
+      // what a negative credit-card balance means. Native currency (same basis as
+      // `balance`); emitted at every visibility level for debt rows, since they
+      // only restate a balance the row already carries.
+      const liability = fa.type === 'debt'
+        ? {
+            amountOwed:     amountOwed(fa.balance),
+            creditBalance:  creditBalance(fa.balance),
+            liabilityState: liabilityState(fa.balance),
+          }
+        : {};
+
       if (isFull) {
         const base: AccountSummaryItem = {
           id:              fa.id,
@@ -377,6 +390,7 @@ async function assembleAccounts(
           syncStatus:      fa.syncStatus,
           needsReauth,
           visibilityLevel: 'FULL',
+          ...liability,
         };
 
         // Debt metadata — FULL visibility, debt-type accounts only.
@@ -425,7 +439,10 @@ async function assembleAccounts(
         syncStatus:      fa.syncStatus,
         needsReauth,
         visibilityLevel: 'BALANCE_ONLY',
+        ...liability,
         // Debt metadata intentionally omitted — BALANCE_ONLY privacy guarantee.
+        // The liability semantics above are NOT debt metadata: they restate the
+        // balance this tier already discloses, adding no new exposure.
       };
     });
   }

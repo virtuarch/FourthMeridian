@@ -20,6 +20,7 @@ import { simulatePayoff } from "@/components/space/sections/DebtPayoffSection";
 import { renderDebtBreakdownChart, renderDebtPayoffCalculator } from "@/components/space/widgets/debt-adapters";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { CashFlowPerspective } from "@/lib/transactions/cash-flow-projection";
+import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
 import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot, Transaction } from "@/types";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
@@ -128,10 +129,16 @@ export function SectionCard({
     // MC1 QA Q4 — the collapsed summary simulates over aggregates, so the
     // sums (and APR weights) use display-currency amounts; the resulting
     // copy is time-only, so no label change is involved.
+    // V25-SIDE-1 — a payoff projection is over amount OWED; credits never net
+    // against another account's obligation, and nothing is due on a settled card.
     const debtAccs = accounts.filter((a) => a.type === "debt");
-    const balConv  = debtAccs.map((a) => toDisplay(a.balance, a.currency, ctx));
+    const balConv  = debtAccs.map((a) => {
+      const c = toDisplay(a.balance, a.currency, ctx);
+      return { amount: amountOwed(c.amount), estimated: c.estimated };
+    });
     const totalBal = balConv.reduce((s, c) => s + c.amount, 0);
     const totalMin = debtAccs
+      .filter((a) => hasOutstandingDebt(a.balance))
       .map((a) => toDisplay(a.minimumPayment ?? 0, a.currency, ctx))
       .reduce((s, c) => s + c.amount, 0);
     if (totalBal > 0 && totalMin > 0) {

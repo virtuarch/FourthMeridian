@@ -116,6 +116,24 @@ export function serializeContextBlock(ctx: SpaceContext_AI, debtPayments?: DebtP
       'reporting value as 0.'
     );
   }
+  // V25-SIDE-1 — liability sign convention. Debt rows carry `balance` in the
+  // PROVIDER convention, where a negative value means the ISSUER OWES THE USER.
+  // Stated only when such an account is actually present, and always alongside
+  // the derived `amountOwed` / `creditBalance` / `liabilityState` fields the
+  // assembler emits, so the model reads meaning rather than inferring a sign.
+  const hasCreditBalanceAccount = (accountsData?.accounts ?? []).some(
+    (a) => a.type === 'debt' && a.liabilityState === 'credit',
+  );
+  if (hasCreditBalanceAccount) {
+    lines.push(
+      'One or more credit/loan accounts carry a CREDIT BALANCE: the issuer owes the user ' +
+      '(overpayment, refund, or statement credit). For every debt account use the derived ' +
+      '`amountOwed`, `creditBalance`, and `liabilityState` fields — NEVER the raw signed ' +
+      '`balance`. A credit balance is ZERO debt: never describe it as negative debt, never ' +
+      'count it toward total debt, never recommend paying it off, and never attribute ' +
+      'interest to it. Total debt figures already exclude it.',
+    );
+  }
   lines.push('');
 
   // ── Analysis window (D6 provenance) ─────────────────────────────────────────
