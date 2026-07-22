@@ -32,6 +32,7 @@
  */
 
 import { db } from "@/lib/db";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 import type { Prisma } from "@prisma/client";
 
 /**
@@ -101,7 +102,7 @@ export async function releasePlaidItemSyncLock(
       where: { id: plaidItemId },
       data:  clearIncomplete ? { syncLockedAt: null, syncIncompleteAt: null } : { syncLockedAt: null },
     })
-    .catch((e) => console.error(`[plaid sync-lock] failed to release lock for item ${plaidItemId}:`, e));
+    .catch((e) => console.error(`[plaid sync-lock] failed to release lock for item ${plaidItemId}:`, redactedErrorForLog(e)));
 }
 
 export type SyncLockResult<T> = { ok: true; result: T } | { ok: false; reason: "in-flight" };

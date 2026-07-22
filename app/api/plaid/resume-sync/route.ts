@@ -27,7 +27,7 @@ import { withApiHandler } from "@/lib/api";
 import { PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { regenerateWealthHistoryForItem } from "@/lib/plaid/backgroundHistorySync";
-import { classifyPlaidErrorForHealth, plaidErrorSummary } from "@/lib/plaid/errors";
+import { classifyPlaidErrorForHealth, plaidErrorSummary, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
@@ -125,7 +125,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
     return NextResponse.json({ resumed: true, complete: true });
   } catch (e) {
-    console.error(`[plaid][resume-sync] resume failed for item ${item.id}: ${plaidErrorSummary(e)}`, e);
+    console.error(`[plaid][resume-sync] resume failed for item ${item.id}: ${plaidErrorSummary(e)}`, redactedErrorForLog(e));
     const health = classifyPlaidErrorForHealth(e);
     if (health) {
       // CH-2 chokepoint (previously a direct db.plaidItem.update here — §5.1

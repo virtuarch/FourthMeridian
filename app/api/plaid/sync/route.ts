@@ -21,7 +21,7 @@ import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
-import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { classifyPlaidErrorForHealth, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
@@ -114,7 +114,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       totalRemoved  += r.removed;
       results.push({ plaidItemId: item.id, institution: item.institutionName, ok: true, ...r });
     } catch (e) {
-      console.error(`[POST /api/plaid/sync] sync failed for PlaidItem ${item.id}:`, e);
+      console.error(`[POST /api/plaid/sync] sync failed for PlaidItem ${item.id}:`, redactedErrorForLog(e));
       const health = classifyPlaidErrorForHealth(e);
       if (health) {
         // CH-2 chokepoint (previously a direct db.plaidItem.update here — §5.1

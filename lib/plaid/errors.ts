@@ -145,6 +145,22 @@ const TRANSIENT_CODES = new Set([
   "INSTITUTION_DOWN",
   "INSTITUTION_NOT_RESPONDING",
   "PRODUCT_NOT_READY",
+  // "Underlying transaction data changed since last page was fetched. Please
+  // restart pagination from last update." Plaid raises this when the Item's data
+  // mutates mid-pagination — routine during a first-run import, which is exactly
+  // when Plaid is still writing history. It is a RESTART instruction, not a fault.
+  //
+  // Untreated it was neither retried nor classified: the sync threw, the run was
+  // recorded failed, and the next attempt began again — the "transactions start
+  // back when I refresh" behaviour reported 2026-07-23 (observed on a live Amex
+  // import at 23:17).
+  //
+  // Retrying is precisely what Plaid asks for, and it is safe here: `cursor`
+  // advances only after a page is FULLY persisted (the cursor safety invariant),
+  // so the retry re-issues from the last persisted cursor — "restart pagination
+  // from last update", exactly. Being transient it also classifies to null
+  // health, so a mid-import mutation can no longer mark a connection ERROR.
+  "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION",
 ]);
 
 export interface PlaidHealthResult {
@@ -216,4 +232,25 @@ export function isRetryablePlaidError(err: unknown): boolean {
   if (code && TRANSIENT_CODES.has(code)) return true;
 
   return false;
+}
+
+/**
+ * A log-safe rendering of an error thrown by a Plaid call.
+ *
+ * NEVER log a raw AxiosError. Its `config` carries the outgoing request headers
+ * and body verbatim — which for Plaid means `PLAID-SECRET`, `PLAID-CLIENT-ID`
+ * and the item's `access_token`. `console.error(msg, err)` serialises all of it,
+ * so on 2026-07-22 a production Plaid secret and a live access token were sitting
+ * in plaintext in the Vercel runtime logs (and, since these requests are Sentry
+ * instrumented, potentially in Sentry too) on EVERY Plaid API failure.
+ *
+ * For Axios errors this returns the Plaid error_code/message (or HTTP status)
+ * and nothing else — the stack is Axios internals and carries no useful signal.
+ * For anything else (Prisma, TypeError, …) the message and stack are kept: they
+ * are genuinely useful and contain no credentials.
+ */
+export function redactedErrorForLog(err: unknown): string {
+  if (isAxiosError(err)) return plaidErrorSummary(err);
+  if (err instanceof Error) return `${err.name}: ${err.message}${err.stack ? `\n${err.stack}` : ""}`;
+  return String(err);
 }

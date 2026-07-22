@@ -52,7 +52,7 @@ import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { regenerateSnapshotsForAccounts, regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 import { emitDomainEvent } from "@/lib/events/emit";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
-import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { classifyPlaidErrorForHealth, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
@@ -585,7 +585,7 @@ export async function refreshAllActiveItemsForUser(
       totalTransactionsRemoved  += r.transactionsRemoved;
       succeededAccountIds.push(...(r.updatedAccountIds ?? []));
     } catch (e) {
-      console.error(`[refreshAllActiveItemsForUser] refresh failed for PlaidItem ${item.id}:`, e);
+      console.error(`[refreshAllActiveItemsForUser] refresh failed for PlaidItem ${item.id}:`, redactedErrorForLog(e));
       failedItemIds.push(item.id);
       const health = classifyPlaidErrorForHealth(e);
       if (health) {

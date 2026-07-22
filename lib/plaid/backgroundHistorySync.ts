@@ -32,7 +32,7 @@ import { db } from "@/lib/db";
 import { ShareStatus, SpaceType } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
-import { classifyPlaidErrorForHealth, plaidErrorSummary } from "@/lib/plaid/errors";
+import { classifyPlaidErrorForHealth, plaidErrorSummary, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed, notifyItemSyncComplete } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { backfillSpaceSnapshots } from "@/lib/snapshots/backfill";
@@ -117,7 +117,7 @@ export async function regenerateWealthHistoryForItem(
         `[${window.fromDate} … ${window.toDate}] (item ${plaidItemId}, ${faIds.length} account(s), MAX available)`,
     );
   } catch (e) {
-    console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, e);
+    console.error(`[plaid][A9] wealth-history regeneration failed for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
   }
 }
 
@@ -143,7 +143,7 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
           console.log(`[plaid][D2x-slice4] backfilled ${written} snapshot(s) for space ${spaceId} (item ${plaidItemId})`);
         }
       } catch (e) {
-        console.error(`[plaid][D2x-slice4] snapshot backfill failed for space ${spaceId} (non-fatal):`, e);
+        console.error(`[plaid][D2x-slice4] snapshot backfill failed for space ${spaceId} (non-fatal):`, redactedErrorForLog(e));
       }
     }
 
@@ -181,7 +181,7 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
                   `${m.failed} failed, ${m.conflicted} conflicted, ${m.derivedRows} derived row(s)`,
               );
             } catch (e) {
-              console.error(`[plaid][A4] reconstruction failed for account ${faId} (item ${plaidItemId}, non-fatal):`, e);
+              console.error(`[plaid][A4] reconstruction failed for account ${faId} (item ${plaidItemId}, non-fatal):`, redactedErrorForLog(e));
             }
           }
         }
@@ -216,7 +216,7 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
               );
             }
           } catch (e) {
-            console.error(`[plaid][A8-3B] price backfill failed for item ${plaidItemId} (non-fatal):`, e);
+            console.error(`[plaid][A8-3B] price backfill failed for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
           }
         }
       }
@@ -240,7 +240,7 @@ async function backfillHistoryForItem(plaidItemId: string): Promise<void> {
     // yet, this keeps self-healing on its own without a manual re-run.
     await regenerateWealthHistoryForItem(plaidItemId, faIds);
   } catch (e) {
-    console.error(`[plaid][D2x-slice4] snapshot backfill resolution failed for item ${plaidItemId} (non-fatal):`, e);
+    console.error(`[plaid][D2x-slice4] snapshot backfill resolution failed for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
   }
 }
 
@@ -302,7 +302,7 @@ async function recordSyncComplete(plaidItemId: string): Promise<void> {
       auditLogId:      audit.id,
     });
   } catch (e) {
-    console.error(`[plaid][sync-complete] non-fatal record/notify failure for item ${plaidItemId}:`, e);
+    console.error(`[plaid][sync-complete] non-fatal record/notify failure for item ${plaidItemId}:`, redactedErrorForLog(e));
   }
 }
 
@@ -330,7 +330,7 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<boole
       }
       console.log(`[plaid][CONN-3] refreshed balances + today's snapshot for item ${plaidItemId} (${bal.accountsUpdated} account(s))`);
     } catch (e) {
-      console.error(`[plaid][CONN-3] balance/snapshot freshness failed for item ${plaidItemId} (non-fatal):`, e);
+      console.error(`[plaid][CONN-3] balance/snapshot freshness failed for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
     }
 
     // D2.x Slice 4 — reconstruct historical snapshots now that full history

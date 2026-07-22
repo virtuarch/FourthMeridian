@@ -38,7 +38,7 @@ import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidInvestmentsConsent, PlaidItemStatus } from "@prisma/client";
 import { refreshPlaidItem } from "@/lib/plaid/refresh";
-import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { classifyPlaidErrorForHealth, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
@@ -91,7 +91,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     }
     holdingsUpdated = lockResult.result.holdingsUpdated;
   } catch (e) {
-    console.error(`[POST /api/plaid/investments/enable] refresh failed for PlaidItem ${item.id}:`, e);
+    console.error(`[POST /api/plaid/investments/enable] refresh failed for PlaidItem ${item.id}:`, redactedErrorForLog(e));
     const health = classifyPlaidErrorForHealth(e);
     if (health) {
       // CH-2 chokepoint (previously a direct db.plaidItem.update here — §5.1

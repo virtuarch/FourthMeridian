@@ -40,7 +40,7 @@
 import { db } from "@/lib/db";
 import { PlaidInvestmentsConsent, PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
-import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { classifyPlaidErrorForHealth, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
@@ -138,7 +138,7 @@ export async function syncBanks(): Promise<SyncBanksResult> {
       }
     } catch (e) {
       failed++;
-      console.error(`[sync-banks] failed for institution "${item.institutionName}" (PlaidItem ${item.id}):`, e);
+      console.error(`[sync-banks] failed for institution "${item.institutionName}" (PlaidItem ${item.id}):`, redactedErrorForLog(e));
       const health = classifyPlaidErrorForHealth(e);
       if (health) {
         // CH-2 — live columns (unchanged) + durable transition row only on change.

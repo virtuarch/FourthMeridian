@@ -93,6 +93,7 @@ import { randomUUID } from "node:crypto";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { ProviderType, PlaidItemStatus } from "@prisma/client";
 import { recordSyncIssue, resolveCursorBlockingIssues } from "@/lib/plaid/syncIssues";
 import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
@@ -593,7 +594,7 @@ export async function syncTransactionsForItem(
         await database.transaction.create({ data: { ...baseFields, category, plaidTransactionId: txn.transaction_id, ...mi } });
         created++;
       } catch (e) {
-        console.error(`[plaid sync] failed to upsert transaction ${txn.transaction_id}:`, e);
+        console.error(`[plaid sync] failed to upsert transaction ${txn.transaction_id}:`, redactedErrorForLog(e));
         // M1 — durable record of a transaction that failed to persist.
         await recordSyncIssue({
           kind:               "UPSERT_ERROR",

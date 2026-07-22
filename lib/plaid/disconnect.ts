@@ -16,6 +16,7 @@
  */
 
 import { db } from "@/lib/db";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { PlaidItemStatus } from "@prisma/client";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
@@ -39,7 +40,7 @@ export async function disconnectPlaidItemIfOrphaned(plaidItemDbId: string): Prom
     const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
     await plaidClient.itemRemove({ access_token: accessToken });
   } catch (plaidErr) {
-    console.error("[disconnectPlaidItemIfOrphaned] Plaid itemRemove failed:", plaidErr);
+    console.error("[disconnectPlaidItemIfOrphaned] Plaid itemRemove failed:", redactedErrorForLog(plaidErr));
   }
 
   // CH-2 — revoke through the chokepoint: writes status REVOKED (unchanged) and

@@ -10,6 +10,7 @@
  */
 
 import { db } from "@/lib/db";
+import { redactedErrorForLog } from "@/lib/plaid/errors";
 import type { SyncIssueKind, Prisma } from "@prisma/client";
 
 export interface SyncIssueInput {
@@ -87,7 +88,7 @@ export async function resolveCursorBlockingIssues(
     }
     return count;
   } catch (e) {
-    console.error(`[syncIssue] failed to resolve cursor-blocking issues for item ${plaidItemId} (non-fatal):`, e);
+    console.error(`[syncIssue] failed to resolve cursor-blocking issues for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
     return 0;
   }
 }
@@ -108,6 +109,6 @@ export async function recordSyncIssue(
       },
     });
   } catch (e) {
-    console.error(`[syncIssue] failed to record ${input.kind} (non-fatal):`, e);
+    console.error(`[syncIssue] failed to record ${input.kind} (non-fatal):`, redactedErrorForLog(e));
   }
 }
