@@ -185,47 +185,57 @@ async function main(): Promise<void> {
 
     if (faIds.length > 0) {
       const now = new Date();
-      const links = await db.$transaction(async (tx) => {
-        // Close ONLY this item's connections — scoped by plaidItemDbId, never by
-        // financialAccountId. Relinking an institution reuses the SAME
-        // FinancialAccount rows (the reconciler matches on provider identity), so
-        // an account-scoped update also closes a SIBLING item's live connections
-        // to those accounts. That is how removing a dead Amex severed the working
-        // one on 2026-07-23, leaving every Amex item with zero live accounts.
-        await tx.accountConnection.updateMany({
-          where: { plaidItemDbId: item.id, deletedAt: null },
-          data:  { deletedAt: now },
-        });
 
-        // An account is only orphaned if NOTHING else still connects it. Anything
-        // still reachable through another item belongs to that item and must be
-        // left completely alone.
-        const stillConnected = await tx.accountConnection.findMany({
-          where:  { financialAccountId: { in: faIds }, deletedAt: null },
-          select: { financialAccountId: true },
-        });
-        const keep = new Set(stillConnected.map((c) => c.financialAccountId));
-        const orphaned = faIds.filter((id) => !keep.has(id));
-        if (orphaned.length === 0) return { active: [], orphaned };
+      // Sequential, NOT db.$transaction. Two reasons, both learned the hard way
+      // (P2028 "Transaction not found" on a real run):
+      //   1. Prisma interactive transactions default to a 5s budget, and this ran
+      //      several round-trips from a laptop to a remote region.
+      //   2. DATABASE_URL points at Supabase's POOLED port (pgbouncer in
+      //      transaction mode), which cannot hold an interactive transaction open
+      //      across statements at all.
+      // Atomicity is worth little here anyway: every write below is an idempotent
+      // soft-delete, so an interrupted run is simply re-run.
 
-        await tx.financialAccount.updateMany({
+      // Close ONLY this item's connections — scoped by plaidItemDbId, never by
+      // financialAccountId. Relinking an institution reuses the SAME
+      // FinancialAccount rows (the reconciler matches on provider identity), so
+      // an account-scoped update also closes a SIBLING item's live connections to
+      // those accounts. That is how removing a dead Amex severed the working one
+      // on 2026-07-23, leaving every Amex item with zero live accounts.
+      await db.accountConnection.updateMany({
+        where: { plaidItemDbId: item.id, deletedAt: null },
+        data:  { deletedAt: now },
+      });
+
+      // An account is orphaned only if NOTHING else still connects it. Anything
+      // still reachable through another item belongs to that item — leave it be.
+      const stillConnected = await db.accountConnection.findMany({
+        where:  { financialAccountId: { in: faIds }, deletedAt: null },
+        select: { financialAccountId: true },
+      });
+      const keep = new Set(stillConnected.map((c) => c.financialAccountId));
+      const orphaned = faIds.filter((id) => !keep.has(id));
+
+      let spaceCount = 0;
+      if (orphaned.length > 0) {
+        await db.financialAccount.updateMany({
           where: { id: { in: orphaned }, deletedAt: null },
           data:  { deletedAt: now },
         });
-        const active = await tx.spaceAccountLink.findMany({
+        const active = await db.spaceAccountLink.findMany({
           where:  { financialAccountId: { in: orphaned }, status: ShareStatus.ACTIVE },
           select: { spaceId: true },
         });
-        await tx.spaceAccountLink.updateMany({
+        await db.spaceAccountLink.updateMany({
           where: { financialAccountId: { in: orphaned }, status: ShareStatus.ACTIVE },
           data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: item.userId },
         });
-        return { active, orphaned };
-      });
-      const spaceCount = new Set(links.active.map((l) => l.spaceId)).size;
-      const shared = faIds.length - links.orphaned.length;
+        spaceCount = new Set(active.map((l) => l.spaceId)).size;
+      }
+
+      const shared = faIds.length - orphaned.length;
       console.log(
-        `    \u2713 closed this item's connections; soft-deleted ${links.orphaned.length} orphaned account(s)` +
+        `    \u2713 closed this item's connections; soft-deleted ${orphaned.length} orphaned account(s)` +
         (shared > 0 ? `, left ${shared} still connected elsewhere` : "") +
         `, revoked links in ${spaceCount} space(s)`,
       );
