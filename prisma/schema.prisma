@@ -680,6 +680,13 @@ model PlaidItem {
   // (drives lib/sync/status.ts and the client auto-resume). Replaces the old
   // cursor===null heuristic, which broke once the cursor is persisted per page.
   syncIncompleteAt    DateTime?
+  // Live progress counter for the first-run import, so the UI can show
+  // "1,284 imported" instead of an unmoving spinner during a multi-minute pull.
+  // Written once per COMPLETED page (never per row), alongside the cursor, so it
+  // survives a mid-import interruption and keeps climbing across a resume rather
+  // than restarting at zero. Reset to 0 only when a fresh import begins
+  // (cursor == null). Meaningful only while state = "importing".
+  syncImportedCount   Int                      @default(0)
   // Webhook concurrency guard — set while a sync/deferred pipeline is running
   // for this item, cleared when it finishes. A conditional claim on this column
   // serializes syncs so a duplicated/racing SYNC_UPDATES_AVAILABLE webhook can

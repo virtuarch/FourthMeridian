@@ -257,6 +257,14 @@ export async function syncTransactionsForItem(
   let updatedByFingerprint  = 0;
   let skippedMissingAccount = 0;
 
+  // Live import progress (see PlaidItem.syncImportedCount). A null cursor means
+  // this is a FRESH import, so the counter starts at zero; any other value means
+  // we are resuming a partial import and must continue from what it already
+  // reached — resetting there would make the customer's progress visibly jump
+  // backwards, which is worse than showing nothing at all.
+  const importedBase = item.cursor == null ? 0 : (item.syncImportedCount ?? 0);
+  const importedSoFar = () => importedBase + created + updatedByPlaidId + updatedByFingerprint;
+
   // FlowType observability (FLOWTYPE_SHADOW). Classification itself now runs
   // unconditionally (P3 Phase B — it feeds the write); this flag only controls
   // the optional aggregate, non-PII distribution summary. Default off = no log.
@@ -663,9 +671,12 @@ export async function syncTransactionsForItem(
     // syncIncompleteAt are intentionally NOT touched here: the item is not
     // "done" until the loop exits, so the incomplete marker stays set until the
     // final update below clears it.
+    // syncImportedCount rides along with the cursor deliberately: both describe
+    // "progress through this import", so writing them in one statement keeps the
+    // number the customer sees consistent with the page actually committed.
     await database.plaidItem.update({
       where: { id: plaidItemDbId },
-      data:  { cursor: cursor ?? null },
+      data:  { cursor: cursor ?? null, syncImportedCount: importedSoFar() },
     });
   }
 
@@ -679,7 +690,8 @@ export async function syncTransactionsForItem(
   await setPlaidItemHealth(
     plaidItemDbId,
     { status: PlaidItemStatus.ACTIVE, errorCode: null },
-    { cursor: cursor ?? null, lastSyncedAt: new Date(), syncIncompleteAt: null },
+    { cursor: cursor ?? null, lastSyncedAt: new Date(), syncIncompleteAt: null,
+      syncImportedCount: importedSoFar() },
     database,
   );
 

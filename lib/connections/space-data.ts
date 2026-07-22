@@ -103,6 +103,7 @@ const PLAID_ITEM_SELECT = {
   institutionName:    true,
   status:             true,
   syncIncompleteAt:   true, // derivation only — buildSyncStatus never forwards it
+  syncImportedCount:  true, // live "N imported" progress while state = importing
   lastSyncedAt:       true,
   errorCode:          true,
   investmentsConsent: true, // → client-safe `investments` capability only

@@ -52,6 +52,14 @@ export interface SyncConnection {
   /** Provider error code — only meaningful for needs_reauth / error. */
   errorCode:    string | null;
   /**
+   * Transactions written so far by the in-flight import — the number behind
+   * "1,284 imported". Non-null ONLY while state = "importing": once the import
+   * completes the figure stops being progress and becomes a stale partial count
+   * of the ledger, which would misread as "your account holds 1,284
+   * transactions". Monotonic within an import, including across a resume.
+   */
+  importedCount: number | null;
+  /**
    * Investments capability for this connection, or null when not applicable
    * (unsupported, unknown, or non-Plaid). Never carries the raw access token
    * or any credential — a pure display-capability enum.
@@ -99,6 +107,11 @@ export interface PlaidItemStateInput {
    * to derive state; never forwarded onto SyncConnection.
    */
   syncIncompleteAt: Date | null;
+  /**
+   * Running count of transactions written by the in-flight import. Optional so
+   * existing callers/fixtures that predate the column keep type-checking.
+   */
+  syncImportedCount?: number | null;
   lastSyncedAt:    Date | null;
   errorCode:       string | null;
   /**
@@ -169,6 +182,8 @@ export function buildSyncStatus(items: PlaidItemStateInput[]): SyncStatus {
       lastSyncedAt: item.lastSyncedAt ? item.lastSyncedAt.toISOString() : null,
       errorCode:    item.errorCode ?? null,
       investments:  deriveInvestmentsCapability(item.investmentsConsent),
+      // Progress is only meaningful mid-import — see the field's contract.
+      importedCount: state === "importing" ? (item.syncImportedCount ?? 0) : null,
     });
   }
 
@@ -227,6 +242,9 @@ export function buildWalletSyncStatus(inputs: WalletConnectionStateInput[]): Syn
       state,
       lastSyncedAt: w.lastSyncedAt ? w.lastSyncedAt.toISOString() : null,
       errorCode:    w.errorCode ?? null,
+      // Self-custody wallets have no paged provider import to count through —
+      // there is no honest number to show, so the progress line stays absent.
+      importedCount: null,
       // Investments (Plaid Holdings) is a Plaid-only capability — self-custody
       // wallets never surface it.
       investments:  null,

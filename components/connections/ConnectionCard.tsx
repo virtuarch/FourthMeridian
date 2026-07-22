@@ -315,6 +315,18 @@ function ImportingContent({
                 ? "Transaction history — taking a little longer"
                 : "Transaction history importing…"
               : "Transaction history imported",
+          // Live count from the server-side import (SyncConnection.importedCount,
+          // refreshed by the existing status poll). Shown only while this stage is
+          // ACTIVE and only once it is non-zero: a "0 imported" that sits there
+          // during Plaid's async preparation phase reads as failure, whereas no
+          // number at all correctly reads as "still starting up". Deliberately a
+          // bare count, not "N of M" — Plaid's sync API never reveals a total, and
+          // a denominator we'd have to invent could only make the bar move
+          // backwards.
+          value:
+            s.status === "active" && (connection.importedCount ?? 0) > 0
+              ? `${connection.importedCount!.toLocaleString()} imported`
+              : undefined,
           status: s.status,
         };
       default: // "ready"

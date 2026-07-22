@@ -58,7 +58,7 @@ check("finalize: building false when all settled",
   finalizeSyncStatus(cards.filter((c) => c.state !== "importing")).building === false);
 check("finalize merges plaid + wallet connection lists",
   finalizeSyncStatus([
-    { id: "p1", provider: "PLAID", institution: "Chase", state: "ready", lastSyncedAt: null, errorCode: null, investments: null },
+    { id: "p1", provider: "PLAID", institution: "Chase", state: "ready", lastSyncedAt: null, errorCode: null, investments: null, importedCount: null },
     ...cards,
   ]).connections.length === 3);
 
