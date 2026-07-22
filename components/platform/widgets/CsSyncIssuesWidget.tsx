@@ -31,12 +31,27 @@ function humanizeKind(kind: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/**
+ * PRE-V26-PLAID-CLOSE Phase 4 — severity is SEMANTIC, derived server-side by
+ * lib/platform/sync-issue-semantics.ts. The bar is no longer a bare count in one
+ * undifferentiated colour: a critical transaction-persistence failure and an
+ * informational tombstone previously looked identical here.
+ */
+const SEVERITY_COLOR: Record<string, string> = {
+  critical: "var(--accent-negative)",
+  error:    "#f97316",
+  warning:  "#f59e0b",
+  info:     "var(--text-faint)",
+};
+const severityColor = (s: string) => SEVERITY_COLOR[s] ?? "var(--meridian-400)";
+
 export function CsSyncIssuesWidget({ section }: { section: PlatformSection }) {
   const { data, loading, error } = useWidgetFetch<PlatformSyncIssuesResponse>("/api/platform/customer-success/sync-issues");
   const [selectedKind, setSelectedKind] = useState<string | null>(null);
 
   const maxCount = data ? Math.max(1, ...data.byKind.map((k) => k.count)) : 1;
   const selected = selectedKind && data ? data.byKind.find((k) => k.kind === selectedKind) ?? null : null;
+  // A domain/severity split can yield several rows per kind; key on the triple.
   const selectedRecent = selected && data ? data.recent.filter((r) => r.kind === selected.kind) : [];
 
   return (
@@ -55,20 +70,26 @@ export function CsSyncIssuesWidget({ section }: { section: PlatformSection }) {
           ) : (
             <ul className="-mx-1 flex flex-col">
               {data.byKind.map((k) => (
-                <li key={k.kind}>
+                <li key={`${k.severity}:${k.domain}:${k.kind}`}>
                   <button
                     type="button"
                     onClick={() => setSelectedKind(k.kind)}
                     className="group flex w-full flex-col gap-1 rounded-[var(--radius-sm)] px-1 py-2 text-left transition-colors hover:bg-[var(--surface-hover)] focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]"
                   >
                     <span className="flex items-center justify-between gap-2 text-xs">
-                      <span className="truncate text-[var(--text-primary)]">{humanizeKind(k.kind)}</span>
+                      <span className="min-w-0 truncate text-[var(--text-primary)]">
+                        {humanizeKind(k.kind)}
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wide" style={{ color: severityColor(k.severity) }}>
+                          {k.severity}
+                        </span>
+                        <span className="ml-1 text-[10px] text-[var(--text-faint)]">{k.domain}</span>
+                      </span>
                       <span className="shrink-0 tabular-nums text-[var(--text-secondary)]">{k.count}</span>
                     </span>
                     <span className="h-1 w-full overflow-hidden rounded-full" style={{ background: "var(--surface-muted)" }} aria-hidden>
                       <span
                         className="block h-full rounded-full"
-                        style={{ width: `${Math.round((k.count / maxCount) * 100)}%`, background: "var(--meridian-400)" }}
+                        style={{ width: `${Math.round((k.count / maxCount) * 100)}%`, background: severityColor(k.severity) }}
                       />
                     </span>
                   </button>

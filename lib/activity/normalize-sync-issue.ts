@@ -12,12 +12,19 @@
  *     resolved is dishonest urgency. Resolved issues are silently dropped — and
  *     we do NOT invert them into "issue resolved" positive-spin events either,
  *     because this data doesn't earn that framing.
- *   - Only member-meaningful, member-actionable kinds surface. MISSING_ACCOUNT
- *     and UPSERT_ERROR map to fix-oriented copy. REMOVED_TOMBSTONE and every
- *     internal/forensic/reserved kind (BALANCE_TX_MISMATCH, REPLAY_*,
- *     INSTRUMENT_IDENTITY_CONFLICT) are internal bookkeeping — dropped, exactly
- *     as REMOVED_TOMBSTONE is. We never invent copy for a kind the product hasn't
- *     defined a member-facing meaning for.
+ *   - Only member-meaningful, member-actionable issues surface. REMOVED_TOMBSTONE
+ *     and every internal/forensic/reserved kind (BALANCE_TX_MISMATCH, REPLAY_*,
+ *     INSTRUMENT_IDENTITY_CONFLICT) are internal bookkeeping — dropped. We never
+ *     invent copy for a kind the product hasn't defined a member-facing meaning for.
+ *   - PRE-V26-PLAID-CLOSE Phase 4: `kind` alone is NOT a sufficient gate.
+ *     `UPSERT_ERROR` also covers investment-repair, import-rollback and BTC
+ *     wallet failures, and this feed was telling members to "reconnect" their
+ *     bank over an internal instrument-repair retry. Those are operator
+ *     concerns with no member action, so they are now EXCLUDED OUTRIGHT rather
+ *     than merely reworded — noise in this feed erodes trust in every other
+ *     message it carries. The caller derives `customerActionable` via
+ *     lib/platform/sync-issue-semantics.ts (the one authority) and passes it in;
+ *     `detail` stays out of this module's contract entirely.
  *   - SyncIssue.detail is NEVER exposed. It may carry provider-internal
  *     identifiers. It is deliberately excluded from SyncIssueRow so it is
  *     structurally impossible for this function to read it into copy, and the
@@ -42,8 +49,9 @@ export interface SyncIssueRow {
 }
 
 /**
- * The only kinds surfaced to members, with calm, fix-oriented copy. A kind not
- * in this map (REMOVED_TOMBSTONE and all internal/reserved kinds) is dropped.
+ * Copy for the kinds that CAN be member-facing. Membership additionally requires
+ * `customerActionable` from the semantics authority — this map alone would let
+ * an investment-repair UPSERT_ERROR through.
  */
 const MEMBER_MEANINGFUL: Record<string, { title: string; tone: TimelineTone; subtitle: string }> = {
   MISSING_ACCOUNT: {
@@ -58,9 +66,22 @@ const MEMBER_MEANINGFUL: Record<string, { title: string; tone: TimelineTone; sub
   },
 };
 
-export function normalizeSyncIssueEvent(issue: SyncIssueRow): TimelineEvent | null {
+export function normalizeSyncIssueEvent(
+  issue: SyncIssueRow,
+  /**
+   * Phase 4 — the caller's verdict from lib/platform/sync-issue-semantics.ts.
+   * Defaults to `true` so existing behaviour for the two transaction kinds is
+   * unchanged when a caller has not been migrated; the kind map below still
+   * gates which kinds are eligible at all.
+   */
+  customerActionable = true,
+): TimelineEvent | null {
   // Resolved issues silently drop (no positive-spin inversion either).
   if (issue.resolved) return null;
+
+  // Not a member's problem to act on (internal repair failure) — drop entirely,
+  // rather than showing them bank-reconnect copy for an investments retry.
+  if (!customerActionable) return null;
 
   // Unknown / internal / reserved kinds (incl. REMOVED_TOMBSTONE) drop.
   const spec = MEMBER_MEANINGFUL[issue.kind];

@@ -33,6 +33,18 @@ export interface ConvergenceEvent {
   detail: string;
   /** Trust of the projected row (a ledger row is observed). */
   tier: OperationalTier;
+  /**
+   * PRE-V26-PLAID-CLOSE Phase 4 — the SEMANTIC correlation key, when the source
+   * ledger has one. Events sharing a `correlationKey` belong to the same real
+   * operation and are clustered together regardless of clock proximity; events
+   * with DIFFERENT keys are never merged, even if they occur seconds apart.
+   *
+   * For sync issues this is `plaidItem:<id>|run:<runId>`, so one Chase sync run's
+   * tombstones and failures form one episode and an unrelated Amex run an hour
+   * later can never fold into it. Absent for ledgers with no natural key (they
+   * fall back to time proximity, as before).
+   */
+  correlationKey?: string;
 }
 
 /** A correlated cluster of participations across ledgers — one operational story. */

@@ -43,18 +43,54 @@ function minusDaysISO(iso: string, d: number): string {
 
 // ── Pure correlation ──────────────────────────────────────────────────────────────
 
-/** Cluster chronologically-sorted events into episodes by time-gap. Pure. */
+/**
+ * Cluster chronologically-sorted events into episodes. Pure.
+ *
+ * PRE-V26-PLAID-CLOSE Phase 4 — correlation is now SEMANTIC first, temporal
+ * second. Time proximity alone merged unrelated incidents: a Chase sync run and
+ * an Amex sync run an hour apart became one "episode", while one real incident
+ * spanning a long retry gap split into several.
+ *
+ * The rule:
+ *   • An event carrying a `correlationKey` clusters with events sharing that
+ *     key, and with NOTHING else. For sync issues the key is item-scoped
+ *     (`plaidItem:<id>|run:<runId>`), so an episode can never span two
+ *     PlaidItems — including the `run:legacy` fallback for pre-Phase-4 rows,
+ *     which still carries its own item id.
+ *   • Events with NO key (jobs, alerts, status transitions — ledgers with no
+ *     natural operational key) keep the original 6-hour proximity clustering.
+ */
 export function correlateEpisodes(events: readonly ConvergenceEvent[]): ConvergenceEpisode[] {
   if (events.length === 0) return [];
   const sorted = [...events].sort((a, b) => a.at.localeCompare(b.at));
-  const clusters: ConvergenceEvent[][] = [];
-  let current: ConvergenceEvent[] = [sorted[0]];
-  for (let i = 1; i < sorted.length; i++) {
-    const gap = Date.parse(sorted[i].at) - Date.parse(sorted[i - 1].at);
-    if (gap > EPISODE_GAP_MS) { clusters.push(current); current = []; }
-    current.push(sorted[i]);
+
+  // Keyed events: one cluster per key, in first-seen order.
+  const keyed = new Map<string, ConvergenceEvent[]>();
+  const unkeyed: ConvergenceEvent[] = [];
+  for (const e of sorted) {
+    if (e.correlationKey) {
+      const bucket = keyed.get(e.correlationKey);
+      if (bucket) bucket.push(e);
+      else keyed.set(e.correlationKey, [e]);
+    } else {
+      unkeyed.push(e);
+    }
   }
-  clusters.push(current);
+
+  const clusters: ConvergenceEvent[][] = [];
+  if (unkeyed.length > 0) {
+    let current: ConvergenceEvent[] = [unkeyed[0]];
+    for (let i = 1; i < unkeyed.length; i++) {
+      const gap = Date.parse(unkeyed[i].at) - Date.parse(unkeyed[i - 1].at);
+      if (gap > EPISODE_GAP_MS) { clusters.push(current); current = []; }
+      current.push(unkeyed[i]);
+    }
+    clusters.push(current);
+  }
+  clusters.push(...keyed.values());
+
+  // Chronological episode order regardless of which bucket produced them.
+  clusters.sort((a, b) => a[0].at.localeCompare(b[0].at));
   return clusters.map((evts, i) => buildEpisode(evts, i));
 }
 
@@ -101,10 +137,60 @@ function realReaders(now: Date): ConvergenceReaders {
     },
     alertRuns: (limit) => loadRecentAlertRuns(limit),
     async syncIssues(from, to) {
-      return db.syncIssue.findMany({
+      const rows = await db.syncIssue.findMany({
         where: { createdAt: { gte: from, lte: to } },
         orderBy: { createdAt: "asc" },
-        select: { provider: true, kind: true, plaidItemId: true, createdAt: true },
+        // Phase 4 — `resolved` was previously not even selected, which is why
+        // every issue rendered as an active degradation forever. `detail` is
+        // read ONLY to derive semantics/correlation; the projection never
+        // interpolates it (see participants.ts).
+        select: {
+          provider: true, kind: true, plaidItemId: true, createdAt: true,
+          resolved: true, financialAccountId: true, detail: true,
+        },
+      });
+      if (rows.length === 0) return [];
+
+      // ONE batched lookup for operator-safe labels + referent existence, rather
+      // than a query per row. A row naming an account or item that no longer
+      // exists describes nothing actionable — it is classified `orphaned` and
+      // kept out of the active set WITHOUT mutating the row.
+      const itemIds = [...new Set(rows.map((r) => r.plaidItemId).filter((v): v is string => v !== null))];
+      const acctIds = [...new Set(rows.map((r) => r.financialAccountId).filter((v): v is string => v !== null))];
+      const [items, accounts] = await Promise.all([
+        itemIds.length
+          ? db.plaidItem.findMany({ where: { id: { in: itemIds } }, select: { id: true, institutionName: true } })
+          : Promise.resolve([]),
+        acctIds.length
+          ? db.financialAccount.findMany({ where: { id: { in: acctIds } }, select: { id: true, name: true, institution: true } })
+          : Promise.resolve([]),
+      ]);
+      const itemById = new Map(items.map((i) => [i.id, i.institutionName]));
+      const acctById = new Map(accounts.map((a) => [a.id, a.institution ? `${a.institution} · ${a.name}` : a.name]));
+
+      return rows.map((r) => {
+        // A row with no referent at all (neither id set) cannot be orphaned —
+        // there is nothing to dangle. Only a NAMED-but-missing referent is.
+        const namesItem = r.plaidItemId !== null;
+        const namesAcct = r.financialAccountId !== null;
+        const itemOk    = namesItem && itemById.has(r.plaidItemId!);
+        const acctOk    = namesAcct && acctById.has(r.financialAccountId!);
+        const referentExists = (!namesItem && !namesAcct) || itemOk || acctOk;
+
+        return {
+          provider: r.provider,
+          kind: r.kind,
+          plaidItemId: r.plaidItemId,
+          createdAt: r.createdAt,
+          resolved: r.resolved,
+          financialAccountId: r.financialAccountId,
+          detail: r.detail,
+          subjectLabel:
+            (r.plaidItemId ? itemById.get(r.plaidItemId) : undefined)
+            ?? (r.financialAccountId ? acctById.get(r.financialAccountId) : undefined)
+            ?? null,
+          referentExists,
+        };
       });
     },
     async statusTransitions(from, to) {

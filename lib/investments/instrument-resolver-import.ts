@@ -149,7 +149,7 @@ export async function resolveInstrumentForImport(
         kind: "INSTRUMENT_IDENTITY_CONFLICT",
         financialAccountId: opts?.financialAccountId ?? null,
         detail: { stage: "import-weak-ambiguous", symbol: identity.symbol, currency: identity.currency ?? null, matches: weak.map((w) => w.id) },
-      });
+      }, client);
       return { instrumentId: "", created: false, conflict: true };
     }
     weakMatchId = weak[0]?.id ?? null;
@@ -167,7 +167,7 @@ export async function resolveInstrumentForImport(
       kind: "INSTRUMENT_IDENTITY_CONFLICT",
       financialAccountId: opts?.financialAccountId ?? null,
       detail: { stage: "import-strong-conflict", symbol: identity.symbol, cusip: identity.cusip ?? null, isin: identity.isin ?? null, conflictingInstrumentIds: [...new Set(strongMatches.map((m) => m.id))] },
-    });
+    }, client);
     return { instrumentId: "", created: false, conflict: true };
   }
 

@@ -292,7 +292,7 @@ export async function commitInvestmentImport(input: CommitInput): Promise<Commit
     repair = { status: m.status, repairedInstrumentIds: m.repairedInstrumentIds };
   } catch (err) {
     console.warn(`[investment-import] reconstruction repair for account ${financialAccountId} failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-    await recordSyncIssue({ kind: "UPSERT_ERROR", financialAccountId, detail: { stage: "investment-import-repair", error: err instanceof Error ? err.message : String(err) } });
+    await recordSyncIssue({ kind: "UPSERT_ERROR", financialAccountId, detail: { stage: "investment-import-repair", error: err instanceof Error ? err.message : String(err) } }, client);
   }
 
   return { status: "ok", batchId: batch.id, counts, supersededAssertions, affectedWindow, repair };

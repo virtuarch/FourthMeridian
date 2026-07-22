@@ -12,6 +12,7 @@
  * nothing here writes.
  */
 
+import { classifySyncIssue, syncIssueState, stageOf } from "@/lib/platform/sync-issue-semantics";
 import type { AlertRunSummary } from "@/lib/alerts/evaluate";
 import type { ConvergenceEvent } from "@/lib/platform/convergence/types";
 
@@ -29,6 +30,15 @@ export interface ConvSyncIssue {
   kind: string;
   plaidItemId: string | null;
   createdAt: Date;
+  /** Phase 4 — lifecycle + semantics inputs. `detail` is read for classification
+   *  and correlation ONLY; it is never placed in a projected event. */
+  resolved: boolean;
+  financialAccountId: string | null;
+  detail: unknown;
+  /** Operator-safe label resolved by the reader (institution / account name). */
+  subjectLabel: string | null;
+  /** False when the referenced account/item no longer exists (⇒ orphaned). */
+  referentExists: boolean;
 }
 export interface ConvTransition {
   at: Date;
@@ -63,6 +73,20 @@ export interface ConvergenceParticipant {
   ledger: string;
   label: string;
   project(readers: ConvergenceReaders, window: ConvergenceWindow): Promise<ConvergenceEvent[]>;
+}
+
+/**
+ * The semantic correlation key for a sync issue. ALWAYS item-scoped, so a
+ * fallback can never merge two institutions: an issue with no runId (pre-Phase-4
+ * rows) still correlates only with other rows for the SAME PlaidItem, and one
+ * with no item at all correlates only with itself.
+ */
+function correlationKeyFor(r: ConvSyncIssue): string {
+  const runId = r.detail && typeof r.detail === "object" && !Array.isArray(r.detail)
+    ? (r.detail as Record<string, unknown>).runId
+    : undefined;
+  const item = r.plaidItemId ?? r.financialAccountId ?? `provider:${r.provider}`;
+  return `plaidItem:${item}|run:${typeof runId === "string" ? runId : "legacy"}`;
 }
 
 function startOfDay(iso: string): Date { return new Date(`${iso}T00:00:00.000Z`); }
@@ -126,12 +150,47 @@ const syncIssueParticipant: ConvergenceParticipant = {
   label: "Sync Issues",
   async project(readers, window) {
     const rows = await readers.syncIssues(startOfDay(window.from), endOfDay(window.to));
-    return rows.map((r) => ({
-      at: r.createdAt.toISOString(), ledger: "syncIssue", kind: "sync-issue",
-      subject: r.plaidItemId ?? r.provider,
-      outcome: "degraded" as const,
-      detail: `${r.provider} sync issue: ${r.kind}`, tier: "observed" as const,
-    }));
+    return rows.map((r) => {
+      const cls   = classifySyncIssue({ kind: r.kind, provider: r.provider, detail: r.detail });
+      const state = syncIssueState(
+        { kind: r.kind, provider: r.provider, detail: r.detail },
+        { referentExists: r.referentExists, resolved: r.resolved },
+      );
+
+      // Phase 4 — outcome now reflects SEMANTICS, not the mere existence of a
+      // row. Previously every sync issue projected as "degraded" forever: a
+      // recovered incident, an expected pending→posted tombstone and a live
+      // persistence failure were rendered identically, so 15 rows of mostly
+      // historical evidence read as 15 active problems.
+      const outcome =
+        state === "active"    ? ("degraded" as const)
+      : state === "recovered" ? ("recovery" as const)
+      :                         ("action" as const);   // evidence / superseded / orphaned
+
+      // Human-first subject: institution or account name where we could resolve
+      // one, never a bare cuid and never the literal string "PLAID".
+      const subject = r.subjectLabel ?? r.plaidItemId ?? r.provider;
+
+      const stage = stageOf({ kind: r.kind, provider: r.provider, detail: r.detail });
+      const note =
+        state === "recovered"  ? " — recovered"
+      : state === "superseded" ? " — superseded (produced by a retired rule)"
+      : state === "orphaned"   ? " — orphaned (its account no longer exists)"
+      : state === "evidence"   ? " — expected provider lifecycle"
+      : "";
+
+      return {
+        at: r.createdAt.toISOString(), ledger: "syncIssue", kind: "sync-issue",
+        subject,
+        outcome,
+        // `detail` (the Json blob) is NEVER interpolated — only the derived
+        // severity/domain/stage vocabulary, which carries no customer data.
+        detail: `${cls.severity} · ${cls.domain} · ${r.kind.replace(/_/g, " ").toLowerCase()}${stage ? ` (${stage})` : ""}${note}`,
+        tier: "observed" as const,
+        // Same item + same sync run = same operational story.
+        correlationKey: correlationKeyFor(r),
+      };
+    });
   },
 };
 

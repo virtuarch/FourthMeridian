@@ -197,7 +197,7 @@ export async function resolveInstrumentForPlaidSecurity(
         sedol: sec.sedol ?? null,
         conflictingInstrumentIds: [...new Set(strongMatches.map((m) => m.id))],
       },
-    });
+    }, client);
     const created = await createInstrumentWithAlias(client, sec, { bootstrap: false });
     return { instrumentId: created, created: true, conflict: true };
   }

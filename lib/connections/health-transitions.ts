@@ -57,8 +57,16 @@ export async function setPlaidItemHealth(
   itemId: string,
   health: { status: PlaidItemStatus; errorCode?: string | null },
   extra?: Prisma.PlaidItemUpdateInput,
+  /**
+   * PRE-V26-PLAID-CLOSE — optional injected Prisma client (defaults to the real
+   * `db`). Additive; all 13 existing callers are unchanged. Needed because this
+   * function performs the FINAL cursor/lastSyncedAt write of a transaction sync,
+   * so it must be able to ride the same injected client as the sync loop rather
+   * than reaching past the seam to the real database.
+   */
+  client: Pick<typeof db, "plaidItem" | "auditLog"> = db,
 ): Promise<void> {
-  const prior = await db.plaidItem.findUnique({
+  const prior = await client.plaidItem.findUnique({
     where:  { id: itemId },
     select: { userId: true, status: true, errorCode: true },
   });
@@ -66,7 +74,7 @@ export async function setPlaidItemHealth(
 
   const data: Prisma.PlaidItemUpdateInput = { ...(extra ?? {}), status: health.status };
   if (health.errorCode !== undefined) data.errorCode = health.errorCode;
-  await db.plaidItem.update({ where: { id: itemId }, data });
+  await client.plaidItem.update({ where: { id: itemId }, data });
 
   const resultingErrorCode =
     health.errorCode !== undefined ? health.errorCode : (prior.errorCode ?? null);
@@ -76,7 +84,7 @@ export async function setPlaidItemHealth(
   if (!changed) return;
 
   try {
-    await db.auditLog.create({
+    await client.auditLog.create({
       data: {
         userId:   prior.userId,
         action:   AuditAction.PLAID_ITEM_STATUS_CHANGED,

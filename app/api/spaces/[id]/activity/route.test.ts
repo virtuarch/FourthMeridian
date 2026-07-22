@@ -93,10 +93,20 @@ check(
   "SyncIssue.detail is NEVER selected",
   !/detail:\s*true/.test(routeSrc),
 );
-// The syncIssue select loads only the four contract fields (no detail leak).
+// The syncIssue select loads only the contract fields (no detail leak).
+// PRE-V26-PLAID-CLOSE Phase 4 adds `plaidTransactionId` — a SCALAR column, not
+// `detail`. It exists so the semantics authority can exclude internal
+// investment / import / wallet repair failures from this member-facing feed
+// (only the two bank-transaction-sync producers ever set it). The
+// never-load-`detail` invariant above is unchanged and still the primary guard.
 check(
-  "syncIssue select is exactly id/kind/resolved/createdAt",
-  routeSrc.includes("select: { id: true, kind: true, resolved: true, createdAt: true }"),
+  "syncIssue select is exactly id/kind/resolved/createdAt + plaidTransactionId",
+  routeSrc.includes("select: { id: true, kind: true, resolved: true, createdAt: true, plaidTransactionId: true }"),
+);
+// The member gate is DERIVED by the one authority, never re-guessed from `kind`.
+check(
+  "member visibility is gated by the semantics authority",
+  routeSrc.includes("classifySyncIssue({ kind: row.kind, plaidTransactionId }).customerActionable"),
 );
 
 // ── Report ────────────────────────────────────────────────────────────────────

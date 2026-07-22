@@ -24,16 +24,13 @@
  *  - Resumes from PlaidItem.cursor; a null/undefined cursor means "first
  *    sync ever" and Plaid returns the full available transaction history.
  *  - Loops on `has_more` — a single call may require several pages.
- *  - Persists `next_cursor` back onto PlaidItem after EVERY completed page
- *    (the transactions from that page are already committed), so a mid-loop
- *    interruption resumes from the last persisted cursor instead of restarting
- *    the full history pull — and never skips an unprocessed page. The final
- *    update additionally stamps lastSyncedAt and clears syncIncompleteAt to
- *    mark the whole import complete.
+ *  - Persists `next_cursor` back onto PlaidItem after EVERY FULLY-PERSISTED
+ *    page, so a mid-loop interruption resumes from the last persisted cursor
+ *    instead of restarting the full history pull — and never skips an
+ *    unprocessed page. The final update additionally stamps lastSyncedAt and
+ *    clears syncIncompleteAt to mark the whole import complete.
  *  - Maps Plaid's account_id -> FinancialAccount.id via the unique
- *    plaidAccountId field set at import time. Transactions for an account we
- *    don't recognize (e.g. an account type we don't import) are skipped with
- *    a warning, not an error — one unmapped account can't abort the sync.
+ *    plaidAccountId field set at import time.
  *  - Flips the amount sign: Plaid uses positive = money out (debit),
  *    negative = money in (credit). Fourth Meridian's convention (see
  *    prisma/schema.prisma Transaction model comment) is the opposite:
@@ -60,13 +57,44 @@
  *    see docs/initiatives/d2/investigations/D2_STEP4C_TRANSACTION_FINGERPRINTING_INVESTIGATION.md.
  *  - Writes `financialAccountId`, never the legacy `accountId` — Plaid-synced
  *    transactions only ever belong to a FinancialAccount.
+ *
+ * ── THE CURSOR SAFETY INVARIANT (PRE-V26-PLAID-CLOSE Phase 1) ────────────────
+ *
+ *   A Plaid cursor may advance past a page ONLY when every canonical
+ *   persistence obligation for that page has succeeded.
+ *
+ * Plaid never re-delivers a row behind a consumed cursor, so advancing past a
+ * row we failed to store loses it permanently. That is not hypothetical: it is
+ * the July-2 2026 payroll incident (a pending→posted transition whose posted
+ * successor was skipped while the cursor moved on), recovered only by a manual
+ * cursor-reset replay — see scripts/recover-plaid-item-transactions.ts.
+ *
+ * Two row-level paths could previously drop a transaction and still let the
+ * page's cursor advance, because each recorded a SyncIssue and then `continue`d:
+ *   1. account resolution miss  → MISSING_ACCOUNT
+ *   2. upsert throw             → UPSERT_ERROR
+ * Both now mark the PAGE incomplete. An incomplete page does not write its
+ * cursor and THROWS `PlaidSyncIncompleteError`, so the same page replays on the
+ * next attempt. Replay is idempotent by construction (plaidTransactionId is
+ * unique and the write path resolves findUnique→update before create, with a
+ * fingerprint fallback), so re-processing a page cannot duplicate anything.
+ *
+ * DOCTRINE: a visible stall beats silent financial-data loss. This function
+ * must never report success while financial data it was handed is unpersisted.
+ *
+ * Throwing (rather than returning a partial result) is deliberate: every caller
+ * already treats a throw as "this sync failed" — runDeferredHistorySync stamps
+ * syncIncompleteAt + classifies health + notifies, withPlaidItemSyncLock leaves
+ * syncIncompleteAt set, and refreshAllActiveItemsForUser records ok:false. A new
+ * partial-result field would have been silently ignored by all of them.
  */
 
+import { randomUUID } from "node:crypto";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import { ProviderType, PlaidItemStatus } from "@prisma/client";
-import { recordSyncIssue } from "@/lib/plaid/syncIssues";
+import { recordSyncIssue, resolveCursorBlockingIssues } from "@/lib/plaid/syncIssues";
 import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { findByFingerprint } from "@/lib/transactions/fingerprint";
@@ -119,6 +147,53 @@ import { resolveMerchantWrite } from "@/lib/transactions/merchant-write";
 import { plaidCounterpartyEnrichment, type EnrichmentCapture } from "@/lib/transactions/merchant-enrichment";
 import type { CategorySource } from "@prisma/client";
 
+/** One canonical persistence obligation this page failed to discharge. */
+export interface PagePersistenceFailure {
+  kind:               "MISSING_ACCOUNT" | "UPSERT_ERROR";
+  plaidTransactionId: string;
+  plaidAccountId:     string;
+}
+
+/**
+ * Thrown when a page could not be fully persisted. The cursor for that page is
+ * deliberately NOT written, so the next attempt replays the same page.
+ *
+ * Deliberately NOT an Axios error: `classifyPlaidErrorForHealth` returns null
+ * for non-Axios errors, so this leaves PlaidItem.status ACTIVE and only stamps
+ * syncIncompleteAt — the item is "retry me", not "broken / needs re-auth". The
+ * resume path and the daily cron therefore keep retrying it.
+ */
+export class PlaidSyncIncompleteError extends Error {
+  readonly plaidItemId: string;
+  readonly failures:    readonly PagePersistenceFailure[];
+  /** The cursor that was NOT advanced past — the page that must replay. */
+  readonly heldCursor:  string | null;
+
+  constructor(plaidItemId: string, failures: readonly PagePersistenceFailure[], heldCursor: string | null) {
+    const kinds = [...new Set(failures.map((f) => f.kind))].join(" + ");
+    super(
+      `Plaid sync incomplete for item ${plaidItemId}: ${failures.length} transaction(s) failed to persist (${kinds}). ` +
+      `Cursor held at ${heldCursor === null ? "the beginning (null)" : "its previous value"} so the page replays; ` +
+      `no transaction was skipped.`,
+    );
+    this.name        = "PlaidSyncIncompleteError";
+    this.plaidItemId = plaidItemId;
+    this.failures    = failures;
+    this.heldCursor  = heldCursor;
+  }
+}
+
+/**
+ * Injected dependencies. Both default to the real singletons, so every
+ * production caller is unchanged. Tests pass fakes (`as never`, the house idiom
+ * from lib/investments/opening-position.ts) — this is the seam that makes the
+ * cursor invariant provable without a live database or the Plaid API.
+ */
+export interface SyncTransactionsDeps {
+  db?:    typeof db;
+  plaid?: Pick<typeof plaidClient, "transactionsSync">;
+}
+
 export interface SyncTransactionsResult {
   /** Count of transactions Plaid reported in its `added` array this run (Plaid's own count, unchanged semantics). */
   added:    number;
@@ -136,6 +211,11 @@ export interface SyncTransactionsResult {
   updatedByFingerprint:  number;
   /** Transactions dropped because no FinancialAccount matched the Plaid account_id. */
   skippedMissingAccount: number;
+  // NOTE (PRE-V26-PLAID-CLOSE Phase 2): there is deliberately NO `failedRows`
+  // field. A returned result is SYNONYMOUS with complete persistence — a page
+  // with any unmet persistence obligation throws `PlaidSyncIncompleteError`
+  // rather than returning. A counter that is always 0 would only invite callers
+  // to branch on a state this contract makes unrepresentable.
 }
 
 /**
@@ -143,8 +223,23 @@ export interface SyncTransactionsResult {
  *
  * @param plaidItemDbId  Our internal PlaidItem.id (primary key), not Plaid's item_id.
  */
-export async function syncTransactionsForItem(plaidItemDbId: string): Promise<SyncTransactionsResult> {
-  const item = await db.plaidItem.findUnique({ where: { id: plaidItemDbId } });
+export async function syncTransactionsForItem(
+  plaidItemDbId: string,
+  deps: SyncTransactionsDeps = {},
+): Promise<SyncTransactionsResult> {
+  // One resolution point for the injected seam; everything below uses these.
+  const database = deps.db    ?? db;
+  const plaid    = deps.plaid ?? plaidClient;
+
+  // PRE-V26-PLAID-CLOSE Phase 4 — one id per sync RUN, stamped into every
+  // SyncIssue this invocation writes. Platform Ops correlates episodes on
+  // (plaidItemId, runId), so one Chase run's tombstones and failures group
+  // together and an unrelated Amex run an hour later never merges into them.
+  // Carried in `detail` (Json) — no schema change, and `JobRun.executionId` does
+  // not cover manual-refresh or webhook syncs.
+  const runId = randomUUID();
+
+  const item = await database.plaidItem.findUnique({ where: { id: plaidItemDbId } });
   if (!item) {
     throw new Error(`syncTransactionsForItem: PlaidItem ${plaidItemDbId} not found`);
   }
@@ -176,7 +271,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   async function resolveAccountMeta(financialAccountId: string): Promise<{ type: string | null; debtSubtype: string | null; currency: string | null; ownerUserId: string | null }> {
     const cached = accountMetaCache.get(financialAccountId);
     if (cached) return cached;
-    const fa = await db.financialAccount.findUnique({
+    const fa = await database.financialAccount.findUnique({
       where:  { id: financialAccountId },
       // currency: MC1 Phase 0 Slice 2 — account-level fallback for the
       // per-transaction currency stamp when Plaid omits iso_currency_code.
@@ -202,14 +297,14 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
     // either path) is cached exactly as before.
     // D2 Step 1D — findFirst, not findUnique: see lib/accounts/reconcile.ts
     // for why (provider, externalAccountId) is no longer a named unique key).
-    const plaidIdentity = await db.providerAccountIdentity.findFirst({
+    const plaidIdentity = await database.providerAccountIdentity.findFirst({
       where:  { provider: ProviderType.PLAID, externalAccountId: plaidAccountId },
       select: { financialAccount: { select: { id: true } } },
     });
 
     let fa = plaidIdentity?.financialAccount ?? null;
     if (!fa) {
-      fa = await db.financialAccount.findUnique({
+      fa = await database.financialAccount.findUnique({
         where:  { plaidAccountId },
         select: { id: true },
       });
@@ -226,8 +321,13 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
   }
 
   while (hasMore) {
+    // PRE-V26-PLAID-CLOSE — canonical persistence obligations this PAGE failed
+    // to discharge. Reset per page: the cursor decision is per page, and earlier
+    // fully-persisted pages legitimately keep their advanced cursor.
+    const pageFailures: PagePersistenceFailure[] = [];
+
     const resp = await withPlaidRetry(
-      () => plaidClient.transactionsSync({
+      () => plaid.transactionsSync({
         access_token: accessToken,
         ...(cursor ? { cursor } : {}),
       }),
@@ -248,7 +348,14 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
           plaidItemId:        plaidItemDbId,
           plaidAccountId:     txn.account_id,
           plaidTransactionId: txn.transaction_id,
-          detail:             { merchant: txn.merchant_name ?? txn.name, amount: txn.amount, date: txn.date, pending: txn.pending },
+          detail:             { stage: "transaction-persist", runId, cursorBlocking: true, merchant: txn.merchant_name ?? txn.name, amount: txn.amount, date: txn.date, pending: txn.pending },
+        }, database);
+        // CURSOR SAFETY — this transaction was delivered and NOT persisted. The
+        // page is incomplete, so its cursor must not advance (see header).
+        pageFailures.push({
+          kind:               "MISSING_ACCOUNT",
+          plaidTransactionId: txn.transaction_id,
+          plaidAccountId:     txn.account_id,
         });
         continue;
       }
@@ -394,7 +501,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         try {
           const meta = await resolveAccountMeta(financialAccountId as string);
           const mi = await resolveMerchantWrite(
-            db,
+            database,
             {
               merchant,
               description,
@@ -431,7 +538,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
 
       try {
         // 1. Exact match — same row Plaid is telling us about.
-        const existingByPlaidId = await db.transaction.findUnique({
+        const existingByPlaidId = await database.transaction.findUnique({
           where:  { plaidTransactionId: txn.transaction_id },
           select: { id: true, merchantId: true, categorySource: true },
         });
@@ -442,7 +549,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
           // added/modified, it is live again — Plaid only sends added/modified
           // for live transactions, so clearing deletedAt here is correct.
           const mi = await miData({ merchantId: existingByPlaidId.merchantId, categorySource: existingByPlaidId.categorySource });
-          await db.transaction.update({ where: { id: existingByPlaidId.id }, data: { ...baseFields, deletedAt: null, ...mi } });
+          await database.transaction.update({ where: { id: existingByPlaidId.id }, data: { ...baseFields, deletedAt: null, ...mi } });
           updatedByPlaidId++;
           continue;
         }
@@ -450,17 +557,17 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         // 2. No plaidTransactionId match — check the fingerprint fallback
         // before assuming this is a genuinely new transaction (see module
         // header + findByFingerprint for why).
-        const fingerprintMatch = await findByFingerprint(financialAccountId, date, amount, merchant, txn.pending);
+        const fingerprintMatch = await findByFingerprint(financialAccountId, date, amount, merchant, txn.pending, database);
 
         if (fingerprintMatch) {
           // Read the matched row's current MI state so the update never
           // re-points an existing merchant or overwrites set provenance.
-          const cur = await db.transaction.findUnique({
+          const cur = await database.transaction.findUnique({
             where:  { id: fingerprintMatch.id },
             select: { merchantId: true, categorySource: true },
           });
           const mi = await miData({ merchantId: cur?.merchantId ?? null, categorySource: cur?.categorySource ?? null });
-          await db.transaction.update({
+          await database.transaction.update({
             where: { id: fingerprintMatch.id },
             data:  { ...baseFields, plaidTransactionId: txn.transaction_id, ...mi },
           });
@@ -475,7 +582,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         // required baseline; miData's category (normal/override) overrides it via
         // the later spread (preserve never occurs on a create).
         const mi = await miData({ merchantId: null, categorySource: null });
-        await db.transaction.create({ data: { ...baseFields, category, plaidTransactionId: txn.transaction_id, ...mi } });
+        await database.transaction.create({ data: { ...baseFields, category, plaidTransactionId: txn.transaction_id, ...mi } });
         created++;
       } catch (e) {
         console.error(`[plaid sync] failed to upsert transaction ${txn.transaction_id}:`, e);
@@ -486,7 +593,13 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
           financialAccountId,
           plaidAccountId:     txn.account_id,
           plaidTransactionId: txn.transaction_id,
-          detail:             { merchant, amount, date: date.toISOString(), error: e instanceof Error ? e.message : String(e) },
+          detail:             { stage: "transaction-persist", runId, cursorBlocking: true, merchant, amount, date: date.toISOString(), pending: txn.pending, error: e instanceof Error ? e.message : String(e) },
+        }, database);
+        // CURSOR SAFETY — delivered and NOT persisted; the page is incomplete.
+        pageFailures.push({
+          kind:               "UPSERT_ERROR",
+          plaidTransactionId: txn.transaction_id,
+          plaidAccountId:     txn.account_id,
         });
       }
     }
@@ -502,7 +615,7 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
       // tombstoned rows do not resurface in UI/AI/totals/snapshots. Guarded on
       // deletedAt: null so re-processing preserves the original removal time
       // (idempotent). The removed ids are logged for forensics.
-      const result = await db.transaction.updateMany({
+      const result = await database.transaction.updateMany({
         where: { plaidTransactionId: { in: ids }, deletedAt: null },
         data:  { deletedAt: new Date() },
       });
@@ -515,9 +628,26 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
         await recordSyncIssue({
           kind:        "REMOVED_TOMBSTONE",
           plaidItemId: plaidItemDbId,
-          detail:      { count: result.count, ids },
-        });
+          detail:      { runId, count: result.count, ids },
+        }, database);
       }
+    }
+
+    // ── CURSOR SAFETY GATE ───────────────────────────────────────────────────
+    // The page is only "consumed" if every row Plaid handed us was persisted.
+    // Bail BEFORE touching `cursor` or writing it, so the held cursor is still
+    // the one this page was fetched with and the next attempt replays this exact
+    // page. Throwing (not returning) is what makes callers treat the run as
+    // failed — see the header. The SyncIssue rows written above are the durable
+    // forensic record; this error is the control-flow signal.
+    if (pageFailures.length > 0) {
+      const heldCursor = cursor ?? null;
+      console.error(
+        `[plaid sync] page INCOMPLETE for item ${plaidItemDbId} — ${pageFailures.length} transaction(s) failed to persist ` +
+        `(${pageFailures.map((f) => `${f.kind}:${f.plaidTransactionId}`).join(", ")}). ` +
+        `Cursor NOT advanced; this page will replay on the next sync.`,
+      );
+      throw new PlaidSyncIncompleteError(plaidItemDbId, pageFailures, heldCursor);
     }
 
     hasMore = has_more;
@@ -527,12 +657,13 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
     // A mid-loop interruption (timeout, transient error, hard kill) now
     // preserves progress: the next attempt resumes from this page's cursor
     // instead of restarting the full 730-day pull. The transactions from this
-    // page are already committed above, so advancing the cursor in lockstep is
-    // correct — it can never skip an unprocessed page. lastSyncedAt /
+    // page are already committed above (the CURSOR SAFETY GATE just proved it),
+    // so advancing the cursor in lockstep is correct — it can never skip an
+    // unprocessed page and can never skip an unpersisted row. lastSyncedAt /
     // syncIncompleteAt are intentionally NOT touched here: the item is not
     // "done" until the loop exits, so the incomplete marker stays set until the
     // final update below clears it.
-    await db.plaidItem.update({
+    await database.plaidItem.update({
       where: { id: plaidItemDbId },
       data:  { cursor: cursor ?? null },
     });
@@ -549,12 +680,20 @@ export async function syncTransactionsForItem(plaidItemDbId: string): Promise<Sy
     plaidItemDbId,
     { status: PlaidItemStatus.ACTIVE, errorCode: null },
     { cursor: cursor ?? null, lastSyncedAt: new Date(), syncIncompleteAt: null },
+    database,
   );
+
+  // Phase 4 — the run completed, so the cursor advanced past every page. Under
+  // the Phase 1 invariant that is PROOF every obligation was discharged, which
+  // is what licenses closing this item's cursor-blocking issues. Best-effort and
+  // deliberately after the health flip: resolution is bookkeeping, never a
+  // precondition for reporting the item healthy.
+  await resolveCursorBlockingIssues(plaidItemDbId, database);
 
   // OPS-3 S5 Wave 3 — the item provably works again: retire the open
   // SYNC_FAILED condition (releases the :open dedupe key + archives the stale
   // "needs attention" row) so a FUTURE outage notifies afresh. Best-effort.
-  await retireItemSyncFailure(plaidItemDbId);
+  await retireItemSyncFailure(plaidItemDbId, { itemClient: database });
 
   console.log(
     `[plaid sync] item ${plaidItemDbId} — created ${created}, updatedByPlaidId ${updatedByPlaidId}, updatedByFingerprint ${updatedByFingerprint}, skippedMissingAccount ${skippedMissingAccount}, removed ${removed}`

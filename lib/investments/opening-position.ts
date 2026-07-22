@@ -183,7 +183,7 @@ export async function assertOpeningPosition(params: AssertOpeningPositionParams)
     repair = { status: m.status, repairedInstrumentIds: m.repairedInstrumentIds };
   } catch (err) {
     console.warn(`[opening-position] reconstruction repair for account ${financialAccountId} failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-    await recordSyncIssue({ kind: "UPSERT_ERROR", financialAccountId, detail: { stage: "opening-position-repair", error: err instanceof Error ? err.message : String(err) } });
+    await recordSyncIssue({ kind: "UPSERT_ERROR", financialAccountId, detail: { stage: "opening-position-repair", error: err instanceof Error ? err.message : String(err) } }, client);
   }
 
   return { status: "ok", instrumentId, instrumentCreated, ...written, repair };

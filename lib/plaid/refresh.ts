@@ -47,6 +47,7 @@ import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
 import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
 import { AccountType, PlaidItemStatus, ShareStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { evaluateReconciliation } from "@/lib/plaid/reconcile-core";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import { regenerateSnapshotsForAccounts, regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 import { emitDomainEvent } from "@/lib/events/emit";
@@ -82,7 +83,25 @@ async function txnSumByAccount(ids: string[]): Promise<Map<string, number>> {
   if (ids.length === 0) return new Map();
   const rows = await db.transaction.groupBy({
     by: ["financialAccountId"],
-    where: { financialAccountId: { in: ids }, deletedAt: null },
+    // SAME-BASIS INVARIANT — posted-only (`pending: false`), matching the basis
+    // of the balance this sum is compared against. `FinancialAccount.balance` is
+    // written from Plaid's `balances.current`, which does NOT include pending
+    // activity — the same statement the snapshot system makes about it
+    // (regenerate-history.ts, accounts-asof.ts, backfill.ts all filter
+    // `pending: false` for exactly this reason).
+    //
+    // Before PRE-V26-PLAID-CLOSE Phase 2 this sum was pending-INCLUSIVE while
+    // the balance was posted-only, so the two sides measured different things.
+    // Every pending→posted transition then produced a spurious mismatch equal to
+    // the posted amount: the sum did not move (the row was already counted while
+    // pending) but the balance did. Both observed BALANCE_TX_MISMATCH events in
+    // this database were exactly that artifact — see reconcile-core.test.ts,
+    // which replays them and shows both resolve to a mismatch of 0.
+    //
+    // This does NOT weaken the detector: a genuinely missing POSTED transaction
+    // still moves the balance without moving this sum, which is the July-2 class
+    // the check was built to catch.
+    where: { financialAccountId: { in: ids }, deletedAt: null, pending: false },
     _sum: { amount: true },
   });
   const m = new Map<string, number>();
@@ -264,21 +283,29 @@ export async function refreshPlaidItem(
     if (reconcileTargets.length > 0) {
       const txnSumAfter = await txnSumByAccount(reconcileIds);
       for (const t of reconcileTargets) {
-        const balanceDelta = t.balanceAfter - t.balanceBefore;
-        const txnSumDelta  = (txnSumAfter.get(t.id) ?? 0) - (txnSumBefore.get(t.id) ?? 0);
-        const expected     = t.kind === "cash" ? txnSumDelta : -txnSumDelta;
-        const mismatch     = Math.abs(balanceDelta - expected);
-        const threshold    = Math.max(100, Math.abs(t.balanceAfter) * 0.02);
-        if (mismatch > threshold) {
+        // Phase 2 — the arithmetic now lives in the pure reconcile core so the
+        // rule is testable against real recorded incidents. Both sums are
+        // posted-only (see txnSumByAccount), matching the balance's basis.
+        const v = evaluateReconciliation({
+          kind:            t.kind,
+          balanceBefore:   t.balanceBefore,
+          balanceAfter:    t.balanceAfter,
+          postedSumBefore: txnSumBefore.get(t.id) ?? 0,
+          postedSumAfter:  txnSumAfter.get(t.id) ?? 0,
+        });
+        if (v.mismatched) {
           console.warn(
-            `[reconcile] BALANCE_TX_MISMATCH account ${t.id} (${t.type}) — balanceDelta=${balanceDelta.toFixed(2)} expected=${expected.toFixed(2)} mismatch=${mismatch.toFixed(2)} > threshold=${threshold.toFixed(2)}`
+            `[reconcile] BALANCE_TX_MISMATCH account ${t.id} (${t.type}) — balanceDelta=${v.balanceDelta.toFixed(2)} expected=${v.expected.toFixed(2)} mismatch=${v.mismatch.toFixed(2)} > threshold=${v.threshold.toFixed(2)}`
           );
           await recordSyncIssue({
             kind:               "BALANCE_TX_MISMATCH",
             plaidItemId:        plaidItemDbId,
             financialAccountId: t.id,
-            detail:             { accountType: t.type, kind: t.kind, balanceDelta, txnSumDelta, expected, mismatch, threshold },
-          });
+            // `basis` records WHICH rule produced this row, so a future reader
+            // can tell a post-Phase-2 finding from the pending-inclusive legacy
+            // events already in the table.
+            detail:             { accountType: t.type, kind: t.kind, basis: "posted", balanceDelta: v.balanceDelta, txnSumDelta: v.txnSumDelta, expected: v.expected, mismatch: v.mismatch, threshold: v.threshold },
+          }, db);
         }
       }
     }

@@ -163,7 +163,7 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
     if (code === "ADDITIONAL_CONSENT_REQUIRED") return emptyMetrics("consent_required");
     if (code === "PRODUCT_NOT_READY") return emptyMetrics("not_ready");
     console.warn(`[investment-events] fetch failed for item ${params.plaidItemId ?? "?"} (non-fatal): ${plaidErrorSummary(err)}`);
-    await recordSyncIssue({ kind: "UPSERT_ERROR", plaidItemId: params.plaidItemId ?? null, detail: { stage: "investment-events-fetch", error: plaidErrorSummary(err) } });
+    await recordSyncIssue({ kind: "UPSERT_ERROR", plaidItemId: params.plaidItemId ?? null, detail: { stage: "investment-events-fetch", error: plaidErrorSummary(err) } }, client);
     return { ...emptyMetrics("error"), failed: 1 };
   }
 
@@ -183,7 +183,7 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
       if (!faId) {
         metrics.unmappedAccount++;
         metrics.skipped++;
-        await recordSyncIssue({ kind: "MISSING_ACCOUNT", plaidItemId: params.plaidItemId ?? null, plaidAccountId: txn.account_id, detail: { stage: "investment-events", externalEventId: txn.investment_transaction_id } });
+        await recordSyncIssue({ kind: "MISSING_ACCOUNT", plaidItemId: params.plaidItemId ?? null, plaidAccountId: txn.account_id, detail: { stage: "investment-events", externalEventId: txn.investment_transaction_id } }, client);
         continue;
       }
 
@@ -260,7 +260,7 @@ async function maybeRepairReconstructions(
       });
     } catch (err) {
       console.warn(`[investment-events] reconstruction repair for account ${financialAccountId} failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-      await recordSyncIssue({ kind: "UPSERT_ERROR", plaidItemId: plaidItemId ?? null, detail: { stage: "reconstruction-repair", financialAccountId } });
+      await recordSyncIssue({ kind: "UPSERT_ERROR", plaidItemId: plaidItemId ?? null, detail: { stage: "reconstruction-repair", financialAccountId } }, client);
     }
   }
 }
@@ -299,7 +299,7 @@ async function resolveInstrument(
   } catch (err) {
     metrics.unresolvedInstrument++;
     console.warn(`[investment-events] instrument resolve failed for security ${txn.security_id} (non-fatal): ${err instanceof Error ? err.message : err}`);
-    await recordSyncIssue({ kind: "UPSERT_ERROR", plaidItemId: plaidItemId ?? null, detail: { stage: "investment-events-instrument", securityId: txn.security_id } });
+    await recordSyncIssue({ kind: "UPSERT_ERROR", plaidItemId: plaidItemId ?? null, detail: { stage: "investment-events-instrument", securityId: txn.security_id } }, client);
     return null;
   }
 }

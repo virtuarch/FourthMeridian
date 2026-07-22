@@ -57,6 +57,7 @@ import { possessive }                   from "@/lib/format";
 import { withApiHandler }               from "@/lib/api";
 import { normalizeImportBatchEvent }    from "@/lib/activity/normalize-import-batch";
 import { normalizeSyncIssueEvent }      from "@/lib/activity/normalize-sync-issue";
+import { classifySyncIssue }            from "@/lib/platform/sync-issue-semantics";
 import { displayActivityAccountName }   from "@/lib/activity/account-name-privacy";
 import type { TimelineEvent, TimelineTone } from "@/lib/timeline-types";
 
@@ -487,14 +488,29 @@ export const GET = withApiHandler(async (
   // ── SyncIssue source — UNRESOLVED issues on those accounts ─────────────────
   // `detail` is deliberately NOT selected: it may carry provider-internal
   // identifiers and must never reach member-facing copy.
+  //
+  // Phase 4 — `UPSERT_ERROR` also covers investment-repair, import-rollback and
+  // BTC wallet failures, and this feed was telling members to "reconnect your
+  // bank" over those. They are operator concerns with no member action, so they
+  // are EXCLUDED here rather than reworded.
+  //
+  // The exclusion uses `plaidTransactionId`, a SCALAR column that only the two
+  // bank-transaction-sync producers ever set — deliberately NOT `detail`, whose
+  // never-load invariant is the single most important safety property of this
+  // route (and is source-guarded in route.test.ts). The semantics authority owns
+  // the verdict; this select stays exactly the contract fields plus that scalar.
   const syncIssues = accountIds.length === 0 ? [] : await db.syncIssue.findMany({
-    where: { resolved: false, financialAccountId: { in: accountIds } },
+    // Defence in depth: the WHERE excludes repair rows outright (only the two
+    // bank-transaction producers set plaidTransactionId), and the authority
+    // re-checks below. Neither alone is trusted to keep internal failures out.
+    where: { resolved: false, financialAccountId: { in: accountIds }, plaidTransactionId: { not: null } },
     orderBy: { createdAt: "desc" },
     take: 50,
-    select: { id: true, kind: true, resolved: true, createdAt: true },
+    select: { id: true, kind: true, resolved: true, createdAt: true, plaidTransactionId: true },
   });
   const syncEvents = syncIssues
-    .map(normalizeSyncIssueEvent)
+    .map(({ plaidTransactionId, ...row }) =>
+      normalizeSyncIssueEvent(row, classifySyncIssue({ kind: row.kind, plaidTransactionId }).customerActionable))
     .filter((e): e is TimelineEvent => e !== null);
 
   // ── Merge all three normalized arrays, sort newest-first, single cap ───────
