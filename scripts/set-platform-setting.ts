@@ -48,6 +48,25 @@ function arg(name: string): string | undefined {
   return i !== -1 ? process.argv[i + 1] : undefined;
 }
 
+/**
+ * `host/dbname` of the connection this run is actually using — never the user,
+ * never the password. Printed on EVERY run because the output is otherwise
+ * identical against local and production: both show "no row" before the first
+ * write, so an operator can lock down the wrong database and see a success
+ * message. registration_mode is a security control; "which database did that go
+ * to" must never be an inference.
+ */
+function targetOf(): string {
+  const raw = process.env.DATABASE_URL;
+  if (!raw) return "(DATABASE_URL unset)";
+  try {
+    const u = new URL(raw);
+    return `${u.host}${u.pathname}`;
+  } catch {
+    return "(unparseable DATABASE_URL)";
+  }
+}
+
 async function showCurrent(): Promise<void> {
   const [mode, status] = await Promise.all([getRegistrationMode(), getProductStatus()]);
   const rows = await db.platformSetting.findMany({
@@ -56,6 +75,7 @@ async function showCurrent(): Promise<void> {
   });
   const stored = new Map(rows.map((r) => [r.key, r]));
 
+  console.log(`\n  Database: ${targetOf()}`);
   console.log("\n  Effective (what the app reads):");
   console.log(`    registration_mode  ${mode}`);
   console.log(`    product_status     ${status}`);
