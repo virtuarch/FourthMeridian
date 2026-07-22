@@ -76,6 +76,7 @@ same per-row classifiers).
 | 11 | Historical positions | `investments-time-machine.ts` (A10) | as-of / compare / period investment reads |
 | 12 | Reporting currency | `money/convert.ts` `convertMoney` (+ `reportingBalance`) | the cross-currency comparison basis |
 | 13 | Debt family | `cash-flow-projection.ts` + `debt.ts` + `SpaceSnapshot.debt` | flow-truth vs balance-truth debt facts |
+| 13a | Liability balance semantics | `lib/debt/balance-semantics.ts` `amountOwed` / `creditBalance` / `liabilityState` / `hasOutstandingDebt` | what a signed liability balance MEANS: owed vs settled vs issuer credit |
 | 14 | Visibility | `lib/ai/visibility.ts` `TRANSACTION_DETAIL_VISIBILITY` | which links may expose transaction/position detail |
 
 ---
@@ -368,7 +369,7 @@ real move — a period change divided by a *partial* opening subtotal).
 ### convertMoney · ConversionContext
 - **Purpose:** the SOLE native→reporting-currency conversion — the one seam that turns a `{amount, currency}` at a date into a reporting-currency amount, carrying an `estimated` taint when the rate is missing/walked-back.
 - **Authority:** `lib/money/convert.ts` `convertMoney(money, dateISO, ctx)`, driven by a per-Space `ConversionContext` built from `Space.reportingCurrency` via `lib/money/server-context.ts`.
-- **Outputs:** `ConvertedMoney` (`amount` in reporting currency, `estimated` flag). Missing FX degrades to the native amount + `estimated` — **never dropped, never silently claimed exact** (the kill-switch: `if (!ctx) return native`).
+- **Outputs:** `ConvertedMoney` (`amount: number | null` in reporting currency, `estimated` flag, optional `native`). **A miss on a KNOWN currency yields `amount: null` — "unavailable" — and is EXCLUDED from target-currency aggregates**, with the exclusion disclosed via `unconverted` / `excluded` (V25-FINAL-1). `null` is deliberately not `0`: a value that cannot be expressed in the target is not a value worth zero. A **null-residue** miss (source currency unknown) still degrades to native + `estimated` and is not excluded — there is no known currency to mislabel. Never silently claimed exact (the kill-switch: `if (!ctx) return native`). Full rule-book: [money & FX](../systems/money-and-fx.md).
 - **Consumers:** the accounts assembler (`reportingBalance`), the transactions assembler (per-row conversion before every sum/sort), debt strategy, investment valuation/allocation, snapshot stamping — **every cross-currency aggregation.**
 - **Must NOT be used for:** comparing to a native amount. If you convert one side, convert both.
 
@@ -390,6 +391,41 @@ derivable by subtracting period flows (money is fungible; charges predate the
 window; payments settle earlier statements; interest/fees/credits/adjustments move
 the balance with no matching flow). A period's `creditCardSpending −
 debtServiceCashOut` is **not** an unpaid balance and must never be presented as one.
+
+### Liability balance semantics (V25-SIDE-1)
+
+- **Purpose:** translate one **raw signed liability balance** into what it means. The
+  stored sign is the provider/canonical convention and is correct as stored —
+  **positive = debt owed, zero = settled, negative = a CREDIT balance in the user's
+  favour** (an overpayment, refund, or statement credit). Plaid's `balances.current`
+  is ingested unmodified; this authority interprets it, it never normalises it.
+- **Authority:** `lib/debt/balance-semantics.ts` — `amountOwed(balance)` (=
+  `max(balance, 0)`), `creditBalance(balance)` (= `max(-balance, 0)`, a positive
+  magnitude), `liabilityState(balance)` (`"owed" | "settled" | "credit"`), and
+  `hasOutstandingDebt(balance)`. Pure: no Prisma, no React, no provider, no clock.
+- **The distinction this exists to protect:** *structural liability membership is
+  NOT the amount currently owed.* Whether a row is a liability is
+  `type === "debt"`, owned by `account-classifier.ts` (§ row 6) and independent of
+  balance — **a paid-off credit card is still a credit card**. `hasOutstandingDebt`
+  is a debt-EXPOSURE predicate (payoff targeting, interest, minimums) and must
+  **never** be used to decide whether an account exists or appears.
+- **Consumers:** the debt lens (`debt.core.ts`), debt KPIs and the payoff planner,
+  the Liabilities ledger and Accounts ledger, `classifyAccounts` (`totalLiabilities`),
+  credit-utilization, the liquidity lens's credit headroom, and the AI accounts
+  assembler + debt-strategy annotations — 21 consumer files, all reading this one
+  module.
+- **Must NOT be used for:** re-deriving the meaning locally. `Math.abs(balance)`
+  turns money the user is OWED into phantom debt; a raw unclamped sum renders a
+  negative "total debt"; a `balance > 0` filter erases a paid-off account from the
+  UI. All three shipped simultaneously before this authority existed.
+- **Invariants:** a credit balance contributes **zero** outstanding debt (never
+  negative, never its absolute magnitude); generates **no** interest and **no** APR
+  weight; is **never** a snowball/avalanche payoff target; never nets against an
+  unrelated account's payoff obligation; never yields negative utilisation; and is
+  **not** reclassified as an asset — `classifyAccounts` floors liabilities at zero,
+  so a credit adds nothing to net worth. Pinned by
+  `lib/debt/balance-semantics.test.ts`, including a source-scan guard that fails if a
+  consumer reinterprets a signed balance independently.
 
 **Debt strategy / paydown reporting-currency rule.** Debt-strategy math in
 `lib/ai/intelligence/annotations.ts` (`monthlyInterestBurden`, `weightedAvgApr`

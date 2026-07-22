@@ -34,16 +34,53 @@ Crypto is modeled as an **asset with a fiat valuation**, not as a simple cash cu
 ## Conversion mechanics (where the rules live in code)
 
 - The aggregation chokepoint is `sumBalances()` / `classifyAccounts()` (`lib/account-classifier.ts`) — conversion isolates there rather than being sprayed across surfaces.
-- Pure money core: `lib/money/` (`convertMoney` / `convertAndSum` / `identityContext`). **Structurally write-free.** A conversion **miss or null residue yields the native amount plus an `estimated` flag — never an exclusion, never a throw.** No rounding is applied in the core.
+- Pure money core: `lib/money/` (`convertMoney` / `convertAndSum` / `identityContext`). **Structurally write-free.** No rounding is applied in the core, and a miss is **never a throw** — it is always returned as a value. What a miss *degrades to* depends on whether the source currency is known (see below).
 - FX resolution service: `lib/fx/` — identity fast path, USD cross-rate, ≤7-day walk-back, and `RateMiss` returned **as a value** (not an exception).
 - Provider layer: OpenExchangeRates primary with a Frankfurter/ECB-subset failover, under a **no-forged-weekend-close** rule; a daily cron appends to the archive. The archive is append-only and immutable.
 - A homogeneous all-reporting-currency Space is numerically **identity** — an all-USD Space behaves byte-for-byte as it did before multi-currency existed. This is the neutrality guarantee that made the cutover safe.
+
+### Unavailable is not zero, and not estimated (V25-FINAL-1)
+
+A conversion can fail in two structurally different ways, and the system treats
+them differently on purpose:
+
+- **UNAVAILABLE — a KNOWN foreign currency with no acceptable rate.** `convertMoney`
+  returns **`amount: null`** (`lib/money/types.ts` `ConvertedMoney.amount: number | null`).
+  `null` is deliberately **not `0`**: a value that cannot be expressed in the target
+  currency is not the same financial statement as a value worth zero. The untouched
+  source value is carried on `native: { amount, currency }` so a surface can honestly
+  show "¥1,000,000, rate unavailable" instead of a mislabeled target figure or a bare
+  `$0`. The nullable type is the enforcement — every consumer must decide what an
+  unavailable value means for its surface rather than silently summing a fake number.
+- **NULL-RESIDUE — the source currency is unknown.** This still degrades to the
+  native amount plus `estimated`, and is **not** excluded. There is no known source
+  currency to mislabel, so the legacy assume-target pass-through remains correct here.
+
+**Aggregates exclude the unavailable member.** `convertAndSum` skips any member whose
+`amount` is `null`, counts it in `excluded`, and sets `unconverted: true` (and
+`estimated: true`, since an incomplete total is at best an estimate). The returned
+total is therefore an honest **partial sum over the convertible members** — never
+inflated by a native magnitude, never quietly reduced by a fake zero.
+
+**The exclusion is disclosed, not hidden.** `unconverted` rides through
+`classifyAccounts`, the perspective lenses, and the workspace adapters to the Wealth
+and Cash Flow surfaces (`components/ui/FxUnavailableNote.tsx`, the perspective trust
+envelope's `warnings[]`). The AI path carries the same contract rather than inventing
+a figure: `AccountSummaryItem.reportingBalance` is `null` for an unavailable balance,
+`AccountsSectionData.totalsUnconverted` marks the affected totals, and the context
+serializer states outright that the affected balances are excluded and that their
+reporting value must not be treated as `0`.
 
 ## Invariants
 
 1. No converted or normalized monetary columns exist; stored facts are native.
 2. Snapshots are stamped, never rewritten; historical FX is historical, not today's.
-3. A conversion miss degrades to native + `estimated`; it never excludes a row or throws.
+3. A conversion miss is returned as a value, never thrown. A miss on a **known**
+   currency yields `amount: null` (unavailable) and is **excluded** from
+   target-currency aggregates, with the exclusion disclosed (`unconverted` /
+   `excluded`); a **null-residue** miss (unknown source currency) degrades to
+   native + `estimated` and is not excluded. Unavailable is never rendered or
+   summed as `0`.
 4. Display currency is read-only and in-memory; it never reaches a writer.
 5. Aggregates convert; itemized rows stay native; nothing is relabeled without conversion.
 
