@@ -517,10 +517,14 @@ function ErrorContent({
   accounts:   AccountLite[];
 }) {
   const { errorCode, provider } = connection;
-  // Wallets have NO automatic background retry today (no scheduled crypto sync);
-  // retry is user-initiated via Refresh. Plaid IS retried daily by sync-banks,
-  // so its "we'll keep retrying" copy stays accurate. Do not promise behavior
-  // that doesn't exist.
+  // Retry honesty. Neither provider is retried automatically in THIS state:
+  //   - Wallets have no scheduled crypto sync at all.
+  //   - Plaid's daily sync-banks selects `status: ACTIVE`, and this card only
+  //     renders for ERROR — so an errored connection is skipped by every
+  //     scheduled run. The previous copy ("We'll keep retrying") was written on
+  //     the assumption that the cron covered it; it does not, and it never did
+  //     for this state.
+  // Retry here is user-initiated. Do not promise behavior that doesn't exist.
   const isWallet = provider === "WALLET";
 
   // Valid extended key, but discovery found NO on-chain-used addresses. This is
@@ -558,7 +562,13 @@ function ErrorContent({
         <span>
           {isWallet
             ? "We couldn’t complete address discovery for this wallet. Press Refresh to retry discovery."
-            : `We hit a problem syncing this connection${errorCode ? ` (${errorCode})` : ""}. We’ll keep retrying.`}
+            : errorCode === "ITEM_NOT_FOUND"
+              // Terminal and unambiguous: the Item no longer exists at Plaid
+              // (removed here, or access withdrawn at the institution). No amount
+              // of retrying can find it — reconnecting is the only route back, so
+              // say that instead of implying patience will fix it.
+              ? "This connection no longer exists at your provider. Reconnect to restore it."
+              : `We hit a problem syncing this connection${errorCode ? ` (${errorCode})` : ""}. Automatic syncing has stopped — reconnect to resume it.`}
         </span>
       </div>
       {isWallet && errorCode && (
