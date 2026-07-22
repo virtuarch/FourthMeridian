@@ -28,11 +28,20 @@
  * in globals.css, which overrides this component's inline transition.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 export interface SegmentedControlOption<T extends string> {
   id: T;
   label: string;
+  /**
+   * Optional pre-resolved icon node rendered before the label (SHELL_NAV §2.3).
+   * A NODE, not an icon-name string, so this primitive stays icon-library-
+   * agnostic — callers resolve their own name→component (e.g. via
+   * lib/perspective-icons) and pass the element. Additive and optional: when
+   * absent, the segment renders exactly its bare label as before, so the five
+   * consumers that pass no icon are byte-identical.
+   */
+  icon?: ReactNode;
 }
 
 interface SegmentedControlProps<T extends string> {
@@ -40,6 +49,18 @@ interface SegmentedControlProps<T extends string> {
   value: T;
   onChange: (id: T) => void;
   className?: string;
+  /**
+   * "always" (default) — every segment shows its label, exactly as before, so
+   * the consumers that don't pass this are byte-identical (SHELL_NAV Phase 2 §2.1).
+   * "activeOnly" — only the active segment shows its label; inactive segments
+   * render icon-only (the label is visually collapsed via sr-only, so the button
+   * narrows to the icon while the label stays in the DOM). Pair with per-option
+   * `icon` for a legible icon-only rail. Accessible name is preserved either way
+   * (see the per-button aria-label below).
+   */
+  labelVisibility?: "always" | "activeOnly";
+  /** Opt-in customer-mobile ergonomics: 40px targets and selected-item auto-scroll. */
+  touchOptimized?: boolean;
   "aria-label"?: string;
 }
 
@@ -48,6 +69,8 @@ export function SegmentedControl<T extends string>({
   value,
   onChange,
   className = "",
+  labelVisibility = "always",
+  touchOptimized = false,
   ...rest
 }: SegmentedControlProps<T>) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -57,7 +80,11 @@ export function SegmentedControl<T extends string>({
   const measure = () => {
     const track = trackRef.current;
     const el = itemRefs.current.get(value);
-    if (!track || !el) return;
+    // When `value` matches no option (e.g. this group is inactive because the
+    // active period lives in a SIBLING control), clear the highlight instead of
+    // leaving a stale one lit — otherwise two groups can look selected at once.
+    if (!track) return;
+    if (!el) { setHighlight(null); return; }
     const trackRect = track.getBoundingClientRect();
     const elRect = el.getBoundingClientRect();
     setHighlight({
@@ -70,8 +97,9 @@ export function SegmentedControl<T extends string>({
   // the option set) changes, so the highlight never flashes at a stale rect.
   useLayoutEffect(() => {
     measure();
+    if (touchOptimized) itemRefs.current.get(value)?.scrollIntoView({ inline: "nearest", block: "nearest" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, options.length]);
+  }, [value, options.length, touchOptimized]);
 
   useEffect(() => {
     window.addEventListener("resize", measure);
@@ -85,19 +113,25 @@ export function SegmentedControl<T extends string>({
       role="tablist"
       aria-label={rest["aria-label"]}
       className={[
-        "relative inline-flex max-w-full overflow-x-auto no-scrollbar p-1.5 gap-0",
+        // SHELL migration — matched to the prototype Rail exactly: 4px track
+        // padding (p-1) + blur(20px) saturate(180%) glass, so the rail/lens read
+        // pixel-identical to the reference (colors + highlight already matched).
+        "relative inline-flex max-w-full overflow-x-auto no-scrollbar p-1 gap-0",
         className,
       ].join(" ")}
       style={{
         background: "var(--glass-ultrathin)",
         border: "1px solid var(--border-hairline)",
         borderRadius: "var(--radius-full)",
-        backdropFilter: "blur(30px) saturate(160%)",
-        WebkitBackdropFilter: "blur(30px) saturate(160%)",
+        backdropFilter: "blur(20px) saturate(180%)",
+        WebkitBackdropFilter: "blur(20px) saturate(180%)",
       }}
     >
-      {/* Sliding active-segment highlight — translucent Meridian wash, not a
-          solid color block (see GlassButton's tone="meridian" recipe). */}
+      {/* Sliding active-segment highlight — M3-Reset: the prototype's NEUTRAL
+          white-glass wash (Rail/LensSelector recipe: bg oklch(1 0 0 / 9%)), NOT
+          the old blue Meridian tint. No blue anywhere in the resting active
+          state — the highlight is a quiet glass pill and the active LABEL carries
+          the emphasis via full-white text. */}
       {highlight && (
         <div
           aria-hidden
@@ -105,9 +139,9 @@ export function SegmentedControl<T extends string>({
           style={{
             width: highlight.width,
             transform: `translateX(${highlight.left}px)`,
-            background: "rgba(59,130,246,.14)",
-            border: "1px solid rgba(125,168,255,.32)",
-            boxShadow: "inset 0 1px 0 rgba(255,255,255,.10), 0 1px 6px rgba(37,99,235,.16)",
+            background: "rgba(255,255,255,.09)",
+            border: "1px solid rgba(255,255,255,.10)",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,.10)",
           }}
         >
           {/* Specular top-edge highlight — same signature as GlassPanel/GlassButton */}
@@ -122,9 +156,24 @@ export function SegmentedControl<T extends string>({
         </div>
       )}
 
-      {options.map((opt, i) => {
+      {options.map((opt) => {
         const isActive = opt.id === value;
-        const prevIsActive = i > 0 && options[i - 1].id === value;
+        // Under "activeOnly", an inactive segment collapses its label to
+        // icon-only (the label stays in the DOM via sr-only, not display:none).
+        //
+        // Accessible name (stop condition #1): EVERY segment on an "activeOnly"
+        // surface gets an explicit aria-label — not just the collapsed ones.
+        // Empirically verified against Chrome's accessibility tree: the ACTIVE
+        // segment renders its label as text nested inside a child <span>, and
+        // Chrome does NOT surface a name-from-contents for that nesting (the
+        // node reads as nameless to assistive tech). An explicit aria-label is
+        // the only reliable name. aria-label equals the visible text, so per the
+        // ARIA name computation it supersedes the contents and is announced once
+        // (no double-announce). "always" surfaces get no aria-label at all, so
+        // the four untouched consumers are byte-identical.
+        const collapse = labelVisibility === "activeOnly" && !isActive;
+        const isActiveOnly = labelVisibility === "activeOnly";
+        const label = collapse ? <span className="sr-only">{opt.label}</span> : opt.label;
         return (
           <button
             key={opt.id}
@@ -135,23 +184,33 @@ export function SegmentedControl<T extends string>({
             role="tab"
             type="button"
             aria-selected={isActive}
+            aria-label={isActiveOnly ? opt.label : undefined}
             onClick={() => onChange(opt.id)}
             className={[
-              "relative z-10 shrink-0 whitespace-nowrap rounded-[var(--radius-full)] px-4 py-2 text-xs font-semibold",
+              "relative z-10 shrink-0 whitespace-nowrap rounded-[var(--radius-full)] px-4 py-1.5 text-xs font-medium",
+              touchOptimized ? "min-h-10 lg:min-h-0" : "",
               "transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-hairline-strong)]",
+              // M3-Reset — prototype treatment: active = full-white text on the
+              // neutral glass pill (no blue); inactive = muted, brightening on hover.
               isActive
-                ? "text-[var(--meridian-400)]"
+                ? "text-[var(--text-primary)]"
                 : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
             ].join(" ")}
-            style={{
-              borderLeft:
-                !isActive && !prevIsActive && i > 0
-                  ? "1px solid var(--border-hairline)"
-                  : "1px solid transparent",
-            }}
           >
-            {opt.label}
+            {opt.icon != null ? (
+              // Icon + label share the segment; the inner flex owns the gap so
+              // the button's own padding/box is unchanged from the label-only
+              // path. The icon is decorative — the visible label (or, when
+              // collapsed, the aria-label) is the accessible name (role=tab), so
+              // the glyph carries aria-hidden.
+              <span className="inline-flex items-center gap-1.5">
+                <span aria-hidden className="inline-flex shrink-0">{opt.icon}</span>
+                {label}
+              </span>
+            ) : (
+              label
+            )}
           </button>
         );
       })}

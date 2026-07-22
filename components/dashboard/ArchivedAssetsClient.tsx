@@ -172,14 +172,14 @@ function AssetRow({
   }, [asset.id, onDeleted]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+    <div className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-2xl overflow-hidden">
       {/* Main row */}
       <div className="flex items-start gap-4 px-5 py-4">
         {/* Icon */}
-        <div className="w-9 h-9 rounded-xl bg-gray-800 flex items-center justify-center shrink-0 mt-0.5">
+        <div className="w-9 h-9 rounded-xl bg-[var(--surface-inset)] flex items-center justify-center shrink-0 mt-0.5">
           {(() => {
             const SourceIcon = SOURCE_ICON[asset.source];
-            return <SourceIcon size={16} className="text-gray-500" />;
+            return <SourceIcon size={16} className="text-[var(--text-muted)]" />;
           })()}
         </div>
 
@@ -187,11 +187,11 @@ function AssetRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-semibold text-white truncate">{asset.name}</p>
-            <span className="inline-flex items-center text-[10px] font-semibold uppercase tracking-wide text-gray-400 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded-md shrink-0">
+            <span className="inline-flex items-center text-[10px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] bg-[var(--surface-inset)] border border-[var(--border-hairline)] px-1.5 py-0.5 rounded-md shrink-0">
               {SOURCE_LABEL[asset.source]}
             </span>
           </div>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <p className="text-xs text-[var(--text-muted)] mt-0.5">
             {asset.institution ? `${asset.institution} · ` : ""}
             {fmtCurrency(asset.balance, asset.currency)} · Archived {timeAgo(asset.deletedAt)}
           </p>
@@ -200,7 +200,7 @@ function AssetRow({
               {asset.spaces.map((ws) => (
                 <span
                   key={ws.id}
-                  className="inline-flex items-center text-[11px] font-medium text-gray-400 bg-gray-800 border border-gray-700 px-2 py-0.5 rounded-md"
+                  className="inline-flex items-center text-[11px] font-medium text-[var(--text-secondary)] bg-[var(--surface-inset)] border border-[var(--border-hairline)] px-2 py-0.5 rounded-md"
                 >
                   {displaySpaceName(ws.name)}
                 </span>
@@ -208,7 +208,7 @@ function AssetRow({
             </div>
           )}
           {error && (
-            <p className="text-xs text-red-400 mt-2 flex items-center gap-1.5">
+            <p className="text-xs text-[var(--accent-negative)] mt-2 flex items-center gap-1.5">
               <AlertTriangle size={11} /> {error}
             </p>
           )}
@@ -220,7 +220,7 @@ function AssetRow({
             <button
               onClick={handleRestore}
               disabled={restoring}
-              className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/10 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent-positive)] border border-emerald-500/30 hover:bg-emerald-500/10 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
             >
               {restoring ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
               {restoring ? "Restoring…" : "Restore"}
@@ -228,7 +228,7 @@ function AssetRow({
             {isManual && (
               <button
                 onClick={() => setConfirmingDelete(true)}
-                className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-red-400 hover:bg-red-500/10 border border-gray-700 hover:border-red-500/30 px-3 py-1.5 rounded-lg transition-colors"
+                className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--accent-negative)] hover:bg-red-500/10 border border-[var(--border-hairline)] hover:border-red-500/30 px-3 py-1.5 rounded-lg transition-colors"
               >
                 <Trash2 size={11} />
                 Delete
@@ -241,23 +241,23 @@ function AssetRow({
       {/* Permanent delete confirmation strip — manual assets only; the route
           itself also rejects non-manual ids, this is a defense-in-depth UI gate */}
       {confirmingDelete && isManual && (
-        <div className="px-5 pb-4 flex items-center justify-between gap-3 border-t border-gray-800 pt-3 mt-1">
-          <p className="text-xs text-gray-400">
+        <div className="px-5 pb-4 flex items-center justify-between gap-3 border-t border-[var(--border-hairline)] pt-3 mt-1">
+          <p className="text-xs text-[var(--text-secondary)]">
             Permanently delete <span className="text-white font-medium">{asset.name}</span>?
-            <span className="text-red-400"> This cannot be undone.</span>
+            <span className="text-[var(--accent-negative)]"> This cannot be undone.</span>
           </p>
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => setConfirmingDelete(false)}
               disabled={deleting}
-              className="text-xs text-gray-500 hover:text-gray-300 px-2.5 py-1.5 rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-50"
+              className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] px-2.5 py-1.5 rounded-lg hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               onClick={handlePermanentDelete}
               disabled={deleting}
-              className="flex items-center gap-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 text-xs font-semibold text-white bg-[var(--accent-negative)] px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
             >
               {deleting ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
               {deleting ? "Deleting…" : "Delete permanently"}
@@ -325,28 +325,28 @@ function ArchivedSpaceRow({
   }, [ws.id, onTrashed]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+    <div className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-2xl overflow-hidden">
       <div className="flex items-start gap-4 px-5 py-4">
-        <div className="w-9 h-9 rounded-xl bg-gray-800 flex items-center justify-center shrink-0 mt-0.5">
-          <Building2 size={16} className="text-gray-500" />
+        <div className="w-9 h-9 rounded-xl bg-[var(--surface-inset)] flex items-center justify-center shrink-0 mt-0.5">
+          <Building2 size={16} className="text-[var(--text-muted)]" />
         </div>
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-semibold text-white truncate">{displaySpaceName(ws.name)}</p>
-            <span className="inline-flex items-center text-[10px] font-semibold uppercase tracking-wide text-gray-400 bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded-md shrink-0">
+            <span className="inline-flex items-center text-[10px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] bg-[var(--surface-inset)] border border-[var(--border-hairline)] px-1.5 py-0.5 rounded-md shrink-0">
               Space
             </span>
           </div>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <p className="text-xs text-[var(--text-muted)] mt-0.5">
             Archived {timeAgo(ws.archivedAt)}
             {!isOwner && ` · ${ws.myRole}`}
           </p>
           {!isOwner && (
-            <p className="text-xs text-gray-600 mt-1.5">Only the owner can restore or trash this Space.</p>
+            <p className="text-xs text-[var(--text-faint)] mt-1.5">Only the owner can restore or trash this Space.</p>
           )}
           {error && (
-            <p className="text-xs text-red-400 mt-2 flex items-center gap-1.5">
+            <p className="text-xs text-[var(--accent-negative)] mt-2 flex items-center gap-1.5">
               <AlertTriangle size={11} /> {error}
             </p>
           )}
@@ -357,14 +357,14 @@ function ArchivedSpaceRow({
             <button
               onClick={handleUnarchive}
               disabled={restoring}
-              className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/10 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent-positive)] border border-emerald-500/30 hover:bg-emerald-500/10 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
             >
               {restoring ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
               {restoring ? "Restoring…" : "Restore"}
             </button>
             <button
               onClick={() => setConfirmingTrash(true)}
-              className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-red-400 hover:bg-red-500/10 border border-gray-700 hover:border-red-500/30 px-3 py-1.5 rounded-lg transition-colors"
+              className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--accent-negative)] hover:bg-red-500/10 border border-[var(--border-hairline)] hover:border-red-500/30 px-3 py-1.5 rounded-lg transition-colors"
             >
               <Trash2 size={11} />
               Move to trash
@@ -374,22 +374,22 @@ function ArchivedSpaceRow({
       </div>
 
       {isOwner && confirmingTrash && (
-        <div className="px-5 pb-4 flex items-center justify-between gap-3 border-t border-gray-800 pt-3 mt-1">
-          <p className="text-xs text-gray-400">
+        <div className="px-5 pb-4 flex items-center justify-between gap-3 border-t border-[var(--border-hairline)] pt-3 mt-1">
+          <p className="text-xs text-[var(--text-secondary)]">
             Move <span className="text-white font-medium">{displaySpaceName(ws.name)}</span> to trash?
           </p>
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => setConfirmingTrash(false)}
               disabled={trashing}
-              className="text-xs text-gray-500 hover:text-gray-300 px-2.5 py-1.5 rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-50"
+              className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] px-2.5 py-1.5 rounded-lg hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               onClick={handleTrash}
               disabled={trashing}
-              className="flex items-center gap-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 text-xs font-semibold text-white bg-[var(--accent-negative)] px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
             >
               {trashing ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
               {trashing ? "Moving…" : "Move to trash"}
@@ -455,28 +455,28 @@ function TrashedSpaceRow({
   }, [ws.id, onDeleted]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+    <div className="bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-2xl overflow-hidden">
       <div className="flex items-start gap-4 px-5 py-4">
-        <div className="w-9 h-9 rounded-xl bg-gray-800 flex items-center justify-center shrink-0 mt-0.5">
-          <Trash2 size={16} className="text-gray-500" />
+        <div className="w-9 h-9 rounded-xl bg-[var(--surface-inset)] flex items-center justify-center shrink-0 mt-0.5">
+          <Trash2 size={16} className="text-[var(--text-muted)]" />
         </div>
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-semibold text-white truncate">{displaySpaceName(ws.name)}</p>
-            <span className="inline-flex items-center text-[10px] font-semibold uppercase tracking-wide text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded-md shrink-0">
+            <span className="inline-flex items-center text-[10px] font-semibold uppercase tracking-wide text-[var(--accent-negative)] bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded-md shrink-0">
               Trashed
             </span>
           </div>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <p className="text-xs text-[var(--text-muted)] mt-0.5">
             Trashed {timeAgo(ws.deletedAt)}
             {!isOwner && ` · ${ws.myRole}`}
           </p>
           {!isOwner && (
-            <p className="text-xs text-gray-600 mt-1.5">Only the owner can restore or permanently delete this Space.</p>
+            <p className="text-xs text-[var(--text-faint)] mt-1.5">Only the owner can restore or permanently delete this Space.</p>
           )}
           {error && (
-            <p className="text-xs text-red-400 mt-2 flex items-center gap-1.5">
+            <p className="text-xs text-[var(--accent-negative)] mt-2 flex items-center gap-1.5">
               <AlertTriangle size={11} /> {error}
             </p>
           )}
@@ -487,14 +487,14 @@ function TrashedSpaceRow({
             <button
               onClick={handleRestore}
               disabled={restoring}
-              className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/10 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent-positive)] border border-emerald-500/30 hover:bg-emerald-500/10 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
             >
               {restoring ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
               {restoring ? "Restoring…" : "Restore"}
             </button>
             <button
               onClick={() => setConfirmingDelete(true)}
-              className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-red-400 hover:bg-red-500/10 border border-gray-700 hover:border-red-500/30 px-3 py-1.5 rounded-lg transition-colors"
+              className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--accent-negative)] hover:bg-red-500/10 border border-[var(--border-hairline)] hover:border-red-500/30 px-3 py-1.5 rounded-lg transition-colors"
             >
               <Trash2 size={11} />
               Delete permanently
@@ -504,23 +504,23 @@ function TrashedSpaceRow({
       </div>
 
       {isOwner && confirmingDelete && (
-        <div className="px-5 pb-4 flex items-center justify-between gap-3 border-t border-gray-800 pt-3 mt-1">
-          <p className="text-xs text-gray-400">
+        <div className="px-5 pb-4 flex items-center justify-between gap-3 border-t border-[var(--border-hairline)] pt-3 mt-1">
+          <p className="text-xs text-[var(--text-secondary)]">
             Permanently delete <span className="text-white font-medium">{displaySpaceName(ws.name)}</span>?
-            <span className="text-red-400"> This cannot be undone.</span>
+            <span className="text-[var(--accent-negative)]"> This cannot be undone.</span>
           </p>
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => setConfirmingDelete(false)}
               disabled={deleting}
-              className="text-xs text-gray-500 hover:text-gray-300 px-2.5 py-1.5 rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-50"
+              className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] px-2.5 py-1.5 rounded-lg hover:bg-[var(--surface-hover)] transition-colors disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               onClick={handlePermanentDelete}
               disabled={deleting}
-              className="flex items-center gap-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 text-xs font-semibold text-white bg-[var(--accent-negative)] px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
             >
               {deleting ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
               {deleting ? "Deleting…" : "Delete permanently"}
@@ -537,11 +537,11 @@ function TrashedSpaceRow({
 function EmptyState({ icon: Icon, title, body }: { icon: React.ElementType; title: string; body: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="w-14 h-14 rounded-2xl bg-gray-800/60 flex items-center justify-center mb-4">
-        <Icon size={24} className="text-gray-600" />
+      <div className="w-14 h-14 rounded-2xl bg-[var(--surface-inset)] flex items-center justify-center mb-4">
+        <Icon size={24} className="text-[var(--text-faint)]" />
       </div>
-      <p className="text-sm font-medium text-gray-400">{title}</p>
-      <p className="text-xs text-gray-600 mt-1 max-w-xs">{body}</p>
+      <p className="text-sm font-medium text-[var(--text-secondary)]">{title}</p>
+      <p className="text-xs text-[var(--text-faint)] mt-1 max-w-xs">{body}</p>
     </div>
   );
 }
@@ -600,32 +600,32 @@ export function ArchiveBinClient({
       <div className="flex items-center gap-3">
         <Link
           href="/dashboard/settings"
-          className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:text-white hover:bg-gray-800 transition-colors shrink-0"
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-white hover:bg-[var(--surface-hover)] transition-colors shrink-0"
         >
           <ChevronLeft size={16} />
         </Link>
         <div>
           <h1 className="text-xl font-bold text-white">Archive &amp; Trash</h1>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <p className="text-xs text-[var(--text-muted)] mt-0.5">
             Restore anything here to bring it back. Trashed Spaces and manual assets can also be deleted permanently.
           </p>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-2xl p-1">
+      <div className="flex gap-1 bg-[var(--surface-muted)] border border-[var(--border-hairline)] rounded-2xl p-1">
         {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-colors ${
-              tab === t.id ? "bg-gray-700 text-white" : "text-gray-500 hover:text-gray-300"
+              tab === t.id ? "bg-[var(--surface-hover-strong)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
             }`}
           >
             {t.label}
             {t.count > 0 && (
               <span className={`text-[10px] rounded-full px-1.5 py-0.5 ${
-                tab === t.id ? "bg-gray-600 text-gray-200" : "bg-gray-800 text-gray-500"
+                tab === t.id ? "bg-[var(--surface-hover-strong)] text-[var(--text-secondary)]" : "bg-[var(--surface-inset)] text-[var(--text-muted)]"
               }`}>
                 {t.count}
               </span>
@@ -647,7 +647,7 @@ export function ArchiveBinClient({
             {assets.map((asset) => (
               <AssetRow key={asset.id} asset={asset} onRestored={handleAssetRestored} onDeleted={handleAssetDeleted} />
             ))}
-            <p className="text-xs text-gray-600 text-center pt-2">
+            <p className="text-xs text-[var(--text-faint)] text-center pt-2">
               {assets.length} archived {assets.length === 1 ? "asset" : "assets"}
             </p>
           </div>
@@ -671,7 +671,7 @@ export function ArchiveBinClient({
                 onTrashed={handleSpaceTrashedFromArchive}
               />
             ))}
-            <p className="text-xs text-gray-600 text-center pt-2">
+            <p className="text-xs text-[var(--text-faint)] text-center pt-2">
               {archivedWs.length} archived {archivedWs.length === 1 ? "Space" : "Spaces"}
             </p>
           </div>
@@ -695,7 +695,7 @@ export function ArchiveBinClient({
                 onDeleted={handleSpacePermanentlyDeleted}
               />
             ))}
-            <p className="text-xs text-gray-600 text-center pt-2">
+            <p className="text-xs text-[var(--text-faint)] text-center pt-2">
               {trashedWs.length} trashed {trashedWs.length === 1 ? "Space" : "Spaces"}
             </p>
           </div>

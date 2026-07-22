@@ -49,6 +49,27 @@ export function formatDate(iso: string | null | undefined): string {
 }
 
 /**
+ * Canonical transaction-row date parts — day / 3-letter month / 4-digit year —
+ * for the shared <TransactionDate> block ("11 / Jul / 2026"). The single source
+ * of truth for how a transaction date is broken into a stacked day/month/year.
+ *
+ * Parses the date-only string (YYYY-MM-DD) at LOCAL noon — the long-standing
+ * transaction-row convention. This is hydration-safe *for date-only inputs*: a
+ * wall-clock noon of a bare calendar date projects back to that same calendar
+ * date in every timezone, so server and client render identical day/month/year.
+ * Do NOT switch this to UTC or a Z-suffixed instant — a real timestamp could then
+ * shift the displayed calendar day. For timestamps use formatDate/formatDateTime.
+ */
+export function transactionDateParts(date: string): { day: string; month: string; year: string } {
+  const d = new Date(`${date}T12:00:00`);
+  return {
+    day:   d.toLocaleDateString("en-US", { day:   "numeric" }),
+    month: d.toLocaleDateString("en-US", { month: "short"   }),  // Jan…Dec
+    year:  d.toLocaleDateString("en-US", { year:  "numeric" }),
+  };
+}
+
+/**
  * "January 2026" — UTC month + year only, SSR-safe.
  * Use for payoff date projections, goal target dates.
  */

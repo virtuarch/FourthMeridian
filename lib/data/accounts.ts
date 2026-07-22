@@ -11,34 +11,74 @@
  * visibility, only ownership semantics differ, and only after the D3 Step 3
  * HOME Semantics Correction (docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md) is
  * the link set here guaranteed to agree with WorkspaceAccountShare's.
- * getHoldings() reads both Holding anchors during the D11 migration: legacy
- * rows still pointing at Account (spaceId direct), and current/new rows
- * pointing at FinancialAccount (visibility via SpaceAccountLink, same join
- * getAccounts() uses). Output is normalized back to a single `accountId`
- * field so existing UI call sites need no changes.
+ * getHoldings() reads Holding rows anchored to FinancialAccount (visibility via
+ * SpaceAccountLink, the same join getAccounts() uses), exposing the anchor as a
+ * single `accountId` field so existing UI call sites need no changes.
  */
 
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
 import { Account, Holding } from "@/types";
-import { ShareStatus, PlaidItemStatus } from "@prisma/client";
+import { ShareStatus, PlaidItemStatus, type VisibilityLevel } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
+import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
+// KD-19 — visibility-tier enforcement on the UI account/holdings read paths.
+// grantsAccountDetail + TRANSACTION_DETAIL_VISIBILITY share the FULL gate the
+// AI assemblers use, so no read surface can disagree; sanitizeForBalanceOnly
+// is the same single-account redactor the shared-Space accounts route uses.
+import { grantsAccountDetail, TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
+import { sanitizeForBalanceOnly } from "@/lib/account-privacy";
 
 /**
- * All accounts visible to the current space, via SpaceAccountLink.
+ * One visible account plus the SpaceAccountLink.visibilityLevel that
+ * produced it — the internal, server-side contract for deterministic
+ * consumers (Perspective Engine, future Meridian Analyst / Daily Brief /
+ * Health Reviews) that must distinguish FULL vs BALANCE_ONLY vs
+ * SUMMARY_ONLY without inferring it from sanitized/missing fields.
+ *
+ * The tier rides BESIDE the Account object, never on it: getAccounts()
+ * (below) strips it, so the Account shape that flows into pages/client
+ * components is byte-identical to before and the tier cannot end up in a
+ * client response unless a consumer explicitly plucks and serializes it.
+ * Reuses the existing VisibilityLevel model — do not introduce a parallel
+ * tier vocabulary on top of this.
+ */
+export interface AccountWithVisibility {
+  account:         Account;
+  visibilityLevel: VisibilityLevel;
+}
+
+/**
+ * All accounts visible to the current space, via SpaceAccountLink, each
+ * paired with the visibility tier that produced it (AccountWithVisibility
+ * above). Most callers want getAccounts() below instead.
  *
  * Pass `ctx` when the caller has already resolved space context for this
  * request (e.g. the dashboard page resolves it once and fans it out to all
  * its data helpers) to avoid a redundant getSpaceContext() call. Falls
  * back to resolving it internally (now cached per-request via React's
  * cache()) when called standalone, so existing callers keep working.
+ *
+ * `ctx.userId` is an optional internal/test seam: `getSpaceContext()` reads
+ * next-auth `headers()` and therefore cannot run outside a Next request scope
+ * (e.g. a standalone tsx privacy-proof script). A caller that already knows the
+ * viewing user — and only such a caller — may pass `userId` to skip that
+ * resolution. Production callers pass at most `{ spaceId }`, so they resolve
+ * `userId` from the request scope exactly as before; production behavior is
+ * unchanged.
  */
-export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]> {
-  const { spaceId } = ctx ?? (await getSpaceContext());
+export async function getAccountsWithVisibility(
+  ctx?: { spaceId: string; userId?: string },
+): Promise<AccountWithVisibility[]> {
+  // Resolve spaceId + the current userId (used only for the reconnect badge
+  // below). Call getSpaceContext() only when the caller hasn't supplied both —
+  // it is cache()-memoized per request, so this is at most one call. When both
+  // are provided (internal/test), no request scope is touched.
+  const needsResolve = !ctx?.spaceId || !ctx?.userId;
+  const resolved = needsResolve ? await getSpaceContext() : null;
+  const spaceId = ctx?.spaceId ?? resolved!.spaceId;
   // D2-7E — current user, for the reconnect-badge ownership check below.
-  // getSpaceContext() is cache()-memoized per request, so this costs nothing
-  // extra even when the caller already passed a resolved `ctx`.
-  const { userId } = await getSpaceContext();
+  const userId = ctx?.userId ?? resolved!.userId;
 
   const links = await db.spaceAccountLink.findMany({
     where: {
@@ -47,6 +87,9 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
       financialAccount: { deletedAt: null },
     },
     include: {
+      // KD-19 — owner first name for the generic label on sanitized
+      // (BALANCE_ONLY / SUMMARY_ONLY) rows, matching normalizeSharedAccounts.
+      addedByUser: { select: { firstName: true, name: true } },
       financialAccount: {
         include: {
           debtProfile: true,
@@ -70,7 +113,48 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return links.map(({ financialAccount: r }: any) => {
+  return links.map((link: any) => {
+    const r = link.financialAccount;
+
+    // KD-19 — only FULL links may expose account metadata (institution, real
+    // name, credit limit, debt fields). BALANCE_ONLY exposes the balance total
+    // alone; SUMMARY_ONLY / PRIVATE / SHARED fail closed. Mirrors the AI
+    // accounts assembler and lib/account-privacy.ts so no read surface can
+    // disagree. Returns the same minimal safe shape the shared-Space accounts
+    // route already serves to the UI.
+    if (!grantsAccountDetail(link.visibilityLevel)) {
+      const ownerFirstName =
+        link.addedByUser?.firstName?.trim() ||
+        link.addedByUser?.name?.trim().split(" ")[0] ||
+        null;
+      const safe = sanitizeForBalanceOnly(
+        {
+          id:          r.id,
+          type:        r.type,
+          debtSubtype: r.debtSubtype ?? null,
+          balance:     r.balance,
+          currency:    r.currency,
+          lastUpdated: r.lastUpdated,
+        },
+        ownerFirstName,
+      );
+      return {
+        visibilityLevel: link.visibilityLevel as VisibilityLevel,
+        account: {
+          id:          safe.id,
+          name:        safe.name,
+          type:        safe.type as Account["type"],
+          institution: "",              // redacted — institution is identifying
+          balance:     safe.balance,
+          currency:    safe.currency,
+          lastUpdated: safe.lastUpdated,
+          // All other fields intentionally omitted (undefined) under the
+          // BALANCE_ONLY / SUMMARY_ONLY tier: no institution, no debt metadata,
+          // no Plaid/connection state, no wallet fields.
+        } as Account,
+      };
+    }
+
     const profile = r.debtProfile ?? null;
 
     // D2-7E — reconnect badge. Only true for the connection *this* user made
@@ -92,12 +176,18 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
 
     // Only estimate when the user gave us an APR but no real minimum payment —
     // never overrides a manually-entered or issuer-provided value.
-    if (minimumPayment === undefined && effectiveApr !== undefined && r.balance) {
-      minimumPayment = estimateMinimumPayment(Math.abs(r.balance), effectiveApr);
+    // V25-SIDE-1 — estimate from the canonical amount OWED, and only when
+    // something IS owed. `Math.abs` previously invented a minimum payment for an
+    // overpaid card, and the heuristic's $35 floor would otherwise manufacture a
+    // payment due on an account with no debt at all.
+    if (minimumPayment === undefined && effectiveApr !== undefined && hasOutstandingDebt(r.balance)) {
+      minimumPayment = estimateMinimumPayment(amountOwed(r.balance), effectiveApr);
       minimumPaymentIsEstimated = true;
     }
 
     return {
+      visibilityLevel: link.visibilityLevel as VisibilityLevel,
+      account: {
       id:            r.id,
       // Resolution order: user override > Plaid's official name > Plaid's raw
       // name > whatever was already in `name` (covers manual/legacy accounts).
@@ -129,48 +219,55 @@ export async function getAccounts(ctx?: { spaceId: string }): Promise<Account[]>
       syncStatus:    r.syncStatus    as Account["syncStatus"]  ?? undefined,
       needsReauth:   !!reauthConnection,
       plaidItemId:   reauthConnection?.plaidItemDbId ?? undefined,
+      },
     };
   });
 }
 
 /**
+ * All accounts visible to the current space — the client-safe shape every
+ * existing caller uses. Delegates to getAccountsWithVisibility() and strips
+ * the server-side visibility tier, so this function's output is unchanged
+ * by the AccountWithVisibility addition.
+ */
+export async function getAccounts(ctx?: { spaceId: string; userId?: string }): Promise<Account[]> {
+  return (await getAccountsWithVisibility(ctx)).map((r) => r.account);
+}
+
+/**
  * All holdings across all investment accounts.
  *
- * D11: Holding now has two possible anchors — legacy Account (accountId) and
- * FinancialAccount (financialAccountId) — while the migration is in
- * progress. Queried separately because each anchor resolves space visibility
- * differently (Account.spaceId is direct; FinancialAccount visibility goes
- * through an active SpaceAccountLink, mirroring getAccounts() above), then
- * merged. A given row only ever has one of the two FKs set, so there's no
- * double-counting. Once every Holding is confirmed migrated off Account,
- * the legacy branch can be deleted — not done here (additive-only for D11).
+ * Holdings are anchored to a FinancialAccount (financialAccountId); visibility
+ * goes through an active SpaceAccountLink, mirroring getAccounts() above.
  */
 export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]> {
   const { spaceId } = ctx ?? (await getSpaceContext());
 
-  const [legacyRows, financialAccountRows] = await Promise.all([
-    db.holding.findMany({
-      where: { accountId: { not: null }, account: { spaceId } },
-    }),
-    db.holding.findMany({
-      where: {
-        financialAccountId: { not: null },
-        financialAccount: {
-          deletedAt: null,
-          spaceAccountLinks: { some: { spaceId, status: ShareStatus.ACTIVE } },
+  const rows = (await db.holding.findMany({
+    where: {
+      financialAccountId: { not: null },
+      financialAccount: {
+        deletedAt: null,
+        // KD-19 — individual positions are per-item DETAIL and require a
+        // FULL link. BALANCE_ONLY / SUMMARY_ONLY accounts contribute their
+        // balance (via getAccounts) but never expose symbols/quantities.
+        // Same FULL-only gate the transaction read paths use, so positions
+        // and rows can never disagree.
+        spaceAccountLinks: {
+          some: {
+            spaceId,
+            status:          ShareStatus.ACTIVE,
+            visibilityLevel: { in: TRANSACTION_DETAIL_VISIBILITY },
+          },
         },
       },
-    }),
-  ]);
-
-  const rows = [...legacyRows, ...financialAccountRows].sort((a, b) => b.value - a.value);
+    },
+  })).sort((a, b) => b.value - a.value);
 
   return rows.map((r) => ({
     id:        r.id,
-    // Exactly one of accountId/financialAccountId is set per row — normalize
-    // to a single field so downstream UI (which matches holdings to accounts
-    // by this id) needs no changes.
-    accountId: (r.accountId ?? r.financialAccountId) as string,
+    // Holdings match to accounts by this single id (the FinancialAccount FK).
+    accountId: r.financialAccountId as string,
     symbol:    r.symbol,
     name:      r.name,
     quantity:  r.quantity,
@@ -178,6 +275,7 @@ export async function getHoldings(ctx?: { spaceId: string }): Promise<Holding[]>
     value:     r.value,
     change24h: r.change24h,
     isCash:    r.isCash,
+    currency:  r.currency ?? null, // MC1 P4 Slice 5 — conversion input
   }));
 }
 

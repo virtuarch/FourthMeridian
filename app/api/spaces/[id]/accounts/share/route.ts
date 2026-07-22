@@ -15,11 +15,14 @@
 
 import { NextRequest, NextResponse }                    from "next/server";
 import { db }                                           from "@/lib/db";
-import { ShareStatus, VisibilityLevel, SpaceMemberStatus } from "@prisma/client";
-import { requireUser } from "@/lib/session";
+import { ShareStatus, VisibilityLevel }                 from "@prisma/client";
+import { requireSpaceAction } from "@/lib/spaces/authorize";
+import { can } from "@/lib/spaces/policy";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
-import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
+import { emitDomainEvent, dispatchDomainEvent } from "@/lib/events/emit";
+import { storedActivityAccountName } from "@/lib/activity/account-name-privacy";
+import type { DomainEvent } from "@/lib/events/types";
 
 // ─── POST ─────────────────────────────────────────────────────────────────────
 
@@ -27,19 +30,12 @@ export const POST = withApiHandler(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) => {
-  const [user, err] = await requireUser();
-  if (err) return err;
-
   const { id: spaceId } = await params;
-  const userId = user.id;
 
-  const membership = await db.spaceMember.findUnique({
-    where: { spaceId_userId: { spaceId, userId } },
-    select: { role: true, status: true },
-  });
-  if (!membership || membership.status !== SpaceMemberStatus.ACTIVE) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  // Any ACTIVE member (any role) may share an account into the space.
+  const [auth, err] = await requireSpaceAction(spaceId, "account:share");
+  if (err) return err;
+  const userId = auth.user.id;
 
   const body = await req.json() as {
     financialAccountId: string;
@@ -58,10 +54,11 @@ export const POST = withApiHandler(async (
     return NextResponse.json({ error: "Invalid visibilityLevel" }, { status: 400 });
   }
 
-  // Verify the caller owns this FinancialAccount
+  // Verify the caller owns this FinancialAccount. type + debtSubtype are
+  // selected for the P1-3 display-safe activity name below.
   const fa = await db.financialAccount.findUnique({
     where: { id: financialAccountId },
-    select: { ownerUserId: true, deletedAt: true, name: true },
+    select: { ownerUserId: true, deletedAt: true, name: true, type: true, debtSubtype: true },
   });
 
   if (!fa || fa.deletedAt) {
@@ -70,6 +67,30 @@ export const POST = withApiHandler(async (
   if (fa.ownerUserId !== userId) {
     return NextResponse.json({ error: "You do not own this account" }, { status: 403 });
   }
+
+  // EV-1 Slice 2 — AccountShared. The AuditLog row is persisted inside the
+  // transaction (KD-4: it commits together with the SAL write); the snapshot
+  // handler runs post-commit via dispatchDomainEvent (best-effort, non-fatal).
+  //
+  // P1-3 — the persisted `accountName` is display-safe: for a non-FULL share it
+  // is a generic typed label, never the real account name, so the activity feed
+  // (and any other AuditLog consumer) can never surface a BALANCE_ONLY account's
+  // real name to Space members.
+  const event: DomainEvent = {
+    type:        "AccountShared",
+    spaceId,
+    actorUserId: userId,
+    ipAddress:   getClientIp(req),
+    payload:     {
+      financialAccountId,
+      accountName: storedActivityAccountName(
+        visibilityLevel as VisibilityLevel,
+        fa.name,
+        { type: fa.type, debtSubtype: fa.debtSubtype },
+      ),
+      visibilityLevel,
+    },
+  };
 
   // KD-4 Phase 3 — the share write (SAL upsert) and its audit row commit
   // together. Snapshot regen below stays OUTSIDE.
@@ -94,25 +115,13 @@ export const POST = withApiHandler(async (
       },
     });
 
-    await tx.auditLog.create({
-      data: {
-        userId,
-        spaceId,
-        action:    "ACCOUNT_SHARE",
-        metadata:  { financialAccountId, accountName: fa.name, visibilityLevel },
-        ipAddress: getClientIp(req),
-      },
-    });
+    await emitDomainEvent(event, { tx });
   });
 
-  // Regenerate SpaceSnapshot now that this space has a new active share —
-  // see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md for the established
-  // pattern. Best-effort/non-fatal: the share itself has already succeeded.
-  try {
-    await regenerateSpaceSnapshot(spaceId);
-  } catch (snapshotErr) {
-    console.warn(`[POST /api/spaces/:id/accounts/share] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
-  }
+  // Post-commit: regenerate SpaceSnapshot now that this space has a new active
+  // share (see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
+  // Best-effort/non-fatal — dispatchDomainEvent isolates handler failures.
+  await dispatchDomainEvent(event);
 
   return NextResponse.json({ ok: true }, { status: 201 });
 }, "POST /api/spaces/[id]/accounts/share");
@@ -123,19 +132,15 @@ export const DELETE = withApiHandler(async (
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) => {
-  const [user, err] = await requireUser();
-  if (err) return err;
-
   const { id: spaceId } = await params;
-  const userId = user.id;
 
-  const membership = await db.spaceMember.findUnique({
-    where: { spaceId_userId: { spaceId, userId } },
-    select: { role: true, status: true },
-  });
-  if (!membership || membership.status !== SpaceMemberStatus.ACTIVE) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  // Door: any ACTIVE member (any role) may reach the account-share surface —
+  // NOT "account:revoke", which is ADMIN-min and would wrongly block an
+  // adder who is only a MEMBER. The OWNER/ADMIN privilege is applied in the
+  // residual below via can("account:revoke", …).
+  const [auth, err] = await requireSpaceAction(spaceId, "account:share");
+  if (err) return err;
+  const userId = auth.user.id;
 
   const body = await req.json() as { financialAccountId: string };
   const { financialAccountId } = body;
@@ -152,7 +157,8 @@ export const DELETE = withApiHandler(async (
       status:          true,
       addedByUserId:   true,
       visibilityLevel: true,
-      financialAccount: { select: { name: true } },
+      // type + debtSubtype for the P1-3 display-safe activity name below.
+      financialAccount: { select: { name: true, type: true, debtSubtype: true } },
     },
   });
 
@@ -160,12 +166,39 @@ export const DELETE = withApiHandler(async (
     return NextResponse.json({ error: "Share not found" }, { status: 404 });
   }
 
-  const isPrivileged = ["OWNER", "ADMIN"].includes(membership.role);
+  // Residual: the adder may revoke their own share; otherwise OWNER/ADMIN
+  // (can("account:revoke", …)) may revoke anyone's. Semantics preserved
+  // exactly from the previous inline ["OWNER","ADMIN"].includes(role) check.
+  const isPrivileged = can("account:revoke", auth.membership);
   if (link.addedByUserId !== userId && !isPrivileged) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const revokedAt = new Date();
+
+  // EV-1 Slice 2 — AccountShareRevoked. AuditLog row persisted in-tx (KD-4);
+  // snapshot handler runs post-commit via dispatchDomainEvent (best-effort).
+  //
+  // P1-3 — the persisted `accountName` is display-safe (generic typed label for
+  // a non-FULL link's revoke), and `visibilityLevel` is now carried so the
+  // activity renderer can fail closed on this row too.
+  const event: DomainEvent = {
+    type:        "AccountShareRevoked",
+    spaceId,
+    actorUserId: userId,
+    ipAddress:   getClientIp(req),
+    payload:     {
+      financialAccountId,
+      accountName: link.financialAccount
+        ? storedActivityAccountName(
+            link.visibilityLevel,
+            link.financialAccount.name,
+            { type: link.financialAccount.type, debtSubtype: link.financialAccount.debtSubtype },
+          )
+        : null,
+      visibilityLevel: link.visibilityLevel,
+    },
+  };
 
   // KD-4 Phase 3 — the revoke write and its audit row commit together.
   // Snapshot regen below stays OUTSIDE.
@@ -179,25 +212,13 @@ export const DELETE = withApiHandler(async (
       },
     });
 
-    await tx.auditLog.create({
-      data: {
-        userId,
-        spaceId,
-        action:    "ACCOUNT_SHARE_REVOKE",
-        metadata:  { financialAccountId, accountName: link.financialAccount?.name ?? null },
-        ipAddress: getClientIp(req),
-      },
-    });
+    await emitDomainEvent(event, { tx });
   });
 
-  // Regenerate SpaceSnapshot now that this space lost an active share —
-  // see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md for the established
-  // pattern. Best-effort/non-fatal: the revoke itself has already succeeded.
-  try {
-    await regenerateSpaceSnapshot(spaceId);
-  } catch (snapshotErr) {
-    console.warn(`[DELETE /api/spaces/:id/accounts/share] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
-  }
+  // Post-commit: regenerate SpaceSnapshot now that this space lost an active
+  // share (see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md).
+  // Best-effort/non-fatal — dispatchDomainEvent isolates handler failures.
+  await dispatchDomainEvent(event);
 
   return NextResponse.json({ ok: true });
 }, "DELETE /api/spaces/[id]/accounts/share");

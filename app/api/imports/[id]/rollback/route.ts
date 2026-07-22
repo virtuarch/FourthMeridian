@@ -78,9 +78,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireFreshUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { ShareStatus, ImportBatchStatus } from "@prisma/client";
+import { ShareStatus, ImportBatchStatus, ImportBatchKind } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
+import { rollbackInvestmentBatchRows, type InvestmentRollbackResult } from "@/lib/investments/investment-import-rollback";
+import { repairReconstructionForAccount } from "@/lib/investments/reconstruction-runner";
+import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 
 const ROLLBACK_ELIGIBLE_STATUSES: ImportBatchStatus[] = [
   ImportBatchStatus.COMPLETED,
@@ -144,10 +147,20 @@ export const POST = withApiHandler(async (
     // This request won the claim — it is the one that performs the
     // soft-delete. Deliberately scoped by importBatchId + deletedAt: null
     // only, never financialAccountId — see module header.
+    const now = new Date();
     const softDeleted = await tx.transaction.updateMany({
       where: { importBatchId: batch.id, deletedAt: null },
-      data:  { deletedAt: new Date() },
+      data:  { deletedAt: now },
     });
+
+    // A7-5 — INVESTMENT_HISTORY batches additionally soft-delete their
+    // InvestmentEvent / PositionObservation rows and un-supersede the assertions
+    // they had outranked. Banking (TRANSACTIONS) batches skip this entirely, so
+    // their rollback stays byte-identical.
+    const investment: InvestmentRollbackResult | null =
+      batch.kind === ImportBatchKind.INVESTMENT_HISTORY
+        ? await rollbackInvestmentBatchRows(tx, batch.id, now)
+        : null;
 
     const updatedBatch = await tx.importBatch.findUniqueOrThrow({ where: { id: batch.id } });
 
@@ -161,13 +174,33 @@ export const POST = withApiHandler(async (
           financialAccountId: batch.financialAccountId,
           source:             batch.source,
           rolledBackCount:    softDeleted.count,
+          ...(investment
+            ? { investmentEventsRolledBack: investment.eventsDeleted, positionObservationsRolledBack: investment.observationsDeleted, supersessionPointersCleared: investment.pointersCleared }
+            : {}),
         },
         ipAddress: getClientIp(req),
       },
     });
 
-    return { kind: "rolled_back" as const, batch: updatedBatch, rolledBackCount: softDeleted.count };
+    return { kind: "rolled_back" as const, batch: updatedBatch, rolledBackCount: softDeleted.count, investment };
   });
+
+  // ── Bounded reconstruction repair (outside the tx, non-fatal) ──────────────
+  //    Residuals re-widen through gatherReconstructionInputs' deletedAt/
+  //    superseded filters with zero core changes. Never fails the rollback.
+  if (result.kind === "rolled_back" && result.investment) {
+    try {
+      await repairReconstructionForAccount({
+        financialAccountId: batch.financialAccountId,
+        affectedInstrumentIds: result.investment.affectedInstrumentIds,
+        affectedCash: result.investment.affectedCash,
+        now: new Date(),
+      });
+    } catch (e) {
+      console.warn(`[import-rollback] reconstruction repair for account ${batch.financialAccountId} failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+      await recordSyncIssue({ kind: "UPSERT_ERROR", financialAccountId: batch.financialAccountId, detail: { stage: "import-rollback-repair", importBatchId: batch.id, error: e instanceof Error ? e.message : String(e) } });
+    }
+  }
 
   if (result.kind === "ineligible") {
     return NextResponse.json(
@@ -188,5 +221,12 @@ export const POST = withApiHandler(async (
     matchedCount:      result.batch.matchedCount,
     skippedCount:      result.batch.skippedCount,
     failedCount:       result.batch.failedCount,
+    ...(result.kind === "rolled_back" && result.investment
+      ? {
+          investmentEventsRolledBack:     result.investment.eventsDeleted,
+          positionObservationsRolledBack: result.investment.observationsDeleted,
+          supersessionPointersCleared:    result.investment.pointersCleared,
+        }
+      : {}),
   });
 }, "POST /api/imports/[id]/rollback");

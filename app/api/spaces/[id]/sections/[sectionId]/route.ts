@@ -13,32 +13,23 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db }                        from "@/lib/db";
-import { Prisma, SpaceMemberStatus } from "@prisma/client";
-import { requireUser } from "@/lib/session";
+import { Prisma }                    from "@prisma/client";
+import { requireSpaceAction }        from "@/lib/spaces/authorize";
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; sectionId: string }> }
 ) {
-  const [user, err] = await requireUser();
-  if (err) return err;
-
   const { id: spaceId, sectionId } = await params;
 
-  const membership = await db.spaceMember.findUnique({
-    where: { spaceId_userId: { spaceId, userId: user.id } },
-    select: { role: true, status: true },
-  });
+  // Only OWNER or ADMIN may modify sections. requireSpaceAction returns 403
+  // for non-member / inactive / role-too-low (the previous "Insufficient
+  // permissions" role-denial body normalizes to "Forbidden" — status
+  // unchanged, matching every requireSpaceRole-gated route).
+  const [, err] = await requireSpaceAction(spaceId, "section:edit");
+  if (err) return err;
 
-  if (!membership || membership.status !== SpaceMemberStatus.ACTIVE) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
-  if (!["OWNER", "ADMIN"].includes(membership.role)) {
-    return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
-  }
-
-  // Verify section belongs to this space
+  // Verify section belongs to this space (resource residual — stays route-local)
   const existing = await db.spaceDashboardSection.findUnique({
     where: { id: sectionId },
     select: { spaceId: true },

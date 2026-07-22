@@ -21,6 +21,7 @@
  */
 
 import type { SpaceMemberRole } from '@prisma/client';
+import type { LiabilityState } from '@/lib/debt/balance-semantics';
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -194,6 +195,37 @@ export interface AccountSummaryItem {
   institution?:     string;
   balance:          number;
   currency:         string;
+  /**
+   * P2-7D — `balance` converted into the Space's reporting currency at the latest
+   * close, via the SAME conversion seam (moneyCtx) that produces the
+   * AccountsSectionData totals. This is the ONLY balance field valid for
+   * CROSS-ACCOUNT aggregation, weighting, or ranking: native `balance`/`currency`
+   * above are account-detail facts and must never be summed, weighted, or compared
+   * across mixed currencies (FINANCIAL_SEMANTIC_AUTHORITIES — reporting-currency
+   * comparison invariant). Equal to `balance` for all-USD / same-currency accounts.
+   */
+  /**
+   * `balance` converted to the Space reporting currency. V25-FINAL-1 — **`null`
+   * when the conversion is UNAVAILABLE** (native currency had no acceptable rate):
+   * there is no reporting-currency value, and the account is EXCLUDED from the
+   * section totals rather than shown as a fake 0. `null` is deliberate so no
+   * consumer can read an unavailable balance as "worth 0" — the true value is the
+   * native `balance`/`currency` above. A real number otherwise (equals `balance`
+   * for same-currency accounts).
+   */
+  reportingBalance: number | null;
+  /**
+   * P2-7D — true when the reportingBalance conversion was estimated (rate walked
+   * back / null-residue provenance), mirroring AccountsSectionData.totalsEstimated.
+   * Omitted when false; consumers must not claim an exact cross-currency figure.
+   */
+  reportingBalanceEstimated?: boolean;
+  /**
+   * V25-FINAL-1 — true when the conversion was UNAVAILABLE (see `reportingBalance:
+   * null`). Redundant with `reportingBalance === null` but explicit for the
+   * serializer/consumers. Omitted when false.
+   */
+  reportingBalanceUnavailable?: boolean;
   lastUpdated:           string;      // ISO-8601 — when FM last wrote this row from Plaid
   /** D4 Balance Freshness Provenance. ISO-8601 timestamp Plaid reports for when
    *  the balance was last fetched from the institution. Null when Plaid does not
@@ -203,6 +235,24 @@ export interface AccountSummaryItem {
   syncStatus?:      string | null;
   needsReauth:      boolean;
   visibilityLevel:  'FULL' | 'BALANCE_ONLY';
+
+  // ── Liability semantics (V25-SIDE-1) ──────────────────────────────────────
+  // Emitted for type === 'debt' rows at EVERY visibility level (they describe
+  // the balance the row already carries, so they reveal nothing extra).
+  //
+  // WHY: `balance` uses the provider sign convention, where a NEGATIVE value on
+  // a credit card means the ISSUER OWES THE USER. Sending that number alone left
+  // the model to infer the convention, and it could reasonably narrate
+  // "you have −$124.04 in debt". These derived fields state the meaning outright
+  // so no inference is required. All three come from the one canonical authority
+  // (lib/debt/balance-semantics.ts) and are stated in the account's NATIVE
+  // currency, matching `balance`.
+  /** Outstanding debt owed by the user. 0 when settled or in credit — never negative. */
+  amountOwed?:            number;
+  /** Credit the issuer owes the user, as a positive magnitude. 0 unless in credit. */
+  creditBalance?:         number;
+  /** 'owed' | 'settled' | 'credit' — the canonical state of this liability. */
+  liabilityState?:        LiabilityState;
 
   // ── Debt metadata (FULL visibility, debt-type accounts only) ──────────────
   // Resolved from DebtProfile (preferred) → FinancialAccount flat fields (fallback).
@@ -240,9 +290,13 @@ export interface KnowledgeGap {
 /**
  * Data payload for the 'accounts' context domain.
  *
- * All monetary values are in the Space's primary currency (USD unless the
- * majority of accounts differ). Mixed-currency balances are summed without
- * conversion — a known limitation until multi-currency support lands.
+ * All monetary TOTALS are converted at read time into the Space's reporting
+ * currency (Space.reportingCurrency; MC1 Phase 3 — the assembler builds a
+ * real conversion context over the immutable FX archive). Per-account rows
+ * keep their native currency. Unresolvable conversions (missing rate,
+ * null-residue provenance) degrade to the native amount and taint
+ * `totalsEstimated` — never excluded, never thrown. Presentation of the flag
+ * is Phase 4; it is data-only here.
  *
  * When assembled with scopeHint='brief', the `accounts` array is omitted
  * to reduce payload size for the Daily Brief aggregator.
@@ -262,6 +316,21 @@ export interface AccountsSectionData {
   totalInvestments:   number;
   totalDigitalAssets: number;
   totalRealAssets:    number;
+  /**
+   * MC1 Phase 3 Slice 4 (D-7) — true when any converted balance in the totals
+   * above was estimated (rate walked back / missing, or null-residue
+   * provenance).
+   */
+  totalsEstimated:    boolean;
+  /**
+   * V25-FINAL-1 — true when at least one account was FX-UNAVAILABLE (known
+   * foreign currency, no rate) and therefore EXCLUDED from the totals above
+   * (contributed 0, never its native magnitude). Stronger than `totalsEstimated`:
+   * the totals are an honest PARTIAL over the convertible accounts. The
+   * serializer discloses this to the model as "incomplete", not merely
+   * "approximate".
+   */
+  totalsUnconverted:  boolean;
   counts: {
     liquid:       number;
     investments:  number;
@@ -272,6 +341,36 @@ export interface AccountsSectionData {
   health:         AccountHealthSummary;
   knowledgeGaps:  KnowledgeGap[];          // always present, possibly empty
   accounts?:      AccountSummaryItem[];    // omitted when scopeHint === 'brief'
+  /**
+   * Distinct FinancialAccount ids visible in this Space (one per SpaceAccountLink).
+   * Populated regardless of scopeHint — used by the Daily Brief to deduplicate
+   * accounts shared across multiple Spaces so "Accounts tracked" counts distinct
+   * real accounts rather than link placements. IDs only; no balances or names.
+   */
+  accountIds?:    string[];
+  /**
+   * Privacy-safe identity roster of the accounts visible in this Space — one
+   * entry per SpaceAccountLink. Populated regardless of scopeHint so the Daily
+   * Brief can render the "Accounts Tracked" list after deduplicating by id.
+   * NEVER contains balances. institution/mask are included only for FULL
+   * visibility; BALANCE_ONLY/SUMMARY_ONLY entries carry a generic name and omit
+   * institution/mask (mirroring the per-account `accounts` array behaviour).
+   */
+  trackedAccounts?: TrackedAccountLite[];
+}
+
+/**
+ * Minimal, balance-free account identity used to build the Daily Brief's
+ * "Accounts Tracked" roster. Deduplicated across Spaces by `id` downstream.
+ */
+export interface TrackedAccountLite {
+  id:           string;              // FinancialAccount.id — the dedup key
+  name:         string;              // privacy-resolved display name
+  type:         string;              // AccountType
+  subtype?:     string | null;       // debtSubtype when present
+  institution?: string;             // FULL visibility only; omitted otherwise
+  mask?:        string | null;       // last 4; FULL visibility only; omitted otherwise
+  visibility:   'FULL' | 'BALANCE_ONLY' | 'SUMMARY_ONLY';
 }
 
 // ---------------------------------------------------------------------------
@@ -323,9 +422,18 @@ export interface MonthlyBreakdownEntry {
   month:            string; // YYYY-MM (UTC)
   incomeTotal:      number;
   expenseTotal:     number;
+  /** Gross flowType=REFUND sum for this month (P5 Slice 4 D-3 — mirrors the window-level field). */
+  refundTotal:      number;
   debtPaymentTotal: number;
   transferTotal:    number;
   transactionCount: number; // settled + pending rows dated in this month
+  /**
+   * MC1 Phase 3 Slice 2 (D-7) — true when any converted row in this month was
+   * estimated (rate walked back / missing, or null-residue currency). Always
+   * emitted (false without a conversion context). Data-only until Phase 4 —
+   * no prompt, serializer, or UI consumes it yet.
+   */
+  estimated:        boolean;
   /** True when the window clips this month (partial coverage). */
   partial?:         boolean;
   /**
@@ -382,6 +490,14 @@ export interface MerchantSummary {
   firstSeen:     string;
   /** Latest settled expense date for this merchant (YYYY-MM-DD). */
   lastSeen:      string;
+  /**
+   * P2-7C — `total` is converted per-row at each row's own date into the Space
+   * reporting currency (same seam as expenseTotal/byCategory). True when any
+   * contributing row's rate was walked back / missing / null-residue, so the
+   * merchant total is estimated rather than exact. Omitted when false (all-USD
+   * and clean-rate rollups stay byte-identical). Data-only until Phase 4.
+   */
+  estimated?:    boolean;
 }
 
 /**
@@ -390,8 +506,9 @@ export interface MerchantSummary {
  * key (lib/transactions/merchant.ts).
  *
  * INCOME-ONLY invariant: built exclusively from settled INFLOW rows — amount > 0
- * in the Income and Interest categories (the same INCOME_CATEGORIES set that
- * feeds the top-level incomeTotal). Transfers are excluded. `total` is the
+ * with flowType=INCOME (the same population that feeds the top-level
+ * incomeTotal; includes dividends and interest earned since P5 Slice 4).
+ * Transfers are excluded. `total` is the
  * (positive) sum of these settled inflow amounts. There is no `category` field:
  * every entry is, by construction, an income/interest source. This is where
  * payroll surfaces — it must never be described as a spending merchant.
@@ -409,6 +526,13 @@ export interface IncomeSource {
   firstSeen:     string;
   /** Latest settled inflow date for this source (YYYY-MM-DD). */
   lastSeen:      string;
+  /**
+   * P2-7C — `total` is converted per-row at each row's own date into the Space
+   * reporting currency (same seam as incomeTotal). True when any contributing
+   * row's rate was walked back / missing / null-residue. Omitted when false.
+   * Data-only until Phase 4.
+   */
+  estimated?:    boolean;
 }
 
 /**
@@ -421,6 +545,13 @@ export interface RecurringCandidate {
   occurrences:   number;
   typicalAmount: number; // mean amount across occurrences (negative = expense)
   category:      string;
+  /**
+   * P2-7C — `typicalAmount` is the mean of the occurrences' amounts converted
+   * per-row at each row's own date into the Space reporting currency. True when
+   * any contributing row's rate was walked back / missing / null-residue.
+   * Omitted when false. Data-only until Phase 4.
+   */
+  estimated?:    boolean;
 }
 
 /**
@@ -432,11 +563,19 @@ export interface RecurringCandidate {
  */
 export interface DrilldownTransaction {
   date:         string;  // YYYY-MM-DD
-  merchant:     string;  // canonical display name
+  merchant:     string;  // MI M6 — resolved Merchant display name (else normalized)
+  rawMerchant?: string;  // MI M6 — original provider descriptor, when it differs (forensic)
   description?: string;  // raw provider description when available
   amount:       number;  // signed (negative = spend)
   category:     string;  // TransactionCategory value
   accountName?: string;  // FULL-visibility source account only
+  /**
+   * P2-7C — `amount` is converted at this row's own date into the Space
+   * reporting currency (same seam as the summary totals), so a drilldown reads
+   * in the same currency as the aggregate it explains. True when this row's rate
+   * was walked back / missing / null-residue. Omitted when false.
+   */
+  estimated?:   boolean;
 }
 
 /**
@@ -473,6 +612,13 @@ export interface TransactionDrilldown {
   matchedTotal: number;
   /** True when totalCount > shownCount (rows omitted by the cap). */
   truncated:    boolean;
+  /**
+   * P2-7C — `matchedTotal`/`shownTotal` and every row `amount` are converted
+   * per-row into the Space reporting currency, so the drilldown reconciles with
+   * the summary/category totals it explains. True when any converted row was
+   * estimated (rate walked back / missing / null-residue). Omitted when false.
+   */
+  estimated?:   boolean;
 }
 
 /**
@@ -515,17 +661,34 @@ export interface TransactionsSummaryData {
   /** The row cap in force for this assembly (TRANSACTION_FETCH_LIMIT). */
   fetchLimit:        number;
 
-  // ── Cash flow totals ────────────────────────────────────────────────────
-  /** Sum of positive amounts in Income + Interest categories. */
+  // ── Cash flow totals (FlowType P5 Slice 4 — flow semantics) ─────────────
+  /** Sum of positive flowType=INCOME amounts (includes dividends, doctrine §5). */
   incomeTotal:       number;
-  /** Absolute sum of negative amounts in non-transfer, non-payment categories. */
+  /**
+   * Gross absolute sum over flowType ∈ {SPENDING, FEE, INTEREST} (D-2).
+   * Refunds are NEVER netted here — see refundTotal (D-3) — preserving the
+   * KD-17 debit-only reconciliation with byCategory.
+   */
   expenseTotal:      number;
-  /** Absolute sum of Payment category (debt repayment). */
+  /**
+   * Gross absolute sum of flowType=REFUND rows (D-3): reversals of prior
+   * spending, disclosed as a first-class figure. NOT income; consumers net
+   * explicitly. Includes any positive spend-category rows the classifier
+   * folded to REFUND (e.g. misclassified card-payment credits — N10 caveat).
+   */
+  refundTotal:       number;
+  /** Absolute sum of source-side (amount < 0) flowType=DEBT_PAYMENT legs. */
   debtPaymentTotal:  number;
-  /** Absolute sum of Transfer category (internal moves, both directions). */
+  /** Absolute sum of flowType=TRANSFER (internal moves, both directions). */
   transferTotal:     number;
-  /** incomeTotal − expenseTotal − debtPaymentTotal (excludes transfers). */
+  /** incomeTotal + refundTotal − expenseTotal − debtPaymentTotal (D-4; excludes transfers). */
   netCashFlow:       number;
+  /**
+   * MC1 Phase 3 Slice 4 (D-7) — true when any converted row in the window
+   * totals above was estimated (rate walked back / missing, or null-residue
+   * provenance). Data-only until Phase 4.
+   */
+  estimated:         boolean;
 
   // ── Pending ─────────────────────────────────────────────────────────────
   pendingCreditCount: number;
@@ -533,6 +696,45 @@ export interface TransactionsSummaryData {
   pendingDebitCount:  number;
   /** Absolute value of pending outflows. */
   pendingDebitTotal:  number;
+
+  // ── Non-economic residue disclosure (P2-7B) ──────────────────────────────
+  /**
+   * P2-7B — count of rows in the canonical banking population (settled + pending)
+   * that carry NO economic flow bucket: flowType UNKNOWN or unclassified (null).
+   * These rows are INCLUDED in the population (visible for review, reachable by
+   * needs-classification, counted in transactionCount) but are excluded from
+   * every money total — an unclassified row is neither spending nor income. The
+   * count exists so a row the UI shows never silently vanishes from AI context.
+   */
+  unclassifiedCount:  number;
+  /**
+   * P2-7B — count of ADJUSTMENT rows (balance corrections / provider artifacts)
+   * in the window. Non-economic: excluded from all money totals (never spending
+   * or income), surfaced only so their presence is explicit, mirroring how the
+   * DayFacts fold folds ADJUSTMENT to the NON_CASH context reason (∉ net).
+   */
+  adjustmentCount:    number;
+
+  // ── Needs classification (TE-2B disclosure; TI2-W1) ──────────────────────
+  /**
+   * Semantic "needs a human to say what this was" disclosure over the window's
+   * rows (settled + pending). DISCLOSURE ONLY — never subtracted from any money
+   * total above (the §3.2 invariant the Cash Flow Perspective already holds).
+   * Two earned clusters, per lib/transactions/needs-classification.ts:
+   *   - UNKNOWN_INFLOW_SOURCE      — income by sign only, no resolved source.
+   *   - UNKNOWN_PAYMENT_APP_PURPOSE — payment-app movement, purpose unresolved.
+   * `counterpartyResolution` records whether cluster A used read-time transfer
+   * parity ('PERSISTED_AND_READ_TIME', matching the Transactions Tab) or the
+   * persisted-only fallback — so a consumer knows the count's provenance.
+   */
+  needsClassification: {
+    count:                  number;
+    unknownInflowCount:     number;
+    unknownInflowTotal:     number;
+    unknownPaymentAppCount: number;
+    unknownPaymentAppTotal: number;
+    counterpartyResolution: 'PERSISTED_AND_READ_TIME' | 'PERSISTED_ONLY';
+  };
 
   // ── By category ─────────────────────────────────────────────────────────
   byCategory: CategorySpend[];
@@ -581,6 +783,35 @@ export interface TransactionsSummaryData {
    * so raw rows are never surfaced by default. FULL-visibility accounts only.
    */
   drilldown?: TransactionDrilldown;
+}
+
+// ---------------------------------------------------------------------------
+// TI2-W2 — unidentified-inflow materiality (single source of truth)
+// ---------------------------------------------------------------------------
+
+/**
+ * The share of in-window income that may be unidentified before it is treated as
+ * "material" — the ONE threshold reused by every consumer (§8-W2): it escalates
+ * the NEEDS_CLASSIFICATION signal from info → warning, gates the assessment's
+ * income-confidence downgrade, and triggers the Daily Brief's savings-rate
+ * honesty caveat. Defined once here so the three surfaces can never drift.
+ */
+export const MATERIAL_UNIDENTIFIED_INFLOW_SHARE = 0.15;
+
+/**
+ * TI2-W2 — the fraction of `incomeTotal` that is sign-default inflow with no
+ * resolved source (`needsClassification.unknownInflowTotal / incomeTotal`).
+ * Returns null when there is no in-window income — the divide-by-zero guard, so
+ * consumers never see NaN/Infinity. Defensive against fixtures that predate the
+ * W1 aggregate (missing block ⇒ 0 unidentified).
+ */
+export function deriveUnidentifiedInflowShare(data: {
+  needsClassification?: { unknownInflowTotal: number } | null;
+  incomeTotal: number;
+}): number | null {
+  if (!(data.incomeTotal > 0)) return null;
+  const unknown = data.needsClassification?.unknownInflowTotal ?? 0;
+  return unknown / data.incomeTotal;
 }
 
 // ---------------------------------------------------------------------------
@@ -649,9 +880,11 @@ export interface HoldingsConcentration {
  *
  * Deterministic, value-based investment intelligence computed from existing
  * Holding rows — no cost basis, no returns, no asset-class/sector data (see
- * `dataLimits`). All monetary values are in the Space's primary currency;
- * mixed-currency holdings are summed without conversion, matching the accounts
- * assembler's known limitation.
+ * `dataLimits`). Monetary values are denominated per the accounts domain's
+ * MC1 Phase 3 contract (totals in the Space's reporting currency; per-row
+ * values native). NOTE: this holdings assembler itself still sums raw values
+ * (not yet threaded through the conversion seam — recorded as a Phase 3
+ * closeout finding alongside F-3); all-USD data is unaffected.
  *
  * ── Visibility model (mirrors lib/ai/assemblers/accounts.ts) ─────────────────
  * Aggregate value totals (totalPortfolioValue, investedValue, cashValue,
@@ -665,7 +898,13 @@ export interface HoldingsConcentration {
  * `topPositions` is omitted when scopeHint === 'brief'.
  */
 export interface HoldingsSummaryData {
-  /** All visible holdings incl. synthetic cash rows. */
+  /**
+   * MC1 Phase 4 Slice 5 (D-7) — true when any converted holding value in the
+   * totals was estimated (rate walked back / missing, or null-residue
+   * currency). Data-only: no prompt or serializer consumes it yet.
+   */
+  totalsEstimated:     boolean;
+  /** All visible holdings incl. synthetic cash rows (converted into the Space's reporting currency). */
   totalPortfolioValue: number;
   /** Non-cash holdings across all visible accounts. */
   investedValue:       number;
@@ -809,6 +1048,12 @@ export interface SpaceContext_AI {
     name:     string;
     type:     string;
     category: string;
+    /**
+     * MC1 Phase 4 Slice 7 — the Space's reporting currency, for the
+     * serializer's one-line currency label. Optional so existing test
+     * fixtures stay valid; the serializer falls back to "USD".
+     */
+    reportingCurrency?: string;
   };
   domains:     Record<string, ContextDomainSection>;
   signals:     ContextSignal[];

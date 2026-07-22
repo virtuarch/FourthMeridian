@@ -21,3 +21,4 @@ services:
 volumes:
   postgres_data:
     driver: local
+    name: fintracker_postgres_data

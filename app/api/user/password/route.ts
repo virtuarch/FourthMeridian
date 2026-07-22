@@ -13,19 +13,32 @@ import { db } from "@/lib/db";
 import bcrypt from "bcryptjs";
 import { requireFreshUser } from "@/lib/session";
 import { withApiHandler } from "@/lib/api";
+import { revokeOtherUserSessions } from "@/lib/sessions";
+import { sendEmail } from "@/lib/email/send";
+import { formatDateTime } from "@/lib/format";
+import { createNotification } from "@/lib/notifications/create";
+import { limitByUser } from "@/lib/rate-limit";
+import { AuditAction } from "@/lib/audit-actions";
+import { getMinPasswordLength } from "@/lib/platform-settings";
 
 export const PATCH = withApiHandler(async (req: NextRequest) => {
   // Sensitive action — always a live revocation check, never the cache.
   const [user, err] = await requireFreshUser();
   if (err) return err;
 
+  // OPS-1 S4 — blunt current-password brute force from a foothold session.
+  const limited = await limitByUser(user.id, "password-change", { limit: 5, windowSec: 900 });
+  if (limited) return limited;
+
   const { currentPassword, newPassword } = await req.json();
 
   if (!currentPassword || !newPassword) {
     return NextResponse.json({ error: "Both current and new password are required." }, { status: 400 });
   }
-  if (newPassword.length < 8) {
-    return NextResponse.json({ error: "New password must be at least 8 characters." }, { status: 400 });
+  // SEC-4 — enforce the admin-configurable min length, not a hardcoded 8.
+  const minPasswordLength = await getMinPasswordLength();
+  if (newPassword.length < minPasswordLength) {
+    return NextResponse.json({ error: `New password must be at least ${minPasswordLength} characters.` }, { status: 400 });
   }
   if (currentPassword === newPassword) {
     return NextResponse.json({ error: "New password must be different from current password." }, { status: 400 });
@@ -33,7 +46,7 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
 
   const dbUser = await db.user.findUnique({
     where:  { id: user.id },
-    select: { passwordHash: true },
+    select: { passwordHash: true, email: true },
   });
 
   if (!dbUser?.passwordHash) {
@@ -45,7 +58,7 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
     await db.auditLog.create({
       data: {
         userId: user.id,
-        action: "PASSWORD_CHANGE_FAILED",
+        action: AuditAction.PASSWORD_CHANGE_FAILED,
         metadata: { reason: "wrong_current_password" },
       },
     });
@@ -59,11 +72,35 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
     data:  { passwordHash: newHash },
   });
 
-  await db.auditLog.create({
+  // Harden (OPS-2 S2): revoke every OTHER session so a stolen session can't
+  // outlive a password change. The current session is preserved — the user
+  // stays signed in on this device. Same helper backs sign-out-everywhere.
+  const revokedOtherSessions = await revokeOtherUserSessions(user.id, user.sessionToken);
+
+  // Notify the account's own email. NON-THROWING: a delivery failure is logged
+  // and recorded, but never fails the password change.
+  const emailResult = await sendEmail("security-alert", dbUser.email, {
+    title:   "Your password was changed",
+    message: `Your Fourth Meridian password was changed on ${formatDateTime(new Date().toISOString())}.`,
+  });
+  if (emailResult.status === "error") {
+    console.error("[user/password] security-alert email failed to send:", emailResult.error);
+  }
+
+  const auditRow = await db.auditLog.create({
     data: {
       userId: user.id,
-      action: "PASSWORD_CHANGED",
+      action: AuditAction.PASSWORD_CHANGED,
+      metadata: { revokedOtherSessions, emailStatus: emailResult.status },
     },
+  });
+
+  // OPS-3 S5 Wave 1 — in-app mirror of the alert above (bell only; the email
+  // guarantee stays with the security-alert send). Non-throwing by contract.
+  await createNotification({
+    type: "PASSWORD_CHANGED",
+    userId: user.id,
+    auditLogId: auditRow.id,
   });
 
   return NextResponse.json({ success: true });

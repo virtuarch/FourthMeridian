@@ -10,7 +10,9 @@
 import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
 import { requireUser, requireSpaceRole }      from "@/lib/session";
-import { SpaceMemberRole, SpaceMemberStatus } from "@prisma/client";
+import { SpaceMemberRole, SpaceMemberStatus, SpaceType } from "@prisma/client";
+import { getClientIp }                            from "@/lib/api";
+import { emitDomainEvent }                        from "@/lib/events/emit";
 
 export async function PATCH(
   req: NextRequest,
@@ -34,6 +36,16 @@ export async function PATCH(
   const { action } = (await req.json()) as { action: "accept" | "decline" };
 
   if (action === "accept") {
+    // Personal Spaces are strictly single-user — never materialize a second
+    // membership, even from a pre-existing PENDING invite created before this
+    // guard. This is the choke point where the SpaceMember row is actually
+    // written, so it's the last line of defense behind the invite route.
+    // Decline still works (below) so a stray invite can be cleared.
+    const space = await db.space.findUnique({ where: { id: spaceId }, select: { type: true } });
+    if (space?.type === SpaceType.PERSONAL) {
+      return NextResponse.json({ error: "Personal Spaces can't have additional members." }, { status: 400 });
+    }
+
     // Use upsert to handle re-joins: if the user previously left or was removed,
     // a stale SpaceMember row (status REMOVED/LEFT) already exists with a
     // unique constraint on [spaceId, userId]. A plain create() would fail.
@@ -54,6 +66,19 @@ export async function PATCH(
         data:  { status: "ACCEPTED" },
       }),
     ]);
+
+    // Timeline T-1 — MemberJoined (audit-only, no handler). Net-new
+    // Timeline-visible row. Emitted post-commit (no-tx) so the array-form
+    // transaction above is untouched; actorUserId is the joining user, from
+    // which the activity consumer derives "{name} joined the space".
+    await emitDomainEvent({
+      type:        "MemberJoined",
+      spaceId,
+      actorUserId: user.id,
+      ipAddress:   getClientIp(req),
+      payload:     { userId: user.id, role: invite.role },
+    });
+
     return NextResponse.json({ ok: true, joined: true });
   }
 

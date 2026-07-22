@@ -250,6 +250,7 @@ export async function buildContext(
       name:     spaceCtx.space.name,
       type:     spaceCtx.space.type,
       category: spaceCtx.space.category,
+      reportingCurrency: spaceCtx.space.reportingCurrency, // MC1 P4 Slice 7 — serializer label
     },
     domains,
     signals,

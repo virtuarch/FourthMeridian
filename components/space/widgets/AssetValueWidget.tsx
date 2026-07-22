@@ -95,6 +95,13 @@ export interface AssetValueWidgetProps {
    * Falls back to undefined (empty state) if not provided.
    */
   accountBalance?: number;
+  /**
+   * MC1 QA Q4 — currency of `accountBalance` as supplied by the adapter
+   * (the Space's reporting currency when the host converted the balance).
+   * Explicit `config.currency` still wins (legacy per-section override);
+   * absent both, the historical USD default applies (kill switch).
+   */
+  currency?: string;
 }
 
 // ─── Copy by asset type ───────────────────────────────────────────────────────
@@ -136,14 +143,14 @@ function toStringVal(v: unknown): string | undefined {
 
 // `title` is part of the widget contract for future standalone/fullscreen renders.
 // The SectionCard header currently renders the label, so it is intentionally unused here.
-export function AssetValueWidget({ title: _title, assetType, config, accountBalance }: AssetValueWidgetProps) {
+export function AssetValueWidget({ title: _title, assetType, config, accountBalance, currency: currencyProp }: AssetValueWidgetProps) {
   // currentValue: live account balance takes precedence over any legacy config value.
   // Config should never store a dollar value — but handle it as a fallback for
   // any rows seeded before this convention was established.
   const currentValue  = accountBalance ?? toNumber((config as Record<string, unknown> | null | undefined)?.["currentValue"]);
   const purchasePrice = toNumber(config?.purchasePrice);
   const purchaseDate  = toStringVal(config?.purchaseDate);
-  const currency      = toStringVal(config?.currency) ?? DEFAULT_DISPLAY_CURRENCY;
+  const currency      = toStringVal(config?.currency) ?? currencyProp ?? DEFAULT_DISPLAY_CURRENCY;
   // Support both 'note' (legacy) and 'notes' (current seed field)
   const note          = toStringVal(config?.note) ?? toStringVal(config?.notes);
 
@@ -152,8 +159,8 @@ export function AssetValueWidget({ title: _title, assetType, config, accountBala
     const copy = EMPTY_COPY[assetType] ?? EMPTY_COPY.other;
     return (
       <div className="text-center py-5 space-y-1">
-        <p className="text-sm text-gray-400">{copy.headline}</p>
-        <p className="text-xs text-gray-600 leading-relaxed max-w-xs mx-auto">{copy.subline}</p>
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>{copy.headline}</p>
+        <p className="text-xs leading-relaxed max-w-xs mx-auto" style={{ color: "var(--text-faint)" }}>{copy.subline}</p>
       </div>
     );
   }
@@ -167,9 +174,9 @@ export function AssetValueWidget({ title: _title, assetType, config, accountBala
   const isGain            = delta !== null && delta >= 0;
   const isFlat            = delta === 0;
 
-  // Colour tokens
-  const valueCls  = "text-white";
-  const gainCls   = isFlat ? "text-gray-400" : isGain ? "text-green-400" : "text-red-400";
+  // Colour tokens — semantic state only (gain → positive, loss → negative);
+  // "no change" resolves to neutral ink.
+  const gainColor = isFlat ? "var(--text-secondary)" : isGain ? "var(--accent-positive)" : "var(--accent-negative)";
   const deltaSign = delta !== null && delta > 0 ? "+" : "";
 
   return (
@@ -177,39 +184,39 @@ export function AssetValueWidget({ title: _title, assetType, config, accountBala
 
       {/* ── Primary value ─────────────────────────────────────────────────── */}
       <div>
-        <p className={`text-3xl font-bold ${valueCls}`}>
+        <p className="text-3xl font-bold" style={{ color: "var(--text-primary)" }}>
           {formatCurrency(currentValue, currency)}
         </p>
-        <p className="text-xs text-gray-500 mt-0.5">Current estimated value</p>
+        <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>Current estimated value</p>
       </div>
 
       {/* ── Gain / loss vs purchase price ─────────────────────────────────── */}
       {hasComparison && delta !== null && deltaPercent !== null && (
         <div className="grid grid-cols-2 gap-3">
           {/* Purchase price */}
-          <div className="bg-gray-800/50 rounded-xl p-3">
-            <p className="text-xs text-gray-500 mb-1">Purchase price</p>
-            <p className="text-base font-semibold text-gray-200">
+          <div className="rounded-xl p-3" style={{ background: "var(--surface-inset)" }}>
+            <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>Purchase price</p>
+            <p className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>
               {formatCurrency(purchasePrice!, currency)}
             </p>
           </div>
 
           {/* Gain / loss */}
-          <div className="bg-gray-800/50 rounded-xl p-3">
+          <div className="rounded-xl p-3" style={{ background: "var(--surface-inset)" }}>
             <div className="flex items-center gap-1 mb-1">
               {isFlat
-                ? <Minus   size={11} className="text-gray-500" />
+                ? <Minus   size={11} style={{ color: "var(--text-muted)" }} />
                 : isGain
-                  ? <TrendingUp   size={11} className="text-green-400" />
-                  : <TrendingDown size={11} className="text-red-400"   />}
-              <p className="text-xs text-gray-500">
+                  ? <TrendingUp   size={11} style={{ color: "var(--accent-positive)" }} />
+                  : <TrendingDown size={11} style={{ color: "var(--accent-negative)" }} />}
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                 {isFlat ? "No change" : isGain ? "Gain" : "Loss"}
               </p>
             </div>
-            <p className={`text-base font-semibold ${gainCls}`}>
+            <p className="text-base font-semibold" style={{ color: gainColor }}>
               {deltaSign}{formatCurrency(Math.abs(delta), currency)}
             </p>
-            <p className={`text-[11px] mt-0.5 ${gainCls}`}>
+            <p className="text-[11px] mt-0.5" style={{ color: gainColor }}>
               {deltaSign}{formatPercent(Math.abs(deltaPercent))}
             </p>
           </div>
@@ -221,12 +228,15 @@ export function AssetValueWidget({ title: _title, assetType, config, accountBala
         <div className="space-y-1">
           {purchaseDate && (
             <div className="flex items-center justify-between text-xs">
-              <span className="text-gray-600">Purchased</span>
-              <span className="text-gray-400">{formatDate(purchaseDate)}</span>
+              <span style={{ color: "var(--text-faint)" }}>Purchased</span>
+              <span style={{ color: "var(--text-secondary)" }}>{formatDate(purchaseDate)}</span>
             </div>
           )}
           {note && (
-            <p className="text-[11px] text-gray-600 border border-gray-800 rounded-lg px-3 py-2 leading-relaxed">
+            <p
+              className="text-[11px] rounded-lg px-3 py-2 leading-relaxed border"
+              style={{ color: "var(--text-faint)", borderColor: "var(--border-hairline)" }}
+            >
               {note}
             </p>
           )}
@@ -235,7 +245,7 @@ export function AssetValueWidget({ title: _title, assetType, config, accountBala
 
       {/* ── Config nudge: purchase price missing ──────────────────────────── */}
       {currentValue !== undefined && purchasePrice === undefined && (
-        <p className="text-[11px] text-gray-700 text-center">
+        <p className="text-[11px] text-center" style={{ color: "var(--text-faint)" }}>
           Add a purchase price in this section&apos;s settings to see gain/loss.
         </p>
       )}

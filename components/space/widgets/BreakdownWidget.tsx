@@ -11,8 +11,19 @@
  *   "list"   — plain ranked list with colour indicators
  *
  * Data contract: BreakdownItem[] — caller sorts, caller assigns colours when
- * palette customisation is needed (e.g. debt red-gradient). Falls back to a
- * generic multi-colour DEFAULT_PALETTE when item.color is omitted.
+ * palette customisation is needed (e.g. debt red-gradient). Falls back to the
+ * shared CHART_PALETTE, keyed on item ID, when item.color is omitted.
+ *
+ * ── Selection (UX-CLOSE-1) ────────────────────────────────────────────────────
+ * A chart segment and a ledger row are the same concept: a named portion of a
+ * total that has constituents. So this widget exposes the SAME seam a ledger row
+ * has — an optional `onSelect` — and nothing more. There is no selection event
+ * bus, no shared selection type, no context. The CALLER decides what opens
+ * (typically the existing Preview → Browser → Detail panels), exactly as the
+ * ledgers already do.
+ *
+ * Selection is OPT-IN and additive: with no `onSelect` this renders precisely as
+ * before, except that segments no longer claim to be clickable (see below).
  *
  * Currently powers:
  *   debt_breakdown_chart   — debt accounts by balance (adapter in SpaceDashboard)
@@ -31,6 +42,7 @@
 import { useState } from "react";
 import { formatCurrency } from "@/lib/format";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
+import { assignStableColors, DEFAULT_CHART_COLOR } from "@/lib/charts/chart-palette";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -75,6 +87,22 @@ export interface BreakdownWidgetProps {
   /** Empty state copy */
   emptyHeadline?: string;
   emptySubline?:  string;
+  /**
+   * Makes segments/rows interrogable. When omitted the widget is inert — and
+   * importantly does NOT render a pointer cursor, which it previously did on
+   * every donut segment while doing nothing on click.
+   *
+   * The caller receives the whole item (its `id` is the slice key it already
+   * chose) and opens whatever surface it owns.
+   */
+  onSelect?: (item: BreakdownItem) => void;
+  /** Currently-selected item id, so the chart can reflect an open detail panel. */
+  selectedId?: string | null;
+  /**
+   * Accessible-name builder for an interactive segment. Defaults to the label.
+   * Pass one when the label alone is ambiguous out of context ("Other").
+   */
+  selectLabel?: (item: BreakdownItem) => string;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -83,29 +111,100 @@ export interface BreakdownWidgetProps {
 type ColoredItem = BreakdownItem & { color: string };
 
 /**
- * Visually distinct palette used when items omit an explicit colour.
- * Values are Tailwind 500 hex equivalents — safe for SVG + inline styles.
+ * Fill in colours for items that omit one.
+ *
+ * Derived colour comes from `lib/charts/chart-palette`, keyed on each item's
+ * stable ID — NOT its array position. Position-keyed colour named a rank rather
+ * than a thing: these lists sort value-descending and drop empty entries, so a
+ * balance change or a missing category silently recoloured the chart (and made
+ * the donut disagree with the treemap/strip modes, which pin class colours).
+ *
+ * An explicit `item.color` always wins — that is the identity regime, for
+ * categories that carry product meaning (asset class, liquidity horizon, debt).
  */
-const DEFAULT_PALETTE: string[] = [
-  "#3b82f6", // blue-500
-  "#10b981", // emerald-500
-  "#f59e0b", // amber-500
-  "#8b5cf6", // violet-500
-  "#ec4899", // pink-500
-  "#06b6d4", // cyan-500
-  "#f97316", // orange-500
-  "#84cc16", // lime-500
-];
-
 function assignColors(items: BreakdownItem[]): ColoredItem[] {
-  return items.map((item, i) => ({
-    ...item,
-    color: item.color ?? DEFAULT_PALETTE[i % DEFAULT_PALETTE.length],
-  }));
+  const derived = assignStableColors(items.map((i) => i.id));
+  return items.map((item, i) => ({ ...item, color: item.color ?? derived[i] }));
 }
 
 const defaultFmt = (v: number) =>
   formatCurrency(v, DEFAULT_DISPLAY_CURRENCY);
+
+/**
+ * Pluralise the donut's centre noun. A bare `+ "s"` rendered "3 asset classs"
+ * on the Wealth card, and would have produced "categorys" the moment a caller
+ * passed `itemNoun="category"`. Sibilants take -es, consonant+y takes -ies.
+ */
+function pluralize(noun: string): string {
+  if (/(s|x|z|ch|sh)$/i.test(noun))  return `${noun}es`;
+  if (/[^aeiou]y$/i.test(noun))      return `${noun.slice(0, -1)}ies`;
+  return `${noun}s`;
+}
+
+// ─── Selection plumbing ───────────────────────────────────────────────────────
+
+/** The optional selection seam, passed down to whichever view is rendering. */
+interface SelectApi {
+  onSelect?:    (item: BreakdownItem) => void;
+  selectedId?:  string | null;
+  selectLabel?: (item: BreakdownItem) => string;
+}
+
+/**
+ * A breakdown row that becomes a real `<button>` when — and only when — the
+ * caller supplied `onSelect`. Inert callers keep the previous non-interactive
+ * markup, so nothing gains a focus stop or a screen-reader control it did not
+ * have before.
+ *
+ * The selected treatment mirrors the ledger idiom already used across the
+ * product (`SourcesLedger`, `HoldingsLedger`): a left accent rail on hover and
+ * focus, filled in while that row's detail is open.
+ */
+function BreakdownRow({
+  item,
+  sel,
+  className = "",
+  onHoverStart,
+  onHoverEnd,
+  style,
+  children,
+}: {
+  item:          BreakdownItem;
+  sel:           SelectApi;
+  className?:    string;
+  onHoverStart?: () => void;
+  onHoverEnd?:   () => void;
+  style?:        React.CSSProperties;
+  children:      React.ReactNode;
+}) {
+  const shared = { onMouseEnter: onHoverStart, onMouseLeave: onHoverEnd, style };
+
+  if (!sel.onSelect) {
+    return <div className={className} {...shared}>{children}</div>;
+  }
+
+  const selected = sel.selectedId != null && sel.selectedId === item.id;
+  return (
+    <button
+      type="button"
+      onClick={() => sel.onSelect?.(item)}
+      aria-label={sel.selectLabel ? sel.selectLabel(item) : item.label}
+      // Only a meaningful state when the caller actually tracks selection;
+      // otherwise this is a plain action button and must not claim a state.
+      aria-pressed={sel.selectedId !== undefined ? selected : undefined}
+      className={`group relative w-full text-left cursor-pointer transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none ${className}`}
+      {...shared}
+    >
+      <span
+        aria-hidden
+        className={`absolute inset-y-1 left-0 w-0.5 rounded-full bg-[var(--meridian-400)] transition-opacity ${
+          selected ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
+        }`}
+      />
+      {children}
+    </button>
+  );
+}
 
 // ─── ListView (standalone, no hover) ─────────────────────────────────────────
 
@@ -113,28 +212,30 @@ function ListView({
   items,
   formatValue,
   total,
+  sel,
 }: {
   items:       ColoredItem[];
   formatValue: (v: number) => string;
   total:       number;
+  sel:         SelectApi;
 }) {
   return (
     <div className="space-y-2">
       {items.map((item) => {
         const pct = total > 0 ? ((item.value / total) * 100).toFixed(1) : "0.0";
         return (
-          <div key={item.id} className="flex items-center gap-3 px-1 py-0.5">
-            <div className="w-2 h-2 rounded-full shrink-0 mt-0.5" style={{ backgroundColor: item.color }} />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm text-white truncate">{item.label}</p>
-              {item.meta  && <p className="text-[10px] text-gray-500">{item.meta}</p>}
-              {item.meta2 && <p className="text-[10px] text-gray-600">{item.meta2}</p>}
-            </div>
-            <div className="text-right shrink-0">
-              <p className="text-sm font-medium text-white">{formatValue(item.value)}</p>
-              <p className="text-[10px] text-gray-600">{pct}%</p>
-            </div>
-          </div>
+          <BreakdownRow key={item.id} item={item} sel={sel} className="flex items-center gap-3 px-1 py-0.5 rounded-lg">
+            <span className="w-2 h-2 rounded-full shrink-0 mt-0.5" style={{ backgroundColor: item.color }} />
+            <span className="flex-1 min-w-0 block">
+              <span className="text-sm truncate block" style={{ color: "var(--text-primary)" }}>{item.label}</span>
+              {item.meta  && <span className="text-[10px] block" style={{ color: "var(--text-muted)" }}>{item.meta}</span>}
+              {item.meta2 && <span className="text-[10px] block" style={{ color: "var(--text-faint)" }}>{item.meta2}</span>}
+            </span>
+            <span className="text-right shrink-0 block">
+              <span className="text-sm font-medium block" style={{ color: "var(--text-primary)" }}>{formatValue(item.value)}</span>
+              <span className="text-[10px] block" style={{ color: "var(--text-faint)" }}>{pct}%</span>
+            </span>
+          </BreakdownRow>
         );
       })}
     </div>
@@ -147,10 +248,12 @@ function BarView({
   items,
   formatValue,
   total,
+  sel,
 }: {
   items:       ColoredItem[];
   formatValue: (v: number) => string;
   total:       number;
+  sel:         SelectApi;
 }) {
   const max = Math.max(...items.map((i) => i.value), 1);
   return (
@@ -159,24 +262,24 @@ function BarView({
         const pct    = total > 0 ? ((item.value / total) * 100).toFixed(1) : "0.0";
         const barPct = ((item.value / max) * 100).toFixed(1);
         return (
-          <div key={item.id} className="space-y-1">
-            <div className="flex items-center justify-between gap-2 text-xs">
-              <div className="min-w-0">
-                <span className="text-gray-300 truncate block">{item.label}</span>
-                {item.meta && <span className="text-gray-600">{item.meta}</span>}
-              </div>
-              <span className="shrink-0 text-gray-400">
-                {formatValue(item.value)}{" "}
-                <span className="text-gray-700">({pct}%)</span>
+          <BreakdownRow key={item.id} item={item} sel={sel} className="block space-y-1 rounded-lg">
+            <span className="flex items-center justify-between gap-2 text-xs">
+              <span className="min-w-0 block">
+                <span className="truncate block" style={{ color: "var(--text-secondary)" }}>{item.label}</span>
+                {item.meta && <span style={{ color: "var(--text-faint)" }}>{item.meta}</span>}
               </span>
-            </div>
-            <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-              <div
-                className="h-full rounded-full"
+              <span className="shrink-0" style={{ color: "var(--text-secondary)" }}>
+                {formatValue(item.value)}{" "}
+                <span style={{ color: "var(--text-faint)" }}>({pct}%)</span>
+              </span>
+            </span>
+            <span className="h-1.5 rounded-full overflow-hidden block" style={{ background: "var(--surface-inset)" }}>
+              <span
+                className="h-full rounded-full block"
                 style={{ width: `${barPct}%`, backgroundColor: item.color }}
               />
-            </div>
-          </div>
+            </span>
+          </BreakdownRow>
         );
       })}
     </div>
@@ -197,13 +300,16 @@ function DonutView({
   formatValue,
   itemNoun,
   total,
+  sel,
 }: {
   items:       ColoredItem[];
   formatValue: (v: number) => string;
   itemNoun:    string;
   total:       number;
+  sel:         SelectApi;
 }) {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const interactive = sel.onSelect != null;
 
   // Gap between segments; no gap for a single item
   const gapDash = items.length > 1 ? (1.5 / 360) * DONUT_CIRC : 0;
@@ -231,8 +337,8 @@ function DonutView({
 
   const hovered       = hoveredIdx !== null ? segments[hoveredIdx] : null;
   // Centre label uses first item colour when showing totals (matches original red-gradient behaviour)
-  const totalColor    = items[0]?.color ?? DEFAULT_PALETTE[0];
-  const pluralNoun    = items.length === 1 ? itemNoun : `${itemNoun}s`;
+  const totalColor    = items[0]?.color ?? DEFAULT_CHART_COLOR;
+  const pluralNoun    = items.length === 1 ? itemNoun : pluralize(itemNoun);
 
   return (
     <div className="space-y-4">
@@ -249,26 +355,43 @@ function DonutView({
             <circle
               cx={DONUT_CX} cy={DONUT_CY} r={DONUT_RADIUS}
               fill="none"
-              stroke="#1f2937"
+              // Was a hardcoded #1f2937 — invisible-to-wrong in a light theme.
+              // BarView already uses this token for the same "empty track" role.
+              stroke="var(--surface-inset)"
               strokeWidth={DONUT_STROKE}
             />
-            {/* Segments */}
+            {/* Segments. Pointer affordance only; the legend below carries the
+                ACCESSIBLE controls (real buttons), so keyboard users reach every
+                slice without SVG needing focus semantics of its own. */}
             {segments.map((seg) => {
               const isHov    = hoveredIdx === seg.i;
-              const isDimmed = hoveredIdx !== null && !isHov;
+              const isSel    = sel.selectedId != null && sel.selectedId === seg.id;
+              const emphasis = isHov || isSel;
+              // Hover wins while it lasts; otherwise an open selection is what
+              // the ring should be pointing at.
+              const isDimmed = hoveredIdx !== null
+                ? !isHov
+                : sel.selectedId != null && !isSel;
               return (
                 <circle
                   key={seg.id}
                   cx={DONUT_CX} cy={DONUT_CY} r={DONUT_RADIUS}
                   fill="none"
                   stroke={seg.color}
-                  strokeWidth={isHov ? DONUT_STROKE + 5 : DONUT_STROKE}
+                  strokeWidth={emphasis ? DONUT_STROKE + 5 : DONUT_STROKE}
                   strokeDasharray={`${seg.dash} ${seg.gap}`}
                   transform={`rotate(${seg.angle}, ${DONUT_CX}, ${DONUT_CY})`}
                   strokeLinecap="butt"
                   opacity={isDimmed ? 0.3 : 1}
-                  style={{ cursor: "pointer", transition: "opacity 0.15s, stroke-width 0.15s" }}
+                  // The cursor previously claimed "clickable" on every donut in
+                  // the product while nothing happened on click. It is now told
+                  // the truth: pointer only where a handler exists.
+                  style={{
+                    cursor: interactive ? "pointer" : "default",
+                    transition: "opacity 0.15s, stroke-width 0.15s",
+                  }}
                   onMouseEnter={() => setHoveredIdx(seg.i)}
+                  onClick={interactive ? () => sel.onSelect?.(seg) : undefined}
                 />
               );
             })}
@@ -278,13 +401,13 @@ function DonutView({
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-4 text-center">
             {hovered ? (
               <>
-                <p className="text-xs text-gray-400 leading-tight truncate w-full text-center">
+                <p className="text-xs leading-tight truncate w-full text-center" style={{ color: "var(--text-secondary)" }}>
                   {hovered.label}
                 </p>
                 <p className="text-base font-bold leading-tight mt-0.5" style={{ color: hovered.color }}>
                   {formatValue(hovered.value)}
                 </p>
-                <p className="text-[10px] text-gray-500 leading-tight mt-0.5">
+                <p className="text-[10px] leading-tight mt-0.5" style={{ color: "var(--text-muted)" }}>
                   {(hovered.pct * 100).toFixed(1)}% of total
                 </p>
               </>
@@ -293,7 +416,7 @@ function DonutView({
                 <p className="text-lg font-bold leading-tight" style={{ color: totalColor }}>
                   {formatValue(total)}
                 </p>
-                <p className="text-[10px] text-gray-500 mt-0.5 leading-tight">
+                <p className="text-[10px] mt-0.5 leading-tight" style={{ color: "var(--text-muted)" }}>
                   {items.length} {pluralNoun}
                 </p>
               </>
@@ -309,28 +432,30 @@ function DonutView({
           const isDim = hoveredIdx !== null && !isHov;
           const pct   = (seg.pct * 100).toFixed(1);
           return (
-            <div
+            <BreakdownRow
               key={seg.id}
+              item={seg}
+              sel={sel}
               className="flex items-center gap-3 rounded-lg px-1 py-0.5 transition-opacity"
-              style={{ opacity: isDim ? 0.4 : 1, cursor: "default" }}
-              onMouseEnter={() => setHoveredIdx(seg.i)}
-              onMouseLeave={() => setHoveredIdx(null)}
+              style={{ opacity: isDim ? 0.4 : 1 }}
+              onHoverStart={() => setHoveredIdx(seg.i)}
+              onHoverEnd={() => setHoveredIdx(null)}
             >
-              <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: seg.color }} />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-white truncate">{seg.label}</p>
-                <div className="flex gap-2 items-center flex-wrap">
-                  {seg.meta  && <span className="text-[10px] text-gray-500">{seg.meta}</span>}
-                  {seg.meta2 && <span className="text-[10px] text-gray-600">{seg.meta2}</span>}
-                </div>
-              </div>
-              <div className="text-right shrink-0">
-                <p className="text-sm font-medium" style={{ color: seg.color }}>
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: seg.color }} />
+              <span className="flex-1 min-w-0 block">
+                <span className="text-sm truncate block" style={{ color: "var(--text-primary)" }}>{seg.label}</span>
+                <span className="flex gap-2 items-center flex-wrap">
+                  {seg.meta  && <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>{seg.meta}</span>}
+                  {seg.meta2 && <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>{seg.meta2}</span>}
+                </span>
+              </span>
+              <span className="text-right shrink-0 block">
+                <span className="text-sm font-medium block" style={{ color: seg.color }}>
                   {formatValue(seg.value)}
-                </p>
-                <p className="text-[10px] text-gray-600">{pct}%</p>
-              </div>
-            </div>
+                </span>
+                <span className="text-[10px] block" style={{ color: "var(--text-faint)" }}>{pct}%</span>
+              </span>
+            </BreakdownRow>
           );
         })}
       </div>
@@ -348,15 +473,19 @@ export function BreakdownWidget({
   footer,
   emptyHeadline,
   emptySubline,
+  onSelect,
+  selectedId,
+  selectLabel,
 }: BreakdownWidgetProps) {
+  const sel: SelectApi = { onSelect, selectedId, selectLabel };
   if (items.length === 0) {
     return (
       <div className="text-center py-5 space-y-1">
-        <p className="text-sm text-gray-400">
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
           {emptyHeadline ?? "No data to display."}
         </p>
         {emptySubline && (
-          <p className="text-xs text-gray-600 leading-relaxed max-w-xs mx-auto">
+          <p className="text-xs leading-relaxed max-w-xs mx-auto" style={{ color: "var(--text-faint)" }}>
             {emptySubline}
           </p>
         )}
@@ -369,10 +498,10 @@ export function BreakdownWidget({
 
   return (
     <div className="space-y-4">
-      {viewMode === "bar"  && <BarView  items={colored} formatValue={formatValue} total={total} />}
-      {viewMode === "list" && <ListView items={colored} formatValue={formatValue} total={total} />}
+      {viewMode === "bar"  && <BarView  items={colored} formatValue={formatValue} total={total} sel={sel} />}
+      {viewMode === "list" && <ListView items={colored} formatValue={formatValue} total={total} sel={sel} />}
       {viewMode === "donut" && (
-        <DonutView items={colored} formatValue={formatValue} itemNoun={itemNoun} total={total} />
+        <DonutView items={colored} formatValue={formatValue} itemNoun={itemNoun} total={total} sel={sel} />
       )}
       {footer && <div>{footer}</div>}
     </div>

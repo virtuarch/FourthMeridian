@@ -19,6 +19,17 @@
  * line ($6,529.45) above total monthly spending ($5,848.70), while the
  * drilldown reported a third figure ($2,970.55).
  *
+ * SR-1 UPDATE — a positive amount in the catch-all `Other` category no longer
+ * classifies REFUND; it is UNKNOWN (non-economic residue), because `Other` is the
+ * "provider told us nothing" sentinel, not reversal evidence. buildMonthlyBreakdown
+ * already skips non-economic residue (`isNonEconomicResidue` → continue), so those
+ * four +credits are now EXCLUDED from the Other category line rather than disclosed
+ * as its `creditTotal`. The KD-17 protection is unchanged and this suite still
+ * proves it: category totals stay debit-only, GENUINE refund credits (a positive
+ * in a real spend category — Shopping/Travel below) are still disclosed and never
+ * netted, and the invariant Σ(spending categories) ≤ expenseTotal still holds. The
+ * assembler is untouched; only the classifier's KIND for a positive Other changed.
+ *
  * Three layers of checks:
  *   1. Rollup behavior — buildMonthlyBreakdown emits debit-only category
  *      totals with separate credit disclosure (January 2026 shape and edge
@@ -42,6 +53,10 @@ import {
   buildMonthlyBreakdown,
   checkSpendingCategoryInvariant,
 } from './transactions';
+// FlowType P5 Slice 4: fixture rows carry flowType/flowDirection, derived by
+// the REAL classifier (pure import) — the same values the P4 backfill wrote,
+// so synthetic rows match production data exactly.
+import { classifyFlow } from '../../transactions/flow-classifier';
 
 // ---------------------------------------------------------------------------
 // Tiny harness (mirrors transactions.privacy.test.ts)
@@ -72,15 +87,35 @@ type Row = {
   category: TransactionCategory;
   amount:   number;
   pending:  boolean;
+  // MC1 Phase 2 Slice 4 — mirrors the assembler's TxnRow (currency stamp;
+  // null = pre-provenance residue). Fixtures use "USD"; these suites call
+  // buildMonthlyBreakdown WITHOUT a money context, exercising the raw
+  // native-sum path — byte-identical to pre-MC1 behavior by construction.
+  currency: string | null;
+  // FlowType P5 Slice 4 — mirrors the assembler's TxnRow.
+  flowType:      ReturnType<typeof classifyFlow>['flowType'] | null;
+  flowDirection: ReturnType<typeof classifyFlow>['flowDirection'] | null;
 };
 
-function row(day: number, category: TransactionCategory, amount: number, merchant = 'Test'): Row {
+function row(
+  day: number,
+  category: TransactionCategory,
+  amount: number,
+  merchant = 'Test',
+  // Optional account context forwarded to the classifier (e.g. a debt
+  // account's destination-side payment leg).
+  ctx?: { accountType?: string; debtSubtype?: string },
+): Row {
+  const c = classifyFlow({ category, amount, ...ctx });
   return {
     date: new Date(`2026-01-${String(day).padStart(2, '0')}T00:00:00.000Z`),
     merchant,
     category,
     amount,
     pending: false,
+    currency: 'USD', // MC1 P2 Slice 4 — mirrors TxnRow; raw path unaffected
+    flowType:      c.flowType,
+    flowDirection: c.flowDirection,
   };
 }
 
@@ -140,11 +175,16 @@ const janRows: Row[] = [
   check('Jan-2026 shape: Other total is debit-only $2,970.55 — NOT the netted $6,529.45',
     other !== undefined && approx(other.total, 2970.55), `got ${other?.total}`);
 
-  check('Jan-2026 shape: Other credits disclosed as creditTotal $9,500.00, never netted',
-    other !== undefined && approx(other.creditTotal ?? 0, 9500.00), `got ${other?.creditTotal}`);
+  // SR-1 — the four +credits ("Payment Thank You-Mobile", categorized Other) are
+  // positive amounts in the "no info" sentinel. They are NOT refunds: a positive
+  // Other classifies UNKNOWN and is EXCLUDED from the category breakdown, rather
+  // than disclosed as an Other creditTotal. A genuine refund credit is still
+  // disclosed — see Shopping (+23.95 Return → REFUND → creditTotal) below.
+  check('SR-1: Other +credits are UNKNOWN residue — NOT disclosed as an Other creditTotal',
+    other !== undefined && other.creditTotal === undefined, `got ${other?.creditTotal}`);
 
-  check('Jan-2026 shape: Other.count still counts all rows (debits + credits)',
-    other?.count === 8, `got ${other?.count}`);
+  check('SR-1: Other.count is debit-only (4) — the +credits are excluded as residue',
+    other?.count === 4, `got ${other?.count}`);
 
   // Drilldown agreement: assembleDrilldown aggregates Σ|amount| over amount<0
   // rows of the category — recompute that population independently and demand
@@ -179,20 +219,50 @@ const janRows: Row[] = [
 // ---------------------------------------------------------------------------
 
 {
+  // The headline defect class uses a GENUINE spend category (Shopping), where a
+  // positive amount legitimately IS a refund (REFUND) — so the "credits > debits,
+  // debit-only total, credit disclosed not netted" protection stays meaningful
+  // after SR-1. (Under the old classifier this fixture used `Other`; SR-1 makes a
+  // positive Other UNKNOWN, which is exercised as its own case immediately below.)
   const jan = janBreakdown([
-    row(3,  TransactionCategory.Other,  -100.00),
-    row(5,  TransactionCategory.Other,  +6629.45, 'Big misclassified credit'),
-    row(10, TransactionCategory.Dining, -50.00),
+    row(3,  TransactionCategory.Shopping, -100.00),
+    row(5,  TransactionCategory.Shopping, +6629.45, 'Big refund'),
+    row(10, TransactionCategory.Dining,   -50.00),
   ]);
-  const other = jan.byCategory.find((c) => c.category === 'Other');
-  check('Net-positive month: Other total is $100.00 (debits), not |net| $6,529.45',
-    other !== undefined && approx(other.total, 100.00), `got ${other?.total}`);
-  check('Net-positive month: credit carried in creditTotal ($6,629.45)',
-    other !== undefined && approx(other.creditTotal ?? 0, 6629.45), `got ${other?.creditTotal}`);
+  const shopping = jan.byCategory.find((c) => c.category === 'Shopping');
+  check('Net-positive month: Shopping total is $100.00 (debits), not |net| $6,529.45',
+    shopping !== undefined && approx(shopping.total, 100.00), `got ${shopping?.total}`);
+  check('Net-positive month: refund credit carried in creditTotal ($6,629.45), never netted',
+    shopping !== undefined && approx(shopping.creditTotal ?? 0, 6629.45), `got ${shopping?.creditTotal}`);
   check('Net-positive month: expenseTotal counts debits only ($150.00)',
     approx(jan.expenseTotal, 150.00), `got ${jan.expenseTotal}`);
   const spendingCats = jan.byCategory.filter((c) => !NON_SPENDING.has(c.category));
   check('Net-positive month: invariant holds',
+    checkSpendingCategoryInvariant(spendingCats, jan.expenseTotal, NON_SPENDING, '2026-01') === null);
+}
+
+// ---------------------------------------------------------------------------
+// 2b. SR-1 — the same net-positive shape with the catch-all `Other`: the big
+//     +credit is NOT a refund. It classifies UNKNOWN and is excluded entirely,
+//     so it can neither inflate the line nor be disclosed as a phantom refund.
+// ---------------------------------------------------------------------------
+
+{
+  const jan = janBreakdown([
+    row(3,  TransactionCategory.Other,  -100.00),
+    row(5,  TransactionCategory.Other,  +6629.45, 'Unclassified inbound'),
+    row(10, TransactionCategory.Dining, -50.00),
+  ]);
+  const other = jan.byCategory.find((c) => c.category === 'Other');
+  check('SR-1 net-positive Other: total is $100.00 (debits only)',
+    other !== undefined && approx(other.total, 100.00), `got ${other?.total}`);
+  check('SR-1 net-positive Other: the +credit is UNKNOWN residue — NO creditTotal, count debit-only',
+    other !== undefined && other.creditTotal === undefined && other.count === 1,
+    `creditTotal=${other?.creditTotal} count=${other?.count}`);
+  check('SR-1 net-positive Other: expenseTotal counts debits only ($150.00)',
+    approx(jan.expenseTotal, 150.00), `got ${jan.expenseTotal}`);
+  const spendingCats = jan.byCategory.filter((c) => !NON_SPENDING.has(c.category));
+  check('SR-1 net-positive Other: invariant holds',
     checkSpendingCategoryInvariant(spendingCats, jan.expenseTotal, NON_SPENDING, '2026-01') === null);
 }
 
@@ -251,7 +321,9 @@ const janRows: Row[] = [
 
 {
   const assemblerSrc = readFileSync(join(process.cwd(), 'lib/ai/assemblers/transactions.ts'), 'utf8');
-  const routeSrc     = readFileSync(join(process.cwd(), 'app/api/ai/chat/route.ts'), 'utf8');
+  // AI-ARCH: serializeContextBlock (with its KD-17 invariant checks) was
+  // extracted from the chat route into lib/ai/prompts/context-serializer.ts.
+  const serializerSrc = readFileSync(join(process.cwd(), 'lib/ai/prompts/context-serializer.ts'), 'utf8');
 
   check('Tripwire: no signed-net accumulation remains in the assembler',
     !/agg\.signed|Math\.abs\(signed\)|\{ signed: 0/.test(assemblerSrc),
@@ -264,13 +336,56 @@ const janRows: Row[] = [
     /Zero-total entries are intentionally KEPT/.test(assemblerSrc));
 
   check('Tripwire: serializer calls the checked invariant for monthly AND window scopes',
-    (routeSrc.match(/checkSpendingCategoryInvariant\(/g) ?? []).length >= 2);
+    (serializerSrc.match(/checkSpendingCategoryInvariant\(/g) ?? []).length >= 2);
 
   check('Tripwire: serializer fails loud outside production on violation',
-    /NODE_ENV !== 'production'\) throw new Error\(msg\)/.test(routeSrc));
+    /NODE_ENV !== 'production'\) throw new Error\(msg\)/.test(serializerSrc));
 
   check('Tripwire: drilldown still aggregates the debits-only population (lt: 0)',
     /amount: \{ lt: 0 \}/.test(assemblerSrc));
+}
+
+// ---------------------------------------------------------------------------
+// 6. FlowType P5 Slice 4 — flow partition cases (D-1..D-4)
+// ---------------------------------------------------------------------------
+
+{
+  const jan = janBreakdown([
+    // D-1: rows the legacy category filter could never see.
+    row(5,  TransactionCategory.Dividend, +120.50, 'Vanguard'),        // → INCOME
+    row(6,  TransactionCategory.Fee,      -35.00,  'Wire fee'),        // → FEE
+    // Existing banking flows.
+    row(7,  TransactionCategory.Dining,   -60.00),                     // → SPENDING
+    row(8,  TransactionCategory.Shopping, +25.00,  'Return'),          // → REFUND
+    row(11, TransactionCategory.Interest, -12.34,  'Interest charge'), // → INTEREST
+    // Both legs of a card payment: source (negative) + destination (positive
+    // INFLOW on a credit-card account) — only the source leg may count.
+    row(10, TransactionCategory.Payment,  -300.00, 'Card payment'),
+    row(9,  TransactionCategory.Payment,  +300.00, 'Card payment',
+        { accountType: 'debt', debtSubtype: 'credit_card' }),
+  ]);
+
+  check('Slice 4: dividend counts as income — and ONLY the dividend (refund is not income)',
+    approx(jan.incomeTotal, 120.50), `got ${jan.incomeTotal}`);
+
+  check('Slice 4: expenseTotal = SPENDING + FEE + INTEREST gross (60 + 35 + 12.34)',
+    approx(jan.expenseTotal, 107.34), `got ${jan.expenseTotal}`);
+
+  check('Slice 4: refund disclosed in refundTotal, never netted into expenseTotal',
+    approx(jan.refundTotal, 25.00), `got ${jan.refundTotal}`);
+
+  check('Slice 4: destination-side DEBT_PAYMENT inflow leg excluded (no double count)',
+    approx(jan.debtPaymentTotal, 300.00), `got ${jan.debtPaymentTotal}`);
+
+  check('Slice 4: Fee appears in byCategory as a debit line',
+    approx(jan.byCategory.find((c) => c.category === 'Fee')?.total ?? 0, 35.00));
+
+  check('Slice 4: credit-only Dividend month is dropped from monthly byCategory (no phantom spend)',
+    jan.byCategory.find((c) => c.category === 'Dividend') === undefined);
+
+  const spendingCats = jan.byCategory.filter((c) => !NON_SPENDING.has(c.category));
+  check('Slice 4: KD-17 invariant holds under the flow partition',
+    checkSpendingCategoryInvariant(spendingCats, jan.expenseTotal, NON_SPENDING, '2026-01') === null);
 }
 
 // ---------------------------------------------------------------------------

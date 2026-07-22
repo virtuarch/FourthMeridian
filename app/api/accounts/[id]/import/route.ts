@@ -118,8 +118,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import { db } from "@/lib/db";
+import { createNotification } from "@/lib/notifications/create";
 import { getSpaceContext } from "@/lib/space";
-import { ImportBatchStatus, ImportSource, Prisma } from "@prisma/client";
+import { ImportBatchStatus, ImportSource, Prisma, type CategorySource } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import {
@@ -131,6 +132,26 @@ import {
 import { runImportPipeline } from "@/lib/imports/pipeline";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
+// FlowType P5 Slice 0 — same classification contract as the Plaid sync write path.
+import { classifyFlow, FLOW_CLASSIFIER_VERSION } from "@/lib/transactions/flow-classifier";
+import { buildFlowInputFromRow, buildFlowWriteFields } from "@/lib/transactions/plaid-flow-input";
+// CCPAY-2C-4 — the ONE card-payment category rescue, shared with the Plaid sync
+// seam. File imports supply evidence; the authority owns the decision.
+import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
+// SR-2 — the payroll descriptor-evidence rescue, applied on the same seam and in
+// the same order as the Plaid sync path (card-payment rescue, then payroll).
+import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
+// TI2-5 — stamp durable TI facts beside FlowType on the import write paths.
+// Imports carry no provider metadata, so only the honestly-derivable facts are
+// non-null (settlementState from pending=false; fxApplied from the single
+// account currency; tiFactsVersion). Provider-only facts stay NULL.
+import { buildTransactionFacts } from "@/lib/transactions/transaction-facts";
+// Merchant Intelligence M4 — stamp merchant identity + category provenance on
+// newly-imported rows, consistent with Plaid sync and the historical backfill.
+// Imports carry no provider merchant-entity id or counterparties, so no
+// enrichment is captured here. Best-effort: a failure degrades to null MI
+// columns and never blocks the import.
+import { resolveMerchantWrite } from "@/lib/transactions/merchant-write";
 
 export const POST = withApiHandler(async (
   req: NextRequest,
@@ -302,6 +323,60 @@ export const POST = withApiHandler(async (
   // counter (see D2_STEP4D4_QUICKBOOKS_IMPLEMENTATION_CHECKLIST.md §5).
   const updatedTransactionIds: string[] = [];
 
+  // FlowType P5 Slice 0 — populate flow columns on import writes using the same
+  // contract as lib/plaid/syncTransactions.ts. Account context is loaded ONCE per
+  // batch (every row targets this single FinancialAccount). CSV/Excel/QuickBooks
+  // carry no Plaid PFC, so pfc*/merchantEntityId are null on create; on
+  // update-on-match they are preserved from the existing row (never nulled).
+  // counterpartyAccountId stays null throughout (no inference).
+  const flowAcct = await db.financialAccount.findUnique({
+    where:  { id: financialAccountId },
+    // currency: MC1 Phase 0 Slice 2 — import files carry no per-row currency
+    // column (lib/imports/csv.ts), so created rows are stamped with the
+    // target account's currency; null if the account row is missing. Never
+    // defaulted to USD here.
+    select: { type: true, debtSubtype: true, currency: true },
+  });
+  const flowAccountContext = {
+    accountType: (flowAcct?.type as string | null) ?? null,
+    debtSubtype: flowAcct?.debtSubtype ?? null,
+  };
+  // CCPAY-2C-5 — merchant/description removed: the classifier is descriptor-blind
+  // by contract, and the descriptor's classification role is already spent one
+  // layer up, in resolveLiabilityPaymentCategory. This signature is a hand-written
+  // mirror of FlowRowInput, so tsc's excess-property check does NOT catch drift
+  // here (rowLike is a named parameter, not an object literal) — it must be kept
+  // in step by hand.
+  function computeFlowFields(rowLike: {
+    category:           string;
+    amount:             number;
+    pfcPrimary:         string | null;
+    pfcDetailed:        string | null;
+    pfcConfidenceLevel: string | null;
+    merchantEntityId:   string | null;
+  }) {
+    const { input, captured } = buildFlowInputFromRow(rowLike, flowAccountContext);
+    return buildFlowWriteFields(classifyFlow(input), input, captured, FLOW_CLASSIFIER_VERSION);
+  }
+
+  // TI2-5 — durable TI facts for imported rows. Reuses buildTransactionFacts with
+  // only the context imports genuinely know: no provider metadata (empty capture),
+  // pending=false (imports are posted), and the row's currency (always the target
+  // account's currency — files carry no per-row currency). The builder yields
+  // settlementState=POSTED, fxApplied (false when currency known, else null), and
+  // tiFactsVersion; every provider-only fact degrades to null. paymentMethod is
+  // forced to null (not the builder's UNKNOWN sentinel): these providers never
+  // supply payment metadata, so NULL — "not captured" — is the honest state.
+  function computeFactFields(rowCurrency: string | null) {
+    const facts = buildTransactionFacts({
+      captured:        { pfcConfidenceLevel: null, merchantEntityId: null, counterparties: [] },
+      pending:         false,
+      rowCurrency,
+      accountCurrency: flowAcct?.currency ?? null,
+    });
+    return { ...facts, paymentMethod: null };
+  }
+
   for (const row of rows) {
     const lineNumber = row.lineNumber; // data-row index, 1-indexed, header row excluded
 
@@ -310,6 +385,42 @@ export const POST = withApiHandler(async (
       errors.push({ row: lineNumber, reason: row.error ?? "missing required field" });
       continue;
     }
+
+    // CCPAY-2C-4 — file imports now participate in the ONE card-payment rescue
+    // (lib/transactions/liability-payment.ts), the same authority the Plaid sync
+    // seam calls. Until this slice the rescue existed ONLY on the Plaid path, so
+    // a CSV-imported card-payment leg ("PAYMENT THANK YOU", +5000, on a credit
+    // card) persisted as category=Other → flowType=REFUND, with no self-healing
+    // path: unlike a Plaid row it is never re-synced, so it stayed wrong forever.
+    //
+    // Rescued ONCE per row, above the CREATE/UPDATE fork, and consumed by BOTH.
+    // Computing it per-branch would let the two disagree — precisely the split
+    // authority CCPAY-2A exists to eliminate.
+    //
+    // Files carry no provider taxonomy: csv.ts's mapCategory only reads an
+    // optional Category/Type column and otherwise yields Other, so the descriptor
+    // is the ONLY payment evidence a file import ever has. Both descriptor fields
+    // are passed — a Payee-only file leaves description null, a Description-only
+    // file duplicates it into both (csv.ts:473-474).
+    //
+    // Sign convention is safe here: csv.ts normalizes to FM's (amount = credit −
+    // debit, so a payment credit is positive). A file imported under the wrong
+    // signConvention flips payments negative, which the liability+inflow guard
+    // rejects — a MISS, never a false DEBT_PAYMENT.
+    const paymentRescuedCategory = resolveLiabilityPaymentCategory(row.category, "Payment", {
+      ...flowAccountContext,
+      amount:      row.amount,
+      merchant:    row.merchant,
+      description: row.description,
+    });
+    // SR-2 — payroll descriptor rescue, same order as the Plaid sync seam. Both
+    // are rescue-only + Other-only, so an already-rescued Payment leg passes
+    // through untouched and only a still-"Other" inbound payroll credit promotes.
+    const rescuedCategory = resolvePayrollIncomeCategory(paymentRescuedCategory, "Income", {
+      amount:      row.amount,
+      merchant:    row.merchant,
+      description: row.description,
+    });
 
     try {
       const result = await resolveFingerprintOutcome(
@@ -321,17 +432,67 @@ export const POST = withApiHandler(async (
       );
 
       if (result.outcome === "CREATE") {
+        // FlowType P5 Slice 0 — classify from the incoming row (no Plaid PFC).
+        let finalCategory: typeof row.category = rescuedCategory;
+        let finalFlow = computeFlowFields({
+          category:           rescuedCategory,
+          amount:             row.amount,
+          pfcPrimary:         null,
+          pfcDetailed:        null,
+          pfcConfidenceLevel: null,
+          merchantEntityId:   null,
+        });
+        // MI M4/M5 — resolve identity + provenance for the new row (no provider
+        // hints/enrichment on imports); apply the importer's USER rule if the
+        // merchant has one, re-deriving flow from the corrected category. The
+        // import CREATE path never hits an existing USER_* row (create only), so
+        // no preserve case arises. Best-effort; never blocks the create.
+        const mi: { merchantId?: string; categorySource?: CategorySource; categoryRuleId?: string } = {};
+        try {
+          const miResult = await resolveMerchantWrite(db, {
+            merchant:        row.merchant,
+            description:     row.description,
+            // CCPAY-2C-4 — the RESCUED category, matching what this path actually
+            // persists and mirroring the Plaid seam (syncTransactions passes its
+            // post-rescue `category` here too). MI reads currentCategory to decide
+            // whether the global catalog CONFIRMS the category as provenance;
+            // handing it a value we are not writing would compare against a
+            // category that never reaches the row.
+            currentCategory: rescuedCategory,
+            ownerUserId:     user.id,
+          });
+          if (miResult.setMerchantId && miResult.merchantId) mi.merchantId = miResult.merchantId;
+          if (miResult.category) {
+            finalCategory = miResult.category;
+            finalFlow = computeFlowFields({
+              category: finalCategory, amount: row.amount,
+              pfcPrimary: null, pfcDetailed: null, pfcConfidenceLevel: null, merchantEntityId: null,
+            });
+            mi.categorySource = "USER_RULE";
+            if (miResult.categoryRuleId) mi.categoryRuleId = miResult.categoryRuleId;
+          } else if (miResult.categorySource) {
+            mi.categorySource = miResult.categorySource;
+          }
+        } catch (miErr) {
+          console.warn(`[merchant-intelligence] import resolution skipped for row ${lineNumber} — writing null MI columns:`, miErr);
+        }
         await db.transaction.create({
           data: {
             financialAccountId,
             date:                  row.date,
             merchant:              row.merchant,
             description:           row.description,
-            category:              row.category,
+            category:              finalCategory,
             amount:                row.amount,
             pending:               false,
             externalTransactionId: row.externalTransactionId,
             importBatchId:         batch.id, // only set on rows this batch creates — never on MATCH
+            // MC1 Phase 0 Slice 2 — the target account's currency (files
+            // carry no per-row currency column).
+            currency:              flowAcct?.currency ?? null,
+            ...finalFlow,
+            ...computeFactFields(flowAcct?.currency ?? null),
+            ...mi,
           },
         });
         created++;
@@ -344,18 +505,58 @@ export const POST = withApiHandler(async (
         if (getImportProviderCapabilities(source).supportsUpdateOnMatch && result.matchedVia === "externalId") {
           const existing = await db.transaction.findUnique({
             where:  { id: result.transactionId },
-            select: { date: true, amount: true, merchant: true, description: true, category: true },
+            select: {
+              date: true, amount: true, merchant: true, description: true, category: true,
+              // FlowType P5 Slice 0 — read existing provider hints so a re-classify
+              // preserves them (never overwrites pfc/merchantEntityId with null).
+              pfcPrimary: true, pfcDetailed: true, pfcConfidenceLevel: true, merchantEntityId: true,
+              // MC1 Phase 0 Slice 2 — read the existing stamp so the update
+              // below preserves it (or fills it opportunistically if null).
+              currency: true,
+            },
           });
           if (existing) {
+            // CCPAY-2C-4 — the RESCUED category, so update-on-match and CREATE
+            // cannot disagree about the same file row. Feeding the raw category
+            // here while the flow below classified the rescued one would persist
+            // category=Other alongside flowType=DEBT_PAYMENT — a desync produced
+            // by this route itself.
+            //
+            // Consequence, deliberate: the rescue can now TRIGGER an update when
+            // it disagrees with a stored category. That is a correction (a row
+            // imported before this slice as Other becomes Payment on re-import),
+            // and it converges — the second re-import diffs clean. This differs
+            // from `currency` below, which is excluded from the diff precisely so
+            // it can never trigger one; currency is an opportunistic backfill,
+            // whereas category is a value this route authoritatively writes.
             const diff = computeQuickBooksUpdateDiff(existing, {
               date:        row.date,
               amount:      row.amount,
               merchant:    row.merchant,
               description: row.description,
-              category:    row.category,
+              category:    rescuedCategory,
             });
             if (diff) {
-              await db.transaction.update({ where: { id: result.transactionId }, data: diff });
+              // FlowType P5 Slice 0 — re-classify from the incoming values so a
+              // changed category/amount never leaves flowType stale (the P4
+              // backfill would not re-select a current-version row). Existing
+              // provider hints are re-fed and preserved.
+              const flowFields = computeFlowFields({
+                category:           rescuedCategory,
+                amount:             row.amount,
+                pfcPrimary:         existing.pfcPrimary,
+                pfcDetailed:        existing.pfcDetailed,
+                pfcConfidenceLevel: existing.pfcConfidenceLevel,
+                merchantEntityId:   existing.merchantEntityId,
+              });
+              await db.transaction.update({
+                where: { id: result.transactionId },
+                // currency (MC1 Phase 0 Slice 2): preserve the existing stamp,
+                // else stamp the target account's currency opportunistically.
+                // Deliberately NOT part of computeQuickBooksUpdateDiff —
+                // currency must never be what *triggers* an update.
+                data:  { ...diff, ...flowFields, ...computeFactFields(existing.currency ?? flowAcct?.currency ?? null), currency: existing.currency ?? flowAcct?.currency ?? null },
+              });
               updatedTransactionIds.push(result.transactionId);
             }
           }
@@ -385,6 +586,24 @@ export const POST = withApiHandler(async (
       completedAt:   new Date(),
     },
   });
+
+  // OPS-3 S5 Wave 3 — batch-completion record for the bell (the importing
+  // user; particularly valuable for the WITH_ERRORS case, whose row count
+  // detail outlives the response toast). Non-throwing by contract; dedupe
+  // none (each batch is a distinct fact).
+  await createNotification(
+    finalStatus === ImportBatchStatus.COMPLETED_WITH_ERRORS
+      ? {
+          type: "IMPORT_COMPLETED_WITH_ERRORS",
+          userId: user.id,
+          data: { batchId: batch.id, errorCount: failed, rowCount: created },
+        }
+      : {
+          type: "IMPORT_COMPLETED",
+          userId: user.id,
+          data: { batchId: batch.id, rowCount: created },
+        },
+  );
 
   // D2 Step 4D-4 — one batch-level audit event, written only if at least
   // one row was actually overwritten (diff was non-empty for at least one

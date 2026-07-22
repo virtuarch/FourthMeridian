@@ -10,10 +10,10 @@
  * data layer, and most account routes (see the D3 Step 4 read-cutover
  * reports), AND the SOLE runtime write target for account↔space visibility.
  * [UPDATED KD-4 Phase 1] The WorkspaceAccountShare (WAS) dual-write has been
- * retired from every runtime path — WAS is written only by prisma/seed.ts now.
- * The "dual-write" naming in this module is historical; these helpers no
- * longer mirror anything. Full WAS model retirement remains scheduled for
- * v2.5. See docs/investigations/KD4_ATOMIC_SPACE_ACCOUNT_LINK_WRITES_INVESTIGATION.md
+ * retired from every runtime path. The WAS model itself is now fully retired —
+ * dropped in v2.5-A Phase 4c — so nothing writes it anywhere. The "dual-write"
+ * naming in this module is historical; these helpers no longer mirror anything.
+ * See docs/investigations/KD4_ATOMIC_SPACE_ACCOUNT_LINK_WRITES_INVESTIGATION.md
  * §1 for the grounding.
  *
  * Rules (docs/initiatives/d3/D3_STEP3_DUAL_WRITE_REVIEW.md §2, amended by
@@ -56,6 +56,7 @@
 
 import { db } from "@/lib/db";
 import { Prisma, SpaceAccountLinkKind, ShareStatus, VisibilityLevel } from "@prisma/client";
+import { TRANSACTION_DETAIL_VISIBILITY } from "@/lib/ai/visibility";
 
 /**
  * A Prisma client handle that is either the module-level singleton `db` or an
@@ -73,21 +74,57 @@ export type DbClient = Prisma.TransactionClient | typeof db;
 
 /**
  * Resolve a user's personal Space — same lookup used by
- * scripts/backfill-space-account-link.ts (ACTIVE membership in a
+ * scripts/backfill-space-account-link.ts (ACTIVE OWNER membership in a
  * non-archived, non-deleted, type=PERSONAL Space). Duplicated here
  * deliberately so this module has no dependency on the backfill script.
+ *
+ * role: OWNER is defense in depth, not new behavior — PERSONAL Spaces are
+ * enforced single-owner at every mutation entry point (personal-space
+ * hardening), so no ACTIVE non-owner membership on one should exist. Filtered
+ * here anyway so this resolver can never return a stranger's personal Space.
  */
 export async function resolvePersonalSpaceId(userId: string): Promise<string | null> {
   const membership = await db.spaceMember.findFirst({
     where: {
       userId,
       status: "ACTIVE",
+      role: "OWNER",
       space: { type: "PERSONAL", archivedAt: null, deletedAt: null },
     },
     select: { spaceId: true },
     orderBy: { joinedAt: "asc" },
   });
   return membership?.spaceId ?? null;
+}
+
+/**
+ * Resolve the set of FinancialAccount ids the given Space may see at FULL
+ * DETAIL — an ACTIVE SpaceAccountLink whose visibilityLevel grants account
+ * detail (TRANSACTION_DETAIL_VISIBILITY / FULL) against a non-deleted account.
+ *
+ * P1-3 privacy convergence. Reuses the canonical detail gate so any surface that
+ * serializes account identity beside a Space-scoped read (goals contributions,
+ * and any future consumer) can never disagree with the data layer / export
+ * (getAccountsWithVisibility, isFullVisibility) about who may see an account's
+ * real name/balance. Fails closed on every non-FULL tier (BALANCE_ONLY /
+ * SUMMARY_ONLY), REVOKED/inactive links (status filter), and soft-deleted
+ * accounts (financialAccount.deletedAt filter) — a hard-deleted link simply has
+ * no row and so is absent from the set.
+ */
+export async function resolveFullVisibleAccountIds(
+  spaceId: string,
+  client: DbClient = db,
+): Promise<Set<string>> {
+  const links = await client.spaceAccountLink.findMany({
+    where: {
+      spaceId,
+      status:           ShareStatus.ACTIVE,
+      visibilityLevel:  { in: TRANSACTION_DETAIL_VISIBILITY },
+      financialAccount: { deletedAt: null },
+    },
+    select: { financialAccountId: true },
+  });
+  return new Set(links.map((l) => l.financialAccountId));
 }
 
 /**
@@ -151,7 +188,11 @@ export async function computeLinkKind(
 }
 
 export interface SpaceAccountLinkWriteFields {
-  addedByUserId:    string;
+  // OPS-2 S5 — nullable since SpaceAccountLink.addedByUserId flipped to
+  // SetNull. Live call sites always pass a real user id; null flows only when
+  // re-pointing a link whose original adder's account was deleted
+  // (lib/accounts/reconcile.ts merge path preserves the null).
+  addedByUserId:    string | null;
   visibilityLevel:  VisibilityLevel;
   status:           ShareStatus;
   revokedAt?:       Date | null;
@@ -241,140 +282,6 @@ export async function dualWriteSpaceAccountLink(params: {
       return;
     }
     throw err;
-  }
-}
-
-/**
- * Mirrors a WorkspaceAccountShare row wholesale onto SpaceAccountLink — the
- * common case for revoke/restore mutations that already have the full share
- * row in hand (e.g. fetched before an updateMany, or returned from a
- * findMany). `kind` is still recomputed per Rule 1, never copied.
- */
-export async function dualWriteFromShare(
-  share: {
-    workspaceId:        string;
-    financialAccountId: string;
-    addedByUserId:      string;
-    visibilityLevel:    VisibilityLevel;
-    status:             ShareStatus;
-    revokedAt:           Date | null;
-    revokedByUserId:     string | null;
-  },
-  creatorUserId?: string | null,
-  client?: DbClient
-): Promise<void> {
-  await dualWriteSpaceAccountLink({
-    spaceId:            share.workspaceId,
-    financialAccountId: share.financialAccountId,
-    creatorUserId,
-    client,
-    create: {
-      addedByUserId:   share.addedByUserId,
-      visibilityLevel: share.visibilityLevel,
-      status:          share.status,
-      revokedAt:       share.revokedAt,
-      revokedByUserId: share.revokedByUserId,
-    },
-    update: {
-      addedByUserId:   share.addedByUserId,
-      visibilityLevel: share.visibilityLevel,
-      status:          share.status,
-      revokedAt:       share.revokedAt,
-      revokedByUserId: share.revokedByUserId,
-    },
-  });
-}
-
-/**
- * Convenience loop over dualWriteFromShare — used by routes that bulk
- * revoke/restore several WorkspaceAccountShare rows at once via updateMany.
- */
-export async function dualWriteFromShares(
-  shares: Array<{
-    workspaceId:        string;
-    financialAccountId: string;
-    addedByUserId:      string;
-    visibilityLevel:    VisibilityLevel;
-    status:             ShareStatus;
-    revokedAt:           Date | null;
-    revokedByUserId:     string | null;
-  }>,
-  creatorUserId?: string | null,
-  client?: DbClient
-): Promise<void> {
-  for (const share of shares) {
-    await dualWriteFromShare(share, creatorUserId, client);
-  }
-}
-
-/**
- * UNUSED as of D3 Step 3 HOME Semantics Correction
- * (docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B). No call sites remain —
- * removed from app/api/plaid/exchange-token/route.ts and
- * app/api/accounts/wallet/route.ts.
- *
- * Previously: HOME synthesis for account-creation paths whose primary
- * WorkspaceAccountShare write may target a non-personal Space (Plaid
- * exchange-token and wallet create both resolve `spaceId` via
- * getSpaceContext(), which can be any Space the user is currently active
- * in, not necessarily personal) — backfilled a HOME link at the creator's
- * personal Space so the account wouldn't end up with zero HOME links.
- *
- * That backfill is no longer needed: computeLinkKind() now assigns HOME to
- * whichever Space an account's first link is written at, so the *primary*
- * dual-write at account creation already produces the correct HOME link
- * (at the actually-active Space, Personal or otherwise) without a second,
- * synthesized row at Personal. Calling this function today would
- * reintroduce exactly the product-wrong synthesized-personal-HOME rows the
- * correction was meant to remove — do not reconnect it without revisiting
- * that decision.
- *
- * Left in place (not deleted) for fast rollback and as a reference for the
- * "previous" pattern. Best-effort, non-fatal — see Rule 5.
- */
-export async function ensureHomeLink(params: {
-  financialAccountId: string;
-  creatorUserId:       string;
-  excludeSpaceId?:     string;
-}): Promise<void> {
-  try {
-    const personalSpaceId = await resolvePersonalSpaceId(params.creatorUserId);
-    if (!personalSpaceId) {
-      console.warn(
-        `[ensureHomeLink] no resolvable ACTIVE PERSONAL space for creator ${params.creatorUserId}, account ${params.financialAccountId} — skipping HOME synthesis`
-      );
-      return;
-    }
-    if (personalSpaceId === params.excludeSpaceId) return;
-
-    await db.spaceAccountLink.upsert({
-      where: {
-        spaceId_financialAccountId: {
-          spaceId:            personalSpaceId,
-          financialAccountId: params.financialAccountId,
-        },
-      },
-      create: {
-        spaceId:            personalSpaceId,
-        financialAccountId: params.financialAccountId,
-        kind:               SpaceAccountLinkKind.HOME,
-        addedByUserId:      params.creatorUserId,
-        visibilityLevel:    VisibilityLevel.FULL,
-        status:             ShareStatus.ACTIVE,
-      },
-      // Defensive only — every current call site invokes this once, at
-      // creation, so this branch should not normally be hit. If it ever is,
-      // just reassert kind=HOME rather than overwriting status/visibility
-      // fields this function did not originate.
-      update: {
-        kind: SpaceAccountLinkKind.HOME,
-      },
-    });
-  } catch (err) {
-    console.warn(
-      `[ensureHomeLink] best-effort HOME synthesis failed for account ${params.financialAccountId} (non-fatal):`,
-      err
-    );
   }
 }
 

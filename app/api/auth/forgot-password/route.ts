@@ -1,12 +1,18 @@
 /**
  * POST /api/auth/forgot-password
  *
- * Generates a password-reset token and stores a hashed version in the DB.
- * Token expires in 1 hour.
+ * Generates a password-reset token, stores a hashed version in the DB (1h TTL),
+ * and delivers the reset link via the transactional email seam (OPS-1 S2a).
  *
- * DEV MODE: Returns the reset URL directly in the response (no email server needed).
- * PRODUCTION TODO: Replace the response with an email delivery and return only
- *   { success: true, message: "Check your email." }
+ * DELIVERY: sendEmail("password-reset", …) — the real Resend transport in
+ * production, the capture transport in dev/test (no credentials needed). The
+ * absolute reset URL is built from the trusted env base (NEXT_PUBLIC_APP_URL),
+ * never from a request Host header.
+ *
+ * DEV MODE: additionally returns the resetUrl in the response body so the flow
+ * is usable locally without a real inbox. This branch is gated strictly on
+ * NODE_ENV !== "production"; the production response is generic and NEVER
+ * contains the token.
  *
  * Body: { identifier: string }  — accepts email OR username
  */
@@ -14,8 +20,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { db } from "@/lib/db";
+import { env } from "@/lib/env";
 import { hashResetToken } from "@/lib/password-reset-token";
+import { sendEmail } from "@/lib/email/send";
+import { buildResetUrl } from "@/lib/email/reset-url";
 import { limitByIp } from "@/lib/rate-limit";
+import { AuditAction } from "@/lib/audit-actions";
 
 const TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 
@@ -60,26 +70,39 @@ export async function POST(req: NextRequest) {
       data:  { passwordResetToken: hashResetToken(rawToken), passwordResetExpiry: expiry },
     });
 
+    // Absolute link, built from the trusted env base (never the request Host).
+    const resetUrl = buildResetUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
+
+    // Deliver via the email seam. Non-throwing: a provider failure yields an
+    // error status we record for ops, but never fails the request or reveals
+    // account existence to the caller.
+    const emailResult = await sendEmail("password-reset", user.email, { resetUrl });
+    if (emailResult.status === "error") {
+      console.error("[forgot-password] reset email failed to send:", emailResult.error);
+    }
+
     await db.auditLog.create({
       data: {
         userId: user.id,
-        action: "PASSWORD_RESET_REQUESTED",
-        metadata: { email: user.email },
+        action: AuditAction.PASSWORD_RESET_REQUESTED,
+        metadata: { email: user.email, emailStatus: emailResult.status },
       },
     });
 
-    const resetUrl = `/reset-password?token=${rawToken}`;
-
     // ── DEV MODE ONLY ─────────────────────────────────────────────────────────
-    // In production, send the reset link via email and remove resetUrl from response.
-    const isDev = process.env.NODE_ENV !== "production";
+    // Expose the resetUrl for DX ONLY when no real email was delivered — i.e.
+    // the capture transport ran (captured/skipped) or the send errored. A real
+    // Resend send ("sent") withholds the link so the dev panel disappears.
+    // Gated on NODE_ENV — production never returns it regardless of status.
+    const exposeDevUrl =
+      process.env.NODE_ENV !== "production" && emailResult.status !== "sent";
 
     return NextResponse.json({
       success: true,
-      message: isDev
+      message: exposeDevUrl
         ? "DEV MODE: use the resetUrl below — in production this would be emailed."
         : "If an account exists, a reset link has been sent.",
-      ...(isDev && { resetUrl }),
+      ...(exposeDevUrl && { resetUrl }),
     });
   } catch (err) {
     console.error("[forgot-password] error:", err);

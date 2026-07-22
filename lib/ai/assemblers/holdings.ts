@@ -1,104 +1,151 @@
 /**
  * lib/ai/assemblers/holdings.ts
  *
- * AI Context Assembler — 'holdings_summary' domain (D6.3C-1).
+ * AI Context Assembler — 'holdings_summary' domain.
  *
- * Fills the previously-empty HOLDINGS_SUMMARY socket with deterministic,
- * value-based investment intelligence computed from existing Holding rows.
- * The domain was already declared (lib/ai/types.ts), requested by intent
- * routing for INVESTMENT / RETIREMENT questions (lib/ai/domain-manifest.ts),
- * and probed by Investment Readiness via `holdingsDomainPresent` — but no
- * assembler was registered, so it was always skipped. This module registers it.
+ * DB binding for the HOLDINGS_SUMMARY socket. It gathers investment facts from the
+ * CANONICAL investment truth spine and hands them to the pure shaper
+ * (holdings-core.ts::buildHoldingsSummary):
  *
- * Assembles a ContextDomainSection for FinanceDomains.HOLDINGS_SUMMARY:
- *   - Aggregate value totals: portfolio value, invested vs cash, cash %
- *   - Aggregated-by-symbol top positions (FULL visibility only)
- *   - Concentration metrics (top weight, top-5, Herfindahl, effective holdings)
- *   - dataLimits describing what this domain deliberately cannot answer
+ *   - FULL-visibility position DETAIL  → getCurrentPositions({spaceId})
+ *       The A10-at-today seam. Visibility (KD-21a / TRANSACTION_DETAIL_VISIBILITY)
+ *       is enforced INSIDE the seam, so this assembler NEVER re-implements the
+ *       BALANCE_ONLY / SUMMARY_ONLY filter and can never expose a hidden position.
+ *   - All-visibility aggregate VALUE   → getInvestmentValueAsOf({visibilityScope:"all"})
+ *       The canonical wealth-scope valuation. This is where the VALUE (never the
+ *       detail) of BALANCE_ONLY / SUMMARY_ONLY accounts legitimately enters.
+ *   - Crypto (BTC wallets)             → readLegacyCryptoWalletPositions() [TRANSITIONAL]
+ *       Crypto rides the SHARED, crypto-only (walletChain-gated, FULL-detail) bridge
+ *       in lib/investments/legacy-crypto-holdings.ts — the SAME reader the data
+ *       Export uses (P2-5) — never a general brokerage Holding read. P2-6 now ALSO
+ *       writes BTC balances to the PositionObservation spine, so a wallet can be in
+ *       BOTH sources; CANONICAL WINS — any custody account already present in the
+ *       getCurrentPositions rows is excluded from the bridge (dedup by
+ *       FinancialAccount identity, not symbol), so no wallet is ever counted twice.
+ *       Removed entirely once P2-6 completes.
  *
- * ── Scope boundaries (D6.3C-1) ───────────────────────────────────────────────
- * No cost basis, no realized/unrealized gains, no returns/performance, and no
- * asset-class or sector breakdown. Those require investment transaction sync or
- * persisting security type (deferred to later D6.3C slices). This assembler is
- * strictly additive: no schema, Plaid sync, or UI changes.
+ * ── P2-4 read-path invariant ─────────────────────────────────────────────────
+ * This assembler no longer reads `Holding` for A-track (Plaid / brokerage / CSV)
+ * positions and re-implements NO visibility branch. It performs NO direct
+ * `db.holding` read at all — crypto comes through the shared legacy-crypto-holdings
+ * bridge. A source-scan test (holdings.test.ts) guards against a regression to
+ * general Holding / current-holdings reads.
  *
- * ── Permissions and visibility (mirrors accounts.ts) ─────────────────────────
- * Holdings are read through SpaceAccountLink (status ACTIVE, account not
- * soft-deleted). SpaceAccountLink.visibilityLevel controls fidelity:
- *
- *   FULL         — positions (symbol/name/value) may be exposed and feed the
- *                  concentration analysis.
- *   BALANCE_ONLY — holding values contribute to the aggregate portfolio totals
- *   SUMMARY_ONLY   only; individual positions and symbols are never exposed and
- *   (and any        never feed concentration. This prevents a holding's
- *    non-FULL)      existence/identity leaking across Space membership.
- *
- * This mirrors accounts.ts exactly: only `=== VisibilityLevel.FULL` is treated
- * as full fidelity; every other level is sanitized.
+ * ── Scope boundaries ─────────────────────────────────────────────────────────
+ * No cost basis surfaced, no realized/unrealized gains, no returns/performance,
+ * no asset-class/sector breakdown (see holdings-core baseDataLimits). Strictly
+ * additive: no schema, Plaid sync, or UI changes.
  *
  * ── Security invariants ──────────────────────────────────────────────────────
  * - Does NOT import lib/plaid/encryption or call any decrypt function.
  * - Does NOT query WorkspaceAccountShare.
- * - Queries are always filtered by spaceCtx.spaceId — no cross-Space data.
- * - Only plaintext holding fields are selected; no credential fields.
+ * - Every query is filtered by spaceCtx.spaceId — no cross-Space data.
+ * - Only plaintext fields are selected; no credential fields.
  */
 
 import { db } from '@/lib/db';
-import { ShareStatus, VisibilityLevel } from '@prisma/client';
+import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
+import { convertMoney } from '@/lib/money/convert';
+import { buildSpaceConversionContext } from '@/lib/money/server-context';
+import { yesterdayUTCISO } from '@/lib/fx/config';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
   AssemblerOptions,
   ContextDomainSection,
-  HoldingsSummaryData,
-  HoldingPosition,
-  HoldingsConcentration,
-  ConcentrationClassification,
 } from '@/lib/ai/types';
 import type { SpaceContext } from '@/lib/space';
+import { getCurrentPositions } from '@/lib/investments/current-positions';
+import { getInvestmentValueAsOf } from '@/lib/investments/valuation';
+import { readLegacyCryptoWalletPositions } from '@/lib/investments/legacy-crypto-holdings';
+import {
+  buildHoldingsSummary,
+  excludeCanonicalCryptoAccounts,
+  type AllScopeAggregate,
+  type CanonicalPositionRow,
+  type CryptoHoldingsInput,
+} from './holdings-core';
 
 // ---------------------------------------------------------------------------
-// Tunables
+// Helpers
 // ---------------------------------------------------------------------------
 
-/** Maximum number of top positions surfaced in the context payload. */
-const HOLDINGS_TOP_N = 10;
+/** Today (UTC), YYYY-MM-DD. Shared clock for both canonical valuations. */
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 /**
- * Concentration classification thresholds. A band triggers when EITHER the
- * single-name top weight OR the Herfindahl index crosses its floor — so a
- * portfolio dominated by one position and one dominated by a few positions are
- * both caught. Bands are checked most-severe first. See
- * docs/investigations/D6_3C_INVESTMENT_INTELLIGENCE_INVESTIGATION.md §5.
+ * TRANSITIONAL crypto arm (convergence P2-6). Reuses the SHARED, crypto-only
+ * bridge `readLegacyCryptoWalletPositions` (walletChain-gated, FULL-detail — the
+ * exact set btc-sync writes) that the data Export uses (P2-5). This function does
+ * NOT read Holding directly; it only converts the bridge's native/quote values
+ * into the reporting currency (the bridge is a passthrough by design) and
+ * aggregates FULL non-cash positions by symbol. Deleted at P2-6 with the bridge.
+ *
+ * CANONICAL WINS: `canonicalAccountIds` is the set of FinancialAccount ids already
+ * present on the spine (from getCurrentPositions().rows). Any wallet in that set is
+ * excluded here (dedup by custody account, not symbol), so a wallet on the spine is
+ * counted ONCE via canonical and never double-counted through this bridge.
  */
-const CONCENTRATION_BANDS: Array<{
-  classification: Exclude<ConcentrationClassification, 'INSUFFICIENT_DATA'>;
-  topWeight:      number;
-  herfindahl:     number;
-}> = [
-  { classification: 'HIGHLY_CONCENTRATED', topWeight: 0.40, herfindahl: 0.25 },
-  { classification: 'CONCENTRATED',        topWeight: 0.25, herfindahl: 0.15 },
-  { classification: 'MODERATE',            topWeight: 0.15, herfindahl: 0.10 },
-];
-
-// ---------------------------------------------------------------------------
-// Internal query result types
-// ---------------------------------------------------------------------------
-
-type HoldingRow = {
-  symbol: string;
-  name:   string;
-  value:  number;
-  isCash: boolean;
-};
-
-type HoldingsLinkRow = {
-  visibilityLevel: VisibilityLevel;
-  financialAccount: {
-    holdings: HoldingRow[];
+async function readCryptoHoldings(
+  spaceId: string,
+  reportingCurrency: string,
+  canonicalAccountIds: ReadonlySet<string>,
+): Promise<CryptoHoldingsInput> {
+  const empty: CryptoHoldingsInput = {
+    total: 0, invested: 0, cash: 0, fullPositions: [], anyEstimated: false, anyUnconverted: false, hasAny: false,
   };
-};
+
+  const bridgePositions = await readLegacyCryptoWalletPositions({ spaceId });
+  // CANONICAL WINS — drop any wallet already on the PositionObservation spine.
+  const positions = excludeCanonicalCryptoAccounts(bridgePositions, canonicalAccountIds);
+  if (positions.length === 0) return empty;
+
+  // Convert the bridge's native/quote values into the reporting currency at the
+  // latest close (identity for a USD Space). Positions with a null value carry no
+  // value contribution but are still real holdings (hasAny stays true).
+  const moneyCtx = await buildSpaceConversionContext(
+    { reportingCurrency },
+    { currencies: positions.map((p) => p.currency ?? null), dates: [yesterdayUTCISO()] },
+  );
+  const closeISO = yesterdayUTCISO();
+  let anyEstimated = false;
+  let anyUnconverted = false;
+  // V25-FINAL-1 — returns null when the position's currency has no acceptable
+  // rate: the position is EXCLUDED from the portfolio totals (never a fake 0) and
+  // `anyUnconverted` is set so the total is disclosed as an incomplete partial.
+  const toTarget = (value: number, currency: string | null): number | null => {
+    const c = convertMoney({ amount: value, currency: currency ?? null }, closeISO, moneyCtx);
+    if (c.estimated) anyEstimated = true;
+    if (c.amount === null) { anyUnconverted = true; return null; }
+    return c.amount;
+  };
+
+  let total = 0, invested = 0, cash = 0;
+  const fullBySymbol = new Map<string, { symbol: string; name: string; value: number }>();
+
+  for (const p of positions) {
+    if (p.value == null) continue;
+    const v = toTarget(p.value, p.currency);
+    if (v === null) continue; // unavailable — excluded from the partial portfolio total
+    total += v;
+    if (p.isCash) { cash += v; continue; } // crypto is not cash, but respect the flag
+    invested += v;
+    const symbol = p.symbol ?? p.name ?? p.financialAccountId;
+    const name   = p.name ?? p.symbol ?? symbol;
+    const existing = fullBySymbol.get(symbol);
+    if (existing) existing.value += v;
+    else fullBySymbol.set(symbol, { symbol, name, value: v });
+  }
+
+  return {
+    total, invested, cash,
+    fullPositions: [...fullBySymbol.values()],
+    anyEstimated, anyUnconverted, hasAny: true,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Assembler implementation
@@ -111,176 +158,58 @@ async function assembleHoldings(
   const { spaceId } = spaceCtx;
   const { scopeHint = 'full' } = options;
   const assembledAt = new Date().toISOString();
+  const asOf = todayIso();
 
-  // ── Query ─────────────────────────────────────────────────────────────────
-  // Same visibility source as accounts.ts: ACTIVE SpaceAccountLinks for this
-  // Space, excluding soft-deleted accounts. Holdings are read via the
-  // FinancialAccount relation. Legacy Account-anchored holdings are out of
-  // scope here — consistent with the accounts assembler being FinancialAccount
-  // only during the D11 migration.
-  const links: HoldingsLinkRow[] = await db.spaceAccountLink.findMany({
-    where: {
-      spaceId,
-      status:           ShareStatus.ACTIVE,
-      financialAccount: { deletedAt: null },
-    },
-    select: {
-      visibilityLevel: true,
-      financialAccount: {
-        select: {
-          holdings: {
-            select: { symbol: true, name: true, value: true, isCash: true },
-          },
-        },
-      },
-    },
+  // Reporting currency (also used for the crypto arm's conversions). The two
+  // canonical valuations resolve the same currency from the Space internally.
+  const spaceRow = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
   });
+  const reportingCurrency = spaceRow?.reportingCurrency ?? DEFAULT_DISPLAY_CURRENCY;
 
-  // ── Aggregate totals + FULL-visibility position map ─────────────────────────
-  let totalPortfolioValue = 0;
-  let investedValue       = 0;
-  let cashValue           = 0;
-  let anyHolding          = false;
-  let positionsPartiallyHidden = false;
+  // FULL detail (visibility inside the seam) + all-visibility aggregate value —
+  // read together. The crypto transitional arm depends on the canonical rows
+  // (CANONICAL WINS: it excludes wallets already on the spine), so it reads next.
+  const [current, allView] = await Promise.all([
+    getCurrentPositions({ spaceId }, { asOf }),
+    getInvestmentValueAsOf({ spaceId, asOf, visibilityScope: 'all' }),
+  ]);
 
-  // Aggregate FULL-visibility, non-cash positions by symbol (VTI held in two
-  // brokerages collapses to one weighted position).
-  const fullPositions = new Map<string, { symbol: string; name: string; value: number }>();
+  // Custody accounts already represented canonically — the exclusion set for the
+  // legacy crypto bridge, so an on-spine wallet is never counted twice.
+  const canonicalAccountIds = new Set(current.rows.map((r) => r.accountId));
+  const crypto = await readCryptoHoldings(spaceId, reportingCurrency, canonicalAccountIds);
 
-  for (const link of links) {
-    const isFull   = link.visibilityLevel === VisibilityLevel.FULL;
-    const holdings = link.financialAccount.holdings;
+  const fullRows: CanonicalPositionRow[] = current.rows.map((r) => ({
+    instrumentId:   r.instrumentId,
+    symbol:         r.symbol,
+    name:           r.name,
+    reportingValue: r.reportingValue,
+    isCash:         r.isCash,
+  }));
 
-    if (holdings.length > 0) anyHolding = true;
-
-    for (const h of holdings) {
-      // Aggregate value totals include every visibility level — sums only.
-      totalPortfolioValue += h.value;
-      if (h.isCash) {
-        cashValue += h.value;
-      } else {
-        investedValue += h.value;
-      }
-
-      // Position/concentration detail: FULL, non-cash only.
-      if (!isFull) {
-        if (!h.isCash) positionsPartiallyHidden = true;
-        continue;
-      }
-      if (h.isCash) continue;
-
-      const existing = fullPositions.get(h.symbol);
-      if (existing) {
-        existing.value += h.value;
-      } else {
-        fullPositions.set(h.symbol, { symbol: h.symbol, name: h.name, value: h.value });
-      }
-    }
+  // All-visibility aggregate derived from the canonical "all"-scope valuation view.
+  let allCash = 0, anyFxEstimated = false;
+  for (const c of allView.components) {
+    if (c.reportingValue == null) continue;
+    if (c.basisUsed === 'cash') allCash += c.reportingValue;
+    if (c.fxTier === 'estimated') anyFxEstimated = true;
   }
-
-  // No holdings at all across any visible account — domain is cleanly empty.
-  if (!anyHolding) return null;
-
-  const cashPct = totalPortfolioValue > 0 ? cashValue / totalPortfolioValue : 0;
-
-  // ── Positions, sorted by value descending ──────────────────────────────────
-  const analyzedInvestedValue = Array.from(fullPositions.values())
-    .reduce((sum, p) => sum + p.value, 0);
-
-  const rankedPositions: HoldingPosition[] = Array.from(fullPositions.values())
-    .map((p): HoldingPosition => ({
-      symbol: p.symbol,
-      name:   p.name,
-      value:  p.value,
-      weight: analyzedInvestedValue > 0 ? p.value / analyzedInvestedValue : 0,
-    }))
-    .sort((a, b) => b.value - a.value);
-
-  // ── Concentration ───────────────────────────────────────────────────────────
-  const concentration = computeConcentration(rankedPositions, analyzedInvestedValue);
-
-  // ── dataLimits ──────────────────────────────────────────────────────────────
-  const dataLimits: string[] = [
-    'No cost basis — unrealized/realized gains cannot be computed.',
-    'No returns or performance metrics (requires investment transaction history).',
-    'Asset-class and sector breakdown unavailable until security type is persisted.',
-  ];
-  if (positionsPartiallyHidden) {
-    dataLimits.push(
-      'Some accounts are shared below full visibility; their individual positions ' +
-      'are excluded from position and concentration analysis.',
-    );
-  }
-
-  // ── Assemble payload ──────────────────────────────────────────────────────
-  const data: HoldingsSummaryData = {
-    totalPortfolioValue,
-    investedValue,
-    cashValue,
-    cashPct,
-    positionCount: rankedPositions.length,
-    analyzedInvestedValue,
-    positionsPartiallyHidden,
-    concentration,
-    dataLimits,
-    // topPositions omitted for the Daily Brief aggregator to keep payload lean.
-    ...(scopeHint !== 'brief'
-      ? { topPositions: rankedPositions.slice(0, HOLDINGS_TOP_N) }
-      : {}),
+  const allScope: AllScopeAggregate = {
+    valuedSubtotal: allView.valuedSubtotal,
+    cashValue:      allCash,
+    anyFxEstimated,
+    hasAny:         allView.components.length > 0,
   };
+
+  const data = buildHoldingsSummary({ scopeHint, fullRows, allScope, crypto });
+  if (!data) return null;
 
   return {
     domain: FinanceDomains.HOLDINGS_SUMMARY,
     assembledAt,
     data,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Concentration computation
-// ---------------------------------------------------------------------------
-
-/**
- * Deterministic concentration metrics over analyzable (FULL, non-cash)
- * positions. `positions` must already be sorted by value descending and carry
- * weights relative to `analyzedInvestedValue`. Returns INSUFFICIENT_DATA with
- * null metrics when there is nothing to analyze.
- */
-function computeConcentration(
-  positions:             HoldingPosition[],
-  analyzedInvestedValue: number,
-): HoldingsConcentration {
-  if (positions.length === 0 || analyzedInvestedValue <= 0) {
-    return {
-      classification:    'INSUFFICIENT_DATA',
-      topSymbol:         null,
-      topWeight:         null,
-      top5Weight:        null,
-      herfindahl:        null,
-      effectiveHoldings: null,
-    };
-  }
-
-  const topWeight  = positions[0].weight;
-  const top5Weight = positions.slice(0, 5).reduce((sum, p) => sum + p.weight, 0);
-  const herfindahl = positions.reduce((sum, p) => sum + p.weight * p.weight, 0);
-  const effectiveHoldings = herfindahl > 0 ? 1 / herfindahl : positions.length;
-
-  let classification: ConcentrationClassification = 'DIVERSIFIED';
-  for (const band of CONCENTRATION_BANDS) {
-    if (topWeight >= band.topWeight || herfindahl >= band.herfindahl) {
-      classification = band.classification;
-      break;
-    }
-  }
-
-  return {
-    classification,
-    topSymbol:         positions[0].symbol,
-    topWeight,
-    top5Weight,
-    herfindahl,
-    effectiveHoldings,
   };
 }
 

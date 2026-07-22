@@ -38,9 +38,9 @@ function extractRiskFlag(text: string): string {
 
 // ── Style maps ────────────────────────────────────────────────────────────────
 const RISK_CONFIG = {
-  low:    { bar: "bg-emerald-500", badge: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", dot: "bg-emerald-400", label: "Low",    icon: CheckCircle,    iconCls: "text-emerald-400" },
-  medium: { bar: "bg-yellow-500",  badge: "bg-yellow-500/15  text-yellow-400  border-yellow-500/30",  dot: "bg-yellow-400",  label: "Medium", icon: AlertTriangle,   iconCls: "text-yellow-400"  },
-  high:   { bar: "bg-red-500",     badge: "bg-red-500/15     text-red-400     border-red-500/30",     dot: "bg-red-400",     label: "High",   icon: AlertTriangle,   iconCls: "text-red-400"     },
+  low:    { bar: "bg-emerald-500", badge: "bg-emerald-500/15 text-[var(--accent-positive)] border-emerald-500/30", dot: "bg-emerald-400", label: "Low",    icon: CheckCircle,    iconCls: "text-[var(--accent-positive)]" },
+  medium: { bar: "bg-yellow-500",  badge: "bg-yellow-500/15  text-[var(--accent-warning)]  border-yellow-500/30",  dot: "bg-yellow-400",  label: "Medium", icon: AlertTriangle,   iconCls: "text-[var(--accent-warning)]"  },
+  high:   { bar: "bg-red-500",     badge: "bg-red-500/15     text-[var(--accent-negative)]     border-red-500/30",     dot: "bg-red-400",     label: "High",   icon: AlertTriangle,   iconCls: "text-[var(--accent-negative)]"     },
 };
 
 // ── Full analysis modal ───────────────────────────────────────────────────────
@@ -54,20 +54,20 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex flex-col bg-gray-950/95 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex flex-col bg-black/95 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="flex flex-col h-full max-w-lg mx-auto w-full sm:max-w-none">
 
         {/* ── Header ── */}
-        <div className="flex items-center justify-between px-4 pt-5 pb-3 border-b border-gray-800 shrink-0">
+        <div className="flex items-center justify-between px-4 pt-5 pb-3 border-b border-[var(--border-hairline)] shrink-0">
           <div className="flex items-center gap-2">
-            <Brain size={16} className="text-gray-400" />
+            <Brain size={16} className="text-[var(--text-secondary)]" />
             <span className="text-sm font-bold tracking-wide text-white">Fourth Meridian Intelligence</span>
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors touch-manipulation"
+            className="w-8 h-8 flex items-center justify-center rounded-xl bg-[var(--surface-inset)] hover:bg-[var(--surface-hover)] text-[var(--text-secondary)] hover:text-white transition-colors touch-manipulation"
           >
             <X size={16} />
           </button>
@@ -78,15 +78,15 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
 
           {/* Masthead strip */}
           <div className={`h-0.5 w-full ${risk.bar}`} />
-          <div className="flex items-center justify-between px-4 py-2.5 bg-gray-900/60 border-b border-gray-800/60">
-            <span className="text-[11px] text-gray-500">{dateStr}</span>
+          <div className="flex items-center justify-between px-4 py-2.5 bg-[var(--surface-muted)] border-b border-[var(--border-hairline)]">
+            <span className="text-[11px] text-[var(--text-muted)]">{dateStr}</span>
             <div className="flex items-center gap-2">
               <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${risk.badge}`}>
                 {risk.label} Risk
               </span>
               <div className="flex items-center gap-1.5">
                 <div className={`w-1.5 h-1.5 rounded-full ${advice.actionReady ? "bg-emerald-400" : "bg-red-400"} animate-pulse`} />
-                <span className={`text-[11px] font-semibold ${advice.actionReady ? "text-emerald-400" : "text-red-400"}`}>
+                <span className={`text-[11px] font-semibold ${advice.actionReady ? "text-[var(--accent-positive)]" : "text-[var(--accent-negative)]"}`}>
                   {advice.actionReady ? "Action Ready" : "Not Ready"}
                 </span>
               </div>
@@ -94,9 +94,9 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
           </div>
 
           {/* Summary */}
-          <div className="px-4 py-4 border-b border-gray-800/60">
+          <div className="px-4 py-4 border-b border-[var(--border-hairline)]">
             <div className="flex items-start gap-2.5">
-              <div className={`mt-0.5 shrink-0 ${advice.actionReady ? "text-emerald-400" : "text-yellow-400"}`}>
+              <div className={`mt-0.5 shrink-0 ${advice.actionReady ? "text-[var(--accent-positive)]" : "text-[var(--accent-warning)]"}`}>
                 {advice.actionReady ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
               </div>
               <p className="text-[15px] font-semibold text-white leading-snug">{advice.summary}</p>
@@ -105,17 +105,17 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
 
           {/* Highlights */}
           {(context || riskFlag) && (
-            <div className="px-4 py-4 grid grid-cols-1 gap-3 border-b border-gray-800/60">
+            <div className="px-4 py-4 grid grid-cols-1 gap-3 border-b border-[var(--border-hairline)]">
               {context && (
-                <div className="rounded-xl bg-gray-800/60 border border-gray-700/40 px-3.5 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-1.5">Market Context</p>
-                  <p className="text-xs text-gray-300 leading-relaxed">{context}</p>
+                <div className="rounded-xl bg-[var(--surface-inset)] border border-[var(--border-hairline)] px-3.5 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-1.5">Market Context</p>
+                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed">{context}</p>
                 </div>
               )}
               {riskFlag && (
-                <div className="rounded-xl bg-gray-800/60 border border-gray-700/40 px-3.5 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-1.5">Risk Summary</p>
-                  <p className="text-xs text-gray-300 leading-relaxed">{riskFlag}</p>
+                <div className="rounded-xl bg-[var(--surface-inset)] border border-[var(--border-hairline)] px-3.5 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-1.5">Risk Summary</p>
+                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed">{riskFlag}</p>
                 </div>
               )}
             </div>
@@ -123,15 +123,15 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
 
           {/* Action items */}
           {actions.length > 0 && (
-            <div className="px-4 py-4 border-b border-gray-800/60">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-3">Recommended Actions</p>
+            <div className="px-4 py-4 border-b border-[var(--border-hairline)]">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-3">Recommended Actions</p>
               <div className="space-y-3">
                 {actions.map((action, i) => (
                   <div key={i} className="flex items-start gap-3">
-                    <span className="shrink-0 w-5 h-5 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-400 mt-0.5">
+                    <span className="shrink-0 w-5 h-5 rounded-full bg-[var(--surface-inset)] border border-[var(--border-hairline-strong)] flex items-center justify-center text-[10px] font-bold text-[var(--text-secondary)] mt-0.5">
                       {i + 1}
                     </span>
-                    <p className="text-sm text-gray-300 leading-snug pt-0.5">{action}</p>
+                    <p className="text-sm text-[var(--text-secondary)] leading-snug pt-0.5">{action}</p>
                   </div>
                 ))}
               </div>
@@ -140,7 +140,7 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
 
           {/* Full raw analysis */}
           <div className="px-4 py-4">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-3">Full Analysis</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-3">Full Analysis</p>
             <div className="space-y-0.5">
               {advice.adviceText.split("\n").map((line, i) => {
                 if (!line.trim()) return <div key={i} className="h-2" />;
@@ -152,8 +152,8 @@ function AnalysisModal({ advice, onClose }: { advice: AiAdvice; onClose: () => v
                   );
                 }
                 return (
-                  <p key={i} className="text-xs text-gray-400 leading-relaxed"
-                     dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.*?)\*\*/g, "<strong class='text-gray-200'>$1</strong>") }}
+                  <p key={i} className="text-xs text-[var(--text-secondary)] leading-relaxed"
+                     dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.*?)\*\*/g, "<strong class='text-[var(--text-primary)]'>$1</strong>") }}
                   />
                 );
               })}
@@ -180,21 +180,21 @@ export function AdviceBanner({ advice }: Props) {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="w-full text-left px-4 py-3 rounded-2xl border border-gray-700/60 bg-gray-900/80 hover:bg-gray-800/80 active:bg-gray-800 transition-colors touch-manipulation"
+        className="w-full text-left px-4 py-3 rounded-2xl border border-[var(--border-hairline-strong)] bg-[var(--surface-muted)] hover:bg-[var(--surface-hover)] active:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation"
       >
         {/* Row 1 — label · badge · date · chevron */}
         <div className="flex items-center gap-2 mb-1.5">
           <Icon size={13} className={`shrink-0 ${risk.iconCls}`} />
-          <span className="text-[11px] font-bold tracking-widest text-gray-400 uppercase">AI Advice</span>
+          <span className="text-[11px] font-bold tracking-widest text-[var(--text-secondary)] uppercase">AI Advice</span>
           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${risk.badge}`}>
             {risk.label} Risk
           </span>
-          <span className="text-[11px] text-gray-600 ml-auto shrink-0">{dateStr}</span>
-          <ChevronRight size={13} className="text-gray-600 shrink-0" />
+          <span className="text-[11px] text-[var(--text-faint)] ml-auto shrink-0">{dateStr}</span>
+          <ChevronRight size={13} className="text-[var(--text-faint)] shrink-0" />
         </div>
 
         {/* Row 2 — full summary, wraps on mobile, no ellipsis */}
-        <p className="text-sm text-gray-200 leading-snug">{advice.summary}</p>
+        <p className="text-sm text-[var(--text-primary)] leading-snug">{advice.summary}</p>
       </button>
 
       {open && <AnalysisModal advice={advice} onClose={() => setOpen(false)} />}

@@ -31,10 +31,44 @@ import { parsePlaidError } from "@/lib/plaid/errors";
 import { db } from "@/lib/db";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client";
+import { limitByUser } from "@/lib/rate-limit";
+import { env } from "@/lib/env";
+
+/**
+ * The public URL Plaid should POST webhooks to (TRANSACTIONS/SYNC_UPDATES_AVAILABLE).
+ * Prefer an explicit PLAID_WEBHOOK_URL; otherwise derive it from the trusted app
+ * base URL (same source as email links). Plaid can only reach a public HTTPS
+ * host, so a localhost / http base yields `undefined` — the token is created
+ * without a webhook and Plaid simply never calls back (local dev needs a tunnel;
+ * see .env.example PLAID_WEBHOOK_URL).
+ */
+function resolvePlaidWebhookUrl(): string | undefined {
+  const explicit = process.env.PLAID_WEBHOOK_URL?.trim();
+  const url = explicit && explicit.length > 0
+    ? explicit
+    : `${env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "")}/api/plaid/webhook`;
+  if (!/^https:\/\//i.test(url) || /localhost|127\.0\.0\.1/i.test(url)) return undefined;
+  return url;
+}
 
 export async function GET(req: NextRequest) {
   const [user, err] = await requireUser();
   if (err) return err;
+
+  // PO-5A — availability gate. When Plaid isn't configured, return a clean 503
+  // (the client renders an honest "temporarily unavailable" state) instead of
+  // the module-load crash a missing key used to cause. The client is lazy now
+  // (lib/plaid/client.ts), so importing it above is side-effect free.
+  if (!env.isPlaidEnabled) {
+    return NextResponse.json(
+      { error: "unavailable", message: "Bank connections are being set up. Please check back soon." },
+      { status: 503 },
+    );
+  }
+
+  // OPS-1 S4 — each call mints a Plaid Link token (external API cost).
+  const limited = await limitByUser(user.id, "plaid-link-token", { limit: 10, windowSec: 900 });
+  if (limited) return limited;
 
   try {
     // D2-7E — explicit reconnect by PlaidItem ID (reconnect badge).
@@ -42,6 +76,14 @@ export async function GET(req: NextRequest) {
     const reconnectItemId = req.nextUrl.searchParams.get("plaidItemId");
     // D2 Slice A — institution-level auto-detection (Add Account flow).
     const institutionId   = req.nextUrl.searchParams.get("institutionId");
+    // Connection-specific Investments consent (update mode only). When
+    // "investments", the update-mode token additionally collects DTM consent
+    // for Investments on THIS Item via `additional_consented_products` — the
+    // ONLY correct mechanism (products is omitted in update mode except for
+    // credit products; Investments is not one). Never affects a fresh-link
+    // session, so the global Transactions-only path (AmEx-compatible) is
+    // untouched. See docs/investigations/PLAID_INVESTMENTS_CONSENT_INVESTIGATION.md.
+    const consentParam    = req.nextUrl.searchParams.get("consent");
     let accessToken: string | undefined;
 
     if (reconnectItemId) {
@@ -109,14 +151,43 @@ export async function GET(req: NextRequest) {
     const products      = [Products.Transactions];
     const country_codes = [CountryCode.Us];
 
+    // Investments consent is added ONLY in update mode (accessToken present)
+    // and ONLY when explicitly requested for this specific Item. It is never
+    // added to a fresh-link session, so `products` stays Transactions-only for
+    // every normal Add Connection — AmEx and other credit-only institutions
+    // are unaffected. Placed in `additional_consented_products` (not
+    // `products`): this collects consent without gating the institution and is
+    // not billed until investmentsHoldingsGet is called on the Item.
+    // B2 — request Investments consent UP FRONT via additional_consented_products
+    // (NOT `products`). This is the DTM-correct, NON-GATING mechanism: it collects
+    // Investments consent where the institution offers it (Schwab/Fidelity/etc.),
+    // avoiding the second manual "Enable Investments" re-link for the common case,
+    // while a credit-only institution (AmEx) is UNAFFECTED — it simply doesn't
+    // offer Investments (putting Investments in `products` would instead REJECT
+    // those institutions' Link tokens, which is why `products` stays
+    // Transactions-only). Update mode keeps its existing per-Item consent request.
+    const wantsInvestmentsConsent = accessToken
+      ? consentParam === "investments" // update mode: only when explicitly requested
+      : true;                          // fresh link: offer Investments consent (non-gating)
+    const additionalConsentedProducts = wantsInvestmentsConsent
+      ? [Products.Investments]
+      : undefined;
+
+    // Register the webhook so Plaid can tell us when the deeper history window has
+    // finished ingesting (TRANSACTIONS/SYNC_UPDATES_AVAILABLE → /api/plaid/webhook).
+    // Undefined (localhost/http) → token created without a webhook.
+    const webhookUrl = resolvePlaidWebhookUrl();
+
     // ── Server-side config log (safe fields only) ─────────────────────────────
     console.log("[plaid] link-token config:", {
       env:           PLAID_ENV,
       client_name:   "Fourth Meridian",
       mode:          accessToken ? "update" : "new",
       products:      products.map(String),
+      additional_consented_products: additionalConsentedProducts?.map(String) ?? null,
       country_codes: country_codes.map(String),
       redirect_uri:  redirectUri ? "set" : "NOT SET (OAuth institutions will fail)",
+      webhook:       webhookUrl ? "set" : "NOT SET (no public HTTPS URL — dev needs a tunnel)",
     });
 
     const response = await plaidClient.linkTokenCreate({
@@ -124,9 +195,16 @@ export async function GET(req: NextRequest) {
       client_name:   "Fourth Meridian",
       country_codes,
       language:      "en",
+      // Webhook endpoint for asynchronous updates (SYNC_UPDATES_AVAILABLE etc.).
+      // Omitted when there is no public HTTPS URL, so local dev is unaffected.
+      ...(webhookUrl && { webhook: webhookUrl }),
       // Update mode: pass access_token, omit products (Plaid requires this —
       // see LinkTokenCreateRequest docs). Default mode: unchanged from before.
       ...(accessToken ? { access_token: accessToken } : { products }),
+      // Only present in update mode when this Item's Investments consent was
+      // explicitly requested (see wantsInvestmentsConsent). Undefined otherwise,
+      // so it is a no-op for every normal/reconnect session.
+      ...(additionalConsentedProducts && { additional_consented_products: additionalConsentedProducts }),
       ...(redirectUri && { redirect_uri: redirectUri }),
       // D4 — Request maximum available transaction history (up to 730 days /
       // ~2 years) for every new Item. Plaid's default is 90 days when this

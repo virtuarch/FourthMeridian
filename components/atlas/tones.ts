@@ -55,15 +55,6 @@ export const TONE_CHIP_BG: Record<BriefTone, string> = {
   neutral:  "bg-[var(--surface-muted)] border-[var(--border-hairline)]",
 };
 
-/** Border-only variant of TONE_CHIP_BG, for surfaces with a flat fill. */
-export const TONE_BORDER: Record<BriefTone, string> = {
-  positive: "border-[var(--emerald-500)]/20",
-  warning:  "border-[var(--coral-400)]/20",
-  danger:   "border-[var(--coral-600)]/30",
-  info:     "border-[var(--meridian-500)]/20",
-  neutral:  "border-[var(--border-hairline)]",
-};
-
 export const TONE_ICON: Record<BriefTone, string> = {
   positive: "text-[var(--emerald-400)]",
   warning:  "text-[var(--coral-300)]",

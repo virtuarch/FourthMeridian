@@ -10,7 +10,7 @@ import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { parseUserAgent } from "@/lib/ua-parser";
 import { requireUser, requireFreshUser } from "@/lib/session";
-import { clearAllSessions } from "@/lib/session-cache";
+import { revokeOtherUserSessions } from "@/lib/sessions";
 
 export async function GET() {
   const [user, err] = await requireUser();
@@ -42,20 +42,9 @@ export async function DELETE() {
   const userId       = user.id;
   const currentToken = user.sessionToken ?? null;
 
-  // Revoke all except the current session
-  const { count } = await db.userSession.updateMany({
-    where: {
-      userId,
-      revokedAt: null,
-      ...(currentToken ? { sessionToken: { not: currentToken } } : {}),
-    },
-    data: { revokedAt: new Date() },
-  });
-
-  // We don't have the individual revoked tokens in hand here, so clear the
-  // whole cache rather than leaving stale "valid" entries for the revoked
-  // sessions on this instance.
-  clearAllSessions();
+  // Revoke all except the current session (shared helper — same logic backs
+  // password-change hardening in OPS-2 S2).
+  const count = await revokeOtherUserSessions(userId, currentToken);
 
   await db.auditLog.create({
     data: {

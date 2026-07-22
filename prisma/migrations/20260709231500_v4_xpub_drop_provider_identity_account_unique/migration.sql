@@ -1,0 +1,22 @@
+-- Wallet Provider v4 (xpub / multi-address foundation).
+--
+-- Drop the @@unique([provider, financialAccountId]) on ProviderAccountIdentity.
+-- It permitted at most one identity per (provider, account), which blocks an
+-- xpub wallet's many addresses (one ProviderAccountIdentity per discovered
+-- address, all under one FinancialAccount).
+--
+-- Safe relaxation:
+--   * Dropping a unique never violates existing rows.
+--   * No application code keys on this compound unique (verified blast-radius).
+--   * The retained @@unique([provider, externalAccountId, financialAccountId])
+--     still prevents the SAME address twice on one account.
+--   * Single-identity providers (PLAID + single-address wallets) keep the
+--     invariant at the application level (dualWriteProviderAccountIdentity), and
+--     PLAID uniqueness is independently guaranteed by
+--     FinancialAccount.plaidAccountId @unique.
+--
+-- Rollback note: re-adding this unique is only safe BEFORE any xpub wallet has
+-- discovered more than one address per account; afterward it would fail on the
+-- (legitimate) duplicate WALLET rows.
+
+DROP INDEX "ProviderAccountIdentity_provider_financialAccountId_key";

@@ -46,10 +46,14 @@ import {
   Plus, Globe, Lock, Users, Crown, Mail, Loader2, Check, X,
   Pencil, ChevronRight, ChevronDown, Home, Briefcase, Car, Plane, TrendingUp,
   Wrench, CreditCard, Target, LayoutDashboard, MoreHorizontal,
-  Sunset, Building2, Shield,
+  Sunset, Building2, Shield, ArrowUpRight,
 } from "lucide-react";
+import { Surface, Figure } from "@/components/atlas/Surface";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { GlassButton } from "@/components/atlas/GlassButton";
+import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
+import { AtlasLiquidCard } from "@/components/atlas/AtlasLiquidCard";
+import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import {
   CATEGORY_LABELS,
   CATEGORY_ICONS,
@@ -66,7 +70,7 @@ import {
 // Manage Space (deep settings) is only opened from a card's hover action —
 // split out of the initial bundle for this route.
 const ManageSpaceModal = dynamic(
-  () => import("@/components/dashboard/ManageSpaceModal").then((m) => m.ManageSpaceModal),
+  () => import("@/components/space/manage/ManageSpaceModal").then((m) => m.ManageSpaceModal),
   { ssr: false }
 );
 
@@ -91,6 +95,9 @@ type SpaceItem = {
   myRole?: string | null;
   accountCount?: number;
   netWorth: number;
+  // MC1 QA Q5 — this Space's OWN reporting currency for its card labels
+  // (never the active Space's). Defaults to USD upstream.
+  currency: string;
   trend: number[];
   lastUpdated: string | null;
 };
@@ -104,6 +111,15 @@ type Invite = {
   invitedBy: { id: string; name: string | null; username: string | null };
 };
 
+// PO1.0 — access-derived platform Spaces (one ACTIVE grant each). Rendered as
+// a separate card group linking to the platform host; never a switch target.
+type PlatformSpaceItem = {
+  id:     string;
+  name:   string;
+  area:   string;
+  access: string;
+};
+
 interface Props {
   mine: SpaceItem[];
   publicSpaces: SpaceItem[];
@@ -111,6 +127,7 @@ interface Props {
   currentUserId: string;
   activeSpaceId: string | null;
   preferredSpaceId: string | null;
+  platformSpaces?: PlatformSpaceItem[];
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -170,6 +187,49 @@ function categoryTile(category: string): string {
   return CATEGORY_TILE[category] ?? CATEGORY_TILE.OTHER;
 }
 
+// ── Space identity tint (Liquid cards) ────────────────────────────────────────
+// Per-category IDENTITY colour used to tint the Liquid Space cards (and their
+// Glass fallback). These are identity tints ONLY — they signal what kind of
+// Space this is, never its health/state. Product-specified palette.
+const SPACE_IDENTITY_TINT: Record<string, string> = {
+  PERSONAL:       "#C89B3C",
+  HOUSEHOLD:      "#4F8DFF",
+  FAMILY:         "#4F8DFF",
+  BUSINESS:       "#2FBF71",
+  INVESTMENT:     "#8B6CFF",
+  RETIREMENT:     "#8B6CFF",
+  DEBT_PAYOFF:    "#D94A4A",
+  GOAL:           "#E3B341",
+  EMERGENCY_FUND: "#2AA6A6",
+};
+// Custom / Unknown / unmapped (PROPERTY, VEHICLE, TRIP, EQUIPMENT, CUSTOM,
+// OTHER) fall back to a neutral slate so the identity read stays quiet.
+const IDENTITY_TINT_NEUTRAL = "#64748B";
+function spaceIdentityTint(category: string): string {
+  return SPACE_IDENTITY_TINT[category] ?? IDENTITY_TINT_NEUTRAL;
+}
+
+// R4-b: the Liquid card's hue comes from the MATERIAL itself. Convert the
+// identity hex into a shader `tintColor` (RGB multiplier), scaled so the
+// brightest channel ≈ 1.05 — this preserves luminance while carrying the hue,
+// so the tint reads as elegant coloured lighting rather than a flat fill.
+function identityTintColor(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16) / 255;
+  const g = parseInt(h.slice(2, 4), 16) / 255;
+  const b = parseInt(h.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b) || 1;
+  const scale = 1.05 / max;
+  return [r * scale, g * scale, b * scale];
+}
+// Texture the Liquid material refracts for Space cards. The per-Space identity
+// hue still applies on top (see SPACE_CARD_TINT_STRENGTH), so this only changes
+// the refracted backdrop — the tint/hues are unchanged.
+const SPACE_CARD_TEXTURE = "/atlas-card-nebula-v2.png";
+// Raised from the frosted preset's ~0.1 so the identity hue is noticeably more
+// apparent, while staying elegant (lighting/tint, not a solid fill).
+const SPACE_CARD_TINT_STRENGTH = 0.42;
+
 // "Net Worth" is the one real number every space already has (from
 // SpaceSnapshot). The label changes per Space type so the same number
 // reads correctly in context — no new aggregation, just relabeling.
@@ -197,73 +257,62 @@ function formatActivity(lastUpdated: string | null, createdAt: string): string {
   return `${verb} ${new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" })}`;
 }
 
-// Deterministic per-member fill so an avatar stack reads as solid, tactile
-// chips (Linear/Slack-style) instead of a single repeated tint. Drawn only
-// from existing category/tone tokens — no new colors invented.
-const AVATAR_PALETTE = [
-  "var(--meridian-600)",
-  "var(--brass-600)",
-  "var(--violet-600)",
-  "var(--emerald-600)",
-  "var(--coral-600)",
-];
-
-function avatarColor(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
-}
-
-function MemberAvatars({ members }: { members: Member[] }) {
-  const shown = members.slice(0, 3);
-  const extra = members.length - shown.length;
-  return (
-    <div className="flex items-center -space-x-2">
-      {shown.map((m) => {
-        const initial = (m.user.name ?? m.user.username ?? "?")[0].toUpperCase();
-        return (
-          <div
-            key={m.id}
-            title={m.user.name ?? m.user.username ?? ""}
-            className="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
-            style={{ background: avatarColor(m.id), border: "1.5px solid var(--bg-base)" }}
-          >
-            <span className="text-[9px] font-semibold text-white">{initial}</span>
-          </div>
-        );
-      })}
-      {extra > 0 && (
-        <div
-          className="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
-          style={{ background: "var(--ink-600)", border: "1.5px solid var(--bg-base)" }}
-        >
-          <span className="text-[9px] font-semibold text-white">+{extra}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // Tiny inline trend visualization — intentionally hand-rolled SVG rather
 // than recharts; a card grid of 20+ Spaces rendering 20+ chart instances is
 // exactly the case a 12-line polyline beats a charting library for.
-function Sparkline({ values, tone }: { values: number[]; tone: "positive" | "danger" | "neutral" }) {
+function Sparkline({
+  values,
+  tone,
+  fullWidth = false,
+}: {
+  values: number[];
+  tone: "positive" | "danger" | "neutral";
+  fullWidth?: boolean;
+}) {
+  // `fullWidth` (R4-a): a wide, integrated trend band that stretches to the
+  // card's width and lives lower in the card, vs. the compact inline chip.
+  const w = fullWidth ? 240 : 80;
+  const h = fullWidth ? 40 : 28;
+  const pad = 3;
+
   if (values.length < 2) {
-    return <div className="w-20 h-7 shrink-0" aria-hidden />;
+    return fullWidth
+      ? <div className="w-full h-10" aria-hidden />
+      : <div className="w-20 h-7 shrink-0" aria-hidden />;
   }
-  const w = 80, h = 28, pad = 3;
+
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = max - min || 1;
-  const points = values
-    .map((v, i) => {
-      const x = pad + (i / (values.length - 1)) * (w - pad * 2);
-      const y = h - pad - ((v - min) / range) * (h - pad * 2);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
+  const pts = values.map((v, i) => {
+    const x = pad + (i / (values.length - 1)) * (w - pad * 2);
+    const y = h - pad - ((v - min) / range) * (h - pad * 2);
+    return [x, y] as const;
+  });
+  const points = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  // Closed area under the line — a faint fill so the chart feels integrated
+  // into the card rather than a floating line (fullWidth only).
+  const area = `${pts[0][0].toFixed(1)},${h} ${points} ${pts[pts.length - 1][0].toFixed(1)},${h}`;
   const stroke =
-    tone === "positive" ? "var(--emerald-400)" : tone === "danger" ? "var(--coral-400)" : "var(--text-muted)";
+    tone === "positive" ? "var(--emerald-400)" : tone === "danger" ? "var(--coral-400)" : "var(--text-secondary)";
+
+  if (fullWidth) {
+    return (
+      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="w-full h-10" aria-hidden>
+        <polygon points={area} fill={stroke} fillOpacity={0.1} stroke="none" />
+        <polyline
+          points={points}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={1.5}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+    );
+  }
+
   return (
     <svg viewBox={`0 0 ${w} ${h}`} width={w} height={h} className="shrink-0" aria-hidden>
       <polyline points={points} fill="none" stroke={stroke} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
@@ -271,13 +320,36 @@ function Sparkline({ values, tone }: { values: number[]; tone: "positive" | "dan
   );
 }
 
-// ─── Space Card ───────────────────────────────────────────────────────────────
+// ─── Space Row (editorial) ────────────────────────────────────────────────────
 //
-// Renders as a plain tinted tile (not a nested GlassPanel) so a grid of
-// these can live inside one shared Atlas Glass canvas without stacking
-// blur-on-blur. Background/border are Tailwind utility classes rather than
-// inline `style` specifically so the `hover:` variants can take effect —
-// see GlassButton.tsx for the same note.
+// The launcher is a LIST of rooms you already own, not a grid of products to
+// browse (prototype Launcher.tsx). Each Space is one editorial row on a solid
+// Atlas Surface — "solid surfaces carry information" — carrying identity on the
+// left, its own trend + one real figure on the right, and an enter affordance.
+// No Liquid/Glass material here: reading a number wants a still surface, and a
+// launcher's whole job is to be a quiet threshold.
+//
+// Nothing about the DATA changed — same SpaceItem, same handlers, same
+// cookie-switch on click. Only the presentation moved from tile to row.
+
+// Compact money for the row figure so long balances (S$1,284,320) read as
+// S$1.28M and never wrap the right column. Same currency, same source number.
+function formatCurrencyCompact(value: number, currency = DEFAULT_DISPLAY_CURRENCY) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency", currency, notation: "compact", maximumFractionDigits: 1,
+  }).format(value);
+}
+
+// Period change derived from the SAME trend series the sparkline draws — not a
+// new number. Math.abs on the base keeps the sign honest for debt Spaces (whose
+// base can be negative). Null when there isn't enough history to state a change.
+function trendDeltaPct(trend: number[]): number | null {
+  if (trend.length < 2) return null;
+  const first = trend[0];
+  const last = trend[trend.length - 1];
+  if (first === 0) return null;
+  return ((last - first) / Math.abs(first)) * 100;
+}
 
 function SpaceCard({
   space,
@@ -308,137 +380,139 @@ function SpaceCard({
       ? space.trend[space.trend.length - 1] >= space.trend[0] ? "positive" : "danger"
       : "neutral";
   const category = space.category as SpaceCategory;
+  const tint = spaceIdentityTint(category);
+  const hasFigure = space.trend.length > 0;
+  const delta = trendDeltaPct(space.trend);
+  const isShared = space.type === "SHARED";
 
-  const tile = isActive
-    ? "bg-[rgba(59,130,246,.08)] hover:bg-[rgba(59,130,246,.13)] border-[rgba(125,168,255,.32)] hover:border-[rgba(125,168,255,.5)]"
-    : "bg-[var(--surface-muted)] hover:bg-[var(--surface-hover)] border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)]";
+  // The whole left/centre/figure region is one enter affordance (onOpen →
+  // cookie switch). Crown/Manage are SIBLINGS of that button, never nested
+  // inside it (no button-in-button), so they keep their own click targets.
+  const openable = interactive && !!onOpen;
 
   return (
-    <div
+    <Surface
+      as="li"
       className={[
-        "group relative overflow-hidden rounded-[var(--radius-lg)] border p-5 flex flex-col gap-4",
-        "transition-[transform,background-color,border-color,box-shadow] duration-[var(--dur-base)] ease-[var(--ease-standard)]",
-        tile,
-        interactive
-          ? "cursor-pointer hover:-translate-y-[3px] hover:scale-[1.014] hover:shadow-[var(--shadow-e3)]"
-          : "",
+        "group relative flex items-stretch overflow-hidden transition-colors duration-[var(--dur-base)] ease-[var(--ease-standard)]",
+        isActive ? "border-[rgba(125,168,255,.4)]" : "hover:border-[var(--border-hairline-strong)]",
         switching ? "opacity-60" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-      onClick={interactive ? onOpen : undefined}
-      role={interactive && onOpen ? "button" : undefined}
-      tabIndex={interactive && onOpen ? 0 : undefined}
-      onKeyDown={
-        interactive && onOpen
-          ? (e: React.KeyboardEvent) => { if (e.key === "Enter") onOpen(); }
-          : undefined
-      }
+      ].filter(Boolean).join(" ")}
     >
-      {/* Specular top-edge highlight — faint at rest, brightens on hover so
-          the "liquid glass raise" reads as physical rather than a flat tint
-          swap. */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute top-0 left-4 right-4 h-px opacity-30 group-hover:opacity-100 transition-opacity duration-[var(--dur-base)] ease-[var(--ease-standard)]"
-        style={{ background: "linear-gradient(90deg, transparent, var(--specular-edge), transparent)" }}
-      />
+      {/* Active accent — a quiet left rail, not a fill; identity stays neutral. */}
+      {isActive && (
+        <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ background: "var(--meridian-400)" }} />
+      )}
 
-      {/* Soft diagonal glass reflection — a faint sheen band that only
-          appears on hover, clipped to the card's rounded corners by the
-          parent's overflow-hidden. Intentionally subtle: no bloom, no
-          neon, just a hint of light passing across glass. */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute -inset-x-6 -top-1/2 h-[180%] opacity-0 group-hover:opacity-100 transition-opacity duration-[var(--dur-base)] ease-[var(--ease-standard)]"
-        style={{
-          background:
-            "linear-gradient(115deg, transparent 38%, rgba(255,255,255,.045) 48%, rgba(255,255,255,.085) 50%, rgba(255,255,255,.045) 52%, transparent 62%)",
-        }}
-      />
-
-      {/* Icon + name + type */}
-      <div className="flex items-start gap-3">
+      <button
+        type="button"
+        onClick={openable ? onOpen : undefined}
+        disabled={!openable}
+        aria-label={openable ? `Enter ${displaySpaceName(space.name)}` : displaySpaceName(space.name)}
+        className="flex min-w-0 flex-1 items-center gap-4 p-4 text-left sm:gap-5 sm:p-5 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-inset"
+      >
+        {/* Identity chip — the one place category colour appears (identity only,
+            never state), a small tinted glass swatch echoing the prototype. */}
         <div
-          className="w-11 h-11 rounded-[var(--radius-md)] flex items-center justify-center shrink-0 text-white"
-          style={{ background: categoryTile(category), boxShadow: "inset 0 1px 0 rgba(255,255,255,.2), 0 1px 3px rgba(0,0,0,.25)" }}
+          className="relative hidden size-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--radius-sm)] text-white sm:flex"
+          style={{
+            background: `linear-gradient(140deg, ${tint}66, ${tint}22)`,
+            boxShadow: `inset 0 1px 0 rgba(255,255,255,.4), inset 0 0 0 1px ${tint}59`,
+          }}
         >
           <CategoryIcon name={CATEGORY_ICONS[category] ?? "LayoutDashboard"} />
         </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start gap-1.5">
-            {/* Name scales down slightly before it wraps to a second line,
-                and only ever ellipsizes as a last resort (line-clamp-2's
-                native overflow behavior) — long Space names stay readable
-                instead of getting cut off after a few characters. */}
-            <p
-              className="font-semibold text-[var(--text-primary)] leading-snug line-clamp-2 break-words"
-              style={{ fontSize: "clamp(0.8125rem, 0.75rem + 0.3vw, 0.875rem)" }}
-            >
+
+        {/* Name + one meta line — the reading axis. */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h2 className="truncate font-semibold text-[var(--text-primary)] tracking-[-0.01em]">
               {displaySpaceName(space.name)}
-            </p>
+            </h2>
+            {isActive && <RowChip tone="accent">Active</RowChip>}
+            {isShared && <RowChip>Shared</RowChip>}
             {space.isPublic
-              ? <Globe size={11} className="text-[var(--text-muted)] shrink-0 mt-1" />
-              : !isPersonal && <Lock size={11} className="text-[var(--text-muted)] shrink-0 mt-1" />}
+              ? <Globe size={12} className="shrink-0 text-[var(--text-muted)]" />
+              : !isPersonal && <Lock size={12} className="shrink-0 text-[var(--text-muted)]" />}
+            {!interactive && (
+              <span className="shrink-0 text-[10px] font-medium text-[var(--text-muted)]">Not joined</span>
+            )}
           </div>
-          <p className="text-xs text-[var(--text-muted)] mt-0.5 truncate">
+          <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
             {CATEGORY_LABELS[category] ?? "Space"}
+            {" · "}{space.members.length} member{space.members.length === 1 ? "" : "s"}
+            {" · "}{formatActivity(space.lastUpdated, space.createdAt)}
           </p>
         </div>
-        {!interactive && (
-          <span className="text-[9px] font-medium text-[var(--text-muted)] shrink-0">Not joined</span>
-        )}
-      </div>
 
-      {/* Primary financial metric + sparkline */}
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">
-            {metricLabelForCategory(category)}
-          </p>
-          <p className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">
-            {space.trend.length > 0 ? formatCurrency(space.netWorth) : "—"}
-          </p>
+        {/* Trend — hidden on mobile where the row is already tight. */}
+        <div className="hidden w-24 shrink-0 md:block">
+          <Sparkline values={space.trend} tone={tone} fullWidth />
         </div>
-        <Sparkline values={space.trend} tone={tone} />
-      </div>
 
-      {/* Members + last updated + hover actions */}
-      <div className="flex items-center justify-between gap-3 pt-3" style={{ borderTop: "1px solid var(--border-hairline)" }}>
-        <div className="flex items-center gap-2.5 min-w-0">
-          <MemberAvatars members={space.members} />
-          <span className="text-[11px] text-[var(--text-muted)] truncate">
-            {formatActivity(space.lastUpdated, space.createdAt)}
-          </span>
+        {/* One real figure + its derived change. Money is neutral (a number is
+            not a claim); only the delta carries gain/loss colour. */}
+        <div className="shrink-0 text-right">
+          <Figure value={hasFigure ? formatCurrencyCompact(space.netWorth, space.currency) : "—"} size="lede" />
+          {delta !== null && (
+            <p className={["tabular-nums mt-0.5 text-[11px]", delta >= 0 ? "text-[var(--accent-positive)]" : "text-[var(--accent-negative)]"].join(" ")}>
+              {delta >= 0 ? "+" : ""}{delta.toFixed(1)}%
+            </p>
+          )}
         </div>
-        {interactive && (
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity shrink-0">
-            {isDefault ? (
-              <span title="Default landing Space" className="p-1.5">
-                <Crown size={13} className="text-[var(--brass-400)]" />
-              </span>
-            ) : onSetDefault && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onSetDefault(); }}
-                title="Set as default Space"
-                className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors"
-              >
-                {settingDefault ? <Loader2 size={13} className="animate-spin" /> : <Crown size={13} />}
-              </button>
-            )}
-            {canManage && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onManage!(); }}
-                title="Manage Space"
-                className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors"
-              >
-                <Pencil size={13} />
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+
+        <ArrowUpRight
+          size={15}
+          aria-hidden
+          className="shrink-0 text-[var(--text-muted)] transition-[transform,color] duration-[var(--dur-base)] ease-[var(--ease-standard)] group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-[var(--text-secondary)]"
+        />
+      </button>
+
+      {/* Row actions — siblings of the enter button, revealed on hover/focus. */}
+      {interactive && (isDefault || onSetDefault || canManage) && (
+        <div className="flex items-center gap-0.5 pr-3 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          {isDefault ? (
+            <span title="Default landing Space" className="p-1.5">
+              <Crown size={13} className="text-[var(--brass-400)]" />
+            </span>
+          ) : onSetDefault && (
+            <button
+              onClick={onSetDefault}
+              title="Set as default Space"
+              className="rounded-[var(--radius-xs)] p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover-strong)] hover:text-[var(--text-primary)]"
+            >
+              {settingDefault ? <Loader2 size={13} className="animate-spin" /> : <Crown size={13} />}
+            </button>
+          )}
+          {canManage && (
+            <button
+              onClick={onManage}
+              title="Manage Space"
+              className="rounded-[var(--radius-xs)] p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover-strong)] hover:text-[var(--text-primary)]"
+            >
+              <Pencil size={13} />
+            </button>
+          )}
+        </div>
+      )}
+    </Surface>
+  );
+}
+
+// A quiet inline badge — the prototype's `Chip` for "Shared"/"Active" identity
+// marks. Not the Atlas radiogroup Chips (that's a switcher); this is a label.
+function RowChip({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "accent" }) {
+  return (
+    <span
+      className={[
+        "shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none",
+        tone === "accent"
+          ? "border-[rgba(125,168,255,.34)] text-[var(--meridian-300)]"
+          : "border-[var(--border-hairline)] text-[var(--text-muted)]",
+      ].join(" ")}
+    >
+      {children}
+    </span>
   );
 }
 
@@ -498,13 +572,63 @@ function PublicSpaceCard({ space, onOpen }: { space: SpaceItem; onOpen: () => vo
           {metricLabelForCategory(category)}
         </p>
         <p className="text-sm font-bold text-[var(--text-primary)] tabular-nums truncate">
-          {space.trend.length > 0 ? formatCurrency(space.netWorth) : "—"}
+          {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
         </p>
         <p className="text-[9px] text-[var(--text-muted)] mt-0.5 truncate">
           {formatActivity(space.lastUpdated, space.createdAt)}
         </p>
       </div>
     </div>
+  );
+}
+
+// Empty state for "Explore Public Spaces" when none exist. Framed by the SAME
+// Atlas Liquid backdrop as the Space cards (same texture + a quiet neutral
+// tint) so it belongs to the same family; falls back to a Glass panel when
+// Liquid isn't supported (useAtlasLiquid). Static — no click affordance.
+function PublicEmptyState() {
+  const liquid = useAtlasLiquid();
+
+  const content = (
+    <div className="relative mx-auto flex max-w-md flex-col items-center gap-3 px-6 py-12 text-center">
+      <div
+        className="flex h-12 w-12 items-center justify-center rounded-full"
+        style={{
+          background: "linear-gradient(140deg, rgba(125,168,255,.18), rgba(125,168,255,.05))",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,.3), inset 0 0 0 1px rgba(125,168,255,.26)",
+        }}
+      >
+        <Globe size={20} className="text-[var(--meridian-300)]" />
+      </div>
+      <div>
+        <p className="text-sm font-semibold text-[var(--text-primary)]">
+          No public Spaces available yet
+        </p>
+        <p className="mt-1.5 text-xs leading-relaxed text-[var(--text-secondary)]">
+          The community marketplace is just getting started. Check back soon to
+          discover public Spaces, frameworks, and templates.
+        </p>
+      </div>
+    </div>
+  );
+
+  if (liquid) {
+    return (
+      <AtlasLiquidCard
+        ariaLabel="No public Spaces available yet"
+        backgroundImage={SPACE_CARD_TEXTURE}
+        tint={identityTintColor(IDENTITY_TINT_NEUTRAL)}
+        tintStrength={SPACE_CARD_TINT_STRENGTH}
+      >
+        <div className="relative rounded-[20px] overflow-hidden">{content}</div>
+      </AtlasLiquidCard>
+    );
+  }
+
+  return (
+    <GlassPanel depth="thin" elevation="e1" radius="lg">
+      {content}
+    </GlassPanel>
   );
 }
 
@@ -571,7 +695,7 @@ function PublicSpaceDetailModal({ space, onClose }: { space: SpaceItem; onClose:
                   {metricLabelForCategory(category)}
                 </p>
                 <p className="text-2xl font-bold text-[var(--text-primary)] tabular-nums">
-                  {space.trend.length > 0 ? formatCurrency(space.netWorth) : "—"}
+                  {space.trend.length > 0 ? formatCurrency(space.netWorth, space.currency) : "—"}
                 </p>
               </div>
               <Sparkline values={space.trend} tone={tone} />
@@ -716,6 +840,61 @@ function InviteBanner({ invites, onAction }: { invites: Invite[]; onAction: () =
   );
 }
 
+// ─── Platform card group (PO1.0) ──────────────────────────────────────────────
+//
+// Access-derived (from PlatformGrant); rendered only for grant-holders. Each
+// card is a plain link to /dashboard/platform/[area] — NOT a switch target, so
+// the ambient Space context never points at a platform Space. Visually quieter
+// and distinct from customer Space cards (Shield glyph, access badge) so the two
+// families never read as the same thing.
+
+function PlatformSpaceGroup({ spaces }: { spaces: PlatformSpaceItem[] }) {
+  const router = useRouter();
+  if (spaces.length === 0) return null;
+
+  return (
+    <div className="mt-10">
+      {/* Divider label — the same "operator Spaces, distinct section, same shell"
+          treatment as the prototype's Fourth Meridian HQ (Launcher.tsx §5.2). */}
+      <div className="mb-3 flex items-center gap-3">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+          Fourth Meridian HQ
+        </span>
+        <span className="h-px flex-1 bg-[var(--border-hairline)]" aria-hidden />
+      </div>
+      <ul className="space-y-2.5">
+        {spaces.map((p) => {
+          const href = `/dashboard/platform/${p.area}`;
+          return (
+            <Surface as="li" key={p.id} className="group transition-colors duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:border-[var(--border-hairline-strong)]">
+              <button
+                type="button"
+                onClick={() => router.push(href)}
+                aria-label={`Open ${displaySpaceName(p.name)}`}
+                className="flex w-full items-center gap-4 p-4 text-left sm:p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-inset"
+              >
+                {/* HQ badge — operator identity, never a financial figure. */}
+                <span className="grid size-9 shrink-0 place-items-center rounded-full border border-[var(--border-hairline-strong)] text-[9px] font-semibold text-[var(--brass-300)]">
+                  HQ
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h2 className="truncate font-semibold text-[var(--text-primary)]">{displaySpaceName(p.name)}</h2>
+                  <p className="mt-1 truncate text-xs text-[var(--text-muted)]">Platform area · {p.access}</p>
+                </div>
+                <ArrowUpRight
+                  size={15}
+                  aria-hidden
+                  className="shrink-0 text-[var(--text-muted)] transition-[transform,color] duration-[var(--dur-base)] ease-[var(--ease-standard)] group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-[var(--text-secondary)]"
+                />
+              </button>
+            </Surface>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 // ─── Header ───────────────────────────────────────────────────────────────────
 //
 // Deliberately not a GlassPanel — a large boxed-in hero reads heavy and
@@ -723,28 +902,50 @@ function InviteBanner({ invites, onAction }: { invites: Invite[]; onAction: () =
 // the lighter, breathable, visionOS-style treatment this page wants. No
 // "current Space" status line under the title anymore — which Space is
 // active is already obvious from the card grid below (tinted tile + no
-// "Active" badge needed) and from the sidebar, so the hero just goes
-// straight from headline to subtitle.
+// "Active" badge needed) and from the sidebar.
+//
+// P1 (overview redesign): the descriptive subtitle was removed — the Daily
+// Brief owns greetings/framing, so the overview header stays to the point
+// (just the "Spaces" title + the Create Space CTA top-right), letting the
+// now-more-apparent Atlas Field carry the atmosphere.
 
 function SpacesHeader({ onCreateSpace }: { onCreateSpace: () => void }) {
+  // Phase 1 Liquid pilot — the single Create Space CTA is the one Spaces surface
+  // that opts into the Liquid material; everything else stays Atlas Glass. Falls
+  // back to the original GlassButton when Liquid isn't supported (useAtlasLiquid:
+  // no WebGL / prefers-reduced-transparency / ?atlasLiquid=0). Behavior (opening
+  // CreateSpaceModal via onCreateSpace) is identical on both paths.
+  const liquid = useAtlasLiquid();
   return (
     <div className="pt-2 pb-8 md:pb-10 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-5">
-      <div>
-        <h1 className="text-3xl md:text-[2.5rem] font-semibold tracking-tight text-[var(--text-primary)] mb-2">
+      <div className="min-w-0">
+        <h1 className="text-3xl md:text-[2.5rem] font-semibold tracking-tight text-[var(--text-primary)]">
           Spaces
         </h1>
-        <p className="text-sm md:text-base text-[var(--text-muted)] max-w-xl leading-relaxed">
-          Everything you build, manage, and share lives here.
+        {/* Manifesto — the launcher's one line of framing (prototype
+            Launcher.tsx). Each Space is a walled financial world. */}
+        <p className="mt-1.5 text-sm text-[var(--text-secondary)] max-w-md">
+          Each Space is a separate financial world. Nothing leaks between them.
         </p>
       </div>
-      {/* Replaces the old permanently-visible inline Create Space panel —
-          the form now lives in CreateSpaceModal (mounted once from
-          DashboardChrome.tsx), opened via the same "open-create-space"
-          window event the Sidebar's own Create Space row also dispatches. */}
-      <GlassButton onClick={onCreateSpace} tone="meridian" className="shrink-0 sm:mt-1">
-        <Plus size={15} />
-        Create Space
-      </GlassButton>
+      {/* Opens CreateSpaceModal (mounted once from DashboardChrome.tsx) via the
+          same "open-create-space" window event the Sidebar's row dispatches. */}
+      {liquid ? (
+        <AtlasLiquidCta
+          onClick={onCreateSpace}
+          ariaLabel="Create Space"
+          fullWidth={false}
+          className="shrink-0 sm:mt-1"
+        >
+          <Plus size={15} />
+          <span>Create Space</span>
+        </AtlasLiquidCta>
+      ) : (
+        <GlassButton onClick={onCreateSpace} tone="meridian" className="shrink-0 sm:mt-1">
+          <Plus size={15} />
+          Create Space
+        </GlassButton>
+      )}
     </div>
   );
 }
@@ -758,6 +959,7 @@ export function SpacesClient({
   currentUserId,
   activeSpaceId: initialActiveId,
   preferredSpaceId: initialPreferredId,
+  platformSpaces = [],
 }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -822,6 +1024,13 @@ export function SpacesClient({
       if (res.ok) {
         setActiveId(spaceId);
         window.dispatchEvent(new CustomEvent(SPACE_LIST_CHANGED_EVENT));
+        // MC1 nav currency-staleness fix — the display-currency provider lives
+        // in the shared /dashboard layout, which App Router does NOT re-run on
+        // same-layout navigation. Without invalidating the Router Cache the
+        // previous Space's currency would follow into the next Space until a
+        // manual refresh. router.refresh() re-runs the layout with the new
+        // active-Space cookie (parity with Sidebar.handleSwitch).
+        router.refresh();
         router.push("/dashboard");
       }
     } finally {
@@ -876,7 +1085,7 @@ export function SpacesClient({
   return (
     <div className="min-h-[70vh]">
       {leftSpaceToast && (
-        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg border text-sm font-medium bg-emerald-500/10 border-emerald-500/30 text-emerald-400">
+        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg border text-sm font-medium bg-emerald-500/10 border-emerald-500/30 text-[var(--accent-positive)]">
           <Check size={14} />
           You left {leftSpaceToast}
         </div>
@@ -890,83 +1099,75 @@ export function SpacesClient({
 
         {pendingInvites.length > 0 && <InviteBanner invites={pendingInvites} onAction={refresh} />}
 
-        {/* One unified Atlas Glass canvas holding every Space card — not
-            a row of separately-boxed panels. No more right-column Create
-            Space panel: that form now lives in a modal (see
-            CreateSpaceModal.tsx), so the page content is just the card
-            grid. */}
-        <GlassPanel depth="thin" elevation="e2" radius="xl" className="p-4 md:p-6">
-          {/* auto-fit + minmax sizes columns off the actual width of this
-              GlassPanel, not the viewport — so once the content column
-              (viewport minus sidebar) can't fit two 280px-min cards side by
-              side, it drops to one column instead of squeezing both.
-              min(280px,100%) keeps the floor from ever exceeding the
-              container on very narrow screens, which would otherwise force
-              horizontal scroll. */}
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-4">
-            {visibleSpaces.map((space) => (
-              <SpaceCard
-                key={space.id}
-                space={space}
-                isActive={resolvedActiveId === space.id}
-                isDefault={preferredId ? preferredId === space.id : space.id === personal?.id}
-                isPersonal={space.id === personal?.id}
-                onOpen={() => handleOpen(space)}
-                onManage={() => setManagingSpace(space)}
-                onSetDefault={space.id === personal?.id ? undefined : () => handleSetDefault(space.id)}
-                switching={switchingId === space.id}
-                settingDefault={settingDefaultId === space.id}
-              />
-            ))}
+        {/* A LIST, not a grid — rooms you already own, on one reading axis
+            (prototype Launcher.tsx). Each row is a solid Atlas Surface; the
+            personal Space is pinned first upstream (`ordered`). */}
+        <ul className="space-y-2.5">
+          {visibleSpaces.map((space) => (
+            <SpaceCard
+              key={space.id}
+              space={space}
+              isActive={resolvedActiveId === space.id}
+              isDefault={preferredId ? preferredId === space.id : space.id === personal?.id}
+              isPersonal={space.id === personal?.id}
+              onOpen={() => handleOpen(space)}
+              onManage={() => setManagingSpace(space)}
+              onSetDefault={space.id === personal?.id ? undefined : () => handleSetDefault(space.id)}
+              switching={switchingId === space.id}
+              settingDefault={settingDefaultId === space.id}
+            />
+          ))}
+        </ul>
+
+        {hiddenSpaceCount > 0 && (
+          <div className="flex justify-center pt-6">
+            <GlassButton tone="neutral" size="sm" onClick={() => setShowAllSpaces(true)}>
+              Show {hiddenSpaceCount} more Space{hiddenSpaceCount === 1 ? "" : "s"}
+              <ChevronDown size={13} />
+            </GlassButton>
           </div>
+        )}
 
-          {hiddenSpaceCount > 0 && (
-            <div className="flex justify-center pt-5">
-              <GlassButton tone="neutral" size="sm" onClick={() => setShowAllSpaces(true)}>
-                Show {hiddenSpaceCount} more Space{hiddenSpaceCount === 1 ? "" : "s"}
-                <ChevronDown size={13} />
-              </GlassButton>
-            </div>
-          )}
-        </GlassPanel>
+        {/* PO1.0 — Platform group (access-derived; only shown to grant-holders). */}
+        <PlatformSpaceGroup spaces={platformSpaces} />
 
-        {explorePublic.length > 0 && (
-          <div className="mt-10">
-            {/* Clickable heading -> /dashboard/spaces/public. That route
-                doesn't exist yet (see TODO below) — this is the main
-                Spaces page's compact preview row, not the full public
-                directory, so the heading itself is the entry point into a
-                future dedicated browsing page. Title-case + text-primary
-                matches the platform's other sub-section headings (see
-                "Add existing accounts" / "Invite Users" in
-                CreateSpaceModal.tsx) rather than the old all-caps muted
-                label style. */}
-            <button
-              type="button"
-              onClick={() => router.push("/dashboard/spaces/public")}
-              className="group flex items-center gap-1.5 mb-3 text-sm font-semibold text-[var(--text-primary)] hover:text-[var(--meridian-400)] transition-colors"
-            >
-              Explore Public Spaces
-              <ChevronRight size={14} className="text-[var(--text-muted)] group-hover:text-[var(--meridian-400)] group-hover:translate-x-0.5 transition-[color,transform]" />
-            </button>
-            {/* TODO(backend/future pass): /dashboard/spaces/public doesn't
-                exist yet — this click currently 404s. Build a dedicated
-                public-Spaces browsing page there (full directory, search,
-                filters) rather than cramming it into this compact preview
-                row. Capped at PUBLIC_CARD_LIMIT here intentionally; that
-                future page is where "see all public Spaces" belongs. */}
+        {/* Explore Public Spaces — ALWAYS rendered. When public Spaces exist,
+            it shows the compact preview grid; when none exist, it shows an
+            intentional, premium Atlas empty state (glass-framed) rather than
+            hiding the section. Presentation-only — the underlying query/data
+            are unchanged. */}
+        <div className="mt-10">
+          {/* Clickable heading -> /dashboard/spaces/public (the future full
+              public directory). Title-case + text-primary matches the
+              platform's other sub-section headings. */}
+          <button
+            type="button"
+            onClick={() => router.push("/dashboard/spaces/public")}
+            className="group flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)] hover:text-[var(--meridian-400)] transition-colors"
+          >
+            Explore Public Spaces
+            <ChevronRight size={14} className="text-[var(--text-muted)] group-hover:text-[var(--meridian-400)] group-hover:translate-x-0.5 transition-[color,transform]" />
+          </button>
+          <p className="text-xs text-[var(--text-secondary)] mt-1 mb-3">
+            Discover ideas, track creators, and follow what matters.
+          </p>
 
-            {/* Roughly half the column width of the "My Spaces" grid above
-                (150px floor vs. 280px) — compact, near-square previews
-                rather than full-width panels. Capped to PUBLIC_CARD_LIMIT so
-                this stays a quiet preview row, not a second full grid. */}
+          {explorePublic.length > 0 ? (
+            /* Roughly half the column width of the "My Spaces" grid above —
+               compact, near-square previews. Capped to PUBLIC_CARD_LIMIT so
+               this stays a quiet preview row, not a second full grid. */
             <div className="grid grid-cols-[repeat(auto-fit,minmax(min(140px,100%),1fr))] gap-3">
               {explorePublic.slice(0, PUBLIC_CARD_LIMIT).map((space) => (
                 <PublicSpaceCard key={space.id} space={space} onOpen={() => setViewingPublicSpace(space)} />
               ))}
             </div>
-          </div>
-        )}
+          ) : (
+            /* Premium Atlas empty state — framed by the SAME Liquid backdrop as
+               the Space cards so it reads as part of the same family, not an
+               error or missing data. */
+            <PublicEmptyState />
+          )}
+        </div>
 
         {managingSpace && (
           <ManageSpaceModal

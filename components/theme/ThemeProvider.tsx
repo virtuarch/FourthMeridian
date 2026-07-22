@@ -101,8 +101,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     };
   }, [mounted, mode]);
 
-  const resolvedTheme: ResolvedTheme =
-    mode === "system" ? (systemPrefersDark ? "dark" : "light") : mode;
+  // Product decision (UI cleanup): Fourth Meridian is DARK-MODE ONLY for now.
+  // The resolved theme is pinned to "dark" so no light styling is ever applied
+  // and `html[data-theme]` always resolves to dark for every consumer. The
+  // mode/system machinery below (localStorage, matchMedia, setMode) is kept
+  // intact — re-enabling themes later is a one-line revert of this pin.
+  const resolvedTheme: ResolvedTheme = "dark";
+  // Keep the (still-tracked) system preference referenced so pinning doesn't
+  // orphan it; it just no longer drives the resolved theme.
+  void systemPrefersDark;
 
   // Apply to <html data-theme="...">. Skipped before mount so the
   // server-rendered markup (no attribute) keeps matching the client's

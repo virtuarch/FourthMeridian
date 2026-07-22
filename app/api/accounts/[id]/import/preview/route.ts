@@ -92,6 +92,12 @@ import {
   type NormalizedTransaction,
 } from "@/lib/imports/csv";
 import { runImportPipeline } from "@/lib/imports/pipeline";
+// CCPAY-2C-4 — the same card-payment rescue the confirm route applies, so this
+// preview keeps showing what that route would actually write.
+import { resolveLiabilityPaymentCategory } from "@/lib/transactions/liability-payment";
+// SR-2 — payroll descriptor rescue, layered over the card-payment rescue so the
+// preview matches the confirm route's persisted category exactly.
+import { resolvePayrollIncomeCategory } from "@/lib/transactions/descriptor-evidence";
 import { resolveImportableFinancialAccount } from "@/lib/imports/authorize";
 import { suggestColumnMapping } from "@/lib/imports/suggest";
 import { getImportProviderCapabilities } from "@/lib/imports/provider-capabilities";
@@ -228,6 +234,23 @@ export const POST = withApiHandler(async (
   // (no within-file-duplicate race to protect against here, since nothing
   // is ever written — see this route's module header on the resulting,
   // expected CREATE/CREATE-vs-CREATE/MATCH difference from confirm).
+  // CCPAY-2C-4 — the confirm route now rescues a liability card-payment leg's
+  // category before writing it. This route's whole contract is to show what that
+  // route WOULD do (module header), so it must apply the same rescue: otherwise
+  // the preview would echo category=Other for a row the import persists as
+  // Payment, and — worse — computeQuickBooksUpdateDiff below would compute
+  // `wouldUpdate` against a category the confirm route never writes, silently
+  // undercounting willUpdate. Read-only: the account is only read for its
+  // liability shape, exactly as the confirm route reads it (flowAccountContext).
+  const previewAcct = await db.financialAccount.findUnique({
+    where:  { id: financialAccountId },
+    select: { type: true, debtSubtype: true },
+  });
+  const previewAccountContext = {
+    accountType: (previewAcct?.type as string | null) ?? null,
+    debtSubtype: previewAcct?.debtSubtype ?? null,
+  };
+
   let willCreate = 0;
   let willMatch  = 0;
   let willSkip   = 0;
@@ -240,6 +263,31 @@ export const POST = withApiHandler(async (
 
   for (const row of rows) {
     const lineNumber = row.lineNumber;
+
+    // CCPAY-2C-4 — mirrors the confirm route's per-row rescue, computed once and
+    // used by BOTH the wouldUpdate diff and the echoed preview row. A row missing
+    // an amount/merchant can never be written, so it keeps its raw category and
+    // the rescue is skipped rather than fed a null amount.
+    const rescuedCategory =
+      row.amount === null || !row.merchant
+        ? row.category
+        : resolvePayrollIncomeCategory(
+            // SR-2 — payroll rescue layered over the card-payment rescue, in the
+            // exact order the confirm route uses, so the preview a user sees
+            // matches what confirm will persist.
+            resolveLiabilityPaymentCategory(row.category, "Payment", {
+              ...previewAccountContext,
+              amount:      row.amount,
+              merchant:    row.merchant,
+              description: row.description,
+            }),
+            "Income",
+            {
+              amount:      row.amount,
+              merchant:    row.merchant,
+              description: row.description,
+            },
+          );
 
     if (row.date) {
       if (!earliest || row.date < earliest) earliest = row.date;
@@ -284,7 +332,7 @@ export const POST = withApiHandler(async (
                 amount:      row.amount,
                 merchant:    row.merchant,
                 description: row.description,
-                category:    row.category,
+                category:    rescuedCategory,
               });
               if (diff) {
                 wouldUpdate = true;
@@ -313,7 +361,7 @@ export const POST = withApiHandler(async (
         date: toIsoDate(row.date),
         merchant: row.merchant,
         description: row.description,
-        category: row.category,
+        category: rescuedCategory,
         amount: row.amount,
         externalTransactionId: row.externalTransactionId,
         classification,

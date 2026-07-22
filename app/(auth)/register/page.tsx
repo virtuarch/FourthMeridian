@@ -1,10 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Eye, EyeOff, Loader2 } from "lucide-react";
-import { AppLogo } from "@/components/ui/AppLogo";
+import { AuthCard, AuthHeader, AuthFooter, AuthButton } from "@/components/auth";
+import { Field, Input, Select, PasswordField } from "@/components/atlas/fields";
+import { InlineBanner } from "@/components/atlas/InlineBanner";
+import { TurnstileWidget } from "@/components/ui/TurnstileWidget";
+import type { RegistrationPolicyResponse } from "@/app/api/registration-policy/route";
+
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
 const EMPLOYMENT_OPTIONS = [
   { value: "EMPLOYED",      label: "Employed" },
@@ -22,8 +27,12 @@ const USE_CASE_OPTIONS = [
   { value: "OTHER",             label: "Other" },
 ];
 
-export default function RegisterPage() {
+function RegisterForm() {
   const router = useRouter();
+  // Beta-invite deep link (buildBetaInviteUrl → /register?invite=<token>). When
+  // present it is forwarded to the register API as `inviteToken`; the API only
+  // consumes it in invite_only mode. Absent → normal open-registration flow.
+  const inviteToken = useSearchParams().get("invite") ?? "";
 
   const [form, setForm] = useState({
     firstName:        "",
@@ -38,14 +47,55 @@ export default function RegisterPage() {
     confirmPassword:  "",
   });
 
-  const [showPw,      setShowPw]      = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
   const [error,       setError]       = useState("");
   const [loading,     setLoading]     = useState(false);
+  // CONN-1 — post-success "check your inbox" state for uninvited signups. Holds
+  // the address we sent the verification link to. Kept in component state (never
+  // a URL param) so the email is not exposed in the address bar / history.
+  const [sentTo,      setSentTo]      = useState<string | null>(null);
+  const [resendState, setResendState] = useState<"idle" | "sending" | "sent">("idle");
+  // CAPTCHA (Wave 2 ⑥) — only rendered when a site key is configured.
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaNonce, setCaptchaNonce] = useState(0);
+  // PO-5A — required Terms/Privacy consent.
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+
+  // PO-3C — the register form honors the authoritative registration policy: it is
+  // not shown until the mode (+ any invite) is resolved. invite_only without a
+  // valid invite ⇒ steer to request-access; closed ⇒ registration unavailable.
+  const [policy, setPolicy]             = useState<RegistrationPolicyResponse | null>(null);
+  const [policyLoading, setPolicyLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/registration-policy", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ invite: inviteToken || undefined }),
+        });
+        const p = (await r.json()) as RegistrationPolicyResponse;
+        if (!alive) return;
+        setPolicy(p);
+        // Lock the email to the invited address so a mismatch can't even be typed.
+        if (p.invitedEmail) setForm((f) => ({ ...f, email: p.invitedEmail as string }));
+      } catch {
+        // Fail OPEN to the form — the register API still enforces the mode
+        // authoritatively, so a policy-fetch failure never bypasses the gate.
+        if (alive) setPolicy({ mode: "open", canRegister: true, invitedEmail: null, requiresInvite: false });
+      } finally {
+        if (alive) setPolicyLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [inviteToken]);
 
   function set(field: string, value: string) {
     setForm((f) => ({ ...f, [field]: value }));
   }
+
+  const emailLocked = !!policy?.invitedEmail;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -57,6 +107,14 @@ export default function RegisterPage() {
     }
     if (form.password.length < 8) {
       setError("Password must be at least 8 characters.");
+      return;
+    }
+    if (TURNSTILE_SITE_KEY && !captchaToken) {
+      setError("Please complete the verification below.");
+      return;
+    }
+    if (!agreedToTerms) {
+      setError("Please accept the Terms of Service and Privacy Policy to continue.");
       return;
     }
 
@@ -72,6 +130,9 @@ export default function RegisterPage() {
       employmentStatus: form.employmentStatus || undefined,
       useCase:          form.useCase         || undefined,
       creditScore:      form.creditScore ? parseInt(form.creditScore) : undefined,
+      inviteToken:      inviteToken || undefined,
+      captchaToken:     captchaToken || undefined,
+      acceptedTerms:    agreedToTerms,
     };
 
     const res = await fetch("/api/auth/register", {
@@ -85,248 +146,308 @@ export default function RegisterPage() {
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       setError(data.error ?? "Registration failed. Please try again.");
+      // Turnstile tokens are single-use — refresh the challenge before a retry.
+      if (TURNSTILE_SITE_KEY) {
+        setCaptchaToken(null);
+        setCaptchaNonce((n) => n + 1);
+      }
       return;
     }
 
+    // CONN-1 — honor the server's authoritative signal. An uninvited signup is
+    // created UNVERIFIED and login is blocked until verified, so sending them to
+    // the sign-in page (as before) was a dead-end. Show a "check your inbox"
+    // screen instead. Invited signups are pre-verified → straight to sign-in.
+    const data = await res.json().catch(() => ({}));
+    if (data.verificationRequired) {
+      setSentTo(form.email.trim());
+      return;
+    }
     router.push("/login?registered=true");
   }
 
-  const inputClass =
-    "w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors";
-  const labelClass = "block text-sm text-gray-400 mb-1.5";
-  const selectClass =
-    "w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500 transition-colors appearance-none " +
-    "text-white [&>option]:bg-gray-900";
+  async function handleResend() {
+    if (!sentTo || resendState === "sending") return;
+    setResendState("sending");
+    // Identifier-based resend is non-enumerating (always a generic 200), so the
+    // UI shows the same confirmation regardless of outcome — no account-existence
+    // signal. Rate limited server-side.
+    await fetch("/api/auth/verify-email/resend", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ identifier: sentTo }),
+    }).catch(() => {});
+    setResendState("sent");
+  }
+
+  // ── CONN-1: post-success "check your inbox" (uninvited signups) ─────────────
+  // Reached only after a 201 with verificationRequired. The account exists but
+  // login is blocked until the emailed link is clicked — so this screen is the
+  // truthful next step, not the sign-in page.
+  if (sentTo) {
+    return (
+      <div className="space-y-5 text-center">
+        <InlineBanner tone="success">
+          Account created. Check your inbox to finish setting up.
+        </InlineBanner>
+        <p className="text-sm text-[var(--text-secondary)]">
+          We sent a verification link to <span className="font-semibold text-[var(--text-primary)]">{sentTo}</span>.
+          Click it to activate your account, then sign in. The link expires in about an hour.
+        </p>
+        <p className="text-xs text-[var(--text-muted)]">
+          Didn&rsquo;t get it? Check spam, or resend below.
+        </p>
+        <div className="space-y-3">
+          <AuthButton
+            type="button"
+            onClick={handleResend}
+            loading={resendState === "sending"}
+            disabled={resendState !== "idle"}
+          >
+            {resendState === "sent"
+              ? "Verification email sent"
+              : resendState === "sending"
+                ? "Sending…"
+                : "Resend verification email"}
+          </AuthButton>
+          <p className="text-sm text-[var(--text-muted)]">
+            <Link
+              href="/login"
+              className="text-[var(--accent-info)] transition-colors hover:text-[var(--meridian-300)]"
+            >
+              Back to sign in
+            </Link>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Policy gating (PO-3C) ───────────────────────────────────────────────────
+  if (policyLoading) {
+    return <p className="text-center text-sm text-[var(--text-muted)]">Checking registration…</p>;
+  }
+  if (policy && !policy.canRegister) {
+    const closed = policy.mode === "closed";
+    return (
+      <div className="space-y-4 text-center">
+        <InlineBanner tone={closed ? "error" : "info"}>
+          {closed
+            ? "Registration is currently closed."
+            : "Fourth Meridian is invite-only right now. You need an invitation to create an account."}
+        </InlineBanner>
+        <p className="text-sm text-[var(--text-muted)]">
+          {closed
+            ? "We’re not accepting new accounts at the moment."
+            : "Have an invite? Open the link from your email. Otherwise, request access and we’ll reach out when a spot opens."}
+        </p>
+        <AuthButton href="/request-access" tone={closed ? "warning" : "primary"}>
+          Request access
+        </AuthButton>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md space-y-6">
+    <>
+      {error && <InlineBanner tone="error">{error}</InlineBanner>}
+      {emailLocked && (
+        <InlineBanner tone="info">
+          You&rsquo;re registering with your invited email — it&rsquo;s locked to match your invitation.
+        </InlineBanner>
+      )}
 
-        {/* Logo */}
-        <div className="text-center">
-          <div className="flex items-center justify-center mb-4">
-            <AppLogo size={32} withWordmark wordmarkClassName="text-white text-lg" forceTheme="dark" priority />
+      <form onSubmit={handleSubmit} className="space-y-5" suppressHydrationWarning>
+
+        {/* ── Personal ── */}
+        <div>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Personal</p>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="First name" htmlFor="reg-first">
+                <Input
+                  id="reg-first"
+                  type="text"
+                  value={form.firstName}
+                  onChange={(e) => set("firstName", e.target.value)}
+                  required
+                  placeholder="Jane"
+                  autoComplete="given-name"
+                />
+              </Field>
+              <Field label="Last name" htmlFor="reg-last">
+                <Input
+                  id="reg-last"
+                  type="text"
+                  value={form.lastName}
+                  onChange={(e) => set("lastName", e.target.value)}
+                  required
+                  placeholder="Smith"
+                  autoComplete="family-name"
+                />
+              </Field>
+            </div>
+
+            <Field label="Date of birth" htmlFor="reg-dob" help="Used for age-appropriate advice.">
+              <Input
+                id="reg-dob"
+                type="date"
+                value={form.dateOfBirth}
+                onChange={(e) => set("dateOfBirth", e.target.value)}
+                max={new Date().toISOString().split("T")[0]}
+              />
+            </Field>
+
+            <Field label="Employment status" htmlFor="reg-employment">
+              <Select
+                id="reg-employment"
+                value={form.employmentStatus}
+                onChange={(e) => set("employmentStatus", e.target.value)}
+                options={EMPLOYMENT_OPTIONS}
+                placeholder="Select status…"
+              />
+            </Field>
+
+            <Field label="Primary reason for use" htmlFor="reg-usecase">
+              <Select
+                id="reg-usecase"
+                value={form.useCase}
+                onChange={(e) => set("useCase", e.target.value)}
+                options={USE_CASE_OPTIONS}
+                placeholder="Select reason…"
+              />
+            </Field>
+
+            <Field label="Credit score" htmlFor="reg-credit" help="Optional — you can add this later.">
+              <Input
+                id="reg-credit"
+                type="number"
+                value={form.creditScore}
+                onChange={(e) => set("creditScore", e.target.value)}
+                min={300}
+                max={850}
+                placeholder="e.g. 740"
+              />
+            </Field>
           </div>
-          <h1 className="text-2xl font-bold text-white">Create your account</h1>
-          <p className="text-gray-400 text-sm mt-1">Set up your personal finance dashboard</p>
         </div>
 
-        {/* Error */}
-        {error && (
-          <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-4 py-3 text-sm text-red-400 text-center">
-            {error}
+        {/* ── Account ── */}
+        <div>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Account</p>
+          <div className="space-y-3">
+            <Field label="Email" htmlFor="reg-email">
+              <Input
+                id="reg-email"
+                type="email"
+                value={form.email}
+                onChange={(e) => set("email", e.target.value)}
+                required
+                readOnly={emailLocked}
+                placeholder="you@example.com"
+                autoComplete="email"
+              />
+            </Field>
+
+            <Field label="Username" htmlFor="reg-username" help="3–30 characters. Letters, numbers, underscores.">
+              <Input
+                id="reg-username"
+                type="text"
+                value={form.username}
+                onChange={(e) => set("username", e.target.value)}
+                required
+                placeholder="e.g. janesmith"
+                autoComplete="username"
+                pattern="[a-zA-Z0-9_]{3,30}"
+                title="3–30 characters: letters, numbers, underscores"
+              />
+            </Field>
+
+            <Field label="Password" htmlFor="reg-password">
+              <PasswordField
+                id="reg-password"
+                value={form.password}
+                onChange={(e) => set("password", e.target.value)}
+                required
+                minLength={8}
+                placeholder="Min. 8 characters"
+                autoComplete="new-password"
+              />
+            </Field>
+
+            <Field label="Confirm password" htmlFor="reg-confirm">
+              <PasswordField
+                id="reg-confirm"
+                value={form.confirmPassword}
+                onChange={(e) => set("confirmPassword", e.target.value)}
+                required
+                placeholder="Repeat password"
+                autoComplete="new-password"
+              />
+            </Field>
           </div>
+        </div>
+
+        {TURNSTILE_SITE_KEY && (
+          <TurnstileWidget
+            siteKey={TURNSTILE_SITE_KEY}
+            onToken={setCaptchaToken}
+            resetNonce={captchaNonce}
+            theme="dark"
+          />
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-5" suppressHydrationWarning>
+        {/* PO-5A — required Terms/Privacy consent. */}
+        <label className="flex items-start gap-2.5 text-sm text-[var(--text-secondary)]">
+          <input
+            type="checkbox"
+            checked={agreedToTerms}
+            onChange={(e) => setAgreedToTerms(e.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--meridian-500)]"
+            aria-label="Accept the Terms of Service and Privacy Policy"
+          />
+          <span>
+            I agree to the{" "}
+            <Link href="/terms" target="_blank" className="text-[var(--accent-info)] hover:text-[var(--meridian-300)]">Terms of Service</Link>
+            {" "}and{" "}
+            <Link href="/privacy" target="_blank" className="text-[var(--accent-info)] hover:text-[var(--meridian-300)]">Privacy Policy</Link>.
+          </span>
+        </label>
 
-          {/* ── Personal ── */}
-          <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Personal</p>
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={labelClass}>First name</label>
-                  <input
-                    type="text"
-                    value={form.firstName}
-                    onChange={(e) => set("firstName", e.target.value)}
-                    required
-                    suppressHydrationWarning
-                    className={inputClass}
-                    placeholder="Jane"
-                    autoComplete="given-name"
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>Last name</label>
-                  <input
-                    type="text"
-                    value={form.lastName}
-                    onChange={(e) => set("lastName", e.target.value)}
-                    required
-                    suppressHydrationWarning
-                    className={inputClass}
-                    placeholder="Smith"
-                    autoComplete="family-name"
-                  />
-                </div>
-              </div>
+        <AuthButton
+          type="submit"
+          loading={loading}
+          disabled={loading || !agreedToTerms || !form.email || !form.username || !form.password || !form.firstName || !form.lastName}
+        >
+          {loading ? "Creating account…" : "Create Account"}
+        </AuthButton>
+      </form>
+    </>
+  );
+}
 
-              <div>
-                <label className={labelClass}>
-                  Date of birth
-                  <span className="text-gray-600 ml-1">(used for age-appropriate advice)</span>
-                </label>
-                <input
-                  type="date"
-                  value={form.dateOfBirth}
-                  onChange={(e) => set("dateOfBirth", e.target.value)}
-                  suppressHydrationWarning
-                  className={inputClass + " [color-scheme:dark]"}
-                  max={new Date().toISOString().split("T")[0]}
-                />
-              </div>
+// useSearchParams() must sit under a Suspense boundary (Next app router), same
+// pattern as the reset-password page.
+export default function RegisterPage() {
+  return (
+    <AuthCard width="md">
+      <AuthHeader title="Create your account" subtitle="Set up your personal finance dashboard" />
 
-              <div>
-                <label className={labelClass}>Employment status</label>
-                <select
-                  value={form.employmentStatus}
-                  onChange={(e) => set("employmentStatus", e.target.value)}
-                  className={selectClass}
-                >
-                  <option value="">Select status…</option>
-                  {EMPLOYMENT_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
+      <Suspense fallback={<p className="text-center text-sm text-[var(--text-muted)]">Loading…</p>}>
+        <RegisterForm />
+      </Suspense>
 
-              <div>
-                <label className={labelClass}>Primary reason for use</label>
-                <select
-                  value={form.useCase}
-                  onChange={(e) => set("useCase", e.target.value)}
-                  className={selectClass}
-                >
-                  <option value="">Select reason…</option>
-                  {USE_CASE_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className={labelClass}>
-                  Credit score
-                  <span className="text-gray-600 ml-1">(optional — you can add this later)</span>
-                </label>
-                <input
-                  type="number"
-                  value={form.creditScore}
-                  onChange={(e) => set("creditScore", e.target.value)}
-                  min={300}
-                  max={850}
-                  className={inputClass}
-                  placeholder="e.g. 740"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* ── Account ── */}
-          <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Account</p>
-            <div className="space-y-3">
-              <div>
-                <label className={labelClass}>Email</label>
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => set("email", e.target.value)}
-                  required
-                  suppressHydrationWarning
-                  className={inputClass}
-                  placeholder="you@example.com"
-                  autoComplete="email"
-                />
-              </div>
-
-              <div>
-                <label className={labelClass}>Username</label>
-                <input
-                  type="text"
-                  value={form.username}
-                  onChange={(e) => set("username", e.target.value)}
-                  required
-                  suppressHydrationWarning
-                  className={inputClass}
-                  placeholder="e.g. janesmith"
-                  autoComplete="username"
-                  pattern="[a-zA-Z0-9_]{3,30}"
-                  title="3–30 characters: letters, numbers, underscores"
-                />
-                <p className="text-xs text-gray-600 mt-1">3–30 characters. Letters, numbers, underscores.</p>
-              </div>
-
-              <div>
-                <label className={labelClass}>Password</label>
-                <div className="relative">
-                  <input
-                    type={showPw ? "text" : "password"}
-                    value={form.password}
-                    onChange={(e) => set("password", e.target.value)}
-                    required
-                    minLength={8}
-                    suppressHydrationWarning
-                    className={inputClass + " pr-11"}
-                    placeholder="Min. 8 characters"
-                    autoComplete="new-password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPw((v) => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors p-1"
-                    tabIndex={-1}
-                  >
-                    {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className={labelClass}>Confirm password</label>
-                <div className="relative">
-                  <input
-                    type={showConfirm ? "text" : "password"}
-                    value={form.confirmPassword}
-                    onChange={(e) => set("confirmPassword", e.target.value)}
-                    required
-                    suppressHydrationWarning
-                    className={inputClass + " pr-11"}
-                    placeholder="Repeat password"
-                    autoComplete="new-password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowConfirm((v) => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors p-1"
-                    tabIndex={-1}
-                  >
-                    {showConfirm ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading || !form.email || !form.username || !form.password || !form.firstName || !form.lastName}
-            className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
-          >
-            {loading ? (
-              <>
-                <Loader2 size={15} className="animate-spin" />
-                Creating account…
-              </>
-            ) : (
-              "Create Account"
-            )}
-          </button>
-        </form>
-
-        <p className="text-center text-sm text-gray-500">
+      <AuthFooter>
+        <p className="text-sm text-[var(--text-muted)]">
           Already have an account?{" "}
-          <Link href="/login" className="text-blue-400 hover:text-blue-300 transition-colors">
+          <Link href="/login" className="text-[var(--accent-info)] transition-colors hover:text-[var(--meridian-300)]">
             Sign in
           </Link>
         </p>
-
-        <p className="text-center text-xs text-gray-600">
+        <p className="text-xs text-[var(--text-faint)]">
           Secured with bcrypt · Date of birth encrypted at rest
         </p>
-      </div>
-    </div>
+      </AuthFooter>
+    </AuthCard>
   );
 }

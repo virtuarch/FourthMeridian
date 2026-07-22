@@ -55,21 +55,6 @@ export interface ConfigField {
   hint?:    string;
 }
 
-// ─── Data tier ────────────────────────────────────────────────────────────────
-
-/**
- * DataTier controls which API calls the dashboard shell must make before
- * rendering this widget.
- *
- * accounts      → GET /api/spaces/[id]/accounts     (NormalizedAccount[])
- * goals         → GET /api/spaces/[id]/goals         (SpaceGoal[])
- * activity      → GET /api/spaces/[id]/activity      (TimelineEvent[])
- * holdings      → GET /api/spaces/[id]/holdings      (future — Tier 4)
- * transactions  → aggregated tx data                      (future — Tier 5)
- * none          → no external data (config-only, etc.)
- */
-export type DataTier = "accounts" | "goals" | "activity" | "holdings" | "transactions" | "none";
-
 // ─── Widget meta ──────────────────────────────────────────────────────────────
 
 export interface WidgetMeta {
@@ -83,8 +68,6 @@ export interface WidgetMeta {
   tab:              SpaceDashboardTab;
   /** Lucide icon name (string; caller imports the icon) */
   icon:             string;
-  /** Which API data this widget needs */
-  dataTier:         DataTier;
   /** Required data conditions — empty array = always renderable */
   requires:         DataRequirement[];
   /** Config fields read from SpaceDashboardSection.config */
@@ -132,7 +115,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Total assets minus total debt across all shared accounts.",
       tab:         SpaceDashboardTab.OVERVIEW,
       icon:        "LayoutDashboard",
-      dataTier:    "accounts",
       requires:    [],
       collapsible: true,
     },
@@ -146,10 +128,358 @@ const registry: WidgetRegistryEntry[] = [
       description:      "Alias for net_worth. Deprecated — prefer net_worth.",
       tab:              SpaceDashboardTab.OVERVIEW,
       icon:             "LayoutDashboard",
-      dataTier:         "accounts",
       requires:         [],
       collapsible:      true,
       deprecatedAlias:  "net_worth",
+    },
+  },
+
+  // Unified Space Widget Layout (slice 1) — the Personal Overview lede
+  // (formerly hardcoded in PersonalHero) is now section-backed so it inherits
+  // order / drag / show-hide like any other widget.
+  {
+    implemented: true,
+    meta: {
+      key:         "net_worth_chart",
+      label:       "Net Worth over time",
+      description: "This Space's net-worth trend from its SpaceSnapshot history.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "TrendingUp",
+      requires:    [],
+      collapsible: true,
+    },
+  },
+
+  {
+    implemented: true,
+    meta: {
+      key:         "allocation",
+      label:       "Allocation",
+      description: "How this Space's assets are split across cash, investments, crypto, and real assets.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "PieChart",
+      requires:    [],
+      collapsible: true,
+    },
+  },
+
+  // ── Wealth Perspective (UX-PER-3) — assets-only analytical widgets. ──────────
+  // Rendered as VIRTUAL sections in the Wealth workspace (never materialized as
+  // tab rows); the `tab` field is metadata only. Answer "Where is my money?".
+  {
+    implemented: true,
+    meta: {
+      key:         "wealth_by_account",
+      label:       "Wealth by Account",
+      description: "Every asset account ranked by balance — where your money actually sits.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Landmark",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "institution_allocation",
+      label:       "Institution Allocation",
+      description: "Assets grouped by institution — how concentrated your money is by provider.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Landmark",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "asset_allocation",
+      label:       "Asset Allocation",
+      description: "Assets by class — cash, investments, crypto, and real assets. Liabilities excluded.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "PieChart",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "wealth_concentration",
+      label:       "Wealth Concentration",
+      description: "How concentrated your assets are — largest account, top institution, diversification score.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Gem",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+
+  // ── Liquidity Perspective (UX-PER-3) — access/readiness widgets. ────────────
+  // Rendered as VIRTUAL sections in the Liquidity workspace (never materialized
+  // as tab rows); `tab` is metadata only. Answer "How accessible is my money?".
+  {
+    implemented: true,
+    meta: {
+      key:         "liquidity_ladder",
+      label:       "Liquidity Ladder",
+      description: "Assets grouped by how fast you can reach them — now, within days, or illiquid.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Droplets",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "accessible_cash",
+      label:       "Accessible Cash",
+      description: "How much you can get at right now and within days, and what share of your money that is.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Wallet",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "emergency_fund_readiness",
+      label:       "Emergency Fund Readiness",
+      description: "Reachable cash as a safety buffer. Months of coverage appear once a monthly expense target is set.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "ShieldCheck",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "liquidity_concentration",
+      label:       "Liquidity Concentration",
+      description: "Whether your reachable cash is spread across accounts or sitting in one place.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Droplets",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+
+  // ── Cash Flow Perspective (UX-PER-3) — movement over time. ──────────────────
+  // Rendered as VIRTUAL sections in the Cash Flow workspace; `tab` is metadata
+  // only. Answer "Where does my money move?" from transaction history.
+  {
+    implemented: true,
+    meta: {
+      key:         "cash_flow_summary",
+      label:       "Cash Flow Summary",
+      description: "Income, spending, and net cash flow for the selected period (FlowType-aware).",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "cash_flow_history",
+      label:       "Cash Flow History",
+      description: "Income vs spending over time, bucketed to fit the selected period.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "income_vs_spending",
+      label:       "Income vs Spending",
+      description: "Incoming versus outgoing movement for the selected period.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "cash_flow_by_category",
+      label:       "Spending by Category",
+      description: "Where outflows go — spending grouped by category for the selected period.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "income_by_source",
+      label:       "Income by Source",
+      description: "Where income comes from — inflows grouped by source for the selected period.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_payments",
+      label:       "Debt Payments",
+      description: "Where debt payments go — card and loan payments grouped by creditor for the selected period.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "Waves",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+
+  // ── Debt Perspective (UX-PER-3) — liabilities-only (shape / cost / risk). ────
+  // Rendered as VIRTUAL sections in the Debt workspace; `tab` is metadata only.
+  // Answer "What do I owe?".
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_by_account",
+      label:       "Debt by Account",
+      description: "Every liability ranked by cost (APR) then size — the shape of what you owe.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_cost",
+      label:       "Interest Cost",
+      description: "Estimated monthly interest per debt (balance × APR ÷ 12) — which debts cost the most.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "credit_utilization",
+      label:       "Credit Utilization",
+      description: "Balance vs credit limit for revolving lines, highest utilization first.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_payoff_snapshot",
+      label:       "Payoff Snapshot",
+      description: "Total owed, minimum payments, highest-APR target, and an honest payoff estimate.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_history",
+      label:       "Debt History",
+      description: "Total debt over time from this Space's snapshot history.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "credit_score",
+      label:       "Credit Score",
+      description: "Your manual FICO score — a credit-health companion. Never drives debt calculations.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "ShieldCheck",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "debt_complete_info",
+      label:       "Complete Debt Details",
+      description: "Fill in missing APR or minimum payment on your debt accounts.",
+      tab:         SpaceDashboardTab.OVERVIEW,
+      icon:        "CreditCard",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+
+  // ── Goals Perspective (UX-PER-3) — trajectory vs target. ────────────────────
+  // Rendered as VIRTUAL sections in the Goals workspace; `tab` is metadata only.
+  // Answer "Am I on track?".
+  {
+    implemented: true,
+    meta: {
+      key:         "goal_progress",
+      label:       "Goal Progress",
+      description: "Each financial goal's progress toward its target.",
+      tab:         SpaceDashboardTab.GOALS,
+      icon:        "Target",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "goal_on_track",
+      label:       "On Track",
+      description: "How many goals are on track by their deadline, and how many are overdue.",
+      tab:         SpaceDashboardTab.GOALS,
+      icon:        "Target",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "goal_required_pace",
+      label:       "Required Pace",
+      description: "The monthly contribution needed to hit each dated goal on time.",
+      tab:         SpaceDashboardTab.GOALS,
+      icon:        "Target",
+      requires:    [],
+      collapsible: false,
+    },
+  },
+  {
+    implemented: true,
+    meta: {
+      key:         "goal_funding_gap",
+      label:       "Funding Gap",
+      description: "Goals ranked by how much is still needed to reach target.",
+      tab:         SpaceDashboardTab.GOALS,
+      icon:        "Target",
+      requires:    [],
+      collapsible: false,
     },
   },
 
@@ -163,7 +493,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "All shared accounts grouped by type with balances.",
       tab:         SpaceDashboardTab.ACCOUNTS,
       icon:        "Landmark",
-      dataTier:    "accounts",
       requires:    [],
       collapsible: true,
     },
@@ -177,7 +506,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Shared business accounts grouped by type with balances.",
       tab:         SpaceDashboardTab.ACCOUNTS,
       icon:        "Landmark",
-      dataTier:    "accounts",
       requires:    [],
       collapsible: true,
     },
@@ -193,7 +521,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Total outstanding debt across all shared debt accounts.",
       tab:         SpaceDashboardTab.DEBT,
       icon:        "CreditCard",
-      dataTier:    "accounts",
       requires:    [
         {
           accountTypes: ["debt"],
@@ -215,7 +542,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Per-account progress bars showing payoff progress toward zero.",
       tab:         SpaceDashboardTab.DEBT,
       icon:        "CreditCard",
-      dataTier:    "accounts",
       requires:    [
         {
           accountTypes: ["debt"],
@@ -249,7 +575,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Mortgage amortization progress: equity built and payoff date estimate.",
       tab:         SpaceDashboardTab.DEBT,
       icon:        "Home",
-      dataTier:    "accounts",
       requires:    [
         {
           accountTypes: ["debt"],
@@ -275,7 +600,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Auto loan payoff progress and estimated payoff date.",
       tab:         SpaceDashboardTab.DEBT,
       icon:        "Car",
-      dataTier:    "accounts",
       requires:    [
         {
           accountTypes: ["debt"],
@@ -298,7 +622,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Interactive donut chart breaking down debt by account.",
       tab:         SpaceDashboardTab.DEBT,
       icon:        "PieChart",
-      dataTier:    "accounts",
       requires:    [
         {
           accountTypes: ["debt"],
@@ -318,7 +641,6 @@ const registry: WidgetRegistryEntry[] = [
       description:    "Simulate debt payoff timelines with avalanche and snowball strategies.",
       tab:            SpaceDashboardTab.DEBT,
       icon:           "Calculator",
-      dataTier:       "accounts",
       requires:       [
         {
           accountTypes: ["debt"],
@@ -356,7 +678,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Portfolio total and per-account balance list.",
       tab:         SpaceDashboardTab.INVESTMENTS,
       icon:        "TrendingUp",
-      dataTier:    "accounts",
       requires:    [
         {
           accountTypes: ["investment"],
@@ -385,7 +706,8 @@ const registry: WidgetRegistryEntry[] = [
 
   {
     // Placeholder — currently renders InvestmentsCard.
-    // Intended: AllocationChart.tsx donut by asset class (needs holdings endpoint).
+    // Intended: AllocationChart.tsx donut by asset class (holdings from the
+    // existing GET /api/spaces/[id]/investments — there is no /holdings route).
     implemented: false,
     meta: {
       key:         "investment_allocation",
@@ -393,7 +715,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Asset allocation breakdown across all investment accounts.",
       tab:         SpaceDashboardTab.INVESTMENTS,
       icon:        "PieChart",
-      dataTier:    "holdings", // Tier 4 — needs GET /api/spaces/[id]/holdings
       requires:    [
         {
           accountTypes: ["investment"],
@@ -417,7 +738,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "IRA, 401k, Roth, and other retirement account balances.",
       tab:         SpaceDashboardTab.RETIREMENT,
       icon:        "Home",
-      dataTier:    "accounts",
       requires:    [
         {
           accountTypes: ["investment"],
@@ -452,7 +772,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Track progress toward a retirement savings target, with FV projection.",
       tab:         SpaceDashboardTab.RETIREMENT,
       icon:        "TrendingUp",
-      dataTier:    "accounts", // reads investment account balances
       requires:    [
         {
           accountTypes: ["investment"],
@@ -481,7 +800,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Active, completed, and archived goals for this space.",
       tab:         SpaceDashboardTab.GOALS,
       icon:        "Target",
-      dataTier:    "goals",
       requires:    [],
       collapsible: true,
     },
@@ -497,7 +815,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Member actions and account updates for this space.",
       tab:         SpaceDashboardTab.ACTIVITY,
       icon:        "Clock",
-      dataTier:    "activity",   // fetches GET /api/spaces/[id]/activity internally
       requires:    [],
       collapsible: true,
     },
@@ -515,7 +832,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Monthly income vs. expenses across shared accounts.",
       tab:         SpaceDashboardTab.OVERVIEW,
       icon:        "ArrowLeftRight",
-      dataTier:    "transactions", // Tier 5 — blocked
       requires:    [
         {
           accountTypes: ["checking", "savings"],
@@ -535,7 +851,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Monthly savings rate as a percentage of income.",
       tab:         SpaceDashboardTab.OVERVIEW,
       icon:        "Percent",
-      dataTier:    "transactions", // Tier 5 — blocked
       requires:    [
         {
           accountTypes: ["checking", "savings"],
@@ -555,7 +870,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Business income vs. expenses across shared business accounts.",
       tab:         SpaceDashboardTab.OVERVIEW,
       icon:        "ArrowLeftRight",
-      dataTier:    "transactions", // Tier 5 — blocked
       requires:    [
         {
           accountTypes: ["checking", "savings"],
@@ -575,7 +889,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Total monthly spending broken down by category.",
       tab:         SpaceDashboardTab.OVERVIEW,
       icon:        "Receipt",
-      dataTier:    "transactions", // Tier 5 — blocked
       requires:    [
         {
           accountTypes: ["checking"],
@@ -606,7 +919,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Current estimated property value vs. purchase price, with gain/loss.",
       tab:         SpaceDashboardTab.OVERVIEW,
       icon:        "Home",
-      dataTier:    "accounts", // reads balance from type=other account
       requires:    [
         {
           accountTypes: ["other"],
@@ -645,7 +957,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Current estimated vehicle value and depreciation since purchase.",
       tab:         SpaceDashboardTab.OVERVIEW,
       icon:        "Car",
-      dataTier:    "accounts",
       requires:    [
         {
           accountTypes: ["other"],
@@ -672,7 +983,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Current estimated equipment value and depreciation since purchase.",
       tab:         SpaceDashboardTab.OVERVIEW,
       icon:        "Wrench",
-      dataTier:    "accounts",
       requires:    [
         {
           accountTypes: ["other"],
@@ -699,7 +1009,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Spending mode: track amount spent against a total trip budget cap.",
       tab:         SpaceDashboardTab.OVERVIEW,
       icon:        "Plane",
-      dataTier:    "none", // config-only — spent amount is entered manually (no transactions yet)
       requires:    [],
       configSchema: [
         { key: "totalBudget",   label: "Total trip budget ($)",     type: "number" },
@@ -719,7 +1028,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Savings mode: track savings account balance toward a trip cost target.",
       tab:         SpaceDashboardTab.GOALS,
       icon:        "PiggyBank",
-      dataTier:    "accounts", // reads savings account balances
       requires:    [
         {
           accountTypes: ["savings"],
@@ -744,7 +1052,6 @@ const registry: WidgetRegistryEntry[] = [
       description: "Savings mode: savings account balance vs. N months of expenses target.",
       tab:         SpaceDashboardTab.GOALS,
       icon:        "Shield",
-      dataTier:    "accounts", // reads savings account balances
       requires:    [
         {
           accountTypes: ["savings"],
@@ -775,6 +1082,7 @@ const registry: WidgetRegistryEntry[] = [
       collapsible: true,
     },
   },
+
 ];
 
 // ─── Lookup helpers ───────────────────────────────────────────────────────────
@@ -784,32 +1092,16 @@ export const WIDGET_REGISTRY = new Map<string, WidgetRegistryEntry>(
   registry.map((e) => [e.meta.key, e]),
 );
 
-/** Returns the registry entry for a key, or undefined if not registered. */
-export function getWidgetEntry(key: string): WidgetRegistryEntry | undefined {
-  return WIDGET_REGISTRY.get(key);
-}
-
-/** Returns the WidgetMeta for a key, or undefined if not registered. */
+/**
+ * Returns the WidgetMeta for a key, or undefined if not registered.
+ *
+ * This is the ONE live consumer of the registry today (SpaceSections'
+ * ContextualCard fallback + perspectives/virtual-sections read `.label` and
+ * `.requires[0].reason`). CLEAN-0 removed the never-called sibling helpers
+ * (getWidgetEntry / isWidgetImplemented / isDeprecatedAlias / getAllWidgets /
+ * getWidgetsForTab) — the picker/settings UIs that would have used them were
+ * never built. Re-add from git history if a widget-picker surface lands.
+ */
 export function getWidgetMeta(key: string): WidgetMeta | undefined {
   return WIDGET_REGISTRY.get(key)?.meta;
-}
-
-/** Returns true if the key is registered and has a real implementation. */
-export function isWidgetImplemented(key: string): boolean {
-  return WIDGET_REGISTRY.get(key)?.implemented === true;
-}
-
-/** Returns true if the key is a deprecated alias for another key. */
-export function isDeprecatedAlias(key: string): boolean {
-  return !!WIDGET_REGISTRY.get(key)?.meta.deprecatedAlias;
-}
-
-/** All registry entries as an array (useful for picker/settings UIs). */
-export function getAllWidgets(): WidgetRegistryEntry[] {
-  return registry;
-}
-
-/** All entries for a given tab, in registry order. */
-export function getWidgetsForTab(tab: SpaceDashboardTab): WidgetRegistryEntry[] {
-  return registry.filter((e) => e.meta.tab === tab);
 }

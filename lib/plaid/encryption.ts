@@ -118,27 +118,38 @@ export function decryptWithPurpose(ciphertext: string, purpose: EncryptionPurpos
   throw new Error("Invalid ciphertext format");
 }
 
-// ─── Legacy API (kept for backward compatibility) ────────────────────────────
+// ─── Version classifier (Slice 5a — SEC-1/KD-6 audit support) ─────────────────
 //
-// These functions still work; call sites have been migrated to the
-// purpose-aware variants above (Slice 4). Do not remove until Slice 5
-// (data migration / re-encryption) is complete and all rows are v2.
+// Pure, read-only. Does NOT decrypt and touches no key material. Mirrors the
+// format discriminator inside decryptWithPurpose() so the re-encryption audit
+// and its tests share one source of truth. Additive only — no existing
+// behavior, write path, or compatibility branch is changed by this.
+
+export type CiphertextVersion = "v1" | "v2" | "invalid";
 
 /**
- * @deprecated Use encryptWithPurpose() instead.
- * Encrypt a plaintext string with the root key.
- * Returns "iv:authTag:ciphertext" (all hex-encoded).
+ * Classify a stored ciphertext string by format, without decrypting it.
+ *
+ *   "v2"      — "v2:iv:authTag:ciphertext" (4 segments, derived-key format)
+ *   "v1"      — "iv:authTag:ciphertext"    (3 segments, legacy root-key format)
+ *   "invalid" — anything else (would throw in decryptWithPurpose)
+ *
+ * Callers are responsible for handling null/empty before calling this.
+ * Faithful to decryptWithPurpose(): a value classified "v1" or "v2" is one it
+ * would attempt to decrypt; "invalid" is one it would reject.
  */
-export function encrypt(plaintext: string): string {
-  return aesgcmEncrypt(getRootKey(), plaintext);
+export function detectCiphertextVersion(value: string): CiphertextVersion {
+  const parts = value.split(":");
+  if (parts.length === 4 && parts[0] === "v2") return "v2";
+  if (parts.length === 3) return "v1";
+  return "invalid";
 }
 
-/**
- * @deprecated Use decryptWithPurpose() instead.
- * Decrypt a value produced by encrypt() (root key, v1 format).
- */
-export function decrypt(ciphertext: string): string {
-  const parts = ciphertext.split(":");
-  if (parts.length !== 3) throw new Error("Invalid ciphertext format");
-  return aesgcmDecrypt(getRootKey(), parts[0], parts[1], parts[2]);
-}
+// ─── Legacy API removed (Slice 5c) ───────────────────────────────────────────
+//
+// The deprecated root-key encrypt()/decrypt() exports were removed once every
+// call site had migrated to the purpose-aware variants above (Slice 4) and the
+// KD-6 audit confirmed zero v1 rows. Reading any residual legacy v1 ciphertext
+// is still supported via the v1 branch of decryptWithPurpose() above; that
+// backward-compatibility branch is retained until its own removal gate (0 v1
+// rows across all environments + backup-retention window) is met.

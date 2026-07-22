@@ -51,7 +51,12 @@ import { db } from '@/lib/db';
 import { ShareStatus, PlaidItemStatus, VisibilityLevel } from '@prisma/client';
 
 import { classifyAccounts, type ClassifiableAccount } from '@/lib/account-classifier';
+import { DEFAULT_DISPLAY_CURRENCY } from '@/lib/currency';
+import { identityContext, convertMoney, fxDisclosureOf } from '@/lib/money/convert';
+import { buildSpaceConversionContext } from '@/lib/money/server-context';
+import { yesterdayUTCISO } from '@/lib/fx/config';
 import { genericAccountName } from '@/lib/account-privacy';
+import { amountOwed, creditBalance, liabilityState } from '@/lib/debt/balance-semantics';
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
@@ -61,6 +66,7 @@ import type {
   AccountSummaryItem,
   AccountHealthSummary,
   KnowledgeGap,
+  TrackedAccountLite,
 } from '@/lib/ai/types';
 import type { SpaceContext } from '@/lib/space';
 
@@ -71,8 +77,10 @@ import type { SpaceContext } from '@/lib/space';
 /** Raw shape returned by the Prisma select on SpaceAccountLink. */
 type AccountLinkRow = {
   visibilityLevel: VisibilityLevel;
-  addedByUserId:   string;
-  addedByUser:     { firstName: string | null; name: string | null };
+  // OPS-2 S5 — nullable since SpaceAccountLink.addedByUserId flipped to
+  // SetNull: a link whose adder's account was deleted has a null adder.
+  addedByUserId:   string | null;
+  addedByUser:     { firstName: string | null; name: string | null } | null;
   financialAccount: {
     id:              string;
     name:            string;
@@ -81,6 +89,7 @@ type AccountLinkRow = {
     plaidName:       string | null;
     type:            string;
     institution:     string;
+    mask:            string | null;
     balance:         number;
     currency:        string;
     lastUpdated:          Date;
@@ -144,6 +153,7 @@ async function assembleAccounts(
           plaidName:      true,
           type:           true,
           institution:    true,
+          mask:           true,
           balance:        true,
           currency:       true,
           lastUpdated:          true,
@@ -193,15 +203,49 @@ async function assembleAccounts(
 
   // ── Classify ──────────────────────────────────────────────────────────────
   // classifyAccounts() needs only { type, balance } — available regardless of
-  // visibility level, so all accounts contribute to totals.
+  // visibility level, so all accounts contribute to totals. currency rides
+  // along for the MC1 conversion seam (identical totals under identity).
 
   const classifiableAll: ClassifiableAccount[] = links.map((l) => ({
     type:       l.financialAccount.type,
     balance:    l.financialAccount.balance,
+    currency:   l.financialAccount.currency,
     syncStatus: l.financialAccount.syncStatus ?? undefined,
   }));
 
-  const classification = classifyAccounts(classifiableAll);
+  // MC1 Phase 3 Slice 4 — THE AI FLIP (plan seam #3). Totals convert at the
+  // latest close into the Space's reporting currency; per-account rows keep
+  // native currency (already in the payload). All-USD Spaces are numerically
+  // identical to the Phase 2 identity behavior (equivalence gates). Identity
+  // fallback only if the Space row vanished mid-request. Data-only: no
+  // prompt/serializer change (presentation is Phase 4).
+  const space = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
+  });
+  const moneyCtx = space
+    ? await buildSpaceConversionContext(space, {
+        currencies: classifiableAll.map((a) => a.currency ?? null),
+        dates:      [yesterdayUTCISO()],
+      })
+    : identityContext(DEFAULT_DISPLAY_CURRENCY);
+  const classification = classifyAccounts(classifiableAll, moneyCtx);
+
+  // P2-7D — per-account reporting-currency balance. Uses the SAME moneyCtx and
+  // valuation date (latest close) classifyAccounts uses for the totals above, so a
+  // per-account reportingBalance and the section totals reconcile exactly.
+  // Native `balance`/`currency` are preserved on each item for account-detail
+  // display; reportingBalance is the cross-account comparison/weighting/ranking
+  // value (FINANCIAL_SEMANTIC_AUTHORITIES reporting-currency invariant). Missing
+  // FX degrades to the native amount + estimated taint (P2-7C conversion contract).
+  const valuationDateISO = yesterdayUTCISO();
+  const toReporting = (fa: { balance: number; currency: string }): { reportingBalance: number | null; estimated: boolean; unavailable: boolean } => {
+    const c = convertMoney({ amount: fa.balance, currency: fa.currency }, valuationDateISO, moneyCtx);
+    // V25-FINAL-1 — an unavailable known-currency balance has NO reporting value:
+    // reportingBalance is null (never a fake 0), so the AI reads the native balance
+    // and the `unavailable` flag, and can never treat it as "worth 0".
+    return { reportingBalance: c.amount, estimated: c.estimated, unavailable: c.amount === null };
+  };
 
   // ── Health summary ────────────────────────────────────────────────────────
 
@@ -306,8 +350,8 @@ async function assembleAccounts(
     accounts = links.map((link): AccountSummaryItem => {
       const fa         = link.financialAccount;
       const isFull     = link.visibilityLevel === VisibilityLevel.FULL;
-      const ownerName  = link.addedByUser.firstName?.trim() ||
-                         link.addedByUser.name?.trim().split(' ')[0] ||
+      const ownerName  = link.addedByUser?.firstName?.trim() ||
+                         link.addedByUser?.name?.trim().split(' ')[0] ||
                          null;
 
       const needsReauth = fa.connections.some(
@@ -315,6 +359,20 @@ async function assembleAccounts(
           c.connectedByUserId === userId &&
           c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH,
       );
+
+      const rep = toReporting(fa);
+
+      // V25-SIDE-1 — derived liability semantics, so the model never has to infer
+      // what a negative credit-card balance means. Native currency (same basis as
+      // `balance`); emitted at every visibility level for debt rows, since they
+      // only restate a balance the row already carries.
+      const liability = fa.type === 'debt'
+        ? {
+            amountOwed:     amountOwed(fa.balance),
+            creditBalance:  creditBalance(fa.balance),
+            liabilityState: liabilityState(fa.balance),
+          }
+        : {};
 
       if (isFull) {
         const base: AccountSummaryItem = {
@@ -324,11 +382,15 @@ async function assembleAccounts(
           institution:     fa.institution,
           balance:         fa.balance,
           currency:        fa.currency,
+          reportingBalance: rep.reportingBalance,
+          ...(rep.estimated ? { reportingBalanceEstimated: true } : {}),
+          ...(rep.unavailable ? { reportingBalanceUnavailable: true } : {}),
           lastUpdated:          fa.lastUpdated.toISOString(),
           balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
           syncStatus:      fa.syncStatus,
           needsReauth,
           visibilityLevel: 'FULL',
+          ...liability,
         };
 
         // Debt metadata — FULL visibility, debt-type accounts only.
@@ -369,20 +431,76 @@ async function assembleAccounts(
         type:            fa.type,
         balance:         fa.balance,
         currency:        fa.currency,
+        reportingBalance: rep.reportingBalance,
+        ...(rep.estimated ? { reportingBalanceEstimated: true } : {}),
+        ...(rep.unavailable ? { reportingBalanceUnavailable: true } : {}),
         lastUpdated:          fa.lastUpdated.toISOString(),
         balanceLastUpdatedAt: fa.balanceLastUpdatedAt?.toISOString() ?? null,
         syncStatus:      fa.syncStatus,
         needsReauth,
         visibilityLevel: 'BALANCE_ONLY',
+        ...liability,
         // Debt metadata intentionally omitted — BALANCE_ONLY privacy guarantee.
+        // The liability semantics above are NOT debt metadata: they restate the
+        // balance this tier already discloses, adding no new exposure.
       };
     });
   }
 
   // ── Assemble payload ──────────────────────────────────────────────────────
 
+  // Distinct FinancialAccount ids visible in this Space. Populated regardless of
+  // scopeHint so the Daily Brief can deduplicate accounts shared across Spaces.
+  // IDs only — no balances or names — so this adds no privacy exposure and does
+  // not affect the BALANCE_ONLY visibility guarantee.
+  const accountIds = links.map((l) => l.financialAccount.id);
+
+  // Privacy-safe identity roster for the Daily Brief "Accounts Tracked" list.
+  // Populated in all scopes. NEVER includes balances. Visibility handling mirrors
+  // the per-account `accounts` array: FULL exposes real name + institution + mask;
+  // all other levels use a generic name and omit institution/mask. SUMMARY_ONLY is
+  // surfaced distinctly so downstream dedup can apply FULL > BALANCE_ONLY >
+  // SUMMARY_ONLY precedence; every other non-FULL level is treated as BALANCE_ONLY.
+  const trackedAccounts: TrackedAccountLite[] = links.map((link) => {
+    const fa       = link.financialAccount;
+    const isFull   = link.visibilityLevel === VisibilityLevel.FULL;
+    const ownerName = link.addedByUser?.firstName?.trim() ||
+                      link.addedByUser?.name?.trim().split(' ')[0] ||
+                      null;
+
+    if (isFull) {
+      return {
+        id:          fa.id,
+        name:        resolveDisplayName(fa),
+        type:        fa.type,
+        subtype:     fa.debtSubtype,
+        institution: fa.institution,
+        mask:        fa.mask,
+        visibility:  'FULL',
+      };
+    }
+
+    const visibility: TrackedAccountLite['visibility'] =
+      link.visibilityLevel === VisibilityLevel.SUMMARY_ONLY ? 'SUMMARY_ONLY' : 'BALANCE_ONLY';
+
+    // BALANCE_ONLY / SUMMARY_ONLY — generic name, no institution, no mask.
+    return {
+      id:         fa.id,
+      name:       genericAccountName({
+                    type:           fa.type,
+                    debtSubtype:    fa.debtSubtype,
+                    ownerFirstName: ownerName,
+                  }),
+      type:       fa.type,
+      subtype:    null,
+      visibility,
+    };
+  });
+
   const data: AccountsSectionData = {
     totalCount:         links.length,
+    accountIds,
+    trackedAccounts,
     totalAssets:        classification.totalAssets,
     totalLiabilities:   classification.totalLiabilities,
     netWorth:           classification.netWorth,
@@ -390,6 +508,9 @@ async function assembleAccounts(
     totalInvestments:   classification.totalInvestments,
     totalDigitalAssets: classification.totalDigitalAssets,
     totalRealAssets:    classification.totalRealAssets,
+    totalsEstimated:    classification.estimated, // MC1 P3 Slice 4 (D-7) — data-only
+    totalsUnconverted:  classification.unconverted, // V25-FINAL-1 — a balance was excluded (no rate)
+
     counts: {
       liquid:        classification.liquid.length,
       investments:   classification.investments.length,

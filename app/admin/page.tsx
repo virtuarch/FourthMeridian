@@ -50,10 +50,19 @@ export default async function AdminOverviewPage() {
         members: {
           select: { role: true, user: { select: { id: true, email: true, username: true, name: true, role: true } } },
         },
-        _count: { select: { accounts: true } },
+        // Canonical per-space account count: ACTIVE SpaceAccountLink rows
+        // with a live FinancialAccount.
+        _count: {
+          select: {
+            accountLinks: {
+              where: { status: "ACTIVE", financialAccount: { deletedAt: null } },
+            },
+          },
+        },
       },
     }),
-    db.account.count(),
+    // Canonical system-wide account total: non-deleted FinancialAccounts.
+    db.financialAccount.count({ where: { deletedAt: null } }),
     db.auditLog.count(),
   ]);
 
@@ -193,7 +202,7 @@ export default async function AdminOverviewPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3 hidden sm:table-cell text-xs text-gray-400 tabular-nums">
-                      {w._count.accounts}
+                      {w._count.accountLinks}
                     </td>
                     <td className="px-4 py-3 hidden md:table-cell text-xs text-gray-500">
                       {fmtDate(w.createdAt)}

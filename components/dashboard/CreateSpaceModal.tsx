@@ -56,36 +56,37 @@
  *
  * Step 1's form fields, validation, and the POST /api/spaces submit
  * logic are unchanged from the old CreateSpacePanel — only the chrome
- * around them (backdrop, glass sheet, header, close affordances) and the
- * post-success behavior (advance instead of close) are new. The
- * "space-list-changed" dispatch on success is preserved verbatim so the
- * Sidebar's own Spaces list keeps refreshing the same way it always has.
+ * around them and the post-success behavior (advance instead of close)
+ * are new. As of the Atlas Glass Modal Doctrine Phase 3 (migration 3.2)
+ * that chrome is the shared FormModal → OverlaySurface primitive (portal,
+ * focus-trap, body-scroll-lock, panel height cap, named z-scale), which
+ * retires this file's hand-rolled recipe R3 shell; Escape/backdrop
+ * dismissal now comes from the primitive (see the `isBusy` / preventClose
+ * note below). The "space-list-changed" dispatch on success is preserved
+ * verbatim so the Sidebar's Spaces list keeps refreshing as it always has.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Globe, Lock, Loader2, Plus, X, ArrowLeft,
   Landmark, Package, Wallet, FolderInput, Mail, ArrowRight, CheckCircle2,
 } from "lucide-react";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { FormModal } from "@/components/atlas/FormModal";
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { displaySpaceName } from "@/lib/format";
 import { usePlaid } from "@/context/PlaidContext";
-import {
-  CATEGORY_LABELS,
-  CATEGORY_ICONS,
-  PRIMARY_CATEGORIES,
-  SECONDARY_CATEGORIES,
-  SpaceCategory,
-} from "@/lib/space-presets";
+// SP-2.2 — the picker is driven by the SP-1 template registry (live templates
+// only; hidden templates like `personal`/`goal` are excluded by
+// getLiveTemplates). Template metadata (name/icon/featured) comes from the
+// registry — nothing is duplicated here.
+import { getLiveTemplates, getComingSoonTemplates } from "@/lib/space-templates/registry";
+import type { SpaceTemplate } from "@/lib/space-templates/types";
 import { CategoryIcon } from "@/components/dashboard/SpacesClient";
 import { AddManualAssetModal } from "@/components/dashboard/AddManualAssetModal";
 import { AddWalletModal } from "@/components/dashboard/AddWalletModal";
-import {
-  UserSearchInput, userDisplayName, type UserResult,
-  ShareExistingAccountsPanel,
-} from "@/components/dashboard/ManageSpaceModal";
+import { UserSearchInput, userDisplayName, type UserResult } from "@/components/space/manage/UserSearchInput";
+import { ShareExistingAccountsPanel } from "@/components/space/manage/ShareExistingAccountsPanel";
 import {
   SPACE_LIST_CHANGED_EVENT,
   SPACE_ACCOUNTS_CHANGED_EVENT,
@@ -101,6 +102,63 @@ function chipTone(selected: boolean): string {
     : "border-[var(--border-hairline)] hover:border-[var(--border-hairline-strong)] hover:bg-[var(--surface-hover)]";
 }
 
+/**
+ * One Space-type option (V25-CLOSE-4B). `comingSoon` renders it visible but
+ * DISABLED — a real `disabled` <button> (not a click-swallowing div), so it is
+ * unselectable by mouse, keyboard, and assistive tech, and carries a "Soon"
+ * badge naming it as planned. Selectable chips show name + description and
+ * toggle selection.
+ */
+function TemplateChip({
+  tpl,
+  selected = false,
+  comingSoon = false,
+  onSelect,
+}: {
+  tpl:         SpaceTemplate;
+  selected?:   boolean;
+  comingSoon?: boolean;
+  onSelect?:   () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={comingSoon ? undefined : onSelect}
+      disabled={comingSoon}
+      aria-disabled={comingSoon || undefined}
+      className={[
+        "flex items-start gap-2 px-3 py-2.5 rounded-[var(--radius-sm)] border text-left transition-[transform,background-color,border-color]",
+        comingSoon
+          ? "border-[var(--border-hairline)] opacity-60 cursor-not-allowed"
+          : "active:scale-[0.97] " + chipTone(selected),
+      ].join(" ")}
+    >
+      <span className={`mt-0.5 shrink-0 ${selected ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)]"}`}>
+        <CategoryIcon name={tpl.icon} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          <span className={`block text-xs truncate ${selected ? "text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)]"}`}>
+            {tpl.name}
+          </span>
+          {comingSoon && (
+            <span className="shrink-0 rounded-full border border-[var(--border-hairline)] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+              Soon
+            </span>
+          )}
+        </span>
+        {/* Description already exists on the template (registry →
+            CATEGORY_DESCRIPTIONS); surfaced so each type names its purpose. */}
+        {tpl.description && (
+          <span className="mt-0.5 block text-[10px] leading-snug text-[var(--text-faint)] line-clamp-2">
+            {tpl.description}
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
+
 type Step = "create" | "accounts" | "invite" | "done";
 
 const STEP_ORDER: Step[] = ["create", "accounts", "invite", "done"];
@@ -114,7 +172,7 @@ const STEP_LABELS: Record<Step, string> = {
 function StepIndicator({ current }: { current: Step }) {
   const idx = STEP_ORDER.indexOf(current);
   return (
-    <div className="px-6 pt-3 pb-1 shrink-0">
+    <div className="shrink-0">
       <div className="flex items-center gap-1.5">
         {STEP_ORDER.map((s, i) => (
           <div
@@ -177,8 +235,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [isPublic, setIsPublic] = useState(false);
-  const [category, setCategory] = useState<SpaceCategory | null>(null);
-  const [showAll, setShowAll] = useState(false);
+  const [templateId, setTemplateId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -199,32 +256,24 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
 
   const isBusy = busy || inviteBusy || switching || plaidLoading || plaidOpen || nestedModal !== null;
 
-  // Escape-to-close — only listens while open, and ignored mid-submit so an
-  // in-flight create/invite/switch can't be abandoned by a stray keypress.
-  // While a nested account modal is open, Escape closes that nested modal
-  // first rather than the whole flow.
-  useEffect(() => {
-    if (!open) return;
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key !== "Escape") return;
-      if (nestedModal) { setNestedModal(null); return; }
-      handleClose();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, busy, inviteBusy, switching, plaidLoading, plaidOpen, nestedModal]);
-
+  // Escape / backdrop dismissal is owned by the FormModal primitive, blocked
+  // whenever `isBusy` is true (via preventClose below). Because `isBusy`
+  // includes `nestedModal !== null`, pressing Escape with a nested account
+  // modal open closes that nested modal (its own OverlaySurface handler) and
+  // leaves this flow intact — exactly what the previous hand-rolled handler
+  // did, now without a bespoke keydown listener.
   if (!open) return null;
 
-  const visibleCategories = showAll ? [...PRIMARY_CATEGORIES, ...SECONDARY_CATEGORIES] : PRIMARY_CATEGORIES;
+  // V25-CLOSE-4B — selectable templates first, then planned concepts shown
+  // disabled so the roadmap stays visible without being creatable.
+  const liveTemplates       = getLiveTemplates();
+  const comingSoonTemplates = getComingSoonTemplates();
 
   function resetForm() {
     setName("");
     setDescription("");
     setIsPublic(false);
-    setCategory(null);
-    setShowAll(false);
+    setTemplateId(null);
     setError("");
     setStep("create");
     setNewSpace(null);
@@ -255,7 +304,10 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
           name:        name.trim(),
           description: description.trim() || undefined,
           isPublic,
-          category:    category ?? SpaceCategory.OTHER,
+          // SP-2.2 — send the selected template; when none is selected, omit
+          // templateId entirely so the server's legacy fallback (category →
+          // OTHER) applies, matching the previous behavior exactly.
+          ...(templateId ? { templateId } : {}),
         }),
       });
       if (!res.ok) {
@@ -357,36 +409,31 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
 
       <div>
         <label className="text-xs font-medium text-[var(--text-secondary)] mb-3 block">Space Type</label>
+        {/* Selectable today. */}
         <div className="grid grid-cols-2 gap-2.5">
-          {visibleCategories.map((cat) => {
-            const selected = category === cat;
-            return (
-              <button
-                key={cat}
-                type="button"
-                onClick={() => setCategory(selected ? null : cat)}
-                className={[
-                  "flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-sm)] border text-left transition-[transform,background-color,border-color] active:scale-[0.97]",
-                  chipTone(selected),
-                ].join(" ")}
-              >
-                <span className={selected ? "text-[var(--meridian-400)]" : "text-[var(--text-muted)]"}>
-                  <CategoryIcon name={CATEGORY_ICONS[cat]} />
-                </span>
-                <span className={`text-xs truncate ${selected ? "text-[var(--text-primary)] font-medium" : "text-[var(--text-secondary)]"}`}>
-                  {CATEGORY_LABELS[cat]}
-                </span>
-              </button>
-            );
-          })}
+          {liveTemplates.map((tpl) => (
+            <TemplateChip
+              key={tpl.id}
+              tpl={tpl}
+              selected={templateId === tpl.id}
+              onSelect={() => setTemplateId(templateId === tpl.id ? null : tpl.id)}
+            />
+          ))}
         </div>
-        <button
-          type="button"
-          onClick={() => setShowAll((p) => !p)}
-          className="w-full text-left text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] mt-2 py-1.5 transition-colors"
-        >
-          {showAll ? "Show fewer types" : "Show more types →"}
-        </button>
+        {/* Planned concepts — visible so the roadmap is legible, disabled so they
+            cannot be selected or created (V25-CLOSE-4B). */}
+        {comingSoonTemplates.length > 0 && (
+          <>
+            <p className="mt-4 mb-2 text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+              Coming soon
+            </p>
+            <div className="grid grid-cols-2 gap-2.5">
+              {comingSoonTemplates.map((tpl) => (
+                <TemplateChip key={tpl.id} tpl={tpl} comingSoon />
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
       <div>
@@ -653,47 +700,16 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
 
   return (
     <>
-      <div
-        className="fixed inset-0 z-[200] flex items-center justify-center p-4 sm:p-6"
-        style={{
-          background: "rgba(0,0,0,0.55)",
-          backdropFilter: "blur(8px)",
-          WebkitBackdropFilter: "blur(8px)",
-        }}
-        onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
+      <FormModal
+        open
+        onClose={handleClose}
+        title="Create Space"
+        size="md"
+        preventClose={isBusy}
+        toolbar={<StepIndicator current={step} />}
       >
-        <GlassPanel depth="thick" elevation="e4" radius="xl" className="w-full sm:max-w-lg">
-          {/* Height/scroll management lives on this inner div rather than the
-              GlassPanel root — GlassPanel wraps `children` in its own
-              non-flex content div, so a max-height + flex-col set here (one
-              level in) is what actually lets the body section below scroll
-              internally while the header stays pinned, instead of the whole
-              sheet silently clipping on short viewports. */}
-          <div className="flex flex-col max-h-[calc(100dvh-2rem)] sm:max-h-[88dvh]">
-            <div
-              className="flex items-center justify-between gap-3 px-6 pt-5 pb-3 shrink-0"
-              style={{ borderBottom: "1px solid var(--border-hairline)" }}
-            >
-              <h2 className="text-base font-semibold text-[var(--text-primary)]">Create Space</h2>
-              <button
-                type="button"
-                onClick={handleClose}
-                disabled={isBusy}
-                aria-label="Close"
-                className="p-1.5 rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <StepIndicator current={step} />
-
-            <div className="px-6 py-6 overflow-y-auto flex-1 min-h-0">
-              {stepBody}
-            </div>
-          </div>
-        </GlassPanel>
-      </div>
+        {stepBody}
+      </FormModal>
 
       {nestedModal === "manual" && (
         <AddManualAssetModal

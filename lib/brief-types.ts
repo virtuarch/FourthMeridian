@@ -30,6 +30,17 @@ export type VisitState =
 
 // ── Brief item ────────────────────────────────────────────────────────────────
 
+/**
+ * Trust provenance for a Brief item — how well we know the claim.
+ * Presentational slot (v2.6): the editorial Brief renders a trust dot ONLY when
+ * an item carries a `basis`. The current /api/brief builder does NOT emit this
+ * yet, so no dot is shown — the field is a seam, not fabricated data. Wiring
+ * per-item provenance requires the Brief pipeline to emit a completeness
+ * envelope per insight (see components/space/trust/TrustIndicator + the
+ * PerspectiveEnvelope model).
+ */
+export type BriefBasis = "observed" | "reconstructed" | "mixed";
+
 export interface BriefItem {
   id:      string;
   label:   string;
@@ -37,6 +48,26 @@ export interface BriefItem {
   detail?: string;
   tone?:   BriefTone;
   href?:   string;
+  /** Reserved presentational slot — see BriefBasis. Not emitted by /api/brief. */
+  basis?:  BriefBasis;
+}
+
+// ── Tracked account (Since Last Visit modal — "Accounts Tracked" tab) ──────────
+
+/**
+ * A distinct, privacy-safe account shown in the Daily Brief "Accounts Tracked"
+ * roster. Deduplicated by `id` across eligible Spaces (shown once). Contains no
+ * balance. institution/mask are present only for FULL visibility; restricted
+ * visibility entries carry a generic name and omit institution/mask.
+ */
+export interface TrackedAccount {
+  id:           string;
+  name:         string;
+  type:         string;
+  subtype?:     string | null;
+  institution?: string;
+  mask?:        string | null;
+  visibility:   "FULL" | "BALANCE_ONLY" | "SUMMARY_ONLY";
 }
 
 // ── Brief section ─────────────────────────────────────────────────────────────
@@ -57,6 +88,12 @@ export interface BriefSection {
   actionLabel?: string;
   actionHref?:  string;
   tone?:        BriefTone;
+  /**
+   * Distinct account roster for the "Accounts Tracked" tab of the Since Last
+   * Visit modal. Only set on the `since_last_visit` section. Deduplicated by id
+   * across eligible Spaces; contains no balances.
+   */
+  trackedAccounts?: TrackedAccount[];
 }
 
 // ── Financial map ─────────────────────────────────────────────────────────────

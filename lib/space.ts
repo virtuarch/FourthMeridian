@@ -51,6 +51,8 @@ export interface SpaceContext {
     type:        string;   // "PERSONAL" | "SHARED"
     category:    string;   // SpaceCategory
     isPublic:    boolean;
+    /** MC1 Phase 3 Slice 6 — authoritative reporting currency (D-1); server pages use it to serialize conversion contexts for client surfaces. */
+    reportingCurrency: string;
   };
 }
 
@@ -179,7 +181,7 @@ export async function resolveSpaceContext(
   if (activeSpaceId) {
     const membership = await db.spaceMember.findUnique({
       where:   { spaceId_userId: { spaceId: activeSpaceId, userId } },
-      include: { space: { select: { id: true, name: true, type: true, category: true, isPublic: true, archivedAt: true, deletedAt: true } } },
+      include: { space: { select: { id: true, name: true, type: true, category: true, isPublic: true, reportingCurrency: true, archivedAt: true, deletedAt: true } } },
     });
     lap("spaceMember.findUnique [requested]", t0);
 
@@ -202,10 +204,15 @@ export async function resolveSpaceContext(
   // ── Fall back to PERSONAL Space ──────────────────────────────────────────
   // PERSONAL Spaces can never be archived/trashed (enforced in the API
   // layer), but the filter is kept here too as defense in depth.
+  // role: OWNER — defense in depth: PERSONAL Spaces are enforced single-owner
+  // at every mutation entry point (see personal-single-user.test.ts), so no
+  // ACTIVE non-owner membership on a PERSONAL Space should exist. Filtering
+  // here anyway means this resolver can never return a stranger's personal
+  // Space even if that invariant were ever violated by a bug or bad data.
   let t = Date.now();
   const personal = await db.spaceMember.findFirst({
-    where:   { userId, status: "ACTIVE", space: { type: "PERSONAL", archivedAt: null, deletedAt: null } },
-    include: { space: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
+    where:   { userId, status: "ACTIVE", role: "OWNER", space: { type: "PERSONAL", archivedAt: null, deletedAt: null } },
+    include: { space: { select: { id: true, name: true, type: true, category: true, isPublic: true, reportingCurrency: true } } },
   });
   lap("spaceMember.findFirst [personal fallback]", t);
 
@@ -228,11 +235,11 @@ export async function resolveSpaceContext(
   const any = await db.spaceMember.findFirst({
     where:   { userId, status: "ACTIVE", space: { archivedAt: null, deletedAt: null } },
     orderBy: { joinedAt: "asc" },
-    include: { space: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
+    include: { space: { select: { id: true, name: true, type: true, category: true, isPublic: true, reportingCurrency: true } } },
   }) ?? await db.spaceMember.findFirstOrThrow({
     where:   { userId, status: "ACTIVE" },
     orderBy: { joinedAt: "asc" },
-    include: { space: { select: { id: true, name: true, type: true, category: true, isPublic: true } } },
+    include: { space: { select: { id: true, name: true, type: true, category: true, isPublic: true, reportingCurrency: true } } },
   });
   lap("spaceMember.findFirstOrThrow [any membership]", t);
 

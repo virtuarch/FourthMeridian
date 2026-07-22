@@ -38,6 +38,8 @@ import {
   buildContext,
   FinanceDomains,
   SignalType,
+  MATERIAL_UNIDENTIFIED_INFLOW_SHARE,
+  deriveUnidentifiedInflowShare,
 } from "@/lib/ai";
 import type {
   SpaceContext_AI,
@@ -53,6 +55,7 @@ import type {
   BriefTone,
   VisitState,
   FinancialMapData,
+  TrackedAccount,
 } from "@/lib/brief-types";
 
 // ── Formatting helpers (unchanged) ────────────────────────────────────────────
@@ -131,10 +134,13 @@ function buildOnboarding(): BriefSection {
     priority: 5,
     title:    "Get started",
     items: [
-      { id: "ob_bank",    label: "Connect your first bank account",                            tone: "neutral", href: "/dashboard/accounts" },
-      { id: "ob_invest",  label: "Add an investment account",                                  tone: "neutral", href: "/dashboard/accounts" },
-      { id: "ob_crypto",  label: "Import a crypto wallet",                                     tone: "neutral", href: "/dashboard/accounts" },
-      { id: "ob_manual",  label: "Add manual assets — home, vehicle, equipment, or valuables", tone: "neutral", href: "/dashboard/accounts" },
+      // Connect-intent onboarding → the Connections hub, where the actual
+      // connect/Plaid flow lives (AccountsPerspective is management-only). The
+      // standalone /dashboard/accounts page is retired.
+      { id: "ob_bank",    label: "Connect your first bank account",                            tone: "neutral", href: "/dashboard/connections" },
+      { id: "ob_invest",  label: "Add an investment account",                                  tone: "neutral", href: "/dashboard/connections" },
+      { id: "ob_crypto",  label: "Import a crypto wallet",                                     tone: "neutral", href: "/dashboard/connections" },
+      { id: "ob_manual",  label: "Add manual assets — home, vehicle, equipment, or valuables", tone: "neutral", href: "/dashboard/connections" },
     ],
   };
 }
@@ -148,10 +154,11 @@ function buildOnboarding(): BriefSection {
  * When no trend data exists, only the current value is shown.
  */
 function buildSinceLastVisit(
-  primaryCtx:     SpaceContext_AI,
-  totalAccounts:  number,
-  lastViewedAt:   Date | null,
-  pendingInvites: number,
+  primaryCtx:      SpaceContext_AI,
+  totalAccounts:   number,
+  lastViewedAt:    Date | null,
+  pendingInvites:  number,
+  trackedAccounts: TrackedAccount[],
 ): BriefSection | null {
   const acct = accounts(primaryCtx);
   const snap  = snapshot(primaryCtx);
@@ -207,6 +214,7 @@ function buildSinceLastVisit(
     priority: 10,
     title:    sinceLabel(lastViewedAt),
     items,
+    trackedAccounts,
   };
 }
 
@@ -241,7 +249,7 @@ function buildAttention(
           id:    sig.id,
           label: sig.title,
           tone:  "danger",
-          href:  "/dashboard/accounts",
+          href:  "/dashboard?tab=accounts",
         });
         break;
 
@@ -251,7 +259,7 @@ function buildAttention(
           label: sig.title,
           detail: "Manual assets may be out of date",
           tone:  "warning",
-          href:  "/dashboard/accounts",
+          href:  "/dashboard?tab=accounts",
         });
         break;
 
@@ -260,6 +268,22 @@ function buildAttention(
           id:    sig.id,
           label: sig.title,
           tone:  "warning",
+        });
+        break;
+
+      // TI2-W2 — surfaces only at `warning` severity (material unidentified
+      // inflow); the info-severity flag is skipped above like every other info
+      // signal. Deep-links to the Transactions Tab, where the needs-review filter
+      // lives (established convention; no dedicated needs-review URL param exists).
+      case SignalType.NEEDS_CLASSIFICATION:
+        items.push({
+          id:     sig.id,
+          label:  sig.title,
+          ...(typeof sig.metadata?.detail === "string" && sig.metadata.detail
+            ? { detail: sig.metadata.detail }
+            : {}),
+          tone:   "warning",
+          href:   "/dashboard?tab=transactions",
         });
         break;
     }
@@ -276,7 +300,7 @@ function buildAttention(
           id:   `sync_error_${name}`,
           label: `Sync issue — ${name}`,
           tone:  "danger",
-          href:  "/dashboard/accounts",
+          href:  "/dashboard?tab=accounts",
         });
       }
     } else {
@@ -284,7 +308,7 @@ function buildAttention(
         id:    "sync_error_accounts",
         label: `${acct.health.errorCount} account${acct.health.errorCount > 1 ? "s" : ""} have sync errors`,
         tone:  "danger",
-        href:  "/dashboard/accounts",
+        href:  "/dashboard?tab=accounts",
       });
     }
   }
@@ -385,12 +409,20 @@ function buildInsight(
       ? Math.round(((txn.incomeTotal - txn.expenseTotal) / txn.incomeTotal) * 100)
       : null;
     if (savingsRate !== null && savingsRate > 0) {
+      // TI2-W2 — honesty caveat: when a material share of that income is
+      // sign-default inflow with no resolved source, the savings rate rests on
+      // income we cannot fully identify. Same threshold as the signal escalation
+      // (MATERIAL_UNIDENTIFIED_INFLOW_SHARE) — one definition, reused.
+      const share = deriveUnidentifiedInflowShare(txn);
+      const caveat = share !== null && share >= MATERIAL_UNIDENTIFIED_INFLOW_SHARE
+        ? ` Note: ${fmtCurrency(txn.needsClassification.unknownInflowTotal)} of that income has no identified source, so this rate is provisional.`
+        : "";
       return {
         id:       "insight",
         type:     "insight",
         priority: 20,
         title:    "Today's Insight",
-        body:     `You kept ${savingsRate}% of income over the last ${txn.windowDays} days. Expenses were ${fmtCurrency(txn.expenseTotal)} against ${fmtCurrency(txn.incomeTotal)} in income.`,
+        body:     `You kept ${savingsRate}% of income over the last ${txn.windowDays} days. Expenses were ${fmtCurrency(txn.expenseTotal)} against ${fmtCurrency(txn.incomeTotal)} in income.${caveat}`,
         tone:     "info",
       };
     }
@@ -454,6 +486,7 @@ export async function GET() {
     },
     select: {
       spaceId: true,
+      role:    true,
       space:   { select: { type: true } },
     },
   });
@@ -463,8 +496,12 @@ export async function GET() {
   }
 
   // Primary Space: personal Space preferred; first eligible as fallback.
+  // role check is defense in depth — PERSONAL Spaces are enforced single-owner
+  // at every mutation entry point, so no ADMIN/MEMBER row on one should exist;
+  // this just means that invariant holding is what makes "personal" here mean
+  // MY personal Space, not merely a personal-type Space I happen to be in.
   const primaryMembership =
-    memberships.find((m) => m.space.type === "PERSONAL") ?? memberships[0];
+    memberships.find((m) => m.space.type === "PERSONAL" && m.role === SpaceMemberRole.OWNER) ?? memberships[0];
 
   // ── Build context for every eligible Space in parallel ─────────────────────
   // scopeHint='brief' keeps each context lean (no per-account list, no raw
@@ -480,15 +517,28 @@ export async function GET() {
     .filter((r): r is PromiseFulfilledResult<SpaceContext_AI> => r.status === "fulfilled")
     .map((r) => r.value);
 
-  // Log failures so they are visible without crashing the brief
+  // Log failures so they are visible without crashing the brief.
+  // A missing AiAgent is an expected, self-correcting data-integrity gap
+  // (auto-created on Space creation; backfilled by scripts/backfill-ai-agents.ts).
+  // It degrades gracefully here, so aggregate it into a single warn rather than
+  // one error per Space per load. Any other rejection is unexpected — surface it.
+  const missingAgentSpaceIds: string[] = [];
   contextResults.forEach((r, i) => {
-    if (r.status === "rejected") {
-      console.error(
-        `[brief] buildContext failed for Space ${memberships[i]?.spaceId}:`,
-        r.reason,
-      );
+    if (r.status !== "rejected") return;
+    const spaceId = memberships[i]?.spaceId;
+    const message = r.reason instanceof Error ? r.reason.message : String(r.reason);
+    if (message.includes("No AiAgent found")) {
+      if (spaceId) missingAgentSpaceIds.push(spaceId);
+    } else {
+      console.error(`[brief] buildContext failed for Space ${spaceId}:`, r.reason);
     }
   });
+  if (missingAgentSpaceIds.length > 0) {
+    console.warn(
+      `[brief] Skipped ${missingAgentSpaceIds.length} Space(s) with no AiAgent ` +
+      `(run scripts/backfill-ai-agents.ts to backfill): ${missingAgentSpaceIds.join(", ")}`,
+    );
+  }
 
   // ── Primary context ────────────────────────────────────────────────────────
   const primaryCtx =
@@ -512,12 +562,34 @@ export async function GET() {
         a.detectedAt.localeCompare(b.detectedAt),
     );
 
-  // ── Cross-Space account count (total across all eligible Spaces) ───────────
-  // Note: shared accounts may be double-counted when they appear in multiple
-  // Spaces. This is a known limitation of per-Space context aggregation and
-  // will be addressed in a future deduplication slice.
-  const totalAccountCount = successfulContexts
-    .reduce((sum, c) => sum + (accounts(c)?.totalCount ?? 0), 0);
+  // ── Cross-Space distinct account count ─────────────────────────────────────
+  // "Accounts tracked" counts distinct real FinancialAccounts visible to the
+  // user, not SpaceAccountLink placements. Each Space's accounts domain reports
+  // the FinancialAccount ids it can see (accountIds); deduplicating across
+  // Spaces via a Set means an account shared into multiple Spaces counts once.
+  const totalAccountCount = new Set(
+    successfulContexts.flatMap((c) => accounts(c)?.accountIds ?? []),
+  ).size;
+
+  // ── Cross-Space distinct account roster ("Accounts Tracked" tab) ───────────
+  // Flatten each Space's privacy-safe roster and deduplicate by
+  // FinancialAccount.id so an account shared into multiple Spaces appears once.
+  // When the same account is visible at different levels across Spaces, keep the
+  // highest-visibility copy (FULL > BALANCE_ONLY > SUMMARY_ONLY). The resulting
+  // length equals totalAccountCount by construction (same ids, deduped).
+  const VISIBILITY_RANK: Record<TrackedAccount["visibility"], number> = {
+    FULL: 3, BALANCE_ONLY: 2, SUMMARY_ONLY: 1,
+  };
+  const trackedById = new Map<string, TrackedAccount>();
+  for (const c of successfulContexts) {
+    for (const a of accounts(c)?.trackedAccounts ?? []) {
+      const existing = trackedById.get(a.id);
+      if (!existing || VISIBILITY_RANK[a.visibility] > VISIBILITY_RANK[existing.visibility]) {
+        trackedById.set(a.id, a);
+      }
+    }
+  }
+  const trackedAccounts: TrackedAccount[] = [...trackedById.values()];
 
   // ── Pending Space invites (non-financial query) ────────────────────────────
   const pendingInviteCount = await db.spaceInvite.count({
@@ -548,6 +620,7 @@ export async function GET() {
       totalAccountCount,
       lastViewedAt,
       pendingInviteCount,
+      trackedAccounts,
     );
     if (sinceSection) sections.push(sinceSection);
 

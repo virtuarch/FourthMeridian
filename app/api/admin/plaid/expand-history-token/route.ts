@@ -65,11 +65,14 @@ import { db } from "@/lib/db";
 import { plaidClient, PLAID_ENV } from "@/lib/plaid/client";
 import { CountryCode, Products } from "plaid";
 import { parsePlaidError } from "@/lib/plaid/errors";
+import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 import { EXPAND_HISTORY_BLOCKED_INSTITUTIONS } from "@/lib/admin/provider-lifecycle";
 
 export async function POST(req: NextRequest) {
-  const [, err] = await requireSystemAdmin();
+  // Capture the acting admin for attribution. The guard returns before the Plaid
+  // call, so a rejected caller never reaches the success-path audit write.
+  const [admin, err] = await requireSystemAdmin();
   if (err) return err;
 
   // ── Parse body ────────────────────────────────────────────────────────────
@@ -93,7 +96,11 @@ export async function POST(req: NextRequest) {
       institutionId:   true,
       institutionName: true,
       status:          true,
-      cursor:          true,   // non-null = first sync completed
+      cursor:          true,   // non-null = at least one page synced
+      // D2.x resume — the cursor is now persisted per page, so cursor≠null no
+      // longer implies the first sync FINISHED. syncIncompleteAt===null is the
+      // authoritative "fully synced" signal (Validation 2 below).
+      syncIncompleteAt: true,
       connections: {
         where:  { deletedAt: null },
         select: {
@@ -117,10 +124,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ── Validation 2: cursor must exist (first sync completed) ────────────────
-  if (item.cursor === null) {
+  // ── Validation 2: first sync must have fully completed ────────────────────
+  // cursor≠null AND syncIncompleteAt===null: real data exists AND the initial
+  // history import finished (not merely paged partway before an interruption).
+  if (item.cursor === null || item.syncIncompleteAt !== null) {
     return NextResponse.json(
-      { error: "PlaidItem has not completed its first sync (cursor is null). Wait for the initial sync to finish before expanding history." },
+      { error: "PlaidItem has not completed its first sync yet. Wait for the initial sync to finish before expanding history." },
       { status: 422 },
     );
   }
@@ -182,6 +191,21 @@ export async function POST(req: NextRequest) {
 
     const linkToken = response.data.link_token;
     console.log(`[plaid][admin][expand-history-token] link token created for item ${plaidItemId}`);
+
+    // Forensic record (V25-CLOSE-3 Part 3). Metadata is ids + institution only;
+    // the returned link_token is NEVER logged.
+    await db.auditLog.create({
+      data: {
+        performedByAdminId: admin.id,
+        action:             AuditAction.ADMIN_PLAID_HISTORY_TOKEN_CREATED,
+        metadata: {
+          plaidItemId,
+          ownerUserId:   item.userId,
+          institutionId: item.institutionId,
+          result:        "SUCCESS",
+        },
+      },
+    });
 
     return NextResponse.json({
       link_token:      linkToken,

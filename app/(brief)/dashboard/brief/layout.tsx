@@ -11,7 +11,11 @@
  */
 
 import { BriefLogo } from "@/components/brief/BriefLogo";
-import { UserMenu } from "@/components/brief/UserMenu";
+// Product decision (UI cleanup): the Daily Brief reuses the SAME app-wide
+// top-right menu as the rest of the app (UserButton) instead of its own
+// UserMenu. This also removes the Appearance (theme) and Region controls that
+// only lived in UserMenu. UserMenu/HeroRegionProvider are kept (inert) for now.
+import { UserButton } from "@/components/ui/UserButton";
 import { HeroRegionProvider } from "@/components/brief/HeroRegionProvider";
 import { ReactNode } from "react";
 
@@ -43,7 +47,7 @@ export default function BriefLayout({ children }: { children: ReactNode }) {
             <BriefLogo />
           </div>
           <div className="pointer-events-auto">
-            <UserMenu />
+            <UserButton />
           </div>
         </header>
 

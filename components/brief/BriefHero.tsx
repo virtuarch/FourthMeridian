@@ -52,9 +52,10 @@
 import Link from "next/link";
 import { LayoutGrid, Brain, ArrowRight } from "lucide-react";
 import { EarthBackground } from "./EarthBackground";
+import { AtlasLiquidCta } from "@/components/atlas/AtlasLiquidCta";
+import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { useTheme } from "@/components/theme/ThemeProvider";
-import { useHeroRegion } from "./HeroRegionProvider";
 import type { VisitState } from "@/lib/brief-types";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -119,6 +120,26 @@ const CTA_BASE =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent";
 
 function HeroCTAs() {
+  // Liquid CTAs when supported (useAtlasLiquid), else the Atlas Glass CTAs below.
+  // Only the row layout is Fourth Meridian; each CTA is the bare Liquid card.
+  const liquid = useAtlasLiquid();
+  if (liquid) {
+    return (
+      <div className="flex flex-col sm:flex-row gap-2.5 mt-7">
+        <AtlasLiquidCta href="/dashboard/spaces" ariaLabel="Continue to Spaces">
+          <LayoutGrid className="w-4 h-4 shrink-0" />
+          <span>Continue to Spaces</span>
+          <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+        </AtlasLiquidCta>
+
+        <AtlasLiquidCta href="/dashboard/analyze" ariaLabel="View AI Analysis">
+          <Brain className="w-4 h-4 shrink-0" />
+          <span>View AI Analysis</span>
+        </AtlasLiquidCta>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col sm:flex-row gap-2.5 mt-7">
       {/* Primary — Meridian-tinted Atlas Glass, not a solid-blue button.
@@ -191,18 +212,25 @@ export function BriefHero({ visitState, contextLine, generatedAt }: BriefHeroPro
 
   const { resolvedTheme } = useTheme();
 
-  // Region (auto-detected, with optional manual override) now lives in
-  // HeroRegionProvider so UserMenu's dropdown — a sibling, not a parent —
-  // can read and set it too. See HeroRegionProvider.tsx.
-  const { effectiveRegion } = useHeroRegion();
+  // Product decision (UI cleanup): the Daily Brief backdrop is pinned to ONE
+  // canonical image for every user, regardless of timezone/location — the
+  // MENA crop. Region-based switching is removed here; HeroRegionProvider is
+  // no longer consumed by the hero (kept inert for now, not deleted).
+  const HERO_REGION = "mena" as const;
 
   return (
     <div
       className="relative w-full"
-      style={{ height: "clamp(480px, 72vh, 820px)" }}
+      // Hero height is the single lever for the whole Brief's vertical start:
+      // the greeting is pinned to the bottom of this panel and the cards sit
+      // right below it, so lowering this clamp lifts the greeting AND the cards
+      // up together, preserving every spacing relationship. Reduced from
+      // 480/72vh/820 to bring the composition higher / closer to the Spaces top.
+      style={{ height: "clamp(380px, 54vh, 640px)" }}
     >
-      {/* Earth — bleeds to all four edges */}
-      <EarthBackground region={effectiveRegion} theme={resolvedTheme} />
+      {/* Earth — bleeds to all four edges. Pinned to the MENA crop (one
+          canonical Daily Brief backdrop for everyone). */}
+      <EarthBackground region={HERO_REGION} theme={resolvedTheme} />
 
       {/* Hero text — pinned to the lower portion */}
       <div className="absolute inset-0 flex flex-col justify-end">

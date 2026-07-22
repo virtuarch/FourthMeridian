@@ -19,6 +19,19 @@ export type TimelineTone =
   | "danger"
   | "info";
 
+/**
+ * Member-facing activity category — the axis the Activity tab's filter chips
+ * partition events along. Deliberately a small, member-legible vocabulary,
+ * distinct from the broader admin `AUDIT_ACTION_GROUPS` in lib/audit-actions.ts
+ * (which carries auth/session/AI-context groups members should never see).
+ *
+ *   financial  → manual asset lifecycle (add/archive/restore)
+ *   connection → account link/unlink, provider sync, historical imports, sync issues
+ *   space      → space lifecycle, members, sharing, goals
+ *   system     → platform bookkeeping surfaced to members (e.g. import rollback)
+ */
+export type ActivityCategory = "financial" | "connection" | "space" | "system";
+
 export interface TimelineEvent {
   /** Stable unique ID — typically the AuditLog.id or composite key */
   id: string;
@@ -81,6 +94,16 @@ export interface TimelineEvent {
   href?: string;
 
   /**
+   * Member-facing category used by the Activity tab's filter chips.
+   * Every real producer (the activity route's normalizers, the ImportBatch /
+   * SyncIssue normalizers) sets this. Optional at the type level only so the
+   * preview rows in lib/timeline-placeholder.ts (which predate categories and
+   * are out of scope for this pass) stay valid without modification — an event
+   * with no category simply never matches a specific chip, only "All".
+   */
+  category?: ActivityCategory;
+
+  /**
    * True for events that demonstrate a future Timeline event type
    * (document upload, AI recommendation, wallet added, recurring payment,
    * investment milestone, note, reminder, ...) that has no real backend
@@ -92,3 +115,18 @@ export interface TimelineEvent {
    */
   isPreview?: boolean;
 }
+
+/**
+ * Member-facing filter chips for the Activity tab, in display order.
+ * "all" is the default (no filtering). Kept here next to the contract rather
+ * than in lib/audit-actions.ts so it stays a member vocabulary, separate from
+ * the admin audit groups. The label copy is intentionally plain-language
+ * ("Connections", not "connection").
+ */
+export const ACTIVITY_FILTER_GROUPS: { id: ActivityCategory | "all"; label: string }[] = [
+  { id: "all",        label: "All" },
+  { id: "financial",  label: "Financial" },
+  { id: "connection", label: "Connections" },
+  { id: "space",      label: "Space" },
+  { id: "system",     label: "System" },
+];

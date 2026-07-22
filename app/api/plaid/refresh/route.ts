@@ -23,7 +23,11 @@ import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 import { refreshPlaidItem, refreshAllActiveItemsForUser, type RefreshSummary, type RefreshItemResult } from "@/lib/plaid/refresh";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
+import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { checkManualRefreshCooldown, markManualRefreshed, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
+import { limitByUser } from "@/lib/rate-limit";
 
 interface RefreshBody {
   plaidItemId?: string;
@@ -32,6 +36,11 @@ interface RefreshBody {
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;
+
+  // OPS-1 S4 — coarse per-user backstop over the per-item cooldown below
+  // (the cooldown is per PlaidItem; many items would otherwise multiply it).
+  const limited = await limitByUser(user.id, "plaid-refresh", { limit: 20, windowSec: 3600 });
+  if (limited) return limited;
 
   const body = (await req.json().catch(() => ({}))) as RefreshBody;
 
@@ -58,8 +67,18 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     // Marked on every attempt (success or failure) — see D2-7B checklist §5.
     await markManualRefreshed(item.id);
 
+    // F1 (2026-07-14) — same shared syncLockedAt guard the webhook/connect
+    // pipeline uses, so a manual "Refresh" can never race a webhook/cron/other
+    // manual trigger against this item's cursor. See the connections-weirdness
+    // investigation §4.1(d) — a freshly-connected item is off-cooldown, so a
+    // user who connects and immediately hits Refresh used to race their own
+    // background import.
     try {
-      const r = await refreshPlaidItem(item.id);
+      const lockResult = await withPlaidItemSyncLock(item.id, () => refreshPlaidItem(item.id));
+      if (!lockResult.ok) {
+        return NextResponse.json({ error: "in-flight" }, { status: 409 });
+      }
+      const r = lockResult.result;
       summary = {
         results:                   [r],
         itemCount:                 1,
@@ -74,10 +93,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       console.error(`[POST /api/plaid/refresh] refresh failed for PlaidItem ${item.id}:`, e);
       const health = classifyPlaidErrorForHealth(e);
       if (health) {
-        await db.plaidItem.update({
-          where: { id: item.id },
-          data:  { status: health.status, errorCode: health.errorCode },
-        });
+        // CH-2 — live columns (unchanged) + durable transition row only on change.
+        await setPlaidItemHealth(item.id, { status: health.status, errorCode: health.errorCode });
+        // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
+        await notifyItemSyncFailed(item.id);
       }
       return NextResponse.json({ error: "Refresh failed" }, { status: 500 });
     }

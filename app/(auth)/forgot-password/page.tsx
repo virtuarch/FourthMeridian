@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Loader2, ArrowLeft } from "lucide-react";
-import { AppLogo } from "@/components/ui/AppLogo";
+import { ArrowLeft } from "lucide-react";
+import { AuthCard, AuthHeader, AuthFooter, AuthButton } from "@/components/auth";
+import { Field, Input } from "@/components/atlas/fields";
+import { InlineBanner } from "@/components/atlas/InlineBanner";
 
 export default function ForgotPasswordPage() {
   const [identifier, setIdentifier] = useState("");
@@ -38,88 +40,67 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
-      <div className="w-full max-w-sm space-y-6">
+    <AuthCard>
+      <AuthHeader title="Reset your password" subtitle="Enter your email or username" />
 
-        {/* Logo */}
-        <div className="text-center">
-          <div className="flex items-center justify-center mb-4">
-            <AppLogo size={32} withWordmark wordmarkClassName="text-white text-lg" forceTheme="dark" priority />
-          </div>
-          <h1 className="text-2xl font-bold text-white">Reset your password</h1>
-          <p className="text-gray-400 text-sm mt-1">Enter your email or username</p>
-        </div>
+      {error && <InlineBanner tone="error">{error}</InlineBanner>}
 
-        {error && (
-          <div className="rounded-xl bg-red-500/10 border border-red-500/30 px-4 py-3 text-sm text-red-400 text-center">
-            {error}
-          </div>
-        )}
+      {!submitted ? (
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <Field label="Email or username" htmlFor="fp-identifier">
+            <Input
+              id="fp-identifier"
+              type="text"
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
+              required
+              autoFocus
+              placeholder="Email or username"
+            />
+          </Field>
 
-        {!submitted ? (
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div>
-              <label className="block text-sm text-gray-400 mb-1.5">Email or username</label>
-              <input
-                type="text"
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                required
-                autoFocus
-                className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
-                placeholder="Email or username"
-              />
-            </div>
+          <AuthButton type="submit" loading={loading} disabled={loading || !identifier.trim()}>
+            {loading ? "Sending…" : "Send Reset Link"}
+          </AuthButton>
+        </form>
+      ) : (
+        <div className="space-y-4">
+          <InlineBanner tone="success">
+            If an account exists for that email or username, a reset link has been sent.
+          </InlineBanner>
 
-            <button
-              type="submit"
-              disabled={loading || !identifier.trim()}
-              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+          {/* DEV MODE: show reset link directly */}
+          {resetUrl && (
+            <div
+              className="space-y-2 rounded-xl border px-4 py-3"
+              style={{ background: "rgba(251,191,36,0.08)", borderColor: "rgba(251,191,36,0.26)" }}
             >
-              {loading ? (
-                <>
-                  <Loader2 size={15} className="animate-spin" />
-                  Sending…
-                </>
-              ) : (
-                "Send Reset Link"
-              )}
-            </button>
-          </form>
-        ) : (
-          <div className="space-y-4">
-            <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 px-4 py-3 text-sm text-emerald-400 text-center">
-              If an account exists for that email or username, a reset link has been sent.
+              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--accent-warning)]">
+                Dev mode — link visible in browser
+              </p>
+              <p className="text-xs text-[var(--text-muted)]">
+                In production this would be delivered by email.
+              </p>
+              <Link
+                href={resetUrl}
+                className="block break-all text-sm text-[var(--accent-info)] transition-colors hover:text-[var(--meridian-300)]"
+              >
+                {resetUrl}
+              </Link>
             </div>
+          )}
+        </div>
+      )}
 
-            {/* DEV MODE: show reset link directly */}
-            {resetUrl && (
-              <div className="rounded-xl bg-yellow-500/10 border border-yellow-500/30 px-4 py-3 space-y-2">
-                <p className="text-xs font-semibold text-yellow-400 uppercase tracking-wider">
-                  Dev mode — link visible in browser
-                </p>
-                <p className="text-xs text-gray-400">
-                  In production this would be delivered by email.
-                </p>
-                <Link
-                  href={resetUrl}
-                  className="block text-sm text-blue-400 hover:text-blue-300 transition-colors break-all"
-                >
-                  {resetUrl}
-                </Link>
-              </div>
-            )}
-          </div>
-        )}
-
+      <AuthFooter>
         <Link
           href="/login"
-          className="flex items-center justify-center gap-1.5 text-sm text-gray-500 hover:text-gray-300 transition-colors"
+          className="inline-flex items-center justify-center gap-1.5 text-sm text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
         >
           <ArrowLeft size={14} />
           Back to sign in
         </Link>
-      </div>
-    </div>
+      </AuthFooter>
+    </AuthCard>
   );
 }

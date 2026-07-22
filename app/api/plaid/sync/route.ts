@@ -22,7 +22,11 @@ import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
+import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
+import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { checkManualRefreshCooldown, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
+import { limitByUser } from "@/lib/rate-limit";
 
 interface SyncBody {
   plaidItemId?: string;
@@ -31,6 +35,11 @@ interface SyncBody {
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;
+
+  // OPS-1 S4 — coarse per-user backstop over the per-item cooldown below
+  // (the cooldown is per PlaidItem; many items would otherwise multiply it).
+  const limited = await limitByUser(user.id, "plaid-sync", { limit: 20, windowSec: 3600 });
+  if (limited) return limited;
 
   const body = await req.json().catch(() => ({})) as SyncBody;
 
@@ -88,9 +97,18 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
   await markManyManualRefreshed(eligibleIds);
 
+  // F1 (2026-07-14) — each item's sync goes through the shared syncLockedAt
+  // guard (lib/plaid/sync-lock.ts), the same one the webhook/connect pipeline
+  // uses, so "Sync Now" can never race a webhook/cron/other manual trigger
+  // against this item's cursor. See the connections-weirdness investigation §4.1.
   for (const item of eligibleItems) {
     try {
-      const r = await syncTransactionsForItem(item.id);
+      const lockResult = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id));
+      if (!lockResult.ok) {
+        results.push({ plaidItemId: item.id, institution: item.institutionName, ok: false, skipped: "in-flight" });
+        continue;
+      }
+      const r = lockResult.result;
       totalAdded    += r.added;
       totalModified += r.modified;
       totalRemoved  += r.removed;
@@ -99,10 +117,12 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       console.error(`[POST /api/plaid/sync] sync failed for PlaidItem ${item.id}:`, e);
       const health = classifyPlaidErrorForHealth(e);
       if (health) {
-        await db.plaidItem.update({
-          where: { id: item.id },
-          data:  { status: health.status, errorCode: health.errorCode },
-        });
+        // CH-2 chokepoint (previously a direct db.plaidItem.update here — §5.1
+        // of the connections-weirdness investigation: this failure path
+        // bypassed the durable transition-history record).
+        await setPlaidItemHealth(item.id, { status: health.status, errorCode: health.errorCode });
+        // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
+        await notifyItemSyncFailed(item.id);
       }
       results.push({ plaidItemId: item.id, institution: item.institutionName, ok: false });
     }

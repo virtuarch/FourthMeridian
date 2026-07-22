@@ -35,7 +35,8 @@ import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
  */
 export type ProgressMode = "savings" | "spending";
 
-/** Base colour palette for savings-mode bars and primary amounts. */
+/** Base colour theme (retained for API compatibility; no longer tints the bar
+ *  under the Atlas token system — decorative theming resolves to neutral ink). */
 export type ProgressTheme = "blue" | "green" | "orange" | "purple";
 
 /** One cell in the supplemental stats grid below the progress bar. */
@@ -73,7 +74,8 @@ export interface ProgressWidgetProps {
   // ── Behaviour ───────────────────────────────────────────────────────────────
   /** Default: "savings" */
   mode?: ProgressMode;
-  /** Base colour theme for savings mode. Default: "blue" */
+  /** Base colour theme for savings mode. Retained for API compatibility; now
+   *  ignored for colour (decorative theming → neutral ink under Atlas tokens). */
   theme?: ProgressTheme;
 
   // ── Supplemental stats ──────────────────────────────────────────────────────
@@ -94,62 +96,44 @@ export interface ProgressWidgetProps {
   emptySubline?: string;
 }
 
-// ─── Color maps (literal strings so Tailwind includes all classes) ────────────
-
-const THEME_BAR: Record<ProgressTheme, string> = {
-  blue:   "bg-blue-500",
-  green:  "bg-green-500",
-  orange: "bg-orange-500",
-  purple: "bg-purple-500",
-};
-
-const THEME_TEXT: Record<ProgressTheme, string> = {
-  blue:   "text-blue-400",
-  green:  "text-green-400",
-  orange: "text-orange-400",
-  purple: "text-purple-400",
-};
+// ─── Colour maps → Atlas tokens (Step B) ──────────────────────────────────────
+// Semantic state only: green → positive, red → negative. Caution (orange) and
+// decorative (blue/purple) resolve to neutral ink — colour is reserved for
+// genuine good/over states. (A distinct caution/warning tone has no token yet.)
 
 const ACCENT_TEXT: Record<NonNullable<ProgressStat["accent"]>, string> = {
-  green:   "text-green-400",
-  red:     "text-red-400",
-  orange:  "text-orange-400",
-  blue:    "text-blue-400",
-  purple:  "text-purple-400",
-  default: "text-white",
+  green:   "var(--accent-positive)",
+  red:     "var(--accent-negative)",
+  orange:  "var(--text-primary)",
+  blue:    "var(--text-primary)",
+  purple:  "var(--text-primary)",
+  default: "var(--text-primary)",
 };
 
-// ─── Derived colour helpers ───────────────────────────────────────────────────
+// ─── Derived colour helpers (return Atlas token strings) ──────────────────────
 
-function barClass(pct: number, mode: ProgressMode, theme: ProgressTheme): string {
+function barColor(pct: number, mode: ProgressMode): string {
   if (mode === "spending") {
-    if (pct >= 100) return "bg-red-500";
-    if (pct >= 90)  return "bg-orange-500";
-    if (pct >= 70)  return "bg-yellow-500";
-    return "bg-green-500";
+    if (pct >= 100) return "var(--accent-negative)"; // over budget
+    if (pct >= 70)  return "var(--text-secondary)";  // caution → neutral
+    return "var(--accent-positive)";                  // comfortably under budget
   }
-  // savings — theme colour until complete, then always green
-  return pct >= 100 ? "bg-green-500" : THEME_BAR[theme];
+  // savings — neutral until complete, then celebrated green
+  return pct >= 100 ? "var(--accent-positive)" : "var(--text-secondary)";
 }
 
-function primaryAmountClass(
-  pct: number,
-  mode: ProgressMode,
-  theme: ProgressTheme,
-): string {
-  if (mode === "spending") {
-    return pct >= 100 ? "text-red-400" : "text-white";
-  }
-  return pct >= 100 ? "text-green-400" : THEME_TEXT[theme];
+function primaryAmountColor(pct: number, mode: ProgressMode): string {
+  if (mode === "spending") return pct >= 100 ? "var(--accent-negative)" : "var(--text-primary)";
+  return pct >= 100 ? "var(--accent-positive)" : "var(--text-primary)";
 }
 
-function pctTextClass(pct: number, mode: ProgressMode, theme: ProgressTheme): string {
+function pctTextColor(pct: number, mode: ProgressMode): string {
   if (mode === "spending") {
-    if (pct >= 100) return "text-red-400";
-    if (pct >= 70)  return "text-orange-400";
-    return "text-green-400";
+    if (pct >= 100) return "var(--accent-negative)";
+    if (pct >= 70)  return "var(--text-secondary)"; // caution → neutral
+    return "var(--accent-positive)";
   }
-  return pct >= 100 ? "text-green-400" : THEME_TEXT[theme];
+  return pct >= 100 ? "var(--accent-positive)" : "var(--text-secondary)";
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -162,7 +146,6 @@ export function ProgressWidget({
   targetLabel,
   progressLabel,
   mode          = "savings",
-  theme         = "blue",
   stats,
   deadline,
   deadlineLabel = "Target date",
@@ -174,10 +157,10 @@ export function ProgressWidget({
   if (targetAmount == null || targetAmount <= 0) {
     return (
       <div className="text-center py-5 space-y-1">
-        <p className="text-sm text-gray-400">
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
           {emptyHeadline ?? "This widget hasn't been configured yet."}
         </p>
-        <p className="text-xs text-gray-600 leading-relaxed max-w-xs mx-auto">
+        <p className="text-xs leading-relaxed max-w-xs mx-auto" style={{ color: "var(--text-faint)" }}>
           {emptySubline ?? "Add a target amount in Settings to start tracking progress."}
         </p>
       </div>
@@ -189,10 +172,7 @@ export function ProgressWidget({
   const isComplete = mode === "savings" && pct >= 100;
   const isOver     = mode === "spending" && pct >= 100;
 
-  const barW          = `${Math.min(100, pct).toFixed(2)}%`;
-  const barCls        = barClass(pct, mode, theme);
-  const amountCls     = primaryAmountClass(pct, mode, theme);
-  const pctCls        = pctTextClass(pct, mode, theme);
+  const barW = `${Math.min(100, pct).toFixed(2)}%`;
 
   return (
     <div className="space-y-4">
@@ -200,41 +180,41 @@ export function ProgressWidget({
       {/* ── Primary amount ──────────────────────────────────────────────── */}
       <div>
         <div className="flex items-end gap-2">
-          <p className={`text-3xl font-bold ${amountCls}`}>
+          <p className="text-3xl font-bold" style={{ color: primaryAmountColor(pct, mode) }}>
             {formatCurrency(current, currency)}
           </p>
           {isComplete && (
-            <CheckCircle2 size={18} className="text-green-400 mb-1 shrink-0" />
+            <CheckCircle2 size={18} className="mb-1 shrink-0" style={{ color: "var(--accent-positive)" }} />
           )}
         </div>
         {currentLabel && (
-          <p className="text-xs text-gray-500 mt-0.5">{currentLabel}</p>
+          <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{currentLabel}</p>
         )}
       </div>
 
       {/* ── Progress bar ────────────────────────────────────────────────── */}
       <div className="space-y-1.5">
-        <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+        <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--surface-inset)" }}>
           <div
-            className={`h-full rounded-full transition-all duration-300 ${barCls}`}
-            style={{ width: barW }}
+            className="h-full rounded-full transition-all duration-300"
+            style={{ width: barW, background: barColor(pct, mode) }}
           />
         </div>
 
         <div className="flex items-center justify-between text-xs">
           {/* Left: percentage */}
-          <span className={`font-semibold ${pctCls}`}>
+          <span className="font-semibold" style={{ color: pctTextColor(pct, mode) }}>
             {formatPercent(pct)}
             {progressLabel && (
-              <span className="font-normal text-gray-600 ml-1">{progressLabel}</span>
+              <span className="font-normal ml-1" style={{ color: "var(--text-faint)" }}>{progressLabel}</span>
             )}
           </span>
 
           {/* Right: X of Y */}
-          <span className="text-gray-600">
+          <span style={{ color: "var(--text-faint)" }}>
             {formatCurrency(current, currency)}
-            <span className="mx-1 text-gray-700">/</span>
-            {targetLabel && <span className="text-gray-500">{targetLabel} </span>}
+            <span className="mx-1" style={{ color: "var(--text-faint)" }}>/</span>
+            {targetLabel && <span style={{ color: "var(--text-muted)" }}>{targetLabel} </span>}
             {formatCurrency(targetAmount, currency)}
           </span>
         </div>
@@ -243,14 +223,14 @@ export function ProgressWidget({
       {/* ── Over-budget / complete banners ──────────────────────────────── */}
       {isOver && (
         <div className="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20">
-          <p className="text-xs text-red-400">
+          <p className="text-xs" style={{ color: "var(--accent-negative)" }}>
             Over budget by {formatCurrency(current - targetAmount, currency)}
           </p>
         </div>
       )}
       {isComplete && (
         <div className="px-3 py-2 rounded-xl bg-green-500/10 border border-green-500/20">
-          <p className="text-xs text-green-400">
+          <p className="text-xs" style={{ color: "var(--accent-positive)" }}>
             Goal reached — {formatCurrency(current - targetAmount, currency)} ahead of target
           </p>
         </div>
@@ -260,9 +240,9 @@ export function ProgressWidget({
       {stats && stats.length > 0 && (
         <div className={`grid gap-3 ${stats.length === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
           {stats.map((stat) => (
-            <div key={stat.label} className="bg-gray-800/50 rounded-xl p-3">
-              <p className="text-xs text-gray-500 mb-1">{stat.label}</p>
-              <p className={`text-base font-semibold ${ACCENT_TEXT[stat.accent ?? "default"]}`}>
+            <div key={stat.label} className="rounded-xl p-3" style={{ background: "var(--surface-inset)" }}>
+              <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>{stat.label}</p>
+              <p className="text-base font-semibold" style={{ color: ACCENT_TEXT[stat.accent ?? "default"] }}>
                 {stat.value}
               </p>
             </div>
@@ -272,10 +252,10 @@ export function ProgressWidget({
 
       {/* ── Deadline ────────────────────────────────────────────────────── */}
       {deadline && (
-        <div className="flex items-center gap-2 text-xs text-gray-500">
+        <div className="flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
           <Calendar size={12} className="shrink-0" />
           <span>
-            {deadlineLabel}: <span className="text-gray-400">{formatDate(deadline)}</span>
+            {deadlineLabel}: <span style={{ color: "var(--text-secondary)" }}>{formatDate(deadline)}</span>
           </span>
         </div>
       )}

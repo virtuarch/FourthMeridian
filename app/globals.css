@@ -113,12 +113,69 @@
   --shadow-e3: 0 18px 44px rgba(0,0,0,.46), 0 0 0 1px rgba(255,255,255,.08) inset;
   --shadow-e4: 0 28px 70px rgba(0,0,0,.56), 0 0 0 1px rgba(255,255,255,.10) inset;
 
+  /* ---------- LAYERING — named modal/overlay stacking scale ----------
+     Introduced by the Atlas Glass Modal Doctrine (Phase 1) to replace the
+     ad-hoc z-index ladder (z-50 / z-[100] / z-[110] / z-[150] / z-[9999]).
+     Consumed by OverlaySurface; existing modals migrate onto these tokens
+     in later phases. Additive — nothing references the removed literals yet. */
+  --z-modal:        100;  /* standard modal / overlay layer */
+  --z-modal-nested: 110;  /* a modal launched from within another modal */
+  --z-toast:        200;  /* transient notifications above modals */
+  --z-critical:     300;  /* critical/system-level interrupts */
+
   /* ---------- AI MOTION — distinct identity for AI surfaces ----------
      Slow, ambient, never a spinner. Used by the meridian-shimmer sweep
      on AI surfaces (e.g. Today's Insight). Intentionally outside the
      core --dur-* scale since it's a single-purpose ambient loop, not a
      UI state transition. */
   --dur-shimmer: 6000ms;
+
+  /* ============================================================
+     ATLAS GLASS MATERIAL ENGINE — PHASE 1 (additive, opt-in).
+     Governed by docs/design-system/ATLAS_GLASS_MATERIAL_DOCTRINE.md.
+
+     Per-depth material variables so "depth" becomes physical
+     THICKNESS (blur + saturation + brightness) instead of the
+     opacity-only difference the --glass-* FILLS carry today. Values
+     port the design language's own .m-* ladder
+     (Fourth-Meridian-Design-Language-v1.html): blur 16→28→40→60px,
+     saturation 180→140%, plus a new, rarer `floating` tier.
+
+     THEME-INDEPENDENT: blur/saturation/brightness are identical in
+     light and dark — only the --glass-* FILLS differ per theme, and
+     those already live in the theme blocks below (the one new fill,
+     --glass-floating, is added to both).
+
+     UNCONSUMED / NON-BREAKING: nothing references these yet. GlassPanel
+     is NOT repointed in Phase 1, so every existing surface stays
+     byte-identical. A later, separately-approved step adopts them.
+     Rollback = delete this block (+ the --glass-floating fills and the
+     .atlas-fresnel-edge utility below). ============================ */
+  /* Phase 2 retune — the tiers were too close to read apart (thin 28 ≈ old
+     hardcoded 30, so Phase 1B "changed almost nothing"). The ladder is now
+     stepped wider so depth is visibly physical: thin lets more of the Earth
+     field read through (shallower frost = the pane floats over a visible
+     world), while regular/thick separate clearly and modal glass reads
+     genuinely thicker. Saturation still falls as thickness rises (more medium
+     between you and the background = less of its color survives). Blur is the
+     expensive axis, so only the rare thick/floating tiers carry the big radii. */
+  --glass-blur-ultrathin: 14px;  --glass-sat-ultrathin: 185%;  --glass-bright-ultrathin: 1;
+  --glass-blur-thin:      22px;  --glass-sat-thin:      172%;  --glass-bright-thin:      1;
+  --glass-blur-regular:   46px;  --glass-sat-regular:   150%;  --glass-bright-regular:   .99;
+  --glass-blur-thick:     68px;  --glass-sat-thick:     138%;  --glass-bright-thick:     .96;
+  /* floating — new, rare, most-separated tier (hero / critical only).
+     Brightness dips slightly (thicker medium darkens what's behind it);
+     its "lift" comes from fill + edge + elevation, not a brighter background. */
+  --glass-blur-floating:  84px;  --glass-sat-floating:  132%;  --glass-bright-floating:  .94;
+
+  /* Convenience combined filters — one token an opt-in consumer/utility can
+     feed to backdrop-filter, composing the three axes above. (Today's
+     GlassPanel hardcodes `blur(30px) saturate(160%)` and is left untouched.) */
+  --glass-filter-ultrathin: blur(var(--glass-blur-ultrathin)) saturate(var(--glass-sat-ultrathin)) brightness(var(--glass-bright-ultrathin));
+  --glass-filter-thin:      blur(var(--glass-blur-thin))      saturate(var(--glass-sat-thin))      brightness(var(--glass-bright-thin));
+  --glass-filter-regular:   blur(var(--glass-blur-regular))   saturate(var(--glass-sat-regular))   brightness(var(--glass-bright-regular));
+  --glass-filter-thick:     blur(var(--glass-blur-thick))     saturate(var(--glass-sat-thick))     brightness(var(--glass-bright-thick));
+  --glass-filter-floating:  blur(var(--glass-blur-floating))  saturate(var(--glass-sat-floating))  brightness(var(--glass-bright-floating));
 }
 
 /* ============ THEME: DARK (default — only theme the app currently ships) ============ */
@@ -149,11 +206,29 @@ html[data-theme="dark"] {
   --surface-hover-strong: rgba(255,255,255,.10);
   --surface-muted: rgba(255,255,255,.05);
 
+  /* ---------- STEP A: DataCard foundation tokens (additive; unconsumed) ----------
+     Added for the Atlas Glass card-unification foundation (see
+     docs/investigations/ATLAS_GLASS_UNIFICATION_STEP_A_CHECKLIST.md). Nothing
+     references these yet — they exist so Step B card migrations reference
+     semantic tokens instead of raw palette. Values are provisional (review). */
+  --text-faint: var(--ink-500);            /* quietest text tier — timestamps (replaces text-gray-500) */
+  --surface-inset: rgba(255,255,255,.07);  /* inset icon-chip fill on glass (replaces bg-gray-800) */
+  --accent-positive: var(--emerald-400);   /* real gain only (Design Language Law 7) */
+  --accent-negative: var(--coral-400);     /* real loss only */
+  --accent-neutral:  var(--ink-300);       /* non-signalling default */
+  --accent-info:     var(--meridian-400);  /* interactive / informational */
+  --accent-warning:  #FBBF24;              /* amber — genuine warnings only (reauth / medium severity) */
+
   /* ---------- MODAL SURFACE — BriefModal's one-off "smoked crystal" fill ----------
      Kept separate from --glass-thick on purpose (see BriefModal.tsx header
      comment) since modals want a lower-opacity, heavier-blur recipe than
      the standard glass depths. */
   --modal-surface: rgba(10,14,23,.55);
+
+  /* Phase 1 material engine — new `floating` depth FILL (dark). One step more
+     separated/opaque than --glass-thick (.88); pairs with --glass-filter-floating.
+     Additive + unconsumed. */
+  --glass-floating: rgba(10,14,23,.92);
 }
 
 /* ============ THEME: LIGHT (reserved — not wired up to a toggle yet) ============ */
@@ -177,9 +252,24 @@ html[data-theme="light"] {
   --surface-hover-strong: rgba(17,21,31,.08);
   --surface-muted: rgba(17,21,31,.04);
 
+  /* ---------- STEP A: DataCard foundation tokens (additive; unconsumed) ----------
+     Light-theme parity for the tokens added in the dark block above. Darker
+     accent steps (-500) and a concrete faint gray are used for contrast on
+     light glass. Provisional (review). */
+  --text-faint: #9AA1B0;                   /* one step fainter than --text-muted (#7A8295) */
+  --surface-inset: rgba(17,21,31,.06);     /* inset icon-chip fill on light glass */
+  --accent-positive: var(--emerald-500);   /* darker step for contrast on light glass */
+  --accent-negative: var(--coral-500);
+  --accent-neutral:  var(--ink-600);
+  --accent-info:     var(--meridian-500);
+  --accent-warning:  #B45309;              /* darker amber for contrast on light glass */
+
   /* Frosted white "smoked glass" — replaces the dark navy fill so the
      modal reads as Light Glass instead of Midnight. */
   --modal-surface: rgba(255,255,255,.75);
+
+  /* Phase 1 material engine — `floating` depth FILL (light-theme parity). */
+  --glass-floating: rgba(255,255,255,.95);
 }
 
 * { box-sizing: border-box; }
@@ -199,103 +289,6 @@ body {
    SegmentedControl range strip) while keeping them scrollable by drag/swipe. */
 .no-scrollbar { scrollbar-width: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
-
-/* ---------- Atlas Field — ambient page background ----------
-   Phase G update: swapped from the generic Earth photography the Daily
-   Brief hero falls back to (oval-world.png / earth-europe-light.png) to the
-   dedicated Fourth Meridian Atlas artwork (fourth-meridian-dark.png /
-   fourth-meridian-light.png — brand globe, baked-in meridian lines, brass
-   horizon glow). Because this art is deliberate brand identity rather than
-   stock photography, it now runs lighter blur/darken than the old "disguise
-   a wallpaper photo" treatment — it's meant to be recognized, not hidden.
-   Positioned `absolute` rather than `fixed` so it fills its nearest
-   `position: relative` ancestor instead of the whole viewport. As of Phase
-   G that ancestor is the dashboard shell's content column (see
-   DashboardChrome.tsx), not just the page's own content wrapper — this is
-   what lets the field paint behind the header strip too, not only below it.
-   See components/atlas/AtlasField.tsx. */
-.atlas-field {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  overflow: hidden;
-  pointer-events: none;
-  background: radial-gradient(ellipse 120% 80% at 50% -10%, var(--bg-deep), var(--bg-base) 60%);
-  /* Fades the whole field toward every edge so the globe/lines read as
-     atmospheric light bleeding into the page rather than a painted
-     rectangle — this mask, not the layers themselves, is what makes the
-     field feel infinite instead of contained/clipped. */
-  mask-image: radial-gradient(ellipse 80% 70% at 50% 16%, black 30%, transparent 90%);
-  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 16%, black 30%, transparent 90%);
-}
-
-/* Subtle top-down dark overlay — re-darkens just the first quarter of the
-   field so header text/buttons stay legible now that the field extends up
-   behind the header strip (Phase G #2), then fades out before the title /
-   card canvas so the art still reads clearly through the rest of the page. */
-.atlas-field::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, var(--bg-deep) 0%, transparent 26%);
-  opacity: .8;
-  pointer-events: none;
-}
-
-/* Fourth Meridian Atlas artwork — brand globe with baked-in meridian grid
-   and brass horizon glow (Phase G #3, swapped in from the project's own
-   fourth-meridian-dark/light.png test assets). Lighter touch than the old
-   stock-photo disguise: less blur, a touch more brightness so the horizon
-   glow and city-light texture stay visible as "distant brand atlas," not
-   mush. Dark/light swap is pure CSS so AtlasField.tsx stays hook-free and
-   server-renderable. */
-.atlas-globe {
-  position: absolute;
-  top: -34%;
-  left: 50%;
-  width: 92vw;
-  max-width: 1500px;
-  aspect-ratio: 1.57;
-  transform: translateX(-50%);
-  background-repeat: no-repeat;
-  background-size: cover;
-  background-position: center 22%;
-  filter: blur(2px) brightness(.52) saturate(1.15);
-  opacity: .6;
-  animation: atlas-globe-drift 70s var(--ease-standard) infinite alternate;
-  will-change: transform;
-}
-.atlas-globe-dark  { background-image: url("/fourth-meridian-dark.png"); }
-.atlas-globe-light { background-image: url("/fourth-meridian-light.png"); display: none; }
-html[data-theme="light"] .atlas-globe-dark  { display: none; }
-html[data-theme="light"] .atlas-globe-light {
-  display: block;
-  opacity: .32;
-  filter: blur(2px) brightness(.94) saturate(1.05);
-}
-@keyframes atlas-globe-drift {
-  0%   { transform: translateX(-50%) translateY(0)    scale(1);    }
-  100% { transform: translateX(-50%) translateY(1.2%) scale(1.04); }
-}
-
-/* Meridian / latitude line art — faint globe-grid geometry (see the inline
-   <svg> in AtlasField.tsx), not a new image asset. Kept extremely subtle —
-   this should read as "structure in the distance," never compete with the
-   card canvas it sits behind. */
-.atlas-meridians {
-  position: absolute;
-  top: -4%;
-  left: 50%;
-  width: 108%;
-  height: 62%;
-  transform: translateX(-50%);
-  color: var(--ink-100);
-  opacity: .14;
-}
-html[data-theme="light"] .atlas-meridians {
-  color: var(--ink-500);
-  opacity: .20;
-}
 
 /* ---------- Presence pulse — small "active" status dot ----------
    Very subtle breathing opacity/scale, no glow/box-shadow ring — the
@@ -339,6 +332,70 @@ html[data-theme="light"] .atlas-meridians {
   animation: meridian-shimmer var(--dur-shimmer) var(--ease-standard) infinite;
 }
 
+/* ---------- Atlas Glass Material Engine — Fresnel edge utility (Phase 1) ----------
+   Full-perimeter edge highlight: a 1px light ring that follows the element's
+   border-radius, brightest toward the top-left (single notional light source per
+   the Material Doctrine) and dimmest opposite, with a faint counter-glow on the
+   lower edge. This is the doctrine's "edges brighter than center" law made real —
+   a superset of GlassPanel's current single TOP-edge specular.
+
+   OPT-IN / ADDITIVE: no existing component references this. Apply
+   `.atlas-fresnel-edge` to a positioned, radius-bearing glass surface (the ring
+   inherits border-radius). Per-surface intensity via `--atlas-edge-strength`
+   (default 1); thicker glass should set a higher value (doctrine §4.3).
+   Decorative only — pointer-inert, aria-invisible, no animation (so it is
+   unaffected by reduced-motion). Phase-1 scope: the light direction is a fixed
+   145deg; Phase 2's shared `--atlas-light-angle` model is intentionally NOT
+   introduced here. Rollback = delete this block. */
+.atlas-fresnel-edge { position: relative; }
+.atlas-fresnel-edge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    145deg,
+    rgba(255,255,255,calc(.34 * var(--atlas-edge-strength, 1))),
+    rgba(255,255,255,calc(.07 * var(--atlas-edge-strength, 1))) 38%,
+    rgba(255,255,255,0) 56%,
+    rgba(255,255,255,calc(.14 * var(--atlas-edge-strength, 1)))
+  );
+  /* Punch out the interior so only the 1px border band paints. */
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+/* Light theme: a plain white ring nearly vanishes on white glass, so brighten
+   the lit edge and add a faint DARK inner edge for definition (doctrine §4.6). */
+html[data-theme="light"] .atlas-fresnel-edge::after {
+  background: linear-gradient(
+    145deg,
+    rgba(255,255,255,calc(.95 * var(--atlas-edge-strength, 1))),
+    rgba(17,21,31,calc(.09 * var(--atlas-edge-strength, 1))) 44%,
+    rgba(17,21,31,0) 58%,
+    rgba(17,21,31,calc(.11 * var(--atlas-edge-strength, 1)))
+  );
+}
+
+/* ---------- Reduced transparency — Phase 1 material filters degrade to none ----------
+   Forward-compatible safety: under prefers-reduced-transparency the new per-depth
+   combined filters collapse to `none`, so any FUTURE adopter automatically drops
+   the GPU-heavy backdrop-filter and leans on the opaque --glass-* fill instead.
+   Inert today (nothing consumes these yet) — guarantees no a11y regression later.
+   Does not touch the current GlassPanel recipe. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-filter-ultrathin: none;
+    --glass-filter-thin:      none;
+    --glass-filter-regular:   none;
+    --glass-filter-thick:     none;
+    --glass-filter-floating:  none;
+  }
+}
+
 /* ---------- Reduced motion — global accessibility rule ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -347,6 +404,5 @@ html[data-theme="light"] .atlas-meridians {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-  .atlas-globe { animation: none; }
   .presence-dot { animation: none; }
 }

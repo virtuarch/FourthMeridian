@@ -12,6 +12,22 @@ export type ParsedUA = {
   device:  string;
 };
 
+/**
+ * Natural-language device label for a parsed UA. Avoids ever rendering
+ * "Unknown on Unknown" (which happens for audit events stored without a
+ * user-agent): degrades to "Unknown device", or keeps whichever half is known.
+ * Presentation-only — parseUserAgent's data is unchanged.
+ */
+export function formatDevice(parsed: ParsedUA): string {
+  const browserUnknown = parsed.browser === "Unknown";
+  const osUnknown      = parsed.os === "Unknown";
+
+  if (browserUnknown && osUnknown) return "Unknown device";
+  if (browserUnknown)              return `Unknown browser on ${parsed.os}`;
+  if (osUnknown)                   return `${parsed.browser} on an unknown operating system`;
+  return `${parsed.browser} on ${parsed.os}`;
+}
+
 export function parseUserAgent(ua: string): ParsedUA {
   if (!ua) return { browser: "Unknown", os: "Unknown", device: "Unknown" };
 

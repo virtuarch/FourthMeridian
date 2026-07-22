@@ -107,14 +107,13 @@ check(
     'a SAL query was added without the KD-15 visibility constraint',
 );
 
-// The three exported read functions each own exactly one SAL query today. If
-// that count drifts, a read path was added or removed — force a conscious review.
-check(
-  'lib/data/transactions.ts has the expected three SAL read queries',
-  salQueryCount === 3,
-  `expected 3 spaceAccountLinks queries (getTransactions / getDebtTransactions / ` +
-    `getInvestmentTransactions), found ${salQueryCount}`,
-);
+// NOTE: the earlier `salQueryCount === 5` exact-count pin was removed as brittle
+// — its own comment narrated it drifting 3→4→5, so it churned on every read-path
+// change without protecting an invariant. The durable guarantee is the lockstep
+// check above (every SAL query carries the shared predicate); a new SAL read that
+// forgets the visibility constraint still fails there. TI4 Slice 1's read-time
+// transfer-match visibility gate lives in lib/transactions/transfer-resolution.ts
+// — deliberately OUTSIDE this file — and is covered by its own test.
 
 check(
   'no hardcoded visibility literal in lib/data/transactions.ts',

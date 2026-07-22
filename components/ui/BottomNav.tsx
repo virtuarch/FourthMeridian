@@ -1,60 +1,91 @@
 "use client";
 
 /**
- * BottomNav
+ * components/ui/BottomNav.tsx
  *
- * Mobile counterpart to Sidebar — same Spaces-first IA, different pattern.
- * The desktop sidebar can afford an inline, always-expanded Spaces tree;
- * a bottom bar can't, so this collapses to four top-level destinations
- * (Brief / Spaces / AI / Settings) and lets /dashboard/spaces carry the
- * full Spaces experience (switching, creating, exploring) on mobile.
+ * The mobile presentation of the ONE navigation model (lib/space-nav GLOBAL_NAV)
+ * — the same five destinations the desktop ContextualNavbar renders in global
+ * mode: Spaces · Brief · AI · Connections · Settings. Desktop and mobile are two
+ * responsive presentations of one model, not two separate legacy systems (the
+ * former four-item Brief/Spaces/AI/Settings bar, which diverged from the model
+ * and dropped Connections, is retired).
  *
- * "Spaces" is active both on /dashboard/spaces and on /dashboard itself —
- * the latter is a Space's dashboard, reached by picking a Space, so it
- * reads as part of the same section rather than a separate "Dashboard" tab.
+ * Prototype behaviour (DS-5 §6): a phone has room for one nav level, so it shows
+ * the top-level app destinations and lets in-Space navigation become the
+ * Space-local rail. AI takes the centre slot, standalone, emphasised through a
+ * filled accent disc at an IDENTICAL footprint to its neighbours — emphasis
+ * through contrast, not size. It is the only filled thing on the bar.
  */
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Sparkles, LayoutGrid, Brain, Settings as SettingsIcon } from "lucide-react";
+import {
+  Layers,
+  Newspaper,
+  Sparkles,
+  Link2,
+  Settings as SettingsIcon,
+  type LucideIcon,
+} from "lucide-react";
+import { GLOBAL_NAV, isGlobalDestActive, type GlobalDestId } from "@/lib/space-nav";
 
-const nav = [
-  { label: "Brief",    href: "/dashboard/brief",    icon: Sparkles },
-  { label: "Spaces",   href: "/dashboard/spaces",   icon: LayoutGrid },
-  { label: "AI",       href: "/dashboard/analyze",  icon: Brain },
-  { label: "Settings", href: "/dashboard/settings", icon: SettingsIcon },
-];
-
-function isActive(href: string, path: string): boolean {
-  if (href === "/dashboard/spaces") {
-    return path.startsWith("/dashboard/spaces") || path === "/dashboard";
-  }
-  return path.startsWith(href);
-}
+const NAV_ICONS: Record<GlobalDestId, LucideIcon> = {
+  spaces: Layers,
+  brief: Newspaper,
+  ai: Sparkles,
+  connections: Link2,
+  settings: SettingsIcon,
+};
 
 export function BottomNav() {
-  const path = usePathname();
+  const pathname = usePathname();
   return (
     <nav
-      className="lg:hidden fixed bottom-0 inset-x-0 z-50"
+      aria-label="Sections"
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--border-hairline)] lg:hidden"
       style={{
-        borderTop:      "1px solid var(--border-hairline)",
-        background:     "var(--glass-regular)",
+        background: "var(--glass-regular)",
         backdropFilter: "blur(30px) saturate(160%)",
+        WebkitBackdropFilter: "blur(30px) saturate(160%)",
+        paddingBottom: "env(safe-area-inset-bottom)",
       }}
     >
-      <div className="flex items-center justify-around h-16">
-        {nav.map(({ label, href, icon: Icon }) => {
-          const active = isActive(href, path);
+      <div className="flex h-14 items-stretch">
+        {GLOBAL_NAV.map((d) => {
+          const Icon = NAV_ICONS[d.id];
+          const on = isGlobalDestActive(d.id, pathname);
+          const isAI = d.id === "ai";
           return (
             <Link
-              key={href}
-              href={href}
-              className="flex flex-col items-center gap-1 px-3 py-2 rounded-xl transition-colors"
-              style={{ color: active ? "var(--meridian-400)" : "var(--text-muted)" }}
+              key={d.id}
+              href={d.href}
+              aria-current={on ? "true" : undefined}
+              aria-label={d.label}
+              className="flex flex-1 flex-col items-center justify-center gap-1"
             >
-              <Icon size={20} strokeWidth={active ? 2.5 : 1.5} />
-              <span className="text-xs font-medium">{label}</span>
+              <span
+                className={[
+                  "grid size-7 place-items-center rounded-full",
+                  "transition-[background-color,color] duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                  isAI
+                    ? on
+                      ? "bg-[var(--meridian-400)] text-[var(--ink-950)]"
+                      : "bg-[rgba(88,150,251,.18)] text-[var(--meridian-400)]"
+                    : on
+                      ? "text-[var(--text-primary)]"
+                      : "text-[var(--text-muted)]",
+                ].join(" ")}
+              >
+                <Icon size={16} strokeWidth={on && !isAI ? 2.25 : 1.75} />
+              </span>
+              <span
+                className={[
+                  "text-[9px] leading-none transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                  on ? "text-[var(--text-secondary)]" : "text-[var(--text-muted)]",
+                ].join(" ")}
+              >
+                {d.label}
+              </span>
             </Link>
           );
         })}

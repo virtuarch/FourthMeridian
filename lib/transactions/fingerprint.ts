@@ -57,9 +57,17 @@ export async function findByFingerprint(
   date: Date,
   amount: number,
   merchant: string,
-  pending: boolean
+  pending: boolean,
+  /**
+   * PRE-V26-PLAID-CLOSE — optional injected Prisma client (defaults to the real
+   * `db`). Additive: every existing caller is unchanged. Needed so a sync run
+   * driven by an injected fake client does not silently read through to the real
+   * database here — without it, the fingerprint fallback would be the one path
+   * in the sync loop that escapes the test seam.
+   */
+  client: Pick<typeof db, "transaction"> = db,
 ): Promise<TransactionFingerprintCandidate | null> {
-  const candidates = await db.transaction.findMany({
+  const candidates = await client.transaction.findMany({
     // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import
     // rollback must never be treated as a match candidate. Without this,
     // Plaid sync's own fingerprint fallback (lib/plaid/syncTransactions.ts)

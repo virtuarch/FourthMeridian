@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, Building2, Plug, ScrollText, ShieldAlert } from "lucide-react";
+import { LayoutDashboard, Users, Building2, Plug, ScrollText, ShieldAlert, KeyRound } from "lucide-react";
 
 const NAV = [
   { label: "Overview",   href: "/admin",           icon: LayoutDashboard },
@@ -11,6 +11,7 @@ const NAV = [
   { label: "Providers",  href: "/admin/providers",  icon: Plug            },
   { label: "Audit Log",  href: "/admin/audit",      icon: ScrollText      },
   { label: "Security",   href: "/admin/security",   icon: ShieldAlert     },
+  { label: "Platform Access", href: "/admin/platform-access", icon: KeyRound },
 ];
 
 export function AdminNav({ mobile }: { mobile?: boolean }) {

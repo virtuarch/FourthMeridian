@@ -22,8 +22,7 @@ import { db } from "@/lib/db";
 import { ShareStatus } from "@prisma/client";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
-import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
-import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
+import { disconnectAccounts } from "@/lib/accounts/disconnect";
 
 export const PATCH = withApiHandler(async (
   req: NextRequest,
@@ -119,15 +118,11 @@ export const DELETE = withApiHandler(async (
   if (err) return err;
 
   try {
-    // Fetch FinancialAccount with its connections so we can revoke Plaid if needed
+    // Fetch the account for the existence check + audit metadata (name/type).
+    // The Plaid-item orphan revocation is handled inside disconnectAccounts.
     const fa = await db.financialAccount.findUnique({
-      where:   { id },
-      include: {
-        connections: {
-          where: { deletedAt: null },
-          include: { plaidItem: true },
-        },
-      },
+      where:  { id },
+      select: { id: true, name: true, type: true },
     });
 
     if (!fa) {
@@ -147,61 +142,13 @@ export const DELETE = withApiHandler(async (
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const now = new Date();
+    // ── Soft-disconnect via the ONE shared primitive (CONN-4A) — soft-delete
+    //    the account + its connections, revoke ACTIVE SALs, regenerate today's
+    //    snapshot per affected space, and revoke the Plaid item when orphaned.
+    //    Same behavior as before; now shared with the connection-level route.
+    await disconnectAccounts([id], user.id);
 
-    // ── KD-4 Phase 3 — soft-delete + connection close + SAL revoke commit
-    //    atomically. The affected-space capture (a read of ACTIVE links, needed
-    //    by snapshot regen below) runs inside the transaction, before the
-    //    revoke, so it observes pre-revocation state; its result is returned for
-    //    use outside. Snapshot regen and the Plaid disconnect stay OUTSIDE.
-    const activeLinks = await db.$transaction(async (tx) => {
-      // 1. Soft-delete the FinancialAccount
-      await tx.financialAccount.update({
-        where: { id },
-        data:  { deletedAt: now },
-      });
-      // 2. Soft-delete all AccountConnections
-      await tx.accountConnection.updateMany({
-        where: { financialAccountId: id, deletedAt: null },
-        data:  { deletedAt: now },
-      });
-      // 3. Capture active links (for snapshot regen), then revoke them
-      const links = await tx.spaceAccountLink.findMany({
-        where:  { financialAccountId: id, status: ShareStatus.ACTIVE },
-        select: { spaceId: true },
-      });
-      await tx.spaceAccountLink.updateMany({
-        where: { financialAccountId: id, status: ShareStatus.ACTIVE },
-        data:  { status: ShareStatus.REVOKED, revokedAt: now, revokedByUserId: user.id },
-      });
-      return links;
-    });
-
-    // ── 3a. Regenerate SpaceSnapshot for every space this account was active
-    //       in — captured above before revocation. Best-effort/non-fatal: a
-    //       snapshot regen failure must never block the archive itself. See
-    //       docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md.
-    const affectedSpaceIds = [...new Set(activeLinks.map((l) => l.spaceId))];
-    for (const spaceId of affectedSpaceIds) {
-      try {
-        await regenerateSpaceSnapshot(spaceId);
-      } catch (snapshotErr) {
-        console.warn(`[DELETE /api/accounts/:id] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
-      }
-    }
-
-    // ── 4. If this was a Plaid account, check whether we should revoke the item ──
-    //    (see lib/plaid/disconnect.ts — extracted seam for future provider-agnostic
-    //    disconnect dispatch; same count-then-itemRemove logic as before.)
-    const plaidItemDbIds = fa.connections
-      .filter((c) => c.plaidItemDbId)
-      .map((c) => c.plaidItemDbId!);
-
-    for (const plaidItemDbId of plaidItemDbIds) {
-      await disconnectPlaidItemIfOrphaned(plaidItemDbId);
-    }
-
-    // ── 5. Audit log ──────────────────────────────────────────────────────────
+    // ── Audit log ──────────────────────────────────────────────────────────────
     await db.auditLog.create({
       data: {
         userId:      user.id,

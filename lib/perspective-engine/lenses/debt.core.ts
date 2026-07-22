@@ -1,0 +1,367 @@
+/**
+ * lib/perspective-engine/lenses/debt.core.ts
+ *
+ * Debt lens — pure computation core (commit 3 of the approved plan in
+ * docs/investigations/PERSPECTIVE_ENGINE_FOUNDATION_INVESTIGATION.md).
+ *
+ * Answers: "What does my debt cost, and what does it take to service it?"
+ *
+ * PURE module: no data access, no clock beyond options.now, no imports
+ * beyond engine types and lib/format. Data binding lives in ./debt.ts;
+ * fixture tests in lib/perspective-engine/debt.test.ts.
+ *
+ * ── Input privacy by construction ────────────────────────────────────────────
+ * DebtAccountRow has NO name/institution fields (same discipline as
+ * liquidity.core.ts). Rate/payment fields are mapped by the adapter for
+ * FULL rows only — and this core additionally fail-closes: rate, payment,
+ * and promo fields on a non-FULL row are IGNORED even if present, so a
+ * future adapter bug over-supplying fields cannot widen exposure.
+ *
+ * ── Tier rules (mirrors lib/ai/assemblers/accounts.ts) ───────────────────────
+ *   FULL         — balance counts; APR/minimum/promo feed the cost metrics;
+ *                  missing-rate "knowledge gap" statements may count it.
+ *   BALANCE_ONLY — balance counts toward total debt (that is what the tier
+ *                  grants); rate/payment metadata never; NEVER counted in
+ *                  knowledge-gap statements (a gap line would reveal it is
+ *                  a debt account with unknown terms — assemblers' rule).
+ *   SUMMARY_ONLY / unknown / legacy — no numeric contribution anywhere;
+ *                  counted in tierCounts + a redaction line. Fails closed.
+ *
+ * ── Money semantics ──────────────────────────────────────────────────────────
+ * Every figure below is DEBT OWED, so each reads the balance through
+ * `amountOwed` (lib/debt/balance-semantics.ts) — the canonical authority. A
+ * credit balance (issuer owes the user) is therefore ZERO debt, contributing no
+ * principal, no interest, and no APR weight. It is NOT `Math.abs`: absolute
+ * value would turn money the user is OWED into phantom debt they carry, which
+ * is what this lens did before V25-SIDE-1.
+ *
+ *   totalDebt       = Σ amountOwed(balance) over countable (FULL + BALANCE_ONLY)
+ *                     debt rows
+ *   monthlyInterest = Σ amountOwed(balance) × APR/100/12 over FULL rows with a
+ *                     known APR — always flagged estimated (accrual varies)
+ *   blendedApr      = owed-weighted mean APR over the same rows
+ *   minPayments     = Σ minimumPayment over FULL rows that have one AND carry
+ *                     outstanding debt (nothing is due on a settled or
+ *                     credit-balance account); flagged estimated when any
+ *                     contributor is an estimate (lib/debt.ts heuristic,
+ *                     resolved by the data layer)
+ *   promoEnds       = earliest FUTURE DebtProfile.promoAprEndDate among
+ *                     FULL rows (relative to options.now) — a promo that
+ *                     already lapsed is not "ending"
+ */
+
+import { formatCurrency } from "@/lib/format";
+import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
+import { convertMoney } from "@/lib/money/convert";
+import { minusDaysISO, toISODateUTC } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
+import type {
+  ComputeOptions,
+  LensAssumption,
+  LensMetric,
+  LensResult,
+  PerspectiveScope,
+} from "../types";
+
+// ── Version & static copy ─────────────────────────────────────────────────────
+
+/** Bump whenever this lens's math or verdict semantics change.
+ *  v2 (V25-SIDE-1): debt owed reads through `amountOwed` instead of `Math.abs`,
+ *  so a credit balance no longer contributes phantom debt/interest/APR weight,
+ *  and minimums are counted only for accounts that actually owe. */
+export const DEBT_LENS_VERSION = 2;
+
+/** Static empty copy — safe whether accounts are absent or invisible (§5.8). */
+export const DEBT_EMPTY = {
+  headline: "Nothing to measure yet",
+  subline:  "Link accounts to see debt across this Space.",
+} as const;
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The only account fields this lens may see. The adapter passes ALL visible
+ * rows (any type) — the core needs non-debt rows only to distinguish
+ * "Space has accounts but no debt" (an answer) from "Space has nothing"
+ * (empty state). Rate/payment/promo fields are FULL-only by adapter
+ * contract and re-gated here.
+ */
+export interface DebtAccountRow {
+  id:      string;
+  /** AccountType string: checking | savings | investment | crypto | debt | other */
+  type:    string;
+  balance: number;
+  /**
+   * MC1 QA Q2 — native currency of balance/minimumPayment (Phase 0 stamp;
+   * non-identifying). Only consulted when a ConversionContext is supplied;
+   * absent/null = null-residue (native pass-through + estimated, plan D-3).
+   */
+  currency?: string | null;
+  /** ISO timestamp of last balance write. */
+  lastUpdated: string;
+  /** SpaceAccountLink.visibilityLevel string (existing model). */
+  visibilityLevel: string;
+  /** Effective APR (user-entered preferred over provider) — FULL rows only. */
+  interestRate?: number;
+  /** Effective minimum payment — FULL rows only. */
+  minimumPayment?: number;
+  /** True when minimumPayment is the lib/debt.ts heuristic, not an issuer value. */
+  minimumPaymentIsEstimated?: boolean;
+  /** DebtProfile.promoAprEndDate as "YYYY-MM-DD" — FULL rows only. */
+  promoAprEndDate?: string;
+}
+
+// ── Core computation ──────────────────────────────────────────────────────────
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+export function computeDebt(
+  scope:   PerspectiveScope,
+  options: ComputeOptions,
+  rows:    DebtAccountRow[],
+  // MC1 QA Q2 — optional conversion context (classifier/liquidity pattern).
+  // Absent ⇒ the original raw addition, byte-for-byte (kill switch).
+  ctx?:    ConversionContext,
+): LensResult {
+  const computedAt = options.now().toISOString();
+
+  // Latest close relative to the INJECTED clock (pure, fixture-deterministic).
+  const valuationDateISO = ctx ? minusDaysISO(toISODateUTC(options.now()), 1) : undefined;
+  const estFlag = { estimated: false, unconverted: false };
+
+  /**
+   * Money amount in the context target. V25-FINAL-1 — an UNAVAILABLE conversion
+   * (no rate) has no target value: it is EXCLUDED from the sums (returns 0 here,
+   * a within-lens exclusion) and recorded on `estFlag.unconverted`, which the
+   * LensResult carries so the workspace discloses an incomplete total. It is
+   * never the native magnitude relabeled, and never a real zero.
+   */
+  const inTarget = (amount: number, currency: string | null | undefined): number => {
+    if (!ctx) return amount;
+    const c = convertMoney({ amount, currency: currency ?? null }, valuationDateISO!, ctx);
+    if (c.estimated) estFlag.estimated = true;
+    if (c.amount === null) { estFlag.unconverted = true; return 0; }
+    return c.amount;
+  };
+  const base = {
+    lensId: "debt" as const,
+    lensVersion: DEBT_LENS_VERSION,
+    scope,
+    computedAt,
+  };
+
+  if (rows.length === 0) {
+    return {
+      ...base,
+      status: "empty",
+      metrics: [],
+      assumptions: [],
+      provenance: {
+        accountIds: [],
+        tierCounts: { full: 0, balanceOnly: 0, summaryOnly: 0 },
+        dataAsOf: null,
+        redactions: [],
+      },
+      empty: { ...DEBT_EMPTY },
+    };
+  }
+
+  // ── Debt rows, partitioned by tier (fail closed on unknown levels) ────────
+  const debtRows = rows.filter((r) => r.type === "debt");
+  const fullRows:    DebtAccountRow[] = [];
+  const balanceRows: DebtAccountRow[] = [];
+  let summaryOnly = 0;
+  for (const r of debtRows) {
+    if (r.visibilityLevel === "FULL") fullRows.push(r);
+    else if (r.visibilityLevel === "BALANCE_ONLY") balanceRows.push(r);
+    else summaryOnly++;
+  }
+  const countable = [...fullRows, ...balanceRows];
+
+  // ── Provenance (over the debt rows this lens considered) ──────────────────
+  const accountIds = countable.map((r) => r.id).sort();
+  const dataAsOf = countable.length
+    ? countable.map((r) => r.lastUpdated).sort()[0]
+    : null;
+  const redactions: string[] = [];
+  if (summaryOnly > 0) {
+    redactions.push(
+      `${plural(summaryOnly, "debt account")} with summary-only sharing ${summaryOnly === 1 ? "is" : "are"} excluded from all totals.`,
+    );
+  }
+  if (balanceRows.length > 0) {
+    redactions.push(
+      `Rate and payment detail withheld for ${plural(balanceRows.length, "shared account")}; ${balanceRows.length === 1 ? "its balance still counts" : "their balances still count"}.`,
+    );
+  }
+  const provenance = {
+    accountIds,
+    tierCounts: { full: fullRows.length, balanceOnly: balanceRows.length, summaryOnly },
+    dataAsOf,
+    redactions,
+  };
+
+  // ── No-debt / withheld-only branches ──────────────────────────────────────
+  if (countable.length === 0) {
+    if (summaryOnly > 0) {
+      // Debt accounts exist but every one is summary-only: never claim a
+      // total (even zero) — that would misstate what the viewer may know.
+      return {
+        ...base,
+        status: "ok",
+        verdict: `Debt totals are withheld for the ${plural(summaryOnly, "summary-only shared account")} in this Space.`,
+        metrics: [],
+        assumptions: [],
+        provenance,
+      };
+    }
+    // Every visible account is a non-debt type — "no debt" is a real,
+    // positive answer over the viewer's visible set, not an absence of data.
+    return {
+      ...base,
+      status: "ok",
+      verdict: "No debt accounts in this Space.",
+      headline: { id: "totalDebt", label: "Total debt", value: 0, format: "currency", tone: "positive" },
+      metrics: [
+        { id: "totalDebt", label: "Total debt", value: 0, format: "currency", tone: "positive" },
+      ],
+      assumptions: [],
+      provenance,
+    };
+  }
+
+  // ── Sums (fail closed: metadata read from FULL rows only) ─────────────────
+  // MC1 QA Q2 — balances convert per row; APRs are rates (never converted).
+  const totalDebt = countable.reduce((s, r) => s + amountOwed(inTarget(r.balance, r.currency)), 0);
+
+  let monthlyInterest = 0;
+  let rateWeighted = 0;
+  let rateKnownBalance = 0;
+  let unknownRateFullCount = 0;
+  let minPayments = 0;
+  let minPaymentsKnown = false;
+  let anyMinEstimated = false;
+  const futurePromos: string[] = [];
+  const todayIsoDate = computedAt.slice(0, 10); // YYYY-MM-DD from the injected clock
+
+  for (const r of fullRows) {
+    const bal = amountOwed(inTarget(r.balance, r.currency));
+    if (typeof r.interestRate === "number") {
+      monthlyInterest  += bal * (r.interestRate / 100 / 12);
+      rateWeighted     += bal * r.interestRate;
+      rateKnownBalance += bal;
+    } else {
+      unknownRateFullCount++;
+    }
+    // V25-SIDE-1 — nothing is DUE on a settled or credit-balance account, so a
+    // stale stored minimum must not inflate the monthly obligation.
+    if (typeof r.minimumPayment === "number" && hasOutstandingDebt(r.balance)) {
+      minPayments += inTarget(r.minimumPayment, r.currency);
+      minPaymentsKnown = true;
+      if (r.minimumPaymentIsEstimated) anyMinEstimated = true;
+    }
+    if (r.promoAprEndDate && r.promoAprEndDate > todayIsoDate) {
+      futurePromos.push(r.promoAprEndDate);
+    }
+  }
+  const blendedApr = rateKnownBalance > 0 ? rateWeighted / rateKnownBalance : null;
+  const interestKnown = rateKnownBalance > 0;
+
+  // ── Metrics ───────────────────────────────────────────────────────────────
+  const headline: LensMetric = {
+    id: "totalDebt",
+    label: "Total debt",
+    value: totalDebt,
+    format: "currency",
+    tone: totalDebt > 0 ? "neutral" : "positive",
+  };
+  const metrics: LensMetric[] = [headline];
+  if (interestKnown) {
+    metrics.push(
+      { id: "monthlyInterest", label: "Estimated interest per month", value: monthlyInterest, format: "currency", tone: "warning", estimated: true },
+      { id: "blendedApr", label: "Blended APR (balance-weighted, known rates)", value: blendedApr as number, format: "percent" },
+    );
+  }
+  if (minPaymentsKnown) {
+    metrics.push({
+      id: "minPayments",
+      label: "Minimum payments per month",
+      value: minPayments,
+      format: "currency",
+      estimated: anyMinEstimated || undefined,
+    });
+  }
+  if (futurePromos.length > 0) {
+    metrics.push({
+      id: "promoEnds",
+      label: "Next promotional rate ends",
+      value: futurePromos.sort()[0],
+      format: "date",
+      tone: "warning",
+    });
+  }
+
+  // ── Assumptions ───────────────────────────────────────────────────────────
+  const assumptions: LensAssumption[] = [];
+  if (interestKnown) {
+    assumptions.push(
+      {
+        id: "interest-simple-monthly",
+        text: "Monthly interest is estimated as balance × APR ÷ 12 for accounts with a known rate; actual accrual varies by issuer.",
+        source: "estimate",
+      },
+      {
+        id: "rate-sources",
+        text: "Rates come from your entries where provided, otherwise from the account provider.",
+        source: "default",
+      },
+    );
+  }
+  if (anyMinEstimated) {
+    assumptions.push({
+      id: "estimated-minimums",
+      text: "Some minimum payments are estimated (the greater of $35 or 1% of balance plus monthly interest); actual issuer minimums may differ.",
+      source: "estimate",
+    });
+  }
+  // Knowledge gap — FULL rows only, by the assemblers' rule: naming a gap on
+  // a shared account would reveal that a withheld debt has unknown terms.
+  if (unknownRateFullCount > 0) {
+    assumptions.push({
+      id: "unknown-rates",
+      text: `${plural(unknownRateFullCount, "account")} ${unknownRateFullCount === 1 ? "has" : "have"} no interest rate on file and ${unknownRateFullCount === 1 ? "is" : "are"} excluded from interest estimates.`,
+      source: "default",
+    });
+  }
+
+  // ── Verdict (deterministic template — amounts and counts, never names) ────
+  // V25-SIDE-1 — the count must describe the accounts the STATED TOTAL is spread
+  // across, i.e. those that actually owe. Using every countable row would read
+  // "$2,100 of debt across 4 accounts" when three of them owe nothing.
+  const n = countable.filter((r) => hasOutstandingDebt(r.balance)).length;
+  let verdict: string;
+  if (totalDebt === 0) {
+    verdict = "No outstanding debt balances in this Space.";
+  } else if (interestKnown) {
+    verdict = `You carry ${formatCurrency(totalDebt, ctx?.target)} of debt across ${plural(n, "account")}, accruing an estimated ${formatCurrency(monthlyInterest, ctx?.target)}/month in interest at known rates.`;
+  } else {
+    verdict = `You carry ${formatCurrency(totalDebt, ctx?.target)} of debt across ${plural(n, "account")}; no interest rates are on file yet.`;
+  }
+
+  return {
+    ...base,
+    status: "ok",
+    verdict,
+    headline,
+    metrics,
+    // MC1 QA Q2 (D-7) — emitted only when a context was supplied, so
+    // context-less results serialize byte-identically (kill switch).
+    ...(ctx ? { estimated: estFlag.estimated } : {}),
+    ...(ctx && estFlag.unconverted ? { unconverted: true } : {}), // V25-FINAL-1 — incomplete total
+
+    assumptions,
+    provenance,
+  };
+}

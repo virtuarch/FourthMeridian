@@ -11,6 +11,7 @@
 
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { env } from "@/lib/env";
 import { redirect } from "next/navigation";
 import { Shield } from "lucide-react";
 import { AdminNav } from "@/components/admin/AdminNav";
@@ -19,6 +20,14 @@ import { AdminUserMenu } from "@/components/admin/AdminUserMenu";
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const session = await getServerSession(authOptions);
   if (!session || session.user.role !== "SYSTEM_ADMIN") redirect("/dashboard");
+
+  // V25-FINAL-2 — DISABLE_SYSTEM_ADMIN kill switch, at the ONE page-shell boundary
+  // for all /admin/* routes. Reads the same canonical env getter the API authority
+  // (decideAdminApiAccess → FORBIDDEN_DISABLED) reads, so an already-issued admin
+  // session is turned away here too — not left staring at an inert shell whose
+  // every data call 403s. Role in the JWT is unchanged; only effective access is
+  // withdrawn at runtime.
+  if (env.isSystemAdminDisabled) redirect("/dashboard");
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">

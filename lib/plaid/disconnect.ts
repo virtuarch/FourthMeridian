@@ -16,8 +16,10 @@
  */
 
 import { db } from "@/lib/db";
+import { PlaidItemStatus } from "@prisma/client";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 
 export async function disconnectPlaidItemIfOrphaned(plaidItemDbId: string): Promise<void> {
   // Count remaining non-deleted connections on this PlaidItem
@@ -40,8 +42,9 @@ export async function disconnectPlaidItemIfOrphaned(plaidItemDbId: string): Prom
     console.error("[disconnectPlaidItemIfOrphaned] Plaid itemRemove failed:", plaidErr);
   }
 
-  await db.plaidItem.update({
-    where: { id: plaidItemDbId },
-    data:  { status: "REVOKED" },
-  });
+  // CH-2 — revoke through the chokepoint: writes status REVOKED (unchanged) and
+  // records a durable transition row only when the item wasn't already REVOKED.
+  // errorCode is left untouched (omitted) — a revoke shouldn't clear a prior
+  // error, matching the previous inline update's behavior.
+  await setPlaidItemHealth(plaidItemDbId, { status: PlaidItemStatus.REVOKED });
 }

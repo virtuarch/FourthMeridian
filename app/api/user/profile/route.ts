@@ -8,11 +8,22 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { EmploymentStatus, UseCase } from "@prisma/client";
 import { requireUser } from "@/lib/session";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
+
+// OPS-3 S3 — an IANA zone is valid iff the runtime's Intl accepts it.
+function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function GET() {
   const [user, err] = await requireUser();
@@ -27,11 +38,13 @@ export async function GET() {
       // DOB is encrypted — return a flag so the client knows if it's set
       dateOfBirthEncrypted: true,
       preferredSpaceId: true,
+      reportingCurrency: true, // MC1 Phase 4 Slice 2 — user default (copy-once seed)
     },
   }) as {
     email: string; username: string | null; firstName: string | null;
     lastName: string | null; employmentStatus: string | null; useCase: string | null;
     dateOfBirthEncrypted: string | null; preferredSpaceId: string | null;
+    reportingCurrency: string;
   } | null;
 
   if (!dbUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -45,6 +58,7 @@ export async function GET() {
     useCase:              dbUser.useCase              ?? "",
     hasDob:               !!dbUser.dateOfBirthEncrypted,
     preferredSpaceId: dbUser.preferredSpaceId ?? null,
+    reportingCurrency:    dbUser.reportingCurrency ?? "USD",
   });
 }
 
@@ -53,7 +67,7 @@ export async function PATCH(req: NextRequest) {
   if (err) return err;
 
   const body = await req.json();
-  const { username, firstName, lastName, employmentStatus, useCase, dateOfBirth, preferredSpaceId } = body;
+  const { username, firstName, lastName, employmentStatus, useCase, dateOfBirth, preferredSpaceId, reportingCurrency, timezone } = body;
 
   // ── Validate username if provided ─────────────────────────────────────────
   if (username !== undefined) {
@@ -81,6 +95,31 @@ export async function PATCH(req: NextRequest) {
   if (employmentStatus      !== undefined) data.employmentStatus      = employmentStatus as EmploymentStatus || null;
   if (useCase               !== undefined) data.useCase               = useCase as UseCase || null;
   if (dateOfBirth           !== undefined) data.dateOfBirthEncrypted  = dateOfBirth ? encryptWithPurpose(dateOfBirth, EncryptionPurpose.DATE_OF_BIRTH) : null;
+  // MC1 Phase 4 Slice 2 (plan D-3) — the user's DEFAULT reporting currency.
+  // Copy-once seed for NEW Spaces only (POST /api/spaces); never re-denominates
+  // existing Spaces. Allowlist-validated: FX_BASE + SUPPORTED_QUOTES, 400 on
+  // anything else (same rule as the Space PATCH).
+  if (reportingCurrency !== undefined) {
+    const parsed = parseReportingCurrencyInput(reportingCurrency);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+    data.reportingCurrency = parsed.value;
+  }
+
+  // OPS-3 S3 — the user's IANA timezone (Settings → Preferences). Validated by
+  // asking Intl itself (the runtime IS the timezone authority — no hand-rolled
+  // allowlist to drift). Empty string / null clears back to "never set".
+  if (timezone !== undefined) {
+    if (timezone === null || timezone === "") {
+      data.timezone = null;
+    } else if (typeof timezone === "string" && isValidTimezone(timezone)) {
+      data.timezone = timezone;
+    } else {
+      return NextResponse.json({ error: "Unknown timezone." }, { status: 400 });
+    }
+  }
+
   if (preferredSpaceId  !== undefined) {
     // Validate that user is actually a member of this space (or null to clear)
     if (preferredSpaceId !== null) {

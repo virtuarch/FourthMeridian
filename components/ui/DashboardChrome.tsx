@@ -3,55 +3,47 @@
 /**
  * DashboardChrome
  *
- * Client-side shell for app/(shell)/dashboard/layout.tsx — split out of
- * that file specifically so the layout itself can stay a Server Component
- * (it exports the `runtime`/`preferredRegion` route-segment config, which
- * Next.js only honors in a Server Component file; adding "use client"
- * directly to layout.tsx would silently break that config).
+ * The app-global chrome that wraps every /dashboard/* route — production's
+ * realization of the prototype's AppShell (components/app/AppShell.tsx). It is
+ * the SAME persistent frame before and after you enter a Space; only the
+ * ContextualNavbar's contents and the content column change, never the frame:
  *
- * Pathname-aware for exactly one thing: the Spaces page now renders its own
- * immersive Atlas Field background (see AtlasField.tsx / SpacesClient.tsx),
- * so the shared top bar's hairline divider would cut across that continuous
- * backdrop like a hard seam. Every other dashboard tab keeps the divider —
- * this is a Spaces-only presentation tweak, not a global redesign.
+ *   SpaceChromeProvider           bridge: the in-Space host publishes its
+ *   ├─ GlobalHeader               Space-mode payload UP to the ContextualNavbar
+ *   ├─ [ ContextualNavbar | main ]
+ *   └─ BottomNav
  *
- * Phase G: the Atlas Field itself now renders from here (not from inside
- * SpacesClient.tsx) so it can paint behind the header strip too, not just
- * the page content below it — the column below is a true common ancestor
- * of both. `relative isolate` on that column scopes the field's negative
- * z-index to this column's own stacking context, so it can't be painted
- * over by the Sidebar or bleed past the Refresh Data button, which stays
- * exactly where it was (still its own `<header>`, just no longer opaque).
+ * This REPLACES the former L-shaped chrome (a brand row buried in the Sidebar's
+ * top corner + a separate desktop top-bar that only held Refresh/Bell over the
+ * content column + a duplicate mobile header). Now: one full-width GlobalHeader
+ * across the top (brand + utilities), one transforming ContextualNavbar on the
+ * left (desktop) whose mobile presentation is BottomNav, and the route children
+ * in the centred content column. The old Sidebar.tsx is retired entirely.
  *
- * Create Space modal: this is also the actual common ancestor of the
- * Sidebar and every dashboard page (including the Spaces page), so it owns
- * the single mounted CreateSpaceModal instance + its open state. Both the
- * Sidebar's "Create Space" row and the Spaces page's own "Create Space"
- * button dispatch a window CustomEvent ("open-create-space") rather than
- * holding a reference to this component — the same decoupled pattern this
- * codebase already uses for "space-list-changed" /
- * "space-invites-changed" (see Sidebar.tsx, SpacesClient.tsx). On a
- * successful create, `router.refresh()` re-fetches the Spaces page's
- * server-provided `mine`/`publicSpaces` props so the card grid picks up
- * the new Space immediately.
+ * Split out of app/(shell)/dashboard/layout.tsx so the layout stays a Server
+ * Component (it exports route-segment config Next only honors there); this
+ * client shell owns the interactive chrome.
+ *
+ * Create Space modal: this is the common ancestor of the ContextualNavbar and
+ * every dashboard page, so it owns the single mounted CreateSpaceModal + its
+ * open state, opened via the decoupled "open-create-space" window event.
  */
 
-import { usePathname, useRouter } from "next/navigation";
-import { ReactNode, useEffect, useState } from "react";
-import { Sidebar } from "@/components/ui/Sidebar";
+import { useRouter } from "next/navigation";
+import { ReactNode, Suspense, useEffect, useState } from "react";
+// TI5-3C — single, shell-level Transaction Detail drawer host. Every transaction
+// surface opens THIS drawer via ?transaction=; there is exactly one instance.
+import { TransactionDetailDrawer } from "@/components/transactions/TransactionDetailDrawer";
+import { GlobalHeader } from "@/components/ui/GlobalHeader";
+import { ContextualNavbar } from "@/components/ui/ContextualNavbar";
 import { BottomNav } from "@/components/ui/BottomNav";
-import { UserButton } from "@/components/ui/UserButton";
-import { RefreshButton } from "@/components/dashboard/RefreshButton";
-import { AtlasField } from "@/components/atlas/AtlasField";
-import { AppLogo } from "@/components/ui/AppLogo";
 import { CreateSpaceModal } from "@/components/dashboard/CreateSpaceModal";
+import { TotpNudgeBanner } from "@/components/dashboard/TotpNudgeBanner";
+import { SpaceChromeProvider } from "@/lib/space/space-chrome-context";
 import { OPEN_CREATE_SPACE_EVENT } from "@/lib/space-nav";
 
 export function DashboardChrome({ children }: { children: ReactNode }) {
-  const pathname = usePathname();
   const router = useRouter();
-  const isSpaces = pathname.startsWith("/dashboard/spaces");
-
   const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
 
   useEffect(() => {
@@ -61,85 +53,36 @@ export function DashboardChrome({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div className="flex min-h-screen bg-[var(--bg-base)]">
-      {/* Desktop sidebar */}
-      <Sidebar />
+    <SpaceChromeProvider>
+      <div className="min-h-screen bg-[var(--bg-base)]">
+        <GlobalHeader />
 
-      {/* Main area */}
-      <div className={["flex-1 flex flex-col min-w-0", isSpaces ? "relative isolate" : ""].join(" ")}>
-        {isSpaces && <AtlasField />}
+        <div className="mx-auto flex w-full max-w-[1320px] gap-0 px-4 sm:px-5 lg:gap-8 lg:px-8">
+          <ContextualNavbar />
 
-        {/* Mobile header — sticky + glass (restored: this used to be a
-            plain opaque bar that scrolled away with the page; it now stays
-            pinned via `sticky top-0` like every other floating surface in
-            this system, with a backdrop blur so content scrolls underneath
-            it instead of behind a hard edge). isSpaces keeps zero tint so it
-            blends into that page's own Atlas Field rather than drawing a
-            seam across it; every other page gets a faint `--glass-ultrathin`
-            tint + hairline border so it still reads as a bar over busy
-            content. Hardcoded bg-gray-950/border-gray-800 replaced with
-            theme tokens so this also respects Light Glass, not just dark. */}
-        <header
-          className={[
-            "lg:hidden sticky top-0 z-40 backdrop-blur-md shrink-0",
-            isSpaces ? "" : "border-b border-[var(--border-hairline)]",
-          ].join(" ")}
-          style={{ background: isSpaces ? "transparent" : "var(--glass-ultrathin)" }}
-        >
-          <div className="flex items-center justify-between px-4 h-14">
-            <div className="flex items-center gap-1.5">
-              <AppLogo size={32} withWordmark wordmarkClassName="text-[var(--text-primary)] text-lg" priority />
-            </div>
-            <div className="flex items-center gap-2">
-              <RefreshButton label="Refresh" />
-              <UserButton />
-            </div>
-          </div>
-        </header>
+          <main className="min-w-0 flex-1 pb-24 pt-6 lg:pb-16">
+            {/* S8 — dismissible 2FA nudge; renders nothing for users with TOTP
+                enabled, for SYSTEM_ADMIN, or once dismissed (per-browser). */}
+            <TotpNudgeBanner />
+            {children}
+          </main>
+        </div>
 
-        {/* Desktop top bar — Refresh Data stays pinned top-right within this
-            bar. Same sticky/glass restoration as the mobile header above:
-            `sticky top-0 z-40` so it stays put while the page content
-            scrolls underneath it, plus a backdrop blur instead of the old
-            flat opaque strip.
+        {/* Mobile presentation of the same navigation model as ContextualNavbar. */}
+        <BottomNav />
 
-            No brand mark here: the Sidebar's own header row (`<aside
-            className="... self-start ... sticky top-0">` in Sidebar.tsx)
-            pins the Fourth Meridian logo+wordmark to the far left at the
-            same h-14 height with the same bottom hairline. (The `self-start`
-            is required — without it, the aside gets flex-stretched to the
-            main column's full page height and `sticky` has no room to take
-            effect, so the brand row would scroll away instead of pinning.)
-            With that in place, the Sidebar's logo row and this bar's
-            Refresh button now scroll-lock together as one continuous glass
-            strip across the top of the screen — this bar is just that
-            strip's right end. Rendering AppLogo here too would put two
-            brand marks on screen at once, which is exactly the duplicate
-            this bar previously had. */}
-        <header
-          className={[
-            "hidden lg:flex items-center justify-end px-8 h-14 sticky top-0 z-40 backdrop-blur-md shrink-0",
-            isSpaces ? "" : "border-b border-[var(--border-hairline)]",
-          ].join(" ")}
-          style={{ background: isSpaces ? "transparent" : "var(--glass-ultrathin)" }}
-        >
-          <RefreshButton label="Refresh Data" />
-        </header>
+        {/* TI5-3C — the single Transaction Detail drawer, shared by every surface
+            (Banking, Space, Debt, AccountModal). ?transaction= driven. */}
+        <Suspense fallback={null}>
+          <TransactionDetailDrawer />
+        </Suspense>
 
-        {/* Page content */}
-        <main className="flex-1 px-4 lg:px-8 pt-5 pb-24 lg:pb-8">
-          {children}
-        </main>
+        <CreateSpaceModal
+          open={createSpaceOpen}
+          onClose={() => setCreateSpaceOpen(false)}
+          onCreated={() => router.refresh()}
+        />
       </div>
-
-      {/* Mobile bottom nav */}
-      <BottomNav />
-
-      <CreateSpaceModal
-        open={createSpaceOpen}
-        onClose={() => setCreateSpaceOpen(false)}
-        onCreated={() => router.refresh()}
-      />
-    </div>
+    </SpaceChromeProvider>
   );
 }

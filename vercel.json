@@ -2,8 +2,8 @@
   "regions": ["sin1"],
   "crons": [
     {
-      "path": "/api/jobs/sync-banks",
-      "schedule": "0 6 * * *"
+      "path": "/api/jobs/dispatch",
+      "schedule": "0,30 0,6,7,12,18 * * *"
     }
   ]
 }

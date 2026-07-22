@@ -38,7 +38,16 @@ import {
 } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { encryptWithPurpose, EncryptionPurpose } from "../lib/plaid/encryption";
-import { getPresetsForCategory, SpaceCategory } from "../lib/space-presets";
+import { SpaceCategory } from "../lib/space-presets";
+// SP-2.3 — seeded Spaces are born through the same registry/planner path as
+// the register route (SP-2A-3) and POST /api/spaces (SP-2.1): the planner is
+// authoritative everywhere a Space is born.
+import { getTemplateForCategory } from "../lib/space-templates/registry";
+import { planTemplateApplication } from "../lib/space-templates/apply";
+// PO1.0 — idempotent bootstrap of the four platform Spaces (Platform/Security
+// Ops, Growth & Revenue, Customer Success). Dev DBs always have them; access is
+// grant-gated (no members are seeded).
+import { ensurePlatformSpaces, ensurePlatformSections } from "../lib/platform/seed";
 
 const prisma = new PrismaClient();
 
@@ -132,7 +141,9 @@ function buildDebtHistory(spaceId: string) {
 }
 
 // ─── createFullAccount ────────────────────────────────────────────────────────
-// Creates Account + FinancialAccount (same id) + AccountConnection + WorkspaceAccountShare
+// Creates FinancialAccount + AccountConnection + SpaceAccountLink (HOME).
+// v2.5-A Phase 4a: no longer creates legacy Account or WorkspaceAccountShare
+// rows — FinancialAccount is canonical, SpaceAccountLink is the sole link path.
 async function createFullAccount(opts: {
   spaceId:     string;
   userId:          string;
@@ -166,19 +177,10 @@ async function createFullAccount(opts: {
   } = opts;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const acct = await (prisma.account.create as any)({
+  const fa = await (prisma.financialAccount.create as any)({
     data: {
-      spaceId, ownerId: userId, name, type, institution,
-      balance, availableBalance, creditLimit, currency, lastUpdated,
-      plaidItemDbId: plaidItemId, plaidAccountId,
-      walletAddress, walletChain, nativeBalance, syncStatus,
-    },
-  });
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (prisma.financialAccount.create as any)({
-    data: {
-      id: acct.id, ownerType: AccountOwnerType.USER, ownerUserId: userId,
+      ownerType: AccountOwnerType.USER, ownerUserId: userId,
+      createdByUserId: userId,
       name, type, institution, institutionId: institutionId ?? null,
       balance, availableBalance, creditLimit, currency, lastUpdated,
       plaidAccountId: plaidAccountId ?? null,
@@ -191,32 +193,23 @@ async function createFullAccount(opts: {
 
   await prisma.accountConnection.create({
     data: {
-      financialAccountId: acct.id, connectedByUserId: userId,
+      financialAccountId: fa.id, connectedByUserId: userId,
       plaidItemDbId: plaidItemId ?? null, syncStatus, isCanonical: true,
     },
   });
 
-  // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (prisma.workspaceAccountShare.create as any)({
-    data: {
-      workspaceId: spaceId, financialAccountId: acct.id, addedByUserId: userId,
-      visibilityLevel: VisibilityLevel.FULL, status: ShareStatus.ACTIVE,
-    },
-  });
-
-  // D3 Step 3 — mirror onto SpaceAccountLink. Every createFullAccount() call
-  // in this seed passes the creator's own PERSONAL space as `spaceId`, so this
-  // is always the account's HOME link by construction.
+  // Every createFullAccount() call in this seed passes the creator's own
+  // PERSONAL space as `spaceId`, so this is always the account's HOME link
+  // by construction.
   await prisma.spaceAccountLink.create({
     data: {
-      spaceId, financialAccountId: acct.id, addedByUserId: userId,
+      spaceId, financialAccountId: fa.id, addedByUserId: userId,
       visibilityLevel: VisibilityLevel.FULL, status: ShareStatus.ACTIVE,
       kind: SpaceAccountLinkKind.HOME,
     },
   });
 
-  return acct;
+  return fa as { id: string };
 }
 
 // ─── shareAccount — share an existing account into another space ──────────
@@ -226,19 +219,9 @@ async function shareAccount(
   userId:      string,
   level:       VisibilityLevel = VisibilityLevel.FULL,
 ) {
-  // WorkspaceAccountShare keeps its own pre-Phase-1 field name (workspaceId).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (prisma.workspaceAccountShare.create as any)({
-    data: {
-      workspaceId: spaceId, financialAccountId: accountId,
-      addedByUserId: userId, visibilityLevel: level, status: ShareStatus.ACTIVE,
-    },
-  });
-
-  // D3 Step 3 — mirror onto SpaceAccountLink. shareAccount() is only ever
-  // called to mirror an account into a space other than its creator's
-  // PERSONAL space (that link is created inside createFullAccount() above),
-  // so this is always SHARED.
+  // shareAccount() is only ever called to link an account into a space other
+  // than its creator's PERSONAL space (that HOME link is created inside
+  // createFullAccount() above), so this is always SHARED.
   await prisma.spaceAccountLink.create({
     data: {
       spaceId, financialAccountId: accountId, addedByUserId: userId,
@@ -255,7 +238,33 @@ async function updateSectionConfig(spaceId: string, key: string, config: Record<
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
+/**
+ * Fail-closed guard (P0-3D). This seed wipes EVERY table before recreating the
+ * demo world, so accidental execution against a deployed database is destructive
+ * and irreversible. Refuse to run under any production/preview environment, with
+ * no interactive prompt (CI/dev keep working). Set SEED_ALLOW_DESTRUCTIVE=1 only
+ * as a deliberate, documented override.
+ */
+function assertNonProductionSeed(): void {
+  const nodeEnv   = process.env.NODE_ENV;
+  const vercelEnv = process.env.VERCEL_ENV; // "production" | "preview" | "development"
+  const override  = process.env.SEED_ALLOW_DESTRUCTIVE === "1";
+  const looksDeployed =
+    nodeEnv === "production" ||
+    vercelEnv === "production" ||
+    vercelEnv === "preview";
+  if (looksDeployed && !override) {
+    throw new Error(
+      "[seed] Refusing to run: this seed wipes ALL data and a production/preview " +
+      `environment was detected (NODE_ENV=${nodeEnv ?? "unset"}, VERCEL_ENV=${vercelEnv ?? "unset"}). ` +
+      "prisma/seed.ts is DEVELOPMENT ONLY. If you truly intend a destructive reseed " +
+      "of this environment, set SEED_ALLOW_DESTRUCTIVE=1 explicitly.",
+    );
+  }
+}
+
 async function main() {
+  assertNonProductionSeed();
   console.log("🌱  Seeding Fourth Meridian database…");
   console.log("   ⏳ Hashing passwords (bcrypt cost 12)…");
 
@@ -277,7 +286,7 @@ async function main() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (prisma as any).spaceDashboardSection.deleteMany();
   await prisma.spaceAccountLink.deleteMany();
-  await prisma.workspaceAccountShare.deleteMany();
+  // WorkspaceAccountShare retired (v2.5-A Phase 4c) — table dropped.
   await prisma.accountConnection.deleteMany();
   await prisma.financialAccount.deleteMany();
   await prisma.auditLog.deleteMany();
@@ -285,7 +294,6 @@ async function main() {
   await prisma.spaceSnapshot.deleteMany();
   await prisma.transaction.deleteMany();
   await prisma.holding.deleteMany();
-  await prisma.account.deleteMany();
   await prisma.plaidItem.deleteMany();
   await prisma.aiAgent.deleteMany();
   await prisma.spaceInvite.deleteMany();
@@ -303,6 +311,7 @@ async function main() {
       dateOfBirthEncrypted: janeDobEncrypted,
       employmentStatus: EmploymentStatus.EMPLOYED, useCase: UseCase.PERSONAL_TRACKING,
       passwordHash: janeHash, role: UserRole.USER,
+      emailVerifiedAt: new Date(), // OPS-1 S2b — seed accounts start verified (login gate)
     },
   });
   const john = await prisma.user.create({
@@ -312,6 +321,7 @@ async function main() {
       dateOfBirthEncrypted: johnDobEncrypted,
       employmentStatus: EmploymentStatus.EMPLOYED, useCase: UseCase.PERSONAL_TRACKING,
       passwordHash: johnHash, role: UserRole.USER,
+      emailVerifiedAt: new Date(), // OPS-1 S2b — seed accounts start verified (login gate)
     },
   });
   const alex = await prisma.user.create({
@@ -321,6 +331,7 @@ async function main() {
       dateOfBirthEncrypted: alexDobEncrypted,
       employmentStatus: EmploymentStatus.EMPLOYED, useCase: UseCase.INVESTING,
       passwordHash: alexHash, role: UserRole.USER,
+      emailVerifiedAt: new Date(), // OPS-1 S2b — seed accounts start verified (login gate)
     },
   });
   // ── SYSTEM_ADMIN — unchanged, dev-only account ────────────────────────────
@@ -329,9 +340,17 @@ async function main() {
       email: "sysadmin@example.com", username: "sysadmin",
       name: "Dev Sysadmin",
       passwordHash: adminHash, role: UserRole.SYSTEM_ADMIN,
+      emailVerifiedAt: new Date(), // OPS-1 S2b — seed accounts start verified (login gate)
     },
   });
   console.log(`   ✓ Users: ${jane.email}, ${john.email}, ${alex.email}, ${admin.email}`);
+
+  // ── Platform Spaces (PO1.0) ───────────────────────────────────────────────
+  // Idempotent; access-derived (no SpaceMember rows). Seeded here so every dev
+  // DB has the four platform Spaces; grants are issued from /admin/platform-access.
+  await ensurePlatformSpaces(prisma);
+  await ensurePlatformSections(prisma); // create-only backfill for sections added post-seed
+  console.log("   ✓ Platform Spaces: 4 (Platform Ops, Security Ops, Growth & Revenue, Customer Success)");
 
   // ── Spaces (8) ──────────────────────────────────────────────────────────
   const janeSpace = await prisma.space.create({
@@ -362,11 +381,15 @@ async function main() {
 
   // ── Dashboard sections ───────────────────────────────────────────────────────
   async function seedSections(spaceId: string, category: string) {
-    const presets = getPresetsForCategory(category);
-    if (presets.length === 0) return;
+    const template = getTemplateForCategory(category);
+    if (!template) {
+      throw new Error(`space-templates registry has no template for category ${category}`);
+    }
+    const { sectionsToCreate } = planTemplateApplication(template, new Set<string>());
+    if (sectionsToCreate.length === 0) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (prisma as any).spaceDashboardSection.createMany({
-      data: presets.map((s) => ({
+      data: sectionsToCreate.map((s) => ({
         spaceId, key: s.key, label: s.label,
         tab: s.tab, enabled: s.enabled, order: s.order, config: s.config ?? null,
       })),
@@ -422,7 +445,19 @@ async function main() {
   // ── AI Agents ────────────────────────────────────────────────────────────────
   const janeAgent = await prisma.aiAgent.create({ data: { spaceId: janeSpace.id, name: "Jane's Financial Agent" } });
   const johnAgent = await prisma.aiAgent.create({ data: { spaceId: johnSpace.id, name: "John's Financial Agent" } });
-  console.log("   ✓ AiAgents");
+  // Every Space has exactly one AiAgent. The shared/category Spaces need one
+  // too, or buildContext() throws "No AiAgent found" on the Daily Brief.
+  await prisma.aiAgent.createMany({
+    data: [
+      { spaceId: householdSpace.id,  name: "Smith-Doe Household Agent" },
+      { spaceId: debtSpace.id,       name: "Debt Payoff Tracker Agent" },
+      { spaceId: japanSpace.id,      name: "Japan Trip 2027 Agent"     },
+      { spaceId: investmentSpace.id, name: "Investment Club Agent"     },
+      { spaceId: businessSpace.id,   name: "JD Freelance LLC Agent"    },
+      { spaceId: propertySpace.id,   name: "Austin Home Agent"         },
+    ],
+  });
+  console.log("   ✓ AiAgents: 8");
 
   // ── Credit Scores ────────────────────────────────────────────────────────────
   await prisma.creditScore.createMany({
@@ -528,18 +563,18 @@ async function main() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (prisma.holding as any).createMany({
     data: [
-      { accountId: jBrokerageIra.id,     symbol: "VOO",  name: "Vanguard S&P 500 ETF",     quantity: 18,    price: 490,   value: 8820,  change24h:  0.6 },
-      { accountId: jBrokerageIra.id,     symbol: "QQQ",  name: "Invesco QQQ Trust",         quantity:  1,    price: 380,   value:  380,  change24h:  1.1 },
-      { accountId: jBrokerageIra.id,     symbol: "CASH", name: "Uninvested Cash",           quantity:  0,    price:   1,   value:    0,  change24h:  0,   isCash: true },
-      { accountId: jBrokerageTaxable.id, symbol: "AAPL", name: "Apple Inc",                 quantity:  8,    price: 195,   value: 1560,  change24h:  0.4 },
-      { accountId: jBrokerageTaxable.id, symbol: "MSFT", name: "Microsoft Corp",            quantity:  3,    price: 420,   value: 1260,  change24h:  0.7 },
-      { accountId: jBrokerageTaxable.id, symbol: "VTI",  name: "Vanguard Total Market ETF", quantity:  2,    price: 245,   value:  490,  change24h:  0.5 },
-      { accountId: jBrokerageTaxable.id, symbol: "CASH", name: "Buying Power",              quantity: -110,  price:   1,   value: -110,  change24h:  0,   isCash: true },
-      { accountId: jCryptoExchange.id,   symbol: "BTC",  name: "Bitcoin",                   quantity: 0.025, price: 98000, value: 2450,  change24h:  1.2 },
-      { accountId: jCryptoExchange.id,   symbol: "ETH",  name: "Ethereum",                  quantity: 0.8,   price: 2750,  value: 2200,  change24h:  0.8 },
-      { accountId: jCryptoExchange.id,   symbol: "SOL",  name: "Solana",                    quantity: 3.0,   price: 66.67, value:  200,  change24h:  2.3 },
-      { accountId: jCryptoExchange.id,   symbol: "CASH", name: "USD Balance",               quantity: 0,     price:   1,   value:    0,  change24h:  0,   isCash: true },
-      { accountId: jBtcWallet.id,        symbol: "BTC",  name: "Bitcoin",                   quantity: 0.02,  price: 98000, value: 1960,  change24h:  1.2 },
+      { financialAccountId: jBrokerageIra.id,     symbol: "VOO",  name: "Vanguard S&P 500 ETF",     quantity: 18,    price: 490,   value: 8820,  change24h:  0.6 },
+      { financialAccountId: jBrokerageIra.id,     symbol: "QQQ",  name: "Invesco QQQ Trust",         quantity:  1,    price: 380,   value:  380,  change24h:  1.1 },
+      { financialAccountId: jBrokerageIra.id,     symbol: "CASH", name: "Uninvested Cash",           quantity:  0,    price:   1,   value:    0,  change24h:  0,   isCash: true },
+      { financialAccountId: jBrokerageTaxable.id, symbol: "AAPL", name: "Apple Inc",                 quantity:  8,    price: 195,   value: 1560,  change24h:  0.4 },
+      { financialAccountId: jBrokerageTaxable.id, symbol: "MSFT", name: "Microsoft Corp",            quantity:  3,    price: 420,   value: 1260,  change24h:  0.7 },
+      { financialAccountId: jBrokerageTaxable.id, symbol: "VTI",  name: "Vanguard Total Market ETF", quantity:  2,    price: 245,   value:  490,  change24h:  0.5 },
+      { financialAccountId: jBrokerageTaxable.id, symbol: "CASH", name: "Buying Power",              quantity: -110,  price:   1,   value: -110,  change24h:  0,   isCash: true },
+      { financialAccountId: jCryptoExchange.id,   symbol: "BTC",  name: "Bitcoin",                   quantity: 0.025, price: 98000, value: 2450,  change24h:  1.2 },
+      { financialAccountId: jCryptoExchange.id,   symbol: "ETH",  name: "Ethereum",                  quantity: 0.8,   price: 2750,  value: 2200,  change24h:  0.8 },
+      { financialAccountId: jCryptoExchange.id,   symbol: "SOL",  name: "Solana",                    quantity: 3.0,   price: 66.67, value:  200,  change24h:  2.3 },
+      { financialAccountId: jCryptoExchange.id,   symbol: "CASH", name: "USD Balance",               quantity: 0,     price:   1,   value:    0,  change24h:  0,   isCash: true },
+      { financialAccountId: jBtcWallet.id,        symbol: "BTC",  name: "Bitcoin",                   quantity: 0.02,  price: 98000, value: 1960,  change24h:  1.2 },
     ],
   });
   console.log("   ✓ Holdings (Jane): 12");
@@ -551,9 +586,9 @@ async function main() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type TxRow = any;
   const tx = (acct: { id: string }, n: number, merchant: string, cat: TransactionCategory, amount: number, pending = false, desc?: string): TxRow =>
-    ({ accountId: acct.id, date: D(n), merchant, category: cat, amount, pending, description: desc });
+    ({ financialAccountId: acct.id, date: D(n), merchant, category: cat, amount, pending, description: desc });
   const itx = (acct: { id: string }, n: number, ticker: string, cat: TransactionCategory, amount: number, desc: string): TxRow =>
-    ({ accountId: acct.id, date: D(n), merchant: ticker, category: cat, amount, pending: false, description: desc });
+    ({ financialAccountId: acct.id, date: D(n), merchant: ticker, category: cat, amount, pending: false, description: desc });
 
   await prisma.transaction.createMany({ data: [
     // Jane Checking — Payroll (bi-weekly ×9)
@@ -705,10 +740,13 @@ async function main() {
     tx(jCreditCard,  1, "Adobe Creative Cloud", Subscriptions, -54.99),
     tx(jCreditCard, 31, "Adobe Creative Cloud", Subscriptions, -54.99),
     tx(jCreditCard, 61, "Adobe Creative Cloud", Subscriptions, -54.99),
-    // CC payments ×3
-    tx(jCreditCard, 28, "CC Payment", Payment, -800),
-    tx(jCreditCard, 60, "CC Payment", Payment, -600),
-    tx(jCreditCard, 90, "CC Payment", Payment, -700),
+    // CC payments ×3 — POSITIVE: a payment is money INTO the liability (FM sign
+    // convention, syncTransactions.ts; all 109 real card payments are positive).
+    // Negative here (CCPAY-2F) contradicted the convention and would seed a
+    // liability OUTFLOW that the CCPAY-2B veto correctly reads as SPENDING.
+    tx(jCreditCard, 28, "CC Payment", Payment, 800),
+    tx(jCreditCard, 60, "CC Payment", Payment, 600),
+    tx(jCreditCard, 90, "CC Payment", Payment, 700),
     // Groceries on CC ×3
     tx(jCreditCard, 11, "Whole Foods Local",    Groceries,  -88.40, true),
     tx(jCreditCard, 55, "Trader Joe's",         Groceries,  -67.20),
@@ -950,29 +988,29 @@ async function main() {
   await (prisma.holding as any).createMany({
     data: [
       // Roth IRA: VOO, SCHD, BND, VXUS, VNQ
-      { accountId: jnRothIra.id,        symbol: "VOO",  name: "Vanguard S&P 500 ETF",          quantity: 35,    price: 490,   value: 17150, change24h:  0.6 },
-      { accountId: jnRothIra.id,        symbol: "SCHD", name: "Schwab US Dividend ETF",         quantity: 60,    price: 78,    value:  4680, change24h:  0.3 },
-      { accountId: jnRothIra.id,        symbol: "BND",  name: "Vanguard Total Bond ETF",        quantity: 30,    price: 74,    value:  2220, change24h: -0.1 },
-      { accountId: jnRothIra.id,        symbol: "VXUS", name: "Vanguard Total Intl Stock ETF",  quantity: 25,    price: 65,    value:  1625, change24h:  0.4 },
-      { accountId: jnRothIra.id,        symbol: "VNQ",  name: "Vanguard Real Estate ETF",       quantity: 20,    price: 95,    value:  1900, change24h:  0.2 },
-      { accountId: jnRothIra.id,        symbol: "CASH", name: "Uninvested Cash",                quantity: 925,   price:   1,   value:   925, change24h:  0,   isCash: true },
+      { financialAccountId: jnRothIra.id,        symbol: "VOO",  name: "Vanguard S&P 500 ETF",          quantity: 35,    price: 490,   value: 17150, change24h:  0.6 },
+      { financialAccountId: jnRothIra.id,        symbol: "SCHD", name: "Schwab US Dividend ETF",         quantity: 60,    price: 78,    value:  4680, change24h:  0.3 },
+      { financialAccountId: jnRothIra.id,        symbol: "BND",  name: "Vanguard Total Bond ETF",        quantity: 30,    price: 74,    value:  2220, change24h: -0.1 },
+      { financialAccountId: jnRothIra.id,        symbol: "VXUS", name: "Vanguard Total Intl Stock ETF",  quantity: 25,    price: 65,    value:  1625, change24h:  0.4 },
+      { financialAccountId: jnRothIra.id,        symbol: "VNQ",  name: "Vanguard Real Estate ETF",       quantity: 20,    price: 95,    value:  1900, change24h:  0.2 },
+      { financialAccountId: jnRothIra.id,        symbol: "CASH", name: "Uninvested Cash",                quantity: 925,   price:   1,   value:   925, change24h:  0,   isCash: true },
       // 401k: NVDA, TSLA, VOO
-      { accountId: jn401k.id,           symbol: "NVDA", name: "NVIDIA Corp",                    quantity: 5,     price: 1100,  value:  5500, change24h:  2.1 },
-      { accountId: jn401k.id,           symbol: "TSLA", name: "Tesla Inc",                      quantity: 10,    price:  280,  value:  2800, change24h: -0.9 },
-      { accountId: jn401k.id,           symbol: "VOO",  name: "Vanguard S&P 500 ETF",           quantity: 20,    price:  490,  value:  9800, change24h:  0.6 },
-      { accountId: jn401k.id,           symbol: "CASH", name: "Uninvested Cash",                quantity: 100,   price:    1,  value:   100, change24h:  0,   isCash: true },
+      { financialAccountId: jn401k.id,           symbol: "NVDA", name: "NVIDIA Corp",                    quantity: 5,     price: 1100,  value:  5500, change24h:  2.1 },
+      { financialAccountId: jn401k.id,           symbol: "TSLA", name: "Tesla Inc",                      quantity: 10,    price:  280,  value:  2800, change24h: -0.9 },
+      { financialAccountId: jn401k.id,           symbol: "VOO",  name: "Vanguard S&P 500 ETF",           quantity: 20,    price:  490,  value:  9800, change24h:  0.6 },
+      { financialAccountId: jn401k.id,           symbol: "CASH", name: "Uninvested Cash",                quantity: 100,   price:    1,  value:   100, change24h:  0,   isCash: true },
       // Taxable: QQQ, AAPL, MSFT
-      { accountId: jnBrokerage.id,      symbol: "QQQ",  name: "Invesco QQQ Trust",              quantity: 15,    price: 380,   value:  5700, change24h:  1.1 },
-      { accountId: jnBrokerage.id,      symbol: "AAPL", name: "Apple Inc",                      quantity: 20,    price: 195,   value:  3900, change24h:  0.4 },
-      { accountId: jnBrokerage.id,      symbol: "MSFT", name: "Microsoft Corp",                 quantity:  5,    price: 420,   value:  2100, change24h:  0.7 },
-      { accountId: jnBrokerage.id,      symbol: "CASH", name: "Buying Power",                   quantity: 1100,  price:   1,   value:  1100, change24h:  0,   isCash: true },
+      { financialAccountId: jnBrokerage.id,      symbol: "QQQ",  name: "Invesco QQQ Trust",              quantity: 15,    price: 380,   value:  5700, change24h:  1.1 },
+      { financialAccountId: jnBrokerage.id,      symbol: "AAPL", name: "Apple Inc",                      quantity: 20,    price: 195,   value:  3900, change24h:  0.4 },
+      { financialAccountId: jnBrokerage.id,      symbol: "MSFT", name: "Microsoft Corp",                 quantity:  5,    price: 420,   value:  2100, change24h:  0.7 },
+      { financialAccountId: jnBrokerage.id,      symbol: "CASH", name: "Buying Power",                   quantity: 1100,  price:   1,   value:  1100, change24h:  0,   isCash: true },
       // Crypto exchange: BTC, ETH, DOGE
-      { accountId: jnCryptoExchange.id, symbol: "BTC",  name: "Bitcoin",                        quantity: 0.04,  price: 98000, value:  3920, change24h:  1.2 },
-      { accountId: jnCryptoExchange.id, symbol: "ETH",  name: "Ethereum",                       quantity: 1.2,   price:  2750, value:  3300, change24h:  0.8 },
-      { accountId: jnCryptoExchange.id, symbol: "DOGE", name: "Dogecoin",                       quantity: 1000,  price:  0.18, value:   180, change24h:  5.4 },
-      { accountId: jnCryptoExchange.id, symbol: "CASH", name: "USD Balance",                    quantity: 0,     price:    1,  value:     0, change24h:  0,   isCash: true },
+      { financialAccountId: jnCryptoExchange.id, symbol: "BTC",  name: "Bitcoin",                        quantity: 0.04,  price: 98000, value:  3920, change24h:  1.2 },
+      { financialAccountId: jnCryptoExchange.id, symbol: "ETH",  name: "Ethereum",                       quantity: 1.2,   price:  2750, value:  3300, change24h:  0.8 },
+      { financialAccountId: jnCryptoExchange.id, symbol: "DOGE", name: "Dogecoin",                       quantity: 1000,  price:  0.18, value:   180, change24h:  5.4 },
+      { financialAccountId: jnCryptoExchange.id, symbol: "CASH", name: "USD Balance",                    quantity: 0,     price:    1,  value:     0, change24h:  0,   isCash: true },
       // BTC wallet
-      { accountId: jnBtcWallet.id,      symbol: "BTC",  name: "Bitcoin",                        quantity: 0.038, price: 98000, value:  3724, change24h:  1.2 },
+      { financialAccountId: jnBtcWallet.id,      symbol: "BTC",  name: "Bitcoin",                        quantity: 0.038, price: 98000, value:  3724, change24h:  1.2 },
     ],
   });
   console.log("   ✓ Holdings (John): 19");
@@ -1123,11 +1161,12 @@ async function main() {
     tx(jnCreditCard, 65, "Fuel Express",         Other,  -69.50),
     tx(jnCreditCard, 83, "Fuel Express",         Other,  -71.90),
     tx(jnCreditCard,103, "Fuel Express",         Other,  -66.30),
-    // CC payments ×4
-    tx(jnCreditCard, 28, "CC Payment", Payment, -1200),
-    tx(jnCreditCard, 58, "CC Payment", Payment,  -800),
-    tx(jnCreditCard, 88, "CC Payment", Payment, -1000),
-    tx(jnCreditCard,118, "CC Payment", Payment,  -900),
+    // CC payments ×4 — POSITIVE (money into the liability); see the CCPAY-2F
+    // note on the other CC Payment block above.
+    tx(jnCreditCard, 28, "CC Payment", Payment, 1200),
+    tx(jnCreditCard, 58, "CC Payment", Payment,  800),
+    tx(jnCreditCard, 88, "CC Payment", Payment, 1000),
+    tx(jnCreditCard,118, "CC Payment", Payment,  900),
   ]});
 
   await prisma.transaction.createMany({ data: [

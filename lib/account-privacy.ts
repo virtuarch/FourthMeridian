@@ -1,7 +1,7 @@
 /**
  * lib/account-privacy.ts
  *
- * Helpers for enforcing WorkspaceAccountShare visibility tiers at the
+ * Helpers for enforcing SpaceAccountLink visibility tiers at the
  * API-response level.
  *
  * BALANCE_ONLY
@@ -68,13 +68,24 @@ export interface NormalizedAccount {
   debtSubtype?:    string | null;
   interestRate?:   number | null;
   minimumPayment?: number | null;
+  /**
+   * YYYY-MM-DD of the account's earliest non-deleted transaction — the same
+   * per-account floor the wealth-history regen uses (lib/snapshots/regenerate-
+   * history.ts). Attached by the accounts route, not normalizeSharedAccounts
+   * itself. Present on FULL rows with transactions; null otherwise (no synced
+   * transactions, or a BALANCE_ONLY aggregate row that maps to no single
+   * FinancialAccount). Consumed by RebuildHistoryButton as the "From" min.
+   */
+  earliestTxDate?: string | null;
 }
 
 /** Raw share row shape expected by normalizeSharedAccounts. */
 export interface ShareRow {
   visibilityLevel:  string;
-  addedByUserId:    string;
-  addedByUser:      { firstName: string | null; name: string | null };
+  // OPS-2 S5 — nullable since SpaceAccountLink.addedByUserId flipped to
+  // SetNull: a link whose adder's account was deleted has a null adder.
+  addedByUserId:    string | null;
+  addedByUser:      { firstName: string | null; name: string | null } | null;
   financialAccount: {
     id:             string;
     name:           string;
@@ -195,7 +206,7 @@ export function sanitizeForBalanceOnly(
 // ── Aggregating normalizer ────────────────────────────────────────────────────
 
 /**
- * Converts a raw list of WorkspaceAccountShare rows into a normalised account
+ * Converts a raw list of SpaceAccountLink rows into a normalised account
  * array safe for every space widget to consume.
  *
  * Rules:
@@ -220,7 +231,9 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
     string,
     {
       count:          number;
-      ownerId:        string;
+      // OPS-2 S5 — null when the adder's account was deleted (SetNull); such
+      // rows still group correctly (the map key stringifies null uniformly).
+      ownerId:        string | null;
       ownerFirstName: string | null;
       baseLabel:      string;  // singular, no owner prefix
       type:           string;
@@ -252,8 +265,8 @@ export function normalizeSharedAccounts(shares: ShareRow[]): NormalizedAccount[]
 
     // BALANCE_ONLY — derive owner name and base label, then group.
     const ownerFirstName =
-      share.addedByUser.firstName?.trim() ||
-      share.addedByUser.name?.trim().split(" ")[0] ||
+      share.addedByUser?.firstName?.trim() ||
+      share.addedByUser?.name?.trim().split(" ")[0] ||
       null;
 
     // Base label has no owner prefix — the prefix is added after aggregation

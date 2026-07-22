@@ -24,13 +24,33 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSpaceContext } from "@/lib/space";
-import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource, ProviderType } from "@prisma/client";
+import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource } from "@prisma/client";
 import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
+import { regenerateWealthHistoryForAccounts, recentWealthWindow } from "@/lib/snapshots/regenerate-history";
+
+/**
+ * Part-2 — after a BTC wallet's balance is synced, regenerate its Space's 30-day
+ * wealth HISTORY (not just today's flat row) so the new CoinGecko-driven per-day
+ * crypto valuation (a05ffbd) actually runs for a real wallet. Best-effort/non-
+ * fatal and gated internally on WEALTH_REGENERATION_ENABLED. Distinct from
+ * regenerateSnapshotsForAccounts (today's live row), which stays as-is.
+ */
+async function regenWalletWealthHistory(financialAccountId: string): Promise<void> {
+  try {
+    await regenerateWealthHistoryForAccounts([financialAccountId], recentWealthWindow());
+  } catch (e) {
+    console.warn(`[POST /api/accounts/wallet] wealth-history regen failed for ${financialAccountId} (non-fatal):`, e);
+  }
+}
 import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
-import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
+// PROV-4 — canonical per-account conn+SAL spine writer, shared with Plaid exchange.
+import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
+import { alignWalletProviderSpine } from "@/lib/accounts/wallet-connection";
+import { syncBtcWallet, BTC_CHAIN } from "@/lib/crypto/btc-sync";
+import { isExtendedKey, normalizeExtendedKeyInput } from "@/lib/crypto/btc-address-derivation";
 
 const SUPPORTED_CHAINS = ["BTC", "ETH", "SOL", "MATIC", "AVAX", "DOT", "ADA", "XRP", "OTHER"];
 
@@ -49,6 +69,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Unsupported chain. Use: ${SUPPORTED_CHAINS.join(", ")}` }, { status: 400 });
   }
 
+  // Wallet Provider v4 — the address field also accepts a BTC xpub/ypub/zpub
+  // (watch-only descriptor). When it does, the stored walletAddress is the
+  // descriptor, the Connection credential is the descriptor, and per-address
+  // ProviderAccountIdentity rows are created by xpub discovery during sync —
+  // NOT here (hence descriptorOnly on the spine align below).
+  //
+  // The user never picks a derivation path: normalizeExtendedKeyInput accepts a
+  // bare xpub/ypub/zpub OR a Ledger-style JSON export ({xpub, freshAddressPath}),
+  // and re-encodes to the prefix implied by the path's purpose (84'→zpub) so the
+  // pipeline derives the correct address type. Non-descriptor input passes through
+  // unchanged. Watch-only: only PUBLIC descriptors, never seeds/keys.
+  const walletValue = chain === BTC_CHAIN ? normalizeExtendedKeyInput(walletAddress.trim()) : walletAddress.trim();
+  const isXpub = chain === BTC_CHAIN && isExtendedKey(walletValue);
+
   const { spaceId, userId } = await getSpaceContext();
 
   // ── Automatic duplicate reconciliation ────────────────────────────────────
@@ -56,7 +90,7 @@ export async function POST(req: NextRequest) {
   // visible row for a wallet address that already has one, and never show
   // the user a conflict — just reuse/reactivate the existing account.
   const activeFa = await db.financialAccount.findFirst({
-    where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: null },
+    where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: null },
     select: { id: true },
   });
 
@@ -83,7 +117,10 @@ export async function POST(req: NextRequest) {
     // lib/accounts/provider-identity.ts). Owner-scoped lookup above is
     // unchanged — this only mirrors activeFa's own identity, never another
     // owner's FinancialAccount, per the D2 Step 1D corrected model.
-    await dualWriteProviderAccountIdentity(activeFa.id, ProviderType.WALLET, walletAddress.trim());
+    // Wallet Provider v1.5 — ensure the real Connection(WALLET) spine and link
+    // the AccountConnection + ProviderAccountIdentity to it (also self-heals a
+    // wallet created before v1.5). Idempotent, non-fatal.
+    await alignWalletProviderSpine({ userId, financialAccountId: activeFa.id, address: walletValue, chain, descriptorOnly: isXpub });
 
     // walletAddress has no DB-level unique constraint, so an archived row
     // for this same address can exist alongside the active one (e.g. a
@@ -92,7 +129,7 @@ export async function POST(req: NextRequest) {
     // or merged it, since this branch returned immediately. Fold it into
     // the active row now, the same way the restore routes do.
     const archivedDup = await db.financialAccount.findFirst({
-      where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: { not: null } },
+      where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: { not: null } },
       select: { id: true },
     });
     if (archivedDup) {
@@ -104,6 +141,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // BTC wallet sync v1 — refresh the confirmed balance + USD value when an
+    // existing BTC wallet is re-added (best-effort, non-fatal; matches the
+    // create/reactivate branches). Without this, an already-existing wallet
+    // has no automatic sync trigger at all — the reported "re-add does nothing"
+    // bug. Runs BEFORE snapshot regen so the snapshot captures the fresh balance.
+    if (chain === BTC_CHAIN) {
+      try { await syncBtcWallet(activeFa.id); }
+      catch (syncErr) { console.warn(`[POST /api/accounts/wallet] BTC sync failed for ${activeFa.id} (non-fatal):`, syncErr); }
+    }
+
     // Regenerate SpaceSnapshot now that the share is active in this space —
     // same best-effort/non-fatal pattern as the reactivation branch below.
     try {
@@ -111,6 +158,7 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${activeFa.id} (non-fatal):`, snapshotErr);
     }
+    if (chain === BTC_CHAIN) await regenWalletWealthHistory(activeFa.id);
 
     return NextResponse.json({ success: true, accountId: activeFa.id }, { status: 200 });
   }
@@ -120,7 +168,7 @@ export async function POST(req: NextRequest) {
   // second row (walletAddress has no DB-level unique constraint). Reactivate
   // it instead of creating a duplicate.
   const archivedFa = await db.financialAccount.findFirst({
-    where: { ownerUserId: userId, walletAddress: walletAddress.trim(), deletedAt: { not: null } },
+    where: { ownerUserId: userId, walletAddress: walletValue, deletedAt: { not: null } },
     select: { id: true },
   });
 
@@ -157,7 +205,18 @@ export async function POST(req: NextRequest) {
 
     // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
     // this user's own archived account — no cross-owner behavior involved.
-    await dualWriteProviderAccountIdentity(archivedFa.id, ProviderType.WALLET, walletAddress.trim());
+    // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine.
+    await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletValue, chain, descriptorOnly: isXpub });
+
+    // BTC wallet sync v1 — populate the confirmed balance + USD value on
+    // reactivate (best-effort, non-fatal). syncBtcWallet never throws; on
+    // explorer/price failure the account stays visible and "pending" and a
+    // SyncIssue is recorded (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot
+    // regen so the snapshot captures the freshly-synced balance.
+    if (chain === BTC_CHAIN) {
+      try { await syncBtcWallet(archivedFa.id); }
+      catch (syncErr) { console.warn(`[POST /api/accounts/wallet] BTC sync failed for ${archivedFa.id} (non-fatal):`, syncErr); }
+    }
 
     // Regenerate SpaceSnapshot now that the share is active again — see
     // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
@@ -166,13 +225,14 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${archivedFa.id} (non-fatal):`, snapshotErr);
     }
+    if (chain === BTC_CHAIN) await regenWalletWealthHistory(archivedFa.id);
 
     await db.auditLog.create({
       data: {
         userId,
         spaceId,
         action:   AuditAction.ACCOUNT_RESTORE,
-        metadata: { name: name.trim(), chain, address: walletAddress.trim() },
+        metadata: { name: name.trim(), chain, address: walletValue },
       },
     });
     return NextResponse.json({ success: true, accountId: archivedFa.id }, { status: 200 });
@@ -192,39 +252,25 @@ export async function POST(req: NextRequest) {
         institution:   "Self-custodied",
         balance:       0,
         currency:      "USD",
-        walletAddress: walletAddress.trim(),
+        walletAddress: walletValue,
         walletChain:   chain,
         nativeBalance: 0,
         syncStatus:    "pending",
       },
     });
 
-    // AccountConnection (manual, no PlaidItem)
-    await tx.accountConnection.create({
-      data: {
-        financialAccountId: created.id,
-        connectedByUserId:  userId,
-        syncStatus:         "pending",
-        isCanonical:        true,
-      },
-    });
-
-    // D3 Stage B3 — SpaceAccountLink is the sole write target
-    await dualWriteSpaceAccountLink({
-      spaceId,
+    // PROV-4 — AccountConnection (manual, no PlaidItem) + SpaceAccountLink via
+    // the canonical spine writer shared with the Plaid exchange path. Passed
+    // `tx` so the whole FA + spine commit stays in ONE transaction, exactly as
+    // before. The WALLET Connection + ProviderAccountIdentity are written
+    // separately by alignWalletProviderSpine below (provider-specific).
+    await persistAccountSpine({
       financialAccountId: created.id,
-      creatorUserId:       created.createdByUserId ?? created.ownerUserId,
-      client:              tx,
-      create: {
-        addedByUserId:   userId,
-        visibilityLevel: VisibilityLevel.FULL,
-        status:          ShareStatus.ACTIVE,
-      },
-      update: {
-        status:          ShareStatus.ACTIVE,
-        revokedAt:       null,
-        revokedByUserId: null,
-      },
+      spaceId,
+      addedByUserId:      userId,
+      creatorUserId:      created.createdByUserId ?? created.ownerUserId,
+      connection: { connectedByUserId: userId, syncStatus: "pending" },
+      client:             tx,
     });
 
     return created;
@@ -235,13 +281,25 @@ export async function POST(req: NextRequest) {
   // provider} lookup finds nothing and creates — no collision handling
   // needed: another owner's FinancialAccount for the same address (if any)
   // is an entirely separate row under the D2 Step 1D corrected model.
-  await dualWriteProviderAccountIdentity(fa.id, ProviderType.WALLET, walletAddress.trim());
+  // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine for the
+  // brand-new wallet (Connection → ProviderAccountIdentity → AccountConnection).
+  await alignWalletProviderSpine({ userId, financialAccountId: fa.id, address: walletValue, chain, descriptorOnly: isXpub });
   // D3 Step 3 HOME Semantics Correction — no separate HOME backfill call
   // needed here. computeLinkKind() (inside dualWriteSpaceAccountLink above)
   // now assigns HOME to the Space a brand-new account's first link is
   // written at — i.e. spaceId, the actually-active Space — rather than
   // synthesizing an extra HOME link at the creator's personal Space. See
   // docs/initiatives/d3/D3_STEP3_HOME_SEMANTICS_CORRECTION.md §5B.
+
+  // BTC wallet sync v1 — populate the confirmed balance + USD value on add
+  // (best-effort, non-fatal). syncBtcWallet never throws; on explorer/price
+  // failure the wallet stays visible and "pending" and a SyncIssue is recorded
+  // (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot regen so the snapshot
+  // captures the freshly-synced balance.
+  if (chain === BTC_CHAIN) {
+    try { await syncBtcWallet(fa.id); }
+    catch (syncErr) { console.warn(`[POST /api/accounts/wallet] BTC sync failed for ${fa.id} (non-fatal):`, syncErr); }
+  }
 
   // Regenerate SpaceSnapshot now that this new wallet is shared in —
   // same best-effort/non-fatal pattern as every other account-create/
@@ -251,13 +309,14 @@ export async function POST(req: NextRequest) {
   } catch (snapshotErr) {
     console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${fa.id} (non-fatal):`, snapshotErr);
   }
+  if (chain === BTC_CHAIN) await regenWalletWealthHistory(fa.id);
 
   await db.auditLog.create({
     data: {
       userId,
       spaceId,
       action:   "WALLET_ADD",
-      metadata: { name: fa.name, chain, address: walletAddress.trim() },
+      metadata: { name: fa.name, chain, address: walletValue },
     },
   });
 

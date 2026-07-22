@@ -13,9 +13,13 @@
 # testing
 /coverage
 
+# one-time backfill rollback logs (scripts/reclassify-subscriptions.ts etc.)
+scripts/.backfill-logs/
+
 # next.js
 /.next/
 /out/
+# (prototype build output — now subsumed by the `prototype/` rule further down)
 
 # production / build outputs
 /build
@@ -32,7 +36,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files — real secrets, never commit
+# env files — real secrets, never commit.
+# ORDERING IS LOAD-BEARING: the negation must come after the patterns it
+# exempts, and no later rule may re-broaden them. A stray `.env*` lower in this
+# file silently re-ignored .env.example for the whole v2.0→v2.5 era (V25-CLOSE-1).
 .env
 .env.*
 # Allow the safe template — no real secrets inside
@@ -53,6 +60,13 @@ node_modules/.prisma
 **/.DS_Store
 # macOS temp files created by some editors when saving (e.g. vim on APFS mounts)
 **/.fuse_hidden*
+# Finder / iCloud / Dropbox copy-on-conflict duplicates (KD-13): any path whose
+# name ends in " 2" — e.g. "widgets 2/" (dir) or "foo 2.ts" (file). The cloud-
+# sync tool keeps regenerating these. NOTE: this only suppresses the untracked-
+# noise SYMPTOM inside the repo; it does NOT fix the sync tool itself, which is a
+# local machine / OS-level configuration outside this repo's control.
+* 2
+* 2.*
 
 # Working / design artefacts — not part of the source distribution
 # Root-level copies that couldn't be deleted (APFS volume restriction in sandbox)
@@ -68,5 +82,20 @@ cloudflared/*.json
 cloudflared/*.pem
 cloudflared/cert.pem
 
-# Deprecated stub files (superseded by lib/plaid/ and lib/db.ts)
-.env*
+# Design prototypes / harnesses — local experiments only, NEVER shipped.
+# app/prototype/ sits under the App Router, so anything tracked there builds and
+# deploys as a public, unauthenticated route (/prototype/*) — it is outside the
+# proxy.ts auth matcher. Keeping the tree untracked is what stops that; the
+# experiments themselves stay on disk. See docs/audits/V25_CLOSE_1_LEDGER_RECONCILIATION.md.
+app/prototype/
+# Root prototype/ holds standalone Next apps (own package.json/next.config).
+# Previously only their build output was ignored, so `git add -A` would have
+# committed two nested applications into this repo.
+prototype/
+
+# scratch/backup artifacts
+_to_delete/
+fintracker_backup.sql
+
+# DB backups (Recovery/Hardening slice) — never commit dumps
+backups/

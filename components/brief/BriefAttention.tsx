@@ -27,6 +27,8 @@ import type { BriefSection, BriefItem } from "@/lib/brief-types";
 import { AttentionModal } from "./AttentionModal";
 import { GlassPanel } from "@/components/atlas/GlassPanel";
 import { TONE_CHIP_BG, TONE_TEXT, TONE_VALUE } from "@/components/atlas/tones";
+import { AtlasLiquidCard } from "@/components/atlas/AtlasLiquidCard";
+import { useAtlasLiquid } from "@/components/atlas/useAtlasLiquid";
 
 // ── Alert chip — display only, no interactive elements ───────────────────────
 
@@ -66,25 +68,20 @@ export function BriefAttention({ section }: BriefAttentionProps) {
   const items    = (section?.items ?? []).slice(0, 3);
   const hasAlerts = items.length > 0;
 
-  return (
-    <>
-      <GlassPanel
-        as="div"
-        role="button"
-        tabIndex={0}
-        aria-label={hasAlerts ? "Needs Attention — click to review issues" : "All Clear — click for details"}
-        onClick={handleOpen}
-        onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleOpen(); } }}
-        depth="thin"
-        elevation="e3"
-        radius="lg"
-        interactive
-        className="group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
-      >
-        {/* Hover brightening overlay */}
-        <div className="absolute inset-0 bg-transparent group-hover:bg-[var(--surface-hover)] transition-colors duration-300 pointer-events-none z-0" />
+  const ariaLabel = hasAlerts
+    ? "Needs Attention — click to review issues"
+    : "All Clear — click for details";
+  const liquid = useAtlasLiquid();
 
-        <div className="relative z-10 px-6 md:px-8 py-5 md:py-6">
+  // Shared crisp content. The hover-brightening overlay is Atlas-only and
+  // OMITTED on the Liquid path (no Atlas glass stacked on LiquidGlassCard).
+  const content = (
+    <>
+      {!liquid && (
+        <div className="absolute inset-0 bg-transparent group-hover:bg-[var(--surface-hover)] transition-colors duration-300 pointer-events-none z-0" />
+      )}
+
+      <div className="relative z-10 px-6 md:px-8 py-5 md:py-6">
           {/* Header — tone flips between warning (coral) and healthy
               (emerald) based on whether there are any items, so the title/
               icon never contradict the body copy below it. */}
@@ -133,9 +130,36 @@ export function BriefAttention({ section }: BriefAttentionProps) {
             </div>
           )}
         </div>
-      </GlassPanel>
+    </>
+  );
 
-      {/* Modal */}
+  return (
+    <>
+      {/* Liquid supported → LiquidGlassCard material (opens the same modal). */}
+      {liquid ? (
+        <AtlasLiquidCard onClick={handleOpen} ariaLabel={ariaLabel}>
+          {content}
+        </AtlasLiquidCard>
+      ) : (
+        // Fallback → the Atlas Glass panel.
+        <GlassPanel
+          as="div"
+          role="button"
+          tabIndex={0}
+          aria-label={ariaLabel}
+          onClick={handleOpen}
+          onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleOpen(); } }}
+          depth="thin"
+          elevation="e3"
+          radius="lg"
+          interactive
+          className="group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
+        >
+          {content}
+        </GlassPanel>
+      )}
+
+      {/* Modal — unchanged, shared by both paths */}
       <AttentionModal
         open={modalOpen}
         onClose={handleClose}

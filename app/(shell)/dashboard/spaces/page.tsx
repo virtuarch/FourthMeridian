@@ -26,8 +26,8 @@ export default async function SpacesPage() {
   const jar               = await cookies();
   const activeSpaceId = jar.get(ACTIVE_SPACE_COOKIE)?.value ?? null;
 
-  // ── Preferred space, my memberships, pending invites ──────────────────
-  const [preferredSpaceRow, myMemberships, pendingInvites] = await Promise.all([
+  // ── Preferred space, my memberships, pending invites, platform grants ─
+  const [preferredSpaceRow, myMemberships, pendingInvites, platformGrants] = await Promise.all([
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (db as any).user
       .findUnique({ where: { id: userId }, select: { preferredSpaceId: true } })
@@ -46,7 +46,15 @@ export default async function SpacesPage() {
               orderBy: { joinedAt: "asc" },
             },
             _count: {
-              select: { accounts: { where: { deletedAt: null } } },
+              // Canonical account count: ACTIVE SpaceAccountLink rows whose
+              // FinancialAccount is not soft-deleted.
+              // @@unique([spaceId, financialAccountId]) makes the ACTIVE-link
+              // count equal the distinct-account count.
+              select: {
+                accountLinks: {
+                  where: { status: "ACTIVE", financialAccount: { deletedAt: null } },
+                },
+              },
             },
           },
         },
@@ -67,10 +75,29 @@ export default async function SpacesPage() {
       },
       orderBy: { createdAt: "desc" },
     }),
+
+    // PO1.0 — platform Spaces the user holds an ACTIVE grant on (access-derived).
+    db.platformGrant.findMany({
+      where:  { userId, status: "ACTIVE" },
+      select: { area: true, level: true },
+    }),
   ]);
 
   const preferredSpaceId: string | null = preferredSpaceRow?.preferredSpaceId ?? null;
   const mySpaceIds = myMemberships.map((m) => m.spaceId);
+
+  // ── Platform Spaces (access-derived; no SpaceMember rows) ─────────────
+  const platformSpaces = platformGrants.length === 0 ? [] : (
+    await db.space.findMany({
+      where:  { platformArea: { in: platformGrants.map((g) => g.area) } },
+      select: { id: true, name: true, platformArea: true },
+    })
+  ).map((s) => ({
+    id:     s.id,
+    name:   s.name,
+    area:   s.platformArea as string,
+    access: platformGrants.find((g) => g.area === s.platformArea)!.level as string,
+  }));
 
   // ── Public SHARED spaces the user hasn't joined ───────────────────────
   const publicSpaces = await db.space.findMany({
@@ -80,6 +107,9 @@ export default async function SpacesPage() {
       id:         { notIn: mySpaceIds },
       archivedAt: null,
       deletedAt:  null,
+      // PO1.0 defense-in-depth — platform Spaces are never public (isPublic:false
+      // already excludes them); this makes the exclusion explicit at the query.
+      platformArea: null,
     },
     include: {
       members: {
@@ -90,7 +120,12 @@ export default async function SpacesPage() {
         orderBy: { joinedAt: "asc" },
       },
       _count: {
-        select: { accounts: { where: { deletedAt: null } } },
+        // Canonical account count (A1) — see the myMemberships query above.
+        select: {
+          accountLinks: {
+            where: { status: "ACTIVE", financialAccount: { deletedAt: null } },
+          },
+        },
       },
     },
     orderBy: { createdAt: "desc" },
@@ -129,8 +164,10 @@ export default async function SpacesPage() {
       createdAt:    m.space.createdAt.toISOString(),
       members:      serializeMembers(m.space.members),
       myRole:       m.role as string,
-      accountCount: m.space._count.accounts,
+      accountCount: m.space._count.accountLinks,
       netWorth:     nw?.netWorth ?? 0,
+      // MC1 QA Q5 — each card labels in its OWN Space's reporting currency.
+      currency:     nw?.currency ?? "USD",
       trend:        nw?.trend ?? [],
       lastUpdated:  nw?.asOf ?? null,
     };
@@ -147,8 +184,10 @@ export default async function SpacesPage() {
       isPublic:     w.isPublic,
       createdAt:    w.createdAt.toISOString(),
       members:      serializeMembers(w.members),
-      accountCount: w._count.accounts,
+      accountCount: w._count.accountLinks,
       netWorth:     nw?.netWorth ?? 0,
+      // MC1 QA Q5 — each card labels in its OWN Space's reporting currency.
+      currency:     nw?.currency ?? "USD",
       trend:        nw?.trend ?? [],
       lastUpdated:  nw?.asOf ?? null,
     };
@@ -169,6 +208,7 @@ export default async function SpacesPage() {
       currentUserId={userId}
       activeSpaceId={activeSpaceId}
       preferredSpaceId={preferredSpaceId}
+      platformSpaces={platformSpaces}
     />
   );
 }

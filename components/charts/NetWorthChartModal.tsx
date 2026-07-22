@@ -3,11 +3,14 @@ import { useMemo, useState } from "react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { X } from "lucide-react";
 import { Snapshot } from "@/types";
 import { Interval, cutoffForInterval } from "./NetWorthChart";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
-import { GlassPanel } from "@/components/atlas/GlassPanel";
+import { useDisplayCurrency } from "@/lib/currency-context";
+import { convertMoney, fxDisclosureOf } from "@/lib/money/convert";
+import type { ConversionContext } from "@/lib/money/types";
+import { FxUnavailableNote } from "@/components/ui/FxUnavailableNote";
+import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 
 interface Props {
   snapshots: Snapshot[];
@@ -17,6 +20,14 @@ interface Props {
    *  Assets/Total Liabilities) all open this same chart/modal, just focused
    *  on their own number, instead of each needing its own chart. */
   initialSeries?: SeriesKey;
+  /**
+   * MC1 — effective conversion context (Personal "view as" override). With
+   * `snapshotCurrency`, every series point is converted at its own date before
+   * formatting. Omitted ⇒ raw stamped values, unchanged.
+   */
+  ctx?:             ConversionContext;
+  /** Currency the snapshot totals are stamped in (the "from" currency). */
+  snapshotCurrency?: string;
 }
 
 const INTERVALS: { label: Interval; days: number | "ytd" }[] = [
@@ -41,14 +52,14 @@ const SERIES = [
 
 export type SeriesKey = (typeof SERIES)[number]["key"];
 
-const fmt = (n: number) =>
+const fmtBase = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, notation: "compact", maximumFractionDigits: 0,
+    style: "currency", currency: cur, notation: "compact", maximumFractionDigits: 0,
   }).format(n);
 
-const fmtFull = (n: number) =>
+const fmtFullBase = (n: number, cur: string = DEFAULT_DISPLAY_CURRENCY) =>
   new Intl.NumberFormat("en-US", {
-    style: "currency", currency: DEFAULT_DISPLAY_CURRENCY, maximumFractionDigits: 0,
+    style: "currency", currency: cur, maximumFractionDigits: 0,
   }).format(n);
 
 // X-axis: "09 Jun"
@@ -78,7 +89,12 @@ const MODAL_TITLE: Record<SeriesKey, string> = {
   netWorth: "Net Worth", totalAssets: "Total Assets", totalDebt: "Total Liabilities",
 };
 
-export function NetWorthChartModal({ snapshots, initialInterval, onClose, initialSeries }: Props) {
+export function NetWorthChartModal({ snapshots, initialInterval, onClose, initialSeries, ctx, snapshotCurrency }: Props) {
+  // MC1 Phase 4 Slice 1 (D-1) — aggregate surfaces format in the Space's
+  // reporting currency; USD fallback when no provider is mounted.
+  const displayCurrency = useDisplayCurrency();
+  const fmt = (n: number) => fmtBase(n, displayCurrency); // MC1 P4 Slice 1 — aggregate display currency
+  const fmtFull = (n: number) => fmtFullBase(n, displayCurrency); // MC1 P4 Slice 1 — aggregate display currency
   const [interval, setInterval]         = useState<Interval>(initialInterval);
   const [active, setActive]             = useState<Set<SeriesKey>>(new Set([initialSeries ?? "netWorth"]));
 
@@ -87,12 +103,43 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
     return snapshots.filter((s) => s.date >= cutoff);
   }, [snapshots, interval]);
 
-  const data = filtered.map((s) => ({
-    date:        s.date,
-    netWorth:    s.netWorth,
-    totalAssets: s.totalAssets,
-    totalDebt:   s.totalDebt,
-  }));
+  // MC1 — convert each series point at its own date through the effective
+  // context (Personal "view as" override) before formatting. No ctx ⇒ raw
+  // stamped values, unchanged. Identity (target === snapshotCurrency) is a
+  // no-op; a rate miss returns native + estimated (D-3), surfaced below.
+  const { data, conversionEstimated, conversionUnavailable } = useMemo(() => {
+    // V25-CLOSE-3 — carry the finer FX disclosure, not just a boolean. "unavailable"
+    // (no rate applied, native amount shown) is disclosed unmistakably below;
+    // "estimated" (a real but walked-back rate) keeps the quiet marker.
+    const conv = (raw: number, date: string): { amount: number; estimated: boolean; unavailable: boolean } => {
+      if (!ctx || !snapshotCurrency) return { amount: raw, estimated: false, unavailable: false };
+      const c = convertMoney({ amount: raw, currency: snapshotCurrency }, date, ctx);
+      // V25-FINAL-1 — an unavailable conversion returns amount 0; this surface
+      // already discloses "native amounts" via FxUnavailableNote, so plot the
+      // native value (c.native) rather than a misleading 0 dip. Converted points
+      // still use c.amount.
+      const unavailable = fxDisclosureOf(c) === "unavailable";
+      return { amount: unavailable && c.native ? c.native.amount : (c.amount ?? 0), estimated: c.estimated, unavailable };
+    };
+    const rows = filtered.map((s) => {
+      const nw = conv(s.netWorth, s.date);
+      const ta = conv(s.totalAssets, s.date);
+      const td = conv(s.totalDebt, s.date);
+      return {
+        date:        s.date,
+        netWorth:    nw.amount,
+        totalAssets: ta.amount,
+        totalDebt:   td.amount,
+        estimated:   nw.estimated || ta.estimated || td.estimated,
+        unavailable: nw.unavailable || ta.unavailable || td.unavailable,
+      };
+    });
+    return {
+      data: rows,
+      conversionEstimated:   rows.some((r) => r.estimated),
+      conversionUnavailable: rows.some((r) => r.unavailable),
+    };
+  }, [filtered, ctx, snapshotCurrency]);
 
   const ticks = useMemo(() => evenTicks(data.map((d) => d.date), 15), [data]);
 
@@ -111,36 +158,24 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
   }
 
   return (
-    // Backdrop — translucent + blurred, matching the rest of the app's
-    // glass-modal recipe (CreateSpaceModal/AddWalletModal/AccountModal),
-    // instead of the old opaque full-bleed bg-gray-900 takeover.
-    <div
-      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-2 sm:p-4"
-      style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
-      onClick={onClose}
-    >
-      {/* Sheet — stops propagation so clicking inside doesn't close */}
-      <GlassPanel
-        depth="thick"
-        elevation="e4"
-        radius="xl"
-        className="w-full h-[94dvh] sm:h-auto sm:max-w-3xl sm:max-h-[88dvh]"
-        onClick={(e: React.MouseEvent) => e.stopPropagation()}
-      >
-        <div className="h-full sm:max-h-[88dvh] p-5 flex flex-col">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-4 shrink-0">
-            <p className="text-sm font-semibold text-[var(--text-primary)]">{MODAL_TITLE[initialSeries ?? "netWorth"]}</p>
-            <button
-              onClick={onClose}
-              className="w-8 h-8 flex items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover-strong)] transition-colors touch-manipulation"
-            >
-              <X size={16} />
-            </button>
-          </div>
-
+    // Converged onto the canonical OverlaySurface primitive (Overlay
+    // Convergence, Phase C1): portal, body-scroll-lock + scroll preservation,
+    // focus trap, Escape and the named --z-modal z-index token now come from
+    // the primitive instead of this file's former hand-rolled scrim/GlassPanel
+    // recipe. Series + interval controls sit in the toolbar slot (between
+    // header and body); the chart is the body. closeOnBackdrop preserves the
+    // old backdrop-click-to-close behaviour under the workspace intent.
+    <OverlaySurface
+      open
+      onClose={onClose}
+      title={MODAL_TITLE[initialSeries ?? "netWorth"]}
+      intent="workspace"
+      size="lg"
+      closeOnBackdrop
+      toolbar={
+        <div className="space-y-3">
           {/* Series toggles */}
-          <div className="flex items-center gap-2 mb-4 flex-wrap shrink-0">
+          <div className="flex items-center gap-2 flex-wrap">
             {SERIES.map(({ key, label, color }) => {
               const on = active.has(key);
               return (
@@ -165,7 +200,7 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
           </div>
 
           {/* Interval selector */}
-          <div className="flex items-center gap-1 mb-4 flex-wrap shrink-0">
+          <div className="flex items-center gap-1 flex-wrap">
             {available.map(({ label }) => (
               <button
                 key={label}
@@ -186,56 +221,69 @@ export function NetWorthChartModal({ snapshots, initialInterval, onClose, initia
             ))}
           </div>
 
-          {/* Chart — flex-1 fills all remaining vertical space */}
-          <div className="flex-1 min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={data} margin={{ top: 4, right: 8, bottom: 48, left: 16 }}>
-                <XAxis
-                  dataKey="date"
-                  ticks={ticks}
-                  tickFormatter={tickFormat}
-                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  tickFormatter={fmt}
-                  tick={{ fontSize: 10, fill: "var(--text-muted)", dx: -20 }}
-                  tickLine={false}
-                  axisLine={false}
-                  width={88}
-                />
-                <Tooltip
-                  contentStyle={{
-                    background: "var(--glass-thick)", border: "1px solid var(--border-hairline-strong)",
-                    borderRadius: 8, fontSize: 12, backdropFilter: "blur(20px)",
-                  }}
-                  formatter={(v, name) => {
-                    const series = SERIES.find((s) => s.key === name);
-                    return [fmtFull(Number(v)), series?.label ?? name];
-                  }}
-                  labelFormatter={(v) => fmtTooltipDate(v)}
-                  labelStyle={{ color: "var(--text-secondary)" }}
-                  trigger="hover"
-                />
-                {SERIES.map(({ key, color }) =>
-                  active.has(key) ? (
-                    <Line
-                      key={key}
-                      type="monotone"
-                      dataKey={key}
-                      stroke={color}
-                      strokeWidth={2}
-                      dot={false}
-                      activeDot={{ r: 4, fill: color, stroke: "var(--bg-base)", strokeWidth: 2 }}
-                    />
-                  ) : null
-                )}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+          {/* V25-CLOSE-3 — unmistakable when a rate was UNAVAILABLE (native amount
+              shown); the quiet marker only for the softer walked-back "estimated". */}
+          {conversionUnavailable ? (
+            <FxUnavailableNote />
+          ) : conversionEstimated ? (
+            <p className="text-[11px] text-[var(--text-muted)]">
+              ≈ Some values use an estimated (older) exchange rate.
+            </p>
+          ) : null}
         </div>
-      </GlassPanel>
-    </div>
+      }
+    >
+      {/* Chart — explicit viewport-relative height so Recharts'
+          ResponsiveContainer always measures a definite parent inside the
+          primitive's scroll body (no reliance on flex-fill through an
+          auto-height column). */}
+      <div className="h-[58dvh] sm:h-[60dvh] min-h-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 4, right: 8, bottom: 48, left: 16 }}>
+            <XAxis
+              dataKey="date"
+              ticks={ticks}
+              tickFormatter={tickFormat}
+              tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+              tickLine={false}
+              axisLine={false}
+            />
+            <YAxis
+              tickFormatter={fmt}
+              tick={{ fontSize: 10, fill: "var(--text-muted)", dx: -20 }}
+              tickLine={false}
+              axisLine={false}
+              width={88}
+            />
+            <Tooltip
+              contentStyle={{
+                background: "var(--glass-thick)", border: "1px solid var(--border-hairline-strong)",
+                borderRadius: 8, fontSize: 12, backdropFilter: "blur(20px)",
+              }}
+              formatter={(v, name) => {
+                const series = SERIES.find((s) => s.key === name);
+                return [fmtFull(Number(v)), series?.label ?? name];
+              }}
+              labelFormatter={(v) => fmtTooltipDate(v)}
+              labelStyle={{ color: "var(--text-secondary)" }}
+              trigger="hover"
+            />
+            {SERIES.map(({ key, color }) =>
+              active.has(key) ? (
+                <Line
+                  key={key}
+                  type="monotone"
+                  dataKey={key}
+                  stroke={color}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4, fill: color, stroke: "var(--bg-base)", strokeWidth: 2 }}
+                />
+              ) : null
+            )}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </OverlaySurface>
   );
 }

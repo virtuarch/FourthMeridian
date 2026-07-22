@@ -5,8 +5,8 @@
  * FinancialAccount balances.
  *
  * Root cause this fixes: the Cash History / Banking History / Net Worth
- * charts (lib/data/snapshots.ts: getRecentSnapshots, getPortfolioHistory)
- * read exclusively from SpaceSnapshot. Before this file existed, the
+ * charts (lib/data/snapshots.ts: getRecentSnapshots) read exclusively from
+ * SpaceSnapshot. Before this file existed, the
  * only code path that ever wrote a SpaceSnapshot row was prisma/seed.ts
  * — there was no production writer, so real (non-seeded) spaces had no
  * rows and the charts rendered blank regardless of how fresh balances or
@@ -35,7 +35,9 @@
 import { db } from "@/lib/db";
 import { getAccounts } from "@/lib/data/accounts";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { ShareStatus } from "@prisma/client";
+import { buildSpaceConversionContext } from "@/lib/money/server-context";
+import { yesterdayUTCISO } from "@/lib/fx/config";
+import { ShareStatus, PlaidInvestmentsConsent } from "@prisma/client";
 
 function todayUTC(): Date {
   const d = new Date();
@@ -53,7 +55,72 @@ export async function regenerateSpaceSnapshot(
   date: Date = todayUTC(),
 ): Promise<void> {
   const accounts = await getAccounts({ spaceId });
-  const c = classifyAccounts(accounts);
+
+  // Part-B — exclude investment accounts still pending Investments consent
+  // (CONSENT_REQUIRED): holdings were never fetched, so there is no real
+  // per-holding value or history for them. Baking today's account-level balance
+  // into the net-worth snapshot injects a misleading vertical JUMP with no
+  // historical lead-up (the "net worth jumps at connect" bug). The account's
+  // balance still shows on its card + EnableInvestmentsButton prompts the user;
+  // once consent is granted the full pipeline reconstructs real history and the
+  // account enters the trend smoothly. Suppress-until-consent (chosen over a
+  // distinct "today dot", which needs new chart code) — honestly omits the
+  // account until we have real data, rather than fabricating a jump.
+  let eligible = accounts;
+  if (accounts.length > 0) {
+    const gated = new Set(
+      (
+        await db.financialAccount.findMany({
+          where: {
+            id:          { in: accounts.map((a) => a.id) },
+            type:        "investment",
+            connections: { some: { plaidItem: { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED } } },
+          },
+          select: { id: true },
+        })
+      ).map((a) => a.id),
+    );
+    if (gated.size > 0) {
+      eligible = accounts.filter((a) => !gated.has(a.id));
+      console.log(`[snapshot] space ${spaceId}: excluding ${gated.size} consent-pending investment account(s) from the snapshot (no fabricated jump).`);
+    }
+  }
+
+  // REG-1 (2026-07-15) — the former "Part-B2" cash/debt evidence gate was REMOVED.
+  // It excluded any checking/savings/debt account with zero non-deleted
+  // Transaction rows from TODAY's live snapshot, which silently dropped a real
+  // balance-bearing account's cash from cash → totalAssets → netWorth (the
+  // ~$9k regression: a low-activity savings account, a manual cash account, or an
+  // account whose transactions were soft-deleted during a re-sync). Today's
+  // snapshot must reconcile with the live KPI (renderNetWorth), which counts every
+  // balance-bearing account — so the live writer no longer applies any transaction-
+  // evidence filter. The legitimate "no vertical jump at connect" concern is a
+  // HISTORICAL-lead-in concern, and is now handled honestly downstream: the
+  // historical writers (backfill.ts / regenerate-history.ts) hold such an account
+  // FLAT at its current balance across the window as an estimate
+  // (isHeldFlatBalanceAccount, REG-2), producing a continuous chart instead of a
+  // gap-then-jump. accountTier / classifyAccounts remain the sole inclusion +
+  // aggregation authority. Part-B (investment-consent suppression above) is
+  // unaffected: those accounts have NO fetched holdings, so there is genuinely no
+  // value to include, unlike a cash account that carries a real balance.
+
+  // MC1 Phase 3 Slice 3 — THE SNAPSHOT FLIP (plan seams #1, F-2). The context
+  // target and the reportingCurrency stamp below both come from the same
+  // Space read, atomically: they can never disagree. For every all-USD Space
+  // this is numerically identical to the Phase 2 identity behavior
+  // (equivalence gates); non-USD rows now convert for real at the latest
+  // close, degrading per D-3 (native + estimated) when a rate is missing.
+  const space = await db.space.findUnique({
+    where:  { id: spaceId },
+    select: { reportingCurrency: true },
+  });
+  if (!space) return; // space vanished mid-call — nothing to snapshot
+
+  const ctx = await buildSpaceConversionContext(space, {
+    currencies: eligible.map((a) => a.currency ?? null),
+    dates:      [yesterdayUTCISO()],
+  });
+  const c = classifyAccounts(eligible, ctx);
 
   const stocks     = c.totalInvestments;
   const crypto     = c.totalDigitalAssets;
@@ -71,16 +138,26 @@ export async function regenerateSpaceSnapshot(
   // cash rather than an invented buffer amount.
   const cashOnHand  = Math.max(cash, 0);
 
+  // MC1 Phase 3 Slice 3 (F-2) — the stamp IS the context target: both come
+  // from the same Space read above, in the same edit, so they can never
+  // disagree. Existing rows keep their stamps (forward-only, plan D-4); only
+  // today's upserted row carries the current value. SpaceSnapshot.isEstimated
+  // keeps its D2.x reconstruction meaning — currency estimation is NOT
+  // written to snapshots (approved D-7; Phase 4 open item).
+  const reportingCurrency = space.reportingCurrency;
+
   await db.spaceSnapshot.upsert({
     where: { spaceId_date: { spaceId, date } },
     create: {
       spaceId, date,
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
+      reportingCurrency,
     },
     update: {
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
+      reportingCurrency,
     },
   });
 }

@@ -1,0 +1,77 @@
+name: STATUS drift guard
+
+# Advisory tripwire for the failure mode documented in
+# FOURTH_MERIDIAN_STATUS_DRIFT_INVESTIGATION_2026-07-13.md: initiatives shipping
+# migrations / closeouts with NO STATUS.md update, leaving the ledger stale.
+#
+# It flags — it does not block. If a pull request adds a prisma/migrations/
+# folder or a docs/initiatives/** closeout without touching STATUS.md, this job
+# emits a GitHub warning annotation + a step summary so the reviewer notices.
+# It always exits 0 so it can never break the existing CI gate (ci.yml) or wedge
+# a legitimately doc-exempt PR. A maintainer who wants it to be blocking can flip
+# the single `exit 0` at the end to `exit 1`.
+#
+# PR-only by design: the base ref needed for a reliable diff exists only on
+# pull_request events (a bare push has no unambiguous base to diff against).
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  status-drift-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Flag migrations/closeouts landing without a STATUS.md update
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.ref }}"
+          git fetch --no-tags --depth=200 origin "$BASE"
+
+          # Files changed by this PR relative to the merge base with the target branch.
+          CHANGED="$(git diff --name-only "origin/${BASE}...HEAD")"
+
+          # Did the PR touch STATUS.md at all?
+          if echo "$CHANGED" | grep -qx 'STATUS.md'; then
+            echo "STATUS.md was updated in this PR — no drift flag." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Ledger-relevant changes that should almost always come with a STATUS.md edit:
+          #  - a new/changed Prisma migration (schema-owning work)
+          #  - a docs/initiatives/** closeout or completion record
+          TRIGGERS="$(echo "$CHANGED" | grep -E \
+            -e '^prisma/migrations/' \
+            -e '^docs/initiatives/.*(CLOSEOUT|COMPLETION|RATIFICATION|_CLOSEOUT_).*\.md$' \
+            || true)"
+
+          if [ -z "$TRIGGERS" ]; then
+            echo "No migration/closeout changes detected — no drift flag." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "### ⚠️ STATUS.md drift guard"
+            echo ""
+            echo "This PR changes migration/closeout files but does **not** touch \`STATUS.md\`."
+            echo "Per the maintenance rule, initiative work updates the ledger (or the PR states why not)."
+            echo ""
+            echo "Ledger-relevant files changed here:"
+            echo ""
+            echo '```'
+            echo "$TRIGGERS"
+            echo '```'
+            echo ""
+            echo "_Advisory only — this check does not block the merge._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::warning title=STATUS.md not updated::This PR adds migrations/closeouts without a STATUS.md diff — update the ledger or note in the PR why not."
+
+          # Advisory: never fail the build. Flip to `exit 1` to make it blocking.
+          exit 0

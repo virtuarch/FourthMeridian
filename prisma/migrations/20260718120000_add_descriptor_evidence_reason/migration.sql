@@ -1,0 +1,15 @@
+-- SR-4 — add DESCRIPTOR_EVIDENCE to FlowClassificationReason.
+--
+-- Purely additive and low-risk: one new enum value, no table/column/constraint
+-- change and no backfill. It records that a deterministic DESCRIPTOR-EVIDENCE
+-- resolver (lib/transactions/descriptor-evidence.ts), not the descriptor-blind
+-- flow classifier, decided a row's economic kind by promoting the "Other"
+-- sentinel to a real category (e.g. an ACH "PAYROLL SEC:PPD" credit → Income →
+-- INCOME). Stamped by the write layer; the classifier never emits it.
+--
+-- PostgreSQL requires ALTER TYPE ... ADD VALUE to commit in its own transaction
+-- before any statement references the new value (see
+-- 20260611000000_financial_account_sharing). This migration references nothing,
+-- so it is safe on its own; the value's first writers are the Plaid sync seam and
+-- scripts/repair-refund-misclassification.ts, which run in later transactions.
+ALTER TYPE "FlowClassificationReason" ADD VALUE IF NOT EXISTS 'DESCRIPTOR_EVIDENCE';

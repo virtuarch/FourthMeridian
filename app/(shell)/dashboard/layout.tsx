@@ -1,4 +1,6 @@
 import { DashboardChrome } from "@/components/ui/DashboardChrome";
+import { DisplayCurrencyProvider } from "@/lib/currency-context";
+import { getSpaceContext } from "@/lib/space";
 import { ReactNode } from "react";
 
 // Applies to every page nested under this layout (all /dashboard/* tabs) —
@@ -12,6 +14,23 @@ export const runtime = "nodejs";
 // DashboardChrome.tsx, a Client Component, since it needs usePathname() to
 // drop the top-bar divider only on the Spaces page (see that file's header
 // comment for why).
-export default function DashboardLayout({ children }: { children: ReactNode }) {
-  return <DashboardChrome>{children}</DashboardChrome>;
+export default async function DashboardLayout({ children }: { children: ReactNode }) {
+  // MC1 Phase 4 Slice 1 (D-1) — resolve the active Space's reporting currency
+  // once for the whole dashboard tree (getSpaceContext() is cache()-deduped,
+  // so pages re-resolving it cost nothing extra). Defensive fallback: the
+  // provider treats undefined as USD, so context-resolution failure renders
+  // exactly the pre-MC1 display.
+  let reportingCurrency: string | undefined;
+  try {
+    const ctx = await getSpaceContext();
+    reportingCurrency = ctx.space.reportingCurrency;
+  } catch {
+    reportingCurrency = undefined;
+  }
+
+  return (
+    <DisplayCurrencyProvider currency={reportingCurrency}>
+      <DashboardChrome>{children}</DashboardChrome>
+    </DisplayCurrencyProvider>
+  );
 }

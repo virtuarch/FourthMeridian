@@ -22,10 +22,11 @@
 
 import { NextRequest, NextResponse }              from "next/server";
 import { db }                                     from "@/lib/db";
-import { SpaceMemberStatus, ShareStatus, SpaceMemberRole } from "@prisma/client";
+import { SpaceMemberStatus, ShareStatus, SpaceMemberRole, SpaceType } from "@prisma/client";
 import { requireSpaceRole }                   from "@/lib/session";
 import { withApiHandler, getClientIp }            from "@/lib/api";
-import { regenerateSpaceSnapshot }                from "@/lib/snapshots/regenerate";
+import { emitDomainEvent }                        from "@/lib/events/emit";
+import type { DomainEvent }                       from "@/lib/events/types";
 
 const PROMOTABLE_ROLES: SpaceMemberRole[] = [
   SpaceMemberRole.ADMIN,
@@ -44,6 +45,15 @@ export const PATCH = withApiHandler(async (
   const [auth, err] = await requireSpaceRole(spaceId, SpaceMemberRole.OWNER);
   if (err) return err;
   const { user } = auth;
+
+  // Personal Spaces are strictly single-user — their only member is the OWNER
+  // (whose role is immutable below anyway), so there is never a non-owner member
+  // to re-role. Reject defensively so a role change can never be the operation
+  // that first gives a personal Space a non-owner member. SHARED unaffected.
+  const pspace = await db.space.findUnique({ where: { id: spaceId }, select: { type: true } });
+  if (pspace?.type === SpaceType.PERSONAL) {
+    return NextResponse.json({ error: "Personal Spaces have no additional members to manage." }, { status: 400 });
+  }
 
   const targetMembership = await db.spaceMember.findUnique({
     where: { spaceId_userId: { spaceId, userId: targetUserId } },
@@ -78,14 +88,15 @@ export const PATCH = withApiHandler(async (
   const tu = targetMembership.user;
   const targetName = [tu.firstName, tu.lastName].filter(Boolean).join(" ").trim() || tu.email || targetUserId;
 
-  await db.auditLog.create({
-    data: {
-      userId:      user.id,
-      spaceId,
-      action:      "MEMBER_ROLE_CHANGE",
-      metadata:    { targetUserId, targetName, oldRole: targetMembership.role, newRole: role },
-      ipAddress:   getClientIp(req),
-    },
+  // EV-1 Slice 5B — MemberRoleChanged (audit-only, no handler). No transaction
+  // and no side effect here today; the no-tx emit persists the canonical
+  // MEMBER_ROLE_CHANGED row with byte-identical metadata.
+  await emitDomainEvent({
+    type:        "MemberRoleChanged",
+    spaceId,
+    actorUserId: user.id,
+    ipAddress:   getClientIp(req),
+    payload:     { targetUserId, targetName, oldRole: targetMembership.role, newRole: role },
   });
 
   return NextResponse.json(updated);
@@ -158,30 +169,26 @@ export const DELETE = withApiHandler(async (
     }),
   ]);
 
-  // ── 2a. Regenerate SpaceSnapshot now that this space's active shares have
-  //       changed (the departing/removed member's shares were just revoked
-  //       above) — see docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md and
-  //       the share/revoke route fix for the established pattern.
-  //       Best-effort/non-fatal: the removal itself has already succeeded.
-  try {
-    await regenerateSpaceSnapshot(spaceId);
-  } catch (snapshotErr) {
-    console.warn(`[DELETE /api/spaces/:id/members/:userId] snapshot regen failed for space ${spaceId} (non-fatal):`, snapshotErr);
-  }
-
-  // ── 3. Audit log ──────────────────────────────────────────────────────────
+  // ── 2a/3. EV-1 Slice 3 — persist the audit row and regenerate the snapshot
+  //   behind the event seam. The array-form transaction above (member flip +
+  //   SAL revoke) is untouched and already committed; audit stays OUTSIDE it,
+  //   exactly as before. The no-tx emit persists the AuditLog row and then
+  //   dispatches the snapshot handler inline (post-commit, best-effort — a
+  //   handler failure is warned and swallowed, so the removal still succeeds).
+  //   Self-leave → MemberLeft (SPACE_LEAVE); admin removal → MemberRemoved
+  //   (MEMBER_REMOVED). Timeline renders both exactly as before.
   const ru = targetMembership.user;
   const removedName = [ru.firstName, ru.lastName].filter(Boolean).join(" ").trim() || ru.email || targetUserId;
 
-  await db.auditLog.create({
-    data: {
-      userId:    user.id,
-      spaceId,
-      action:    isSelf ? "SPACE_LEAVE" : "SPACE_REMOVE_MEMBER",
-      metadata:  { removedUserId: targetUserId, removedName, newStatus },
-      ipAddress: getClientIp(req),
-    },
-  });
+  const event: DomainEvent = {
+    type:        isSelf ? "MemberLeft" : "MemberRemoved",
+    spaceId,
+    actorUserId: user.id,
+    ipAddress:   getClientIp(req),
+    payload:     { removedUserId: targetUserId, removedName, newStatus },
+  };
+
+  await emitDomainEvent(event);
 
   return NextResponse.json({ ok: true });
 }, "DELETE /api/spaces/[id]/members/[userId]");

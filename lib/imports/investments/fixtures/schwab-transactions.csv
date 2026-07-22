@@ -1,0 +1,8 @@
+Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount
+06/03/2026,Buy,AAPL,APPLE INC,10,150.00,0.00,-1500.00
+06/10/2026,Sell,AAPL,APPLE INC,5,160.00,0.00,800.00
+06/15/2026,Cash Dividend,AAPL,APPLE INC,,,,25.00
+06/18/2026,Reinvest Shares,VTI,VANGUARD TOTAL,0.5,220.00,0.00,-110.00
+06/20/2026,Advisor Fee,,ADVISORY FEE,,,,-30.00
+06/22/2026,Stock Split,TSLA,TESLA INC,20,,,
+06/25/2026,Security Transfer,MSFT,MICROSOFT,15,,,

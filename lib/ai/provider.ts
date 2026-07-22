@@ -16,6 +16,7 @@
 
 import 'server-only';
 import OpenAI from 'openai';
+import { recordApiUsage } from '@/lib/usage/record';
 
 // ── Client ───────────────────────────────────────────────────────────────────
 // Lazy-initialised singleton. Fails loudly if the key is absent so
@@ -78,6 +79,18 @@ export async function generateChatReply(
     temperature: 0.3,
     max_tokens:  1024,
   });
+
+  // Wave 2 S7 — record API usage (calls + tokens per model). Fire-and-forget:
+  // recordApiUsage is internally non-throwing, so `void` here can neither fail
+  // the chat nor produce an unhandled rejection. Metric embeds the model so the
+  // per-model breakdown needs no extra dimension.
+  const usage = completion.usage;
+  if (usage) {
+    const metric = `chat.completions:${CHAT_MODEL}`;
+    void recordApiUsage('OPENAI', metric, 'calls', 1);
+    void recordApiUsage('OPENAI', metric, 'prompt_tokens', usage.prompt_tokens ?? 0);
+    void recordApiUsage('OPENAI', metric, 'completion_tokens', usage.completion_tokens ?? 0);
+  }
 
   const reply = completion.choices[0]?.message?.content ?? '';
   if (!reply) {

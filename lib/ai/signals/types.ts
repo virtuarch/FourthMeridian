@@ -13,7 +13,7 @@
  * collision would silently allow two signals with the same type string.
  *
  * Implemented in D4 Slice 5:
- *   Transactions  — PENDING_CREDIT, PENDING_DEBIT
+ *   Transactions  — PENDING_CREDIT, PENDING_DEBIT, NEEDS_CLASSIFICATION (TI2-W2)
  *   Snapshot      — NET_WORTH_INCREASED, NET_WORTH_DECLINED
  *   Goals         — GOAL_COMPLETED
  *   Accounts      — STALE_CONNECTION, NEEDS_REAUTH
@@ -25,6 +25,13 @@ export const SignalType = {
   PENDING_CREDIT: 'PENDING_CREDIT',
   /** One or more outgoing transactions are still pending settlement. */
   PENDING_DEBIT: 'PENDING_DEBIT',
+  /**
+   * One or more transactions in the window genuinely need human classification
+   * (TE-2B: payment-app movement of unknown purpose, or sign-default inflow with
+   * no resolved source). Info by default; escalates to warning when the
+   * unidentified-inflow share is material (MATERIAL_UNIDENTIFIED_INFLOW_SHARE).
+   */
+  NEEDS_CLASSIFICATION: 'NEEDS_CLASSIFICATION',
 
   // ── Snapshot ─────────────────────────────────────────────────────────────
   /** Net worth increased over the snapshot history window. */

@@ -31,22 +31,24 @@ import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { db } from "@/lib/db";
 import {
   AccountType,
-  PlaidInvestmentsConsent,
   PlaidItemStatus,
   AccountOwnerType,
-  ShareStatus,
-  VisibilityLevel,
   ProviderType,
   ConnectionStatus,
 } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
+import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { AuditAction } from "@/lib/audit-actions";
-import { resolveAccountByFingerprint } from "@/lib/accounts/reconcile";
-import { dualWriteSpaceAccountLink } from "@/lib/accounts/space-account-link";
+import { resolveAccountByFingerprint, resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
+// PROV-2 — the ONE owner of Plaid type/subtype → AccountType (was defined + exported here).
+import { mapAccountType } from "@/lib/plaid/account-type";
+// PROV-3 — the shared investments-ingest orchestration (was inline here).
+import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
+// PROV-4 — the canonical per-account conn+SAL spine writer (was inline here).
+import { persistAccountSpine } from "@/lib/accounts/persist-account-spine";
 import { dualWriteProviderAccountIdentity } from "@/lib/accounts/provider-identity";
-import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
-import { getPlaidErrorCode, plaidErrorSummary } from "@/lib/plaid/errors";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -61,6 +63,19 @@ export interface ExchangeTokenParams {
   institution_id:   string;
   /** Human-readable institution name for display + DB storage. */
   institution_name: string;
+  /**
+   * D2.x Slice 1 (fast-path split). When true, the full 730-day initial
+   * transaction sync is NOT awaited inside this call: accounts/balances,
+   * holdings, and today's snapshot are made durable and the function returns
+   * immediately with `historyPending: true`, leaving history to complete
+   * out-of-band (daily sync-banks cron today; an after()/waitUntil background
+   * continuation once Slice 2 lands). Defaults to false, which preserves the
+   * original inline-history behavior — required by the admin Expand History
+   * flow (exchange-expanded-history-token), whose entire purpose is to pull
+   * expanded history inline and which relies on the returned
+   * transactionsSynced count and the cursor set by syncTransactionsForItem.
+   */
+  deferHistorySync?: boolean;
 }
 
 export interface ExchangeTokenResult {
@@ -69,25 +84,27 @@ export interface ExchangeTokenResult {
   transactionsSynced: number;
   /** The new PlaidItem's internal DB id (used by admin retire flow). */
   plaidItemId:        string;
+  /**
+   * D2.x Slice 1. True when the initial transaction history import was
+   * deferred (see ExchangeTokenParams.deferHistorySync) rather than run
+   * inline — balances/holdings/snapshot are durable but full history is still
+   * arriving out-of-band. Additive/optional; existing callers that ignore it
+   * are unaffected.
+   */
+  historyPending?:    boolean;
 }
 
-// ── Plaid type → AccountType ──────────────────────────────────────────────────
-
-export function mapAccountType(type: string, subtype: string | null | undefined): AccountType {
-  switch (type) {
-    case "depository":
-      return subtype === "savings" || subtype === "money market" || subtype === "cd"
-        ? AccountType.savings
-        : AccountType.checking;
-    case "investment":
-      return subtype === "crypto exchange"
-        ? AccountType.crypto
-        : AccountType.investment;
-    case "credit":
-    case "loan":
-      return AccountType.debt;
-    default:
-      return AccountType.other;
+/**
+ * Thrown when a fresh Link session completes for an institution the user ALREADY
+ * has an ACTIVE PlaidItem for (a genuine duplicate — a NEW Plaid item_id, not an
+ * update-mode reconnect which preserves the item_id and heals the existing row).
+ * The exchange-token route maps this to a 409 + the user-facing message; the
+ * connect UI already surfaces `{ error }` from a non-2xx exchange response.
+ */
+export class DuplicateInstitutionError extends Error {
+  constructor(public readonly institutionName: string) {
+    super(`You already have ${institutionName} connected — refresh it instead of reconnecting.`);
+    this.name = "DuplicateInstitutionError";
   }
 }
 
@@ -97,30 +114,55 @@ export async function performPlaidTokenExchange(
   params: ExchangeTokenParams,
 ): Promise<ExchangeTokenResult> {
   const { userId, spaceId, public_token, institution_id, institution_name } = params;
+  const deferHistorySync = params.deferHistorySync ?? false;
 
-  // 1. Duplicate institution check — log only; upsert handles collisions
-  const existingItem = await db.plaidItem.findFirst({
-    where: { userId, institutionId: institution_id, status: PlaidItemStatus.ACTIVE },
-  });
-  if (existingItem) {
-    console.log(
-      `[plaid] re-linking existing institution "${institution_name}" (${institution_id}) for user ${userId} — will refresh token`,
-    );
-  }
-
-  // 2. Exchange public_token → access_token
+  // 1. Exchange public_token → access_token (+ Plaid's item_id).
   console.log(`[plaid] exchanging public token for institution "${institution_name}" (${institution_id})`);
   const exchangeRes = await plaidClient.itemPublicTokenExchange({ public_token });
   const { access_token, item_id } = exchangeRes.data;
   console.log(`[plaid] public token exchanged — item_id: ${item_id}`);
 
+  // 2. Duplicate-institution GATE (real, not log-only). An update-mode reconnect
+  // reuses the existing access_token, so Plaid returns the SAME item_id and the
+  // upsert below heals the existing row. A genuine duplicate is a FRESH Link
+  // session for an already-connected institution: a NEW item_id. If an ACTIVE
+  // PlaidItem already exists for (userId, institutionId) under a DIFFERENT
+  // item_id, block instead of creating a second parallel connection. Best-effort
+  // itemRemove the just-created item so it doesn't linger unused at Plaid.
+  const duplicate = await db.plaidItem.findFirst({
+    where:  { userId, institutionId: institution_id, status: PlaidItemStatus.ACTIVE, externalItemId: { not: item_id } },
+    select: { id: true, institutionName: true },
+  });
+  if (duplicate) {
+    console.warn(
+      `[plaid] duplicate connect blocked — user ${userId} already has ACTIVE item ${duplicate.id} for institution "${institution_name}" (${institution_id}); removing the new item ${item_id} at Plaid`,
+    );
+    try {
+      await plaidClient.itemRemove({ access_token });
+    } catch (removeErr) {
+      console.warn(`[plaid] best-effort itemRemove of duplicate item ${item_id} failed (non-fatal):`, removeErr);
+    }
+    throw new DuplicateInstitutionError(institution_name);
+  }
+
   // 3. Encrypt access_token before it touches the DB
   const encryptedToken = encryptWithPurpose(access_token, EncryptionPurpose.PLAID_ACCESS_TOKEN);
 
-  // 4. Upsert PlaidItem — credential belongs to User, not Space
+  // 4. Upsert PlaidItem — credential belongs to User, not Space.
+  // D2.x resume — when history is deferred, mark the item incomplete from birth
+  // (syncIncompleteAt = now) so it reads as "importing" until the background
+  // history sync confirms completion (which clears it). The inline flow (admin
+  // Expand History, deferHistorySync=false) syncs history within this call, so
+  // it leaves the marker null. Re-link re-imports history the same way.
+  const syncIncompleteAt = deferHistorySync ? new Date() : null;
   const plaidItem = await db.plaidItem.upsert({
     where:  { externalItemId: item_id },
-    update: { encryptedToken, status: PlaidItemStatus.ACTIVE, errorCode: null },
+    // CH-2 — the health reset (status ACTIVE, errorCode null) is no longer done
+    // inline here; setPlaidItemHealth below owns it so a relink that recovers a
+    // broken item leaves a durable transition row. The upsert still writes the
+    // non-health columns; a brand-new item is created ACTIVE (default), for
+    // which the helper's no-op comparison writes no row.
+    update: { encryptedToken, syncIncompleteAt },
     create: {
       userId,
       externalItemId:  item_id,
@@ -128,8 +170,20 @@ export async function performPlaidTokenExchange(
       institutionName: institution_name,
       encryptedToken,
       status:          PlaidItemStatus.ACTIVE,
+      syncIncompleteAt,
     },
   });
+
+  // CH-2 — flip to healthy through the chokepoint. Records a transition row only
+  // when this relink actually recovered a NEEDS_REAUTH/ERROR item (no row for a
+  // brand-new item, which is already ACTIVE from the create above).
+  await setPlaidItemHealth(plaidItem.id, { status: PlaidItemStatus.ACTIVE, errorCode: null });
+
+  // OPS-3 S5 Wave 3 — a relink through Link update mode resolves an open
+  // SYNC_FAILED condition immediately (don't wait for the next sync): retire
+  // the :open key + archive the stale "needs attention" row. No-op for brand
+  // new items. Best-effort.
+  await retireItemSyncFailure(plaidItem.id);
 
   // 5. D2 Slice A — Connection dual-write (PLAID).
   // Upsert a Connection row keyed on (userId, provider=PLAID,
@@ -186,25 +240,11 @@ export async function performPlaidTokenExchange(
     const creditLimit      = acct.balances.limit ?? undefined;
 
     // ── Resolve FinancialAccount ──────────────────────────────────────────────
-    // 1. Exact match via ProviderAccountIdentity (D2 Step 3C) with legacy
-    //    plaidAccountId fallback (D2 Step 3C coverage gap handling).
+    // 1. PROV-2 — identity→legacy resolve via the canonical resolver (returns
+    //    soft-deleted rows too, so the restore branch below can revive them).
     // 2. Fingerprint match against archived accounts.
     // 3. Create new row if neither lookup finds anything.
-    const plaidIdentity = await db.providerAccountIdentity.findFirst({
-      where:   { provider: ProviderType.PLAID, externalAccountId: acct.account_id },
-      include: { financialAccount: true },
-    });
-
-    let fa = plaidIdentity?.financialAccount ?? null;
-
-    if (!fa) {
-      fa = await db.financialAccount.findUnique({ where: { plaidAccountId: acct.account_id } });
-      if (fa) {
-        console.warn(
-          `[plaid][D2-3C] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${acct.account_id}. Coverage gap; investigate before removing fallback.`,
-        );
-      }
-    }
+    let fa = await resolvePlaidAccountByExternalId(acct.account_id);
 
     if (fa) {
       fa = await db.financialAccount.update({
@@ -284,190 +324,83 @@ export async function performPlaidTokenExchange(
     // all three resolution branches above. Best-effort / non-fatal.
     await dualWriteProviderAccountIdentity(fa.id, ProviderType.PLAID, acct.account_id);
 
-    // ── KD-4 Phase 3 — AccountConnection upsert + SAL link commit atomically.
-    //    The FinancialAccount resolve/create/update above stays OUTSIDE this
-    //    transaction: resolveAccountByFingerprint() self-manages its own
-    //    interactive transaction (Phase 2) and must never be nested, and each
-    //    fa write there is a single atomic statement. The ProviderAccountIdentity
-    //    mirror write (above) is idempotent/non-fatal and also stays outside.
-    //    Fields are captured into locals so the closure doesn't rely on
-    //    control-flow narrowing of the `let fa`.
-    const faId = fa.id;
-    const faCreatorUserId = fa.createdByUserId ?? fa.ownerUserId;
-    await db.$transaction(async (tx) => {
-      const existingConn = await tx.accountConnection.findFirst({
-        where: {
-          financialAccountId: faId,
-          connectedByUserId:  userId,
-          plaidItemDbId:      plaidItem.id,
-        },
-      });
-
-      if (!existingConn) {
-        await tx.accountConnection.create({
-          data: {
-            financialAccountId: faId,
-            connectedByUserId:  userId,
-            plaidItemDbId:      plaidItem.id,
-            connectionId:       connectionId,
-            syncStatus:         "synced",
-            isCanonical:        true,
-          },
-        });
-      } else {
-        await tx.accountConnection.update({
-          where: { id: existingConn.id },
-          data: {
-            syncStatus:   "synced",
-            lastSyncedAt: new Date(),
-            deletedAt:    null,
-            ...(connectionId && !existingConn.connectionId && { connectionId }),
-          },
-        });
-      }
-
-      // D3 Stage B3 — SpaceAccountLink is the sole write target
-      await dualWriteSpaceAccountLink({
-        spaceId,
-        financialAccountId: faId,
-        creatorUserId:      faCreatorUserId,
-        client:             tx,
-        create: {
-          addedByUserId:   userId,
-          visibilityLevel: VisibilityLevel.FULL,
-          status:          ShareStatus.ACTIVE,
-        },
-        update: {
-          status:          ShareStatus.ACTIVE,
-          revokedAt:       null,
-          revokedByUserId: null,
-        },
-      });
+    // PROV-4 — AccountConnection + SpaceAccountLink, committed atomically per
+    // account, through the canonical spine writer shared with the Wallet route.
+    // The FinancialAccount resolve/create/update above stays OUTSIDE this
+    // transaction (resolveAccountByFingerprint self-manages its own; each fa
+    // write is a single atomic statement), and the ProviderAccountIdentity mirror
+    // (above) is idempotent/non-fatal and also stays outside — the boundary is
+    // unchanged from the hand-written version this replaces.
+    await persistAccountSpine({
+      financialAccountId: fa.id,
+      spaceId,
+      addedByUserId:      userId,
+      creatorUserId:      fa.createdByUserId ?? fa.ownerUserId,
+      connection: {
+        connectedByUserId: userId,
+        plaidItemDbId:     plaidItem.id,
+        connectionId,
+        syncStatus:        "synced",
+      },
     });
 
     importedIds.push(fa.id);
     imported++;
   }
 
-  // 8. Investment holdings — consent-gated (lib/plaid/investmentsConsent.ts).
-  // Link tokens request transactions only (see app/api/plaid/link-token/
-  // route.ts), so DTM Items arrive here without Investments consent: derive
-  // the state from the accountsGet payload already fetched above, seed
-  // PlaidItem.investmentsConsent (read by refresh + the future "Enable
-  // Investment Holdings" UI), and skip the guaranteed
-  // ADDITIONAL_CONSENT_REQUIRED call instead of making it.
+  // 8. Investment holdings — consent-gated. PROV-3: the whole ingest (consent
+  // derive+persist, holdings call, per-account observation→holdings→events,
+  // consent-error catch) is the shared syncInvestmentsForItem primitive, also
+  // used by refresh. At initial link storedConsent is the just-upserted item's
+  // value (null for a brand-new item → the primitive seeds it; a stored value on
+  // a re-link → the primitive change-detects). Link tokens request transactions
+  // only, so DTM items arrive without Investments consent and the primitive
+  // skips the guaranteed ADDITIONAL_CONSENT_REQUIRED call.
   const investmentAccounts = plaidAccounts.filter(
     (a) => mapAccountType(a.type, a.subtype) === AccountType.investment,
   );
-  let holdingsImported = 0;
+  const investmentsResult = await syncInvestmentsForItem({
+    accessToken:        access_token,
+    plaidItemId:        plaidItem.id,
+    institutionName:    institution_name,
+    investmentAccounts,
+    item:               accountsRes.data.item,
+    storedConsent:      plaidItem.investmentsConsent,
+  });
+  const holdingsImported = investmentsResult.holdingsSynced;
 
-  let investmentsConsent: PlaidInvestmentsConsent | null = null;
-  if (investmentAccounts.length > 0) {
-    investmentsConsent = deriveInvestmentsConsent(accountsRes.data.item);
-    if (investmentsConsent !== null) {
-      await db.plaidItem.update({
-        where: { id: plaidItem.id },
-        data:  { investmentsConsent },
-      });
-      if (investmentsConsent !== PlaidInvestmentsConsent.ENABLED) {
-        console.log(
-          `[plaid] institution "${institution_name}" — Investments consent ${investmentsConsent}; skipping holdings import`,
-        );
-      }
-    }
-  }
-  const holdingsCallable =
-    investmentsConsent === null || investmentsConsent === PlaidInvestmentsConsent.ENABLED;
-
-  if (investmentAccounts.length > 0 && holdingsCallable) {
-    try {
-      const holdingsRes = await plaidClient.investmentsHoldingsGet({ access_token });
-      const { holdings, securities } = holdingsRes.data;
-      const secById = Object.fromEntries(securities.map((s) => [s.security_id, s]));
-
-      for (const plaidAcct of investmentAccounts) {
-        const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
-        if (!acctHoldings.length) continue;
-
-        const holdingPlaidIdentity = await db.providerAccountIdentity.findFirst({
-          where:  { provider: ProviderType.PLAID, externalAccountId: plaidAcct.account_id },
-          select: { financialAccount: { select: { id: true } } },
-        });
-
-        let fa = holdingPlaidIdentity?.financialAccount ?? null;
-        if (!fa) {
-          fa = await db.financialAccount.findUnique({
-            where:  { plaidAccountId: plaidAcct.account_id },
-            select: { id: true },
-          });
-          if (fa) {
-            console.warn(
-              `[plaid][D2-3F] ProviderAccountIdentity miss, legacy plaidAccountId hit — financialAccountId=${fa.id} externalAccountId=${plaidAcct.account_id}. Coverage gap; investigate before removing fallback.`,
-            );
-          }
-        }
-        if (!fa) continue;
-
-        await db.holding.deleteMany({ where: { financialAccountId: fa.id } });
-
-        for (const h of acctHoldings) {
-          const sec = secById[h.security_id];
-          if (!sec || sec.type === "cash" || !sec.ticker_symbol) continue;
-
-          const currentPrice = h.institution_price ?? 0;
-          const prevClose    = sec.close_price ?? currentPrice;
-          const change24h    = prevClose > 0
-            ? parseFloat((((currentPrice - prevClose) / prevClose) * 100).toFixed(2))
-            : 0;
-
-          await db.holding.create({
-            data: {
-              financialAccountId: fa.id,
-              symbol:   sec.ticker_symbol,
-              name:     sec.name ?? sec.ticker_symbol,
-              quantity: h.quantity,
-              price:    currentPrice,
-              value:    h.institution_value ?? h.quantity * currentPrice,
-              change24h,
-            },
-          });
-          holdingsImported++;
-        }
-      }
-
-      // Unknown (pre-DTM) probe succeeded — remember it.
-      if (investmentsConsent === null) {
-        await db.plaidItem.update({
-          where: { id: plaidItem.id },
-          data:  { investmentsConsent: PlaidInvestmentsConsent.ENABLED },
-        });
-      }
-    } catch (holdingsErr) {
-      if (getPlaidErrorCode(holdingsErr) === "ADDITIONAL_CONSENT_REQUIRED") {
-        // Expected for Items linked without Investments consent — remember it
-        // so refresh never re-attempts until consent is granted.
-        await db.plaidItem.update({
-          where: { id: plaidItem.id },
-          data:  { investmentsConsent: PlaidInvestmentsConsent.CONSENT_REQUIRED },
-        });
-        console.log(
-          `[plaid] institution "${institution_name}" lacks Investments consent — holdings skipped until granted via Link update mode`,
-        );
-      } else {
-        console.warn(`[plaid] investmentsHoldingsGet failed (non-fatal): ${plaidErrorSummary(holdingsErr)}`);
-      }
-    }
-  }
-
-  // 9. Initial transaction sync — best-effort, non-fatal
+  // 9. Initial transaction sync.
+  //
+  // D2.x Slice 1 (fast-path split) — when deferHistorySync is set (the normal
+  // first-run Link flow, app/api/plaid/exchange-token/route.ts), the full
+  // 730-day history import is NOT awaited here: balances, holdings, and
+  // today's snapshot (step 9b) are already durable, so the function returns
+  // immediately and history completes out-of-band. Until Slice 2 attaches an
+  // after()/waitUntil background continuation, the standing daily sync-banks
+  // cron (vercel.json → /api/jobs/sync-banks) is the completion path — no
+  // manual Refresh required, just a delay. syncTransactionsForItem is
+  // untouched; this only chooses whether to await it here.
+  //
+  // When deferHistorySync is false (admin Expand History flow,
+  // exchange-expanded-history-token) behavior is unchanged: history is pulled
+  // inline — that is that flow's entire purpose, and it relies on the
+  // transactionsSynced count and the cursor set by syncTransactionsForItem.
   let txSync: { added: number; modified: number; removed: number } | null = null;
-  try {
-    txSync = await syncTransactionsForItem(plaidItem.id);
+  let historyPending = false;
+  if (deferHistorySync) {
+    historyPending = true;
     console.log(
-      `[plaid] initial transaction sync — ${txSync.added} added, ${txSync.modified} modified, ${txSync.removed} removed`,
+      `[plaid] initial transaction sync DEFERRED for item ${plaidItem.id} ("${institution_name}") — fast-path return; history completes out-of-band (cron until Slice 2)`,
     );
-  } catch (syncErr) {
-    console.warn("[plaid] initial transaction sync failed (non-fatal):", syncErr);
+  } else {
+    try {
+      txSync = await syncTransactionsForItem(plaidItem.id);
+      console.log(
+        `[plaid] initial transaction sync — ${txSync.added} added, ${txSync.modified} modified, ${txSync.removed} removed`,
+      );
+    } catch (syncErr) {
+      console.warn("[plaid] initial transaction sync failed (non-fatal):", syncErr);
+    }
   }
 
   // 9b. SpaceSnapshot regeneration — best-effort, non-fatal
@@ -507,6 +440,7 @@ export async function performPlaidTokenExchange(
     holdingsImported,
     transactionsSynced: txSync?.added ?? 0,
     plaidItemId:        plaidItem.id,
+    historyPending,
   };
 }
 

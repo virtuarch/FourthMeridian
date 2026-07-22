@@ -33,12 +33,34 @@
  * session user's context.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { getSpaceContext } from "@/lib/space";
-import { performPlaidTokenExchange, parsePlaidError } from "@/lib/plaid/exchangeToken";
+import { requireUser } from "@/lib/session";
+import { performPlaidTokenExchange, parsePlaidError, DuplicateInstitutionError } from "@/lib/plaid/exchangeToken";
+import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
+import { limitByUser } from "@/lib/rate-limit";
+
+// D2.x Slice 1 (fast-path split). This request returns as soon as the fast
+// slice is durable — token exchanged, accounts/balances persisted, holdings
+// attempted, today's snapshot written — and defers the full 730-day history
+// import out-of-band (see deferHistorySync below).
+//
+// D2.x Slice 2 (background continuation). That deferred history now runs via
+// after() below, in the SAME server invocation, after the response is sent.
+// after() work counts against maxDuration, so the budget is raised from the
+// fast-slice 30 to 60 (parity with the sync-banks cron) to give the background
+// syncTransactionsForItem room to complete. Anything exceeding this budget is
+// finished by the standing daily cron — no manual Refresh required.
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
+    // SEC-FIX-1 — this route authenticates via getSpaceContext(); add the
+    // shared guard so a forced-TOTP-enrolment-pending session is denied at
+    // the API layer (the page middleware never runs on /api/*).
+    const [, authErr] = await requireUser();
+    if (authErr) return authErr;
+
     const { public_token, institution_id, institution_name } = await req.json();
 
     if (!public_token || !institution_id || !institution_name) {
@@ -51,21 +73,60 @@ export async function POST(req: NextRequest) {
     // exchange-expanded-history-token instead of this endpoint.
     const { userId, spaceId } = await getSpaceContext();
 
+    // OPS-1 S4 — token exchange triggers a full import (Plaid API + heavy DB
+    // writes); a legitimate user links a handful of institutions, not dozens
+    // in fifteen minutes.
+    const limited = await limitByUser(userId, "plaid-exchange-token", { limit: 10, windowSec: 900 });
+    if (limited) return limited;
+
     const result = await performPlaidTokenExchange({
       userId,
       spaceId,
       public_token,
       institution_id,
       institution_name,
+      // D2.x Slice 1 — defer the full history import so this request returns
+      // once balances/holdings/snapshot are durable. Only this normal
+      // first-run flow defers; the admin Expand History flow does not.
+      deferHistorySync: true,
     });
+
+    // D2.x Slice 2 — schedule the deferred history import to run after this
+    // response is sent (post-response, same invocation). Fire-and-forget and
+    // best-effort: syncPlaidItemFromWebhook never throws, so a background
+    // failure can never affect the Link success returned below. Only gated on
+    // historyPending, so it never runs for a caller that synced inline.
+    //
+    // Goes through syncPlaidItemFromWebhook (the SAME syncLockedAt guard the
+    // webhook path uses), NOT runDeferredHistorySync directly: Plaid fires
+    // HOLDINGS/TRANSACTIONS webhooks within seconds of a connect, so the connect
+    // pipeline and a webhook pipeline could otherwise run the full pipeline
+    // concurrently against one item — racing PlaidItem.cursor and colliding on
+    // prisma.transaction.create() (the Amex 363-UPSERT_ERROR signature). With the
+    // shared lock, whichever fires first runs; the other is skipped-locked, and
+    // the in-flight run does the identical full work either way.
+    if (result.historyPending) {
+      after(() => syncPlaidItemFromWebhook(result.plaidItemId));
+    }
 
     return NextResponse.json({
       success:            true,
       imported:           result.imported,
       holdingsImported:   result.holdingsImported,
       transactionsSynced: result.transactionsSynced,
+      // Additive/optional. True when history is still arriving out-of-band so
+      // the client can message honestly ("balances ready, importing history")
+      // instead of treating a fast return as incomplete. Existing clients that
+      // ignore this field are unaffected.
+      historyPending:     result.historyPending ?? false,
     });
   } catch (err: unknown) {
+    // Duplicate connection to an already-connected institution — a clean 409 with
+    // a user-facing message (surfaced by the connect UI), not a Plaid error.
+    if (err instanceof DuplicateInstitutionError) {
+      console.warn(`[plaid] exchange-token: ${err.message}`);
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     const { message, status, code } = parsePlaidError(err, "Failed to connect account");
     console.error(`[plaid] exchange-token error (code: ${code ?? "unknown"}):`, message);
     return NextResponse.json({ error: message }, { status });

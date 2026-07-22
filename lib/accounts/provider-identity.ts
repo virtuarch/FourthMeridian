@@ -55,7 +55,13 @@ import { ProviderType } from "@prisma/client";
 export async function dualWriteProviderAccountIdentity(
   financialAccountId: string,
   provider: ProviderType,
-  externalAccountId: string
+  externalAccountId: string,
+  // Wallet Provider v1.5 — optional Connection linkage. When provided, the
+  // identity row is created pointing at / repointed to this Connection. When
+  // omitted (every pre-v1.5 caller, e.g. Plaid exchange-token), behavior is
+  // byte-identical to before: connectionId stays null on create and untouched
+  // on update. Passing `undefined` never clears an existing connectionId.
+  connectionId?: string | null
 ): Promise<void> {
   try {
     const existing = await db.providerAccountIdentity.findFirst({
@@ -64,22 +70,28 @@ export async function dualWriteProviderAccountIdentity(
 
     if (!existing) {
       await db.providerAccountIdentity.create({
-        data: { financialAccountId, connectionId: null, provider, externalAccountId },
+        data: { financialAccountId, connectionId: connectionId ?? null, provider, externalAccountId },
       });
       return;
     }
 
-    if (existing.externalAccountId !== externalAccountId) {
-      // Repoint — the account's external identifier changed (e.g. Plaid
-      // reissued account_id for this row on reconnect; see reconcile.ts's
-      // fingerprint-fallback header comment for the observed historical
-      // case). Update in place rather than delete-then-create: avoids a
-      // window where the (provider, externalAccountId) row briefly doesn't
-      // exist, and avoids any ordering question with the onDelete: Cascade
-      // FK back to FinancialAccount.
+    const needsExternal   = existing.externalAccountId !== externalAccountId;
+    // Only repoint the Connection when a caller actually supplied one and it
+    // differs — `undefined` is "don't care", not "set to null".
+    const needsConnection = connectionId !== undefined && existing.connectionId !== connectionId;
+
+    if (needsExternal || needsConnection) {
+      // Repoint in place rather than delete-then-create: avoids a window where
+      // the (provider, externalAccountId) row briefly doesn't exist, and avoids
+      // any ordering question with the onDelete: Cascade FK back to
+      // FinancialAccount. (externalAccountId drift originally seen when Plaid
+      // reissued account_id on reconnect — see reconcile.ts.)
       await db.providerAccountIdentity.update({
         where: { id: existing.id },
-        data:  { externalAccountId },
+        data:  {
+          ...(needsExternal   ? { externalAccountId }         : {}),
+          ...(needsConnection ? { connectionId: connectionId } : {}),
+        },
       });
     }
     // else: already correct — idempotent no-op.

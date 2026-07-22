@@ -58,7 +58,19 @@ export async function GET(req: NextRequest) {
           role:   true,
           status: true,
           space: {
-            select: { id: true, name: true, type: true, _count: { select: { accounts: true } } },
+            // Canonical per-space account count (A1): ACTIVE SpaceAccountLink
+            // rows with a live FinancialAccount (legacy `Space.accounts`
+            // undercounted). Reshaped back to `_count.accounts` in the response.
+            select: {
+              id: true, name: true, type: true,
+              _count: {
+                select: {
+                  accountLinks: {
+                    where: { status: "ACTIVE", financialAccount: { deletedAt: null } },
+                  },
+                },
+              },
+            },
           },
         },
         where: { status: "ACTIVE" },
@@ -80,6 +92,12 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     users: users.map((u) => ({
       ...u,
+      // Reshape canonical `accountLinks` back onto the stable `_count.accounts`
+      // response contract so the admin Users client is unchanged (A1).
+      spaces: u.spaces.map((m) => ({
+        ...m,
+        space: { ...m.space, _count: { accounts: m.space._count.accountLinks } },
+      })),
       recoveryCodesRemaining: unusedMap[u.id] ?? 0,
     })),
   });

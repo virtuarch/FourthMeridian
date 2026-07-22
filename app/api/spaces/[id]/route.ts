@@ -22,6 +22,7 @@ import { SpaceMemberRole } from "@prisma/client";
 import { db } from "@/lib/db";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
+import { parseReportingCurrencyInput } from "@/lib/spaces/reporting-currency";
 
 export const GET = withApiHandler(async (
   _req: NextRequest,
@@ -44,6 +45,21 @@ export const GET = withApiHandler(async (
 
   if (!space) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  // ── SP-2b Batch 3 — DOCUMENTED public-read exception (intentionally inline) ──
+  // This GET door is NOT a role/lifecycle gate, so it deliberately does NOT use
+  // requireSpaceAction. It is a read-VISIBILITY gate with three properties that
+  // requireSpaceAction cannot model, and must be preserved here:
+  //   1. Existence first — a missing Space returns 404 (above) BEFORE any auth
+  //      check; requireSpaceAction never emits 404 (it would 403 a missing
+  //      Space, collapsing the 404/403 distinction).
+  //   2. Public OR member — a PUBLIC Space is readable by anyone authenticated,
+  //      including non-members; requireSpaceAction 403s every non-member and has
+  //      no `isPublic` awareness, so it would break public-Space reads.
+  //   3. myRole derivation — the response carries the caller's role (or null for
+  //      a public non-member); requireSpaceAction returns no row for a public
+  //      non-member (it 403s first).
+  // See docs/initiatives/sp2/SP-2B_BATCH3_INVESTIGATION.md. Do NOT swap this for
+  // requireSpaceAction("space:read").
   const membership = await db.spaceMember.findUnique({ where: { spaceId_userId: { spaceId: id, userId: user.id } } });
   const isActiveMember = membership?.status === "ACTIVE";
   if (!space.isPublic && !isActiveMember) {
@@ -66,13 +82,29 @@ export const PATCH = withApiHandler(async (
   const { user, membership } = patchAuth;
 
   const body = await req.json();
-  const { name, description, isPublic, category, archivedAt } = body as {
-    name?:        string;
-    description?: string;
-    isPublic?:    boolean;
-    category?:    string;
-    archivedAt?:  string | null; // ISO string to archive, null to unarchive
+  const { name, description, isPublic, category, archivedAt, reportingCurrency } = body as {
+    name?:              string;
+    description?:       string;
+    isPublic?:          boolean;
+    category?:          string;
+    archivedAt?:        string | null; // ISO string to archive, null to unarchive
+    // MC1 Phase 3 Slice 1 — authoritative Space reporting currency. API-only
+    // field (the selector UI is Phase 4); allowlist-validated below; changes
+    // are FORWARD-ONLY by architecture (read-time conversion — nothing stored
+    // is rewritten). Nothing reads the value until the flip slices.
+    reportingCurrency?: string;
   };
+
+  // MC1 Phase 3 Slice 1 — validate against FX_BASE + SUPPORTED_QUOTES before
+  // any write; invalid input is a 400, never a silent default.
+  let resolvedReportingCurrency: string | undefined;
+  if (reportingCurrency !== undefined) {
+    const parsed = parseReportingCurrencyInput(reportingCurrency);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+    resolvedReportingCurrency = parsed.value;
+  }
 
   const existing = await db.space.findUnique({ where: { id } });
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -104,6 +136,7 @@ export const PATCH = withApiHandler(async (
       ...(isPublic    !== undefined && { isPublic }),
       ...(category    !== undefined && { category: category as never }),
       ...(archivedAt  !== undefined && { archivedAt: archivedAt ? new Date(archivedAt) : null }),
+      ...(resolvedReportingCurrency !== undefined && { reportingCurrency: resolvedReportingCurrency }),
     },
   });
 
@@ -114,7 +147,14 @@ export const PATCH = withApiHandler(async (
       action:      archivedAt !== undefined
         ? (archivedAt ? AuditAction.SPACE_ARCHIVED : AuditAction.SPACE_UNARCHIVED)
         : AuditAction.SPACE_UPDATE,
-      metadata:    { name: space.name, isPublic: space.isPublic, category },
+      metadata:    {
+        name: space.name, isPublic: space.isPublic, category,
+        // MC1 Phase 4 Slice 2 (plan D-4) — record currency changes with
+        // from/to; omitted entirely when the field wasn't part of this PATCH.
+        ...(resolvedReportingCurrency !== undefined && resolvedReportingCurrency !== existing.reportingCurrency
+          ? { reportingCurrency: { from: existing.reportingCurrency, to: resolvedReportingCurrency } }
+          : {}),
+      },
       ipAddress:   getClientIp(req),
     },
   });
