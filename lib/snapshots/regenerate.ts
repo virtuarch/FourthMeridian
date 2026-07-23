@@ -33,11 +33,14 @@
  */
 
 import { db } from "@/lib/db";
-import { getAccounts } from "@/lib/data/accounts";
+import {
+  readSpaceAccountsForSnapshot,
+  type SnapshotAccountsClient,
+} from "@/lib/snapshots/space-accounts";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { ShareStatus, PlaidInvestmentsConsent } from "@prisma/client";
+import { ShareStatus, PlaidInvestmentsConsent, type Prisma } from "@prisma/client";
 
 function todayUTC(): Date {
   const d = new Date();
@@ -46,15 +49,59 @@ function todayUTC(): Date {
 }
 
 /**
- * Recomputes and upserts today's SpaceSnapshot row for one space
- * from its current FinancialAccount balances (via getAccounts, the same
- * live data source the dashboard's "Banking" card already renders from).
+ * PS-1 — narrow injection seam for regenerateSpaceSnapshot, following the house
+ * pattern (lib/plaid/sync-lock.ts#PlaidItemSyncLockClient). Defaults to the
+ * shared Prisma client, so production behaviour is unchanged and every existing
+ * caller keeps its current two-argument signature.
+ *
+ * It exists so the background-authority test can EXECUTE this function against
+ * an in-memory fake rather than source-scan it. That distinction is the whole
+ * lesson of PS-1: CONN-3's own test asserted the snapshot call appeared in the
+ * webhook's source text, which it did — while throwing on every real
+ * invocation. Wiring assertions cannot catch a runtime dependency failure.
+ *
+ * It extends SnapshotAccountsClient so ONE injected object covers every query
+ * on the path. A seam that some queries honour and others bypass is worse than
+ * none: it reads as isolated while silently hitting the real database.
+ */
+export interface SpaceSnapshotClient extends SnapshotAccountsClient {
+  financialAccount: {
+    findMany(args: {
+      where:  Prisma.FinancialAccountWhereInput;
+      select: { id: true };
+    }): Promise<Array<{ id: string }>>;
+  };
+  space: {
+    findUnique(args: {
+      where:  Prisma.SpaceWhereUniqueInput;
+      select: { reportingCurrency: true };
+    }): Promise<{ reportingCurrency: string } | null>;
+  };
+  spaceSnapshot: {
+    upsert(args: Prisma.SpaceSnapshotUpsertArgs): Promise<unknown>;
+  };
+}
+
+/**
+ * Recomputes and upserts today's SpaceSnapshot row for one space from its
+ * current FinancialAccount balances.
+ *
+ * PS-1 — the account read is the SYSTEM authority
+ * (lib/snapshots/space-accounts.ts), not the viewer-scoped
+ * getAccounts()/getSpaceContext() path this used to borrow. That borrowing is
+ * what made this function throw "Not authenticated — no active session" on
+ * every Plaid-webhook and cron invocation while silently succeeding on request
+ * paths. The new read returns the same rows with the same values in the same
+ * order (see that module's header for the field-level identity argument), so
+ * this computation is unchanged — it simply no longer depends on a session
+ * that background execution has no reason to possess.
  */
 export async function regenerateSpaceSnapshot(
   spaceId: string,
   date: Date = todayUTC(),
+  client: SpaceSnapshotClient = db,
 ): Promise<void> {
-  const accounts = await getAccounts({ spaceId });
+  const accounts = await readSpaceAccountsForSnapshot(spaceId, client);
 
   // Part-B — exclude investment accounts still pending Investments consent
   // (CONSENT_REQUIRED): holdings were never fetched, so there is no real
@@ -70,7 +117,7 @@ export async function regenerateSpaceSnapshot(
   if (accounts.length > 0) {
     const gated = new Set(
       (
-        await db.financialAccount.findMany({
+        await client.financialAccount.findMany({
           where: {
             id:          { in: accounts.map((a) => a.id) },
             type:        "investment",
@@ -110,7 +157,7 @@ export async function regenerateSpaceSnapshot(
   // this is numerically identical to the Phase 2 identity behavior
   // (equivalence gates); non-USD rows now convert for real at the latest
   // close, degrading per D-3 (native + estimated) when a rate is missing.
-  const space = await db.space.findUnique({
+  const space = await client.space.findUnique({
     where:  { id: spaceId },
     select: { reportingCurrency: true },
   });
@@ -146,7 +193,7 @@ export async function regenerateSpaceSnapshot(
   // written to snapshots (approved D-7; Phase 4 open item).
   const reportingCurrency = space.reportingCurrency;
 
-  await db.spaceSnapshot.upsert({
+  await client.spaceSnapshot.upsert({
     where: { spaceId_date: { spaceId, date } },
     create: {
       spaceId, date,
@@ -188,6 +235,44 @@ export async function regenerateSnapshotsForAccounts(
   });
 
   const spaceIds = [...new Set(links.map((l) => l.spaceId))];
-  await Promise.all(spaceIds.map((id) => regenerateSpaceSnapshot(id)));
+
+  // PS-1 containment — SEQUENTIAL, not Promise.all.
+  //
+  // Until PS-1 this loop never actually ran to completion in background
+  // execution: regenerateSpaceSnapshot threw inside its account read before
+  // doing any snapshot work. Fixing that authority bug REACTIVATES real work
+  // here — on the webhook and cron paths, and in jobs/sync-banks.ts once per
+  // PlaidItem. Fanning that reactivated load out concurrently would add
+  // simultaneous connection demand at exactly the moments production is
+  // already tightest.
+  //
+  // Nothing is waiting on this: it runs after the response (webhook `after()`)
+  // or inside a cron, so serial costs latency nobody observes and saves
+  // concurrency that is genuinely scarce. Per-space results are independent —
+  // each upserts its own (spaceId, date) row — so ordering changes no output.
+  //
+  // This is containment of the load PS-1 reactivates, NOT a capacity fix.
+  // Pool sizing, connection limits and the wider concurrency picture are PS-2;
+  // no other fan-out site was touched.
+  //
+  // ERROR SEMANTICS ARE PRESERVED EXACTLY. Promise.all starts every element and
+  // rejects with the FIRST rejection — a failure on one space does not stop the
+  // others from completing. A bare `for … await` would instead abandon every
+  // remaining space at the first throw, which is a real behaviour change: fewer
+  // spaces would be regenerated than before. So each space is attempted
+  // independently and the first error is re-thrown after the loop, giving
+  // callers the same "all attempted, first error propagates" contract with none
+  // of the concurrency.
+  let firstError: unknown;
+  let failed = false;
+  for (const id of spaceIds) {
+    try {
+      await regenerateSpaceSnapshot(id);
+    } catch (e) {
+      if (!failed) { firstError = e; failed = true; }
+    }
+  }
+  if (failed) throw firstError;
+
   return spaceIds;
 }
