@@ -59,6 +59,16 @@ export function BottomNav() {
             <Link
               key={d.id}
               href={d.href}
+              // PS-6D prefetch containment — BottomNav is the ONE nav that stays
+              // rendered during a Space mount on mobile (the desktop sidebar is in
+              // SpaceMode then, so its global links are absent). Default viewport
+              // prefetch would fire a full-context RSC render of all five sibling
+              // routes (each re-running the shell layout's getSpaceContext)
+              // concurrent with the Space mount — the exact authority fan-out
+              // PS-4B tied to the P2024 incident. `false` drops only the eager
+              // viewport prefetch; tap navigation (and touch/hover prefetch) is
+              // unchanged, so this contains the mount burst without a UX loss.
+              prefetch={false}
               aria-current={on ? "true" : undefined}
               aria-label={d.label}
               className="flex flex-1 flex-col items-center justify-center gap-1"
