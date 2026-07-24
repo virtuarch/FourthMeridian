@@ -9,6 +9,12 @@ import { AuthCard, AuthHeader, AuthFooter, AuthButton, AuthCallout } from "@/com
 import { Field, Input, PasswordField, OtpInput } from "@/components/atlas/fields";
 import { InlineBanner } from "@/components/atlas/InlineBanner";
 import { TurnstileWidget } from "@/components/ui/TurnstileWidget";
+import {
+  classifyPreLoginResponse,
+  classifySignInError,
+  LOGIN_MESSAGES,
+  AUTH_UNAVAILABLE_TOKEN,
+} from "@/lib/auth/login-outcome";
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
@@ -32,9 +38,14 @@ function LoginForm() {
 
   // UI state
   const [step,    setStep]    = useState<Step>("credentials");
-  const [error,   setError]   = useState(() =>
-    searchParams.get("error") ? "Invalid email, username, or password." : ""
-  );
+  // NextAuth redirect-error flow (pages.error → /login?error=…). We use
+  // redirect:false everywhere below, so this is an edge path, but keep it
+  // honest: an authority-unavailable sentinel must not read as invalid creds.
+  const [error,   setError]   = useState(() => {
+    const e = searchParams.get("error");
+    if (!e) return "";
+    return e.includes(AUTH_UNAVAILABLE_TOKEN) ? LOGIN_MESSAGES.unavailable : LOGIN_MESSAGES.invalid;
+  });
   const [notice,  setNotice]  = useState(() => {
     if (searchParams.get("registered") === "true") return "Account created! Sign in below.";
     if (searchParams.get("reset")      === "true") return "Password updated. Sign in with your new password.";
@@ -117,64 +128,83 @@ function LoginForm() {
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ identifier: identifier.toLowerCase().trim(), password }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+
+      // PS-4A — classify by (HTTP status, body), NOT by `data.ok` alone. This is
+      // the fix: an infrastructure response (503, or reason:"unavailable") and a
+      // rate-limit response (429) are recognised BEFORE the generic bad-credentials
+      // fallback, so neither is ever shown as invalid credentials.
+      const decision = classifyPreLoginResponse(res.status, data);
 
       // Reflect the server's CAPTCHA step-up hint (present on ok + bad-creds
-      // responses). Once true, the widget renders on the credentials step.
-      setCaptchaRequired(!!(TURNSTILE_SITE_KEY && data.captchaRequired));
+      // responses; absent on unavailable/rate-limited). Once true, the widget
+      // renders on the credentials step.
+      const decisionCaptcha =
+        decision.kind === "continue" || decision.kind === "invalid" ? decision.captchaRequired : false;
+      setCaptchaRequired(!!(TURNSTILE_SITE_KEY && decisionCaptcha));
 
-      if (!data.ok) {
-        // Deactivated account (OPS-2 S4): a correct password on a deactivated
-        // account returns reason:"deactivated" — offer explicit reactivation.
-        // Password is deliberately KEPT in state: the reactivate button
-        // re-submits it through the normal signIn flow.
-        // Pending deletion (OPS-2 S7b): a correct password on a pending-deletion
-        // account returns reason:"pending_deletion" — offer explicit cancellation
-        // (handled by the S7a cancelDeletion login leg). Checked before the
-        // deactivated branch since a pending account is also deactivated.
-        if (data.reason === "pending_deletion") {
-          setPendingDeletionOffer({ totpRequired: !!data.totpRequired });
+      switch (decision.kind) {
+        case "unavailable":
+          // Infrastructure failure — truthful message, password kept so a retry
+          // needs no re-typing.
+          setError(LOGIN_MESSAGES.unavailable);
           setLoading(false);
           return;
-        }
-        if (data.reason === "deactivated") {
-          setReactivateOffer({ totpRequired: !!data.totpRequired });
+
+        case "rate_limited":
+          setError(LOGIN_MESSAGES.rateLimited);
           setLoading(false);
           return;
-        }
-        // Block mode (OPS-1 S2e): a correct password on an unverified account
-        // returns reason:"unverified" — show a clear instruction and point at
-        // the resend affordance below, rather than the generic error.
-        setError(
-          data.reason === "unverified"
-            ? "Please verify your email before signing in. Check your inbox, or resend the verification email below."
-            : "Invalid email, username, or password."
-        );
-        setPassword("");
-        setLoading(false);
-        return;
-      }
 
-      // CAPTCHA step-up: if required and not yet solved, hold on the credentials
-      // step and render the widget — solving it must happen before we advance to
-      // TOTP or call signIn (authorize() re-verifies the token server-side).
-      if (TURNSTILE_SITE_KEY && data.captchaRequired && !captchaToken) {
-        setError("Please complete the verification below, then sign in again.");
-        setLoading(false);
-        return;
-      }
+        case "pending_deletion":
+          // A correct password on a pending-deletion account — offer explicit
+          // cancellation (S7a cancelDeletion leg). Password KEPT in state.
+          setPendingDeletionOffer({ totpRequired: decision.totpRequired });
+          setLoading(false);
+          return;
 
-      if (data.totpRequired) {
-        // Show TOTP screen — identifier + password stay in state
-        setStep("totp");
-        setLoading(false);
-        return;
-      }
+        case "deactivated":
+          // A correct password on a deactivated account — offer reactivation.
+          setReactivateOffer({ totpRequired: decision.totpRequired });
+          setLoading(false);
+          return;
 
-      // No TOTP — complete login directly
-      await completeSignIn({ identifier, password });
+        case "unverified":
+          // Block mode (OPS-1 S2e): correct password, unverified email.
+          setError(LOGIN_MESSAGES.unverified);
+          setPassword("");
+          setLoading(false);
+          return;
+
+        case "invalid":
+          setError(LOGIN_MESSAGES.invalid);
+          setPassword("");
+          setLoading(false);
+          return;
+
+        case "continue":
+          // Password accepted — advance the flow.
+          // CAPTCHA step-up: if required and not yet solved, hold on the
+          // credentials step and render the widget — solving it must happen
+          // before we advance to TOTP or call signIn (authorize() re-verifies).
+          if (TURNSTILE_SITE_KEY && decision.captchaRequired && !captchaToken) {
+            setError("Please complete the verification below, then sign in again.");
+            setLoading(false);
+            return;
+          }
+          if (decision.totpRequired) {
+            // Show TOTP screen — identifier + password stay in state
+            setStep("totp");
+            setLoading(false);
+            return;
+          }
+          // No TOTP — complete login directly
+          await completeSignIn({ identifier, password });
+          return;
+      }
     } catch {
-      setError("Something went wrong. Try again.");
+      // Network/parse failure reaching pre-login — not a credential judgement.
+      setError(LOGIN_MESSAGES.unavailable);
       setLoading(false);
     }
   }
@@ -263,14 +293,23 @@ function LoginForm() {
     setLoading(false);
 
     if (result?.error) {
-      if (step === "totp") {
-        setError("Incorrect code. Check your authenticator app.");
+      // PS-4A — authorize() throws the AUTH_UNAVAILABLE_TOKEN sentinel when the
+      // credential AUTHORITY is unreachable (vs returning null for a genuine
+      // rejection). classifySignInError maps that to `unavailable`, never to the
+      // credential/TOTP message. (See the NextAuth-limitation note in
+      // lib/auth/login-outcome.ts: pre-login already catches the common case.)
+      const kind = classifySignInError(result.error, step);
+      if (kind === "unavailable") {
+        setError(LOGIN_MESSAGES.unavailable);
+        // Password kept — a retry needs no re-typing.
+      } else if (kind === "totp_invalid") {
+        setError(LOGIN_MESSAGES.totpInvalid);
         setTotpCode("");
-      } else if (step === "recovery") {
-        setError("Recovery code is invalid or already used.");
+      } else if (kind === "recovery_invalid") {
+        setError(LOGIN_MESSAGES.recoveryInvalid);
         setRecoveryCode("");
       } else {
-        setError("Invalid email, username, or password.");
+        setError(LOGIN_MESSAGES.invalid);
         setPassword("");
       }
       // Turnstile tokens are single-use — refresh the challenge before a retry.

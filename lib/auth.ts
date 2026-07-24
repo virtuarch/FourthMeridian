@@ -35,7 +35,9 @@ import { createNotification } from "@/lib/notifications/create";
 import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
 import { getCachedRevocation, setCachedRevocation, invalidateSession } from "@/lib/session-cache";
-import { limitByKey, peekKey } from "@/lib/rate-limit";
+import { checkKeyLimitStrict, peekKey } from "@/lib/rate-limit";
+import { captureAuthInfraFailure } from "@/lib/monitoring/capture";
+import { AUTH_UNAVAILABLE_TOKEN } from "@/lib/auth/login-outcome";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { LOGIN_ID_WINDOW_SEC, LOGIN_ID_LIMIT, LOGIN_CAPTCHA_THRESHOLD } from "@/lib/login-limits";
 import { reportLoginFailureAnomalies } from "@/lib/security/anomaly-alerts";
@@ -72,17 +74,27 @@ async function recordLoginFailure(args: {
   userEmail?: string | null;
 }): Promise<void> {
   const { reason, identifier, ipAddress, userAgent, userId, role, userEmail } = args;
-  await db.auditLog.create({
-    data: {
-      ...(userId ? { userId } : {}),
-      action:    AuditAction.LOGIN_FAILED,
-      ipAddress,
-      userAgent,
-      metadata:  { identifier, reason, ...(role ? { role } : {}) },
-    },
-  });
-  if (ANOMALY_SUSPICIOUS_REASONS.has(reason)) {
-    await reportLoginFailureAnomalies({ identifier, ip: ipAddress, reason, userId, userEmail });
+  // PS-4A — BEST-EFFORT. The auth DECISION (valid vs invalid) is always made
+  // before this is called; a failed audit write must never flip that decision
+  // or, worse, propagate as an exception that authorize()'s infra-guard would
+  // then misclassify as "authority unavailable". So this swallows its own
+  // errors: a genuine invalid_password stays invalid even if the DB is
+  // struggling. (The write is still attempted; only its failure is contained.)
+  try {
+    await db.auditLog.create({
+      data: {
+        ...(userId ? { userId } : {}),
+        action:    AuditAction.LOGIN_FAILED,
+        ipAddress,
+        userAgent,
+        metadata:  { identifier, reason, ...(role ? { role } : {}) },
+      },
+    });
+    if (ANOMALY_SUSPICIOUS_REASONS.has(reason)) {
+      await reportLoginFailureAnomalies({ identifier, ip: ipAddress, reason, userId, userEmail });
+    }
+  } catch (err) {
+    console.error("[auth] recordLoginFailure write failed (non-fatal):", err);
   }
 }
 
@@ -140,8 +152,19 @@ export const authOptions: NextAuthOptions = {
         // reject a legitimate attempt the client couldn't have tokenized).
         const priorAttempts = await peekKey(identifier, "login-id", LOGIN_ID_WINDOW_SEC);
 
-        const idLimited = await limitByKey(identifier, "login-id", { limit: LOGIN_ID_LIMIT, windowSec: LOGIN_ID_WINDOW_SEC });
-        if (idLimited) return null;
+        // PS-4A — FAIL CLOSED. The limiter is the authoritative increment for the
+        // login-id bucket. If its store is unreachable we must NOT verify the
+        // password with brute-force protection disabled: throw the
+        // authority-unavailable sentinel (translated by the client to the
+        // temporary-unavailability message), NOT return null (which NextAuth
+        // reads as a credential rejection). A genuine over-limit still denies via
+        // return null, exactly as before.
+        const idLimit = await checkKeyLimitStrict(identifier, "login-id", { limit: LOGIN_ID_LIMIT, windowSec: LOGIN_ID_WINDOW_SEC });
+        if (idLimit.status === "unavailable") {
+          captureAuthInfraFailure("rate-limit", new Error("authorize rate-limit store unavailable"));
+          throw new Error(AUTH_UNAVAILABLE_TOKEN);
+        }
+        if (idLimit.status === "limited") return null;
 
         // ── CAPTCHA step-up (Wave 2 ⑥) ────────────────────────────────────────
         // Past the per-identifier threshold, a valid Turnstile token is required.
@@ -160,15 +183,27 @@ export const authOptions: NextAuthOptions = {
         const adminDisabled = process.env.DISABLE_SYSTEM_ADMIN === "true";
 
         // ── Look up user by email OR username ─────────────────────────────────
-        const user = await db.user.findFirst({
-          where: {
-            OR: [
-              { email:    identifier },
-              { username: identifier },
-            ],
-          },
-          select: { id: true, email: true, name: true, username: true, passwordHash: true, role: true, totpEnabled: true, totpSecret: true, emailVerifiedAt: true, deactivatedAt: true, deletionScheduledAt: true, deletionRequestedAt: true },
-        });
+        // PS-4A — the credential AUTHORITY. A throw here (Prisma pool timeout —
+        // P2024 / ECHECKOUTTIMEOUT) means we could not CONSULT the authority; it
+        // is NOT "wrong password". Convert it to the authority-unavailable
+        // sentinel (capture once) instead of letting a raw Prisma error surface
+        // as a generic CredentialsSignin the client reads as invalid credentials.
+        const user = await (async () => {
+          try {
+            return await db.user.findFirst({
+              where: {
+                OR: [
+                  { email:    identifier },
+                  { username: identifier },
+                ],
+              },
+              select: { id: true, email: true, name: true, username: true, passwordHash: true, role: true, totpEnabled: true, totpSecret: true, emailVerifiedAt: true, deactivatedAt: true, deletionScheduledAt: true, deletionRequestedAt: true },
+            });
+          } catch (err) {
+            captureAuthInfraFailure("user-lookup", err);
+            throw new Error(AUTH_UNAVAILABLE_TOKEN);
+          }
+        })();
 
         if (!user || !user.passwordHash) {
           // Log failed attempt — no userId because user may not exist. No owner
@@ -272,13 +307,25 @@ export const authOptions: NextAuthOptions = {
         // skips even that DB read for admins (mandatory regardless).
         let requireTotpSetup = false;
         if (!user.totpEnabled) {
-          const requireTotpAllUsers =
-            user.role === UserRole.SYSTEM_ADMIN
-              ? false // not consulted for admins — enrolment is mandatory
-              : (await db.platformSetting.findUnique({
-                  where:  { key: PlatformSettingKey.REQUIRE_TOTP_ALL_USERS },
-                  select: { value: true },
-                }))?.value === "true";
+          // PS-4A — this DB read gates whether a non-admin is forced into TOTP
+          // enrolment. A throw here is infrastructure, and the password has
+          // already been VERIFIED at this point, so treating it as a credential
+          // rejection would be doubly wrong. Convert to the authority-unavailable
+          // sentinel (capture once) so a settings-read outage is truthful, not a
+          // silent bypass of the enrolment gate.
+          let requireTotpAllUsers: boolean;
+          try {
+            requireTotpAllUsers =
+              user.role === UserRole.SYSTEM_ADMIN
+                ? false // not consulted for admins — enrolment is mandatory
+                : (await db.platformSetting.findUnique({
+                    where:  { key: PlatformSettingKey.REQUIRE_TOTP_ALL_USERS },
+                    select: { value: true },
+                  }))?.value === "true";
+          } catch (err) {
+            captureAuthInfraFailure("totp-config", err);
+            throw new Error(AUTH_UNAVAILABLE_TOKEN);
+          }
 
           requireTotpSetup = requiresTotpEnrollment({
             role:        user.role,

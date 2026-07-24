@@ -159,6 +159,84 @@ async function enforce(key: string, cfg: RateLimitConfig): Promise<NextResponse 
   return tooManyRequests(outcome.retryAfterSec);
 }
 
+// ── Strict (fail-CLOSED) variant for authentication paths (PS-4A) ──────────────
+//
+// enforce() above FAILS OPEN: on a store error it returns null (not limited) so
+// an ordinary endpoint stays up during a rate-limit outage. That is the correct
+// default for most endpoints, but it is the WRONG policy for login: failing open
+// there silently removes brute-force protection during exactly the window an
+// attacker would exploit.
+//
+// The authentication paths instead need to know the difference between
+// "checked, not limited", "checked, limited", and "could not check". This
+// variant surfaces that as a discriminated verdict WITHOUT swallowing the store
+// error, so the caller can STOP the attempt and return temporary-unavailability
+// (see app/api/auth/pre-login + lib/auth.ts authorize). It does not itself
+// perform credential verification — it only reports.
+//
+// It still honours RATE_LIMIT_ENABLED (disabled ⇒ "ok", no DB call) and
+// RATE_LIMIT_SHADOW (would-block is logged, reported as "ok"). A genuine store
+// failure is reported as "unavailable" regardless of shadow, because the store
+// being unreachable is an infrastructure fact, not a limit decision.
+
+export type LimitVerdict =
+  | { status: "ok" }
+  | { status: "limited"; retryAfterSec: number }
+  | { status: "unavailable" };
+
+/**
+ * `runCheck` is an injection seam (house pattern, cf. sync-lock) so tests can
+ * execute the fail-closed branch deterministically without a live DB — the
+ * store backend is production-gated, so the real `check` never throws in test.
+ * Production callers use the default.
+ */
+export async function checkStrict(
+  key: string,
+  cfg: RateLimitConfig,
+  runCheck: (k: string, c: RateLimitConfig) => Promise<RateLimitOutcome> = check,
+): Promise<LimitVerdict> {
+  if (!isEnabled()) return { status: "ok" };
+
+  let outcome: RateLimitOutcome;
+  try {
+    outcome = await runCheck(key, cfg);
+  } catch (err) {
+    // FAIL CLOSED: do not proceed to credential verification without a working
+    // limiter. The caller maps this to HTTP 503 + an operational capture.
+    console.error("[rate-limit] store error — auth path failing CLOSED (unavailable):", err);
+    return { status: "unavailable" };
+  }
+
+  if (!outcome.limited) return { status: "ok" };
+
+  if (isShadow()) {
+    console.warn(`[rate-limit] SHADOW would-block key=${key} limit=${cfg.limit}/${cfg.windowSec}s`);
+    return { status: "ok" };
+  }
+
+  console.warn(`[rate-limit] BLOCK key=${key} limit=${cfg.limit}/${cfg.windowSec}s retryAfter=${outcome.retryAfterSec}s`);
+  return { status: "limited", retryAfterSec: outcome.retryAfterSec };
+}
+
+/**
+ * Strict per-IP check for authentication endpoints (fail-closed). Increments the
+ * same fixed-window bucket as limitByIp for the given `(name, ip)`, so it is a
+ * drop-in for the limiter call in a login route — the only difference is the
+ * return shape and the failure policy.
+ */
+export function checkIpLimitStrict(req: Request, name: string, cfg: RateLimitConfig): Promise<LimitVerdict> {
+  return checkStrict(`ip:${name}:${getClientIp(req)}`, cfg);
+}
+
+/**
+ * Strict composite-key check for authentication contexts without a Request
+ * object (the NextAuth authorize() callback keys on the submitted identifier).
+ * Mirrors limitByKey's bucket; fail-closed return shape.
+ */
+export function checkKeyLimitStrict(key: string, name: string, cfg: RateLimitConfig): Promise<LimitVerdict> {
+  return checkStrict(`key:${name}:${key}`, cfg);
+}
+
 // ── Key helpers ───────────────────────────────────────────────────────────────
 
 /**

@@ -43,12 +43,16 @@ check(
 const auth = src("lib/auth.ts");
 const authorizeBody = auth.slice(auth.indexOf("async authorize"));
 check(
-  "authorize() applies a per-identifier limit",
-  authorizeBody.includes('limitByKey(identifier, "login-id"'),
+  // PS-4A — the per-identifier limiter is now the FAIL-CLOSED strict variant
+  // (checkKeyLimitStrict) so a limiter outage stops the attempt instead of
+  // silently disabling brute-force protection. Still per-identifier, still the
+  // "login-id" bucket.
+  "authorize() applies a per-identifier limit (fail-closed strict)",
+  authorizeBody.includes('checkKeyLimitStrict(identifier, "login-id"'),
 );
 check(
   "identifier limit runs BEFORE the user lookup",
-  authorizeBody.indexOf('limitByKey(identifier, "login-id"') <
+  authorizeBody.indexOf('checkKeyLimitStrict(identifier, "login-id"') <
     authorizeBody.indexOf("db.user.findFirst"),
 );
 
@@ -66,7 +70,7 @@ const surfaces: [string, string][] = [
   ["app/api/plaid/exchange-token/route.ts",     'limitByUser(userId, "plaid-exchange-token"'],
   ["app/api/plaid/refresh/route.ts",            'limitByUser(user.id, "plaid-refresh"'],
   ["app/api/plaid/sync/route.ts",               'limitByUser(user.id, "plaid-sync"'],
-  ["app/api/auth/pre-login/route.ts",           'limitByIp(req, "pre-login"'],
+  ["app/api/auth/pre-login/route.ts",           'checkIpLimitStrict(req, "pre-login"'], // PS-4A fail-closed
   ["app/api/health/route.ts",                   'limitByIp(req, "health"'],
 ];
 for (const [file, needle] of surfaces) {
