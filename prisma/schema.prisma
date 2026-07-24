@@ -2676,6 +2676,83 @@ model JobRun {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// RefreshExecution / RefreshEndpointResult  (DF-2A — Canonical Refresh
+// Execution Authority)
+//
+// The per-ITEM refresh execution ledger. JobRun (above) records one row per
+// scheduled BATCH (the nightly sync-banks run); it cannot answer "for THIS
+// connection's refresh, what was attempted, what succeeded, what failed, what
+// changed, and how long did it take?" — the manual per-item Refresh, the
+// webhook, and the reconnect syncs write no JobRun at all. This pair captures
+// that per-item grain: one immutable RefreshExecution per refresh invocation,
+// one immutable RefreshEndpointResult per stage it attempted.
+//
+// IMMUTABILITY (the runJob idiom): written through ONE chokepoint
+// (lib/plaid/refresh-execution.ts). A start row is created "RUNNING"; exactly
+// ONE completion write sets completedAt/durationMs/overallStatus/errorSummary.
+// Historical facts are NEVER rewritten to reflect later freshness, pricing, or
+// connection state — corrections belong in a LATER execution, not a mutation.
+// Ledger writes are best-effort/non-throwing: a telemetry failure must never
+// turn a successful provider refresh into a customer-visible provider failure.
+//
+// STRINGS, NOT DB ENUMS (the JobRun idiom): trigger/profile/overallStatus and
+// the child endpoint/status/skipReason are Strings, with TypeScript
+// string-union types in lib/plaid/refresh-execution-types.ts — adding a trigger
+// (WEBHOOK), a profile, or a stage (LIABILITIES) must not require a migration.
+//
+// SOFT REFERENCES, NO FKs (the JobRun/SyncIssue idiom): plaidItemId and
+// parentJobRunId are plain indexed Strings, so the ledger SURVIVES deletion of
+// the item or batch it observed — historical evidence is never cascade-deleted.
+//
+// FACTS, NOT POLICY: counts, timing, covered accounts. No dollar cost, tier, or
+// user-facing freshness label — those are downstream derivations (DF-2D+).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RefreshExecution {
+  id             String    @id @default(cuid())
+  runId          String    @unique // first-class run correlator; stamped into SyncIssue.detail.runId and (later) provider-usage rows
+  plaidItemId    String // soft reference (no FK) — ledger survives item deletion
+  trigger        String // "MANUAL" | "CRON" | "RECONNECT" | "WEBHOOK" | "ADMIN"
+  profile        String // "FULL_REFRESH" | "RECONNECT"
+  startedAt      DateTime
+  completedAt    DateTime? // set by the single completion write
+  durationMs     Int? // wall-clock, set at completion
+  overallStatus  String // "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "SKIPPED" — derived from child results
+  parentJobRunId String? // soft ref to JobRun.id when this refresh ran under a batch (cron); null for standalone manual
+  errorSummary   String? // truncated message only (no stack), set when overallStatus != SUCCEEDED
+  createdAt      DateTime  @default(now())
+
+  endpoints RefreshEndpointResult[]
+
+  @@index([plaidItemId, startedAt]) // "recent refreshes of this connection"
+  @@index([overallStatus, startedAt]) // failure / partial scans
+  @@index([parentJobRunId]) // executions under a batch
+}
+
+model RefreshEndpointResult {
+  id                 String           @id @default(cuid())
+  refreshExecutionId String
+  execution          RefreshExecution @relation(fields: [refreshExecutionId], references: [id], onDelete: Cascade)
+  endpoint           String // stage: "TRANSACTIONS" | "BALANCES" | "HOLDINGS" | "INVESTMENT_ACTIVITY" | "SNAPSHOT" | "RECONCILIATION"
+  stageKind          String // "PROVIDER" (a live provider endpoint) | "DERIVED" (a projection/derived stage) — disambiguates the mixed vocabulary
+  status             String // "SUCCEEDED" | "FAILED" | "SKIPPED"
+  skipReason         String? // "NOT_APPLICABLE" | "BUDGET" | "IN_FLIGHT" | "COOLDOWN" — set only when status = "SKIPPED"
+  startedAt          DateTime
+  completedAt        DateTime?
+  durationMs         Int?
+  recordsRead        Int?
+  recordsWritten     Int?
+  recordsChanged     Int?
+  coveredAccountIds  String[] // stable canonical FinancialAccount ids this stage covered — endpoint-grained coverage, NOT one-provider-request-per-account
+  freshnessAdvanced  Boolean? // did this stage change canonical data (recordsChanged > 0)?
+  errorSummary       String?
+  createdAt          DateTime         @default(now())
+
+  @@index([refreshExecutionId])
+  @@index([endpoint, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MerchantMergeDecision (MI2 S2 — Merchant Merge Review Queue)
 // The durable record of a HUMAN verdict on one candidate merchant pair.
 // Suggestions are NEVER persisted — the detector (lib/transactions/

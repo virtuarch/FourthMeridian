@@ -21,7 +21,12 @@ import { db } from "@/lib/db";
 import { withApiHandler, getClientIp } from "@/lib/api";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
-import { refreshPlaidItem, refreshAllActiveItemsForUser, type RefreshSummary, type RefreshItemResult } from "@/lib/plaid/refresh";
+import { refreshAllActiveItemsForUser, type RefreshSummary, type RefreshItemResult } from "@/lib/plaid/refresh";
+// DF-2A — the single-item manual refresh runs under the canonical execution
+// authority (opens one immutable RefreshExecution, persists per-stage results,
+// derives overall status). Behavior/return value are unchanged; telemetry is
+// best-effort and never breaks the refresh.
+import { runFullRefresh } from "@/lib/plaid/refresh-execution";
 import { classifyPlaidErrorForHealth, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
@@ -74,7 +79,9 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     // user who connects and immediately hits Refresh used to race their own
     // background import.
     try {
-      const lockResult = await withPlaidItemSyncLock(item.id, () => refreshPlaidItem(item.id));
+      const lockResult = await withPlaidItemSyncLock(item.id, () =>
+        runFullRefresh({ itemId: item.id, trigger: "MANUAL", profile: "FULL_REFRESH" }),
+      );
       if (!lockResult.ok) {
         return NextResponse.json({ error: "in-flight" }, { status: 409 });
       }

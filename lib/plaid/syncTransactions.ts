@@ -193,6 +193,14 @@ export class PlaidSyncIncompleteError extends Error {
 export interface SyncTransactionsDeps {
   db?:    typeof db;
   plaid?: Pick<typeof plaidClient, "transactionsSync">;
+  /**
+   * DF-2A — the owning RefreshExecution's run correlator. When supplied, this
+   * sync stamps it into every SyncIssue.detail.runId instead of minting its own,
+   * so a manual/dashboard refresh's transaction issues group under the same
+   * runId as the RefreshExecution. Omitted (cron/webhook today) ⇒ mint one, as
+   * before — behavior is unchanged for every existing caller.
+   */
+  runId?: string;
 }
 
 export interface SyncTransactionsResult {
@@ -238,7 +246,10 @@ export async function syncTransactionsForItem(
   // together and an unrelated Amex run an hour later never merges into them.
   // Carried in `detail` (Json) — no schema change, and `JobRun.executionId` does
   // not cover manual-refresh or webhook syncs.
-  const runId = randomUUID();
+  // DF-2A — reuse the owning RefreshExecution.runId when the caller threads one
+  // in (manual/dashboard refresh), so this sync's issues correlate to that
+  // execution; otherwise mint a standalone id exactly as before.
+  const runId = deps.runId ?? randomUUID();
 
   const item = await database.plaidItem.findUnique({ where: { id: plaidItemDbId } });
   if (!item) {

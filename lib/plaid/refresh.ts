@@ -57,6 +57,9 @@ import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { withPlaidRetry } from "@/lib/plaid/retry";
+// DF-2A — the observational stage recorder for the per-item refresh execution
+// ledger. Optional; when absent, refreshPlaidItem behaves byte-identically.
+import type { RefreshStageRecorder } from "@/lib/plaid/refresh-execution-types";
 
 // ── M2 — balance↔transaction reconciliation helpers ──────────────────────────
 
@@ -237,11 +240,23 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
  */
 export async function refreshPlaidItem(
   plaidItemDbId: string,
-  opts?: { deferSnapshot?: boolean },
+  opts?: {
+    deferSnapshot?: boolean;
+    // DF-2A — observational execution-ledger seam. When present, each stage
+    // reports its outcome; control flow is unchanged. `runId` is threaded into
+    // the transaction sync so its SyncIssue.detail.runId matches the owning
+    // RefreshExecution.runId (one correlator per per-item refresh).
+    recorder?: RefreshStageRecorder;
+    runId?: string;
+  },
 ): Promise<RefreshItemResult> {
+  const recorder = opts?.recorder;
+
   // ── 1. Balances / account metadata — the ONE balance authority (CONN-3) ───
+  recorder?.begin("BALANCES", "PROVIDER");
   const { item, accessToken, plaidAccounts, itemData, accountsUpdated, updatedAccountIds, reconcileTargets } =
     await refreshBalancesForItem(plaidItemDbId);
+  recorder?.succeed("BALANCES", { recordsChanged: accountsUpdated, coveredAccountIds: updatedAccountIds });
 
   // ── 2. Investment holdings ──────────────────────────────────────────────
   // Best-effort/non-fatal — an institution with no investment accounts, or a
@@ -254,6 +269,11 @@ export async function refreshPlaidItem(
   const investmentPlaidAccounts = plaidAccounts.filter(
     (a) => mapAccountType(a.type, a.subtype) === AccountType.investment
   );
+  // DF-2A — an item with no investment accounts has nothing to sync here; that
+  // is NOT_APPLICABLE, not a failure, and must never degrade the refresh.
+  const hasInvestmentAccounts = investmentPlaidAccounts.length > 0;
+  if (hasInvestmentAccounts) recorder?.begin("HOLDINGS", "PROVIDER");
+  else recorder?.skip("HOLDINGS", "PROVIDER", "NOT_APPLICABLE");
   const investmentsResult = await syncInvestmentsForItem({
     accessToken,
     plaidItemId:     plaidItemDbId,
@@ -263,6 +283,7 @@ export async function refreshPlaidItem(
     storedConsent:   item.investmentsConsent,
   });
   const holdingsUpdated = investmentsResult.holdingsSynced;
+  if (hasInvestmentAccounts) recorder?.succeed("HOLDINGS", { recordsChanged: holdingsUpdated });
 
   // ── 3. Transactions ──────────────────────────────────────────────────────
   // Reuses the existing cursor-based sync as-is — no duplicated logic.
@@ -302,7 +323,18 @@ export async function refreshPlaidItem(
   // atomically. Ordering is therefore NOT changed. What that state requires is
   // DISCLOSURE on the surfaces that mix the two (see the sync-incomplete trust
   // warning in lib/perspectives/envelope.ts).
-  const txSync = await syncTransactionsForItem(plaidItemDbId);
+  recorder?.begin("TRANSACTIONS", "PROVIDER");
+  // DF-2A — thread the execution's runId so this sync's SyncIssue.detail.runId
+  // correlates to the owning RefreshExecution. Absent runId ⇒ deps omitted ⇒
+  // syncTransactionsForItem mints its own, exactly as before.
+  const txSync = opts?.runId
+    ? await syncTransactionsForItem(plaidItemDbId, { runId: opts.runId })
+    : await syncTransactionsForItem(plaidItemDbId);
+  recorder?.succeed("TRANSACTIONS", {
+    recordsRead:    txSync.added + txSync.modified,
+    recordsWritten: txSync.created + txSync.updatedByPlaidId + txSync.updatedByFingerprint,
+    recordsChanged: txSync.added + txSync.modified + txSync.removed,
+  });
 
   // ── 3b. Balance↔transaction reconciliation (M2) ──────────────────────────
   // For cash/card accounts, the balance movement this refresh should be
@@ -310,6 +342,7 @@ export async function refreshPlaidItem(
   // owed: −Σamount). A gap beyond threshold means the balance moved without
   // matching transactions (e.g. the July-2 pending→posted loss). Flag only —
   // best-effort; never fails the refresh; no replay.
+  if (reconcileTargets.length > 0) recorder?.begin("RECONCILIATION", "DERIVED");
   try {
     if (reconcileTargets.length > 0) {
       const txnSumAfter = await txnSumByAccount(reconcileIds);
@@ -343,6 +376,9 @@ export async function refreshPlaidItem(
   } catch (reconErr) {
     console.error(`[reconcile] balance↔transaction reconciliation failed for item ${plaidItemDbId} (non-fatal):`, reconErr);
   }
+  // DF-2A — reconciliation is a best-effort DERIVED stage: it ran (a mismatch is
+  // recorded data, not a stage failure; an internal error is swallowed above).
+  if (reconcileTargets.length > 0) recorder?.succeed("RECONCILIATION", { coveredAccountIds: reconcileIds });
 
   // ── 4. SpaceSnapshot regeneration ───────────────────────────────────
   // Recomputes today's snapshot row for every space these accounts are
@@ -357,9 +393,17 @@ export async function refreshPlaidItem(
   // stale, persisting a partial-balance snapshot (see
   // D2X_LIVE_SNAPSHOT_PARTIAL_REFRESH_INVESTIGATION.md). Direct single-item
   // callers (no opts) keep regenerating once here, as before.
-  const spacesSnapshotted = opts?.deferSnapshot
-    ? []
-    : await regenerateSnapshotsForAccounts(updatedAccountIds);
+  let spacesSnapshotted: string[];
+  if (opts?.deferSnapshot) {
+    // Deferred to the caller (the all-items path regenerates each Space once
+    // after every institution finishes) — not this execution's stage.
+    recorder?.skip("SNAPSHOT", "DERIVED", "BUDGET");
+    spacesSnapshotted = [];
+  } else {
+    recorder?.begin("SNAPSHOT", "DERIVED");
+    spacesSnapshotted = await regenerateSnapshotsForAccounts(updatedAccountIds);
+    recorder?.succeed("SNAPSHOT", { recordsChanged: spacesSnapshotted.length, coveredAccountIds: updatedAccountIds });
+  }
 
   // ── EV-1 Slice 4 — ConnectionSynced (audit-only) ────────────────────────
   // Records a canonical PLAID_REFRESH audit row now that the sync (incl. the
