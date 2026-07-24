@@ -72,6 +72,14 @@ export interface SyncInvestmentsResult {
   holdingsSynced: number;
   /** The consent value in effect after this run (persisted). */
   consent: PlaidInvestmentsConsent | null;
+  /**
+   * DF-2B — canonical FinancialAccount ids the holdings stage GENUINELY
+   * processed this run (resolved + ran syncCurrentHoldings). Empty when no
+   * investment accounts, no holdings, or holdings were consent-skipped. Coarse
+   * coverage evidence for RefreshEndpointResult — NOT a per-account outcome
+   * (present ≠ updated; empty ≠ uncovered).
+   */
+  processedAccountIds: string[];
 }
 
 /**
@@ -84,7 +92,9 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
   const { accessToken, plaidItemId, institutionName, investmentAccounts, item, storedConsent } = params;
 
   let holdingsSynced = 0;
-  if (investmentAccounts.length === 0) return { holdingsSynced, consent: storedConsent };
+  // DF-2B — accounts the holdings stage genuinely processed (for coverage evidence).
+  const processedAccountIds: string[] = [];
+  if (investmentAccounts.length === 0) return { holdingsSynced, consent: storedConsent, processedAccountIds };
 
   // ── Consent (DRIFT-1: change-detect + log; seeds at link since stored=null) ──
   let consent: PlaidInvestmentsConsent | null = storedConsent;
@@ -98,7 +108,7 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
   // null = still unknown (pre-DTM item, never probed) — attempt once below; the
   // outcome is persisted either way, so the probe never repeats.
   const holdingsCallable = consent === null || consent === PlaidInvestmentsConsent.ENABLED;
-  if (!holdingsCallable) return { holdingsSynced, consent };
+  if (!holdingsCallable) return { holdingsSynced, consent, processedAccountIds };
 
   try {
     // DRIFT-2: always retry.
@@ -147,6 +157,8 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
         payloadComplete,
       });
       holdingsSynced += syncCounts.inserted + syncCounts.updated + syncCounts.unchanged;
+      // DF-2B — this account was genuinely processed by the holdings stage.
+      processedAccountIds.push(fa.id);
     }
 
     // A3 — canonical investment event ingestion (once per item; separate
@@ -176,5 +188,5 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
     }
   }
 
-  return { holdingsSynced, consent };
+  return { holdingsSynced, consent, processedAccountIds };
 }

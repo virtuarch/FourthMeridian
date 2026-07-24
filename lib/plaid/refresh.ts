@@ -283,7 +283,14 @@ export async function refreshPlaidItem(
     storedConsent:   item.investmentsConsent,
   });
   const holdingsUpdated = investmentsResult.holdingsSynced;
-  if (hasInvestmentAccounts) recorder?.succeed("HOLDINGS", { recordsChanged: holdingsUpdated });
+  // DF-2B — HOLDINGS coverage = the investment FinancialAccount ids the stage
+  // GENUINELY processed (resolved + synced), sourced from syncInvestmentsForItem
+  // itself. Coarse evidence only (present ≠ updated; empty ≠ uncovered).
+  if (hasInvestmentAccounts)
+    recorder?.succeed("HOLDINGS", {
+      recordsChanged:    holdingsUpdated,
+      coveredAccountIds: investmentsResult.processedAccountIds,
+    });
 
   // ── 3. Transactions ──────────────────────────────────────────────────────
   // Reuses the existing cursor-based sync as-is — no duplicated logic.

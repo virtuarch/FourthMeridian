@@ -128,6 +128,23 @@ export class StageRecorder implements RefreshStageRecorder {
     });
   }
 
+  fail(endpoint: RefreshEndpoint, err: unknown): void {
+    const open = this.takeOpen(endpoint);
+    const startedAt = open?.startedAt ?? new Date();
+    const t0 = open?.t0 ?? Date.now();
+    const stageKind = open?.stageKind ?? "PROVIDER";
+    this.records.push({
+      endpoint,
+      stageKind,
+      status: "FAILED",
+      startedAt,
+      completedAt: new Date(),
+      durationMs: Date.now() - t0,
+      coveredAccountIds: [],
+      errorSummary: summarizeError(err),
+    });
+  }
+
   skip(endpoint: RefreshEndpoint, stageKind: RefreshStageKind, reason: RefreshSkipReason): void {
     this.takeOpen(endpoint);
     const now = new Date();
@@ -203,26 +220,36 @@ export interface RunFullRefreshParams {
   parentJobRunId?: string;
 }
 
-export interface RunFullRefreshDeps {
+/**
+ * Runs the actual refresh stages, driving the recorder, and returns whatever
+ * result its caller wants. The manual path returns a RefreshItemResult
+ * (refreshPlaidItem); the cron path (DF-2B) returns its own outcome shape — the
+ * execution AUTHORITY is shared, the stage SEQUENCE is per-path (manual runs
+ * holdings/reconciliation; cron runs investment events / wealth self-heal).
+ */
+export type RefreshStageRunner<T> = (opts: { recorder: RefreshStageRecorder; runId: string }) => Promise<T>;
+
+export interface RunFullRefreshDeps<T> {
   /** Test injection seam — production callers never pass this. */
   client?: RefreshExecutionWriteClient;
   /**
    * Runs the actual refresh stages, driving the recorder. Defaults to
-   * refreshPlaidItem. Tests inject a fake that records stage outcomes without
-   * Plaid or a database.
+   * refreshPlaidItem (T = RefreshItemResult). Cron/tests inject a runner that
+   * records the stage outcomes for their own pipeline.
    */
-  refresh?: (opts: { recorder: RefreshStageRecorder; runId: string }) => Promise<RefreshItemResult>;
+  refresh?: RefreshStageRunner<T>;
 }
 
 /**
  * Wrap one per-item refresh in the canonical execution authority. Returns the
- * refresh result unchanged on success; records the failure and rethrows the
- * ORIGINAL error on failure. The ledger never alters refresh behavior.
+ * runner's result unchanged on success; records the failure and rethrows the
+ * ORIGINAL error on failure. The ledger never alters refresh behavior. The
+ * default runner is refreshPlaidItem (manual path); DF-2B injects a cron runner.
  */
-export async function runFullRefresh(
+export async function runFullRefresh<T = RefreshItemResult>(
   params: RunFullRefreshParams,
-  deps: RunFullRefreshDeps = {},
-): Promise<RefreshItemResult> {
+  deps: RunFullRefreshDeps<T> = {},
+): Promise<T> {
   const client = deps.client ?? executionDb;
   const runId = randomUUID();
   const recorder = new StageRecorder();
@@ -239,8 +266,11 @@ export async function runFullRefresh(
     overallStatus: "RUNNING",
   });
 
-  const runStages =
-    deps.refresh ?? ((o) => refreshPlaidItem(params.itemId, { recorder: o.recorder, runId: o.runId }));
+  // The default runner (refreshPlaidItem) returns RefreshItemResult; the cast is
+  // sound because `deps.refresh` is undefined only when T defaulted to it.
+  const runStages: RefreshStageRunner<T> =
+    deps.refresh ??
+    (((o) => refreshPlaidItem(params.itemId, { recorder: o.recorder, runId: o.runId })) as RefreshStageRunner<T>);
 
   try {
     const result = await runStages({ recorder, runId });

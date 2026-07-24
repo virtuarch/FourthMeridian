@@ -27,6 +27,9 @@ import {
 } from "@/lib/plaid/refresh-execution";
 import type { RefreshItemResult } from "@/lib/plaid/refresh";
 import type { RefreshStageRecord, RefreshStageRecorder } from "@/lib/plaid/refresh-execution-types";
+// DF-2B — the real cron per-item runner, exercised through the SAME authority.
+import { runCronItemRefresh, type CronItemDeps, type CronItemOutcome } from "@/jobs/sync-banks";
+import type { SyncTransactionsResult } from "@/lib/plaid/syncTransactions";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -223,6 +226,99 @@ async function main() {
       { client, refresh: fullSuccessRunner(captured) },
     );
     check("ledger write failures are swallowed — refresh result still returned", result === okResult);
+  }
+
+  // ── DF-2B: cron runner drives the SAME lifecycle ──────────────────────────
+  const TX: SyncTransactionsResult = {
+    added: 2, modified: 1, removed: 0, cursor: "c",
+    created: 3, updatedByPlaidId: 0, updatedByFingerprint: 0, skippedMissingAccount: 0,
+  };
+  function cronDeps(over: Partial<CronItemDeps> = {}, capture?: { runId?: string }): CronItemDeps {
+    return {
+      syncTransactions: (async (_id: string, d?: { runId?: string }) => { if (capture) capture.runId = d?.runId; return TX; }) as unknown as CronItemDeps["syncTransactions"],
+      withLock: (async (_id: string, fn: () => Promise<unknown>) => ({ ok: true, result: await fn() })) as unknown as CronItemDeps["withLock"],
+      refreshBalances: (async () => ({ updatedAccountIds: ["a1", "a2"], accountsUpdated: 2, reconcileTargets: [], item: {}, accessToken: "", plaidAccounts: [], itemData: {} })) as unknown as CronItemDeps["refreshBalances"],
+      regenerateSnapshots: (async () => ["space-1"]) as unknown as CronItemDeps["regenerateSnapshots"],
+      ...over,
+    };
+  }
+
+  {
+    // Full cron item through runFullRefresh → one execution, cron's own stages.
+    const { client, creates, updates, endpointRows } = makeFake();
+    const cap: { runId?: string } = {};
+    const outcome = await runFullRefresh<CronItemOutcome>(
+      { itemId: "item-1", trigger: "CRON", profile: "FULL_REFRESH" },
+      { client, refresh: ({ recorder, runId }) => runCronItemRefresh("item-1", recorder, runId, cronDeps({}, cap)) },
+    );
+    check("cron: refresh runs, not skipped", outcome.skippedLocked === false && outcome.added === 2);
+    check("cron: creates exactly one RefreshExecution with trigger CRON", creates.length === 1 && creates[0]?.trigger === "CRON");
+    check("cron: runId threaded into the transaction sync (correlation)", cap.runId === creates[0]?.runId && !!cap.runId);
+    const endpoints = endpointRows.map((r) => r.endpoint);
+    check("cron: records TRANSACTIONS + BALANCES + SNAPSHOT (its own pipeline)", endpoints.includes("TRANSACTIONS") && endpoints.includes("BALANCES") && endpoints.includes("SNAPSHOT"));
+    check("cron: does NOT record HOLDINGS/RECONCILIATION (empty ≠ uncovered)", !endpoints.includes("HOLDINGS") && !endpoints.includes("RECONCILIATION"));
+    check("cron: BALANCES coverage persisted", JSON.stringify(endpointRows.find((r) => r.endpoint === "BALANCES")?.coveredAccountIds) === JSON.stringify(["a1", "a2"]));
+    check("cron: overall SUCCEEDED", updates[0]?.data.overallStatus === "SUCCEEDED");
+  }
+
+  {
+    // Lock held elsewhere → SKIPPED execution, no balance/snapshot stages.
+    const { client, updates, endpointRows } = makeFake();
+    const outcome = await runFullRefresh<CronItemOutcome>(
+      { itemId: "item-1", trigger: "CRON", profile: "FULL_REFRESH" },
+      { client, refresh: ({ recorder, runId }) => runCronItemRefresh("item-1", recorder, runId, cronDeps({
+        withLock: (async () => ({ ok: false, reason: "in-flight" })) as unknown as CronItemDeps["withLock"],
+      })) },
+    );
+    check("cron: lock-held → skippedLocked", outcome.skippedLocked === true);
+    check("cron: lock-held → TRANSACTIONS SKIPPED/IN_FLIGHT only", endpointRows.length === 1 && endpointRows[0]?.status === "SKIPPED" && endpointRows[0]?.skipReason === "IN_FLIGHT");
+    check("cron: lock-held → overall SKIPPED", updates[0]?.data.overallStatus === "SKIPPED");
+  }
+
+  {
+    // Best-effort balance failure → recorded FAILED, item NOT thrown, execution PARTIAL.
+    const { client, updates, endpointRows } = makeFake();
+    const outcome = await runFullRefresh<CronItemOutcome>(
+      { itemId: "item-1", trigger: "CRON", profile: "FULL_REFRESH" },
+      { client, refresh: ({ recorder, runId }) => runCronItemRefresh("item-1", recorder, runId, cronDeps({
+        refreshBalances: (async () => { throw new Error("balance boom"); }) as unknown as CronItemDeps["refreshBalances"],
+      })) },
+    );
+    check("cron: balance failure does not throw the item", outcome.skippedLocked === false);
+    check("cron: TRANSACTIONS SUCCEEDED, BALANCES FAILED recorded", endpointRows.find((r) => r.endpoint === "TRANSACTIONS")?.status === "SUCCEEDED" && endpointRows.find((r) => r.endpoint === "BALANCES")?.status === "FAILED");
+    check("cron: best-effort balance failure → overall PARTIAL", updates[0]?.data.overallStatus === "PARTIAL");
+  }
+
+  // ── DF-2B: manual / cron parity — same authority, both produce a ledger ────
+  {
+    const manual = makeFake();
+    await runFullRefresh({ itemId: "item-1", trigger: "MANUAL", profile: "FULL_REFRESH" }, { client: manual.client, refresh: fullSuccessRunner({}) });
+    const cron = makeFake();
+    await runFullRefresh<CronItemOutcome>({ itemId: "item-1", trigger: "CRON", profile: "FULL_REFRESH" }, { client: cron.client, refresh: ({ recorder, runId }) => runCronItemRefresh("item-1", recorder, runId, cronDeps()) });
+    check("parity: both produce exactly one immutable execution", manual.creates.length === 1 && cron.creates.length === 1);
+    check("parity: both persist endpoint results + one completion", manual.updates.length === 1 && cron.updates.length === 1 && manual.endpointRows.length > 0 && cron.endpointRows.length > 0);
+    check("parity: both derive a completion status via the same lifecycle", !!manual.updates[0]?.data.overallStatus && !!cron.updates[0]?.data.overallStatus);
+  }
+
+  // ── DF-2B: coverage doctrine encoded as guards ────────────────────────────
+  {
+    const r = new StageRecorder();
+    // present coverage but recordsChanged 0 → freshnessAdvanced false (present ≠ freshness-advanced)
+    r.begin("BALANCES", "PROVIDER");
+    r.succeed("BALANCES", { recordsChanged: 0, coveredAccountIds: ["a1"] });
+    check("doctrine: coverage present but freshnessAdvanced FALSE (present ≠ advanced)", r.records[0]?.coveredAccountIds.length === 1 && r.records[0]?.freshnessAdvanced === false);
+    // a SKIPPED stage carries empty coverage (empty ≠ per-account outcome)
+    r.skip("HOLDINGS", "PROVIDER", "NOT_APPLICABLE");
+    check("doctrine: SKIPPED stage has empty coverage", r.records[1]?.status === "SKIPPED" && r.records[1]?.coveredAccountIds.length === 0);
+    // recorder.fail records a FAILED stage inline without throwing (best-effort)
+    r.begin("SNAPSHOT", "DERIVED");
+    r.fail("SNAPSHOT", new Error("x".repeat(800)));
+    check("doctrine: fail() records FAILED inline with bounded errorSummary", r.records[2]?.status === "FAILED" && (r.records[2]?.errorSummary?.length ?? 0) <= 500);
+    // HOLDINGS coverage is persistable (the manual path fills it from processedAccountIds)
+    const holdCap = new StageRecorder();
+    holdCap.begin("HOLDINGS", "PROVIDER");
+    holdCap.succeed("HOLDINGS", { recordsChanged: 4, coveredAccountIds: ["inv-1", "inv-2"] });
+    check("holdings: processed account ids recorded as coverage", JSON.stringify(holdCap.records[0]?.coveredAccountIds) === JSON.stringify(["inv-1", "inv-2"]));
   }
 
   console.log(failures === 0 ? "\nAll refresh-execution guards passed." : `\n${failures} guard(s) failed.`);

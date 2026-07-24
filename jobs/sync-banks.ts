@@ -49,6 +49,12 @@ import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investmen
 import { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled, recentWealthWindow } from "@/lib/snapshots/regenerate-history";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
 import { refreshBalancesForItem } from "@/lib/plaid/refresh";
+// DF-2B — scheduled refresh adopts the SAME canonical execution authority as
+// manual refresh. runFullRefresh owns the RefreshExecution lifecycle; cron
+// injects its OWN stage pipeline (below) so its provider work is unchanged —
+// only the execution ledger is added.
+import { runFullRefresh } from "@/lib/plaid/refresh-execution";
+import type { RefreshStageRecorder, RefreshEndpoint } from "@/lib/plaid/refresh-execution-types";
 
 export interface SyncBanksResult {
   succeeded: number;
@@ -58,6 +64,86 @@ export interface SyncBanksResult {
   total:     number;
   /** A3-4 — items whose scheduled investment-event ingestion ran (flag on + consent ENABLED). */
   eventItems: number;
+}
+
+/** DF-2B — the cron runner's outcome, consumed by syncBanks for counting/logging. */
+export interface CronItemOutcome {
+  /** The item's transaction sync was skipped because another sync held its lock. */
+  skippedLocked: boolean;
+  added:    number;
+  modified: number;
+  removed:  number;
+}
+
+/** Injection seam for testing the cron stage sequence without Plaid or a database. */
+export interface CronItemDeps {
+  syncTransactions?:    typeof syncTransactionsForItem;
+  withLock?:            typeof withPlaidItemSyncLock;
+  refreshBalances?:     typeof refreshBalancesForItem;
+  regenerateSnapshots?: typeof regenerateSnapshotsForAccounts;
+}
+
+/**
+ * DF-2B — the cron per-item stage pipeline, driving the RefreshExecution
+ * recorder. Behavior-preserving vs. the previous inline body: transactions
+ * under the item lock (skip → IN_FLIGHT), then best-effort balances + today's
+ * snapshot (never fails the item; recorded FAILED without throwing). Wealth-
+ * history self-heal and investment-event ingestion stay in syncBanks, exactly
+ * as before (a wealth projection and a lock-independent Plaid call, not stages
+ * of this locked refresh). A thrown transaction error propagates to
+ * runFullRefresh (finalizes TRANSACTIONS FAILED) and on to syncBanks's catch.
+ */
+export async function runCronItemRefresh(
+  itemId: string,
+  recorder: RefreshStageRecorder,
+  runId: string,
+  deps: CronItemDeps = {},
+): Promise<CronItemOutcome> {
+  const syncTransactions    = deps.syncTransactions    ?? syncTransactionsForItem;
+  const withLock            = deps.withLock            ?? withPlaidItemSyncLock;
+  const refreshBalances     = deps.refreshBalances     ?? refreshBalancesForItem;
+  const regenerateSnapshots = deps.regenerateSnapshots ?? regenerateSnapshotsForAccounts;
+
+  // ── TRANSACTIONS — the ONE stage under the item lock ─────────────────────
+  recorder.begin("TRANSACTIONS", "PROVIDER");
+  const lockResult = await withLock(itemId, () => syncTransactions(itemId, { runId }));
+  if (!lockResult.ok) {
+    recorder.skip("TRANSACTIONS", "PROVIDER", "IN_FLIGHT");
+    return { skippedLocked: true, added: 0, modified: 0, removed: 0 };
+  }
+  const tx = lockResult.result;
+  recorder.succeed("TRANSACTIONS", {
+    recordsRead:    tx.added + tx.modified,
+    recordsWritten: tx.created + tx.updatedByPlaidId + tx.updatedByFingerprint,
+    recordsChanged: tx.added + tx.modified + tx.removed,
+  });
+
+  // ── BALANCES + SNAPSHOT — best-effort freshness; never fails the item ────
+  // (CONN-3 L3: the daily sync refreshes balances then regenerates today's
+  // snapshot from those fresh balances.)
+  recorder.begin("BALANCES", "PROVIDER");
+  let stage: RefreshEndpoint = "BALANCES";
+  try {
+    const bal = await refreshBalances(itemId);
+    recorder.succeed("BALANCES", {
+      recordsChanged:    bal.updatedAccountIds.length,
+      coveredAccountIds: bal.updatedAccountIds,
+    });
+    if (bal.updatedAccountIds.length > 0) {
+      stage = "SNAPSHOT";
+      recorder.begin("SNAPSHOT", "DERIVED");
+      const spaces = await regenerateSnapshots(bal.updatedAccountIds);
+      recorder.succeed("SNAPSHOT", {
+        recordsChanged:    spaces.length,
+        coveredAccountIds: bal.updatedAccountIds, // input accounts (doctrine: materially-used inputs)
+      });
+    }
+  } catch (e) {
+    recorder.fail(stage, e);
+    console.warn(`[sync-banks] balance/snapshot freshness failed for PlaidItem ${itemId} (non-fatal):`, e);
+  }
+
+  return { skippedLocked: false, added: tx.added, modified: tx.modified, removed: tx.removed };
 }
 
 export async function syncBanks(): Promise<SyncBanksResult> {
@@ -83,33 +169,25 @@ export async function syncBanks(): Promise<SyncBanksResult> {
 
   for (const item of items) {
     try {
-      const lockResult = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id));
-      if (!lockResult.ok) {
+      // DF-2B — through the canonical execution authority. runFullRefresh opens
+      // one immutable RefreshExecution per item, runs cron's OWN stage pipeline
+      // (runCronItemRefresh: transactions-under-lock → balances → snapshot),
+      // persists per-stage RefreshEndpointResults, and derives completion —
+      // identical lifecycle to manual refresh. Cron's provider work, lock scope,
+      // skip/fail counting, and per-item isolation are unchanged.
+      const outcome = await runFullRefresh<CronItemOutcome>(
+        { itemId: item.id, trigger: "CRON", profile: "FULL_REFRESH" },
+        { refresh: ({ recorder, runId }) => runCronItemRefresh(item.id, recorder, runId) },
+      );
+      if (outcome.skippedLocked) {
         skipped++;
         console.log(`[sync-banks] ${item.institutionName}: skipped — sync already in progress elsewhere`);
       } else {
         succeeded++;
-        const result = lockResult.result;
-        if (result.added || result.modified || result.removed) {
+        if (outcome.added || outcome.modified || outcome.removed) {
           console.log(
-            `[sync-banks] ${item.institutionName}: +${result.added} ~${result.modified} -${result.removed}`
+            `[sync-banks] ${item.institutionName}: +${outcome.added} ~${outcome.modified} -${outcome.removed}`
           );
-        }
-
-        // CONN-3 — L3 FRESHNESS. The daily sync imports transactions but never
-        // refreshed FinancialAccount.balance or today's SpaceSnapshot, so balances
-        // could lag a full day. Refresh current balances then regenerate today's
-        // snapshot from those FRESH balances — the ONE balance authority + the
-        // existing snapshot authority (no new engine). Best-effort/non-fatal. This
-        // resolves the deferred-snapshot-cron stale-balance blocker (registry S3):
-        // the snapshot is now written only immediately after a balance refresh.
-        try {
-          const bal = await refreshBalancesForItem(item.id);
-          if (bal.updatedAccountIds.length > 0) {
-            await regenerateSnapshotsForAccounts(bal.updatedAccountIds);
-          }
-        } catch (e) {
-          console.warn(`[sync-banks] balance/snapshot freshness failed for "${item.institutionName}" (PlaidItem ${item.id}) (non-fatal):`, e);
         }
 
         // 2026-07-14 — ongoing self-heal for the "connect-time regen ran before

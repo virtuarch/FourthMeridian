@@ -207,7 +207,12 @@ async function main(): Promise<void> {
     ];
     for (const p of lockedCallers) {
       const src = stripComments(readFileSync(p, "utf8"));
-      check(`${p} calls the sync engine through withPlaidItemSyncLock`, src.includes("withPlaidItemSyncLock("));
+      // Direct call `withPlaidItemSyncLock(...)`, OR — for jobs/sync-banks.ts
+      // since DF-2B — the injection-default seam `deps.withLock ?? withPlaidItemSyncLock`
+      // inside runCronItemRefresh (the same DI-default idiom sync-lock.ts's own
+      // header endorses for its `client` param). Either way the primitive is
+      // referenced; removing the lock entirely still trips this guard.
+      check(`${p} goes through withPlaidItemSyncLock`, src.includes("withPlaidItemSyncLock"));
     }
 
     // webhook-sync.ts uses the low-level primitives directly (its success

@@ -2743,8 +2743,17 @@ model RefreshEndpointResult {
   recordsRead        Int?
   recordsWritten     Int?
   recordsChanged     Int?
-  coveredAccountIds  String[] // stable canonical FinancialAccount ids this stage covered — endpoint-grained coverage, NOT one-provider-request-per-account
-  freshnessAdvanced  Boolean? // did this stage change canonical data (recordsChanged > 0)?
+  // DF-2B COVERAGE DOCTRINE: a COARSE evidence set of canonical FinancialAccount
+  // ids DIRECTLY PROCESSED BY, or MATERIALLY USED AS INPUTS TO, this stage during
+  // one execution. Point-in-time SOFT references (no FK to FinancialAccount), so a
+  // later account deletion / merge / identity-correction never mutates execution
+  // history. It is NOT a per-account freshness / success / completeness / outcome
+  // authority: empty ≠ uncovered, present ≠ updated, present ≠ freshness-advanced.
+  // Per-account current freshness lives on FinancialAccount.lastUpdated. Normalize
+  // to a soft-ref child model only when per-account outcomes/reasons or reverse
+  // account→execution queries become real consumers (first decision point: DF-2E).
+  coveredAccountIds  String[]
+  freshnessAdvanced  Boolean? // did this stage change canonical data (recordsChanged > 0)? — independent of coverage
   errorSummary       String?
   createdAt          DateTime         @default(now())
 

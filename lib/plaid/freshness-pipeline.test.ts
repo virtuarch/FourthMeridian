@@ -50,15 +50,20 @@ console.log("Webhook path (runDeferredHistorySync) now refreshes balances + toda
 
 console.log("Cron path (sync-banks) now refreshes balances + today's snapshot");
 {
-  check("cron calls refreshBalancesForItem", cron.includes("refreshBalancesForItem("));
-  check("cron regenerates today's snapshot", cron.includes("regenerateSnapshotsForAccounts("));
+  // DF-2B — cron's balance + snapshot calls moved into runCronItemRefresh via the
+  // DI-default seam (`deps.refreshBalances ?? refreshBalancesForItem`, called as
+  // `refreshBalances(...)`). The primitives are still referenced in sync-banks
+  // (removal caught); runCronItemRefresh's actual balance/snapshot recording is
+  // verified at execution level in lib/plaid/refresh-execution.test.ts.
+  check("cron uses refreshBalancesForItem", cron.includes("refreshBalancesForItem"));
+  check("cron uses regenerateSnapshotsForAccounts (today's snapshot)", cron.includes("regenerateSnapshotsForAccounts"));
 }
 
 console.log("No new engine; L1 semantics untouched");
 {
   // Reuses the existing snapshot authority, not a new one.
   check("uses existing regenerateSnapshotsForAccounts (no new snapshot engine)",
-    bg.includes("regenerateSnapshotsForAccounts(") && cron.includes("regenerateSnapshotsForAccounts("));
+    bg.includes("regenerateSnapshotsForAccounts(") && cron.includes("regenerateSnapshotsForAccounts"));
   // The transaction engine is unchanged — still no balance refresh in it.
   check("syncTransactionsForItem still never calls accountsGet", !txSync.includes("accountsGet"));
   check("syncTransactionsForItem still never writes FinancialAccount.balance", !/financialAccount\.update/.test(txSync));

@@ -52,7 +52,13 @@ export interface RefreshStageFacts {
   recordsRead?: number;
   recordsWritten?: number;
   recordsChanged?: number;
-  /** Stable canonical FinancialAccount ids this stage covered (endpoint-grained). */
+  /**
+   * DF-2B COVERAGE DOCTRINE: a COARSE evidence set of canonical FinancialAccount
+   * ids DIRECTLY PROCESSED BY, or MATERIALLY USED AS INPUTS TO, this stage. Soft
+   * references (ids only, no FK). NOT a per-account freshness/success/outcome
+   * authority — empty ≠ uncovered, present ≠ updated, present ≠ freshness-advanced.
+   * Populate only with accounts the stage genuinely touched; never invent or infer.
+   */
   coveredAccountIds?: string[];
 }
 
@@ -84,6 +90,13 @@ export interface RefreshStageRecorder {
   begin(endpoint: RefreshEndpoint, stageKind: RefreshStageKind): void;
   /** Finalize the open stage as SUCCEEDED with the facts it produced. */
   succeed(endpoint: RefreshEndpoint, facts?: RefreshStageFacts): void;
+  /**
+   * Finalize the open stage as FAILED WITHOUT throwing — for a best-effort stage
+   * that caught its own error and continues (e.g. the cron balance/snapshot
+   * freshness step). Distinct from a stage whose throw propagates (that is
+   * finalized by the orchestrator). `endpoint` names the stage being failed.
+   */
+  fail(endpoint: RefreshEndpoint, err: unknown): void;
   /** Record a stage that did not run (may be called without a preceding begin). */
   skip(endpoint: RefreshEndpoint, stageKind: RefreshStageKind, reason: RefreshSkipReason): void;
 }
