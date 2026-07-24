@@ -18,17 +18,24 @@ architectural changes without violating existing doctrine.
    engineering document. One authoritative model · one semantic layer · one
    aggregation path · many consumers. The 14 financial authorities and where each
    truth lives. *Read before touching any financial number.*
-3. **[SPACE_ARCHITECTURE.md](./SPACE_ARCHITECTURE.md)** — what a Space is (and is
+3. **[OPERATIONAL_TRUTH_SPINE.md](./OPERATIONAL_TRUTH_SPINE.md)** — the same law applied
+   to the platform's knowledge of *itself*. The six categories of operational state,
+   who owns each, why health is always derived and never stored, and the honest gap
+   list. *Read before adding any operational fact, health state, or Platform Ops
+   surface.* Its two per-subsystem companions are
+   [REFRESH_EXECUTION_DOCTRINE.md](./REFRESH_EXECUTION_DOCTRINE.md) and
+   [REFRESH_COVERAGE_DOCTRINE.md](./REFRESH_COVERAGE_DOCTRINE.md).
+4. **[SPACE_ARCHITECTURE.md](./SPACE_ARCHITECTURE.md)** — what a Space is (and is
    not), the Shell → PerspectiveShell → Workspace hierarchy, Perspectives, the
    workspace contract, and the dashboard-as-composition-root rule.
-4. **[SECURITY_MODEL.md](./SECURITY_MODEL.md)** — the three authorization axes
+5. **[SECURITY_MODEL.md](./SECURITY_MODEL.md)** — the three authorization axes
    (Customer · Operator · Emergency), the per-account visibility tiers, and where
    authorization is enforced (and why hiding UI is not security).
-5. **[TIME_MODEL.md](./TIME_MODEL.md)** — the `asOf` anchor, presets as backward
+6. **[TIME_MODEL.md](./TIME_MODEL.md)** — the `asOf` anchor, presets as backward
    windows, TimelineLens intents, and why every Perspective shares one time model.
-6. **[UI_INTERACTION_MODEL.md](./UI_INTERACTION_MODEL.md)** — Preview → Browser →
+7. **[UI_INTERACTION_MODEL.md](./UI_INTERACTION_MODEL.md)** — Preview → Browser →
    Detail, chart interrogability, panels over modals, and selection invalidation.
-7. **[SPACE_MOUNT_DOCTRINE.md](./SPACE_MOUNT_DOCTRINE.md)** — the mount boundary: what
+8. **[SPACE_MOUNT_DOCTRINE.md](./SPACE_MOUNT_DOCTRINE.md)** — the mount boundary: what
    the shared `SpaceMountContext` owns (identity · nav · shell config), what stays a
    workspace loader, the hydration allowlist, and why finance/platform load differently.
 
@@ -42,6 +49,7 @@ architectural changes without violating existing doctrine.
 | a chart, drill-down, or detail surface | UI_INTERACTION_MODEL |
 | anything time-windowed (asOf/compareTo) | TIME_MODEL |
 | a route, API, or who-can-see-what | SECURITY_MODEL |
+| an operational fact, health state, or Platform Ops surface | OPERATIONAL_TRUTH_SPINE (+ the two refresh doctrines) |
 | an AI feature | [systems/ai-foundation.md](../systems/ai-foundation.md) (AI is a consumer, never an authority) |
 
 ## The rest of the tree
