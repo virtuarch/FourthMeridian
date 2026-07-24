@@ -117,17 +117,21 @@ const WORKSPACE_ICONS: Record<string, LucideIcon> = {
 };
 
 interface Props {
+  /** Domain locator — the PlatformArea. Deliberately KEPT OUT of the neutral
+   *  SpaceRef (the area is a resolution detail, not identity), so it stays a
+   *  Platform-specific prop: it drives the area editorial lede (PlatformAreaHero)
+   *  and the operational workspace COMPOSITION (which section keys + doorways each
+   *  workspace renders). That composition is data-needs metadata, NOT mount
+   *  context — it correctly remains Platform-owned. */
   area:        PlatformArea;
-  areaLabel:   string;
-  spaceName:   string;
-  accessLevel: string; // READ | WRITE
-  /** Enabled SpaceDashboardSection rows for this area's Space (DB, ordered). */
+  /** Enabled SpaceDashboardSection rows for this area's Space (DB, ordered) — the
+   *  OPERATIONAL data the self-fetching widgets render. Never mount context. */
   sections:    Section[];
-  /** PS-6A — the SAME domain-neutral SpaceMountContext the financial route
-   *  builds, composed here from PlatformGrant + Space.platformArea. Additive and
-   *  NOT YET CONSUMED (PS-6C owns platform adoption); proves the contract is
-   *  domain-neutral. Deliberately not destructured — behavior unchanged. */
-  mountContext?: SpaceMountContext;
+  /** PS-6C — the shared domain-neutral SpaceMountContext (the SAME contract the
+   *  financial route builds), now CONSUMED for identity / display / workspace
+   *  navigation / access / shell config. Required: Platform reads these from the
+   *  contract rather than rebuilding them locally. */
+  mountContext: SpaceMountContext;
 }
 
 
@@ -205,19 +209,32 @@ function PlatformWorkspaceBody({
   );
 }
 
-export function PlatformSpaceDashboard({ area, areaLabel, spaceName, accessLevel, sections }: Props) {
-  const workspaces = getPlatformAreaWorkspaces(area);
-  const [activeTab, setActiveTab] = useState<string>(workspaces[0]?.workspaceId ?? "platform-overview");
+export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) {
+  // ── Identity / display / navigation / access / shell — ALL from the shared
+  //    contract (PS-6C). Nothing here is rebuilt from a second local derivation. ──
+  const spaceName   = mountContext.display.name;
+  const areaLabel   = mountContext.display.label ?? "";
+  const accessLevel = mountContext.access.level;
+  const { available, selectedKey } = mountContext.workspaces;
 
+  const [activeTab, setActiveTab] = useState<string>(selectedKey);
+
+  // Operational COMPOSITION (which section keys + doorways each workspace renders)
+  // stays Platform-owned — it is data-needs metadata, NOT mount context, and is
+  // deliberately absent from the neutral contract. Keyed by the same workspace ids
+  // the contract's rail exposes, so rail and body stay consistent by construction.
+  const composition = getPlatformAreaWorkspaces(area);
   const dbByKey = new Map(sections.map((s) => [s.key, s] as const));
 
-  const railOptions: SpaceShellRailOption[] = workspaces.map((w) => {
-    const def = getPlatformWorkspace(w.workspaceId);
-    const Icon = (def && WORKSPACE_ICONS[def.icon]) ?? LayoutDashboard;
-    return { id: w.workspaceId, label: def?.label ?? w.workspaceId, icon: <Icon size={14} aria-hidden /> };
+  // Rail navigation is the CONTRACT's workspace projection (key/label/icon NAME),
+  // not a second registry walk here. Resolving the icon name → component is the
+  // consuming surface's concern (the contract is client-safe string data).
+  const railOptions: SpaceShellRailOption[] = available.map((w) => {
+    const Icon = WORKSPACE_ICONS[w.icon] ?? LayoutDashboard;
+    return { id: w.key, label: w.label, icon: <Icon size={14} aria-hidden /> };
   });
 
-  const active = workspaces.find((w) => w.workspaceId === activeTab) ?? workspaces[0];
+  const active = composition.find((w) => w.workspaceId === activeTab) ?? composition[0];
 
   // SHELL migration — publish platform identity to the ContextualNavbar's Space
   // mode (the same transforming sidebar customer Spaces use; platform Spaces are
@@ -242,6 +259,10 @@ export function PlatformSpaceDashboard({ area, areaLabel, spaceName, accessLevel
       railOptions={railOptions}
       activeTab={active?.workspaceId ?? activeTab}
       onSelectTab={setActiveTab}
+      // Shell frame variant from the contract (platform resolves to "space" — it
+      // delegates identity to the ContextualNavbar exactly like finance; see
+      // SpaceMountShellConfig). Byte-identical to the prior default.
+      variant={mountContext.shell.variant}
     >
       {active ? (
         <div className="flex flex-col gap-8 md:gap-10">

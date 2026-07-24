@@ -84,7 +84,10 @@ const plat = platformMountContext({
 check("ref.id is the REAL platform Space.id (NOT the area key)", plat.ref.id === "space-plat-ops");
 check("ref.domain = platform", plat.ref.domain === "platform");
 check("ref.kind = utility", plat.ref.kind === "utility");
-check("shell.variant = utility", plat.shell.variant === "utility");
+// PS-6C correction — platform renders the "space" VARIANT (it delegates identity
+// to the ContextualNavbar exactly like finance; "utility" is for lone GLOBAL-nav
+// destinations). ref.kind stays "utility" (Space NATURE) — a separate axis.
+check("shell.variant = space (frame axis ≠ kind; platform delegates identity like finance)", plat.shell.variant === "space");
 check("READ grant → canRead true, canWrite false, level 'READ'",
   plat.access.canRead === true && plat.access.canWrite === false && plat.access.level === "READ");
 check("WRITE grant → canWrite true",

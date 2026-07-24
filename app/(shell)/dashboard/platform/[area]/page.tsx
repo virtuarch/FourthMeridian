@@ -78,11 +78,12 @@ export default async function PlatformSpacePage({
   // The seed guarantees the Space exists; if it somehow doesn't, fail closed.
   if (!space) redirect("/dashboard/spaces");
 
-  // PS-6A — compose the SAME domain-neutral SpaceMountContext from the ALREADY-
+  // PS-6A/6C — compose the SAME domain-neutral SpaceMountContext from the ALREADY-
   // AUTHORIZED platform inputs (area validated, ACTIVE PlatformGrant checked via
-  // hasPlatformAccess above, canonical Space.platformArea loaded). This proves
-  // the shared contract is domain-neutral: no getSpaceContext, no cookie, no
-  // SpaceMember. Additive and not-yet-consumed (PS-6C owns platform adoption).
+  // hasPlatformAccess above, canonical Space.platformArea loaded). This proves the
+  // shared contract is domain-neutral: no getSpaceContext, no cookie, no
+  // SpaceMember. PS-6C — the dashboard now CONSUMES it for identity / display /
+  // navigation / access / shell config, so those are no longer passed separately.
   const mountContext = platformMountContext({
     spaceId:     space.id,
     spaceName:   space.name,
@@ -95,9 +96,6 @@ export default async function PlatformSpacePage({
   return (
     <PlatformSpaceDashboard
       area={area}
-      areaLabel={PLATFORM_AREAS[area].label}
-      spaceName={space.name}
-      accessLevel={grant.level}
       sections={space.dashboardSections}
       mountContext={mountContext}
     />

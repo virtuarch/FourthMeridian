@@ -127,8 +127,13 @@ export interface SpaceMountWorkspaceContext {
  * The smallest domain-neutral shell configuration. Deliberately NOT a mirror of
  * SpaceShellProps: no callbacks (onManage/onSelectTab), no React nodes
  * (overlays/currencyControl/headerActions), no derived presentation. `variant`
- * is the one canonical fact the shell frame needs and is DERIVED from
- * SpaceRef.domain (finance → "space", platform → "utility").
+ * is the one canonical fact the shell frame needs — the frame rendering axis,
+ * INDEPENDENT of SpaceRef.domain/kind. Both finance AND platform Spaces render
+ * "space" (they delegate identity to the ContextualNavbar's Space mode);
+ * "utility" is reserved for lone GLOBAL-nav destinations (Connections / Settings)
+ * that render their own header and take over no navbar. (A platform Space is
+ * kind:"utility" by NATURE yet still renders variant:"space" — the two axes do
+ * not co-vary.)
  */
 export interface SpaceMountShellConfig {
   variant: "space" | "utility";

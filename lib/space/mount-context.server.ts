@@ -158,7 +158,14 @@ export function platformMountContext(
     },
     display: { name: input.spaceName, label: input.areaLabel },
     workspaces: { available, selectedKey },
-    shell: { variant: "utility" },
+    // Platform renders through the "space" variant, NOT "utility": it delegates
+    // identity to the ContextualNavbar's Space mode (publishSpace) exactly like a
+    // financial Space — it is not a lone GLOBAL-nav destination (Connections /
+    // Settings) that renders its own header. The shipped shell behavior "a single-
+    // Overview Platform area KEEPS its one pill" only holds under "space" (the
+    // "utility" branch suppresses a single-workspace rail). `ref.kind` stays
+    // "utility" (the Space's NATURE); the shell VARIANT is a separate axis.
+    shell: { variant: "space" },
     // Platform workspaces declare no temporalCapability ⇒ always { supported: false }.
     time: timeForSelected(selectedKey, undefined, undefined),
   };
