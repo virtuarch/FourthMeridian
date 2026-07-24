@@ -32,6 +32,9 @@ import { db } from "@/lib/db";
 import { ShareStatus, SpaceType } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+// DF-2C — observational execution-ledger seam. Optional; when absent,
+// runDeferredHistorySync behaves byte-identically.
+import type { RefreshStageRecorder } from "@/lib/plaid/refresh-execution-types";
 import { classifyPlaidErrorForHealth, plaidErrorSummary, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed, notifyItemSyncComplete } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
@@ -339,9 +342,24 @@ async function recordSyncComplete(plaidItemId: string): Promise<void> {
   }
 }
 
-export async function runDeferredHistorySync(plaidItemId: string): Promise<boolean> {
+export async function runDeferredHistorySync(
+  plaidItemId: string,
+  // DF-2C — observational recorder + run correlator, threaded by
+  // syncPlaidItemFromWebhook so reconnect/webhook syncs write a RefreshExecution.
+  // Both optional; absent ⇒ byte-identical to the pre-DF-2C behavior.
+  recorder?: RefreshStageRecorder,
+  runId?: string,
+): Promise<boolean> {
   try {
-    const r = await syncTransactionsForItem(plaidItemId);
+    recorder?.begin("TRANSACTIONS", "PROVIDER");
+    const r = runId
+      ? await syncTransactionsForItem(plaidItemId, { runId })
+      : await syncTransactionsForItem(plaidItemId);
+    recorder?.succeed("TRANSACTIONS", {
+      recordsRead:    r.added + r.modified,
+      recordsWritten: r.created + r.updatedByPlaidId + r.updatedByFingerprint,
+      recordsChanged: r.added + r.modified + r.removed,
+    });
     console.log(
       `[plaid][D2x-slice2] background history sync complete for item ${plaidItemId} — ` +
         `added ${r.added}, modified ${r.modified}, removed ${r.removed} ` +
@@ -356,19 +374,32 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<boole
     // engine). Best-effort/non-fatal: a balance-refresh failure never fails the
     // sync. (At connect this re-confirms balances exchange-token already wrote;
     // on webhook it is the fix.)
+    recorder?.begin("BALANCES", "PROVIDER");
+    let freshnessStage: "BALANCES" | "SNAPSHOT" = "BALANCES";
     try {
       const bal = await refreshBalancesForItem(plaidItemId);
+      recorder?.succeed("BALANCES", {
+        recordsChanged:    bal.updatedAccountIds.length,
+        coveredAccountIds: bal.updatedAccountIds,
+      });
       if (bal.updatedAccountIds.length > 0) {
-        await regenerateSnapshotsForAccounts(bal.updatedAccountIds);
+        freshnessStage = "SNAPSHOT";
+        recorder?.begin("SNAPSHOT", "DERIVED");
+        const spaces = await regenerateSnapshotsForAccounts(bal.updatedAccountIds);
+        recorder?.succeed("SNAPSHOT", { recordsChanged: spaces.length, coveredAccountIds: bal.updatedAccountIds });
       }
       console.log(`[plaid][CONN-3] refreshed balances + today's snapshot for item ${plaidItemId} (${bal.accountsUpdated} account(s))`);
     } catch (e) {
+      recorder?.fail(freshnessStage, e);
       console.error(`[plaid][CONN-3] balance/snapshot freshness failed for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
     }
 
     // D2.x Slice 4 — reconstruct historical snapshots now that full history
-    // exists. Best-effort/non-fatal and gated to new Spaces inside.
+    // exists. Best-effort/non-fatal and gated to new Spaces inside. DF-2C records
+    // it as the HISTORY_BACKFILL stage — the reconnect/webhook-defining work.
+    recorder?.begin("HISTORY_BACKFILL", "DERIVED");
     await backfillHistoryForItem(plaidItemId);
+    recorder?.succeed("HISTORY_BACKFILL");
 
     // Part-3 — the FULL deferred pipeline is done: record it + notify the owner
     // (bell + Recent Activity, from ONE AuditLog record). Only reached on a
@@ -380,6 +411,10 @@ export async function runDeferredHistorySync(plaidItemId: string): Promise<boole
     // concurrent duplicate delivery stamped via its skipped-locked branch.
     return true;
   } catch (e) {
+    // DF-2C — this function catches internally and RETURNS false (never rethrows),
+    // so the orchestrator's own catch never fires; record the open stage's
+    // failure here. No-op if nothing is open.
+    recorder?.failOpen(e);
     console.error(
       `[plaid][D2x-slice2] background history sync FAILED for item ${plaidItemId} (non-fatal — Link already succeeded): ${plaidErrorSummary(e)}`,
       e,

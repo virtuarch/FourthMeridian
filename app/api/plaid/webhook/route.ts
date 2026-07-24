@@ -92,7 +92,9 @@ export async function POST(req: NextRequest) {
   // Run the guarded full pipeline AFTER responding, so Plaid gets a fast 200 and
   // never retries on our latency. The guard (syncPlaidItemFromWebhook) makes a
   // duplicated/racing delivery safe.
-  after(() => syncPlaidItemFromWebhook(item.id));
+  // DF-2C — trigger WEBHOOK: same deferred pipeline, execution ledger records
+  // that this refresh was initiated by a provider webhook.
+  after(() => syncPlaidItemFromWebhook(item.id, "WEBHOOK"));
 
   return NextResponse.json({ received: true, handled: true });
 }

@@ -26,7 +26,7 @@ import {
   type RefreshEndpointResultData,
 } from "@/lib/plaid/refresh-execution";
 import type { RefreshItemResult } from "@/lib/plaid/refresh";
-import type { RefreshStageRecord, RefreshStageRecorder } from "@/lib/plaid/refresh-execution-types";
+import type { RefreshStageRecord, RefreshStageRecorder, RefreshEndpoint } from "@/lib/plaid/refresh-execution-types";
 // DF-2B — the real cron per-item runner, exercised through the SAME authority.
 import { runCronItemRefresh, type CronItemDeps, type CronItemOutcome } from "@/jobs/sync-banks";
 import type { SyncTransactionsResult } from "@/lib/plaid/syncTransactions";
@@ -319,6 +319,85 @@ async function main() {
     holdCap.begin("HOLDINGS", "PROVIDER");
     holdCap.succeed("HOLDINGS", { recordsChanged: 4, coveredAccountIds: ["inv-1", "inv-2"] });
     check("holdings: processed account ids recorded as coverage", JSON.stringify(holdCap.records[0]?.coveredAccountIds) === JSON.stringify(["inv-1", "inv-2"]));
+  }
+
+  // ── DF-2C: reconnect / webhook adoption (deferred pipeline shape) ──────────
+  // Mirrors runDeferredHistorySync's stage sequence: TRANSACTIONS → BALANCES →
+  // SNAPSHOT → HISTORY_BACKFILL. Never throws (it catches internally), so the
+  // runner records failures itself (failOpen) rather than re-throwing.
+  function deferredRunner(opts: { failAt?: RefreshEndpoint; lockHeld?: boolean } = {}) {
+    return async ({ recorder }: { recorder: RefreshStageRecorder; runId: string }) => {
+      if (opts.lockHeld) { recorder.skip("TRANSACTIONS", "PROVIDER", "IN_FLIGHT"); return "skipped-locked"; }
+      const stages: Array<[RefreshEndpoint, "PROVIDER" | "DERIVED"]> = [
+        ["TRANSACTIONS", "PROVIDER"], ["BALANCES", "PROVIDER"], ["SNAPSHOT", "DERIVED"], ["HISTORY_BACKFILL", "DERIVED"],
+      ];
+      try {
+        for (const [ep, kind] of stages) {
+          recorder.begin(ep, kind);
+          if (opts.failAt === ep) throw new Error(`${ep} boom`);
+          recorder.succeed(ep, ep === "BALANCES" ? { recordsChanged: 1, coveredAccountIds: ["a1"] } : { recordsChanged: 1 });
+        }
+        return "ran";
+      } catch (e) {
+        recorder.failOpen(e); // never rethrows — the real function returns false
+        return "ran";
+      }
+    };
+  }
+
+  {
+    // Reconnect: trigger RECONNECT, records the backfill stage, SUCCEEDED.
+    const { client, creates, updates, endpointRows } = makeFake();
+    const out = await runFullRefresh<string>({ itemId: "item-1", trigger: "RECONNECT", profile: "RECONNECT" }, { client, refresh: deferredRunner() });
+    check("reconnect: outcome passthrough", out === "ran");
+    check("reconnect: one execution, trigger RECONNECT, profile RECONNECT", creates.length === 1 && creates[0]?.trigger === "RECONNECT" && creates[0]?.profile === "RECONNECT");
+    check("reconnect: records HISTORY_BACKFILL (the reconnect-defining stage)", endpointRows.some((r) => r.endpoint === "HISTORY_BACKFILL" && r.status === "SUCCEEDED"));
+    check("reconnect: overall SUCCEEDED", updates[0]?.data.overallStatus === "SUCCEEDED");
+  }
+  {
+    // Webhook: same deferred pipeline, trigger WEBHOOK.
+    const { client, creates, endpointRows } = makeFake();
+    await runFullRefresh<string>({ itemId: "item-1", trigger: "WEBHOOK", profile: "RECONNECT" }, { client, refresh: deferredRunner() });
+    check("webhook: one execution, trigger WEBHOOK", creates.length === 1 && creates[0]?.trigger === "WEBHOOK");
+    check("webhook: records the same deferred stages incl HISTORY_BACKFILL", endpointRows.some((r) => r.endpoint === "HISTORY_BACKFILL"));
+  }
+  {
+    // Lock held → SKIPPED execution, no stages beyond the skip.
+    const { client, updates, endpointRows } = makeFake();
+    const out = await runFullRefresh<string>({ itemId: "item-1", trigger: "WEBHOOK", profile: "RECONNECT" }, { client, refresh: deferredRunner({ lockHeld: true }) });
+    check("deferred: lock-held → skipped-locked outcome", out === "skipped-locked");
+    check("deferred: lock-held → overall SKIPPED", updates[0]?.data.overallStatus === "SKIPPED" && endpointRows.length === 1);
+  }
+  {
+    // failOpen (never-throws path): a mid-pipeline failure is recorded, NOT rethrown.
+    const { client, updates, endpointRows } = makeFake();
+    let threw = false;
+    try {
+      await runFullRefresh<string>({ itemId: "item-1", trigger: "RECONNECT", profile: "RECONNECT" }, { client, refresh: deferredRunner({ failAt: "HISTORY_BACKFILL" }) });
+    } catch { threw = true; }
+    check("failOpen: never-throws runner does not propagate", threw === false);
+    check("failOpen: the open stage is recorded FAILED", endpointRows.find((r) => r.endpoint === "HISTORY_BACKFILL")?.status === "FAILED");
+    check("failOpen: earlier stages SUCCEEDED → overall PARTIAL", updates[0]?.data.overallStatus === "PARTIAL");
+  }
+
+  // ── DF-2C: cross-trigger parity — one lifecycle, independent orchestration ─
+  {
+    const results: Record<string, { creates: number; updates: number; endpoints: string[]; status?: string }> = {};
+    const runs: Array<[string, () => Promise<unknown>]> = [
+      ["MANUAL", async () => { const f = makeFake(); await runFullRefresh({ itemId: "i", trigger: "MANUAL", profile: "FULL_REFRESH" }, { client: f.client, refresh: fullSuccessRunner({}) }); results.MANUAL = { creates: f.creates.length, updates: f.updates.length, endpoints: f.endpointRows.map((r) => r.endpoint), status: f.updates[0]?.data.overallStatus }; }],
+      ["CRON", async () => { const f = makeFake(); await runFullRefresh<CronItemOutcome>({ itemId: "i", trigger: "CRON", profile: "FULL_REFRESH" }, { client: f.client, refresh: ({ recorder, runId }) => runCronItemRefresh("i", recorder, runId, cronDeps()) }); results.CRON = { creates: f.creates.length, updates: f.updates.length, endpoints: f.endpointRows.map((r) => r.endpoint), status: f.updates[0]?.data.overallStatus }; }],
+      ["RECONNECT", async () => { const f = makeFake(); await runFullRefresh<string>({ itemId: "i", trigger: "RECONNECT", profile: "RECONNECT" }, { client: f.client, refresh: deferredRunner() }); results.RECONNECT = { creates: f.creates.length, updates: f.updates.length, endpoints: f.endpointRows.map((r) => r.endpoint), status: f.updates[0]?.data.overallStatus }; }],
+      ["WEBHOOK", async () => { const f = makeFake(); await runFullRefresh<string>({ itemId: "i", trigger: "WEBHOOK", profile: "RECONNECT" }, { client: f.client, refresh: deferredRunner() }); results.WEBHOOK = { creates: f.creates.length, updates: f.updates.length, endpoints: f.endpointRows.map((r) => r.endpoint), status: f.updates[0]?.data.overallStatus }; }],
+    ];
+    for (const [, run] of runs) await run();
+    const all = Object.values(results);
+    check("parity: all 4 triggers create exactly one execution", all.every((r) => r.creates === 1));
+    check("parity: all 4 triggers write one completion with a derived status", all.every((r) => r.updates === 1 && !!r.status));
+    check("parity: reconnect+webhook run HISTORY_BACKFILL; manual+cron do NOT (independent orchestration)",
+      results.RECONNECT.endpoints.includes("HISTORY_BACKFILL") && results.WEBHOOK.endpoints.includes("HISTORY_BACKFILL") &&
+      !results.MANUAL.endpoints.includes("HISTORY_BACKFILL") && !results.CRON.endpoints.includes("HISTORY_BACKFILL"));
+    check("parity: manual runs HOLDINGS; cron/reconnect/webhook do not (no accidental manualization)",
+      results.MANUAL.endpoints.includes("HOLDINGS") && !results.CRON.endpoints.includes("HOLDINGS") && !results.RECONNECT.endpoints.includes("HOLDINGS"));
   }
 
   console.log(failures === 0 ? "\nAll refresh-execution guards passed." : `\n${failures} guard(s) failed.`);

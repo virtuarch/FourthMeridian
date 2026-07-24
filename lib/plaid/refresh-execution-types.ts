@@ -13,7 +13,17 @@
  * gain a new trigger/profile/stage/skip-reason later (DF-2B..2F).
  */
 
-/** How a per-item refresh was initiated. Only currently-meaningful triggers. */
+/**
+ * How a per-item refresh was initiated. Only currently-meaningful triggers.
+ *
+ * DF-2C TRIGGER DOCTRINE: the trigger names the INITIATING BUSINESS EVENT, NOT
+ * the stage sequence executed. MANUAL / CRON / RECONNECT / WEBHOOK all share the
+ * one execution LIFECYCLE (open → record → derive → close) while legitimately
+ * running DIFFERENT endpoint subsets (manual runs holdings/reconciliation; cron
+ * runs its transaction+balance+snapshot set; reconnect/webhook run the deferred
+ * HISTORY_BACKFILL pipeline). A future entrypoint extends this authority by
+ * supplying its own trigger + orchestration profile — it never forks the ledger.
+ */
 export type RefreshTrigger = "MANUAL" | "CRON" | "RECONNECT" | "WEBHOOK" | "ADMIN";
 
 /** The two canonical refresh operations (DF-2 taxonomy). No LIGHT/REALTIME/tier profiles. */
@@ -33,7 +43,12 @@ export type RefreshEndpoint =
   | "HOLDINGS"
   | "INVESTMENT_ACTIVITY"
   | "SNAPSHOT"
-  | "RECONCILIATION";
+  | "RECONCILIATION"
+  // DF-2C — the connect/webhook deferred historical layer (reconstruction +
+  // price backfill + MAX-window wealth history + historical snapshots) recorded
+  // as ONE DERIVED stage. It is the reconnect/webhook-defining work; manual/cron
+  // never run it (empty ≠ uncovered).
+  | "HISTORY_BACKFILL";
 
 export type RefreshStageKind = "PROVIDER" | "DERIVED";
 
@@ -99,4 +114,11 @@ export interface RefreshStageRecorder {
   fail(endpoint: RefreshEndpoint, err: unknown): void;
   /** Record a stage that did not run (may be called without a preceding begin). */
   skip(endpoint: RefreshEndpoint, stageKind: RefreshStageKind, reason: RefreshSkipReason): void;
+  /**
+   * Finalize WHATEVER stage is currently open as FAILED — for a never-throws
+   * caller (runDeferredHistorySync) whose own catch handles the error without
+   * re-throwing, so the orchestrator's catch never sees it. No-op if nothing is
+   * open. Distinct from fail(endpoint): the caller need not know which stage.
+   */
+  failOpen(err: unknown): void;
 }

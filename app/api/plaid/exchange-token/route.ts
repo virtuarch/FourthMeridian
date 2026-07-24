@@ -106,7 +106,10 @@ export async function POST(req: NextRequest) {
     // shared lock, whichever fires first runs; the other is skipped-locked, and
     // the in-flight run does the identical full work either way.
     if (result.historyPending) {
-      after(() => syncPlaidItemFromWebhook(result.plaidItemId));
+      // DF-2C — trigger RECONNECT: the deferred sync writes a RefreshExecution
+      // whose trigger names the initiating event (a connect/relink), while
+      // running the same deferred pipeline the webhook path does.
+      after(() => syncPlaidItemFromWebhook(result.plaidItemId, "RECONNECT"));
     }
 
     return NextResponse.json({

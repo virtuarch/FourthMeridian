@@ -2733,7 +2733,7 @@ model RefreshEndpointResult {
   id                 String           @id @default(cuid())
   refreshExecutionId String
   execution          RefreshExecution @relation(fields: [refreshExecutionId], references: [id], onDelete: Cascade)
-  endpoint           String // stage: "TRANSACTIONS" | "BALANCES" | "HOLDINGS" | "INVESTMENT_ACTIVITY" | "SNAPSHOT" | "RECONCILIATION"
+  endpoint           String // stage: "TRANSACTIONS" | "BALANCES" | "HOLDINGS" | "INVESTMENT_ACTIVITY" | "SNAPSHOT" | "RECONCILIATION" | "HISTORY_BACKFILL"
   stageKind          String // "PROVIDER" (a live provider endpoint) | "DERIVED" (a projection/derived stage) — disambiguates the mixed vocabulary
   status             String // "SUCCEEDED" | "FAILED" | "SKIPPED"
   skipReason         String? // "NOT_APPLICABLE" | "BUDGET" | "IN_FLIGHT" | "COOLDOWN" — set only when status = "SKIPPED"
