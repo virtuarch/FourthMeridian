@@ -49,6 +49,24 @@ export interface UseSpaceDataArgs {
    * false ⇒ transactions stay null (lazy, exactly as before).
    */
   wantTransactions: boolean;
+  /**
+   * PS-6B — server-hydrated initial STRUCTURAL data for this Space's first
+   * render, composed once at the /dashboard RSC boundary
+   * (lib/space/mount-composition.ts) from the already-authorized SpaceContext.
+   * When present, the three EAGER initial fetches (sections + accounts combined,
+   * and the member count) are skipped — their values come from the server, and
+   * `loading` starts false. Every refresh/reload path (currency change, manual
+   * Plaid sync, ManageSpaceModal, shared-account change) is UNCHANGED, so the
+   * data still re-fetches on those events. Absent ⇒ the client fetches on mount
+   * exactly as before (shared Spaces / any non-hydrated caller). The host remounts
+   * the hook on a Space switch (key={spaceId}), so the hydrated value always
+   * matches the mounted spaceId.
+   */
+  initial?: {
+    sections:    DashboardSection[];
+    accounts:    SpaceAccount[];
+    memberCount: number;
+  } | null;
 }
 
 export interface SpaceData {
@@ -89,11 +107,17 @@ export function useSpaceData({
   displayCurrency,
   wantSnapshots,
   wantTransactions,
+  initial,
 }: UseSpaceDataArgs): SpaceData {
-  const [sections,     setSections]     = useState<DashboardSection[]>([]);
-  const [accounts,     setAccounts]     = useState<SpaceAccount[]>([]);
-  const [loading,      setLoading]      = useState(true);
-  const [memberCount,  setMemberCount]  = useState<number | null>(null);
+  // PS-6B — seed the eager structural state from the server-hydrated payload when
+  // present; otherwise start empty + loading (the pre-6B behavior). `hydrated` is
+  // stable for the hook's mounted life (the host remounts on a Space switch), so
+  // it cleanly gates the initial fetches without racing a Space change.
+  const hydrated = initial != null;
+  const [sections,     setSections]     = useState<DashboardSection[]>(initial?.sections ?? []);
+  const [accounts,     setAccounts]     = useState<SpaceAccount[]>(initial?.accounts ?? []);
+  const [loading,      setLoading]      = useState(!hydrated);
+  const [memberCount,  setMemberCount]  = useState<number | null>(initial?.memberCount ?? null);
   const [snapshots,    setSnapshots]    = useState<Snapshot[] | null>(null);
   const [backfilling,  setBackfilling]  = useState(false);
   const [transactions, setTransactions] = useState<Transaction[] | null>(null);
@@ -185,14 +209,17 @@ export function useSpaceData({
   }, [spaceId, reloadAccounts]);
 
   // ── Header member count ─────────────────────────────────────────────────────
+  // PS-6B — skipped when hydrated (server composed the ACTIVE member count), so
+  // the mount no longer calls the heavy /api/spaces/[id] route just for a length.
   useEffect(() => {
+    if (hydrated) return;
     let active = true;
     fetch(`/api/spaces/${spaceId}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => { if (active) setMemberCount(data?.members?.length ?? null); })
       .catch(() => { if (active) setMemberCount(null); });
     return () => { active = false; };
-  }, [spaceId]);
+  }, [spaceId, hydrated]);
 
   // ── Snapshot history (+ backfill flag) ──────────────────────────────────────
   useEffect(() => {
@@ -240,7 +267,11 @@ export function useSpaceData({
   }, [spaceId, wantTransactions, transactions === null, currencyNonce, refreshNonce]);
 
   // ── Initial sections + accounts (one combined fetch; flips `loading` false) ──
+  // PS-6B — skipped when hydrated: the server composition already provided both
+  // (and `loading` started false). Refresh still works — reloadSections /
+  // reloadAccounts and the event listeners above re-fetch on demand, unchanged.
   useEffect(() => {
+    if (hydrated) return;
     let active = true;
     Promise.all([
       fetch(`/api/spaces/${spaceId}/sections`).then((r) => (r.ok ? r.json() : [])),
@@ -252,7 +283,7 @@ export function useSpaceData({
       setLoading(false);
     });
     return () => { active = false; };
-  }, [spaceId]);
+  }, [spaceId, hydrated]);
 
   return {
     sections,

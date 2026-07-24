@@ -10,8 +10,8 @@
  */
 
 import { NextRequest, NextResponse }      from "next/server";
-import { db }                             from "@/lib/db";
 import { requireSpaceAction }             from "@/lib/spaces/authorize";
+import { loadSpaceSections }              from "@/lib/space/mount-composition";
 
 export async function GET(
   _req: NextRequest,
@@ -23,10 +23,8 @@ export async function GET(
   const [, err] = await requireSpaceAction(spaceId, "section:read");
   if (err) return err;
 
-  const sections = await db.spaceDashboardSection.findMany({
-    where: { spaceId },
-    orderBy: [{ tab: "asc" }, { order: "asc" }],
-  });
-
+  // PS-6B — ONE loader definition, shared with the /dashboard mount composition
+  // (lib/space/mount-composition.ts). The authorization above is unchanged.
+  const sections = await loadSpaceSections(spaceId);
   return NextResponse.json(sections);
 }

@@ -57,6 +57,7 @@ import { SectionCard } from "@/components/space/sections/SectionCard";
 import { SectionRegistry } from "@/components/space/sections/SectionRegistry";
 import { formatBalance } from "@/lib/currency";
 import type { SpaceMountContext } from "@/lib/space/mount-context";
+import type { FinancialInitialWorkspacePayload } from "@/lib/space/mount-composition";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -124,6 +125,15 @@ interface Props {
    * destructured, so behavior is byte-unchanged.
    */
   mountContext?: SpaceMountContext;
+  /**
+   * PS-6B — the finance initial-Workspace payload (sections + accounts + member
+   * count), composed once at the /dashboard RSC boundary and consumed by
+   * useSpaceData to hydrate the shell without the client re-fetching those three
+   * eager structural resources. Absent ⇒ the hook fetches on mount, exactly as
+   * before. This is the FINANCIAL InitialWorkspacePayload (PS-6P boundary) — it is
+   * not part of the domain-neutral mountContext.
+   */
+  initialWorkspace?: FinancialInitialWorkspacePayload;
 }
 
 // SD-8b — the URL⇄tab vocabulary (URL_SYNCED_TABS / URL_TAB_ALIAS / parseTabParam /
@@ -161,6 +171,7 @@ export function SpaceDashboard({
   ficoUpdatedAt,
   perspectiveTargetCurrency,
   transactionsMoneyCtxOverride,
+  initialWorkspace,
 }: Props) {
   const router = useRouter();
 
@@ -308,7 +319,7 @@ export function SpaceDashboard({
     effectiveCurrency,
     reloadSections,
     reloadAccounts,
-  } = useSpaceData({ spaceId, displayCurrency, wantSnapshots, wantTransactions });
+  } = useSpaceData({ spaceId, displayCurrency, wantSnapshots, wantTransactions, initial: initialWorkspace });
 
   // V25-CLOSE-3A — the reporting-currency failure contract, resolved once at the
   // shared /view-context boundary and applied here at the composition root. When

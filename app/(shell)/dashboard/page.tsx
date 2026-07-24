@@ -4,6 +4,7 @@ import { PersonalDashboard }                       from "@/components/dashboard/
 import { getFicoData }                                 from "@/lib/data/accounts";
 import { getSpaceContext }                         from "@/lib/space";
 import { financialMountContext }                   from "@/lib/space/mount-context.server";
+import { composeFinancialInitialWorkspace }        from "@/lib/space/mount-composition";
 import { DisplayCurrencyProvider }                 from "@/lib/currency-context";
 
 // Co-locate compute with the Singapore-region Supabase instance — see
@@ -56,6 +57,14 @@ export default async function DashboardPage({
     compareTo:   str(spAll?.compareto) ?? null,
   });
 
+  // PS-6B — compose the finance initial-Workspace payload (sections + accounts +
+  // member count) ONCE from the already-authorized ctx.spaceId, so the shell
+  // hydrates instead of the client re-fetching those three eager resources (each
+  // of which independently re-ran session + spaceMember). The three loaders are
+  // the SAME ones the API routes now delegate to (no duplication). Snapshots /
+  // perspectives / transactions stay lazy/client — deferred.
+  const initialWorkspace = await composeFinancialInitialWorkspace(ctx.spaceId);
+
   // Non-personal spaces render the planning dashboard (client-side data fetching)
   //
   // MC1 nav currency-staleness fix — source the display currency from THIS
@@ -79,6 +88,7 @@ export default async function DashboardPage({
             myRole={ctx.role}
             currentUserId={ctx.userId}
             mountContext={mountContext}
+            initialWorkspace={initialWorkspace}
           />
         </Suspense>
       </DisplayCurrencyProvider>
@@ -118,6 +128,7 @@ export default async function DashboardPage({
           initialTab={mapLegacyTabToShell(rawTab)}
           ficoScore={ficoData.score}
           mountContext={mountContext}
+          initialWorkspace={initialWorkspace}
         />
       </Suspense>
     </DisplayCurrencyProvider>

@@ -82,18 +82,28 @@ function attachFloors(floors: GroupRow[], normalized: Acct[]): (Acct & { earlies
 }
 
 // ── 2. Source-scan drift/safety guards ────────────────────────────────────────
-const routeSrc = readFileSync(
-  path.join(process.cwd(), "app", "api", "spaces", "[id]", "accounts", "route.ts"),
+// PS-6B — the floor logic (query + attach) moved from the route into its ONE
+// authoritative loader (lib/space/mount-composition.ts#loadSpaceAccounts), which
+// the route now delegates to. Scan the loader for the drift guards, and confirm
+// the route still delegates (so the shape the personal-space RebuildHistoryButton
+// depends on is produced identically for the API and the hydrated mount).
+const loaderSrc = readFileSync(
+  path.join(process.cwd(), "lib", "space", "mount-composition.ts"),
   "utf8",
 );
-const scrunch = routeSrc.replace(/\s+/g, " ");
+const scrunch = loaderSrc.replace(/\s+/g, " ");
+const routeDelegates = readFileSync(
+  path.join(process.cwd(), "app", "api", "spaces", "[id]", "accounts", "route.ts"),
+  "utf8",
+).includes("loadSpaceAccounts(spaceId)");
 
-check("route groups transactions by financialAccountId", /groupBy\(\s*\{[^}]*by:\s*\[\s*"financialAccountId"\s*\]/.test(scrunch), "expected transaction.groupBy by financialAccountId");
-check("route floors on min transaction date", /_min:\s*\{\s*date:\s*true\s*\}/.test(scrunch), "expected _min: { date: true }");
-check("route excludes soft-deleted transactions (parity with regen)", /deletedAt:\s*null/.test(scrunch), "expected deletedAt: null in the floor query");
-check("route floors on date, never createdAt, inside the _min aggregate", !/_min:\s*\{[^}]*createdAt/.test(scrunch), "the floor must aggregate min(date), not createdAt — see regenerate-history.ts");
-check("route attaches earliestTxDate to each account", /earliestTxDate:/.test(scrunch), "expected earliestTxDate on the returned rows");
-check("route formats the floor as YYYY-MM-DD", /toISOString\(\)\.slice\(0,\s*10\)/.test(scrunch), "expected toISOString().slice(0,10)");
+check("accounts route delegates to the shared loadSpaceAccounts loader", routeDelegates, "expected the route to call loadSpaceAccounts(spaceId)");
+check("loader groups transactions by financialAccountId", /groupBy\(\s*\{[^}]*by:\s*\[\s*"financialAccountId"\s*\]/.test(scrunch), "expected transaction.groupBy by financialAccountId");
+check("loader floors on min transaction date", /_min:\s*\{\s*date:\s*true\s*\}/.test(scrunch), "expected _min: { date: true }");
+check("loader excludes soft-deleted transactions (parity with regen)", /deletedAt:\s*null/.test(scrunch), "expected deletedAt: null in the floor query");
+check("loader floors on date, never createdAt, inside the _min aggregate", !/_min:\s*\{[^}]*createdAt/.test(scrunch), "the floor must aggregate min(date), not createdAt — see regenerate-history.ts");
+check("loader attaches earliestTxDate to each account", /earliestTxDate:/.test(scrunch), "expected earliestTxDate on the returned rows");
+check("loader formats the floor as YYYY-MM-DD", /toISOString\(\)\.slice\(0,\s*10\)/.test(scrunch), "expected toISOString().slice(0,10)");
 
 // ── Report ────────────────────────────────────────────────────────────────────
 if (failures.length) {
