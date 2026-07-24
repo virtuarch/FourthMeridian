@@ -128,6 +128,7 @@ export async function runCronItemRefresh(
     recorder.succeed("BALANCES", {
       recordsChanged:    bal.updatedAccountIds.length,
       coveredAccountIds: bal.updatedAccountIds,
+      accounts:          bal.accountCoverage,
     });
     if (bal.updatedAccountIds.length > 0) {
       stage = "SNAPSHOT";

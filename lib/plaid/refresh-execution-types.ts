@@ -62,11 +62,40 @@ export type RefreshStageStatus = "SUCCEEDED" | "FAILED" | "SKIPPED";
  */
 export type RefreshSkipReason = "NOT_APPLICABLE" | "BUDGET" | "IN_FLIGHT" | "COOLDOWN";
 
+/** DF-2E — per-account coverage outcome, reported by stages that iterate accounts. */
+export type AccountCoverageStatus = "COVERED" | "SKIPPED" | "FAILED";
+
+/**
+ * DF-2E — canonical reason a covered account was NOT freshly evaluated. Only
+ * SKIPPED/FAILED carry one. ACCOUNT_DISCONNECTED (soft-deleted account under an
+ * active item), NO_HOLDINGS (holdings stage, account held nothing), NOT_APPLICABLE
+ * (endpoint N/A for the account), PROVIDER_FAILURE (reserved — per-account
+ * provider failure; whole-stage failures record no per-account row).
+ */
+export type AccountCoverageReason = "ACCOUNT_DISCONNECTED" | "NO_HOLDINGS" | "NOT_APPLICABLE" | "PROVIDER_FAILURE";
+
+/** One account's outcome within a stage — the atom of RefreshEndpointAccountCoverage. */
+export interface AccountCoverageFact {
+  financialAccountId: string;
+  status: AccountCoverageStatus;
+  reason?: AccountCoverageReason;
+  /** Did THIS execution freshly observe/write the account for this endpoint (execution freshness). */
+  freshnessAdvanced: boolean;
+}
+
 /** Facts a stage reports on success. All optional — a stage records only what it truthfully knows. */
 export interface RefreshStageFacts {
   recordsRead?: number;
   recordsWritten?: number;
   recordsChanged?: number;
+  /**
+   * DF-2E — per-account coverage the stage genuinely evaluated (BALANCES,
+   * HOLDINGS). Persisted as RefreshEndpointAccountCoverage rows. Omitted by
+   * stages that do not iterate accounts (TRANSACTIONS is item-level; derived
+   * stages carry none) — absence means "not evaluated per-account", never "not
+   * covered". Never fabricate accounts a stage did not truly touch.
+   */
+  accounts?: AccountCoverageFact[];
   /**
    * DF-2B COVERAGE DOCTRINE: a COARSE evidence set of canonical FinancialAccount
    * ids DIRECTLY PROCESSED BY, or MATERIALLY USED AS INPUTS TO, this stage. Soft
@@ -92,6 +121,8 @@ export interface RefreshStageRecord {
   coveredAccountIds: string[];
   freshnessAdvanced?: boolean;
   errorSummary?: string;
+  /** DF-2E — per-account coverage carried from the stage facts, persisted at close. */
+  accounts: AccountCoverageFact[];
 }
 
 /**

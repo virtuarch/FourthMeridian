@@ -88,6 +88,15 @@ export interface RefreshEndpointResultData {
   errorSummary?: string;
 }
 
+export interface RefreshEndpointAccountCoverageData {
+  refreshExecutionId: string;
+  endpoint: string;
+  financialAccountId: string;
+  status: string;
+  reason?: string;
+  freshnessAdvanced: boolean;
+}
+
 export interface RefreshExecutionWriteClient {
   refreshExecution: {
     create(args: { data: RefreshExecutionStartData; select: { id: true } }): Promise<{ id: string }>;
@@ -95,6 +104,9 @@ export interface RefreshExecutionWriteClient {
   };
   refreshEndpointResult: {
     createMany(args: { data: RefreshEndpointResultData[] }): Promise<unknown>;
+  };
+  refreshEndpointAccountCoverage: {
+    createMany(args: { data: RefreshEndpointAccountCoverageData[] }): Promise<unknown>;
   };
 }
 
@@ -136,6 +148,7 @@ export class StageRecorder implements RefreshStageRecorder {
       recordsChanged,
       coveredAccountIds: facts?.coveredAccountIds ?? [],
       freshnessAdvanced: recordsChanged === undefined ? undefined : recordsChanged > 0,
+      accounts: facts?.accounts ?? [],
     });
   }
 
@@ -153,6 +166,7 @@ export class StageRecorder implements RefreshStageRecorder {
       durationMs: Date.now() - t0,
       coveredAccountIds: [],
       errorSummary: summarizeError(err),
+      accounts: [],
     });
   }
 
@@ -168,6 +182,7 @@ export class StageRecorder implements RefreshStageRecorder {
       completedAt: now,
       durationMs: 0,
       coveredAccountIds: [],
+      accounts: [],
     });
   }
 
@@ -186,6 +201,7 @@ export class StageRecorder implements RefreshStageRecorder {
       durationMs: Date.now() - t0,
       coveredAccountIds: [],
       errorSummary: summarizeError(err),
+      accounts: [],
     });
   }
 
@@ -354,6 +370,28 @@ async function closeExecution(
       });
     } catch (writeErr) {
       console.error(`[refresh-execution] ${executionId}: endpoint-result write failed (non-fatal):`, writeErr);
+    }
+  }
+
+  // DF-2E — one immutable RefreshEndpointAccountCoverage row per (endpoint,
+  // account) the execution evaluated. Flattened from the stage records that
+  // reported per-account outcomes (BALANCES, HOLDINGS). Best-effort; a coverage
+  // write failure never breaks the refresh.
+  const coverageRows: RefreshEndpointAccountCoverageData[] = records.flatMap((r) =>
+    r.accounts.map((a) => ({
+      refreshExecutionId: executionId,
+      endpoint: r.endpoint,
+      financialAccountId: a.financialAccountId,
+      status: a.status,
+      reason: a.reason,
+      freshnessAdvanced: a.freshnessAdvanced,
+    })),
+  );
+  if (coverageRows.length > 0) {
+    try {
+      await client.refreshEndpointAccountCoverage.createMany({ data: coverageRows });
+    } catch (writeErr) {
+      console.error(`[refresh-execution] ${executionId}: account-coverage write failed (non-fatal):`, writeErr);
     }
   }
 

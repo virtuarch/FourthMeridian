@@ -59,7 +59,7 @@ import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 // DF-2A — the observational stage recorder for the per-item refresh execution
 // ledger. Optional; when absent, refreshPlaidItem behaves byte-identically.
-import type { RefreshStageRecorder } from "@/lib/plaid/refresh-execution-types";
+import type { RefreshStageRecorder, AccountCoverageFact } from "@/lib/plaid/refresh-execution-types";
 
 // ── M2 — balance↔transaction reconciliation helpers ──────────────────────────
 
@@ -153,6 +153,13 @@ export interface ItemBalanceRefresh {
   accountsUpdated:   number;
   updatedAccountIds: string[];
   reconcileTargets:  ReconcileTarget[];
+  /**
+   * DF-2E — per-account coverage for the BALANCES stage: each resolved account
+   * written (COVERED, freshness advanced) or soft-deleted and skipped
+   * (SKIPPED / ACCOUNT_DISCONNECTED). Unresolved provider accounts (no
+   * FinancialAccount) are omitted — no account identity to attribute.
+   */
+  accountCoverage:   AccountCoverageFact[];
 }
 
 /**
@@ -175,6 +182,8 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
 
   let accountsUpdated = 0;
   const updatedAccountIds: string[] = [];
+  // DF-2E — per-account coverage for this BALANCES stage.
+  const accountCoverage: AccountCoverageFact[] = [];
   // M2 — per-account balance before/after for cash/card reconciliation (used by
   // refreshPlaidItem only; carried through so the manual path is unchanged).
   const reconcileTargets: ReconcileTarget[] = [];
@@ -188,7 +197,13 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
     // PROV-2 — canonical identity→legacy resolve. Refresh SKIPS soft-deleted
     // matches: never restore or create during a refresh (relink owns that).
     const fa = await resolvePlaidAccountByExternalId(acct.account_id);
-    if (!fa || fa.deletedAt) continue;
+    if (!fa) continue; // unresolved provider account — no FinancialAccount identity to attribute
+    if (fa.deletedAt) {
+      // DF-2E — a soft-deleted account under an active item: intentionally not
+      // evaluated (distinct from a stage failure). Freshness does NOT advance.
+      accountCoverage.push({ financialAccountId: fa.id, status: "SKIPPED", reason: "ACCOUNT_DISCONNECTED", freshnessAdvanced: false });
+      continue;
+    }
 
     const availableBalance = acct.balances.available ?? undefined;
     const creditLimit       = acct.balances.limit ?? undefined;
@@ -214,6 +229,9 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
     });
     accountsUpdated++;
     updatedAccountIds.push(fa.id);
+    // DF-2E — balance written (institution-verified) → this execution advanced
+    // the account's balance freshness, even if the value itself was unchanged.
+    accountCoverage.push({ financialAccountId: fa.id, status: "COVERED", freshnessAdvanced: true });
 
     const rk = reconcileKind(fa);
     if (rk) {
@@ -227,7 +245,7 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
     }
   }
 
-  return { item, accessToken, plaidAccounts, itemData: accountsRes.data.item, accountsUpdated, updatedAccountIds, reconcileTargets };
+  return { item, accessToken, plaidAccounts, itemData: accountsRes.data.item, accountsUpdated, updatedAccountIds, reconcileTargets, accountCoverage };
 }
 
 /**
@@ -254,9 +272,9 @@ export async function refreshPlaidItem(
 
   // ── 1. Balances / account metadata — the ONE balance authority (CONN-3) ───
   recorder?.begin("BALANCES", "PROVIDER");
-  const { item, accessToken, plaidAccounts, itemData, accountsUpdated, updatedAccountIds, reconcileTargets } =
+  const { item, accessToken, plaidAccounts, itemData, accountsUpdated, updatedAccountIds, reconcileTargets, accountCoverage } =
     await refreshBalancesForItem(plaidItemDbId);
-  recorder?.succeed("BALANCES", { recordsChanged: accountsUpdated, coveredAccountIds: updatedAccountIds });
+  recorder?.succeed("BALANCES", { recordsChanged: accountsUpdated, coveredAccountIds: updatedAccountIds, accounts: accountCoverage });
 
   // ── 2. Investment holdings ──────────────────────────────────────────────
   // Best-effort/non-fatal — an institution with no investment accounts, or a
@@ -290,6 +308,7 @@ export async function refreshPlaidItem(
     recorder?.succeed("HOLDINGS", {
       recordsChanged:    holdingsUpdated,
       coveredAccountIds: investmentsResult.processedAccountIds,
+      accounts:          investmentsResult.accountCoverage,
     });
 
   // ── 3. Transactions ──────────────────────────────────────────────────────

@@ -2722,12 +2722,67 @@ model RefreshExecution {
   errorSummary   String? // truncated message only (no stack), set when overallStatus != SUCCEEDED
   createdAt      DateTime  @default(now())
 
-  endpoints     RefreshEndpointResult[]
-  providerCalls ProviderCall[]
+  endpoints      RefreshEndpointResult[]
+  providerCalls  ProviderCall[]
+  accountCoverage RefreshEndpointAccountCoverage[]
 
   @@index([plaidItemId, startedAt]) // "recent refreshes of this connection"
   @@index([overallStatus, startedAt]) // failure / partial scans
   @@index([parentJobRunId]) // executions under a batch
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RefreshEndpointAccountCoverage  (DF-2E — per-account coverage & execution
+// freshness authority)
+//
+// One row per (execution, endpoint, FinancialAccount) the execution EVALUATED.
+// This is the canonical answer to: which accounts did a refresh actually
+// process, which endpoint touched each, which were intentionally skipped (and
+// why), whether their freshness advanced, and — by reverse lookup — which
+// execution most recently refreshed a given account. Consumed later by OPS-2;
+// it owns NO UI.
+//
+// COVERAGE ≠ SUCCESS/DATA/HEALTH (see REFRESH_COVERAGE_DOCTRINE.md):
+//   status COVERED  = this execution freshly evaluated (and wrote/observed) the
+//                     account for this endpoint. `freshnessAdvanced` records
+//                     whether a fresh observation actually landed (a successful
+//                     empty/no-change response STILL advances freshness).
+//   status SKIPPED  = the account was present but intentionally NOT evaluated
+//                     (reason: ACCOUNT_DISCONNECTED, NO_HOLDINGS, NOT_APPLICABLE)
+//                     — distinct from an account whose stage FAILED (no row here
+//                     + a FAILED RefreshEndpointResult).
+//   status FAILED   = reserved for a per-account provider/processing failure;
+//                     whole-stage provider failures produce NO per-account row
+//                     (the accounts were never iterated) — that reason lives on
+//                     the endpoint result, not here. (Not produced yet.)
+//
+// EXECUTION freshness, NOT observed freshness: `freshnessAdvanced` states that
+// THIS execution advanced the account's freshness for this endpoint. Current
+// "is the data stale now" (observed freshness) stays in resource-freshness.ts;
+// provider-side timestamps stay on FinancialAccount.balanceLastUpdatedAt. UNKNOWN
+// freshness is never asserted as "now" — absence of a COVERED row means the
+// account was not freshly observed, never that it is fresh.
+//
+// SOFT account reference (no FK to FinancialAccount): a point-in-time historical
+// fact; a later account merge/deletion/identity-correction must not rewrite or
+// cascade-erase it. FK-cascade to RefreshExecution only (its own ledger root).
+// Immutable: one row per (execution, endpoint, account), never updated.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RefreshEndpointAccountCoverage {
+  id                 String           @id @default(cuid())
+  refreshExecutionId String
+  execution          RefreshExecution @relation(fields: [refreshExecutionId], references: [id], onDelete: Cascade)
+  endpoint           String // the stage that evaluated the account ("BALANCES" | "HOLDINGS" | ...)
+  financialAccountId String // SOFT reference (no FK) — survives account merge/deletion/identity-correction
+  status             String // "COVERED" | "SKIPPED" | "FAILED"
+  reason             String? // canonical reason for SKIPPED/FAILED ("ACCOUNT_DISCONNECTED" | "NO_HOLDINGS" | "NOT_APPLICABLE" | "PROVIDER_FAILURE"); null for COVERED
+  freshnessAdvanced  Boolean // did THIS execution freshly observe/write this account for this endpoint
+  createdAt          DateTime         @default(now())
+
+  @@index([refreshExecutionId]) // "coverage for this execution"
+  @@index([financialAccountId, endpoint, createdAt]) // reverse: executions that covered account X for endpoint EP, newest first
+  @@index([financialAccountId, createdAt]) // "which execution most recently refreshed this account"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

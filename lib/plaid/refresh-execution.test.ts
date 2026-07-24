@@ -24,6 +24,7 @@ import {
   type RefreshExecutionStartData,
   type RefreshExecutionCompletionData,
   type RefreshEndpointResultData,
+  type RefreshEndpointAccountCoverageData,
 } from "@/lib/plaid/refresh-execution";
 import type { RefreshItemResult } from "@/lib/plaid/refresh";
 import type { RefreshStageRecord, RefreshStageRecorder, RefreshEndpoint } from "@/lib/plaid/refresh-execution-types";
@@ -61,6 +62,7 @@ function makeFake(opts: FakeOpts = {}) {
   const creates: RefreshExecutionStartData[] = [];
   const updates: Array<{ id: string; data: RefreshExecutionCompletionData }> = [];
   const endpointRows: RefreshEndpointResultData[] = [];
+  const coverageRows: RefreshEndpointAccountCoverageData[] = [];
   let seq = 0;
   const client: RefreshExecutionWriteClient = {
     refreshExecution: {
@@ -82,8 +84,15 @@ function makeFake(opts: FakeOpts = {}) {
         return {};
       },
     },
+    refreshEndpointAccountCoverage: {
+      async createMany({ data }) {
+        if (opts.failCreateMany) throw new Error("ledger down");
+        coverageRows.push(...data);
+        return {};
+      },
+    },
   };
-  return { client, creates, updates, endpointRows };
+  return { client, creates, updates, endpointRows, coverageRows };
 }
 
 const okResult: RefreshItemResult = {
@@ -160,7 +169,7 @@ async function main() {
   {
     const s = (over: Partial<RefreshStageRecord>): RefreshStageRecord => ({
       endpoint: "BALANCES", stageKind: "PROVIDER", status: "SUCCEEDED",
-      startedAt: new Date(0), completedAt: new Date(0), durationMs: 0, coveredAccountIds: [], ...over,
+      startedAt: new Date(0), completedAt: new Date(0), durationMs: 0, coveredAccountIds: [], accounts: [], ...over,
     });
     check("all provider stages succeed → SUCCEEDED", deriveOverallStatus([
       s({ endpoint: "BALANCES" }), s({ endpoint: "TRANSACTIONS" }),
@@ -423,6 +432,46 @@ async function main() {
     check("DF-2D: context active inside the runner, bound to the execution row", seen.execId === "exec-1" && creates[0]?.plaidItemId === "item-1");
     check("DF-2D: recorder keeps context.currentEndpoint in sync with the active stage", seen.epDuring === "BALANCES" && seen.epAfter === undefined);
     check("DF-2D: context does not leak after the refresh returns", getProviderCallContext() === undefined);
+  }
+
+  // ── DF-2E: per-account coverage & execution freshness ─────────────────────
+  {
+    const { client, coverageRows } = makeFake();
+    await runFullRefresh({ itemId: "item-1", trigger: "MANUAL", profile: "FULL_REFRESH" }, {
+      client,
+      refresh: async ({ recorder }) => {
+        recorder.begin("BALANCES", "PROVIDER");
+        recorder.succeed("BALANCES", { recordsChanged: 2, coveredAccountIds: ["a1", "a2"], accounts: [
+          { financialAccountId: "a1", status: "COVERED", freshnessAdvanced: true },
+          { financialAccountId: "a2", status: "COVERED", freshnessAdvanced: true },
+          { financialAccountId: "a3", status: "SKIPPED", reason: "ACCOUNT_DISCONNECTED", freshnessAdvanced: false },
+        ] });
+        recorder.begin("HOLDINGS", "PROVIDER");
+        recorder.succeed("HOLDINGS", { recordsChanged: 1, accounts: [
+          { financialAccountId: "inv1", status: "COVERED", freshnessAdvanced: true },
+          { financialAccountId: "inv2", status: "SKIPPED", reason: "NO_HOLDINGS", freshnessAdvanced: false },
+        ] });
+        recorder.begin("TRANSACTIONS", "PROVIDER");
+        recorder.succeed("TRANSACTIONS", { recordsChanged: 3 }); // item-level → no per-account coverage
+        return okResult;
+      },
+    });
+    check("DF-2E: one coverage row per (endpoint, account) the stages evaluated", coverageRows.length === 5);
+    const byId = (id: string) => coverageRows.find((r) => r.financialAccountId === id);
+    check("DF-2E: COVERED account records freshnessAdvanced=true", byId("a1")?.status === "COVERED" && byId("a1")?.freshnessAdvanced === true);
+    check("DF-2E: SKIPPED distinguishable from COVERED, with a canonical reason", byId("a3")?.status === "SKIPPED" && byId("a3")?.reason === "ACCOUNT_DISCONNECTED" && byId("a3")?.freshnessAdvanced === false);
+    check("DF-2E: HOLDINGS NO_HOLDINGS skip recorded (freshness not advanced)", byId("inv2")?.reason === "NO_HOLDINGS" && byId("inv2")?.freshnessAdvanced === false);
+    check("DF-2E: each row is attributed to its endpoint", byId("a1")?.endpoint === "BALANCES" && byId("inv1")?.endpoint === "HOLDINGS");
+    check("DF-2E: TRANSACTIONS (item-level) produces NO per-account coverage (absence ≠ uncovered)", !coverageRows.some((r) => r.endpoint === "TRANSACTIONS"));
+    check("DF-2E: coverage rows bound to the execution (soft account ref)", coverageRows.every((r) => r.refreshExecutionId === "exec-1"));
+  }
+  {
+    // A skipped-locked execution evaluates no accounts → no coverage rows.
+    const { client, coverageRows, updates } = makeFake();
+    await runFullRefresh<string>({ itemId: "item-1", trigger: "CRON", profile: "FULL_REFRESH" }, {
+      client, refresh: ({ recorder }) => { recorder.skip("TRANSACTIONS", "PROVIDER", "IN_FLIGHT"); return Promise.resolve("skipped-locked"); },
+    });
+    check("DF-2E: lock-skipped execution writes zero coverage rows", coverageRows.length === 0 && updates[0]?.data.overallStatus === "SKIPPED");
   }
 
   console.log(failures === 0 ? "\nAll refresh-execution guards passed." : `\n${failures} guard(s) failed.`);

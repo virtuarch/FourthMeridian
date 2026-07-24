@@ -45,6 +45,7 @@ import { deriveInvestmentsConsent } from "@/lib/plaid/investmentsConsent";
 import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
 import { capturePositionObservations, investmentObservationsEnabled } from "@/lib/investments/position-capture";
 import { syncCurrentHoldings } from "@/lib/investments/sync-current-holdings";
+import type { AccountCoverageFact } from "@/lib/plaid/refresh-execution-types";
 import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
 
 const LOG = "[plaid-investments]";
@@ -80,6 +81,13 @@ export interface SyncInvestmentsResult {
    * (present ≠ updated; empty ≠ uncovered).
    */
   processedAccountIds: string[];
+  /**
+   * DF-2E — per-account coverage for the HOLDINGS stage: each resolved
+   * investment account synced (COVERED, freshness advanced) or resolved with no
+   * holdings (SKIPPED / NO_HOLDINGS). Empty when holdings were not callable
+   * (consent) or no investment accounts.
+   */
+  accountCoverage: AccountCoverageFact[];
 }
 
 /**
@@ -94,7 +102,9 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
   let holdingsSynced = 0;
   // DF-2B — accounts the holdings stage genuinely processed (for coverage evidence).
   const processedAccountIds: string[] = [];
-  if (investmentAccounts.length === 0) return { holdingsSynced, consent: storedConsent, processedAccountIds };
+  // DF-2E — per-account coverage for this HOLDINGS stage.
+  const accountCoverage: AccountCoverageFact[] = [];
+  if (investmentAccounts.length === 0) return { holdingsSynced, consent: storedConsent, processedAccountIds, accountCoverage };
 
   // ── Consent (DRIFT-1: change-detect + log; seeds at link since stored=null) ──
   let consent: PlaidInvestmentsConsent | null = storedConsent;
@@ -108,7 +118,7 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
   // null = still unknown (pre-DTM item, never probed) — attempt once below; the
   // outcome is persisted either way, so the probe never repeats.
   const holdingsCallable = consent === null || consent === PlaidInvestmentsConsent.ENABLED;
-  if (!holdingsCallable) return { holdingsSynced, consent, processedAccountIds };
+  if (!holdingsCallable) return { holdingsSynced, consent, processedAccountIds, accountCoverage };
 
   try {
     // DRIFT-2: always retry.
@@ -121,11 +131,17 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
     const payloadComplete = holdingsRes.data.is_investments_fallback_item !== true;
 
     for (const plaidAcct of investmentAccounts) {
-      const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
-      if (!acctHoldings.length) continue;
-
+      // DF-2E — resolve identity first so a no-holdings account can be recorded
+      // as SKIPPED/NO_HOLDINGS (resolution is a read; no behavior change for
+      // accounts that do have holdings).
       const fa = await resolvePlaidAccountByExternalId(plaidAcct.account_id);
-      if (!fa) continue;
+      if (!fa) continue; // no FinancialAccount identity to attribute
+
+      const acctHoldings = holdings.filter((h) => h.account_id === plaidAcct.account_id);
+      if (!acctHoldings.length) {
+        accountCoverage.push({ financialAccountId: fa.id, status: "SKIPPED", reason: "NO_HOLDINGS", freshnessAdvanced: false });
+        continue;
+      }
 
       // A1 — dark-write append-only observation from the RAW payload (incl.
       // cash / no-ticker securities the Holding writer skips), BEFORE the
@@ -159,6 +175,9 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
       holdingsSynced += syncCounts.inserted + syncCounts.updated + syncCounts.unchanged;
       // DF-2B — this account was genuinely processed by the holdings stage.
       processedAccountIds.push(fa.id);
+      // DF-2E — holdings synced → this execution advanced the account's holdings
+      // freshness (a fresh observation, even if nothing changed).
+      accountCoverage.push({ financialAccountId: fa.id, status: "COVERED", freshnessAdvanced: true });
     }
 
     // A3 — canonical investment event ingestion (once per item; separate
@@ -188,5 +207,5 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
     }
   }
 
-  return { holdingsSynced, consent, processedAccountIds };
+  return { holdingsSynced, consent, processedAccountIds, accountCoverage };
 }
