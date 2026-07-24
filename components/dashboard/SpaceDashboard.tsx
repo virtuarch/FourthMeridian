@@ -116,13 +116,16 @@ interface Props {
    */
   transactionsMoneyCtxOverride?: SerializedConversionContext;
   /**
-   * PS-6A — the domain-neutral SpaceMountContext composed server-side by the
-   * /dashboard route from the already-authorized SpaceContext. Additive and
-   * NOT YET CONSUMED: this slice only proves the route can construct and pass
-   * the shared contract. The hydration cutover that would let this shell read
-   * identity/access/workspaces/time FROM this context (and drop the duplicate
-   * useSpaceData client fetches) is PS-6B. Accepted here, deliberately not
-   * destructured, so behavior is byte-unchanged.
+   * PS-6A/6E — the domain-neutral SpaceMountContext, composed server-side by the
+   * /dashboard route from the already-authorized SpaceContext (resolver parity
+   * with platformMountContext). This FINANCIAL shell does NOT consume it: the
+   * P2024 fan-out fix landed via server hydration (initialWorkspace + useSpaceData,
+   * PS-6B), and this shell reads its identity/nav from native props + that bounded
+   * payload — NOT from the context. Platform is the context's end-to-end consumer
+   * (PS-6C). Wiring this financial shell to read identity/access/workspaces FROM
+   * the context (full convergence to the canonical mount flow) is a deliberate
+   * PS-6 FOLLOW-UP, out of the closure slice's verification scope — so the prop is
+   * accepted and left unconsumed rather than removed, keeping the boundary intact.
    */
   mountContext?: SpaceMountContext;
   /**

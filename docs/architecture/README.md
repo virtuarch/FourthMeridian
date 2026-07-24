@@ -28,6 +28,9 @@ architectural changes without violating existing doctrine.
    windows, TimelineLens intents, and why every Perspective shares one time model.
 6. **[UI_INTERACTION_MODEL.md](./UI_INTERACTION_MODEL.md)** — Preview → Browser →
    Detail, chart interrogability, panels over modals, and selection invalidation.
+7. **[SPACE_MOUNT_DOCTRINE.md](./SPACE_MOUNT_DOCTRINE.md)** — the mount boundary: what
+   the shared `SpaceMountContext` owns (identity · nav · shell config), what stays a
+   workspace loader, the hydration allowlist, and why finance/platform load differently.
 
 ## Where to go when you change a feature
 
@@ -35,6 +38,7 @@ architectural changes without violating existing doctrine.
 |---|---|
 | any financial calculation | FINANCIAL_TRUTH_SPINE + the relevant [systems/](../systems/) doc |
 | a workspace, panel, or dashboard | SPACE_ARCHITECTURE |
+| the /dashboard mount, mount context, or initial hydration | SPACE_MOUNT_DOCTRINE |
 | a chart, drill-down, or detail surface | UI_INTERACTION_MODEL |
 | anything time-windowed (asOf/compareTo) | TIME_MODEL |
 | a route, API, or who-can-see-what | SECURITY_MODEL |

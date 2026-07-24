@@ -152,7 +152,7 @@ export type SpaceMountTime =
   | { supported: true; asOf: string; compareTo?: string | null }
   | { supported: false };
 
-// ── The context + payload envelope ─────────────────────────────────────────────
+// ── The domain-neutral mount context ───────────────────────────────────────────
 
 /** THE domain-neutral shell mount context. */
 export interface SpaceMountContext {
@@ -165,16 +165,14 @@ export interface SpaceMountContext {
   time: SpaceMountTime;
 }
 
-/**
- * Part K — the envelope that keeps context and domain data SEPARATE. The initial
- * Workspace payload is typed per domain and is DEFERRED (PS-6B finance / PS-6C
- * platform). Platform may continue with no server-composed initial payload. This
- * is intentionally NOT a discriminated union of every Workspace DTO.
- */
-export interface SpaceMountPayload<TInitialWorkspace = never> {
-  context: SpaceMountContext;
-  initialWorkspace?: TInitialWorkspace;
-}
+// PS-6E — the speculative `SpaceMountPayload<T>` envelope (context + optional
+// initialWorkspace, bundled) was removed at closure: neither domain ever adopted
+// it. The mount context and the domain's optional first-render payload travel as
+// SEPARATE values by design — finance passes SpaceMountContext and its
+// FinancialInitialWorkspacePayload as distinct props (the shell consumes the
+// payload via useSpaceData); platform passes only the context. Keeping the two
+// separate is the boundary; an enveloping wrapper added nothing and had no
+// producer or consumer.
 
 // ── Shared validator (pure; used by both resolvers) ────────────────────────────
 

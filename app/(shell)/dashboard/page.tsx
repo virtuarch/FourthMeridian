@@ -42,13 +42,14 @@ export default async function DashboardPage({
   const ctx = await getSpaceContext();
   const isPersonal = ctx.space.type === "PERSONAL";
 
-  // PS-6A — compose the domain-neutral SpaceMountContext from the ALREADY-
+  // PS-6A/6E — compose the domain-neutral SpaceMountContext from the ALREADY-
   // AUTHORIZED financial SpaceContext (getSpaceContext above ran the
-  // cookie→preferred→personal resolution and the SpaceMember gate). This proves
-  // the shared contract can be constructed on the financial route; it is passed
-  // to the shell as an additive, not-yet-consumed prop. The client-fetch
-  // hydration cutover that would REMOVE the useSpaceData fan-out is PS-6B —
-  // deliberately NOT done here, so behavior is unchanged.
+  // cookie→preferred→personal resolution and the SpaceMember gate). This gives the
+  // financial route resolver PARITY with platformMountContext. The financial shell
+  // does NOT consume it: the fan-out fix shipped via server hydration
+  // (composeFinancialInitialWorkspace below + useSpaceData, PS-6B), and the shell
+  // reads native props + that payload. Platform is the context's end-to-end
+  // consumer (PS-6C). Full financial consumption is a PS-6 FOLLOW-UP.
   const spAll = await searchParams;
   const str = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
   const mountContext = financialMountContext(ctx, {

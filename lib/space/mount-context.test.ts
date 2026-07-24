@@ -88,6 +88,12 @@ check("ref.kind = utility", plat.ref.kind === "utility");
 // to the ContextualNavbar exactly like finance; "utility" is for lone GLOBAL-nav
 // destinations). ref.kind stays "utility" (Space NATURE) — a separate axis.
 check("shell.variant = space (frame axis ≠ kind; platform delegates identity like finance)", plat.shell.variant === "space");
+// PS-6E invariant guard (SPACE_MOUNT_DOCTRINE §3) — kind (ontology) and variant
+// (presentation) are INDEPENDENT axes; one must never be derived from the other.
+// Platform is the living proof: a utility-KIND Space renders the space-VARIANT.
+// Deriving variant from kind was the PS-6C defect (it suppressed the rail).
+check("SpaceRef.kind and shell.variant do NOT co-vary (utility kind → space variant)",
+  plat.ref.kind === "utility" && plat.shell.variant === "space" && plat.ref.kind !== plat.shell.variant);
 check("READ grant → canRead true, canWrite false, level 'READ'",
   plat.access.canRead === true && plat.access.canWrite === false && plat.access.level === "READ");
 check("WRITE grant → canWrite true",
