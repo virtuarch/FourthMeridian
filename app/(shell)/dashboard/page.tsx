@@ -3,7 +3,6 @@ import { SpaceDashboard }                          from "@/components/dashboard/
 import { PersonalDashboard }                       from "@/components/dashboard/PersonalDashboard";
 import { getFicoData }                                 from "@/lib/data/accounts";
 import { getSpaceContext }                         from "@/lib/space";
-import { financialMountContext }                   from "@/lib/space/mount-context.server";
 import { composeFinancialInitialWorkspace }        from "@/lib/space/mount-composition";
 import { DisplayCurrencyProvider }                 from "@/lib/currency-context";
 
@@ -42,21 +41,16 @@ export default async function DashboardPage({
   const ctx = await getSpaceContext();
   const isPersonal = ctx.space.type === "PERSONAL";
 
-  // PS-6A/6E — compose the domain-neutral SpaceMountContext from the ALREADY-
-  // AUTHORIZED financial SpaceContext (getSpaceContext above ran the
-  // cookie→preferred→personal resolution and the SpaceMember gate). This gives the
-  // financial route resolver PARITY with platformMountContext. The financial shell
-  // does NOT consume it: the fan-out fix shipped via server hydration
-  // (composeFinancialInitialWorkspace below + useSpaceData, PS-6B), and the shell
-  // reads native props + that payload. Platform is the context's end-to-end
-  // consumer (PS-6C). Full financial consumption is a PS-6 FOLLOW-UP.
+  // PS-6F — the financial route deliberately does NOT construct a
+  // SpaceMountContext. Finance is REPRESENTABLE by the neutral contract (the
+  // financialMountContext resolver + its tests prove that), but the financial
+  // shell reads its identity/nav from native props + the bounded initial payload
+  // below; constructing the context here only to pass an unconsumed prop was dead
+  // plumbing. Platform consumes SpaceMountContext directly because it consolidates
+  // real authority (PS-6C); finance does not, by design — see
+  // docs/architecture/SPACE_MOUNT_DOCTRINE.md.
   const spAll = await searchParams;
   const str = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
-  const mountContext = financialMountContext(ctx, {
-    selectedKey: str(spAll?.perspective) ?? str(spAll?.tab),
-    asOf:        str(spAll?.asof),
-    compareTo:   str(spAll?.compareto) ?? null,
-  });
 
   // PS-6B — compose the finance initial-Workspace payload (sections + accounts +
   // member count) ONCE from the already-authorized ctx.spaceId, so the shell
@@ -88,7 +82,6 @@ export default async function DashboardPage({
             category={ctx.space.category}
             myRole={ctx.role}
             currentUserId={ctx.userId}
-            mountContext={mountContext}
             initialWorkspace={initialWorkspace}
           />
         </Suspense>
@@ -128,7 +121,6 @@ export default async function DashboardPage({
           currentUserId={ctx.userId}
           initialTab={mapLegacyTabToShell(rawTab)}
           ficoScore={ficoData.score}
-          mountContext={mountContext}
           initialWorkspace={initialWorkspace}
         />
       </Suspense>

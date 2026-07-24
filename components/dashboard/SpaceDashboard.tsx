@@ -56,7 +56,6 @@ import type { Transaction } from "@/types";
 import { SectionCard } from "@/components/space/sections/SectionCard";
 import { SectionRegistry } from "@/components/space/sections/SectionRegistry";
 import { formatBalance } from "@/lib/currency";
-import type { SpaceMountContext } from "@/lib/space/mount-context";
 import type { FinancialInitialWorkspacePayload } from "@/lib/space/mount-composition";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -116,25 +115,20 @@ interface Props {
    */
   transactionsMoneyCtxOverride?: SerializedConversionContext;
   /**
-   * PS-6A/6E — the domain-neutral SpaceMountContext, composed server-side by the
-   * /dashboard route from the already-authorized SpaceContext (resolver parity
-   * with platformMountContext). This FINANCIAL shell does NOT consume it: the
-   * P2024 fan-out fix landed via server hydration (initialWorkspace + useSpaceData,
-   * PS-6B), and this shell reads its identity/nav from native props + that bounded
-   * payload — NOT from the context. Platform is the context's end-to-end consumer
-   * (PS-6C). Wiring this financial shell to read identity/access/workspaces FROM
-   * the context (full convergence to the canonical mount flow) is a deliberate
-   * PS-6 FOLLOW-UP, out of the closure slice's verification scope — so the prop is
-   * accepted and left unconsumed rather than removed, keeping the boundary intact.
-   */
-  mountContext?: SpaceMountContext;
-  /**
    * PS-6B — the finance initial-Workspace payload (sections + accounts + member
    * count), composed once at the /dashboard RSC boundary and consumed by
    * useSpaceData to hydrate the shell without the client re-fetching those three
    * eager structural resources. Absent ⇒ the hook fetches on mount, exactly as
    * before. This is the FINANCIAL InitialWorkspacePayload (PS-6P boundary) — it is
-   * not part of the domain-neutral mountContext.
+   * a separate value from the domain-neutral SpaceMountContext.
+   *
+   * PS-6F — this FINANCIAL shell deliberately does NOT take a `SpaceMountContext`
+   * prop. The context is REPRESENTABLE from finance (the resolver + its tests
+   * prove it) but the shell reads its identity/nav from native props + this
+   * payload; consuming the context here would add indirection without
+   * consolidating any authority (see docs/architecture/SPACE_MOUNT_DOCTRINE.md
+   * §"domain asymmetry"). Platform consumes the context directly because it
+   * consolidates real authority; finance does not, by design.
    */
   initialWorkspace?: FinancialInitialWorkspacePayload;
 }

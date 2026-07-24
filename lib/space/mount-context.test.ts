@@ -92,8 +92,11 @@ check("shell.variant = space (frame axis ≠ kind; platform delegates identity l
 // (presentation) are INDEPENDENT axes; one must never be derived from the other.
 // Platform is the living proof: a utility-KIND Space renders the space-VARIANT.
 // Deriving variant from kind was the PS-6C defect (it suppressed the rail).
+// Compare as widened strings — the literal-narrowed `!==` is provably-true to the
+// compiler (TS2367); widening keeps the runtime independence assertion honest.
 check("SpaceRef.kind and shell.variant do NOT co-vary (utility kind → space variant)",
-  plat.ref.kind === "utility" && plat.shell.variant === "space" && plat.ref.kind !== plat.shell.variant);
+  plat.ref.kind === "utility" && plat.shell.variant === "space" &&
+  (plat.ref.kind as string) !== (plat.shell.variant as string));
 check("READ grant → canRead true, canWrite false, level 'READ'",
   plat.access.canRead === true && plat.access.canWrite === false && plat.access.level === "READ");
 check("WRITE grant → canWrite true",

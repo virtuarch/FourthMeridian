@@ -24,7 +24,6 @@
 
 import { useState } from "react";
 import { SpaceDashboard } from "@/components/dashboard/SpaceDashboard";
-import type { SpaceMountContext } from "@/lib/space/mount-context";
 import type { FinancialInitialWorkspacePayload } from "@/lib/space/mount-composition";
 import { DisplayCurrencyProvider, useDisplayCurrency } from "@/lib/currency-context";
 import { ViewCurrencyOverride, type ViewOverride } from "@/components/dashboard/widgets/ViewCurrencyOverride";
@@ -45,8 +44,6 @@ interface Props {
   // the shared shell fetches its own section data, so page.tsx was passing
   // (and this component was discarding) those reads. Only ficoScore is consumed.
   ficoScore:     number | null;
-  /** PS-6A — domain-neutral mount context, forwarded to the shared shell. */
-  mountContext?: SpaceMountContext;
   /** PS-6B — finance initial-Workspace payload, forwarded to the shared shell
    *  where useSpaceData consumes it to hydrate sections/accounts/member count. */
   initialWorkspace?: FinancialInitialWorkspacePayload;
@@ -54,7 +51,7 @@ interface Props {
 
 export function PersonalDashboard({
   spaceId, spaceName, spaceType, category, myRole, currentUserId, initialTab,
-  ficoScore, mountContext, initialWorkspace,
+  ficoScore, initialWorkspace,
 }: Props) {
   // EPHEMERAL "view as" override — pure in-memory, never persisted; a reload
   // resets to the Space's saved currency by construction.
@@ -80,7 +77,6 @@ export function PersonalDashboard({
         // UX-PER-3 Debt — the user's FICO score for the Debt workspace's
         // credit-health companion (never drives debt math).
         ficoScore={ficoScore}
-        mountContext={mountContext}
         initialWorkspace={initialWorkspace}
         // Reporting currency (snapshot stamp) → the chart section's "from" side;
         // the shell's ctx.target (effective display currency) is the "to" side,

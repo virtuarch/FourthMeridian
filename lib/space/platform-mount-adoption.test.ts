@@ -124,5 +124,40 @@ check("platform page composes NO financial initial payload",
 check("platform page still authorizes via PlatformGrant (unchanged auth strategy)",
   platPage.includes("platformGrant.findUnique") && platPage.includes("hasPlatformAccess"));
 
+// ── PART 3 — REPRESENTABILITY vs CONSUMPTION (PS-6F, deliberate asymmetry) ───────
+// Two DISTINCT claims, encoded so a future contributor does NOT see the asymmetry
+// and "complete the migration" by wiring finance to consume the context:
+//   • REPRESENTABILITY — BOTH domains can PRODUCE a valid SpaceMountContext.
+//   • CONSUMPTION      — Platform consumes it directly (it consolidates real
+//                        authority). Finance does NOT, by design: the financial
+//                        shell reads native props + its bounded payload, and
+//                        consuming the context would add indirection without
+//                        consolidating any authority (SPACE_MOUNT_DOCTRINE
+//                        §domain-asymmetry). This is intentional, not unfinished.
+console.log("\nPart 3 — representability vs consumption (deliberate asymmetry)");
+
+// REPRESENTABILITY (retained): finance produces a valid, same-shape context.
+check("REPRESENTABILITY: finance produces a valid SpaceMountContext, same shape as platform",
+  fin.ref.domain === "finance" &&
+  JSON.stringify(Object.keys(fin).sort()) === JSON.stringify(Object.keys(plat).sort()));
+check("REPRESENTABILITY: the financialMountContext resolver still exists (proof retained)",
+  stripComments(src("lib/space/mount-context.server.ts")).includes("export function financialMountContext"));
+
+// CONSUMPTION asymmetry: finance does NOT construct/pass/declare the context.
+const finPage     = stripComments(src("app/(shell)/dashboard/page.tsx"));
+const finShell     = stripComments(src("components/dashboard/SpaceDashboard.tsx"));
+const finPersonal = stripComments(src("components/dashboard/PersonalDashboard.tsx"));
+check("CONSUMPTION: financial route does NOT construct or pass a SpaceMountContext (no dead plumbing)",
+  !finPage.includes("financialMountContext(") && !finPage.includes("mountContext="),
+  "finance is representable but must not construct the context only to pass an unconsumed prop");
+check("CONSUMPTION: financial shell (SpaceDashboard) declares NO mountContext prop",
+  !/mountContext\s*\??\s*:/.test(finShell));
+check("CONSUMPTION: PersonalDashboard neither declares nor forwards mountContext",
+  !/mountContext/.test(finPersonal));
+// Finance keeps its OWN richer route contract — the initial payload is retained
+// and is a SEPARATE value from the neutral context (never re-enveloped).
+check("finance still hydrates via its own FinancialInitialWorkspacePayload (native route contract intact)",
+  finPage.includes("composeFinancialInitialWorkspace") && finShell.includes("FinancialInitialWorkspacePayload"));
+
 if (failures > 0) { console.error(`\n${failures} check(s) failed.`); process.exit(1); }
-console.log("\nAll PS-6C platform-mount-adoption checks passed.");
+console.log("\nAll platform-mount-adoption + PS-6F asymmetry checks passed.");

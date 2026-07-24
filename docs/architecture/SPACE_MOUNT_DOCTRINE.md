@@ -131,6 +131,27 @@ Shared architecture does **not** require identical loading behavior.
 Do not erase this asymmetry in pursuit of symmetry. Same mount contract, same shell;
 different, deliberate data strategies.
 
+### Representability ≠ consumption (the settled PS-6F decision)
+
+`SpaceMountContext` is a domain-neutral mount **representation**. Two distinct claims:
+
+- **Representability** — finance **and** platform can each *produce* a valid
+  `SpaceMountContext` (`financialMountContext()` / `platformMountContext()` yield the
+  identical shape; the resolvers and their tests are the proof).
+- **Consumption** — **Platform consumes it directly** because it *consolidates real
+  authority*: the context replaced platform's scattered identity (`area→label`,
+  `grant→level`) and a duplicate registry walk for its single-axis rail. **Finance
+  does not consume it**, by design: the financial shell reads identity/nav from typed
+  native props + the bounded payload, its navigation is two-axis (tabs *and*
+  perspectives) and richer than the context models, and direct consumption would add
+  **indirection without consolidating any authority**.
+
+So finance is *provably representable* by the contract but *uses its richer native
+route contract*. This is not an unfinished migration. **Do not wire finance to consume
+`SpaceMountContext`** — PS-6F removed that plumbing after proving it was dead weight.
+The `platform-mount-adoption` test encodes both claims so the asymmetry cannot be
+"corrected" by accident.
+
 ## 6. Loader doctrine
 
 ```
@@ -200,23 +221,22 @@ production DB SQL instrumentation available; do not estimate them.
 | PS-6B | Financial hydration cutover; removed duplicate mount-time authority | `2caef00` |
 | PS-6C | Platform adoption — consumes the shared contract; corrected `shell.variant` | `0f4a241` |
 | PS-6D | Mobile prefetch containment + enforced hydration-boundary guardrail | `041d973` |
-| PS-6E | Cross-domain runtime verification, this doctrine, dead-envelope removal | *(this slice)* |
+| PS-6E | Cross-domain runtime verification, this doctrine, dead-envelope removal | `d078a0a` |
+| PS-6F | Removed the dead financial mount plumbing; settled representability ≠ consumption | *(this slice)* |
 
-**Verdict: PASS WITH FOLLOW-UP.**
+**Verdict: PASS.**
 
 **Achieved:** one shared shell contract (both domains render through `SpaceShell`);
 domain-specific data ownership (finance payload+loaders / platform self-fetch); the
 duplicate-authority elimination that was the actual P2024 remediation (measured);
-and a proven-neutral `SpaceMountContext` **consumed end-to-end by Platform**.
+a proven-neutral `SpaceMountContext` **consumed end-to-end by Platform**; and, per §5,
+a **settled** finance/platform asymmetry — finance is provably representable by the
+context but uses its richer native route contract (PS-6F removed the dead plumbing
+that made this ambiguous). The former "financial context consumption" follow-up is
+**resolved, not deferred**: finance is not meant to consume the context.
 
-**Known limitations / follow-ups (non-blocking, may live outside PS-6):**
+**Known limitations (verification/environmental only):**
 
-- **Financial context consumption.** The financial route *constructs* `SpaceMountContext`
-  (resolver parity) but the financial **shell does not consume it** — it reads native
-  identity/nav props + the bounded payload. Full financial consumption (read
-  identity/access/workspaces from the context) is the remaining convergence to the
-  canonical flow in §2. Deferred deliberately: it touches the financial shell's prop
-  contract (a redesign, out of a verification slice's scope).
 - **Platform runtime render.** The rendered Platform mount path is **compile- and
   test-verified**; its **auth gate is runtime-verified** (a non-granted USER is
   redirected `/dashboard/platform/[area] → /dashboard/spaces`). Full **rendered**
