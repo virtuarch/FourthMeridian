@@ -30,6 +30,8 @@ import type { RefreshStageRecord, RefreshStageRecorder, RefreshEndpoint } from "
 // DF-2B — the real cron per-item runner, exercised through the SAME authority.
 import { runCronItemRefresh, type CronItemDeps, type CronItemOutcome } from "@/jobs/sync-banks";
 import type { SyncTransactionsResult } from "@/lib/plaid/syncTransactions";
+// DF-2D — the provider-call correlation context runFullRefresh establishes.
+import { getProviderCallContext } from "@/lib/plaid/provider-call-context";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -398,6 +400,29 @@ async function main() {
       !results.MANUAL.endpoints.includes("HISTORY_BACKFILL") && !results.CRON.endpoints.includes("HISTORY_BACKFILL"));
     check("parity: manual runs HOLDINGS; cron/reconnect/webhook do not (no accidental manualization)",
       results.MANUAL.endpoints.includes("HOLDINGS") && !results.CRON.endpoints.includes("HOLDINGS") && !results.RECONNECT.endpoints.includes("HOLDINGS"));
+  }
+
+  // ── DF-2D: runFullRefresh establishes the provider-call context ───────────
+  {
+    const { client, creates } = makeFake();
+    const seen: { execId?: string; epDuring?: string; epAfter?: string; noCtxOutside?: boolean } = {};
+    seen.noCtxOutside = getProviderCallContext() === undefined; // no context outside a refresh
+    await runFullRefresh({ itemId: "item-1", trigger: "MANUAL", profile: "FULL_REFRESH" }, {
+      client,
+      refresh: async ({ recorder }) => {
+        const ctx = getProviderCallContext();
+        seen.execId = ctx?.refreshExecutionId;
+        recorder.begin("BALANCES", "PROVIDER");
+        seen.epDuring = ctx?.currentEndpoint;            // recorder.begin → context updated
+        recorder.succeed("BALANCES", { recordsChanged: 1, coveredAccountIds: ["a1"] });
+        seen.epAfter = ctx?.currentEndpoint;             // recorder.succeed → cleared
+        return okResult;
+      },
+    });
+    check("DF-2D: no provider-call context outside a refresh", seen.noCtxOutside === true);
+    check("DF-2D: context active inside the runner, bound to the execution row", seen.execId === "exec-1" && creates[0]?.plaidItemId === "item-1");
+    check("DF-2D: recorder keeps context.currentEndpoint in sync with the active stage", seen.epDuring === "BALANCES" && seen.epAfter === undefined);
+    check("DF-2D: context does not leak after the refresh returns", getProviderCallContext() === undefined);
   }
 
   console.log(failures === 0 ? "\nAll refresh-execution guards passed." : `\n${failures} guard(s) failed.`);

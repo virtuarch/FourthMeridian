@@ -33,6 +33,9 @@ import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { summarizeError } from "@/lib/jobs/run";
 import { refreshPlaidItem, type RefreshItemResult } from "@/lib/plaid/refresh";
+// DF-2D — the provider-call correlation context. runFullRefresh establishes it
+// around the runner so every Plaid call inside attributes to this execution.
+import { runWithProviderCallContext, type ProviderCallContext } from "@/lib/plaid/provider-call-context";
 import type {
   RefreshTrigger,
   RefreshProfile,
@@ -103,8 +106,16 @@ export class StageRecorder implements RefreshStageRecorder {
   readonly records: RefreshStageRecord[] = [];
   private open?: { endpoint: RefreshEndpoint; stageKind: RefreshStageKind; startedAt: Date; t0: number };
 
+  /**
+   * @param onStage DF-2D — invoked with the stage that just became active
+   * (begin) or `undefined` (a stage just closed), so runFullRefresh can keep the
+   * provider-call context's currentEndpoint in sync for attribution.
+   */
+  constructor(private readonly onStage?: (endpoint: RefreshEndpoint | undefined) => void) {}
+
   begin(endpoint: RefreshEndpoint, stageKind: RefreshStageKind): void {
     this.open = { endpoint, stageKind, startedAt: new Date(), t0: Date.now() };
+    this.onStage?.(endpoint);
   }
 
   succeed(endpoint: RefreshEndpoint, facts?: RefreshStageFacts): void {
@@ -165,6 +176,7 @@ export class StageRecorder implements RefreshStageRecorder {
     if (!this.open) return;
     const { endpoint, stageKind, startedAt, t0 } = this.open;
     this.open = undefined;
+    this.onStage?.(undefined); // no stage active after a fail-open
     this.records.push({
       endpoint,
       stageKind,
@@ -180,6 +192,7 @@ export class StageRecorder implements RefreshStageRecorder {
   private takeOpen(endpoint: RefreshEndpoint) {
     const open = this.open?.endpoint === endpoint ? this.open : undefined;
     if (open) this.open = undefined;
+    this.onStage?.(undefined); // no stage active after succeed/skip/fail
     return open;
   }
 }
@@ -252,7 +265,6 @@ export async function runFullRefresh<T = RefreshItemResult>(
 ): Promise<T> {
   const client = deps.client ?? executionDb;
   const runId = randomUUID();
-  const recorder = new StageRecorder();
   const startedAt = new Date();
   const t0 = Date.now();
 
@@ -266,21 +278,32 @@ export async function runFullRefresh<T = RefreshItemResult>(
     overallStatus: "RUNNING",
   });
 
+  // DF-2D — attribute provider calls to this execution only when the ledger row
+  // exists (executionId non-null); the recorder keeps the context's active stage
+  // in sync so each ProviderCall names the stage that fired it.
+  const ctx: ProviderCallContext | null =
+    executionId === null ? null : { refreshExecutionId: executionId, currentEndpoint: undefined, attempts: new Map() };
+  const recorder = new StageRecorder(ctx ? (ep) => { ctx.currentEndpoint = ep; } : undefined);
+
   // The default runner (refreshPlaidItem) returns RefreshItemResult; the cast is
   // sound because `deps.refresh` is undefined only when T defaulted to it.
   const runStages: RefreshStageRunner<T> =
     deps.refresh ??
     (((o) => refreshPlaidItem(params.itemId, { recorder: o.recorder, runId: o.runId })) as RefreshStageRunner<T>);
 
-  try {
-    const result = await runStages({ recorder, runId });
-    await closeExecution(client, executionId, recorder.records, startedAt, t0, undefined);
-    return result;
-  } catch (err) {
-    recorder.failOpen(err);
-    await closeExecution(client, executionId, recorder.records, startedAt, t0, err);
-    throw err;
-  }
+  const execute = async (): Promise<T> => {
+    try {
+      const result = await runStages({ recorder, runId });
+      await closeExecution(client, executionId, recorder.records, startedAt, t0, undefined);
+      return result;
+    } catch (err) {
+      recorder.failOpen(err);
+      await closeExecution(client, executionId, recorder.records, startedAt, t0, err);
+      throw err;
+    }
+  };
+
+  return ctx ? runWithProviderCallContext(ctx, execute) : execute();
 }
 
 // ── Best-effort ledger writes (swallowed on failure — never break the refresh) ─

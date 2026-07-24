@@ -7,6 +7,10 @@
 
 import { Configuration, PlaidApi, PlaidEnvironments } from "plaid";
 import { recordApiUsage } from "@/lib/usage/record";
+// DF-2D — per-attempt provider-call attribution. Records a ProviderCall ONLY
+// when a refresh execution context is active (AsyncLocalStorage); otherwise the
+// call runs verbatim. Independent of and additive to recordApiUsage above.
+import { maybeInstrumentProviderCall } from "@/lib/plaid/provider-call";
 
 // ── Validate required env vars at module load time ───────────────────────────
 const VALID_ENVS = ["sandbox", "development", "production"] as const;
@@ -73,7 +77,12 @@ export const plaidClient: PlaidApi = new Proxy({} as PlaidApi, {
     const method = typeof prop === "string" ? prop : String(prop);
     return function (...args: unknown[]) {
       void recordApiUsage("PLAID", method, "calls", 1);
-      return (value as (...a: unknown[]) => unknown).apply(client, args);
+      // DF-2D — when inside a refresh execution, record one immutable
+      // ProviderCall per attempt (correlated to that execution + stage);
+      // otherwise this is a verbatim passthrough. Never alters the call result.
+      return maybeInstrumentProviderCall(method, () =>
+        (value as (...a: unknown[]) => Promise<unknown>).apply(client, args),
+      );
     };
   },
 });

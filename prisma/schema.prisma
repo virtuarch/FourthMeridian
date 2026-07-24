@@ -2722,11 +2722,67 @@ model RefreshExecution {
   errorSummary   String? // truncated message only (no stack), set when overallStatus != SUCCEEDED
   createdAt      DateTime  @default(now())
 
-  endpoints RefreshEndpointResult[]
+  endpoints     RefreshEndpointResult[]
+  providerCalls ProviderCall[]
 
   @@index([plaidItemId, startedAt]) // "recent refreshes of this connection"
   @@index([overallStatus, startedAt]) // failure / partial scans
   @@index([parentJobRunId]) // executions under a batch
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProviderCall  (DF-2D — provider-operation attribution)
+//
+// One row per ACTUAL external provider request ATTEMPT made during a refresh
+// execution. Recorded at the ONE Plaid-client Proxy chokepoint (lib/plaid/
+// client.ts) via an AsyncLocalStorage correlation context — no per-call-site
+// instrumentation. Only calls that occur INSIDE a runFullRefresh context are
+// attributed; provider calls outside a refresh (link-token, token exchange,
+// item removal, webhook-key) write no ProviderCall (they belong to connection
+// establishment / other flows, not a refresh).
+//
+// ATTRIBUTION, NOT BILLING: ApiUsageCounter remains the independent daily usage/
+// billing authority (the Proxy still writes it); ProviderCall adds per-attempt
+// execution attribution and correlates by (provider, operation). No dollar/
+// billable units here — usage reconciliation is deferred.
+//
+// RETRIES + PAGINATION each produce a SEPARATE immutable row (attempt = the
+// ordinal external request of this operation within the execution). A stage can
+// SUCCEED after one or more FAILED provider attempts — ProviderCall.status is
+// independent of RefreshEndpointResult.status.
+//
+// LINKAGE: FK to RefreshExecution (cascade — a provider call belongs to its
+// execution, exactly like RefreshEndpointResult). The owning stage is stored as
+// the `endpoint` STRING, NOT an FK to RefreshEndpointResult, because endpoint
+// rows are persisted at execution CLOSE and do not exist during the call (and a
+// call may occur between stages — null endpoint, never a forced association).
+//
+// DATA MINIMIZATION: allowlisted operational fields only. NEVER a token, secret,
+// raw request/response payload, account number, or unbounded provider body. No
+// free-form metadata dumping ground.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ProviderCall {
+  id                 String           @id @default(cuid())
+  refreshExecutionId String
+  execution          RefreshExecution @relation(fields: [refreshExecutionId], references: [id], onDelete: Cascade)
+  endpoint           String? // the stage active when the call fired ("TRANSACTIONS" | "BALANCES" | ...); null if between stages / shared prep
+  provider           String // "PLAID" (free string — extensible vocabulary, matching ApiUsageCounter.provider)
+  operation          String // provider method name, e.g. "transactionsSync" | "accountsGet" | "investmentsHoldingsGet" (matches ApiUsageCounter.metric)
+  status             String // "SUCCEEDED" | "FAILED" | "RATE_LIMITED"
+  attempt            Int              @default(1) // ordinal external request of this operation within the execution (retries + pagination)
+  startedAt          DateTime
+  completedAt        DateTime
+  durationMs         Int // provider round-trip only — excludes local processing after the response
+  providerRequestId  String? // Plaid request_id (support / incident lookup) when the SDK/response exposes it
+  httpStatus         Int? // provider HTTP status when observable
+  errorCode          String? // Plaid error_code (FAILED / RATE_LIMITED only) — reuses Plaid's own code, no new taxonomy
+  errorCategory      String? // Plaid error_type (its own category, not a new local taxonomy)
+  createdAt          DateTime         @default(now())
+
+  @@index([refreshExecutionId]) // "provider calls for this execution"
+  @@index([provider, operation]) // usage / failure by operation
+  @@index([status, startedAt]) // failure / rate-limit scans
 }
 
 model RefreshEndpointResult {
