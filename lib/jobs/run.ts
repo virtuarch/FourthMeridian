@@ -34,6 +34,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
+import { currentDeploymentSha } from "@/lib/monitoring/deployment";
 
 /** How a run was initiated. "cron" for the Vercel-cron routes. */
 export type JobTrigger = "cron" | "manual" | "script";
@@ -53,6 +54,13 @@ export interface JobRunStartData {
   executionId: string;
   status: "running";
   startedAt: Date;
+  /**
+   * OPS-2B′ — the deployment that produced this fact, or null when unobservable.
+   * Present on the START data ONLY: `JobRunCompletionData` deliberately has no
+   * such field, so the completion write CANNOT alter it — immutability is
+   * enforced by the compiler, not by convention.
+   */
+  deploymentSha: string | null;
 }
 
 export interface JobRunCompletionData {
@@ -123,7 +131,9 @@ export async function runJob<T>(
   let runId: string | null = null;
   try {
     const row = await client.jobRun.create({
-      data: { jobName, trigger, executionId, status: "running", startedAt },
+      // deploymentSha is stamped once, here, from the one canonical resolver.
+      // The completion write never touches it.
+      data: { jobName, trigger, executionId, status: "running", startedAt, deploymentSha: currentDeploymentSha() },
       select: { id: true },
     });
     runId = row.id;

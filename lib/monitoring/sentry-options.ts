@@ -29,6 +29,7 @@
  */
 
 import type { ErrorEvent, EventHint } from "@sentry/nextjs";
+import { currentDeploymentSha } from "@/lib/monitoring/deployment";
 
 /** The publishable DSN. Empty string ⇒ monitoring disabled (dev/test/preview). */
 export const SENTRY_DSN: string = process.env.NEXT_PUBLIC_SENTRY_DSN ?? "";
@@ -46,11 +47,16 @@ const ENVIRONMENT: string =
   process.env.NODE_ENV ??
   "development";
 
-/** Release identifier for grouping — the deploy's git SHA when Vercel provides it. */
-const RELEASE: string | undefined =
-  process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ??
-  process.env.VERCEL_GIT_COMMIT_SHA ??
-  undefined;
+/**
+ * Release identifier for grouping — the deploy's git SHA when Vercel provides it.
+ *
+ * OPS-2B′: resolved through the ONE canonical deployment authority, which is the
+ * same value stamped onto immutable operational facts (`JobRun.deploymentSha`,
+ * `RefreshExecution.deploymentSha`). That shared identifier is what lets a Sentry
+ * incident be correlated to the job or refresh that produced it; two independent
+ * reads would have been free to drift.
+ */
+const RELEASE: string | undefined = currentDeploymentSha() ?? undefined;
 
 /**
  * Final defense against financial data / PII leaving in an error payload. Runs on

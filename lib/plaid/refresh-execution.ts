@@ -32,6 +32,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { summarizeError } from "@/lib/jobs/run";
+import { currentDeploymentSha } from "@/lib/monitoring/deployment";
 import { refreshPlaidItem, type RefreshItemResult } from "@/lib/plaid/refresh";
 // DF-2D — the provider-call correlation context. runFullRefresh establishes it
 // around the runner so every Plaid call inside attributes to this execution.
@@ -62,6 +63,13 @@ export interface RefreshExecutionStartData {
   parentJobRunId: string | null;
   startedAt: Date;
   overallStatus: "RUNNING";
+  /**
+   * OPS-2B′ — the deployment that produced this fact, or null when unobservable.
+   * Present on the START data ONLY: `RefreshExecutionCompletionData` deliberately
+   * has no such field, so the completion write CANNOT alter it — immutability is
+   * enforced by the compiler, not by convention.
+   */
+  deploymentSha: string | null;
 }
 
 export interface RefreshExecutionCompletionData {
@@ -292,6 +300,9 @@ export async function runFullRefresh<T = RefreshItemResult>(
     parentJobRunId: params.parentJobRunId ?? null,
     startedAt,
     overallStatus: "RUNNING",
+    // Stamped once, here, from the one canonical resolver. Never recomputed at
+    // close, never backfilled: this row keeps the deployment that produced it.
+    deploymentSha: currentDeploymentSha(),
   });
 
   // DF-2D — attribute provider calls to this execution only when the ledger row

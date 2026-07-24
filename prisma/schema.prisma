@@ -2669,10 +2669,15 @@ model JobRun {
   durationMs   Int? // wall-clock, set at completion
   summary      Json? // counts/kinds/IDs only — never user content or monetary values
   errorSummary String? // truncated message only (no stack), set when status = "failed"
+  // OPS-2B′ — the deployment that PRODUCED this fact. See RefreshExecution's
+  // fuller note below; identical semantics, identical resolver, stamped once at
+  // the start write and never touched by the completion write.
+  deploymentSha String?
   createdAt    DateTime  @default(now())
 
   @@index([jobName, startedAt]) // "did last night's X run?"
   @@index([status, startedAt]) // failure scans
+  @@index([deploymentSha]) // "which runs belong to deployment X"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2720,6 +2725,31 @@ model RefreshExecution {
   overallStatus  String // "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "SKIPPED" — derived from child results
   parentJobRunId String? // soft ref to JobRun.id when this refresh ran under a batch (cron); null for standalone manual
   errorSummary   String? // truncated message only (no stack), set when overallStatus != SUCCEEDED
+  // ───────────────────────────────────────────────────────────────────────────
+  // OPS-2B′ — DEPLOYMENT IDENTITY. The deployment that PRODUCED this fact, not
+  // the current/latest/active one: a historical row keeps its original identity
+  // forever, exactly like every other value in this ledger.
+  //
+  // Stamped ONCE at the start write from lib/monitoring/deployment.ts
+  // (`currentDeploymentSha()`) — the same value Sentry uses as its `release`, so
+  // an incident and the execution that produced it share one key. The completion
+  // write NEVER touches this column.
+  //
+  // NULLABLE AND PERMANENTLY SO. Null means "the deployment was not observable
+  // when this fact was written" (local dev, self-hosted, pre-OPS-2B′ history).
+  // It is never backfilled, never inferred, never defaulted to a placeholder —
+  // an unknown deployment must not become a confident wrong one. Every consumer
+  // must tolerate null.
+  //
+  // A PLAIN STRING, NOT A `Deployment` TABLE. A deployment entity would need a
+  // lifecycle this system does not own or observe (when a deploy began, ended,
+  // was rolled back), and an FK would couple immutable history to a table that
+  // could be pruned — the exact cascade hazard the soft-reference rule exists to
+  // avoid. The sha identifies the CODE; it is deliberately not unique per deploy
+  // (a redeploy or preview→prod promotion repeats it). Instance-grain, if ever
+  // needed, is an ADDITIVE column, not a redesign of this one.
+  // ───────────────────────────────────────────────────────────────────────────
+  deploymentSha  String?
   createdAt      DateTime  @default(now())
 
   endpoints      RefreshEndpointResult[]
@@ -2729,6 +2759,7 @@ model RefreshExecution {
   @@index([plaidItemId, startedAt]) // "recent refreshes of this connection"
   @@index([overallStatus, startedAt]) // failure / partial scans
   @@index([parentJobRunId]) // executions under a batch
+  @@index([deploymentSha, startedAt]) // "which refreshes belong to deployment X", newest first
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
