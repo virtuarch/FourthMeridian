@@ -33,6 +33,7 @@
 import { useEffect, useState, type ComponentType } from "react";
 import { useRouter } from "next/navigation";
 import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
+import type { SpaceMountContext } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
 import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, ArrowRight } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
@@ -122,6 +123,11 @@ interface Props {
   accessLevel: string; // READ | WRITE
   /** Enabled SpaceDashboardSection rows for this area's Space (DB, ordered). */
   sections:    Section[];
+  /** PS-6A — the SAME domain-neutral SpaceMountContext the financial route
+   *  builds, composed here from PlatformGrant + Space.platformArea. Additive and
+   *  NOT YET CONSUMED (PS-6C owns platform adoption); proves the contract is
+   *  domain-neutral. Deliberately not destructured — behavior unchanged. */
+  mountContext?: SpaceMountContext;
 }
 
 

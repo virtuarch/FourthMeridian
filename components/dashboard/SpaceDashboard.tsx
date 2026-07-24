@@ -56,6 +56,7 @@ import type { Transaction } from "@/types";
 import { SectionCard } from "@/components/space/sections/SectionCard";
 import { SectionRegistry } from "@/components/space/sections/SectionRegistry";
 import { formatBalance } from "@/lib/currency";
+import type { SpaceMountContext } from "@/lib/space/mount-context";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -113,6 +114,16 @@ interface Props {
    * Spaces, or no override) ⇒ the saved-currency context — today's behavior.
    */
   transactionsMoneyCtxOverride?: SerializedConversionContext;
+  /**
+   * PS-6A — the domain-neutral SpaceMountContext composed server-side by the
+   * /dashboard route from the already-authorized SpaceContext. Additive and
+   * NOT YET CONSUMED: this slice only proves the route can construct and pass
+   * the shared contract. The hydration cutover that would let this shell read
+   * identity/access/workspaces/time FROM this context (and drop the duplicate
+   * useSpaceData client fetches) is PS-6B. Accepted here, deliberately not
+   * destructured, so behavior is byte-unchanged.
+   */
+  mountContext?: SpaceMountContext;
 }
 
 // SD-8b — the URL⇄tab vocabulary (URL_SYNCED_TABS / URL_TAB_ALIAS / parseTabParam /

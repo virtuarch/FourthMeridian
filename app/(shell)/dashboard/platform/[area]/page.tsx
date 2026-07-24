@@ -31,6 +31,7 @@ import { db } from "@/lib/db";
 import { PlatformArea } from "@prisma/client";
 import { PLATFORM_AREAS, hasPlatformAccess } from "@/lib/platform/policy";
 import { PlatformSpaceDashboard } from "@/components/platform/PlatformSpaceDashboard";
+import { platformMountContext } from "@/lib/space/mount-context.server";
 
 export const runtime = "nodejs";
 
@@ -77,6 +78,20 @@ export default async function PlatformSpacePage({
   // The seed guarantees the Space exists; if it somehow doesn't, fail closed.
   if (!space) redirect("/dashboard/spaces");
 
+  // PS-6A — compose the SAME domain-neutral SpaceMountContext from the ALREADY-
+  // AUTHORIZED platform inputs (area validated, ACTIVE PlatformGrant checked via
+  // hasPlatformAccess above, canonical Space.platformArea loaded). This proves
+  // the shared contract is domain-neutral: no getSpaceContext, no cookie, no
+  // SpaceMember. Additive and not-yet-consumed (PS-6C owns platform adoption).
+  const mountContext = platformMountContext({
+    spaceId:     space.id,
+    spaceName:   space.name,
+    area,
+    areaLabel:   PLATFORM_AREAS[area].label,
+    accessLevel: grant.level,
+    userId:      session.user.id,
+  });
+
   return (
     <PlatformSpaceDashboard
       area={area}
@@ -84,6 +99,7 @@ export default async function PlatformSpacePage({
       spaceName={space.name}
       accessLevel={grant.level}
       sections={space.dashboardSections}
+      mountContext={mountContext}
     />
   );
 }

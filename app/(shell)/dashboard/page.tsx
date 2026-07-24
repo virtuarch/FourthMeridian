@@ -3,6 +3,7 @@ import { SpaceDashboard }                          from "@/components/dashboard/
 import { PersonalDashboard }                       from "@/components/dashboard/PersonalDashboard";
 import { getFicoData }                                 from "@/lib/data/accounts";
 import { getSpaceContext }                         from "@/lib/space";
+import { financialMountContext }                   from "@/lib/space/mount-context.server";
 import { DisplayCurrencyProvider }                 from "@/lib/currency-context";
 
 // Co-locate compute with the Singapore-region Supabase instance — see
@@ -40,6 +41,21 @@ export default async function DashboardPage({
   const ctx = await getSpaceContext();
   const isPersonal = ctx.space.type === "PERSONAL";
 
+  // PS-6A — compose the domain-neutral SpaceMountContext from the ALREADY-
+  // AUTHORIZED financial SpaceContext (getSpaceContext above ran the
+  // cookie→preferred→personal resolution and the SpaceMember gate). This proves
+  // the shared contract can be constructed on the financial route; it is passed
+  // to the shell as an additive, not-yet-consumed prop. The client-fetch
+  // hydration cutover that would REMOVE the useSpaceData fan-out is PS-6B —
+  // deliberately NOT done here, so behavior is unchanged.
+  const spAll = await searchParams;
+  const str = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
+  const mountContext = financialMountContext(ctx, {
+    selectedKey: str(spAll?.perspective) ?? str(spAll?.tab),
+    asOf:        str(spAll?.asof),
+    compareTo:   str(spAll?.compareto) ?? null,
+  });
+
   // Non-personal spaces render the planning dashboard (client-side data fetching)
   //
   // MC1 nav currency-staleness fix — source the display currency from THIS
@@ -62,6 +78,7 @@ export default async function DashboardPage({
             category={ctx.space.category}
             myRole={ctx.role}
             currentUserId={ctx.userId}
+            mountContext={mountContext}
           />
         </Suspense>
       </DisplayCurrencyProvider>
@@ -83,8 +100,7 @@ export default async function DashboardPage({
   // Context is resolved exactly once above (and cache()-deduped even if it
   // weren't — see lib/space.ts). Pass the already-resolved userId into
   // getFicoData so this page makes zero redundant context lookups.
-  const sp = await searchParams;
-  const rawTab = typeof sp?.tab === "string" ? sp.tab : undefined;
+  const rawTab = str(spAll?.tab);
 
   const ficoData = await getFicoData({ userId: ctx.userId });
 
@@ -101,6 +117,7 @@ export default async function DashboardPage({
           currentUserId={ctx.userId}
           initialTab={mapLegacyTabToShell(rawTab)}
           ficoScore={ficoData.score}
+          mountContext={mountContext}
         />
       </Suspense>
     </DisplayCurrencyProvider>
