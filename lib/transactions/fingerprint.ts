@@ -45,9 +45,23 @@ export function normalizeMerchantKey(value: string): string {
  * header). Scoped first by (financialAccountId, date, amount, pending) —
  * financialAccountId+date is already indexed
  * (@@index([financialAccountId, date])) — then narrowed by normalized
- * merchant in memory, since the DB doesn't store a normalized column.
+ * DESCRIPTOR in memory, since the DB doesn't store a normalized column.
  * Candidate sets here are expected to be small (a handful of same-day
  * transactions per account at most).
+ *
+ * DF-4 — the narrowing key is the RAW provider DESCRIPTOR (`Transaction.description`,
+ * i.e. Plaid's verbatim `txn.name`), NOT the enriched merchant. Plaid's
+ * `merchant_name` enrichment DRIFTS across sync runs — a row enriched to
+ * "Amazon" on one pass but returned un-enriched (`merchant_name = null`,
+ * personal_finance_category OTHER_OTHER) on a re-pull yields two different
+ * merchant keys, so the fallback missed and created a duplicate (the 6-Amazon-
+ * rows incident). The raw descriptor is stable across enrichment, so replaying
+ * the same provider history now resolves to the same canonical row. Callers pass
+ * `description ?? merchant` so sources without a separate raw descriptor (some
+ * CSV rows) keep their prior merchant-keyed behavior; the compare side coalesces
+ * the same way. This is STRICTER than the enriched merchant (a longer, more
+ * specific string), so it can only reduce false merges, never increase them.
+ * See docs/architecture/TRANSACTION_IDENTITY_DOCTRINE.md.
  *
  * Returns the first match, logging a warning if more than one candidate
  * matches (unexpected, but handled deterministically rather than erroring).
@@ -56,7 +70,8 @@ export async function findByFingerprint(
   financialAccountId: string,
   date: Date,
   amount: number,
-  merchant: string,
+  /** DF-4 — the RAW descriptor (caller passes `description ?? merchant`), not the enriched merchant. */
+  descriptor: string,
   pending: boolean,
   /**
    * PRE-V26-PLAID-CLOSE — optional injected Prisma client (defaults to the real
@@ -78,17 +93,19 @@ export async function findByFingerprint(
     // this helper. See
     // docs/initiatives/d2/investigations/D2_STEP4DR_TRANSACTION_READ_PATH_AUDIT_INVESTIGATION.md §3.
     where:  { financialAccountId, date, amount, pending, deletedAt: null },
-    select: { id: true, merchant: true, plaidTransactionId: true },
+    select: { id: true, merchant: true, description: true, plaidTransactionId: true },
   });
   if (candidates.length === 0) return null;
 
-  const target  = normalizeMerchantKey(merchant);
-  const matches = candidates.filter((c) => normalizeMerchantKey(c.merchant) === target);
+  // DF-4 — narrow on the RAW descriptor (`description ?? merchant`), stable across
+  // Plaid enrichment drift, instead of the enriched `merchant` (which drifts).
+  const target  = normalizeMerchantKey(descriptor);
+  const matches = candidates.filter((c) => normalizeMerchantKey(c.description ?? c.merchant) === target);
   if (matches.length === 0) return null;
 
   if (matches.length > 1) {
     console.warn(
-      `[plaid sync] fingerprint match ambiguous — ${matches.length} existing rows match financialAccountId=${financialAccountId} date=${date.toISOString().slice(0, 10)} amount=${amount} merchant="${merchant}"; using the first (id=${matches[0].id})`
+      `[plaid sync] fingerprint match ambiguous — ${matches.length} existing rows match financialAccountId=${financialAccountId} date=${date.toISOString().slice(0, 10)} amount=${amount} descriptor="${descriptor}"; using the first (id=${matches[0].id})`
     );
   }
   return matches[0];

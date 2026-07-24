@@ -577,7 +577,11 @@ export async function syncTransactionsForItem(
         // 2. No plaidTransactionId match — check the fingerprint fallback
         // before assuming this is a genuinely new transaction (see module
         // header + findByFingerprint for why).
-        const fingerprintMatch = await findByFingerprint(financialAccountId, date, amount, merchant, txn.pending, database);
+        // DF-4 — fingerprint on the RAW descriptor (`description` = Plaid's
+        // verbatim `txn.name`), NOT the enriched `merchant` which drifts across
+        // re-pulls and created the 6-Amazon-rows duplicates. `description` is
+        // always present for Plaid; `?? merchant` keeps the contract uniform.
+        const fingerprintMatch = await findByFingerprint(financialAccountId, date, amount, description ?? merchant, txn.pending, database);
 
         if (fingerprintMatch) {
           // Read the matched row's current MI state so the update never

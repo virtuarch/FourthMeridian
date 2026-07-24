@@ -533,7 +533,12 @@ export async function resolveFingerprintOutcome(
   date: Date,
   amount: number,
   merchant: string,
-  externalTransactionId: string | null
+  externalTransactionId: string | null,
+  // DF-4 — the RAW descriptor (CSV "description"/"memo" column). Passed to the
+  // fingerprint as `description ?? merchant` so CSV keys on the same stable raw
+  // descriptor as Plaid sync (see lib/transactions/fingerprint.ts). Optional so
+  // a caller without a separate descriptor keeps the prior merchant-keyed match.
+  description: string | null = null
 ): Promise<FingerprintOutcome> {
   if (externalTransactionId) {
     // deletedAt: null — D2 Step 4D-R: a row soft-deleted by an import
@@ -552,7 +557,7 @@ export async function resolveFingerprintOutcome(
     if (exact) return { outcome: "MATCH", transactionId: exact.id, matchedVia: "externalId" };
   }
 
-  const fpMatch = await findByFingerprint(financialAccountId, date, amount, merchant, false);
+  const fpMatch = await findByFingerprint(financialAccountId, date, amount, description ?? merchant, false);
   if (!fpMatch) return { outcome: "CREATE" };
 
   // deletedAt: null — same rationale as above. This candidate set must agree

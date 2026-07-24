@@ -428,7 +428,8 @@ export const POST = withApiHandler(async (
         row.date,
         row.amount,
         row.merchant,
-        row.externalTransactionId
+        row.externalTransactionId,
+        row.description // DF-4 — fingerprint on the raw descriptor
       );
 
       if (result.outcome === "CREATE") {
