@@ -52,6 +52,14 @@ export interface IncidentView {
   firstOccurredAt: string | null;
   lastOccurredAt: string | null;
   occurrenceCount: number;
+  /**
+   * How many of those occurrences carry a real RefreshExecution FK (OPS-2D-5D-1).
+   *
+   * Counted, not assumed. Several producers still have no execution envelope, so
+   * "0 of 3 correlated" is a genuine and common answer; a consumer renders that
+   * as correlation UNAVAILABLE and never as "no execution failed".
+   */
+  correlatedOccurrenceCount: number;
   resolvedAt: string | null;
   resolutionKind: string | null;
   resolvingExecutionId: string | null;
@@ -108,7 +116,21 @@ async function referentExistence(rows: Row[]): Promise<Map<string, boolean>> {
   return out;
 }
 
-function toView(r: Row, referentExists: boolean): IncidentView {
+/**
+ * Occurrences carrying an execution FK, batched by episode. One grouped query
+ * for the whole page rather than a per-incident lookup.
+ */
+async function correlatedCounts(rows: Row[]): Promise<Map<string, number>> {
+  if (rows.length === 0) return new Map();
+  const grouped = await db.syncIssueOccurrence.groupBy({
+    by: ["syncIssueId"],
+    where: { syncIssueId: { in: rows.map((r) => r.id) }, refreshExecutionId: { not: null } },
+    _count: { _all: true },
+  });
+  return new Map(grouped.map((g) => [g.syncIssueId, g._count._all]));
+}
+
+function toView(r: Row, referentExists: boolean, correlated: number): IncidentView {
   const classifiable = {
     kind: r.kind, provider: r.provider, detail: r.detail,
     plaidTransactionId: r.plaidTransactionId,
@@ -122,6 +144,7 @@ function toView(r: Row, referentExists: boolean): IncidentView {
     firstOccurredAt: (r.firstOccurredAt ?? r.createdAt).toISOString(),
     lastOccurredAt: (r.lastOccurredAt ?? r.createdAt).toISOString(),
     occurrenceCount: r._count?.occurrences ?? 0,
+    correlatedOccurrenceCount: correlated,
     resolvedAt: r.resolvedAt?.toISOString() ?? null,
     resolutionKind: r.resolutionKind,
     resolvingExecutionId: r.resolvingExecutionId,
@@ -131,8 +154,8 @@ function toView(r: Row, referentExists: boolean): IncidentView {
 }
 
 async function build(rows: Row[]): Promise<IncidentView[]> {
-  const referents = await referentExistence(rows);
-  return rows.map((r) => toView(r, referents.get(r.id) ?? true));
+  const [referents, correlated] = await Promise.all([referentExistence(rows), correlatedCounts(rows)]);
+  return rows.map((r) => toView(r, referents.get(r.id) ?? true, correlated.get(r.id) ?? 0));
 }
 
 /**
@@ -143,13 +166,29 @@ async function build(rows: Row[]): Promise<IncidentView[]> {
  * is orphaned — neither is actionable, and a Boolean filter would show both.
  */
 export async function getActiveIncidents(limit = 200): Promise<IncidentView[]> {
+  return (await getActiveIncidentPage(limit)).incidents;
+}
+
+/**
+ * The same read, plus whether the underlying scan hit its ceiling.
+ *
+ * `incidents.length` cannot answer that: the scan takes `limit` UNRESOLVED rows
+ * and only then filters to derived-active, so a truncated scan routinely yields
+ * far fewer than `limit` incidents. A consumer that inferred completeness from
+ * the returned length would silently present a floor as a total — so the fact is
+ * reported by the module that actually knows it.
+ */
+export async function getActiveIncidentPage(
+  limit = 200,
+): Promise<{ incidents: IncidentView[]; scanTruncated: boolean }> {
   const rows = await db.syncIssue.findMany({
     where: { resolved: false },
     orderBy: { lastOccurredAt: "desc" },
     take: limit,
     select: SELECT,
   });
-  return (await build(rows as Row[])).filter((v) => v.state === "active");
+  const incidents = (await build(rows as Row[])).filter((v) => v.state === "active");
+  return { incidents, scanTruncated: rows.length === limit };
 }
 
 /** Everything that is no longer active — resolved conditions and evidence alike. */

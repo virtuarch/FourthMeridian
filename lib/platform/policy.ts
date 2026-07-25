@@ -158,8 +158,10 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
     spaceDescription:
       "Operational health signals. No purpose-built customer-success primitives exist yet.",
     sections: [
-      // Honest label: no CS primitives exist yet — first real widget is sync-issue triage.
-      { key: "cs_sync_issues", label: "Sync Issues", order: 0 },
+      // OPS-2D-5D-1 — "incidents", not "issues": the surface renders EPISODES
+      // with their occurrence depth, not one row per failed attempt. The section
+      // key is unchanged (it is persisted layout identity, not wording).
+      { key: "cs_sync_issues", label: "Sync Incidents", order: 0 },
     ],
   },
 };

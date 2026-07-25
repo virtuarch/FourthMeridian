@@ -309,3 +309,116 @@ export function describeSyncIssue(row: ClassifiableSyncIssue): string {
   const kind  = row.kind.replace(/_/g, " ").toLowerCase();
   return `${severity} · ${domain} · ${kind}${stage ? ` (${stage})` : ""}`;
 }
+
+// ── Operator wording (OPS-2D-5D-1) ───────────────────────────────────────────
+//
+// The MINIMUM of OPS-2D-5C required to build a Preview: a canonical short label
+// and one operator-safe sentence, per FAILED OPERATION. Deliberately narrow —
+// customer-safe wording, remediation runbooks and contextual guidance remain 5C
+// and are NOT started here.
+//
+// It lives in this file for the same reason severity does: a label computed in a
+// component is a second authority, and two surfaces would then be free to call
+// the same incident different things. `describeSyncIssue` above stays as the
+// DIAGNOSTIC string (severity · domain · kind · stage); this is the human one.
+//
+// KEYED ON THE OPERATION, NOT THE KIND. A legacy `UPSERT_ERROR` on the
+// transactions domain and a typed `TRANSACTION_PERSISTENCE_FAILED` are the same
+// operator problem — OPS-2D-5B-0 proved they are the same INCIDENT — so they
+// must read identically. Falling back through `domain` is what makes a taxonomy
+// deployment invisible to an operator, which is the whole contract.
+
+/** Short operator label per domain, used for the persistence-failure family. */
+const DOMAIN_LABEL: Record<SyncIssueDomain, string> = {
+  transactions:   "Transaction persistence failed",
+  investments:    "Investment data persistence failed",
+  imports:        "Import rollback failed",
+  wallet:         "Wallet sync failed",
+  reconciliation: "Balance and transactions disagreed",
+  unknown:        "Unrecognised sync failure",
+};
+
+const DOMAIN_DESCRIPTION: Record<SyncIssueDomain, string> = {
+  transactions:   "Delivered bank transactions were not stored. The sync cursor is held so the page can replay.",
+  investments:    "An internal investment-data repair did not complete. No canonical financial record is missing.",
+  imports:        "A member file import could not be fully rolled back, leaving its data partially applied.",
+  wallet:         "On-chain wallet synchronisation did not complete.",
+  reconciliation: "A reported balance did not agree with the transactions observed in one refresh window.",
+  unknown:        "This failure is not recognised by the semantic authority and needs classification.",
+};
+
+/**
+ * The canonical short operator label for an incident.
+ *
+ * TAKES THE ALREADY-DERIVED DOMAIN rather than re-classifying. That is not
+ * ceremony: a consumer holding an `IncidentView` classified the row WITH its
+ * `detail` in hand, whereas re-classifying from `kind` alone hits the
+ * conservative transactions fallback — so a legacy investment `UPSERT_ERROR`
+ * would be badged "investments" and labelled "Transaction persistence failed" on
+ * the same line. One verdict per row, computed once, is the only way those two
+ * cannot disagree.
+ *
+ * Never includes `detail`, never includes an id, never includes a stage — a
+ * label is what an operator READS, and the stage is diagnostic context that
+ * belongs on a detail surface.
+ */
+export function incidentLabel(kind: string, domain: SyncIssueDomain): string {
+  switch (kind) {
+    case "REMOVED_TOMBSTONE":            return "Transaction removed by provider";
+    case "INSTRUMENT_IDENTITY_CONFLICT": return "Instrument identity conflict";
+    case "MISSING_ACCOUNT":              return "Account missing during sync";
+    case "REPLAY_ATTEMPTED":             return "Sync replay attempted";
+    case "REPLAY_RECOVERED":             return "Sync replay recovered";
+    case "REPLAY_FAILED":                return "Sync replay failed";
+    // The persistence-failure family — typed and legacy alike — reads by domain.
+    default:                             return DOMAIN_LABEL[domain];
+  }
+}
+
+/** One operator-safe sentence. Explains the OPERATION, never the ORM mechanics. */
+export function incidentDescription(kind: string, domain: SyncIssueDomain): string {
+  switch (kind) {
+    case "REMOVED_TOMBSTONE":
+      return "Expected provider lifecycle: a pending transaction was replaced by its posted successor.";
+    case "INSTRUMENT_IDENTITY_CONFLICT":
+      return "Two instruments could not be merged safely. Both were preserved; nothing was lost.";
+    case "MISSING_ACCOUNT":
+      return "A sync referenced an account that could not be found.";
+    default:
+      return DOMAIN_DESCRIPTION[domain];
+  }
+}
+
+/**
+ * Whether the system can recover this on its own — stated only where that is
+ * PROVEN.
+ *
+ * `cursorBlocking` is the single canonical signal: a held Plaid page replays and
+ * a later successful sync proves every row persisted. That is the only automatic
+ * resolver OPS-2D-5A-1 shipped, and OPS-2D-5B-2 (deferred) is where the other
+ * conditions get theirs. Until then "no automatic recovery rule" is the honest
+ * answer for investment, import and wallet conditions — not a defect to hide.
+ *
+ * There is deliberately NO "recovery in progress": nothing in the model proves a
+ * recovery is underway, and inventing it would be exactly the false comfort this
+ * whole initiative exists to prevent.
+ */
+export type IncidentRecovery =
+  /** A proven automatic resolver applies to this condition. */
+  | "automatic-available"
+  /** A real condition with no resolver yet. It will stay active until one exists. */
+  | "none"
+  /** Already recovered. */
+  | "recovered"
+  /** An EVENT: terminal evidence, so recovery is not a meaningful question. */
+  | "not-applicable";
+
+export function incidentRecovery(
+  /** The verdict already produced for this row — never re-derived here. */
+  classification: Pick<SyncIssueClassification, "nature" | "cursorBlocking">,
+  state: SyncIssueState,
+): IncidentRecovery {
+  if (classification.nature === "event") return "not-applicable";
+  if (state === "recovered") return "recovered";
+  return classification.cursorBlocking ? "automatic-available" : "none";
+}
