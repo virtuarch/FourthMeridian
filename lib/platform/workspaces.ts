@@ -119,11 +119,15 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
   PLATFORM_OPS: [
     {
       workspaceId: "platform-overview",
-      // Summary surface — top alerts + high-level job/provider/freshness summaries +
-      // the two platform-config posture cards (rate limits / environment). The heavy
-      // detail (Manual Operations WRITE controls, connection + API-usage breakdowns)
-      // deliberately leaves Overview for its dedicated workspace.
-      sections: ["ops_alerts", "ops_scheduler", "ops_job_health", "ops_provider_health", "ops_resource_freshness", "ops_rate_limits", "ops_env_status"],
+      // PM-1 — Overview reads as ONE operational question in three movements:
+      // Scheduler (is the clock ticking?) → Jobs (did the work run?) → Platform
+      // Health (is the platform, end to end, healthy?). The five formerly-separate
+      // summary cards (alerts, provider health, resource freshness, rate limits,
+      // environment) are CONSOLIDATED into ops_platform_health rather than deleted;
+      // see PLATFORM_SECTION_REPRESENTATION for the keys it now stands in for. The
+      // heavy detail (Manual Operations WRITE controls, connection + API-usage
+      // breakdowns) continues to live in its own Workspace.
+      sections: ["ops_scheduler", "ops_job_health", "ops_platform_health"],
       doorways: ["platform-jobs", "platform-refresh", "platform-providers", "platform-operations", "platform-alerts", "platform-trends", "platform-ai", "platform-costs"],
     },
     { workspaceId: "platform-jobs", sections: ["ops_scheduler", "ops_job_health"] },
@@ -157,7 +161,70 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
   ],
 };
 
+// ── Consolidation: which sections a CONSOLIDATING section stands in for ─────────
+
+/**
+ * Declared CONSOLIDATION, owned by the same module that owns composition.
+ *
+ * A section key normally earns its place on a surface by appearing in some
+ * workspace's `sections`. When a new surface ABSORBS an older one — same
+ * operational question, one widget instead of five — the absorbed key stops
+ * being composed anywhere. Without a record of that intent the key is
+ * indistinguishable from one that was dropped by accident, which is exactly how
+ * an operational surface goes silently missing.
+ *
+ * So absorption is DECLARED here: `absorbedKey → absorbingKey`. The absorbing
+ * section must itself be a declared, reachable section (the reachability guard
+ * in workspaces.test.ts walks this transitively), so consolidating into a
+ * surface that is later removed from every workspace FAILS rather than quietly
+ * hiding both.
+ *
+ * This is not a second composition truth: it grants no placement and renders
+ * nothing. It records that the operator can still SEE the absorbed question,
+ * inside the absorbing widget.
+ *
+ * PM-1 — the Platform Health surface answers "is the platform healthy?" across
+ * alerts, provider health and resource freshness, and carries a Configuration
+ * group covering rate-limit posture and environment status. Those five keys keep
+ * their DB rows and their widgets (still composed by Alerts / Providers where
+ * they carry a detail question of their own); only their OVERVIEW summary card
+ * is what ops_platform_health replaces.
+ */
+export const PLATFORM_SECTION_REPRESENTATION: Readonly<Record<string, string>> = {
+  ops_alerts:             "ops_platform_health",
+  ops_provider_health:    "ops_platform_health",
+  ops_resource_freshness: "ops_platform_health",
+  ops_rate_limits:        "ops_platform_health",
+  ops_env_status:         "ops_platform_health",
+};
+
 // ── Accessors ───────────────────────────────────────────────────────────────────
+
+/**
+ * Every section key an operator of `area` can actually REACH: the union of all
+ * keys composed into any of the area's workspaces, plus every key transitively
+ * ABSORBED by one of those (PLATFORM_SECTION_REPRESENTATION).
+ *
+ * Absorption is followed transitively with a visited set, so a chain
+ * (a → b → composed-b) resolves and a cycle (a → b → a) terminates and is simply
+ * unreachable — a cycle grants nothing, which is the correct fail-safe.
+ */
+export function reachableSectionKeys(area: PlatformArea): ReadonlySet<string> {
+  const composed = new Set<string>();
+  for (const w of PLATFORM_AREA_WORKSPACES[area]) for (const k of w.sections) composed.add(k);
+
+  const reachable = new Set(composed);
+  for (const absorbed of Object.keys(PLATFORM_SECTION_REPRESENTATION)) {
+    const seen = new Set<string>([absorbed]);
+    let cursor: string | undefined = PLATFORM_SECTION_REPRESENTATION[absorbed];
+    while (cursor && !seen.has(cursor)) {
+      if (composed.has(cursor)) { reachable.add(absorbed); break; }
+      seen.add(cursor);
+      cursor = PLATFORM_SECTION_REPRESENTATION[cursor];
+    }
+  }
+  return reachable;
+}
 
 /** The ordered workspace composition an area exposes (never empty for a known area). */
 export function getPlatformAreaWorkspaces(area: PlatformArea): readonly PlatformWorkspaceComposition[] {

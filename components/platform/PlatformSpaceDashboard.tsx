@@ -67,6 +67,7 @@ import { OpsRefreshExecutionsWidget } from "./widgets/OpsRefreshExecutionsWidget
 import { OpsRefreshCoverageWidget } from "./widgets/OpsRefreshCoverageWidget";
 import { OpsProviderOperationsWidget } from "./widgets/OpsProviderOperationsWidget";
 import { OpsSchedulerWidget } from "./widgets/OpsSchedulerWidget";
+import { OpsPlatformHealthWidget } from "./widgets/OpsPlatformHealthWidget";
 import { WorkspaceSessionProvider } from "./workspace-session";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
 import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
@@ -113,6 +114,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   ops_refresh_coverage:   OpsRefreshCoverageWidget,
   ops_provider_operations: OpsProviderOperationsWidget,
   ops_scheduler:          OpsSchedulerWidget,
+  ops_platform_health:    OpsPlatformHealthWidget,
   // Growth & Revenue
   growth_signups:       GrowthSignupsWidget,
   growth_beta_requests: GrowthBetaRequestsWidget,

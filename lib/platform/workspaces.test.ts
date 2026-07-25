@@ -16,9 +16,11 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   PLATFORM_WORKSPACES,
+  PLATFORM_SECTION_REPRESENTATION,
   getPlatformAreaWorkspaces,
   getPlatformWorkspace,
   isPlatformWorkspaceId,
+  reachableSectionKeys,
 } from "@/lib/platform/workspaces";
 import { WORKSPACE_REGISTRY, getWorkspaceDefinition, STANDARD_WORKSPACES } from "@/lib/perspectives";
 import { PLATFORM_AREAS, ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
@@ -32,6 +34,42 @@ function check(name: string, cond: boolean, detail?: string): void {
   }
 }
 const read = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8");
+const strip = (rel: string) =>
+  read(rel).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+/** The absorption chain for a section key: itself, then whatever absorbs it, and
+ *  so on. Terminates on a cycle (a cycle is simply a chain that stops). */
+function absorptionChain(key: string): string[] {
+  const chain = [key];
+  const seen = new Set([key]);
+  let cursor: string | undefined = PLATFORM_SECTION_REPRESENTATION[key];
+  while (cursor && !seen.has(cursor)) {
+    chain.push(cursor);
+    seen.add(cursor);
+    cursor = PLATFORM_SECTION_REPRESENTATION[cursor];
+  }
+  return chain;
+}
+
+/** Section keys of the platform-local widget registry, read from its ONE
+ *  definition site by brace-matching the object literal. Anchored on the
+ *  identifier rather than on any widget name, so renaming a widget (or
+ *  reordering/reformatting the map) does not change what this sees. */
+function widgetRegistryKeys(src: string): Set<string> {
+  const anchor = src.indexOf("PLATFORM_WIDGET_REGISTRY");
+  if (anchor < 0) return new Set();
+  const open = src.indexOf("{", src.indexOf("=", anchor));
+  let depth = 0;
+  let end = -1;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}" && --depth === 0) { end = i; break; }
+  }
+  if (open < 0 || end < 0) return new Set();
+  const keys = new Set<string>();
+  for (const m of src.slice(open + 1, end).matchAll(/^\s*([A-Za-z_]\w*)\s*:/gm)) keys.add(m[1]);
+  return keys;
+}
 
 // ── Identity in the UNIVERSAL registry (no parallel identity system) ─────────────
 
@@ -84,8 +122,88 @@ console.log("single composition owner integrity");
     for (const w of getPlatformAreaWorkspaces(area)) for (const k of w.sections) composed.add(k);
     // Every composed section key is a real, declared section of the area (no orphans).
     for (const k of composed) check(`${area} composed section "${k}" is a declared area section`, declared.has(k));
-    // Every declared section appears in at least one workspace (nothing orphaned out).
-    for (const k of declared) check(`${area} declared section "${k}" is placed in a workspace`, composed.has(k));
+  }
+}
+
+// ── REACHABILITY: no declared operational surface may go dark ────────────────────
+
+/*
+ * THE guard this file exists for (PM-1). A section that is declared in
+ * PLATFORM_AREAS is seeded as an enabled SpaceDashboardSection row and therefore
+ * reads, to an operator, as a surface the platform HAS. If no workspace composes
+ * it and nothing absorbs it, that surface renders nowhere — silently. Every past
+ * instance of this failure looked like a harmless composition edit.
+ *
+ * Reachable is deliberately the WEAKER, honest predicate: composed into some
+ * workspace of its own area, OR transitively absorbed (PLATFORM_SECTION_
+ * REPRESENTATION) by a section that is. Consolidating five cards into one
+ * surface is legitimate and passes; deleting the last surface that answers a
+ * question is not and fails — including when the deletion is of the ABSORBING
+ * section, which is the subtler defect.
+ */
+console.log("section reachability (nothing declared renders nowhere)");
+{
+  const areaOf = new Map<string, string>();
+  for (const area of ALL_PLATFORM_AREAS) {
+    for (const s of PLATFORM_AREAS[area].sections) areaOf.set(s.key, area);
+  }
+
+  for (const area of ALL_PLATFORM_AREAS) {
+    const reachable = reachableSectionKeys(area);
+    for (const s of PLATFORM_AREAS[area].sections) {
+      check(
+        `${area} section "${s.key}" is reachable (composed, or absorbed by a composed section)`,
+        reachable.has(s.key),
+        `neither composed into a ${area} workspace nor absorbed by one — it would be seeded, enabled, and render nowhere`,
+      );
+    }
+  }
+
+  // Absorption integrity: an absorption edge only means something if both ends
+  // are real sections of the SAME area (cross-area absorption would claim a
+  // surface is visible behind a grant its operator may not hold).
+  for (const [absorbed, absorbing] of Object.entries(PLATFORM_SECTION_REPRESENTATION)) {
+    check(`absorbed "${absorbed}" is a declared section`, areaOf.has(absorbed));
+    check(`absorbing "${absorbing}" is a declared section`, areaOf.has(absorbing));
+    check(`"${absorbed}" → "${absorbing}" stays inside one area`, areaOf.get(absorbed) === areaOf.get(absorbing));
+    check(`"${absorbed}" does not absorb itself`, absorbed !== absorbing);
+    // A cycle terminates the walk, so it cannot loop — but it also grants no
+    // reachability, which would be a confusing way to lose a surface. Ban it.
+    const chain = absorptionChain(absorbed);
+    const tail = chain[chain.length - 1];
+    check(`"${absorbed}" absorption chain terminates (no cycle)`, PLATFORM_SECTION_REPRESENTATION[tail] === undefined);
+  }
+}
+
+// ── Registry ↔ composition parity (three-place registration is complete) ─────────
+
+/*
+ * A section key must exist in all three places or it fails silently:
+ *   policy.ts        — declared, so the seed materializes an enabled row;
+ *   workspaces.ts    — composed, so some workspace renders it;
+ *   the widget map   — resolved, so the row maps to a component.
+ * PlatformWorkspaceBody SKIPS a row with no registry entry (no error, no log),
+ * which is why parity is pinned rather than reviewed. Read from the ONE registry
+ * definition site by brace-matching, so widget renames do not weaken it.
+ */
+console.log("registry ↔ composition parity");
+{
+  const registry = widgetRegistryKeys(strip("components/platform/PlatformSpaceDashboard.tsx"));
+  check("the platform widget registry was located and parsed", registry.size >= 20, `parsed ${registry.size} keys`);
+
+  const declared = new Set<string>();
+  const composed = new Set<string>();
+  for (const area of ALL_PLATFORM_AREAS) {
+    for (const s of PLATFORM_AREAS[area].sections) declared.add(s.key);
+    for (const w of getPlatformAreaWorkspaces(area)) for (const k of w.sections) composed.add(k);
+  }
+
+  for (const k of composed) {
+    check(`composed section "${k}" resolves to a widget (else it renders nothing, silently)`, registry.has(k));
+  }
+  for (const k of registry) {
+    check(`registered widget key "${k}" is a declared platform section`, declared.has(k),
+      "a registry entry for an undeclared key can never receive a DB row");
   }
 }
 
@@ -103,7 +221,23 @@ console.log("PLATFORM_OPS decomposition shape");
   check("Overview offers doorways (summary→detail navigation)", (overview.doorways?.length ?? 0) >= 1);
   check("Overview does NOT host Manual Operations (the WRITE surface left the landing grid)", !overview.sections.includes("ops_manual_operations"));
   check("Overview does NOT host the connection/API-usage detail", !overview.sections.includes("ops_connection_health") && !overview.sections.includes("ops_api_usage"));
-  check("Overview surfaces top alerts", overview.sections.includes("ops_alerts"));
+
+  // PM-1 — Overview no longer carries an alerts CARD; the alerts question is
+  // absorbed by the consolidated health surface. The check therefore asserts the
+  // QUESTION survives on Overview (composed there, or absorbed by something
+  // composed there) rather than pinning the key — a further consolidation is
+  // allowed, dropping the question from the landing surface is not.
+  const answeredOnOverview = (key: string): boolean =>
+    absorptionChain(key).some((k) => overview.sections.includes(k));
+  check("Overview still answers the alerts question", answeredOnOverview("ops_alerts"));
+  check("Overview still answers the platform-configuration questions (rate limits + environment)",
+    answeredOnOverview("ops_rate_limits") && answeredOnOverview("ops_env_status"));
+
+  // Overview is a SUMMARY, not the area's landfill: it must host strictly fewer
+  // sections than PLATFORM_OPS declares. Proportional, so it survives growth.
+  check("Overview stays a summary (hosts far fewer sections than the area declares)",
+    overview.sections.length * 2 < PLATFORM_AREAS.PLATFORM_OPS.sections.length,
+    `${overview.sections.length} of ${PLATFORM_AREAS.PLATFORM_OPS.sections.length}`);
 
   // Detailed capabilities have dedicated homes.
   check("Manual Operations lives in the Operations workspace", byId.get("platform-operations")?.sections.includes("ops_manual_operations") === true);

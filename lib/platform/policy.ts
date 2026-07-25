@@ -110,6 +110,13 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       // OPS-2C-7 — scheduler OBSERVATION (observed / expected / notes). No
       // scheduler-health authority exists, so this asserts none.
       { key: "ops_scheduler", label: "Scheduler", order: 20 },
+      // PM-1 — the consolidated Platform Health surface: one answer to "is the
+      // platform healthy?" over alerts + provider health + resource freshness,
+      // with a configuration group for rate-limit posture and environment status.
+      // Display order comes from PLATFORM_AREA_WORKSPACES (Overview: Scheduler →
+      // Jobs → Platform Health); this materialized order is just a unique Int.
+      // Backfilled onto the live Space by ensurePlatformSections.
+      { key: "ops_platform_health", label: "Platform Health", order: 21 },
     ],
   },
   SECURITY_OPS: {
