@@ -31,7 +31,7 @@ import { claimPlaidItemSyncLock, releasePlaidItemSyncLock, LOCK_TTL_MS } from "@
 // module keeps its claim/release lock scope and never-throws contract, and
 // supplies the trigger (RECONNECT vs WEBHOOK — the initiating business event).
 import { runFullRefresh } from "@/lib/plaid/refresh-execution";
-import type { RefreshTrigger } from "@/lib/plaid/refresh-execution-types";
+import type { RefreshTrigger, RefreshProfile } from "@/lib/plaid/refresh-execution-types";
 
 export { LOCK_TTL_MS };
 
@@ -59,13 +59,20 @@ export async function syncPlaidItemFromWebhook(
   // (exchange-token), "WEBHOOK" from the webhook receiver. Both run the SAME
   // deferred pipeline (profile RECONNECT); only the trigger differs.
   trigger: RefreshTrigger = "WEBHOOK",
+  // OPS-2D-1 — the WORKFLOW this wrapper ran. Webhook and reconnect genuinely
+  // run the deferred RECONNECT pipeline; the resume-stale-imports backstop runs
+  // the same body for a different reason (continuing an incomplete first-run
+  // import), and labelling that RECONNECT claimed a token exchange that never
+  // happened. Historical rows are NOT rewritten — only future executions carry
+  // the corrected profile.
+  profile: RefreshProfile = "RECONNECT",
 ): Promise<WebhookSyncOutcome> {
   // DF-2C — one immutable RefreshExecution per deferred-sync attempt. The lock
   // claim/release and the never-throws contract are UNCHANGED: they live inside
   // the runner, exactly as before, and runFullRefresh never throws here (the
   // runner never throws). A lock-held attempt records a SKIPPED execution.
   return runFullRefresh<WebhookSyncOutcome>(
-    { itemId: plaidItemId, trigger, profile: "RECONNECT" },
+    { itemId: plaidItemId, trigger, profile },
     {
       refresh: async ({ recorder, runId }) => {
         if (!(await claimPlaidItemSyncLock(plaidItemId))) {

@@ -24,8 +24,9 @@ import { db } from "@/lib/db";
 import { PlaidItemStatus } from "@prisma/client";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
-import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
+import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-lock";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+import { runFullRefresh } from "@/lib/plaid/refresh-execution";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
@@ -77,7 +78,37 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     });
 
   try {
-    const lockResult = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id));
+    // OPS-2D-1 — the SAME lock + the SAME body, now inside the canonical
+    // execution envelope so an operator resync leaves RefreshExecution evidence
+    // like every other refresh. Nothing about the orchestration changed: the
+    // lock is still claimed here, the cooldown was already enforced above, and
+    // a thrown Plaid error still propagates to the catch below (runFullRefresh
+    // records the failure and rethrows the ORIGINAL error).
+    //
+    // Profile TRANSACTIONS_ONLY, not FULL_REFRESH: this path syncs the
+    // transaction cursor and nothing else. Claiming a full refresh would assert
+    // balances and holdings were refreshed when they were not.
+    type TxResult = Awaited<ReturnType<typeof syncTransactionsForItem>>;
+    const lockResult = await runFullRefresh<SyncLockResult<TxResult>>(
+      { itemId: item.id, trigger: "OPERATOR", profile: "TRANSACTIONS_ONLY" },
+      {
+        refresh: async ({ recorder, runId }) => {
+          recorder.begin("TRANSACTIONS", "PROVIDER");
+          const res = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id, { runId }));
+          if (!res.ok) {
+            recorder.skip("TRANSACTIONS", "PROVIDER", "IN_FLIGHT");
+            return res;
+          }
+          const tx = res.result;
+          recorder.succeed("TRANSACTIONS", {
+            recordsRead:    tx.added + tx.modified,
+            recordsWritten: tx.created + tx.updatedByPlaidId + tx.updatedByFingerprint,
+            recordsChanged: tx.added + tx.modified + tx.removed,
+          });
+          return res;
+        },
+      },
+    );
     if (!lockResult.ok) {
       // A sync is already in flight (cron/webhook/other) — coalesced, not raced.
       return NextResponse.json({ error: "in-flight" }, { status: 409 });

@@ -24,10 +24,39 @@
  * HISTORY_BACKFILL pipeline). A future entrypoint extends this authority by
  * supplying its own trigger + orchestration profile — it never forks the ledger.
  */
-export type RefreshTrigger = "MANUAL" | "CRON" | "RECONNECT" | "WEBHOOK" | "ADMIN";
+export type RefreshTrigger =
+  | "MANUAL"      // the owning customer asked (refresh, sync, investments-enable)
+  | "CRON"        // the scheduled batch
+  | "RECONNECT"   // token exchange completed
+  | "WEBHOOK"     // Plaid told us something changed
+  | "ADMIN"       // reserved; no producer today
+  // OPS-2D-1 — an OPERATOR acting on a customer's connection. A distinct
+  // initiating event: not the owner, not the schedule, not the provider.
+  // Attribution of WHO is the AuditLog's job; this only names the event.
+  | "OPERATOR"
+  // OPS-2D-1 — machine-driven continuation of an incomplete first-run import,
+  // whether driven by the client poller or the server-side backstop. Distinct
+  // from WEBHOOK: nothing was pushed to us, and from RECONNECT: no token
+  // changed hands.
+  | "RESUME";
 
-/** The two canonical refresh operations (DF-2 taxonomy). No LIGHT/REALTIME/tier profiles. */
-export type RefreshProfile = "FULL_REFRESH" | "RECONNECT";
+/**
+ * The caller-owned WORKFLOW an execution ran. Trigger says why it began;
+ * profile says what shape of work it performed — the two are orthogonal
+ * (REFRESH_EXECUTION_DOCTRINE.md §D/§E).
+ *
+ * OPS-2D-1 added the two below because the existing pair could not describe the
+ * paths being converged without lying. A transactions-only sync recorded as
+ * FULL_REFRESH would claim balances and holdings were refreshed when they were
+ * not, and an import continuation recorded as RECONNECT would claim a token
+ * exchange that never happened. A profile that misdescribes its own workflow is
+ * exactly the unenforceable claim the enforceability doctrine forbids.
+ */
+export type RefreshProfile =
+  | "FULL_REFRESH"      // balances → holdings → transactions → reconciliation → snapshot
+  | "RECONNECT"         // the deferred post-connect / webhook historical pipeline
+  | "TRANSACTIONS_ONLY" // the cursor-based transaction sync alone — no balances, no holdings
+  | "IMPORT_RECOVERY";  // continuation of an INCOMPLETE first-run import from its cursor
 
 /** Execution-level status, DERIVED from child stage results — never a stored success boolean. */
 export type RefreshOverallStatus = "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "SKIPPED";

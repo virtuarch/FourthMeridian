@@ -105,7 +105,11 @@ export async function resumeStaleImports(): Promise<ResumeStaleImportsResult> {
   // is the retry, and it needs no bookkeeping here.
   let ran = 0, skipped = 0;
   for (const item of items) {
-    const outcome = await syncPlaidItemFromWebhook(item.id); // never throws, by contract
+    // OPS-2D-1 — this backstop is neither a webhook nor a reconnect: nothing was
+    // pushed to us and no token changed hands. It continues an incomplete
+    // first-run import, so it records RESUME / IMPORT_RECOVERY. The BODY is the
+    // shared deferred pipeline, unchanged.
+    const outcome = await syncPlaidItemFromWebhook(item.id, "RESUME", "IMPORT_RECOVERY"); // never throws, by contract
     if (outcome === "skipped-locked") skipped++; else ran++;
     console.log(`[resume-stale-imports] ${item.institutionName} (${item.id}) → ${outcome}`);
   }

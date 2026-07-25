@@ -41,7 +41,8 @@ import { refreshPlaidItem } from "@/lib/plaid/refresh";
 import { classifyPlaidErrorForHealth, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
-import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
+import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-lock";
+import { runFullRefresh } from "@/lib/plaid/refresh-execution";
 import { limitByUser } from "@/lib/rate-limit";
 
 interface EnableBody {
@@ -85,7 +86,21 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // webhook for the same item — connections-weirdness investigation §4.1(b))
   // can never run concurrently with that webhook's sync.
   try {
-    const lockResult = await withPlaidItemSyncLock(item.id, () => refreshPlaidItem(item.id));
+    // OPS-2D-1 — canonical envelope, UNCHANGED body. This path runs the SAME
+    // full pipeline as the manual refresh (refreshPlaidItem drives the recorder
+    // itself, so the stage population is identical), which is why the profile is
+    // genuinely FULL_REFRESH. The deliberate cooldown BYPASS documented in this
+    // file's header is preserved — the envelope adds evidence, not a gate.
+    type RefreshResult = Awaited<ReturnType<typeof refreshPlaidItem>>;
+    const lockResult = await runFullRefresh<SyncLockResult<RefreshResult>>(
+      { itemId: item.id, trigger: "MANUAL", profile: "FULL_REFRESH" },
+      {
+        refresh: ({ recorder, runId }) =>
+          // runId threaded exactly as the default manual runner does, so this
+          // path's SyncIssue.detail.runId still matches its RefreshExecution.
+          withPlaidItemSyncLock(item.id, () => refreshPlaidItem(item.id, { recorder, runId })),
+      },
+    );
     if (!lockResult.ok) {
       return NextResponse.json({ error: "A sync is already in progress for this connection — try again shortly." }, { status: 409 });
     }

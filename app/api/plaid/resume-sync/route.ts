@@ -30,7 +30,8 @@ import { regenerateWealthHistoryForItem } from "@/lib/plaid/backgroundHistorySyn
 import { classifyPlaidErrorForHealth, plaidErrorSummary, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
-import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
+import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-lock";
+import { runFullRefresh } from "@/lib/plaid/refresh-execution";
 import { limitByUser } from "@/lib/rate-limit";
 
 // Resuming a large remaining history can take a while — same budget as the
@@ -103,7 +104,31 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // Amex stuck-import incident. See sync-lock.ts + the connections-weirdness
   // investigation §4.1(a).
   try {
-    const lockResult = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id));
+    // OPS-2D-1 — canonical envelope, UNCHANGED body. The RESUME_MIN_AGE gate was
+    // enforced above and is not re-evaluated; the lock is still claimed inside.
+    // Profile IMPORT_RECOVERY, not RECONNECT: no token changed hands here — this
+    // continues an incomplete first-run import from its persisted cursor.
+    type TxResult = Awaited<ReturnType<typeof syncTransactionsForItem>>;
+    const lockResult = await runFullRefresh<SyncLockResult<TxResult>>(
+      { itemId: item.id, trigger: "RESUME", profile: "IMPORT_RECOVERY" },
+      {
+        refresh: async ({ recorder, runId }) => {
+          recorder.begin("TRANSACTIONS", "PROVIDER");
+          const res = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id, { runId }));
+          if (!res.ok) {
+            recorder.skip("TRANSACTIONS", "PROVIDER", "IN_FLIGHT");
+            return res;
+          }
+          const tx = res.result;
+          recorder.succeed("TRANSACTIONS", {
+            recordsRead:    tx.added + tx.modified,
+            recordsWritten: tx.created + tx.updatedByPlaidId + tx.updatedByFingerprint,
+            recordsChanged: tx.added + tx.modified + tx.removed,
+          });
+          return res;
+        },
+      },
+    );
     if (!lockResult.ok) {
       // Another sync already holds the lock — don't race it. That run's own
       // completion resolves this item's state; the next resume attempt (or

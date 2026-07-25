@@ -24,7 +24,8 @@ import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { classifyPlaidErrorForHealth, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
-import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
+import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-lock";
+import { runFullRefresh } from "@/lib/plaid/refresh-execution";
 import { checkManualRefreshCooldown, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
 import { limitByUser } from "@/lib/rate-limit";
 
@@ -103,7 +104,32 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // against this item's cursor. See the connections-weirdness investigation §4.1.
   for (const item of eligibleItems) {
     try {
-      const lockResult = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id));
+      // OPS-2D-1 — the canonical execution envelope around the UNCHANGED
+      // per-item body. Cooldown and eligibility were decided above and are not
+      // re-evaluated here; the lock is still claimed inside, per item, so
+      // per-item isolation and the "one failure never blocks siblings" contract
+      // below are untouched. One execution per ITEM, matching the cron's grain.
+      type TxResult = Awaited<ReturnType<typeof syncTransactionsForItem>>;
+      const lockResult = await runFullRefresh<SyncLockResult<TxResult>>(
+        { itemId: item.id, trigger: "MANUAL", profile: "TRANSACTIONS_ONLY" },
+        {
+          refresh: async ({ recorder, runId }) => {
+            recorder.begin("TRANSACTIONS", "PROVIDER");
+            const res = await withPlaidItemSyncLock(item.id, () => syncTransactionsForItem(item.id, { runId }));
+            if (!res.ok) {
+              recorder.skip("TRANSACTIONS", "PROVIDER", "IN_FLIGHT");
+              return res;
+            }
+            const tx = res.result;
+            recorder.succeed("TRANSACTIONS", {
+              recordsRead:    tx.added + tx.modified,
+              recordsWritten: tx.created + tx.updatedByPlaidId + tx.updatedByFingerprint,
+              recordsChanged: tx.added + tx.modified + tx.removed,
+            });
+            return res;
+          },
+        },
+      );
       if (!lockResult.ok) {
         results.push({ plaidItemId: item.id, institution: item.institutionName, ok: false, skipped: "in-flight" });
         continue;
