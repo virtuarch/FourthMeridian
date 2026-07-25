@@ -170,13 +170,75 @@ export const ALL_PLATFORM_AREAS = Object.keys(PLATFORM_AREAS) as PlatformArea[];
 // ── Level rank ────────────────────────────────────────────────────────────────
 
 /**
- * Canonical level precedence. WRITE implies READ — never compared for equality.
- * Mirrors ROLE_RANK (lib/spaces/policy.ts:90) / ROLE_ORDER (lib/session.ts:246).
+ * Canonical level precedence. Higher satisfies lower — never compared for
+ * equality. Mirrors ROLE_RANK (lib/spaces/policy.ts:90) / ROLE_ORDER
+ * (lib/session.ts:246).
+ *
+ *   READ    0 — observe authorized platform state.
+ *   WRITE   1 — perform ordinary operational work WITHIN the current behaviour.
+ *   CONTROL 2 — change the platform's operating behaviour itself (OPS-2D-2).
+ *
+ * The ranking is MONOTONE and one-directional, which is the whole point of
+ * adding CONTROL as a rank rather than a flag:
+ *
+ *   CONTROL satisfies WRITE and READ.
+ *   WRITE does NOT satisfy CONTROL.
+ *
+ * That second line is the load-bearing one. Had CONTROL been folded into WRITE
+ * (or ranked below it), every existing WRITE holder would silently acquire
+ * control-plane power the day the first control endpoint shipped. Because it
+ * ranks ABOVE WRITE, every existing grant keeps exactly the reach it has today
+ * and CONTROL has to be granted deliberately.
+ *
+ * Typed `Record<PlatformAccessLevel, number>`, so the compiler REQUIRES an
+ * entry for every enum member — a new level cannot be added without ranking it.
+ * A value outside the enum indexes to `undefined`, and `undefined >= n` is
+ * false, so an unknown level DENIES rather than defaulting to WRITE.
  */
 export const LEVEL_RANK: Record<PlatformAccessLevel, number> = {
-  READ:  0,
-  WRITE: 1,
+  READ:    0,
+  WRITE:   1,
+  CONTROL: 2,
 };
+
+/**
+ * Every level, ordered LOW → HIGH by rank. Derived from LEVEL_RANK rather than
+ * written out, so it inherits that record's compiler-enforced exhaustiveness: a
+ * level cannot exist without a rank, and cannot have a rank without appearing
+ * here. Consumers that must ENUMERATE levels (the admin matrix) read this
+ * instead of a local literal — a hardcoded list is how the surface silently
+ * stopped representing the model in the first place.
+ */
+export const ALL_ACCESS_LEVELS: readonly PlatformAccessLevel[] =
+  (Object.keys(LEVEL_RANK) as PlatformAccessLevel[]).sort((a, b) => LEVEL_RANK[a] - LEVEL_RANK[b]);
+
+// ── Issuance surface ──────────────────────────────────────────────────────────
+
+/**
+ * The levels the grant-administration surface (POST /api/admin/platform-grants)
+ * may actually mint. Deliberately NARROWER than the enum.
+ *
+ * CONTROL is canonical but NOT issuable in OPS-2D-2. The reason is truthfulness,
+ * not caution: nothing consumes CONTROL yet, and the admin matrix
+ * (app/admin/platform-access/page.tsx) renders exactly two cells per area — so a
+ * CONTROL grant would confer no capability anyone asks for while displaying as
+ * *no* grant at all in the operator's own UI. An unrenderable grant is worse
+ * than an absent one.
+ *
+ * This list — not `Object.values(PlatformAccessLevel)` — is what the grant route
+ * validates against, which is precisely why adding CONTROL to the enum changed
+ * no authorization behaviour: `level: "CONTROL"` was a 400 before this slice and
+ * is a 400 after it.
+ *
+ * Whoever makes CONTROL issuable owes the admin matrix a third cell in the same
+ * change. `capability-classification.ts` records what would justify that.
+ */
+export const ISSUABLE_LEVELS: readonly PlatformAccessLevel[] = ["READ", "WRITE"];
+
+/** Is `level` a level the grant surface may mint today? */
+export function isIssuableLevel(level: PlatformAccessLevel): boolean {
+  return ISSUABLE_LEVELS.includes(level);
+}
 
 // ── Grant context ─────────────────────────────────────────────────────────────
 
@@ -215,9 +277,29 @@ export function hasPlatformAccess(
 // ── Derived capability names (display / widget self-declaration only) ──────────
 
 /**
+ * The capability-name suffix each level projects to. Typed
+ * `Record<PlatformAccessLevel, …>`, so a new level cannot be added without
+ * naming it — the same exhaustiveness guarantee LEVEL_RANK carries.
+ */
+export const CAPABILITY_SUFFIX: Record<PlatformAccessLevel, "VIEW" | "MANAGE" | "CONTROL"> = {
+  READ:    "VIEW",
+  WRITE:   "MANAGE",
+  CONTROL: "CONTROL",
+};
+
+/**
  * 07-07-style capability names, derived from `area × level` rather than stored.
  * `SECURITY_OPS_VIEW ≡ (SECURITY_OPS, READ)`, `SECURITY_OPS_MANAGE ≡
- * (SECURITY_OPS, WRITE)`. For display / widget self-declaration only — never a
- * storage or gating primitive (the grant row + hasPlatformAccess are).
+ * (SECURITY_OPS, WRITE)`, `PLATFORM_OPS_CONTROL ≡ (PLATFORM_OPS, CONTROL)`. For
+ * display / widget self-declaration only — never a storage or gating primitive
+ * (the grant row + hasPlatformAccess are).
  */
-export type PlatformCapability = `${PlatformArea}_${"VIEW" | "MANAGE"}`;
+export type PlatformCapability = `${PlatformArea}_${"VIEW" | "MANAGE" | "CONTROL"}`;
+
+/** The derived capability name for one (area, level). Pure; display only. */
+export function platformCapability(
+  area:  PlatformArea,
+  level: PlatformAccessLevel,
+): PlatformCapability {
+  return `${area}_${CAPABILITY_SUFFIX[level]}`;
+}

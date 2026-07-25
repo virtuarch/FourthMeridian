@@ -12,7 +12,8 @@
  *   1. requireFreshSystemAdmin() — live revocation re-check, deliberately
  *      stronger than the cached guard most admin routes use.
  *   2. limitByUser(admin.id, "platform-grant", …) — rate limit.
- *   3. Target validation — user exists, role === USER, area/level are enum members.
+ *   3. Target validation — user exists, role === USER, area is an enum member,
+ *      level is an ISSUABLE level (READ/WRITE — see policy.ts ISSUABLE_LEVELS).
  *   4. Grant write + AuditLog row in ONE transaction, canon action, with
  *      performedByAdminId set and area/level (+ previous state) in metadata.
  */
@@ -26,6 +27,7 @@ import {
   type Prisma,
 } from "@prisma/client";
 import { requireSystemAdmin, requireFreshSystemAdmin } from "@/lib/session";
+import { isIssuableLevel } from "@/lib/platform/policy";
 import { limitByUser } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
 import { getClientIp } from "@/lib/api";
@@ -84,7 +86,18 @@ export async function POST(req: NextRequest) {
   if (typeof area !== "string" || !(Object.values(PlatformArea) as string[]).includes(area)) {
     return NextResponse.json({ error: "Invalid area" }, { status: 400 });
   }
-  if (typeof level !== "string" || !(Object.values(PlatformAccessLevel) as string[]).includes(level)) {
+  // Validated against ISSUABLE_LEVELS, NOT the raw enum. OPS-2D-2 added CONTROL
+  // to PlatformAccessLevel as a canonical rank with no consumers; minting one
+  // would produce a grant that confers nothing anyone asks for and that the
+  // admin matrix (READ/WRITE cells only) cannot render. Behaviour is unchanged:
+  // READ/WRITE are accepted exactly as before and every other string — CONTROL
+  // included — is still a 400. Whoever makes CONTROL issuable owes the matrix a
+  // third cell in the same change.
+  if (
+    typeof level !== "string" ||
+    !(Object.values(PlatformAccessLevel) as string[]).includes(level) ||
+    !isIssuableLevel(level as PlatformAccessLevel)
+  ) {
     return NextResponse.json({ error: "Invalid level" }, { status: 400 });
   }
   const areaVal  = area  as PlatformArea;

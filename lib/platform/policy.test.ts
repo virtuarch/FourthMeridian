@@ -58,14 +58,22 @@ const AREAS: PlatformArea[] = [
   "GROWTH_REVENUE",
   "CUSTOMER_SUCCESS",
 ];
-const LEVELS:   PlatformAccessLevel[]  = ["READ", "WRITE"];
+const LEVELS:   PlatformAccessLevel[]  = ["READ", "WRITE", "CONTROL"];
 const STATUSES: PlatformGrantStatus[]  = ["ACTIVE", "REVOKED"];
+
+/**
+ * The two levels that existed before OPS-2D-2. Kept as its own list so the
+ * pre-CONTROL behaviour can be asserted as a REGRESSION set, independent of
+ * whatever LEVELS grows to. If adding a rank ever perturbs the old matrix, the
+ * §F block below fails whether or not the oracle was updated in sympathy.
+ */
+const PRE_CONTROL_LEVELS: PlatformAccessLevel[] = ["READ", "WRITE"];
 
 // ── Independent oracle ────────────────────────────────────────────────────────
 // Hand-written expected behavior. Intentionally NOT importing LEVEL_RANK, so a
 // drift between spec and implementation is caught.
 
-const ORACLE_RANK: Record<PlatformAccessLevel, number> = { READ: 0, WRITE: 1 };
+const ORACLE_RANK: Record<PlatformAccessLevel, number> = { READ: 0, WRITE: 1, CONTROL: 2 };
 
 function oracleAllows(
   needed: PlatformAccessLevel,
@@ -105,8 +113,8 @@ for (const grantArea of AREAS) {
     }
   }
 }
-// 4 grantAreas × 2 grantLevels × 2 statuses × 4 askAreas × 2 needed = 128
-check(`matrix covered exactly 128 combinations (got ${combos})`, combos === 128);
+// 4 grantAreas × 3 grantLevels × 2 statuses × 4 askAreas × 3 needed = 288
+check(`matrix covered exactly 288 combinations (got ${combos})`, combos === 288);
 
 // ── B. Named invariant cases ──────────────────────────────────────────────────
 
@@ -118,6 +126,17 @@ check(`matrix covered exactly 128 combinations (got ${combos})`, combos === 128)
   check("inv#1 READ does NOT satisfy WRITE", hasPlatformAccess("SECURITY_OPS", "WRITE", readGrant)  === false);
   check("inv#1 WRITE satisfies READ",        hasPlatformAccess("SECURITY_OPS", "READ",  writeGrant) === true);
   check("inv#1 WRITE satisfies WRITE",       hasPlatformAccess("SECURITY_OPS", "WRITE", writeGrant) === true);
+
+  // OPS-2D-2 — CONTROL is a RANK ABOVE WRITE, which cuts one way only. The
+  // second assertion is the load-bearing one: if WRITE ever satisfied CONTROL,
+  // every operator holding WRITE today would silently acquire control-plane
+  // power the moment the first control endpoint shipped.
+  const controlGrant: PlatformGrantCtx[] = [{ area: "SECURITY_OPS", level: "CONTROL", status: "ACTIVE" }];
+  check("inv#1 CONTROL satisfies READ",         hasPlatformAccess("SECURITY_OPS", "READ",    controlGrant) === true);
+  check("inv#1 CONTROL satisfies WRITE",        hasPlatformAccess("SECURITY_OPS", "WRITE",   controlGrant) === true);
+  check("inv#1 CONTROL satisfies CONTROL",      hasPlatformAccess("SECURITY_OPS", "CONTROL", controlGrant) === true);
+  check("inv#1 WRITE does NOT satisfy CONTROL", hasPlatformAccess("SECURITY_OPS", "CONTROL", writeGrant)   === false);
+  check("inv#1 READ does NOT satisfy CONTROL",  hasPlatformAccess("SECURITY_OPS", "CONTROL", readGrant)    === false);
 }
 
 // 2. REVOKED grants confer nothing — no residual access at either level.
@@ -176,11 +195,16 @@ check(`matrix covered exactly 128 combinations (got ${combos})`, combos === 128)
   check("reg every area has ≥1 section", AREAS.every((a) => PLATFORM_AREAS[a].sections.length >= 1));
 }
 
-// LEVEL_RANK is a strict two-member ranking (WRITE > READ).
+// LEVEL_RANK is a strict three-member ranking (CONTROL > WRITE > READ).
 {
-  check("rank LEVEL_RANK READ=0",  LEVEL_RANK.READ === 0);
-  check("rank LEVEL_RANK WRITE=1", LEVEL_RANK.WRITE === 1);
-  check("rank WRITE outranks READ", LEVEL_RANK.WRITE > LEVEL_RANK.READ);
+  check("rank LEVEL_RANK READ=0",    LEVEL_RANK.READ === 0);
+  check("rank LEVEL_RANK WRITE=1",   LEVEL_RANK.WRITE === 1);
+  check("rank LEVEL_RANK CONTROL=2", LEVEL_RANK.CONTROL === 2);
+  check("rank WRITE outranks READ",     LEVEL_RANK.WRITE > LEVEL_RANK.READ);
+  check("rank CONTROL outranks WRITE",  LEVEL_RANK.CONTROL > LEVEL_RANK.WRITE);
+  // The rank is a total order with no ties — a tie would make two levels
+  // mutually satisfying and silently collapse the distinction.
+  check("rank has no ties", new Set(Object.values(LEVEL_RANK)).size === Object.keys(LEVEL_RANK).length);
 }
 
 // ── D. Determinism ────────────────────────────────────────────────────────────
@@ -251,7 +275,7 @@ function oracleDecide(
       }
     }
   }
-  check(`dec USER matrix covered 128 combinations (got ${decCombos})`, decCombos === 128);
+  check(`dec USER matrix covered 288 combinations (got ${decCombos})`, decCombos === 288);
 }
 
 // Spec (b): the real authorize.ts implements exactly this branch + the tuple
@@ -277,6 +301,68 @@ function oracleDecide(
   const authCode = authSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   check("src denies with forbidden() (403), never 404 in code",
     authCode.includes("forbidden()") && !authCode.includes("404") && !authCode.includes("notFound"));
+}
+
+// ── F. Pre-CONTROL regression + fail-closed on unknown levels (OPS-2D-2) ──────
+//
+// Section A already compares the implementation to an oracle, but both were
+// edited in the same slice — so a shared mistake would pass. This block pins the
+// pre-OPS-2D-2 answers LITERALLY, computed from nothing: 24 hand-stated
+// expectations for the READ/WRITE world. If adding CONTROL moved any existing
+// decision by so much as one cell, these fail regardless of the oracle.
+{
+  // Expected truth table for a single ACTIVE grant on the SAME area, exactly as
+  // it read before CONTROL existed: grantLevel → { neededLevel → allowed }.
+  const PRE: Record<string, Record<string, boolean>> = {
+    READ:  { READ: true,  WRITE: false },
+    WRITE: { READ: true,  WRITE: true  },
+  };
+  let pinned = 0;
+  for (const area of AREAS) {
+    for (const grantLevel of PRE_CONTROL_LEVELS) {
+      for (const needed of PRE_CONTROL_LEVELS) {
+        pinned++;
+        const grants: PlatformGrantCtx[] = [{ area, level: grantLevel, status: "ACTIVE" }];
+        check(
+          `regress ${area} grant=${grantLevel} needs=${needed} → ${PRE[grantLevel][needed]}`,
+          hasPlatformAccess(area, needed, grants) === PRE[grantLevel][needed],
+        );
+      }
+    }
+  }
+  check(`regress pinned 16 pre-CONTROL decisions (got ${pinned})`, pinned === 16);
+
+  // Revoked and cross-area denials are unchanged for the pre-CONTROL levels.
+  for (const grantLevel of PRE_CONTROL_LEVELS) {
+    const revoked: PlatformGrantCtx[] = [{ area: "PLATFORM_OPS", level: grantLevel, status: "REVOKED" }];
+    check(`regress REVOKED ${grantLevel} still denies READ`,
+      hasPlatformAccess("PLATFORM_OPS", "READ", revoked) === false);
+    const elsewhere: PlatformGrantCtx[] = [{ area: "SECURITY_OPS", level: grantLevel, status: "ACTIVE" }];
+    check(`regress ${grantLevel} on SECURITY_OPS still denies PLATFORM_OPS READ`,
+      hasPlatformAccess("PLATFORM_OPS", "READ", elsewhere) === false);
+  }
+}
+
+// Unknown level values FAIL CLOSED. A level outside the enum (a stale row from a
+// rolled-back migration, a hand-written DB value, a deserialized string) indexes
+// LEVEL_RANK to `undefined`; `undefined >= n` is false in JS, so the comparison
+// DENIES rather than defaulting to WRITE. Asserted through the real function via
+// a deliberate cast — this is the one place the type system is bypassed on
+// purpose, because the hazard is precisely a value the types said was impossible.
+{
+  const bogusGrant: PlatformGrantCtx[] = [
+    { area: "PLATFORM_OPS", level: "SUPERUSER" as PlatformAccessLevel, status: "ACTIVE" as PlatformGrantStatus },
+  ];
+  for (const needed of LEVELS) {
+    check(`failclosed unknown grant level denies ${needed}`,
+      hasPlatformAccess("PLATFORM_OPS", needed, bogusGrant) === false);
+  }
+  // And an unknown NEEDED level is not satisfied by any real grant.
+  const realGrant: PlatformGrantCtx[] = [{ area: "PLATFORM_OPS", level: "CONTROL", status: "ACTIVE" }];
+  check("failclosed unknown needed level denied even to CONTROL",
+    hasPlatformAccess("PLATFORM_OPS", "SUPERUSER" as PlatformAccessLevel, realGrant) === false);
+  check("failclosed LEVEL_RANK has no entry for an unknown level",
+    (LEVEL_RANK as Record<string, number | undefined>).SUPERUSER === undefined);
 }
 
 // ── Report ────────────────────────────────────────────────────────────────────

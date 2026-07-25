@@ -39,6 +39,7 @@ import {
   workspaceConsumesShellTime,
 } from "@/lib/perspectives";
 import { getPlatformAreaWorkspaces, getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { LEVEL_RANK } from "@/lib/platform/policy";
 import {
   type SpaceMountContext,
   type MountWorkspaceSummary,
@@ -153,7 +154,11 @@ export function platformMountContext(
     principal: { userId: input.userId },
     access: {
       canRead:  true,                         // READ gate already passed to reach here
-      canWrite: input.accessLevel === "WRITE",
+      // RANK, not equality — the same rule hasPlatformAccess applies. Identical
+      // for the two levels that exist as grants today (READ 0 ≥ 1 false,
+      // WRITE 1 ≥ 1 true); OPS-2D-2 changed this from `=== "WRITE"` so that a
+      // higher rank can never read as *less* write access than WRITE itself.
+      canWrite: LEVEL_RANK[input.accessLevel] >= LEVEL_RANK.WRITE,
       level:    input.accessLevel,            // PlatformAccessLevel vocabulary — descriptive only
     },
     display: { name: input.spaceName, label: input.areaLabel },

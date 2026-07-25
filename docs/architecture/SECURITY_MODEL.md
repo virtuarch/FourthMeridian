@@ -33,7 +33,7 @@ Fourth Meridian
 | Axis | Model | Enum(s) | Controls | Gated by |
 |---|---|---|---|---|
 | **Customer** | `SpaceMember` (per user × Space) | `SpaceMemberRole {OWNER, ADMIN, MEMBER, VIEWER}`, status `ACTIVE\|REMOVED\|LEFT` | Access to a **customer Space's** balances, transactions, goals, AI, sharing | `requireSpaceRole(spaceId, minRole)` → `spaceMember` lookup (`lib/session.ts`, `lib/spaces/policy.ts`) |
-| **Operator** | `PlatformGrant` (per user × area) | `PlatformArea {PLATFORM_OPS, SECURITY_OPS, GROWTH_REVENUE, CUSTOMER_SUCCESS}` × `PlatformAccessLevel {READ, WRITE}`, status `ACTIVE\|REVOKED` | Access to a **Fourth Meridian HQ** area at `/dashboard/platform/[area]` and its `/api/platform/*` routes | `requirePlatformAccess(area, level)` → `hasPlatformAccess` pure policy (`lib/platform/authorize.ts`, `lib/platform/policy.ts`) |
+| **Operator** | `PlatformGrant` (per user × area) | `PlatformArea {PLATFORM_OPS, SECURITY_OPS, GROWTH_REVENUE, CUSTOMER_SUCCESS}` × `PlatformAccessLevel {READ, WRITE, CONTROL}`, status `ACTIVE\|REVOKED` | Access to a **Fourth Meridian HQ** area at `/dashboard/platform/[area]` and its `/api/platform/*` routes | `requirePlatformAccess(area, level)` → `hasPlatformAccess` pure policy (`lib/platform/authorize.ts`, `lib/platform/policy.ts`) |
 | **Emergency** | `User.role` | `UserRole {USER, SYSTEM_ADMIN}` | Break-glass administration at `/admin/*`: issue/revoke grants, user & space oversight, security settings, audit | `requireSystemAdmin` / `requireFreshSystemAdmin` (`lib/session.ts`) |
 
 ### Why they are separate — and must stay so
@@ -44,6 +44,37 @@ Fourth Meridian
 - **`SYSTEM_ADMIN` is break-glass, not a daily role.** It carries an unconditional bypass over every platform area (`decidePlatformAccess`), so it is the highest-value credential in the system and is treated accordingly (mandatory MFA below; kill switch `DISABLE_SYSTEM_ADMIN`; every admin action audited with `performedByAdminId`).
 
 The employee/operator tier is expressed **today** as a normal `USER` account + one or more per-area `PlatformGrant`s — least-privilege, with zero customer-data reach and no new role enum required.
+
+---
+
+## The CONTROL capability (OPS-2D-2)
+
+The Operator axis ranks **`CONTROL > WRITE > READ`** (`LEVEL_RANK`, `lib/platform/policy.ts`). The rank is the model; levels are never compared for equality.
+
+**The distinction, in one line:**
+
+> **WRITE** — do operational work *within* the platform's current behaviour.
+> **CONTROL** — change what the platform's behaviour *is*.
+
+"Resync this connection now" is WRITE: it asks for an occurrence of work the platform already performs on a schedule. "Stop syncing this connection" is CONTROL: afterwards the platform behaves differently until someone changes it back. The test is **not** blast radius and **not** reversibility — it is whether steady-state behaviour differs after the action.
+
+**Why a rank above WRITE, and not a flag or a fold-in.** The ranking cuts one way only: `CONTROL` satisfies `WRITE` and `READ`; **`WRITE` does not satisfy `CONTROL`.** Had control-plane mutations been folded into WRITE, every operator holding WRITE today would silently acquire control-plane power the day the first control endpoint shipped. Because CONTROL ranks *above* WRITE, every existing grant keeps exactly the reach it has, and CONTROL has to be granted deliberately.
+
+**As of OPS-2D-2, CONTROL exists and nothing consumes it.** This is the intended terminal state of that slice, not an unfinished edge:
+
+| | Status |
+|---|---|
+| Declared in `PlatformAccessLevel` + migrated | ✅ |
+| Ranked, exhaustive, distinct from WRITE | ✅ |
+| Required by any route | ❌ — all 11 platform mutations still require `WRITE` |
+| Checked by any UI | ❌ |
+| **Issuable** | ❌ — `ISSUABLE_LEVELS = [READ, WRITE]` |
+
+Issuance is closed on purpose. Nothing asks for CONTROL, and the admin matrix (`/admin/platform-access`) renders exactly two cells per area — so a CONTROL grant would confer no capability anyone requests while displaying as *no grant at all* in the operator's own UI. An unrenderable grant is worse than an absent one. **Whoever makes CONTROL issuable owes the admin matrix a third cell in the same change.**
+
+**Escalation stays closed.** CONTROL does not, and must never, permit minting grants — a CONTROL holder who could issue grants would be a `SYSTEM_ADMIN` by another name. Grant administration remains `SYSTEM_ADMIN`-only.
+
+**Classification, not enforcement.** Which mutation families *should* require CONTROL is recorded in `lib/platform/capability-classification.ts` — a typed, test-backed table that **no production module imports** (asserted structurally by `lib/platform/capability-control.test.ts`, so the question "is this enforced?" is settled by grep, not by trusting a comment). Two families are recorded as genuinely **UNRESOLVED** rather than guessed: platform-wide settings (registration mode, product status) and manual operations (Run Now / Dry Run) — both ship as WRITE today and both have a real argument for CONTROL. They are resolved deliberately, with the grant migration, not as a side effect.
 
 ---
 

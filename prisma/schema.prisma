@@ -264,12 +264,21 @@ enum PlatformArea {
   CUSTOMER_SUCCESS
 }
 
-/// Ranked access level within one PlatformArea. WRITE ≥ READ (LEVEL_RANK in
-/// lib/platform/policy.ts) — never compared for equality, mirroring how
-/// SpaceMemberRole is consumed via ROLE_RANK/ROLE_ORDER.
+/// Ranked access level within one PlatformArea. CONTROL ≥ WRITE ≥ READ
+/// (LEVEL_RANK in lib/platform/policy.ts) — never compared for equality,
+/// mirroring how SpaceMemberRole is consumed via ROLE_RANK/ROLE_ORDER.
+///
+/// CONTROL (OPS-2D-2) is reserved for mutations that change the platform's own
+/// operating behaviour — admission, scheduling intent, provider enablement,
+/// recovery policy — as opposed to WRITE, which performs ordinary operational
+/// work WITHIN the current behaviour. It exists canonically but is deliberately
+/// NOT yet issuable and NOT yet required by any route: see ISSUABLE_LEVELS in
+/// lib/platform/policy.ts and the classification table in
+/// lib/platform/capability-classification.ts. No row carries it.
 enum PlatformAccessLevel {
   READ
   WRITE
+  CONTROL
 }
 
 /// Grant lifecycle. Rows are never deleted — revocation is a status flip with

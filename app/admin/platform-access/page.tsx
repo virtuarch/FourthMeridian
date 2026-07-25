@@ -5,7 +5,15 @@
  *
  * PO1.0 — the SYSTEM_ADMIN surface for issuing / changing / revoking platform
  * grants (user × area × level). The screen IS the model: a (user, area) matrix
- * whose cells are — / READ / WRITE, backed 1:1 by PlatformGrant rows.
+ * whose cells are — / READ / WRITE / CONTROL, backed 1:1 by PlatformGrant rows.
+ *
+ * OPS-2D-2 — the matrix enumerates ALL_ACCESS_LEVELS (derived from LEVEL_RANK)
+ * rather than a local literal, so it cannot silently fall behind the model
+ * again. CONTROL renders as a RESERVED cell: present, ranked, and visibly not
+ * issuable. That is the honest depiction of the current state — the level
+ * exists canonically and nothing consumes it — and it is enforced twice over:
+ * the button is `disabled`, and setLevel() refuses any non-issuable level
+ * before it can reach the network. The route rejects it a third time.
  *
  * Mutations go through the extra-guarded routes:
  *   POST  /api/admin/platform-grants            { userId, area, level }
@@ -21,7 +29,13 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { Search, X, ScrollText, Loader2, ShieldCheck } from "lucide-react";
 import Link from "next/link";
-import { PLATFORM_AREAS, ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
+import {
+  PLATFORM_AREAS,
+  ALL_PLATFORM_AREAS,
+  ALL_ACCESS_LEVELS,
+  isIssuableLevel,
+} from "@/lib/platform/policy";
+import type { PlatformAccessLevel } from "@prisma/client";
 
 type Identity = { id: string; name: string | null; username: string | null };
 type User = Identity & { email: string; role: string };
@@ -37,7 +51,30 @@ type Grant = {
   revokedBy: Identity | null;
 };
 
-const LEVELS = ["READ", "WRITE"] as const;
+/** Every canonical level, low → high by rank. Derived, never hardcoded. */
+const LEVELS = ALL_ACCESS_LEVELS;
+
+/** Single-letter cell label. */
+const INITIAL: Record<PlatformAccessLevel, string> = { READ: "R", WRITE: "W", CONTROL: "C" };
+
+/** One line per level for the legend — the real hierarchy, stated plainly. */
+const LEVEL_COPY: Record<PlatformAccessLevel, string> = {
+  READ:    "Can inspect authorized platform state.",
+  WRITE:   "Can perform existing operational work.",
+  CONTROL: "Reserved for future authority to change platform behavior. Not currently issuable.",
+};
+
+/**
+ * The RESERVED chip — a level that exists in the model but cannot be issued.
+ * Expressed in Atlas tokens rather than raw palette (the surrounding surface
+ * predates Atlas; new styling does not inherit that debt). Dashed + faint so it
+ * reads as "present but inert", never as an available choice.
+ */
+const CHIP_RESERVED =
+  "bg-transparent text-[var(--text-faint)] border-dashed border-[var(--border-hairline)] opacity-60";
+/** The neutral, selectable chip — used by the legend for issuable levels. */
+const CHIP_LEGEND =
+  "bg-white/5 text-[var(--text-muted)] border-[var(--border-hairline)]";
 
 export default function PlatformAccessPage() {
   const [users,   setUsers]   = useState<User[]>([]);
@@ -84,7 +121,10 @@ export default function PlatformAccessPage() {
     );
   }, [users, search]);
 
-  async function setLevel(userId: string, area: string, level: string) {
+  async function setLevel(userId: string, area: string, level: PlatformAccessLevel) {
+    // Structural, not cosmetic: a reserved level never reaches the network, even
+    // if the disabled button were bypassed. The route rejects it independently.
+    if (!isIssuableLevel(level)) return;
     const key = `${userId}:${area}`;
     setBusy(key); setError(null);
     try {
@@ -142,12 +182,37 @@ export default function PlatformAccessPage() {
         </Link>
       </div>
 
-      <p className="text-xs text-gray-500 leading-relaxed max-w-3xl">
-        Grants are held per user, per platform area, at READ or WRITE (WRITE
-        implies READ). Revoking flips the grant to REVOKED — the row is kept for
-        audit and reinstated on re-grant. SYSTEM_ADMIN accounts are omitted:
-        they already have unconditional access and need no grant.
-      </p>
+      <div className="max-w-3xl space-y-3">
+        <p className="text-xs text-gray-500 leading-relaxed">
+          Grants are held per user, per platform area. Levels are ranked — a higher
+          level satisfies every lower one. Revoking flips the grant to REVOKED — the
+          row is kept for audit and reinstated on re-grant. SYSTEM_ADMIN accounts are
+          omitted: they already have unconditional access and need no grant.
+        </p>
+        {/* Legend — the real hierarchy, including the level that is not issuable. */}
+        <dl className="space-y-1.5 text-xs text-[var(--text-muted)]">
+          {LEVELS.map((lvl) => {
+            const issuable = isIssuableLevel(lvl);
+            return (
+              <div
+                key={lvl}
+                className={`flex items-start gap-2.5 ${issuable ? "" : "opacity-70"}`}
+              >
+                <span
+                  className={[
+                    "shrink-0 mt-px text-[11px] font-semibold px-2 py-0.5 rounded-md border",
+                    issuable ? CHIP_LEGEND : CHIP_RESERVED,
+                  ].join(" ")}
+                >
+                  {INITIAL[lvl]}
+                </span>
+                <dt className="shrink-0 font-medium text-[var(--text-secondary)]">{lvl}</dt>
+                <dd>{LEVEL_COPY[lvl]}</dd>
+              </div>
+            );
+          })}
+        </dl>
+      </div>
 
       {error && (
         <div className="px-4 py-2.5 rounded-xl text-sm bg-red-500/10 border border-red-500/30 text-red-400">
@@ -222,23 +287,32 @@ export default function PlatformAccessPage() {
                             ) : (
                               <>
                                 {LEVELS.map((lvl) => {
-                                  const isCurrent = grant?.level === lvl;
+                                  const isCurrent  = grant?.level === lvl;
+                                  const issuable   = isIssuableLevel(lvl);
                                   return (
                                     <button
                                       key={lvl}
-                                      onClick={() => !isCurrent && setLevel(u.id, area, lvl)}
-                                      disabled={isCurrent}
-                                      title={isCurrent ? `Currently ${lvl}` : `Grant ${lvl}`}
+                                      onClick={() => issuable && !isCurrent && setLevel(u.id, area, lvl)}
+                                      disabled={isCurrent || !issuable}
+                                      title={
+                                        !issuable
+                                          ? `${lvl} — reserved, not yet issuable`
+                                          : isCurrent ? `Currently ${lvl}` : `Grant ${lvl}`
+                                      }
                                       className={[
                                         "text-[11px] font-semibold px-2 py-1 rounded-md border transition-colors",
-                                        isCurrent
-                                          ? lvl === "WRITE"
-                                            ? "bg-amber-500/15 text-amber-400 border-amber-500/30 cursor-default"
-                                            : "bg-blue-500/15 text-blue-400 border-blue-500/30 cursor-default"
-                                          : "bg-gray-800/60 text-gray-500 border-gray-700/60 hover:text-white hover:border-gray-600",
+                                        // Reserved: present and ranked, visibly inert. Dashed border +
+                                        // faded so it never reads as an available choice.
+                                        !issuable
+                                          ? `${CHIP_RESERVED} cursor-not-allowed`
+                                          : isCurrent
+                                            ? lvl === "WRITE"
+                                              ? "bg-amber-500/15 text-amber-400 border-amber-500/30 cursor-default"
+                                              : "bg-blue-500/15 text-blue-400 border-blue-500/30 cursor-default"
+                                            : "bg-gray-800/60 text-gray-500 border-gray-700/60 hover:text-white hover:border-gray-600",
                                       ].join(" ")}
                                     >
-                                      {lvl === "READ" ? "R" : "W"}
+                                      {INITIAL[lvl]}
                                     </button>
                                   );
                                 })}

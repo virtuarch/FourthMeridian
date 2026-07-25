@@ -1,0 +1,23 @@
+-- OPS-2D-2 — add CONTROL to PlatformAccessLevel.
+--
+-- Purely additive and low-risk: one new enum value, no table/column/constraint
+-- change, no backfill, and no row anywhere carries it. The platform capability
+-- model gains a third rank (CONTROL ≥ WRITE ≥ READ, LEVEL_RANK in
+-- lib/platform/policy.ts) so that control-plane mutations — admission,
+-- scheduling intent, provider enablement, recovery policy — have somewhere to
+-- land other than WRITE, which must not become the umbrella for everything.
+--
+-- CONTROL is NOT consumed in this slice by design:
+--   * no route asks for it (every mutation still requires WRITE);
+--   * no UI checks it (app/admin/platform-access/page.tsx renders READ/WRITE);
+--   * it is NOT issuable — POST /api/admin/platform-grants validates against
+--     ISSUABLE_LEVELS (READ, WRITE), not the raw enum, so the grant surface
+--     rejects it with 400 exactly as it did before this migration.
+-- Whoever makes it issuable owes the admin matrix a third cell in the same
+-- change; see docs/architecture/SECURITY_MODEL.md §"The CONTROL capability".
+--
+-- PostgreSQL requires ALTER TYPE ... ADD VALUE to commit in its own transaction
+-- before any statement references the new value (see
+-- 20260718120000_add_descriptor_evidence_reason). This migration references
+-- nothing, so it is safe on its own.
+ALTER TYPE "PlatformAccessLevel" ADD VALUE IF NOT EXISTS 'CONTROL';
