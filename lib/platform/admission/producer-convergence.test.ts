@@ -77,28 +77,22 @@ const PRODUCERS = [
 ] as const;
 
 /**
- * The EIGHTH producer, found by sweeping every direct caller of the sync engine
- * during OPS-2D-4's census-closure step — and deliberately NOT migrated.
+ * Producers deliberately NOT migrated.
  *
- * `performPlaidTokenExchange` performs real provider ingestion (accounts,
- * balances, holdings, and an inline transaction sync when history is not
- * deferred) entirely outside any RefreshExecution envelope. It is a genuine
- * eighth producer, it was not in the declared seven, and whether connecting a
- * NEW account should be refused while ingestion is paused is a product decision,
- * not a mechanical one. Pinned here so it cannot be quietly forgotten OR quietly
- * absorbed.
+ * EMPTY as of OPS-2D-4A. It previously held lib/plaid/exchangeToken.ts, the
+ * eighth producer found by sweeping every direct caller of the sync engine
+ * during OPS-2D-4's census-closure step. It was left out of D4 because it does
+ * connection establishment AND initial ingestion in one function, and a single
+ * gate around it would have been wrong in both directions at once. OPS-2D-4A
+ * split the stages; it now declares both work classes and appears in the
+ * boundary census with the rest.
+ *
+ * Kept as an empty, asserted list rather than deleted: the next producer that
+ * cannot be migrated immediately needs somewhere honest to sit, and an empty
+ * list that is still checked is what makes "nothing is deferred" a claim rather
+ * than an absence.
  */
-const OUT_OF_SCOPE = [
-  { file: "lib/plaid/exchangeToken.ts",
-    why: "OUT OF SCOPE — REQUIRES CONNECTION/INGESTION SPLIT. It performs BOTH " +
-         "connection establishment (token exchange, item + institution + account " +
-         "persistence) and initial provider ingestion (balances, holdings, inline " +
-         "transaction sync) in one function. A single admission gate around the " +
-         "whole thing would be wrong in both directions: too broad, because a " +
-         "paused ingestion should not stop someone connecting an account; and too " +
-         "narrow, because the ingestion half plainly must be paused. Splitting the " +
-         "stages is OPS-2D-4A." },
-] as const;
+const OUT_OF_SCOPE: readonly { file: string; why: string }[] = [];
 
 /** Known legacy bypasses — separate from the census, and still bypasses. */
 const LEGACY_BYPASSES = [
@@ -340,13 +334,17 @@ function main() {
   }
 
   // ── 9. Out-of-scope producer stays reported, not absorbed ───────────────────
-  console.log("9. the eighth producer is reported, not silently migrated");
+  console.log("9. deferred producers are listed, and the list is empty");
   {
     for (const o of OUT_OF_SCOPE) {
       check(`${o.file}: exists`, exists(o.file));
       check(`${o.file}: still NOT migrated — ${o.why}`,
         !/admitOperationalWork\(/.test(code(o.file)));
     }
+    check("no producer remains deferred (OPS-2D-4A closed the last one)", OUT_OF_SCOPE.length === 0);
+    // …and the one it closed is genuinely converged.
+    check("lib/plaid/exchangeToken.ts consumes the canonical evaluator",
+      /admitOperationalWork\(/.test(code("lib/plaid/exchangeToken.ts")));
   }
 
   // ── 10. Legacy bypasses stay identified as bypasses ─────────────────────────

@@ -36,7 +36,7 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSpaceContext } from "@/lib/space";
 import { requireUser } from "@/lib/session";
-import { performPlaidTokenExchange, parsePlaidError, DuplicateInstitutionError } from "@/lib/plaid/exchangeToken";
+import { performPlaidTokenExchange, parsePlaidError, DuplicateInstitutionError, AdmissionDeniedError } from "@/lib/plaid/exchangeToken";
 import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
 import { limitByUser } from "@/lib/rate-limit";
 
@@ -122,10 +122,25 @@ export async function POST(req: NextRequest) {
       // instead of treating a fast return as incomplete. Existing clients that
       // ignore this field are unaffected.
       historyPending:     result.historyPending ?? false,
+      // OPS-2D-4A — the connection is real; ingestion is not. Surfaced so the
+      // client can say "connected, sync pending" instead of implying a finished
+      // import. `success: true` stays true because the connection DID succeed —
+      // and the Connections hub already renders this item as importing rather
+      // than ready, because syncIncompleteAt is stamped.
+      ...(result.ingestionDeferred ? { ingestionDeferred: result.ingestionDeferred } : {}),
     });
   } catch (err: unknown) {
     // Duplicate connection to an already-connected institution — a clean 409 with
     // a user-facing message (surfaced by the connect UI), not a Plaid error.
+    // OPS-2D-4A — a platform-wide denial taken BEFORE the public token was
+    // spent. 503, not 403: the caller's permissions are fine. The token is
+    // unconsumed, so retrying after the pause needs no new Link session.
+    if (err instanceof AdmissionDeniedError) {
+      return NextResponse.json(
+        { error: "not-admitted", reason: err.reason, message: err.label, evaluatedAt: err.evaluatedAt },
+        { status: 503 },
+      );
+    }
     if (err instanceof DuplicateInstitutionError) {
       console.warn(`[plaid] exchange-token: ${err.message}`);
       return NextResponse.json({ error: err.message }, { status: 409 });

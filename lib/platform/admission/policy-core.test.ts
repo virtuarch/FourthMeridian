@@ -31,6 +31,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 const REQ: AdmissionRequest = { work: "REFRESH_EXECUTION" };
+const CONNECT: AdmissionRequest = { work: "CONNECTION_ESTABLISHMENT" };
 const STATES: FactState[] = ["ON", "OFF", "MISSING", "INVALID", "UNAVAILABLE"];
 
 const fact = (key: string, state: FactState): ControlPlaneFact => ({
@@ -59,6 +60,59 @@ function oracle(m: FactState, i: FactState): string | null {
 }
 
 function main() {
+  // ── OPS-2D-4A — the work-class matrix ─────────────────────────────────────
+  //
+  // The whole point of the second work class is that ONE cell differs:
+  // ingestion_paused must stop provider data without stopping a customer from
+  // connecting an account. Every other cell must stay identical, or the split
+  // has quietly changed something it was not meant to touch. So the matrix is
+  // asserted in full, both classes, all 25 fact combinations each.
+  console.log("0. work-class applicability — the full matrix, both classes");
+  {
+    // The one intended difference, stated literally.
+    check("ingestion_paused DENIES ingestion",
+      evaluateAdmission(REQ, facts("OFF", "ON")).reason === "INGESTION_PAUSED");
+    check("ingestion_paused ADMITS connection establishment",
+      evaluateAdmission(CONNECT, facts("OFF", "ON")).decision === "ADMIT");
+
+    // maintenance stops everything, including new connections.
+    check("maintenance DENIES ingestion",
+      evaluateAdmission(REQ, facts("ON", "OFF")).reason === "MAINTENANCE_MODE");
+    check("maintenance DENIES connection establishment",
+      evaluateAdmission(CONNECT, facts("ON", "OFF")).reason === "MAINTENANCE_MODE");
+    check("maintenance denies connection even when ingestion is fine",
+      evaluateAdmission(CONNECT, facts("ON", "MISSING")).reason === "MAINTENANCE_MODE");
+
+    // Unknown control state fails closed for BOTH classes — deliberately
+    // control-plane scoped, not fact scoped.
+    for (const bad of ["INVALID", "UNAVAILABLE"] as FactState[]) {
+      const want = bad === "INVALID" ? "CONTROL_PLANE_UNREADABLE" : "CONTROL_PLANE_UNAVAILABLE";
+      check(`connection establishment denied when maintenance is ${bad}`,
+        evaluateAdmission(CONNECT, facts(bad, "OFF")).reason === want);
+      check(`connection establishment denied when ingestion is ${bad} (control-plane scoped)`,
+        evaluateAdmission(CONNECT, facts("OFF", bad)).reason === want);
+    }
+
+    // Nothing configured → both admitted (backwards compatibility).
+    check("both MISSING admits ingestion", evaluateAdmission(REQ, facts("MISSING", "MISSING")).decision === "ADMIT");
+    check("both MISSING admits connection", evaluateAdmission(CONNECT, facts("MISSING", "MISSING")).decision === "ADMIT");
+
+    // The classes differ ONLY where ingestion_paused is ON and nothing else denies.
+    let differing = 0;
+    for (const m of STATES) for (const i of STATES) {
+      const a = evaluateAdmission(REQ, facts(m, i));
+      const b = evaluateAdmission(CONNECT, facts(m, i));
+      if (a.reason !== b.reason) {
+        differing++;
+        check(`(${m},${i}) differs ONLY because ingestion_paused is ON`,
+          i === "ON" && (m === "OFF" || m === "MISSING") &&
+          a.reason === "INGESTION_PAUSED" && b.reason === null,
+          `ingestion=${a.reason} connection=${b.reason}`);
+      }
+    }
+    check(`exactly 2 of 25 cells differ between the classes (got ${differing})`, differing === 2);
+  }
+
   console.log("1. the complete 5x5 fact space vs an independent oracle");
   {
     let n = 0;

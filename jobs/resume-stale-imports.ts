@@ -46,6 +46,12 @@ import { PlaidItemStatus } from "@prisma/client";
 import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
 // OPS-2D-4 — canonical admission, resolved once per dispatch.
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
+import type { StampedAdmissionVerdict } from "@/lib/platform/admission/types";
+import type { WebhookSyncOutcome } from "@/lib/plaid/webhook-sync";
+
+/** The canonical per-candidate driver. Only tests replace it. */
+const driveCandidate = (itemId: string, admission: StampedAdmissionVerdict) =>
+  syncPlaidItemFromWebhook(itemId, "RESUME", "IMPORT_RECOVERY", admission);
 
 /**
  * Minimum age of the syncIncompleteAt marker before this job will touch an item.
@@ -58,6 +64,43 @@ const STALE_AFTER_MS = 315_000;
 
 /** Items driven per run. Bounded so one invocation cannot exceed its budget. */
 const MAX_ITEMS_PER_RUN = 5;
+
+/** One stale-import candidate, as the loader yields it. */
+export interface StaleImportCandidate {
+  id: string;
+  institutionName: string;
+}
+
+/**
+ * Injection seam — production callers never pass this.
+ *
+ * WHY IT EXISTS (OPS-2D-4A follow-up): a runtime proof of the recovery path
+ * called this job directly against the persistent development database. The job
+ * is an UNSCOPED FAN-OUT — it selects every stale item on the platform — so the
+ * proof drove two unrelated real connections through a mocked provider and
+ * overwrote their Plaid cursors. The mistake was not the mock; it was that a
+ * test could not express "only these items" at all.
+ *
+ * With `loadCandidates` injected, the set of records a run can touch is exactly
+ * the set the caller supplies. A scoped test is now the easy path, and
+ * `recovery-isolation.test.ts` asserts no tracked test uses the unscoped form.
+ *
+ * `drive` is separate so a test can choose between the real pipeline on fixture
+ * items and a fully mocked driver.
+ */
+export interface ResumeStaleImportsDeps {
+  /** Returns the candidate population. Defaults to the platform-wide query. */
+  loadCandidates?: (cutoff: Date, take: number) => Promise<{ candidates: number; items: StaleImportCandidate[] }>;
+  /** Drives one candidate. Defaults to the shared webhook/recovery wrapper. */
+  drive?: (itemId: string, admission: StampedAdmissionVerdict) => Promise<WebhookSyncOutcome>;
+  /**
+   * Resolves the dispatch-level admission verdict. Defaults to the canonical
+   * evaluator. Injected only so a scoped test can be hermetic — without it a
+   * test with no database reachable resolves UNAVAILABLE and every run is
+   * denied, which would make the isolation assertions vacuously true.
+   */
+  admit?: () => Promise<StampedAdmissionVerdict>;
+}
 
 export interface ResumeStaleImportsResult {
   candidates: number;
@@ -75,9 +118,14 @@ export interface ResumeStaleImportsResult {
   notAdmitted?: string;
 }
 
-export async function resumeStaleImports(): Promise<ResumeStaleImportsResult> {
-  const cutoff = new Date(Date.now() - STALE_AFTER_MS);
-
+/**
+ * THE canonical, platform-wide candidate query. The scheduled path always uses
+ * this; only tests replace it.
+ */
+async function loadStaleCandidates(
+  cutoff: Date,
+  take: number,
+): Promise<{ candidates: number; items: StaleImportCandidate[] }> {
   const where = {
     status:           PlaidItemStatus.ACTIVE,
     syncIncompleteAt: { lt: cutoff },
@@ -92,9 +140,17 @@ export async function resumeStaleImports(): Promise<ResumeStaleImportsResult> {
     // Oldest first: the longest-stalled import is the one a user is most likely
     // staring at.
     orderBy: { syncIncompleteAt: "asc" },
-    take:    MAX_ITEMS_PER_RUN,
+    take,
     select:  { id: true, institutionName: true },
   });
+  return { candidates, items };
+}
+
+export async function resumeStaleImports(
+  deps: ResumeStaleImportsDeps = {},
+): Promise<ResumeStaleImportsResult> {
+  const cutoff = new Date(Date.now() - STALE_AFTER_MS);
+  const { candidates, items } = await (deps.loadCandidates ?? loadStaleCandidates)(cutoff, MAX_ITEMS_PER_RUN);
 
   const deferred = Math.max(0, candidates - items.length);
   if (candidates === 0) {
@@ -117,7 +173,7 @@ export async function resumeStaleImports(): Promise<ResumeStaleImportsResult> {
   // re-stamped and no recovery timestamp moves. A denied pass leaves every
   // candidate exactly as stale as it was, which is the truth — the work did not
   // happen, so the item is not one attempt closer to being resolved.
-  const admission = await admitOperationalWork({ work: "REFRESH_EXECUTION" });
+  const admission = await (deps.admit ?? (() => admitOperationalWork({ work: "REFRESH_EXECUTION" })))();
   if (admission.decision === "DENY") {
     console.log(
       `[resume-stale-imports] ${candidates} stale import(s) present but NOT ADMITTED — ${admission.reason}; ` +
@@ -143,7 +199,7 @@ export async function resumeStaleImports(): Promise<ResumeStaleImportsResult> {
     // shared deferred pipeline, unchanged.
     // The verdict is THREADED, not re-resolved: one decision governs the whole
     // dispatch (see the admission block above).
-    const outcome = await syncPlaidItemFromWebhook(item.id, "RESUME", "IMPORT_RECOVERY", admission); // never throws, by contract
+    const outcome = await (deps.drive ?? driveCandidate)(item.id, admission); // never throws, by contract
     if (outcome === "skipped-locked") skipped++; else ran++;
     console.log(`[resume-stale-imports] ${item.institutionName} (${item.id}) → ${outcome}`);
   }

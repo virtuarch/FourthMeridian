@@ -14,6 +14,7 @@ import {
   type AdmissionVerdict,
   type ControlPlaneFact,
   type ControlPlaneFacts,
+  type OperationalWork,
 } from "./types";
 
 /**
@@ -32,6 +33,29 @@ const PRECEDENCE: readonly (keyof ControlPlaneFacts)[] = ["maintenanceMode", "in
 const ON_REASON: Record<keyof ControlPlaneFacts, AdmissionReason> = {
   maintenanceMode: "MAINTENANCE_MODE",
   ingestionPaused: "INGESTION_PAUSED",
+};
+
+/**
+ * Which work classes each fact's ON state actually speaks to (OPS-2D-4A).
+ *
+ * This is the whole of work-class applicability, declared once, in the policy —
+ * NOT in the producers. A producer says what work it is doing; this table says
+ * which declarations bear on it.
+ *
+ *   maintenance_mode  the platform is not operating. Everything stops, including
+ *                     establishing new provider relationships.
+ *   ingestion_paused  stop calling providers for DATA. It says nothing about
+ *                     whether someone may connect an account — a customer
+ *                     finishing a Link flow during a provider incident should
+ *                     end up connected and pending, not rejected. Their
+ *                     connection is real; the data is what is on hold.
+ *
+ * Typed `Record<keyof ControlPlaneFacts, …>`, so a new fact cannot be added
+ * without declaring its scope.
+ */
+const APPLIES_TO: Record<keyof ControlPlaneFacts, readonly OperationalWork[]> = {
+  maintenanceMode: ["REFRESH_EXECUTION", "CONNECTION_ESTABLISHMENT"],
+  ingestionPaused: ["REFRESH_EXECUTION"],
 };
 
 function deny(reason: AdmissionReason, evidence: ControlPlaneFact): AdmissionVerdict {
@@ -82,17 +106,26 @@ const ADMITTED: AdmissionVerdict = {
  * Deterministic: the same request and facts always produce an equal verdict.
  */
 export function evaluateAdmission(
-  _request: AdmissionRequest,
+  request: AdmissionRequest,
   facts: ControlPlaneFacts,
 ): AdmissionVerdict {
   for (const key of PRECEDENCE) {
     const fact = facts[key];
     switch (fact.state) {
+      // UNREADABLE AND UNAVAILABLE DENY EVERY WORK CLASS, including classes the
+      // fact would not otherwise apply to. This is deliberately control-plane
+      // scoped rather than fact scoped: a control plane we cannot read is a
+      // platform-level fault, and "ingestion_paused holds garbage, but I am
+      // confident about maintenance_mode" is not a position worth defending.
+      // Narrowing it would also contradict the OPS-2D-3 doctrine that unknown is
+      // never silently healthy, which already accepted this exact tradeoff.
       case "UNAVAILABLE":
         return deny("CONTROL_PLANE_UNAVAILABLE", fact);
       case "INVALID":
         return deny("CONTROL_PLANE_UNREADABLE", fact);
+      // An ON fact denies only the work classes it actually speaks to.
       case "ON":
+        if (!APPLIES_TO[key].includes(request.work)) continue;
         return deny(ON_REASON[key], fact);
       case "OFF":
       case "MISSING":

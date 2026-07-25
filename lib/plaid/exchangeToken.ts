@@ -37,6 +37,10 @@ import {
   ConnectionStatus,
 } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
+// OPS-2D-4A — canonical admission. Two work classes, one authority; this module
+// declares WHAT it is doing and never decides whether it may.
+import { admitOperationalWork } from "@/lib/platform/admission/facts";
+import { recordAdmissionDenial } from "@/lib/plaid/refresh-execution";
 import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
@@ -92,6 +96,13 @@ export interface ExchangeTokenResult {
    * are unaffected.
    */
   historyPending?:    boolean;
+  /**
+   * OPS-2D-4A — set when INITIAL INGESTION was refused by canonical admission
+   * while the connection itself was established. The connection is real and
+   * usable; no provider data has been pulled yet. Absent on every admitted
+   * exchange, so existing callers are unaffected.
+   */
+  ingestionDeferred?: { reason: string; label: string; evaluatedAt: string };
 }
 
 /**
@@ -108,6 +119,27 @@ export class DuplicateInstitutionError extends Error {
   }
 }
 
+/**
+ * OPS-2D-4A — thrown when canonical admission refuses the operation BEFORE the
+ * one-time public token is consumed.
+ *
+ * Raised only for denials that make the whole operation impossible: platform
+ * maintenance, or an unreadable control plane. An ingestion-only denial does NOT
+ * throw — the connection is established and the deferral is reported in the
+ * result, because refusing a customer's completed Link flow over a data pause
+ * would destroy something real to avoid doing something optional.
+ */
+export class AdmissionDeniedError extends Error {
+  constructor(
+    public readonly reason: string,
+    public readonly label: string,
+    public readonly evaluatedAt: string,
+  ) {
+    super(label);
+    this.name = "AdmissionDeniedError";
+  }
+}
+
 // ── Core exchange + import ────────────────────────────────────────────────────
 
 export async function performPlaidTokenExchange(
@@ -115,6 +147,45 @@ export async function performPlaidTokenExchange(
 ): Promise<ExchangeTokenResult> {
   const { userId, spaceId, public_token, institution_id, institution_name } = params;
   const deferHistorySync = params.deferHistorySync ?? false;
+
+  // ── 0. OPS-2D-4A — ADMISSION, BEFORE THE TOKEN IS SPENT ─────────────────────
+  //
+  // Both verdicts are taken here, before `itemPublicTokenExchange`, because a
+  // public token is ONE-TIME. Discovering a platform-wide denial after spending
+  // it would strand the customer with a consumed token and no connection — they
+  // would have to walk the whole Link flow again to reach the same refusal.
+  //
+  // Authorization already happened in the caller (requireUser for the customer
+  // flow, requireSystemAdmin for Expand History), so evaluating platform state
+  // here discloses nothing to an unauthorized caller.
+  //
+  // TWO WORK CLASSES, because this function does two different things:
+  //
+  //   CONNECTION_ESTABLISHMENT  steps 1–7: exchange, persist item, institution
+  //                             and accounts. Denied only by maintenance (or an
+  //                             unreadable control plane).
+  //   REFRESH_EXECUTION         steps 8–9b: holdings and transactions. Denied by
+  //                             an ingestion pause as well.
+  //
+  // Which fact bears on which class is decided ENTIRELY by the policy core; this
+  // module only names the work.
+  const connectionAdmission = await admitOperationalWork({ work: "CONNECTION_ESTABLISHMENT" });
+  if (connectionAdmission.decision === "DENY") {
+    throw new AdmissionDeniedError(
+      connectionAdmission.reason!, connectionAdmission.label!, connectionAdmission.evaluatedAt);
+  }
+
+  const ingestionAdmission = await admitOperationalWork({ work: "REFRESH_EXECUTION" });
+  // A caller that syncs history INLINE (admin Expand History) exists solely to
+  // ingest — a connection-only outcome would create a second PlaidItem that
+  // never syncs and leave the retire-superseded step with nothing to retire. For
+  // that caller the whole operation is ingestion, so a denial aborts here,
+  // before the token is spent, rather than half-completing.
+  if (ingestionAdmission.decision === "DENY" && !deferHistorySync) {
+    throw new AdmissionDeniedError(
+      ingestionAdmission.reason!, ingestionAdmission.label!, ingestionAdmission.evaluatedAt);
+  }
+  const ingestionAdmitted = ingestionAdmission.decision === "ADMIT";
 
   // 1. Exchange public_token → access_token (+ Plaid's item_id).
   console.log(`[plaid] exchanging public token for institution "${institution_name}" (${institution_id})`);
@@ -154,7 +225,14 @@ export async function performPlaidTokenExchange(
   // history sync confirms completion (which clears it). The inline flow (admin
   // Expand History, deferHistorySync=false) syncs history within this call, so
   // it leaves the marker null. Re-link re-imports history the same way.
-  const syncIncompleteAt = deferHistorySync ? new Date() : null;
+  // OPS-2D-4A — also marked pending when INGESTION was denied. syncIncompleteAt
+  // is the repository's existing "connection exists, ingestion incomplete"
+  // authority: lib/sync/status.ts renders it as "importing" rather than "ready",
+  // and jobs/resume-stale-imports.ts selects on it. Reusing it means a
+  // policy-deferred connection is discovered by the SAME recovery path that
+  // already handles interrupted first-run imports — no new column, no new job,
+  // and no second Link flow when the pause lifts.
+  const syncIncompleteAt = deferHistorySync || !ingestionAdmitted ? new Date() : null;
   const plaidItem = await db.plaidItem.upsert({
     where:  { externalItemId: item_id },
     // CH-2 — the health reset (status ACTIVE, errorCode null) is no longer done
@@ -368,15 +446,21 @@ export async function performPlaidTokenExchange(
   const investmentAccounts = plaidAccounts.filter(
     (a) => mapAccountType(a.type, a.subtype) === AccountType.investment,
   );
-  const investmentsResult = await syncInvestmentsForItem({
-    accessToken:        access_token,
-    plaidItemId:        plaidItem.id,
-    institutionName:    institution_name,
-    investmentAccounts,
-    item:               accountsRes.data.item,
-    storedConsent:      plaidItem.investmentsConsent,
-  });
-  const holdingsImported = investmentsResult.holdingsSynced;
+  // OPS-2D-4A — INGESTION STAGE. Holdings are provider DATA, not connection
+  // identity, so an ingestion pause suppresses this while the connection above
+  // stands. `syncInvestmentsForItem` is the only Plaid holdings call in this
+  // path; skipping it means investmentsHoldingsGet is never reached.
+  const investmentsResult = ingestionAdmitted
+    ? await syncInvestmentsForItem({
+        accessToken:        access_token,
+        plaidItemId:        plaidItem.id,
+        institutionName:    institution_name,
+        investmentAccounts,
+        item:               accountsRes.data.item,
+        storedConsent:      plaidItem.investmentsConsent,
+      })
+    : null;
+  const holdingsImported = investmentsResult?.holdingsSynced ?? 0;
 
   // 9. Initial transaction sync.
   //
@@ -396,7 +480,16 @@ export async function performPlaidTokenExchange(
   // transactionsSynced count and the cursor set by syncTransactionsForItem.
   let txSync: { added: number; modified: number; removed: number } | null = null;
   let historyPending = false;
-  if (deferHistorySync) {
+  if (!ingestionAdmitted) {
+    // OPS-2D-4A — INGESTION STAGE, refused. No transactionsSync call, and
+    // syncIncompleteAt is already stamped above, so the existing recovery job
+    // will drive this item once the pause is lifted.
+    historyPending = true;
+    console.log(
+      `[plaid] initial ingestion NOT ADMITTED for item ${plaidItem.id} ("${institution_name}") — ` +
+        `${ingestionAdmission.reason}; connection established, ingestion pending recovery.`,
+    );
+  } else if (deferHistorySync) {
     historyPending = true;
     console.log(
       `[plaid] initial transaction sync DEFERRED for item ${plaidItem.id} ("${institution_name}") — fast-path return; history completes out-of-band (cron until Slice 2)`,
@@ -415,7 +508,9 @@ export async function performPlaidTokenExchange(
   // 9b. SpaceSnapshot regeneration — best-effort, non-fatal
   let spacesSnapshotted: string[] = [];
   try {
-    spacesSnapshotted = await regenerateSnapshotsForAccounts(importedIds);
+    // OPS-2D-4A — derived from ingested data; nothing was ingested, so there is
+    // nothing to project. Skipped rather than run over an empty import.
+    if (ingestionAdmitted) spacesSnapshotted = await regenerateSnapshotsForAccounts(importedIds);
   } catch (snapshotErr) {
     console.warn("[plaid] initial snapshot regeneration failed (non-fatal):", snapshotErr);
   }
@@ -433,6 +528,13 @@ export async function performPlaidTokenExchange(
           holdingsImported,
           transactionsAdded: txSync?.added ?? 0,
           spacesSnapshotted: spacesSnapshotted.length,
+          // OPS-2D-4A — the audit says what actually happened. An ACCOUNT_ADD
+          // that reports zero holdings and zero transactions with no explanation
+          // reads as a failed import; naming the outcome keeps it honest.
+          ...(ingestionAdmitted
+            ? {}
+            : { outcome: "connection-established-ingestion-deferred",
+                admissionReason: ingestionAdmission.reason }),
         },
       },
     });
@@ -444,12 +546,34 @@ export async function performPlaidTokenExchange(
     `[plaid] import complete — ${imported} account(s), ${holdingsImported} holding(s) for institution "${institution_name}"`,
   );
 
+  // OPS-2D-4A — one denied-ingestion execution, recorded only once the ingestion
+  // intent was genuinely formed (the connection exists and its accounts are
+  // persisted). Nothing is fabricated: the row carries no stages, no provider
+  // call, and the typed reason. RECONNECT/RECONNECT is the same trigger/profile
+  // pair the deferred post-connect pipeline uses, so the denied attempt and the
+  // recovery run that eventually replaces it are directly comparable.
+  if (!ingestionAdmitted) {
+    await recordAdmissionDenial({
+      itemId:          plaidItem.id,
+      trigger:         "RECONNECT",
+      profile:         "RECONNECT",
+      admissionReason: ingestionAdmission.reason!,
+    });
+  }
+
   return {
     imported,
     holdingsImported,
     transactionsSynced: txSync?.added ?? 0,
     plaidItemId:        plaidItem.id,
     historyPending,
+    ...(ingestionAdmitted
+      ? {}
+      : { ingestionDeferred: {
+            reason:      ingestionAdmission.reason!,
+            label:       ingestionAdmission.label!,
+            evaluatedAt: ingestionAdmission.evaluatedAt,
+          } }),
   };
 }
 

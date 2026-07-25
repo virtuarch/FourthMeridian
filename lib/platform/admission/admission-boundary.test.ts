@@ -86,6 +86,10 @@ const PRODUCERS = [
   { file: "jobs/sync-banks.ts",                         migrated: true, note: "the scheduled batch" },
   { file: "jobs/resume-stale-imports.ts",               migrated: true, note: "the */5 recovery backstop" },
   { file: "lib/plaid/webhook-sync.ts",                  migrated: true, note: "webhook + reconnect wrapper" },
+  // OPS-2D-4A — the eighth producer, migrated once its two stages were split.
+  // It is the only consumer that declares BOTH work classes; its detailed
+  // contract lives in connection-establishment.test.ts.
+  { file: "lib/plaid/exchangeToken.ts",                 migrated: true, note: "connection establishment + initial ingestion (two work classes)" },
 ] as const;
 
 function main() {
@@ -216,7 +220,7 @@ function main() {
     // list forces a deliberate decision rather than defaulting to "migrated".
     check("every censused producer is migrated (OPS-2D-4)",
       PRODUCERS.filter((p) => p.migrated).length === PRODUCERS.length);
-    check("the census still holds all eight known producers", PRODUCERS.length === 8);
+    check("the census still holds all nine known producers", PRODUCERS.length === 9);
 
     // No producer OUTSIDE the census may consume admission.
     const consumers = [...walk("app"), ...walk("jobs"), ...walk("lib")]

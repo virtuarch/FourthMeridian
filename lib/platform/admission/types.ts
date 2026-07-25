@@ -46,15 +46,32 @@
 // ── What may be admitted ──────────────────────────────────────────────────────
 
 /**
- * The class of operational work being requested. One member today, and one
- * consumer: refresh-equivalent execution against a provider.
+ * The class of operational work being requested.
  *
  * A class — not an item id, a user, or a trigger. Admission asks about the
  * PLATFORM's state, not about the subject of the work; per-subject eligibility
  * (item status, account lifecycle, recovery age) is data-lifecycle logic that
  * already lives with each producer and is deliberately not absorbed here.
+ *
+ * OPS-2D-4A added the second member because one class could not describe
+ * `performPlaidTokenExchange` honestly. That function both ESTABLISHES a
+ * provider relationship (exchange the one-time public token, persist the item,
+ * institution and accounts) and INGESTS from it (holdings, transactions). A
+ * single gate around it is wrong in both directions at once: too broad, because
+ * a paused ingestion should not stop someone connecting an account; and too
+ * narrow, because the ingestion half plainly must stop.
+ *
+ * The names deliberately do NOT follow the "CONNECTION_ESTABLISHMENT /
+ * PROVIDER_INGESTION" symmetry. `REFRESH_EXECUTION` is the repository's own
+ * canonical vocabulary for provider ingestion — RefreshExecution, runFullRefresh,
+ * the whole DF-2 ledger — and coining a synonym would leave two names for one
+ * thing, which is the failure this codebase keeps a single vocabulary to avoid.
  */
-export type OperationalWork = "REFRESH_EXECUTION";
+export type OperationalWork =
+  /** Provider ingestion: balances, holdings, transactions, history. */
+  | "REFRESH_EXECUTION"
+  /** Establishing the provider relationship itself, before any ingestion. */
+  | "CONNECTION_ESTABLISHMENT";
 
 export interface AdmissionRequest {
   work: OperationalWork;

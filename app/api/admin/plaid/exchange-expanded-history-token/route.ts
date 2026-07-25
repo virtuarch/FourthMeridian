@@ -44,7 +44,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSystemAdmin } from "@/lib/session";
 import { db } from "@/lib/db";
 import { resolveSpaceContext } from "@/lib/space";
-import { performPlaidTokenExchange, parsePlaidError } from "@/lib/plaid/exchangeToken";
+import { performPlaidTokenExchange, parsePlaidError, AdmissionDeniedError } from "@/lib/plaid/exchangeToken";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
@@ -129,6 +129,22 @@ export async function POST(req: NextRequest) {
       institution_name: oldItem.institutionName,
     });
   } catch (exchangeErr: unknown) {
+    // OPS-2D-4A — checked FIRST, before parsePlaidError: a policy denial is not
+    // a provider error, and running it through the Plaid error parser would log
+    // and report it as one.
+    //
+    // Expand History exists ONLY to ingest, so an ingestion pause denies the
+    // whole operation up front (see exchangeToken.ts step 0). The denial lands
+    // before the public token is spent and before any second PlaidItem is
+    // created, so nothing is stranded and the superseded item is untouched.
+    if (exchangeErr instanceof AdmissionDeniedError) {
+      console.warn(`[admin][expand-history] not admitted — ${exchangeErr.reason}`);
+      return NextResponse.json(
+        { error: "not-admitted", reason: exchangeErr.reason, message: exchangeErr.label,
+          evaluatedAt: exchangeErr.evaluatedAt },
+        { status: 503 },
+      );
+    }
     const { message, status, code } = parsePlaidError(
       exchangeErr,
       "Failed to exchange token and import accounts",
