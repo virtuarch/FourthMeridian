@@ -178,13 +178,24 @@ function main() {
         check(`${f}: never ${rule.what}`, !rule.re.test(src));
       }
     }
-    // Exactly ONE producer consumes the evaluator in OPS-2D-3, and it does so
-    // through the canonical entry point. The full census lives in
-    // lib/platform/admission/admission-boundary.test.ts.
-    const consumers = touched.filter((f) => /admitOperationalWork\(/.test(strip(f)));
-    check("exactly one converged producer consumes admission (OPS-2D-3)",
-      consumers.length === 1 && consumers[0].includes("connections/[id]/resync"),
-      consumers.join(", "));
+    // OPS-2D-3 pinned this at exactly one (the representative path). OPS-2D-4
+    // converged the rest, so the assertion tightens rather than loosens: EVERY
+    // producer in this set now consumes the evaluator, and the one file that
+    // does not is the type module, which has nothing to admit.
+    //
+    // Stated as "every producer" rather than a magic number so it keeps holding
+    // as the converged set grows — a new producer added to CONVERGED without
+    // admission fails here immediately. Placement, evidence and channel
+    // semantics live in lib/platform/admission/producer-convergence.test.ts.
+    const TYPES_ONLY = "lib/plaid/refresh-execution-types.ts";
+    for (const f of touched) {
+      const consumes = /admitOperationalWork\(/.test(strip(f));
+      if (f === TYPES_ONLY) {
+        check(`${f}: a vocabulary module admits nothing`, !consumes);
+      } else {
+        check(`${f}: consumes the canonical evaluator (OPS-2D-4)`, consumes);
+      }
+    }
 
     // The legacy /api/jobs/* bypass is explicitly NOT closed in this slice.
     for (const f of ["app/api/jobs/sync-banks/route.ts", "app/api/jobs/process-deletions/route.ts"]) {

@@ -28,6 +28,7 @@ import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-loc
 import { runFullRefresh } from "@/lib/plaid/refresh-execution";
 import { checkManualRefreshCooldown, markManyManualRefreshed } from "@/lib/plaid/refreshCooldown";
 import { limitByUser } from "@/lib/rate-limit";
+import { admitOperationalWork } from "@/lib/platform/admission/facts";
 
 interface SyncBody {
   plaidItemId?: string;
@@ -41,6 +42,25 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // (the cooldown is per PlaidItem; many items would otherwise multiply it).
   const limited = await limitByUser(user.id, "plaid-sync", { limit: 20, windowSec: 3600 });
   if (limited) return limited;
+
+  // ── OPS-2D-4 — ADMISSION ────────────────────────────────────────────────────
+  // After authorization and the rate limit; BEFORE the cooldown is consumed, the
+  // lock is claimed, or any provider call is made. A denial therefore costs the
+  // caller nothing: their 60-minute cooldown is intact and they may retry the
+  // moment the platform is unpaused.
+  //
+  // 503, not 403: the caller's permissions are fine — the platform is not
+  // accepting this work right now. Returning 403 would send people hunting for
+  // access they already have.
+  const admission = await admitOperationalWork({ work: "REFRESH_EXECUTION" });
+  if (admission.decision === "DENY") {
+    return NextResponse.json(
+      { error: "not-admitted", reason: admission.reason, message: admission.label,
+        evaluatedAt: admission.evaluatedAt },
+      { status: 503 },
+    );
+  }
+
 
   const body = await req.json().catch(() => ({})) as SyncBody;
 

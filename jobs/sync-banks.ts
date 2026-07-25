@@ -54,6 +54,8 @@ import { refreshBalancesForItem } from "@/lib/plaid/refresh";
 // injects its OWN stage pipeline (below) so its provider work is unchanged —
 // only the execution ledger is added.
 import { runFullRefresh } from "@/lib/plaid/refresh-execution";
+// OPS-2D-4 — canonical admission, resolved once per dispatch (see syncBanks).
+import { admitOperationalWork } from "@/lib/platform/admission/facts";
 import type { RefreshStageRecorder, RefreshEndpoint } from "@/lib/plaid/refresh-execution-types";
 
 export interface SyncBanksResult {
@@ -64,6 +66,13 @@ export interface SyncBanksResult {
   total:     number;
   /** A3-4 — items whose scheduled investment-event ingestion ran (flag on + consent ENABLED). */
   eventItems: number;
+  /**
+   * OPS-2D-4 — the typed admission reason when the platform declined this pass.
+   * Absent on every admitted run. The job SUCCEEDED: it ran, asked, and was told
+   * no. This lands in the JobRun summary, which is what keeps a paused platform
+   * from reading as a broken scheduler.
+   */
+  notAdmitted?: string;
 }
 
 /** DF-2B — the cron runner's outcome, consumed by syncBanks for counting/logging. */
@@ -161,6 +170,29 @@ export async function syncBanks(): Promise<SyncBanksResult> {
   });
 
   if (items.length === 0) return { succeeded: 0, failed: 0, skipped: 0, total: 0, eventItems: 0 };
+
+  // ── OPS-2D-4 — ADMISSION, once per dispatch ─────────────────────────────────
+  // The fleet sync is the widest fan-out on the platform. Admission facts are
+  // platform-wide, so one resolution governs the whole pass: asking per item
+  // would be N reads answering one question, and a mid-loop flip would make a
+  // single dispatch behave two ways.
+  //
+  // Evidence is ONE dispatch-level finding in the JobRun summary — NOT a denied
+  // RefreshExecution per item. With a fleet of connections and a multi-slot cron,
+  // per-item rows would bury the real executions the Refresh workspace exists to
+  // show behind thousands of identical denials.
+  //
+  // The job returns NORMALLY. It ran, it asked, it was told no — that is a
+  // successful job, and recording it as a failure would make an operator's own
+  // pause register as a broken scheduler.
+  const admission = await admitOperationalWork({ work: "REFRESH_EXECUTION" });
+  if (admission.decision === "DENY") {
+    console.log(
+      `[sync-banks] ${items.length} item(s) eligible but NOT ADMITTED — ${admission.reason}; ` +
+        "no provider call, no lock claimed, no item marked.",
+    );
+    return { succeeded: 0, failed: 0, skipped: 0, total: items.length, eventItems: 0, notAdmitted: admission.reason! };
+  }
 
   let succeeded = 0;
   let failed = 0;

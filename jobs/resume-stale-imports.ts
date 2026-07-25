@@ -44,6 +44,8 @@
 import { db } from "@/lib/db";
 import { PlaidItemStatus } from "@prisma/client";
 import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
+// OPS-2D-4 — canonical admission, resolved once per dispatch.
+import { admitOperationalWork } from "@/lib/platform/admission/facts";
 
 /**
  * Minimum age of the syncIncompleteAt marker before this job will touch an item.
@@ -65,6 +67,12 @@ export interface ResumeStaleImportsResult {
   /** Another sync held the lock — that run resolves the item, not this one. */
   skipped:    number;
   deferred:   number;
+  /**
+   * OPS-2D-4 — the typed admission reason when the platform declined this pass.
+   * Null on every admitted run. This is the DISPATCH-level finding: the job ran,
+   * policy said no, and no candidate was attempted.
+   */
+  notAdmitted?: string;
 }
 
 export async function resumeStaleImports(): Promise<ResumeStaleImportsResult> {
@@ -94,6 +102,30 @@ export async function resumeStaleImports(): Promise<ResumeStaleImportsResult> {
     return { candidates: 0, attempted: 0, ran: 0, skipped: 0, deferred: 0 };
   }
 
+  // ── OPS-2D-4 — ADMISSION, once per dispatch ─────────────────────────────────
+  // Resolved ONCE, before the loop, and only after there is real work to
+  // consider. Platform-wide facts do not change between items, so asking per
+  // item would be N reads answering one question — and a mid-loop flip would
+  // make a single dispatch behave two ways.
+  //
+  // Evidence is ONE dispatch-level finding, not one denied execution per
+  // candidate. This job fires every five minutes; per-candidate rows would add
+  // thousands of identical entries to the refresh ledger during a pause and bury
+  // the real executions the surface exists to show.
+  //
+  // Critically: this returns BEFORE the loop, so no syncIncompleteAt is
+  // re-stamped and no recovery timestamp moves. A denied pass leaves every
+  // candidate exactly as stale as it was, which is the truth — the work did not
+  // happen, so the item is not one attempt closer to being resolved.
+  const admission = await admitOperationalWork({ work: "REFRESH_EXECUTION" });
+  if (admission.decision === "DENY") {
+    console.log(
+      `[resume-stale-imports] ${candidates} stale import(s) present but NOT ADMITTED — ${admission.reason}; ` +
+        "no candidate attempted, no recovery marker touched.",
+    );
+    return { candidates, attempted: 0, ran: 0, skipped: 0, deferred: candidates, notAdmitted: admission.reason! };
+  }
+
   console.log(
     `[resume-stale-imports] ${candidates} stale import(s) older than ${STALE_AFTER_MS / 1000}s; ` +
       `driving ${items.length}${deferred > 0 ? `, ${deferred} deferred to the next run` : ""}.`,
@@ -109,7 +141,9 @@ export async function resumeStaleImports(): Promise<ResumeStaleImportsResult> {
     // pushed to us and no token changed hands. It continues an incomplete
     // first-run import, so it records RESUME / IMPORT_RECOVERY. The BODY is the
     // shared deferred pipeline, unchanged.
-    const outcome = await syncPlaidItemFromWebhook(item.id, "RESUME", "IMPORT_RECOVERY"); // never throws, by contract
+    // The verdict is THREADED, not re-resolved: one decision governs the whole
+    // dispatch (see the admission block above).
+    const outcome = await syncPlaidItemFromWebhook(item.id, "RESUME", "IMPORT_RECOVERY", admission); // never throws, by contract
     if (outcome === "skipped-locked") skipped++; else ran++;
     console.log(`[resume-stale-imports] ${item.institutionName} (${item.id}) → ${outcome}`);
   }

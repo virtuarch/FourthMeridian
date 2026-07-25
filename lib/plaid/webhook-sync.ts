@@ -30,12 +30,26 @@ import { claimPlaidItemSyncLock, releasePlaidItemSyncLock, LOCK_TTL_MS } from "@
 // the SAME authority manual/cron use. runFullRefresh owns the lifecycle; this
 // module keeps its claim/release lock scope and never-throws contract, and
 // supplies the trigger (RECONNECT vs WEBHOOK — the initiating business event).
-import { runFullRefresh } from "@/lib/plaid/refresh-execution";
+import { runFullRefresh, recordAdmissionDenial } from "@/lib/plaid/refresh-execution";
 import type { RefreshTrigger, RefreshProfile } from "@/lib/plaid/refresh-execution-types";
+// OPS-2D-4 — the canonical admission authority. This wrapper is the shared entry
+// point for the webhook receiver, the connect trigger and the resume backstop, so
+// admitting HERE covers three of the seven producers at one seam.
+import { admitOperationalWork } from "@/lib/platform/admission/facts";
+import type { StampedAdmissionVerdict } from "@/lib/platform/admission/types";
 
 export { LOCK_TTL_MS };
 
-export type WebhookSyncOutcome = "ran" | "skipped-locked";
+/**
+ * OPS-2D-4 — "not-admitted" joins the outcome vocabulary.
+ *
+ * It is deliberately NOT folded into "skipped-locked". Those two look alike from
+ * a caller's seat (neither ran) and mean opposite things operationally:
+ * skipped-locked says another sync is doing this work right now, not-admitted
+ * says nobody is and nobody will until an operator changes the platform's state.
+ * Collapsing them would make an intentional pause read as healthy contention.
+ */
+export type WebhookSyncOutcome = "ran" | "skipped-locked" | "not-admitted";
 
 /**
  * Claim the per-item sync lock, run the full deferred pipeline, release the
@@ -66,7 +80,31 @@ export async function syncPlaidItemFromWebhook(
   // happened. Historical rows are NOT rewritten — only future executions carry
   // the corrected profile.
   profile: RefreshProfile = "RECONNECT",
+  /**
+   * OPS-2D-4 — a verdict already taken by the caller.
+   *
+   * `resume-stale-imports` fans out over up to 25 items in one pass. Admission
+   * facts are platform-wide and do not change mid-loop, so re-resolving them per
+   * item would be 25 reads answering one question — and worse, a mid-loop flip
+   * would make one dispatch behave two ways. The job resolves once and threads
+   * the verdict through; single-item callers (the webhook receiver, the connect
+   * trigger) pass nothing and this resolves for itself.
+   */
+  admission?: StampedAdmissionVerdict,
 ): Promise<WebhookSyncOutcome> {
+  // ── OPS-2D-4 — ADMISSION ────────────────────────────────────────────────────
+  // Before the lock, before the pipeline, before any provider call. A denial
+  // therefore claims nothing, stamps no syncIncompleteAt, and calls no provider —
+  // it only leaves evidence.
+  const verdict = admission ?? (await admitOperationalWork({ work: "REFRESH_EXECUTION" }));
+  if (verdict.decision === "DENY") {
+    await recordAdmissionDenial({
+      itemId: plaidItemId, trigger, profile, admissionReason: verdict.reason!,
+    });
+    console.log(`[plaid webhook] item ${plaidItemId} not admitted — ${verdict.reason}`);
+    return "not-admitted";
+  }
+
   // DF-2C — one immutable RefreshExecution per deferred-sync attempt. The lock
   // claim/release and the never-throws contract are UNCHANGED: they live inside
   // the runner, exactly as before, and runFullRefresh never throws here (the

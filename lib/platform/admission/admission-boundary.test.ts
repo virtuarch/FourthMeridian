@@ -66,20 +66,26 @@ const MODULE_FILES = [
 /**
  * Every producer of refresh-equivalent work, and whether it consumes admission.
  *
- * MIGRATED is deliberately ONE. OPS-2D-3 establishes the authority and proves it
- * on the narrowest representative path; converging the rest is later work and
- * saying otherwise here would be the exact false claim this file exists to stop.
+ * OPS-2D-3 migrated ONE — the representative path. OPS-2D-4 converged the
+ * remaining seven, so the list is now uniformly true. It stays here, and stays
+ * asserted against the source, because a census whose entries all agree is
+ * exactly when it stops being read: the next producer to be added is the one
+ * that will be forgotten, and this fails the moment its state and its label
+ * disagree in EITHER direction.
+ *
+ * Placement, evidence and channel semantics are asserted separately in
+ * producer-convergence.test.ts; this file owns the boundary and the ownership.
  */
 const PRODUCERS = [
   { file: "app/api/platform/platform-ops/connections/[id]/resync/route.ts", migrated: true,
     note: "representative path — operator-triggered, provable without a provider call" },
-  { file: "app/api/plaid/refresh/route.ts",             migrated: false, note: "owner manual refresh" },
-  { file: "app/api/plaid/sync/route.ts",                migrated: false, note: "owner manual transaction sync" },
-  { file: "app/api/plaid/resume-sync/route.ts",         migrated: false, note: "client-driven import recovery" },
-  { file: "app/api/plaid/investments/enable/route.ts",  migrated: false, note: "consent-driven full refresh" },
-  { file: "jobs/sync-banks.ts",                         migrated: false, note: "the scheduled batch" },
-  { file: "jobs/resume-stale-imports.ts",               migrated: false, note: "the */5 recovery backstop" },
-  { file: "lib/plaid/webhook-sync.ts",                  migrated: false, note: "webhook + reconnect wrapper" },
+  { file: "app/api/plaid/refresh/route.ts",             migrated: true, note: "owner manual refresh" },
+  { file: "app/api/plaid/sync/route.ts",                migrated: true, note: "owner manual transaction sync" },
+  { file: "app/api/plaid/resume-sync/route.ts",         migrated: true, note: "client-driven import recovery" },
+  { file: "app/api/plaid/investments/enable/route.ts",  migrated: true, note: "consent-driven full refresh" },
+  { file: "jobs/sync-banks.ts",                         migrated: true, note: "the scheduled batch" },
+  { file: "jobs/resume-stale-imports.ts",               migrated: true, note: "the */5 recovery backstop" },
+  { file: "lib/plaid/webhook-sync.ts",                  migrated: true, note: "webhook + reconnect wrapper" },
 ] as const;
 
 function main() {
@@ -206,8 +212,10 @@ function main() {
         actual ? "consumes admission but is listed as not migrated" : "listed as migrated but does not consume admission",
       );
     }
-    check("exactly one producer is migrated in this slice",
-      PRODUCERS.filter((p) => p.migrated).length === 1);
+    // OPS-2D-4: all eight. Asserted as a COUNT so the next producer added to the
+    // list forces a deliberate decision rather than defaulting to "migrated".
+    check("every censused producer is migrated (OPS-2D-4)",
+      PRODUCERS.filter((p) => p.migrated).length === PRODUCERS.length);
     check("the census still holds all eight known producers", PRODUCERS.length === 8);
 
     // No producer OUTSIDE the census may consume admission.
