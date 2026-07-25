@@ -207,6 +207,10 @@ function providerLine(connection: SyncConnection): string {
   switch (connection.state) {
     case "importing":
       return `Connected via ${name}`;
+    case "sync_deferred":
+      // The connection is real and healthy — say so. The reason it has no data
+      // yet is a platform condition, covered by the card body below.
+      return `Connected via ${name}`;
     case "ready":
       return `Synced via ${name}`;
     case "needs_reauth":
@@ -270,6 +274,39 @@ function AccountNames({ accounts }: { accounts: AccountLite[] }) {
 }
 
 // ── State-specific content (same shell wraps each) ────────────────────────────
+
+/**
+ * OPS-2D-4A — connected, but ingestion is held by platform policy.
+ *
+ * Deliberately NOT the importing stepper: nothing is running, so a progress
+ * affordance would be theatre. Deliberately NOT an error card either — the
+ * connection is healthy and the customer has nothing to fix. The one thing this
+ * has to communicate is "this is not on you, and no action is needed".
+ *
+ * No reason code, no internal vocabulary. `connection.deferredReason` is a
+ * typed code for operator surfaces; a customer sees a plain sentence.
+ */
+function SyncDeferredContent({
+  connection,
+  accounts,
+}: {
+  connection: SyncConnection;
+  accounts:   AccountLite[];
+}) {
+  return (
+    <div className="flex flex-col min-h-[200px] md:min-h-[220px]">
+      <EyebrowHeading eyebrow="Sync pending" institution={connection.institution} />
+      <p className="mt-1.5 mb-4 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
+        Your account is connected. Financial data will begin syncing when platform
+        ingestion resumes — no action is needed from you.
+      </p>
+      <ul className="space-y-1.5">
+        <DoneStatusRow label="Account connected" />
+        <DoneStatusRow label={accounts.length === 1 ? "1 account found" : `${accounts.length} accounts found`} />
+      </ul>
+    </div>
+  );
+}
 
 function ImportingContent({
   connection,
@@ -626,6 +663,9 @@ export function ConnectionCard({ connection, accounts, intelligence, slow, allow
   switch (state) {
     case "importing":
       content = <ImportingContent connection={connection} accounts={accounts} slow={slow} />;
+      break;
+    case "sync_deferred":
+      content = <SyncDeferredContent connection={connection} accounts={accounts} />;
       break;
     case "ready":
       // CONN-2G — "ready" transactions ≠ "Fourth Meridian ready". While derived

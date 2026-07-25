@@ -35,6 +35,7 @@
  */
 
 import "server-only";
+import { deriveIngestionDeferral, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
 
 import { db } from "@/lib/db";
 import {
@@ -416,4 +417,53 @@ export async function getExecutionTimeline(
     entries: built.entries,
     tier: built.tier,
   };
+}
+
+// ── Ingestion deferral (OPS-2D-4A follow-up) ─────────────────────────────────
+
+/**
+ * "Which of these connections are currently held by platform policy?"
+ *
+ * A projection, and therefore here. This was first written in lib/sync/ beside
+ * its pure rule, which read the ledger directly — a third path. The read-boundary
+ * ratchet caught it, and the fix was to move the read to the aggregate seam
+ * rather than widen the allowlist: an allowlist entry is a doctrine decision,
+ * and the doctrine already had a home for this.
+ *
+ * The RULE stays pure in lib/sync/deferred-ingestion.ts (`deriveIngestionDeferral`);
+ * this contributes only the read — the same split every projection here uses.
+ *
+ * ONE query, newest-first, first row per item: "most recent execution" is the
+ * whole contract, and a per-item query would be N round-trips for a page that
+ * renders every connection at once. Only deferred items get an entry, so a
+ * missing key means "not deferred" and callers never distinguish absent from null.
+ */
+export async function getIngestionDeferrals(
+  items: { id: string; syncLockedAt: Date | null }[],
+): Promise<Map<string, IngestionDeferral>> {
+  const out = new Map<string, IngestionDeferral>();
+  const ids = items.map((i) => i.id);
+  if (ids.length === 0) return out;
+
+  const rows = await db.refreshExecution.findMany({
+    where:   { plaidItemId: { in: ids } },
+    orderBy: { startedAt: "desc" },
+    select:  { plaidItemId: true, overallStatus: true, admissionReason: true },
+  });
+
+  const latest = new Map<string, { overallStatus: string; admissionReason: string | null }>();
+  for (const r of rows) {
+    if (!latest.has(r.plaidItemId)) {
+      latest.set(r.plaidItemId, { overallStatus: r.overallStatus, admissionReason: r.admissionReason });
+    }
+  }
+
+  for (const item of items) {
+    const d = deriveIngestionDeferral({
+      syncLockedAt:    item.syncLockedAt,
+      latestExecution: latest.get(item.id) ?? null,
+    });
+    if (d !== null) out.set(item.id, d);
+  }
+  return out;
 }

@@ -51,6 +51,7 @@
 
 import { db } from "@/lib/db";
 import { PlaidItemStatus, ConnectionStatus } from "@prisma/client";
+import { getIngestionDeferrals } from "@/lib/platform/refresh/projections";
 import {
   buildSyncStatus,
   finalizeSyncStatus,
@@ -103,6 +104,7 @@ const PLAID_ITEM_SELECT = {
   institutionName:    true,
   status:             true,
   syncIncompleteAt:   true, // derivation only — buildSyncStatus never forwards it
+  syncLockedAt:       true, // OPS-2D-4A — deferral evidence; never forwarded either
   syncImportedCount:  true, // live "N imported" progress while state = importing
   historyBuildStartedAt: true, // A9 rebuild phase — keeps state = importing
   historyBuildTotalDays: true,
@@ -317,7 +319,12 @@ export async function loadConnectionsSpaceData(userId: string): Promise<Connecti
     loadWalletSyncConnections(userId),
   ]);
 
-  const status = finalizeSyncStatus([...buildSyncStatus(items).connections, ...wallet.connections]);
+  // OPS-2D-4A — resolve policy deferral from the refresh ledger before deriving
+  // state. One query for the whole page; a missing entry means "not deferred".
+  const deferrals = await getIngestionDeferrals(
+    items.map((i) => ({ id: i.id, syncLockedAt: i.syncLockedAt ?? null })),
+  );
+  const status = finalizeSyncStatus([...buildSyncStatus(items, deferrals).connections, ...wallet.connections]);
 
   // Plaid accounts by stable connection id; wallet accounts already come keyed
   // by connection id from loadWalletSyncConnections. One id space, one map.

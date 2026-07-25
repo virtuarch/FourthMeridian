@@ -270,6 +270,8 @@ export function ConnectionsList({
   const inProgressPhase = (id: string) =>
     intelligence[id]?.phase === "IMPORTING" || intelligence[id]?.phase === "BUILDING_INTELLIGENCE";
   const isInProgress = (c: SyncStatus["connections"][number]) =>
+    // OPS-2D-4A — deliberately does NOT include "sync_deferred": nothing is
+    // running, so polling for progress would never settle.
     c.state === "importing" || inProgressPhase(c.id);
 
   const anyReady = status.connections.some((c) => intelligence[c.id]?.phase === "READY");

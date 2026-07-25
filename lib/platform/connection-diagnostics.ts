@@ -41,7 +41,13 @@ export interface ConnectionDiagnostic {
     lastAcquiredAt:        string | null;
     transactionCount:      number;
     latestTransactionDate: string | null;
-    syncStatus:            "IMPORTING" | "READY" | "ACTION_REQUIRED";
+    /**
+     * OPS-2D-4A — SYNC_DEFERRED is its own state, not a flavour of IMPORTING.
+     * Operators triage by "what needs me": a deferred connection needs nobody,
+     * it needs the pause lifted. Folding it into IMPORTING would hide how many
+     * connections a pause is actually holding.
+     */
+    syncStatus:            "IMPORTING" | "SYNC_DEFERRED" | "READY" | "ACTION_REQUIRED";
     errorCode:             string | null;
   };
   intelligence: {
@@ -187,7 +193,10 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
         lastAcquiredAt: p.lastSyncedAt?.toISOString() ?? null,
         transactionCount: tx.count,
         latestTransactionDate: tx.max ? tx.max.toISOString() : null,
-        syncStatus: state === "importing" ? "IMPORTING" : state === "ready" ? "READY" : "ACTION_REQUIRED",
+        // OPS-2D-4A — a policy-held connection is not IMPORTING (nothing is running)
+        // and not ACTION_REQUIRED (there is nothing for anyone to fix on it).
+        syncStatus: state === "sync_deferred" ? "SYNC_DEFERRED"
+          : state === "importing" ? "IMPORTING" : state === "ready" ? "READY" : "ACTION_REQUIRED",
         errorCode: p.errorCode ?? null,
       },
       intelligence: {
@@ -216,7 +225,10 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
         lastAcquiredAt: w.lastSyncedAt?.toISOString() ?? null,
         transactionCount: tx.count,
         latestTransactionDate: tx.max ? tx.max.toISOString() : null,
-        syncStatus: state === "importing" ? "IMPORTING" : state === "ready" ? "READY" : "ACTION_REQUIRED",
+        // OPS-2D-4A — a policy-held connection is not IMPORTING (nothing is running)
+        // and not ACTION_REQUIRED (there is nothing for anyone to fix on it).
+        syncStatus: state === "sync_deferred" ? "SYNC_DEFERRED"
+          : state === "importing" ? "IMPORTING" : state === "ready" ? "READY" : "ACTION_REQUIRED",
         errorCode: w.errorCode ?? null,
       },
       intelligence: {

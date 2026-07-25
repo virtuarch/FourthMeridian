@@ -119,6 +119,11 @@ export function computeAvailableHistory(earliest: Date | null, now: Date): Avail
 function deriveTransactionHistory(state: SyncConnectionState): TransactionHistoryStatus {
   switch (state) {
     case "importing": return "IMPORTING";
+    // OPS-2D-4A — history has not begun arriving and will not until the platform
+    // resumes. Not IMPORTING (nothing is running) and not READY. UNKNOWN is the
+    // existing honest member — the arrival time genuinely is not known — rather
+    // than widening a customer-facing union for one presentational case.
+    case "sync_deferred": return "UNKNOWN";
     case "ready":     return "READY";
     default:          return "UNKNOWN"; // needs_reauth / error
   }
@@ -145,6 +150,7 @@ function deriveIntelligence(
 function derivePhase(state: SyncConnectionState, intelligence: IntelligenceStatus): ConnectionLifecyclePhase {
   if (state === "needs_reauth" || state === "error") return "ACTION_REQUIRED";
   if (state === "importing") return "IMPORTING";
+  if (state === "sync_deferred") return "IMPORTING"; // lifecycle phase: pre-ready, awaiting data
   // state === "ready":
   return intelligence === "READY" ? "READY" : "BUILDING_INTELLIGENCE";
 }

@@ -70,6 +70,8 @@ export function healthChip(state: SyncConnectionState | null): HealthChip | null
     case "needs_reauth": return { label: "Needs reconnection", tone: "warning"  };
     case "error":        return { label: "Sync error",         tone: "warning"  };
     case "importing":    return { label: "Importing…",         tone: "muted"    };
+    // OPS-2D-4A — nothing is running; an ellipsis would imply motion.
+    case "sync_deferred": return { label: "Sync pending",        tone: "muted"    };
     default:             return null; // null state (manual / wallet-only / revoked): no chip
   }
 }

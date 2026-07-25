@@ -24,7 +24,18 @@
  * SyncConnection — same contract the Plaid `cursor` had (asserted by the test).
  */
 
-export type SyncConnectionState = "importing" | "ready" | "needs_reauth" | "error";
+/**
+ * OPS-2D-4A follow-up — "sync_deferred" joins the state machine.
+ *
+ * It is NOT a refinement of "importing"; it is its opposite. "importing" says
+ * work is happening and the card should settle on its own. "sync_deferred" says
+ * nothing is running and nothing will until the platform resumes ingestion —
+ * with no fault on the connection and nothing for the customer to do. Rendering
+ * the second as the first is the lie this state exists to end.
+ */
+import type { IngestionDeferral } from "@/lib/sync/deferred-ingestion";
+
+export type SyncConnectionState = "importing" | "sync_deferred" | "ready" | "needs_reauth" | "error";
 
 /** Provider-agnostic. PLAID + WALLET today; CSV / COINBASE / SCHWAB / … later. */
 export type SyncProvider = "PLAID" | "WALLET";
@@ -68,6 +79,13 @@ export interface SyncConnection {
    * denominator would be invented.
    */
   historyBuild: { doneDays: number; totalDays: number } | null;
+  /**
+   * OPS-2D-4A — the canonical admission reason when `state === "sync_deferred"`,
+   * else null. A CODE, never copy: customer surfaces must not render it, and
+   * operator surfaces resolve its label from ADMISSION_REASONS so the wording
+   * lives in exactly one place.
+   */
+  deferredReason: string | null;
   /**
    * Investments capability for this connection, or null when not applicable
    * (unsupported, unknown, or non-Plaid). Never carries the raw access token
@@ -156,6 +174,14 @@ export function deriveInvestmentsCapability(
  */
 export function deriveConnectionState(
   item: Pick<PlaidItemStateInput, "status" | "syncIncompleteAt" | "historyBuildStartedAt">,
+  /**
+   * OPS-2D-4A — the canonical deferral, resolved from the refresh ledger by
+   * lib/sync/deferred-ingestion.ts. Passed IN rather than inferred here,
+   * because this module is pure over PlaidItem rows and the evidence lives in
+   * RefreshExecution. Omitted by callers that have not resolved it; the state
+   * machine then behaves exactly as it did before.
+   */
+  deferral: IngestionDeferral | null = null,
 ): SyncConnectionState | null {
   switch (item.status) {
     case "REVOKED":
@@ -173,7 +199,12 @@ export function deriveConnectionState(
       // wealth history is then rebuilt across the window those transactions
       // support. Treating that as "ready" is what made the card settle while the
       // history it was about to show was still being written.
-      if (item.syncIncompleteAt !== null) return "importing";
+      if (item.syncIncompleteAt !== null) {
+        // Pending work AND canonical evidence that policy is what is holding it.
+        // syncIncompleteAt alone can never reach this branch — see
+        // deferred-ingestion.ts for why that distinction is the whole point.
+        return deferral !== null ? "sync_deferred" : "importing";
+      }
       return item.historyBuildStartedAt != null ? "importing" : "ready";
     default:
       // Unknown/unexpected status — omit rather than guess.
@@ -185,11 +216,15 @@ export function deriveConnectionState(
  * Maps raw Plaid connection rows into the provider-agnostic SyncStatus.
  * Excludes rows whose state is null (REVOKED / unknown). Never leaks `cursor`.
  */
-export function buildSyncStatus(items: PlaidItemStateInput[]): SyncStatus {
+export function buildSyncStatus(
+  items: PlaidItemStateInput[],
+  /** itemId → deferral, from resolveIngestionDeferrals. Empty = none resolved. */
+  deferrals: ReadonlyMap<string, IngestionDeferral | null> = new Map(),
+): SyncStatus {
   const connections: SyncConnection[] = [];
 
   for (const item of items) {
-    const state = deriveConnectionState(item);
+    const state = deriveConnectionState(item, deferrals.get(item.id) ?? null);
     if (state === null) continue;
 
     connections.push({
@@ -202,6 +237,10 @@ export function buildSyncStatus(items: PlaidItemStateInput[]): SyncStatus {
       investments:  deriveInvestmentsCapability(item.investmentsConsent),
       // Progress is only meaningful mid-import — see the field's contract.
       importedCount: state === "importing" ? (item.syncImportedCount ?? 0) : null,
+      // Present only on sync_deferred; the typed reason, never copy. Customer
+      // surfaces ignore it; operator surfaces resolve a label from the canonical
+      // admission registry with it.
+      deferredReason: state === "sync_deferred" ? (deferrals.get(item.id)?.reason ?? null) : null,
       historyBuild:
         item.historyBuildStartedAt != null && (item.historyBuildTotalDays ?? 0) > 0
           ? { doneDays: item.historyBuildDoneDays ?? 0, totalDays: item.historyBuildTotalDays! }
@@ -209,6 +248,8 @@ export function buildSyncStatus(items: PlaidItemStateInput[]): SyncStatus {
     });
   }
 
+  // A deferred connection is NOT "building" — nothing is running, so any
+  // consumer that polls while building would poll forever.
   const building = connections.some((c) => c.state === "importing");
   return { building, connections };
 }
@@ -262,6 +303,8 @@ export function buildWalletSyncStatus(inputs: WalletConnectionStateInput[]): Syn
       provider:     "WALLET",
       institution:  w.displayName,
       state,
+      // Wallets have no provider ingestion stage, so nothing to defer.
+      deferredReason: null,
       lastSyncedAt: w.lastSyncedAt ? w.lastSyncedAt.toISOString() : null,
       errorCode:    w.errorCode ?? null,
       // Self-custody wallets have no paged provider import to count through —

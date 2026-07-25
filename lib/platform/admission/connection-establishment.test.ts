@@ -206,8 +206,15 @@ function main() {
       /status:\s*PlaidItemStatus\.ACTIVE/.test(recovery) && /deactivatedAt: null/.test(recovery));
     // …and the status derivation renders it as importing, never ready.
     const status = code("lib/sync/status.ts");
-    check("sync status renders syncIncompleteAt as importing, not ready",
-      /if \(item\.syncIncompleteAt !== null\) return "importing";/.test(status));
+    // Stated as INTENT, not as the literal branch. The Phase B follow-up split
+    // the incomplete case into importing vs sync_deferred; what must hold — and
+    // what this has always been about — is that a pending import NEVER reads as
+    // ready. Pinning the old one-liner made a correct refinement look like a
+    // regression.
+    check("an incomplete import never reads as ready",
+      /if \(item\.syncIncompleteAt !== null\) \{/.test(status) &&
+      /"sync_deferred" : "importing"/.test(status) &&
+      !/syncIncompleteAt !== null\) return "ready"/.test(status));
     // …and the recovery path itself now asks admission, so it resumes only once
     // the pause is lifted rather than hammering a paused provider every 5 min.
     check("the recovery path is itself admission-gated (resumes only when unpaused)",
