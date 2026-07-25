@@ -137,7 +137,15 @@ export interface ResolvedInstrument {
  */
 export async function resolveInstrumentForPlaidSecurity(
   sec: Security,
-  opts?: { client?: Client; financialAccountId?: string | null },
+  /**
+   * OPS-2D-TX-1 — `client` is a ROOT client, never a `Prisma.TransactionClient`.
+   * This function records an INSTRUMENT_IDENTITY_CONFLICT incident, and incident
+   * recording must never run inside a caller's transaction: a failed telemetry
+   * write aborts that transaction and silently discards the financial mutation
+   * it was observing. Every caller already passes a root client; the type now
+   * says so. Internal helpers keep the wider union — they only write identity.
+   */
+  opts?: { client?: PrismaClient; financialAccountId?: string | null },
 ): Promise<ResolvedInstrument> {
   const client = opts?.client ?? db;
 

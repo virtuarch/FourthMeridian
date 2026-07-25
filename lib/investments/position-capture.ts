@@ -107,7 +107,13 @@ export interface CaptureParams {
   securitiesById: Record<string, Security>;
   /** Observation (capture) date — the refresh date; NOT a fabricated history date. */
   date: Date;
-  client?: Client;
+  /**
+   * OPS-2D-TX-1 — a ROOT client. Capture resolves instruments, and instrument
+   * resolution records INSTRUMENT_IDENTITY_CONFLICT incidents, which must never
+   * be written inside a caller's transaction. `upsertObservation` below still
+   * takes the wider union: it writes observations, not telemetry.
+   */
+  client?: PrismaClient;
   /**
    * Optional account-balance context for derived brokerage-cash reconciliation
    * (runs AFTER position capture, from the SAME refresh payload so inputs are

@@ -109,12 +109,17 @@ function strongImportConflict(
 /**
  * Resolve an import/manual identity to a canonical Instrument. Creates the
  * identity (and a provider alias when a namespace is supplied) only when nothing
- * safe to reuse exists. Best-effort callers pass a transaction client; this
- * performs writes only on the create path.
+ * safe to reuse exists. Performs writes only on the create path.
+ *
+ * OPS-2D-TX-1 — `client` is a ROOT client. The previous wording here invited
+ * callers to "pass a transaction client", which no caller ever did and which is
+ * now unsafe: this function records INSTRUMENT_IDENTITY_CONFLICT incidents, and
+ * a telemetry write that fails inside a caller's transaction aborts it, taking
+ * the financial mutation with it (silently — COMMIT degrades to ROLLBACK).
  */
 export async function resolveInstrumentForImport(
   identity: ImportInstrumentIdentity,
-  opts?: { client?: Client; financialAccountId?: string | null },
+  opts?: { client?: PrismaClient; financialAccountId?: string | null },
 ): Promise<ResolvedImportInstrument> {
   const client = opts?.client ?? db;
 

@@ -43,6 +43,20 @@ export interface SyncIssueInput {
  * Injection is preferred over a `NODE_ENV === "test"` no-op precisely so sync
  * tests can still ASSERT that an issue was recorded (Phase 1B needs exactly
  * that) rather than having the behaviour disabled underneath them.
+ *
+ * ── OPS-2D-TX-1 — WHAT THE CLIENT MAY BE ─────────────────────────────────────
+ * `IncidentClient` requires `$transaction`, so a `Prisma.TransactionClient` no
+ * longer type-checks here. Injection is unchanged and still mandatory; what is
+ * now forbidden is threading the CALLER'S OPEN TRANSACTION into telemetry.
+ *
+ * A losing convergence race raises P2002, which aborts the surrounding Postgres
+ * transaction (25P02). Every later statement then fails, COMMIT silently
+ * degrades to ROLLBACK, and the financial writes vanish while the caller is told
+ * it succeeded — reproduced on real PostgreSQL in
+ * scripts/test-incident-transaction-safety.ts.
+ *
+ * A test fake therefore declares a `$transaction` stub: it is standing in for a
+ * root client, and saying so is what keeps the type honest.
  */
 /**
  * PRE-V26-PLAID-CLOSE Phase 4 — close the cursor-blocking issues for one item
@@ -71,7 +85,7 @@ export interface SyncIssueInput {
  */
 export async function resolveCursorBlockingIssues(
   plaidItemId: string,
-  client: Pick<typeof db, "syncIssue"> = db,
+  client: IncidentClient = db,
   /**
    * OPS-2D-5A-1 — the run that proved recovery. Threaded by callers that have
    * one; null stays null and is stored honestly rather than fabricated.
@@ -86,7 +100,7 @@ export async function resolveCursorBlockingIssues(
   // lives there, derived from sync-issue-semantics, not duplicated here.
   const { resolved } = await resolveByAutomaticRecovery(
     { plaidItemId, domain: "transactions", runId: runId ?? null },
-    client as IncidentClient,
+    client,
     deps.getExecutionIdByRunId,
   );
   return resolved;
@@ -111,7 +125,7 @@ export interface SyncIssueDeps {
 
 export async function recordSyncIssue(
   input: SyncIssueInput,
-  client: Pick<typeof db, "syncIssue"> = db,
+  client: IncidentClient = db,
   deps: SyncIssueDeps = {},
 ): Promise<void> {
   // OPS-2D-5A-1 — FACADE. The name and signature stay (14 call sites depend on
@@ -136,7 +150,7 @@ export async function recordSyncIssue(
       runId,
       detail:             input.detail,
     },
-    client as IncidentClient,
+    client,
     deps.getExecutionIdByRunId,
   );
 }

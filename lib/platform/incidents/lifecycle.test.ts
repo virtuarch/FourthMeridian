@@ -77,6 +77,11 @@ function makeClient(executions: { runId: string; id: string }[] = []) {
         return row;
       },
     },
+    // OPS-2D-TX-1 — this fake stands in for a ROOT client, and `IncidentClient`
+    // now requires `$transaction` so a caller's `Prisma.TransactionClient`
+    // cannot be passed. Declaring the stub is how the fake says which of the two
+    // it is. It is never invoked: the lifecycle only checks that it exists.
+    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
   };
   const lookup = async (runId: string) => executions.find((e) => e.runId === runId)?.id ?? null;
   return { client: client as unknown as IncidentClient, issues, occurrences, lookup };

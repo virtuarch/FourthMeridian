@@ -110,6 +110,11 @@ function makeFakeDb(opts: {
       },
     },
     syncIssueOccurrence: { create: async () => ({ id: "so1" }) },
+    // OPS-2D-TX-1 — declares this fake as a ROOT client (see IncidentClient).
+    // syncTransactionsForItem passes `database` straight through to
+    // recordSyncIssue, so the fake must satisfy the same contract the real
+    // client does: incident recording never runs inside a caller transaction.
+    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
     plaidItem: {
       findUnique: async () => ({ ...item }),
       update: async ({ data }: { data: { cursor?: string | null } }) => {

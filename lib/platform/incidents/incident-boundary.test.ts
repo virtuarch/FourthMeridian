@@ -237,6 +237,56 @@ function main() {
     check("no incident browser API was built", controlRoutes.length === 0, controlRoutes.join(", "));
   }
 
+  // ── 9. Telemetry never rides the caller's transaction (OPS-2D-TX-1) ────────
+  //
+  // The invariant: failure to record incident telemetry must not cause failure
+  // of the financial write being observed. An incident write inside a caller's
+  // transaction breaks it — a lost convergence race raises P2002, Postgres marks
+  // the transaction aborted (25P02), the caller's later statements all fail and
+  // its COMMIT silently degrades to ROLLBACK. Proven on real PostgreSQL 16 in
+  // scripts/test-incident-transaction-safety.ts; this guard keeps the door shut.
+  //
+  // Structural, not a call-site census: it asserts the CONTRACT (the type that
+  // makes a transaction client unrepresentable, and the runtime backstop behind
+  // it), so a new producer is covered the day it is written.
+  console.log("9. incident recording cannot run inside a caller's transaction");
+  {
+    const lc = code(LIFECYCLE);
+    check("IncidentClient requires $transaction, so a TransactionClient cannot type-check",
+      /export type IncidentClient = Pick<\s*typeof db,[^>]*"\$transaction"[^>]*>/.test(lc));
+    check("a transaction-scoped client is detected at runtime too",
+      /function isTransactionScoped/.test(lc) && /\$transaction\b[\s\S]{0,80}!==\s*"function"/.test(lc));
+    check("both lifecycle entry points check before writing anything",
+      (lc.match(/isTransactionScoped\(client\)/g) ?? []).length === 2);
+    check("the refusal is REFUSED, never a silent redirect to the module db",
+      /refuseTransactionScopedClient/.test(lc) &&
+      /console\.error\([\s\S]{0,120}REFUSED/.test(lc));
+
+    // The refusal must not become a fallback: quietly retargeting an injected
+    // client at the module-level `db` is the defect lib/plaid/sync-issue-
+    // isolation.test.ts exists to prevent (eight test rows in a developer's DB).
+    check("no fallback rewrites the caller's client to the module db",
+      !/client\s*=\s*db\s*;/.test(lc) && !/\?\s*client\s*:\s*db/.test(lc));
+
+    // Producers must not re-open the hole by casting around the type. A cast to
+    // IncidentClient in the product tree is exactly how a transaction client
+    // would get back in; the harness is allowed one, and says why.
+    const casters = [...walk("lib"), ...walk("app"), ...walk("jobs")]
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => /as\s+unknown\s+as\s+IncidentClient|as\s+IncidentClient/.test(code(f)));
+    check("no production file casts its way past the incident client contract",
+      casters.length === 0, casters.join(", "));
+
+    // The facade's own parameters must carry the safe type, not a looser Pick
+    // that would re-admit a transaction client through the front door.
+    const fc = code(FACADE);
+    check("the facade types both client parameters as IncidentClient",
+      (fc.match(/client:\s*IncidentClient\s*=\s*db/g) ?? []).length === 2,
+      "recordSyncIssue and resolveCursorBlockingIssues");
+    check("the facade no longer accepts the old syncIssue-only Pick",
+      !/Pick<typeof db,\s*"syncIssue">/.test(fc));
+  }
+
   if (failures > 0) {
     console.error(`\nincident-boundary.test: ${failures} failure(s).`);
     process.exit(1);

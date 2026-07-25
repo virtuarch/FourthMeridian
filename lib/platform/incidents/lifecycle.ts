@@ -73,13 +73,74 @@ export interface IncidentObservation {
 }
 
 /**
- * The accessors this authority needs. STRUCTURAL, not `typeof db`, because most
- * producers thread a narrow transaction client — the same reason recordSyncIssue
- * has always taken a Pick. `refreshExecution` is read-only here (correlator
- * lookup); the ledger is never written from this module.
+ * The accessors this authority needs. STRUCTURAL, not `typeof db`, so a test can
+ * substitute a fake — but it REQUIRES `$transaction`, and that requirement is
+ * the whole of OPS-2D-TX-1.
+ *
+ * ── WHY `$transaction` IS IN THIS TYPE ───────────────────────────────────────
+ * A `Prisma.TransactionClient` is `Omit<PrismaClient, ITXClientDenyList>` and
+ * `ITXClientDenyList` contains `$transaction`. Naming it here therefore makes a
+ * caller's transaction client FAIL TO TYPE-CHECK at every incident call site.
+ * That is deliberate, and it is a compile-time prohibition rather than a comment
+ * because the runtime consequence of getting it wrong is silent financial data
+ * loss. Reproduced against real PostgreSQL 16 (scripts/test-incident-
+ * transaction-safety.ts):
+ *
+ *   caller opens a transaction, writes a financial row
+ *     → records an incident through the SAME transaction client
+ *     → loses the partial-unique-index race
+ *     → Postgres raises 23505, Prisma surfaces P2002
+ *     → THE CALLER'S TRANSACTION IS NOW ABORTED (SQLSTATE 25P02)
+ *     → the convergence retry below queries with that same client and fails
+ *     → this module's outer catch swallows it and returns null
+ *     → every later statement in the caller's transaction fails
+ *     → COMMIT silently degrades to ROLLBACK — the caller is told it succeeded
+ *     → the financial rows are gone, and nothing anywhere reports an error
+ *
+ * Observation must never control the observed operation. An incident is
+ * telemetry about an operation that ALREADY FAILED; it cannot be allowed to
+ * decide whether the surrounding financial mutation lives. So incident writes
+ * run on their own connection, outside any caller transaction, always.
+ *
+ * This also isolates every OTHER failure mode, not just P2002: a check
+ * constraint, an FK violation or a statement timeout inside the incident write
+ * would abort a caller's transaction exactly the same way. Excluding the
+ * transaction client closes all of them at once, which is why this is preferred
+ * over making the P2002 path alone conflict-free.
+ *
+ * `refreshExecution` is read-only here (correlator lookup); the ledger is never
+ * written from this module.
  */
-export type IncidentClient = Pick<typeof db, "syncIssue" | "syncIssueOccurrence">;
+export type IncidentClient = Pick<typeof db, "syncIssue" | "syncIssueOccurrence" | "$transaction">;
 type Client = IncidentClient;
+
+/**
+ * Runtime backstop for the type above.
+ *
+ * Unreachable from type-checked code — which is the point: this catches the
+ * `as never` cast, the JS caller and the `any` that the compiler cannot. It
+ * REFUSES rather than falling back to the module-level `db`, because silently
+ * redirecting an injected client to the real database is the exact defect that
+ * put eight test rows in a developer's database (see lib/plaid/syncIssues.ts).
+ * Losing one telemetry row loudly beats writing it somewhere nobody asked for.
+ */
+function isTransactionScoped(client: Client): boolean {
+  return typeof (client as { $transaction?: unknown }).$transaction !== "function";
+}
+
+/**
+ * Refuse, loudly, and tell the operator which contract was broken. Telemetry
+ * loss must be observable — that is the third rule of the safety hierarchy,
+ * after "never corrupt the mutation" and "preserve evidence when safe".
+ */
+function refuseTransactionScopedClient(operation: string): void {
+  console.error(
+    `[incidents] REFUSED ${operation}: the client has no $transaction, so it is a ` +
+      "caller's transaction client. Incident recording never runs inside a caller " +
+      "transaction — a convergence race would abort it and silently discard the " +
+      "financial mutation being observed (OPS-2D-TX-1). Telemetry dropped.",
+  );
+}
 
 /** Postgres unique-violation — the partial index doing its job. */
 function isUniqueViolation(e: unknown): boolean {
@@ -131,6 +192,10 @@ export async function recordIncidentObservation(
   /** Injection seam — production uses the canonical row seam. */
   lookupExecutionId: LookupExecutionId | undefined = getExecutionIdByRunId,
 ): Promise<DetectionResult | null> {
+  if (isTransactionScoped(client)) {
+    refuseTransactionScopedClient("recordIncidentObservation");
+    return null;
+  }
   try {
     const provider = obs.provider ?? "PLAID";
     const { domain, nature } = classifySyncIssue({
@@ -323,6 +388,10 @@ export async function resolveByAutomaticRecovery(
   /** Injection seam — production uses the canonical row seam. */
   lookupExecutionId: LookupExecutionId | undefined = getExecutionIdByRunId,
 ): Promise<{ resolved: number; resolvingExecutionId: string | null }> {
+  if (isTransactionScoped(client)) {
+    refuseTransactionScopedClient("resolveByAutomaticRecovery");
+    return { resolved: 0, resolvingExecutionId: null };
+  }
   try {
     const resolvingExecutionId = await resolveExecutionId(scope.runId, lookupExecutionId ?? getExecutionIdByRunId);
 

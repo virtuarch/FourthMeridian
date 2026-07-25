@@ -44,6 +44,9 @@ async function behavioural(): Promise<void> {
   // ASSERTIONS are unchanged: what this file has always guarded is that the
   // caller's client is honoured and no bare `db.` escapes it — the leak that put
   // eight test rows in the developer database.
+  // OPS-2D-TX-1 — the `$transaction` stub is how a fake declares it stands in
+  // for a ROOT client. `IncidentClient` now requires it, so a caller's
+  // `Prisma.TransactionClient` no longer type-checks at any incident call site.
   const fake = {
     syncIssue: {
       create: async ({ data }: { data: Record<string, unknown> }) => { written.push(data); return { id: "si1" }; },
@@ -51,6 +54,7 @@ async function behavioural(): Promise<void> {
       update: async () => ({ id: "si1" }),
     },
     syncIssueOccurrence: { create: async () => ({ id: "so1" }) },
+    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
   };
 
   await recordSyncIssue(
@@ -64,24 +68,37 @@ async function behavioural(): Promise<void> {
   const exploding = {
     syncIssue: { create: async () => { throw new Error("boom"); }, findFirst: async () => null },
     syncIssueOccurrence: { create: async () => { throw new Error("boom"); } },
+    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
   };
   let threw = false;
   try { await recordSyncIssue({ kind: "UPSERT_ERROR" }, exploding as never); } catch { threw = true; }
   check("a failing recorder still never throws (contract preserved)", !threw);
 
+  // OPS-2D-TX-1 — a client WITHOUT `$transaction` is a caller's transaction
+  // client. The lifecycle must refuse it rather than write through it, and must
+  // NOT quietly redirect to the module-level `db` — silently retargeting an
+  // injected client is the defect that put eight test rows in a developer's
+  // database, and it is the reason this file exists.
+  const txShaped = {
+    syncIssue: { create: async () => { throw new Error("must never be called"); }, findFirst: async () => null },
+    syncIssueOccurrence: { create: async () => { throw new Error("must never be called"); } },
+  };
+  let txThrew = false;
+  try { await recordSyncIssue({ kind: "UPSERT_ERROR" }, txShaped as never); } catch { txThrew = true; }
+  check("a transaction-shaped client is refused, not written through, and never throws", !txThrew);
+
   // The default is unchanged for production callers: no second arg ⇒ real db.
   const src = readFileSync("lib/plaid/syncIssues.ts", "utf8");
-  check("default parameter is the real db (production unchanged)",
-    /client:\s*Pick<typeof db,\s*"syncIssue">\s*=\s*db/.test(src));
-  // Stated as INTENT. OPS-2D-5A-1 made this function a facade: it no longer
-  // creates rows, it forwards typed evidence to the incident lifecycle. What has
-  // always mattered — and what caused eight test rows to land in a developer's
-  // database — is that the CALLER'S client is the one used, and that no bare
-  // `db.` escapes it. Pinning the old `client.syncIssue.create` literal made a
-  // correct refactor look like the very regression it guards against.
+  check("the default is still the real db (production unchanged)",
+    /client:\s*IncidentClient\s*=\s*db/.test(src));
+  // Stated as INTENT, not as a literal. OPS-2D-5A-1 made this function a facade:
+  // it no longer creates rows, it forwards typed evidence to the incident
+  // lifecycle. What has always mattered — and what caused eight test rows to
+  // land in a developer's database — is that the CALLER'S client is the one
+  // used, and that no bare `db.` write escapes it.
   check("the caller's client is forwarded, and no bare `db.` write escapes",
-    /recordIncidentObservation\([\s\S]{0,400}client as IncidentClient/.test(src) &&
-    /resolveByAutomaticRecovery\([\s\S]{0,300}client as IncidentClient/.test(src) &&
+    /recordIncidentObservation\(\s*\{[\s\S]{0,600}?\},\s*client,/.test(src) &&
+    /resolveByAutomaticRecovery\(\s*\{[\s\S]{0,300}?\},\s*client,/.test(src) &&
     !/await db\.syncIssue\./.test(src));
 }
 

@@ -196,6 +196,8 @@ async function main() {
         update: async () => ({ id: "x" }),
       },
       syncIssueOccurrence: { create: async () => ({ id: "o" }) },
+      // OPS-2D-TX-1 — declares this fake as a ROOT client (see IncidentClient).
+      $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
     };
     await recordIncidentObservation(
       { kind: "UPSERT_ERROR", plaidItemId: "item1", plaidTransactionId: "t",

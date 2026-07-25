@@ -122,7 +122,15 @@ export interface IngestParams {
   /** Internal PlaidItem.id — for sync-issue context only (never the token). */
   plaidItemId?: string;
   now: Date;
-  client?: Client;
+  /**
+   * OPS-2D-TX-1 — a ROOT client, never a `Prisma.TransactionClient`. This
+   * function records incidents, and incident recording must run on its own
+   * connection: a telemetry write that fails inside a caller's transaction
+   * aborts it, and the caller's COMMIT then silently degrades to ROLLBACK.
+   * Inner persistence helpers still accept the wider union — they write no
+   * telemetry, so they remain safe to run transactionally.
+   */
+  client?: PrismaClient;
 }
 
 /**
@@ -243,7 +251,8 @@ export async function ingestInvestmentEvents(params: IngestParams): Promise<Inge
  * refresh/ingestion caller.
  */
 async function maybeRepairReconstructions(
-  client: Client,
+  /** Root client — this helper records incidents (see IngestParams.client). */
+  client: PrismaClient,
   affected: Map<string, { instrumentIds: Set<string>; cash: boolean }>,
   now: Date,
   plaidItemId?: string,
@@ -282,7 +291,8 @@ async function resolveFinancialAccountId(client: Client, plaidAccountId: string,
 }
 
 async function resolveInstrument(
-  client: Client,
+  /** Root client — this helper records incidents (see IngestParams.client). */
+  client: PrismaClient,
   txn: InvestmentTransaction,
   securitiesById: Record<string, Security>,
   faId: string,
