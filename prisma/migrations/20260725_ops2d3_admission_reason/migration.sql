@@ -1,0 +1,13 @@
+-- OPS-2D-3 — record WHY an execution was not admitted.
+--
+-- One nullable column, no backfill, no constraint, no index. Null means the
+-- execution was admitted, which is true of every row written before this slice
+-- and of the overwhelming majority written after it — so existing history stays
+-- correct without being touched.
+--
+-- Populated only by the canonical admission evaluator (lib/platform/admission)
+-- with a typed code from ADMISSION_REASONS. Deliberately separate from
+-- errorSummary: a policy decision is not an error, and folding the two would
+-- make every operator-declared pause render as a failure on the OPS-2C Refresh
+-- workspace.
+ALTER TABLE "RefreshExecution" ADD COLUMN IF NOT EXISTS "admissionReason" TEXT;

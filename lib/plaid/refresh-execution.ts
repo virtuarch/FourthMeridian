@@ -77,6 +77,13 @@ export interface RefreshExecutionCompletionData {
   durationMs: number;
   overallStatus: RefreshOverallStatus;
   errorSummary?: string;
+  /**
+   * OPS-2D-3 — the typed admission reason, set ONLY when the execution was
+   * denied before any stage ran. Optional here rather than on the start data
+   * because admission is evaluated after the row opens, and because an admitted
+   * execution must leave it null.
+   */
+  admissionReason?: string;
 }
 
 export interface RefreshEndpointResultData {
@@ -292,18 +299,7 @@ export async function runFullRefresh<T = RefreshItemResult>(
   const startedAt = new Date();
   const t0 = Date.now();
 
-  const executionId = await openExecution(client, {
-    runId,
-    plaidItemId: params.itemId,
-    trigger: params.trigger,
-    profile: params.profile,
-    parentJobRunId: params.parentJobRunId ?? null,
-    startedAt,
-    overallStatus: "RUNNING",
-    // Stamped once, here, from the one canonical resolver. Never recomputed at
-    // close, never backfilled: this row keeps the deployment that produced it.
-    deploymentSha: currentDeploymentSha(),
-  });
+  const executionId = await openExecution(client, startData(params, runId, startedAt));
 
   // DF-2D — attribute provider calls to this execution only when the ledger row
   // exists (executionId non-null); the recorder keeps the context's active stage
@@ -334,6 +330,30 @@ export async function runFullRefresh<T = RefreshItemResult>(
 }
 
 // ── Best-effort ledger writes (swallowed on failure — never break the refresh) ─
+
+/**
+ * The START row for one execution. THE single place deployment identity is
+ * stamped — OPS-2B′ requires it resolved once, at the start write, from the one
+ * canonical resolver, and never recomputed at close. Every function that opens
+ * an execution (runFullRefresh, recordAdmissionDenial) goes through here, so
+ * that requirement is satisfied by construction rather than by repetition.
+ */
+function startData(
+  params: RunFullRefreshParams,
+  runId: string,
+  startedAt: Date,
+): RefreshExecutionStartData {
+  return {
+    runId,
+    plaidItemId: params.itemId,
+    trigger: params.trigger,
+    profile: params.profile,
+    parentJobRunId: params.parentJobRunId ?? null,
+    startedAt,
+    overallStatus: "RUNNING",
+    deploymentSha: currentDeploymentSha(),
+  };
+}
 
 async function openExecution(
   client: RefreshExecutionWriteClient,
@@ -426,4 +446,59 @@ async function closeExecution(
   } catch (writeErr) {
     console.error(`[refresh-execution] ${executionId}: completion write failed (non-fatal):`, writeErr);
   }
+}
+
+// ── OPS-2D-3 — admission evidence ────────────────────────────────────────────
+
+/**
+ * Record that a refresh was NOT ADMITTED, as a first-class execution.
+ *
+ * A denied refresh opens and closes a real RefreshExecution with zero stages.
+ * `deriveOverallStatus([])` already returns SKIPPED for "nothing attempted", so
+ * the status is derived by the existing rule rather than asserted here — the
+ * ledger gains no special case, only a reason.
+ *
+ * WHY A ROW AT ALL. The alternative — return early, write nothing — would make
+ * an operator's own declared pause invisible on the very surfaces built to
+ * observe operations, and would leave "nothing was requested" and "we chose not
+ * to run" indistinguishable. Row volume is bounded by the request rate, which
+ * during a pause is the cron cadence.
+ *
+ * Deliberately NOT part of runFullRefresh: that function must return the
+ * runner's result type, and a denial has no result. Producers therefore ask
+ * admission BEFORE entering the envelope and record the denial with this. See
+ * the unmigrated-producer census in admission-boundary.test.ts.
+ *
+ * Non-fatal throughout, exactly like the rest of this ledger: failing to record
+ * a denial must never turn into a second failure for the caller to handle.
+ */
+export async function recordAdmissionDenial(
+  params: RunFullRefreshParams & { admissionReason: string },
+  deps: { client?: RefreshExecutionWriteClient } = {},
+): Promise<{ runId: string }> {
+  const client = deps.client ?? executionDb;
+  const runId = randomUUID();
+  const startedAt = new Date();
+  const t0 = Date.now();
+
+  const executionId = await openExecution(client, startData(params, runId, startedAt));
+
+  if (executionId !== null) {
+    try {
+      await client.refreshExecution.update({
+        where: { id: executionId },
+        data: {
+          completedAt: new Date(),
+          durationMs: Date.now() - t0,
+          // No stages ran — the existing derivation rule, applied to nothing.
+          overallStatus: deriveOverallStatus([]),
+          admissionReason: params.admissionReason,
+        },
+      });
+    } catch (writeErr) {
+      console.error(`[refresh-execution] ${runId}: admission-denial write failed (non-fatal):`, writeErr);
+    }
+  }
+
+  return { runId };
 }

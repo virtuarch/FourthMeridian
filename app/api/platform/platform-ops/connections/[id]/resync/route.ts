@@ -26,7 +26,8 @@ import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { AuditAction } from "@/lib/audit-actions";
 import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-lock";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
-import { runFullRefresh } from "@/lib/plaid/refresh-execution";
+import { runFullRefresh, recordAdmissionDenial } from "@/lib/plaid/refresh-execution";
+import { admitOperationalWork } from "@/lib/platform/admission/facts";
 import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
@@ -63,7 +64,6 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       { status: 429 },
     );
   }
-  await markManualRefreshed(item.id);
 
   const auditResync = (outcome: string, extra: Record<string, unknown> = {}) =>
     db.auditLog.create({
@@ -76,6 +76,45 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
         metadata:           { connectionId: item.id, provider: "PLAID", institution: item.institutionName, outcome, ...extra },
       },
     });
+
+  // ── OPS-2D-3 — ADMISSION ────────────────────────────────────────────────────
+  // The operator is authorized (WRITE, checked above) and this item is eligible
+  // (status, cooldown, checked above). A fourth, separate question remains: has
+  // an operator declared a platform state under which this class of work should
+  // not begin? Authorization cannot answer it, and no amount of capability
+  // changes the answer — a CONTROL holder who paused ingestion is subject to
+  // their own pause.
+  //
+  // Placed AFTER authorization (an unauthorized caller learns nothing about
+  // platform state) and BEFORE the cooldown is consumed and the lock is claimed:
+  // work that will not run must not burn the caller's 60-minute cooldown.
+  //
+  // 503, not 403: this is a platform condition, not a permissions problem, and
+  // conflating the two sends operators hunting for grants during an outage.
+  const admission = await admitOperationalWork({ work: "REFRESH_EXECUTION" });
+  if (admission.decision === "DENY") {
+    // Ledgered, not silent — the denial is a first-class execution so the
+    // operator's own declaration is visible on the Refresh workspace.
+    const { runId } = await recordAdmissionDenial({
+      itemId:          item.id,
+      trigger:         "OPERATOR",
+      profile:         "TRANSACTIONS_ONLY",
+      admissionReason: admission.reason!,
+    });
+    await auditResync("not-admitted", { admissionReason: admission.reason, runId });
+    return NextResponse.json(
+      {
+        error:       "not-admitted",
+        reason:      admission.reason,
+        message:     admission.label,
+        evaluatedAt: admission.evaluatedAt,
+        runId,
+      },
+      { status: 503 },
+    );
+  }
+
+  await markManualRefreshed(item.id);
 
   try {
     // OPS-2D-1 — the SAME lock + the SAME body, now inside the canonical

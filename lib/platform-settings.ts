@@ -22,6 +22,20 @@ export const PlatformSettingKey = {
   // "who may sign up" (open/invite_only/closed). Presentation/framing only — it
   // gates no behavior by itself; registration_mode remains the only signup gate.
   PRODUCT_STATUS:            "product_status",
+  // OPS-2D-3 — the first CONTROL-PLANE facts: operator declarations about
+  // whether operational work may begin, as opposed to every key above, which
+  // configures how the product behaves for customers. Read only through
+  // lib/platform/admission; no route reads them directly.
+  //
+  // Two keys, not one, because they answer different questions and an operator
+  // needs to be able to say either without saying the other: "the platform is
+  // under maintenance" is broader than "stop calling providers", and pausing
+  // ingestion during a provider incident should not imply the product is down.
+  //
+  // Both ship absent, and absence means off — see policy-core.ts for why that
+  // exception is bounded to never-configured and not extended to unreadable.
+  MAINTENANCE_MODE:          "maintenance_mode",
+  INGESTION_PAUSED:          "ingestion_paused",
 } as const;
 
 export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof PlatformSettingKey];
@@ -55,6 +69,13 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   registration_mode:         "open",
   // Ships `beta` — honest current maturity; changed only when the operator flips it.
   product_status:            "beta",
+  // OPS-2D-3 — both ship OFF. Nothing about existing behaviour changes until an
+  // operator declares otherwise. Note these defaults are documentation of the
+  // contract, not the admission path's fallback: the admission resolver reads
+  // the row itself so it can tell MISSING from INVALID, which getSetting()'s
+  // `?? DEFAULTS[key]` deliberately collapses.
+  maintenance_mode:          "false",
+  ingestion_paused:          "false",
 };
 
 /** Read all platform settings as a key→value map. */

@@ -87,6 +87,11 @@ export function OpsConnectionHealthWidget({ section }: { section: PlatformSectio
         if (r.status === 409 && body.error === "in-flight") {
           throw new Error("A sync is already in flight for this connection.");
         }
+        // OPS-2D-3 — an admission denial carries a human label from the reason
+        // registry. Prefer it over the code: "not-admitted" tells an operator
+        // nothing, while "Provider ingestion is paused platform-wide." tells
+        // them the action was refused by a platform state, not by a fault.
+        if (body.message) throw new Error(body.message as string);
         throw new Error(body.error ?? `Action failed (${r.status})`);
       }
       setConfirm(null);

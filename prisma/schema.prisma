@@ -2759,6 +2759,24 @@ model RefreshExecution {
   // needed, is an ADDITIVE column, not a redesign of this one.
   // ───────────────────────────────────────────────────────────────────────────
   deploymentSha  String?
+  // ───────────────────────────────────────────────────────────────────────────
+  // OPS-2D-3 — ADMISSION EVIDENCE. Set only when this execution was DENIED by
+  // the canonical admission evaluator (lib/platform/admission): the typed reason
+  // code from ADMISSION_REASONS, never free text. Null on every execution that
+  // was admitted — which is every execution written before this slice, and the
+  // overwhelming majority after it.
+  //
+  // A denied execution is RECORDED, not silent. A pause that produces no
+  // evidence would make the operator's own declaration invisible on the very
+  // surfaces built to observe it, and would leave "nothing ran" and "we chose
+  // not to run" indistinguishable in the ledger — the absence-is-a-state failure
+  // this project guards against everywhere else.
+  //
+  // Deliberately NOT errorSummary: a policy decision is not an error, and
+  // folding it into the error column would make every operator-declared pause
+  // read as a failure on the Refresh workspace.
+  // ───────────────────────────────────────────────────────────────────────────
+  admissionReason String?
   createdAt      DateTime  @default(now())
 
   endpoints      RefreshEndpointResult[]

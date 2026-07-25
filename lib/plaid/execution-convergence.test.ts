@@ -146,7 +146,7 @@ function main() {
     check("no tier/LIGHT profiles were added", !/"LIGHT"|"REALTIME"|"TIER/.test(types));
   }
 
-  console.log("scope · no policy, admission, capability, or control entered");
+  console.log("scope · producers consume policy, they never implement it");
   {
     const touched = [
       "lib/plaid/refresh-execution-types.ts",
@@ -154,13 +154,41 @@ function main() {
       "jobs/resume-stale-imports.ts",
       ...CONVERGED.filter((c) => !c.pre).map((c) => c.file),
     ];
-    const forbidden = /mayRun|admission|JobControlState|JobAdmissionPolicy|maintenanceMode|pausedUntil|declaredPolicy|CONTROL/;
+    // NARROWED IN OPS-2D-3 (was: a lexical ban on the word "admission" and
+    // friends). That fence was written to hold OPS-2D-1's scope, and it did —
+    // but its regex was broader than the rule it stood for, so the slice it was
+    // fencing FOR could not cross it. The enduring rule is not "these files must
+    // never mention admission"; it is "these files must never BE the policy
+    // authority". A producer calling the canonical evaluator is convergence
+    // working; a producer reading settings and deciding for itself is the
+    // duplication OPS-2D-1 existed to end.
+    //
+    // (Fifth time a guard has been broader than its own doctrine. The habit that
+    // keeps catching it: state the intent in the assertion, not a proxy for it.)
+    const IMPLEMENTS_POLICY = [
+      { re: /platformSetting\.|PlatformSettingKey/,        what: "reads control-plane settings directly" },
+      { re: /"(MAINTENANCE_MODE|INGESTION_PAUSED|CONTROL_PLANE_[A-Z_]+)"/, what: "hardcodes an admission reason code" },
+      { re: /ADMISSION_REASONS|evaluateAdmission|readFactState/, what: "evaluates admission itself" },
+      { re: /mayRun|JobControlState|JobAdmissionPolicy|declaredPolicy|pausedUntil/, what: "invents its own control-plane model" },
+      { re: /hasPlatformAccess|LEVEL_RANK|ISSUABLE_LEVELS|PlatformAccessLevel/, what: "reimplements authorization" },
+    ];
     for (const f of touched) {
-      check(`${f}: no OPS-2D policy/admission/capability vocabulary`, !forbidden.test(strip(f)));
+      const src = strip(f);
+      for (const rule of IMPLEMENTS_POLICY) {
+        check(`${f}: never ${rule.what}`, !rule.re.test(src));
+      }
     }
+    // Exactly ONE producer consumes the evaluator in OPS-2D-3, and it does so
+    // through the canonical entry point. The full census lives in
+    // lib/platform/admission/admission-boundary.test.ts.
+    const consumers = touched.filter((f) => /admitOperationalWork\(/.test(strip(f)));
+    check("exactly one converged producer consumes admission (OPS-2D-3)",
+      consumers.length === 1 && consumers[0].includes("connections/[id]/resync"),
+      consumers.join(", "));
+
     // The legacy /api/jobs/* bypass is explicitly NOT closed in this slice.
     for (const f of ["app/api/jobs/sync-banks/route.ts", "app/api/jobs/process-deletions/route.ts"]) {
-      check(`${f}: untouched (bypass closure is later OPS-2D work)`, !/runFullRefresh|admission/.test(strip(f)));
+      check(`${f}: untouched (bypass closure is later OPS-2D work)`, !/runFullRefresh|admitOperationalWork/.test(strip(f)));
     }
     // itemRemove / provider lifecycle stays outside the refresh envelope.
     for (const c of CONVERGED.filter((x) => !x.pre)) {
