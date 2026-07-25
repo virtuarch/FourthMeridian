@@ -2571,6 +2571,18 @@ enum SyncIssueKind {
   REPLAY_RECOVERED
   REPLAY_FAILED
   INSTRUMENT_IDENTITY_CONFLICT // A1 — refused Instrument merge (conflicting strong ids / alias)
+
+  // OPS-2D-5B-1 — typed persistence taxonomy. UPSERT_ERROR spanned ten distinct
+  // operations; these four split it by OPERATOR REMEDIATION, not by file or by
+  // Prisma call. The fine-grained operational detail stays in the incident's
+  // operationKey, so these are descriptions, never identity.
+  //
+  // UPSERT_ERROR is retained: legacy rows keep their recorded kind, and nothing
+  // rewrites history to match a newer vocabulary.
+  TRANSACTION_PERSISTENCE_FAILED     // bank transaction not persisted; cursor held
+  INVESTMENT_DATA_PERSISTENCE_FAILED // holdings/events/opening-position repair failed
+  IMPORT_ROLLBACK_FAILED             // a user import rollback did not complete
+  WALLET_SYNC_FAILED                 // on-chain wallet discovery/balance/price failed
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -179,6 +179,37 @@ export function classifySyncIssue(row: ClassifiableSyncIssue): SyncIssueClassifi
       // eventually, but no data is missing and no member action helps.
       return { domain: domainFromStage ?? "investments", severity: "warning", nature: "event", customerActionable: false, cursorBlocking: false };
 
+    // ── OPS-2D-5B-1 — typed persistence taxonomy ─────────────────────────────
+    // These carry their own meaning, so none of them needs the conservative
+    // fallback reasoning below: a typed row already says what failed.
+    case "TRANSACTION_PERSISTENCE_FAILED":
+      // The ONLY financial-data-critical persistence failure: a delivered bank
+      // transaction was not stored and the cursor is held so the page replays.
+      // Member-actionable because reconnecting genuinely can help.
+      return { domain: "transactions", severity: "critical", nature: "condition",
+               customerActionable: true, cursorBlocking };
+
+    case "INVESTMENT_DATA_PERSISTENCE_FAILED":
+      // Internal repair of optional data. Real, but no canonical financial
+      // record is missing and no member action helps — telling someone to
+      // reconnect their bank over an instrument retry is the noise Phase 4 closed.
+      return { domain: "investments", severity: "error", nature: "condition",
+               customerActionable: false, cursorBlocking: false };
+
+    case "IMPORT_ROLLBACK_FAILED":
+      // Separate from investment repair because the OPERATOR RESPONSE differs: a
+      // half-rolled-back user import is an integrity question about data the
+      // member deliberately supplied, not optional-data degradation.
+      return { domain: "imports", severity: "error", nature: "condition",
+               customerActionable: false, cursorBlocking: false };
+
+    case "WALLET_SYNC_FAILED":
+      // One kind for discovery/balance/price: the operator response is identical
+      // (chain or provider trouble). The three stay distinct INCIDENTS through
+      // their operation keys, which is where that detail belongs.
+      return { domain: "wallet", severity: "error", nature: "condition",
+               customerActionable: false, cursorBlocking: false };
+
     case "UPSERT_ERROR":
     case "MISSING_ACCOUNT": {
       // A row naming a specific bank transaction IS bank-transaction sync,

@@ -198,7 +198,7 @@ export const POST = withApiHandler(async (
       });
     } catch (e) {
       console.warn(`[import-rollback] reconstruction repair for account ${batch.financialAccountId} failed (non-fatal): ${e instanceof Error ? e.message : e}`);
-      await recordSyncIssue({ kind: "UPSERT_ERROR", financialAccountId: batch.financialAccountId, detail: { stage: "import-rollback-repair", importBatchId: batch.id, error: e instanceof Error ? e.message : String(e) } });
+      await recordSyncIssue({ kind: "IMPORT_ROLLBACK_FAILED", financialAccountId: batch.financialAccountId, detail: { stage: "import-rollback-repair", importBatchId: batch.id, error: e instanceof Error ? e.message : String(e) } });
     }
   }
 

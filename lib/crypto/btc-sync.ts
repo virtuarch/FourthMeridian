@@ -122,7 +122,9 @@ async function recordWalletSyncIssue(
   // `stage` (discovery / balance / price) already distinguishes the three
   // failure modes, so it carries identity without any taxonomy change.
   await recordSyncIssue({
-    kind:               SyncIssueKind.UPSERT_ERROR,
+    // OPS-2D-5B-1 — one public kind for all three wallet operations; the
+    // discovery/balance/price distinction lives in the operation key.
+    kind:               SyncIssueKind.WALLET_SYNC_FAILED,
     provider:           "WALLET",
     financialAccountId,
     detail:             { chain: BTC_CHAIN, stage, message, ...(extra ?? {}) } as Prisma.InputJsonValue,

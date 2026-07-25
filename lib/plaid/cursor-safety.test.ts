@@ -233,7 +233,11 @@ console.log("2. UPSERT failure on txn_B — cursor MUST NOT advance");
 
   const err = thrown as PlaidSyncIncompleteError;
   check("error names the failed row", err.failures.length === 1 && err.failures[0].plaidTransactionId === "txn_B");
-  check("error kind is UPSERT_ERROR", err.failures[0].kind === "UPSERT_ERROR");
+  // PagePersistenceFailure keeps its OWN vocabulary. It is cursor-safety
+  // accounting — "which obligations did this page fail to discharge" — not an
+  // incident classification, and OPS-2D-5B-1 deliberately left it alone.
+  check("cursor-safety failure kind is unchanged (local accounting, not taxonomy)",
+    err.failures[0].kind === "UPSERT_ERROR");
   check("error carries the held cursor", err.heldCursor === "C_old");
   check("error is NOT an Axios error ⇒ health classifier leaves item ACTIVE",
     !("isAxiosError" in (thrown as object)) && !("response" in (thrown as object)));
@@ -247,7 +251,7 @@ console.log("2. UPSERT failure on txn_B — cursor MUST NOT advance");
   // Order matters: the evidence must survive even though the run then throws.
   const ev = fdb._syncIssues;
   check("exactly one SyncIssue recorded", ev.length === 1, `${ev.length}`);
-  check("SyncIssue kind is UPSERT_ERROR", ev[0]?.kind === "UPSERT_ERROR");
+  check("SyncIssue kind is TRANSACTION_PERSISTENCE_FAILED", ev[0]?.kind === "TRANSACTION_PERSISTENCE_FAILED");
   check("SyncIssue names the failed transaction", ev[0]?.plaidTransactionId === "txn_B");
   check("SyncIssue detail carries the error", typeof ev[0]?.detail?.error === "string");
   check("SyncIssue detail carries `pending` (Phase 1 asymmetry closed)",
@@ -287,7 +291,7 @@ console.log("3. Replay — next attempt sends C_old, replay is idempotent, then 
   check("exactly ONE issue recorded across both attempts (the successful replay adds none)",
     fdb._syncIssues.length === 1, `${fdb._syncIssues.length}`);
   check("no SyncIssue row reached the real database (all captured by the fake)",
-    fdb._syncIssues.every((i) => i.kind === "UPSERT_ERROR"));
+    fdb._syncIssues.every((i) => i.kind === "TRANSACTION_PERSISTENCE_FAILED"));
 
   // Phase 4 — the successful replay CLOSES the incident it opened. Recovery is
   // proven by the cursor advancing, not assumed from elapsed time.

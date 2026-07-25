@@ -612,7 +612,10 @@ export async function syncTransactionsForItem(
         console.error(`[plaid sync] failed to upsert transaction ${txn.transaction_id}:`, redactedErrorForLog(e));
         // M1 — durable record of a transaction that failed to persist.
         await recordSyncIssue({
-          kind:               "UPSERT_ERROR",
+          // OPS-2D-5B-1 — the only financial-data-critical persistence failure.
+          // The local PagePersistenceFailure buffer below keeps its own vocabulary:
+          // that is cursor-safety accounting, not an incident classification.
+          kind:               "TRANSACTION_PERSISTENCE_FAILED",
           plaidItemId:        plaidItemDbId,
           financialAccountId,
           plaidAccountId:     txn.account_id,

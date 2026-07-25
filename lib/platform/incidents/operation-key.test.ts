@@ -155,9 +155,17 @@ async function main() {
     // No taxonomy yet — 5B-1 owns that.
     const schema = readFileSync(path.join(ROOT, "prisma/schema.prisma"), "utf8");
     const en = schema.slice(schema.indexOf("enum SyncIssueKind"), schema.indexOf("}", schema.indexOf("enum SyncIssueKind")));
-    check("SyncIssueKind is unchanged — no taxonomy values added",
-      !/PERSISTENCE_FAILED|WALLET_SYNC|ROLLBACK_FAILED/.test(en));
-    check("UPSERT_ERROR is still present (nothing removed)", /UPSERT_ERROR/.test(en));
+    // This began as a 5B-0 scope fence ("no taxonomy yet"). OPS-2D-5B-1 added the
+    // four typed kinds, which is the fence's own purpose being fulfilled rather
+    // than violated — so it is restated as the ENDURING rule: taxonomy may grow,
+    // but it must stay additive and must never reach identity.
+    check("UPSERT_ERROR is retained — legacy rows keep the kind they were recorded under",
+      /UPSERT_ERROR/.test(en));
+    check("taxonomy growth is additive; no kind was removed",
+      ["MISSING_ACCOUNT", "REMOVED_TOMBSTONE", "BALANCE_TX_MISMATCH", "INSTRUMENT_IDENTITY_CONFLICT"]
+        .every((k) => en.includes(k)));
+    check("no typed kind leaked into an incident key",
+      !/PERSISTENCE_FAILED|WALLET_SYNC_FAILED|IMPORT_ROLLBACK_FAILED/.test(key({})));
   }
 
   // ── 7. One authority ────────────────────────────────────────────────────────

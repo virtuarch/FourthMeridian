@@ -64,6 +64,21 @@ const MEMBER_MEANINGFUL: Record<string, { title: string; tone: TimelineTone; sub
     tone:     "danger",
     subtitle: "Some recent activity may be missing — reconnect to retry",
   },
+  // OPS-2D-5B-1 — the typed successor to a transaction-scoped UPSERT_ERROR.
+  // Registered with IDENTICAL member copy: the taxonomy is an operator-facing
+  // refinement, and a member should not see their wording change because we
+  // renamed an internal category. Omitting it would have silently stopped
+  // surfacing bank-sync failures the moment producers switched over.
+  //
+  // The other three new kinds are deliberately ABSENT. They are
+  // customerActionable: false — internal investment repair, a failed import
+  // rollback and wallet sync are operator concerns, and telling a member to
+  // reconnect their bank over one is the noise Phase 4 removed.
+  TRANSACTION_PERSISTENCE_FAILED: {
+    title:    "Sync error",
+    tone:     "danger",
+    subtitle: "Some recent activity may be missing — reconnect to retry",
+  },
 };
 
 export function normalizeSyncIssueEvent(

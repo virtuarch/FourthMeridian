@@ -130,8 +130,8 @@ async function main(): Promise<void> {
   check("sync's balance write does not touch deletedAt (preserve visibility)",
     updateBlock.length > 0 && !/deletedAt/.test(updateBlock), updateBlock ? undefined : "update() block not found");
   check("sync never touches SpaceAccountLink", !/spaceAccountLink/i.test(sync));
-  check("sync records SyncIssue provider=WALLET, reusing UPSERT_ERROR kind",
-    /provider:\s*["']WALLET["']/.test(sync) && sync.includes("SyncIssueKind.UPSERT_ERROR"));
+  check("sync records SyncIssue provider=WALLET with the typed WALLET_SYNC_FAILED kind",
+    /provider:\s*["']WALLET["']/.test(sync) && sync.includes("SyncIssueKind.WALLET_SYNC_FAILED"));
   // Presence, not a call-site count (was `>= 3` for 1 def + 2 calls, which churned
   // whenever a call site moved). The balance/price failure PATHS are exercised at
   // runtime in PART A (BtcSyncError stage=balance / stage=price).
