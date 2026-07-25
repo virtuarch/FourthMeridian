@@ -13,12 +13,14 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { classifySyncIssue, syncIssueState } from "@/lib/platform/sync-issue-semantics";
+import { classifySyncIssue, syncIssueState, incidentOperationLabel } from "@/lib/platform/sync-issue-semantics";
 import {
   countBySeverity,
   sortIncidentsForOperator,
   toPreviewItem,
 } from "./preview-core";
+import { buildIncidentKey, parseIncidentKey } from "./identity";
+import { OPERATION_KEYS, UNREGISTERED_PREFIX } from "./operation-key";
 import type { IncidentView } from "./projections";
 import { occurrenceText, subjectText, summaryText, RECOVERY_TEXT, SEVERITY_TOKEN } from "@/components/platform/widgets/incident-preview-view";
 
@@ -51,12 +53,15 @@ const WIDGET  = "components/platform/widgets/CsSyncIssuesWidget.tsx";
 
 function view(o: { id: string; kind: string; provider?: string; detail?: unknown;
                    plaidTransactionId?: string | null; at: string; occurrences?: number;
-                   correlated?: number; resolved?: boolean }): IncidentView {
+                   correlated?: number; resolved?: boolean;
+                   /** `undefined` keeps the legacy shorthand key; `null` means a pre-identity row. */
+                   incidentKey?: string | null }): IncidentView {
   const c = { kind: o.kind, provider: o.provider ?? "PLAID", detail: o.detail,
               plaidTransactionId: o.plaidTransactionId ?? null };
   return {
     id: o.id, kind: o.kind, provider: o.provider ?? "PLAID",
-    plaidItemId: null, financialAccountId: null, incidentKey: `v1::${o.id}`,
+    plaidItemId: null, financialAccountId: null,
+    incidentKey: o.incidentKey === undefined ? `v1::${o.id}` : o.incidentKey,
     state: syncIssueState(c, { referentExists: true, resolved: o.resolved ?? false }),
     classification: classifySyncIssue(c),
     firstOccurredAt: o.at, lastOccurredAt: o.at,
@@ -218,6 +223,168 @@ function main() {
     }
     // Preview is read-only: the surface must not offer a write.
     check("the widget issues no mutating fetch", !/method:\s*["'](POST|PUT|PATCH|DELETE)["']/.test(code(WIDGET)));
+  }
+
+  // ── 9. Operationally different incidents are distinguishable ───────────────
+  //
+  // THE DEFECT THIS CLOSES, found by rendering the real Preview: a wallet
+  // balance failure and a wallet price failure are two correct episodes with two
+  // identities, and they rendered as two byte-identical rows. Same for five
+  // operations sharing "Investment data persistence failed".
+  //
+  // The operation is NOT a new fact — it is already the last segment of the
+  // stored incident key. Everything below therefore builds its fixtures with the
+  // REAL `buildIncidentKey`, so a change to the key format is caught here rather
+  // than by an operator noticing the qualifier quietly vanished.
+  console.log("9. one label, several operations — an operator can still tell them apart");
+  {
+    const keyFor = (opts: { domain: "wallet" | "investments" | "transactions"; stage: string; scope?: string }) =>
+      buildIncidentKey({
+        provider: opts.domain === "wallet" ? "WALLET" : "PLAID",
+        plaidItemId: null,
+        scope: { kind: opts.domain === "wallet" ? "WALLET" : "FINANCIAL_ACCOUNT", id: opts.scope ?? "acct1" },
+        domain: opts.domain,
+        stage: opts.stage,
+      });
+
+    const walletItem = (id: string, stage: string) =>
+      toPreviewItem(
+        view({ id, kind: "WALLET_SYNC_FAILED", provider: "WALLET", detail: { stage },
+               at: T("2026-07-26T00:00:00.000Z"), incidentKey: keyFor({ domain: "wallet", stage }) }),
+        { primary: "Self-custody", secondary: "BTC Wallet" },
+      );
+
+    // The reported pair, exactly as an operator saw it.
+    const bal = walletItem("w-bal", "balance");
+    const pri = walletItem("w-pri", "price");
+    check("the two wallet episodes still share ONE label (the taxonomy did not split)",
+      bal.title === pri.title && bal.title === "Wallet sync failed", `${bal.title} / ${pri.title}`);
+    check("…and every other rendered value is identical",
+      bal.severity === pri.severity && bal.domain === pri.domain &&
+      bal.recovery === pri.recovery && bal.description === pri.description);
+    check("…yet the two rows are now DISTINGUISHABLE by operation",
+      bal.operationLabel !== null && pri.operationLabel !== null &&
+      bal.operationLabel !== pri.operationLabel,
+      `${bal.operationLabel} vs ${pri.operationLabel}`);
+    check("a third wallet operation is distinguishable from both",
+      new Set([bal, pri, walletItem("w-dis", "discovery")].map((i) => i.operationLabel)).size === 3);
+
+    // The investments family — five typed operations plus the MISSING_ACCOUNT
+    // one, all wearing "Investment data persistence failed".
+    const invStages = ["investment-events-fetch", "investment-events", "investment-events-instrument",
+                       "reconstruction-repair", "investment-import-repair", "opening-position-repair"];
+    const invItems = invStages.map((stage, n) =>
+      toPreviewItem(
+        view({ id: `i${n}`, kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", detail: { stage },
+               at: T("2026-07-20T00:00:00.000Z"), incidentKey: keyFor({ domain: "investments", stage }) }),
+        { primary: null, secondary: null },
+      ));
+    check("all six investment operations share one label",
+      new Set(invItems.map((i) => i.title)).size === 1 && invItems[0].title === "Investment data persistence failed");
+    check("all six investment operations are mutually distinguishable",
+      new Set(invItems.map((i) => i.operationLabel)).size === 6,
+      invItems.map((i) => i.operationLabel).join(" | "));
+
+    // ── Honest degradation. Three populations genuinely have no operation, and
+    // each must render NOTHING extra rather than a plausible-looking guess.
+    const noKey = toPreviewItem(
+      view({ id: "legacy", kind: "UPSERT_ERROR", plaidTransactionId: "t", at: T("2026-07-01T00:00:00.000Z"), incidentKey: null }),
+      { primary: null, secondary: null });
+    check("a legacy row with NO incident key has no operation qualifier",
+      noKey.operationLabel === null, String(noKey.operationLabel));
+    check("…and is still fully labelled, so nothing else regressed",
+      noKey.title === "Transaction persistence failed");
+
+    const shortKey = toPreviewItem(
+      view({ id: "short", kind: "UPSERT_ERROR", plaidTransactionId: "t", at: T("2026-07-01T00:00:00.000Z"), incidentKey: "v1::PLAID::item1" }),
+      { primary: null, secondary: null });
+    check("a key written under an unrecognised shape yields no qualifier, not a fragment",
+      shortKey.operationLabel === null, String(shortKey.operationLabel));
+
+    // THE LEAK TEST. An unregistered operation carries a producer's private
+    // stage spelling. It must not reach an operator in any form.
+    const unregisteredKey = keyFor({ domain: "investments", stage: `${UNREGISTERED_PREFIX}a-stage-nobody-typed-carefully` });
+    const unreg = toPreviewItem(
+      view({ id: "u", kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", detail: { stage: "a-stage-nobody-typed-carefully" },
+             at: T("2026-07-01T00:00:00.000Z"), incidentKey: unregisteredKey }),
+      { primary: null, secondary: null });
+    check("an unregistered operation yields no qualifier", unreg.operationLabel === null, String(unreg.operationLabel));
+    check("…and no part of the raw stage reaches the item",
+      !JSON.stringify(unreg).includes("a-stage-nobody-typed-carefully") &&
+      !JSON.stringify(unreg).includes(UNREGISTERED_PREFIX), JSON.stringify(unreg));
+
+    // ── Continuity (OPS-2D-5B-0). A legacy UPSERT_ERROR and the typed kind are
+    // ONE incident with ONE identity; adding a second axis must not make a
+    // taxonomy deployment visible to an operator as a "new" problem.
+    const txKey = buildIncidentKey({ provider: "PLAID", plaidItemId: "item1", domain: "transactions", stage: "transaction-persist" });
+    const asLegacy = toPreviewItem(
+      view({ id: "cl", kind: "UPSERT_ERROR", plaidTransactionId: "t", detail: { stage: "transaction-persist" },
+             at: T("2026-07-01T00:00:00.000Z"), incidentKey: txKey }), { primary: null, secondary: null });
+    const asTyped = toPreviewItem(
+      view({ id: "ct", kind: "TRANSACTION_PERSISTENCE_FAILED", detail: { stage: "transaction-persist" },
+             at: T("2026-07-01T00:00:00.000Z"), incidentKey: txKey }), { primary: null, secondary: null });
+    check("legacy and typed rows still read with the SAME label",
+      asLegacy.title === asTyped.title && asLegacy.title === "Transaction persistence failed");
+    check("…and now also with the same operation qualifier",
+      asLegacy.operationLabel === asTyped.operationLabel && asLegacy.operationLabel !== null,
+      `${asLegacy.operationLabel} vs ${asTyped.operationLabel}`);
+
+    // ── The reader is the builder's exact inverse ────────────────────────────
+    // The qualifier is only correct while these two agree about the format. The
+    // separator is written twice in identity.ts, so this is the assertion that
+    // actually protects it.
+    check("parseIncidentKey round-trips every registered operation",
+      Object.values(OPERATION_KEYS).every((op) =>
+        parseIncidentKey(buildIncidentKey({ provider: "PLAID", plaidItemId: "item1", domain: "wallet", stage: op }))?.operation === op),
+      Object.values(OPERATION_KEYS).filter((op) =>
+        parseIncidentKey(buildIncidentKey({ provider: "PLAID", plaidItemId: "item1", domain: "wallet", stage: op }))?.operation !== op).join(", "));
+    check("…including every other segment",
+      (() => {
+        const p = parseIncidentKey(buildIncidentKey({ provider: "PLAID", plaidItemId: null,
+          scope: { kind: "FINANCIAL_ACCOUNT", id: "acct1" }, domain: "investments", stage: "reconstruction-repair" }));
+        return p?.version === 1 && p.provider === "PLAID" && p.scope === "FINANCIAL_ACCOUNT:acct1" &&
+               p.domain === "investments" && p.operation === "reconstruction-repair";
+      })());
+
+    // NEVER THROWS. This runs on an operator dashboard over historical rows
+    // written under rules this code has never seen.
+    const hostile: (string | null | undefined)[] = [
+      null, undefined, "", "   ", "::::", "v1", "vX::PLAID::s::d::op", "1::PLAID::s::d::op",
+      "v1::::::::", "v99::PLAID::s::d::op", "v1::PLAID::s::d::op::extra", "not a key at all",
+    ];
+    let threw: string | null = null;
+    for (const h of hostile) { try { parseIncidentKey(h); } catch { threw = String(h); } }
+    check("parseIncidentKey never throws, whatever it is handed", threw === null, String(threw));
+    check("a malformed key parses to null rather than a partial guess",
+      ["::::", "v1", "vX::PLAID::s::d::op", "1::PLAID::s::d::op", "v1::::::::"]
+        .every((h) => parseIncidentKey(h) === null));
+    check("an unknown FUTURE key version still parses (the version is reported, not enforced)",
+      parseIncidentKey("v99::PLAID::s::d::op")?.version === 99);
+
+    // ── The qualifier is not a second identity, and not a second domain ──────
+    const src = code(CORE);
+    check("the core reads the operation through the key's OWNER, never by splitting a string",
+      /parseIncidentKey\(/.test(src) && !/incidentKey[\s\S]{0,40}\.split\(/.test(src));
+    check("the core asks the semantics authority for the words",
+      /incidentOperationLabel\(/.test(src));
+    check("the core never uses the key's recorded domain as the classification",
+      !/parseIncidentKey\([^)]*\)[^;]*\.domain/.test(src));
+    check("the core builds no incident key", !/buildIncidentKey\(/.test(src));
+    check("the core does not resolve raw stages into operations", !/resolveOperationKey\(/.test(src));
+
+    // PRESENTATION NEVER OWNS WORDING. If any phrase appears literally in a
+    // component or the view vocabulary, a second wording authority exists.
+    const phrases = [...new Set(Object.values(OPERATION_KEYS))]
+      .map((op) => incidentOperationLabel(op)!)
+      .filter(Boolean);
+    for (const f of [VIEW, "components/platform/widgets/IncidentPreview.tsx"]) {
+      const s = code(f);
+      const leaked = phrases.filter((p) => s.includes(p));
+      check(`${f}: hardcodes no operation wording`, leaked.length === 0, leaked.join(" | "));
+    }
+    check("no component maps operations to words itself",
+      ![VIEW, "components/platform/widgets/IncidentPreview.tsx", WIDGET]
+        .some((f) => /OPERATION_KEYS|OPERATION_PHRASE|operationText\s*[:=]\s*\{/.test(code(f))));
   }
 
   if (failures > 0) { console.error(`\npreview-core.test: ${failures} failure(s).`); process.exit(1); }

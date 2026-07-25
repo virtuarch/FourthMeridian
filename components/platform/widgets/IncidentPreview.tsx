@@ -105,6 +105,18 @@ export function IncidentPreview({
                       {item.severity}
                     </span>
                     <span className="min-w-0 text-sm text-[var(--text-primary)]">{item.title}</span>
+                    {/* WHICH OPERATION FAILED. Two wallet episodes — one from
+                        the balance operation, one from the price operation —
+                        are two correct rows that used to read identically; this
+                        is what tells them apart, on the line an operator scans
+                        first. The words are the semantic authority's, never
+                        this component's, and when the platform cannot prove the
+                        operation the element is absent rather than guessed. */}
+                    {item.operationLabel && (
+                      <span className="min-w-0 text-xs text-[var(--text-secondary)]">
+                        · {item.operationLabel}
+                      </span>
+                    )}
                   </div>
 
                   {/* An unavailable subject is rendered at the SAME weight as a

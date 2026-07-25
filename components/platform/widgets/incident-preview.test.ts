@@ -27,6 +27,8 @@ import { classifySyncIssue, syncIssueState } from "@/lib/platform/sync-issue-sem
 import { countBySeverity, sortIncidentsForOperator, toPreviewItem } from "@/lib/platform/incidents/preview-core";
 import type { IncidentPreview as IncidentPreviewData, IncidentSubject } from "@/lib/platform/incidents/preview-core";
 import type { IncidentView } from "@/lib/platform/incidents/projections";
+import { buildIncidentKey } from "@/lib/platform/incidents/identity";
+import { UNREGISTERED_PREFIX } from "@/lib/platform/incidents/operation-key";
 import { IncidentPreview } from "./IncidentPreview";
 
 let failures = 0;
@@ -61,6 +63,8 @@ function view(over: {
   resolved?: boolean;
   referentExists?: boolean;
   lastOccurredAt?: string;
+  /** `undefined` keeps the shorthand key; `null` models a pre-identity legacy row. */
+  incidentKey?: string | null;
 }): IncidentView {
   const classifiable = {
     kind: over.kind,
@@ -76,7 +80,7 @@ function view(over: {
     provider: over.provider ?? "PLAID",
     plaidItemId: over.plaidItemId ?? null,
     financialAccountId: over.financialAccountId ?? null,
-    incidentKey: `v1::key::${over.id}`,
+    incidentKey: over.incidentKey === undefined ? `v1::key::${over.id}` : over.incidentKey,
     state: syncIssueState(classifiable, { referentExists: over.referentExists ?? true, resolved }),
     classification: classifySyncIssue(classifiable),
     firstOccurredAt: MINUTES_AGO(600),
@@ -116,6 +120,14 @@ function render(props: { data: IncidentPreviewData | null; loading?: boolean; er
 }
 
 const rowCount = (html: string) => (html.match(/<li/g) ?? []).length;
+/**
+ * The rendered rows, each bounded by its own closing tag.
+ *
+ * NOT `html.split("<li")`: that leaves the list's trailing markup attached to
+ * the final fragment, so "these two rows differ" would pass on the footer alone
+ * — a check that could never fail is worse than no check.
+ */
+const rowsOf = (html: string) => html.match(/<li[\s\S]*?<\/li>/g) ?? [];
 
 // The realistic pair the runtime harness also creates.
 const TX = view({
@@ -297,6 +309,114 @@ function main() {
     // The presentational component renders the projection's order as given.
     check("IncidentPreview maps items in received order",
       /data\.items\.map\(/.test(strip("components/platform/widgets/IncidentPreview.tsx")));
+  }
+
+  // ── 13. Two incidents, one label — an operator can still tell them apart ───
+  //
+  // THE OBSERVED DEFECT (found by rendering the real Preview in a browser). A
+  // wallet BALANCE failure and a wallet PRICE failure are two genuine episodes
+  // with two identities, and they produced two byte-identical rows:
+  //
+  //     ERROR  Wallet sync failed / Self-custody · BTC Wallet / Occurred once …
+  //
+  // Two rows is correct — one episode is one item. What was wrong is that the
+  // rows were indistinguishable, because wording keyed on the derived DOMAIN
+  // while identity keys on the OPERATION.
+  console.log("13. operationally different incidents render distinguishably");
+  {
+    const walletKey = (stage: string) =>
+      buildIncidentKey({ provider: "WALLET", plaidItemId: null,
+                         scope: { kind: "WALLET", id: "wallet-1" }, domain: "wallet", stage });
+    const wallet = (id: string, stage: string) =>
+      view({ id, kind: "WALLET_SYNC_FAILED", provider: "WALLET", detail: { stage },
+             financialAccountId: "acct-btc", incidentKey: walletKey(stage) });
+
+    const subjects = {
+      "w-balance": { primary: "Self-custody", secondary: "BTC Wallet" },
+      "w-price":   { primary: "Self-custody", secondary: "BTC Wallet" },
+    };
+    const { html, text } = render({
+      data: preview([wallet("w-balance", "balance"), wallet("w-price", "price")], subjects),
+    });
+
+    check("two wallet episodes are still two rows", rowCount(html) === 2, `${rowCount(html)}`);
+    check("both carry the one shared label", (text.match(/Wallet sync failed/g) ?? []).length === 2, text);
+
+    // The assertion that matters: the two rendered rows are no longer the same
+    // string. Compared as MARKUP, so a difference invisible to an operator (an
+    // id in a key attribute) could not satisfy it.
+    const rows = rowsOf(html);
+    check("the two rendered rows are NOT identical", rows.length === 2 && rows[0] !== rows[1]);
+    check("each row names its own operation in operator words",
+      /Reading the wallet balance/.test(rows[0] ?? "") && /Reading the market price/.test(rows[1] ?? ""),
+      rows.map((r) => r.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()).join("  ||  "));
+
+    // …and none of that is the machine spelling of the stage.
+    check("no raw stage spelling reaches the markup",
+      !/["'>\s](balance|price|discovery)["'<\s]/.test(html.replace(/wallet balance|market price/g, "")),
+      html.slice(0, 300));
+    check("no incident key reaches the markup", !html.includes("v1::") && !html.includes("WALLET:"));
+
+    // The five typed investment operations behind ONE label.
+    const SAME_MOMENT = MINUTES_AGO(10);
+    const invStages = ["investment-events-fetch", "investment-events-instrument",
+                       "reconstruction-repair", "investment-import-repair", "opening-position-repair"];
+    const invHtml = render({
+      data: preview(invStages.map((stage, n) =>
+        view({ id: `inv-${n}`, kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", detail: { stage },
+               // Deliberately the SAME timestamp for all five: if the rows were
+               // allowed to differ by "last seen", distinctness would be proven
+               // by the clock rather than by the operation.
+               financialAccountId: "acct-fid", lastOccurredAt: SAME_MOMENT,
+               incidentKey: buildIncidentKey({ provider: "PLAID", plaidItemId: null,
+                 scope: { kind: "FINANCIAL_ACCOUNT", id: "acct-fid" }, domain: "investments", stage }) }))),
+    }).html;
+    const invRows = rowsOf(invHtml);
+    check("five investment episodes render five rows", invRows.length === 5, `${invRows.length}`);
+    check("…all sharing one label",
+      (invHtml.match(/Investment data persistence failed/g) ?? []).length === 5);
+    check("…and all five rows are mutually distinct", new Set(invRows).size === 5);
+    check("no investment stage spelling reaches the markup",
+      !invStages.some((s) => invHtml.includes(s)), invHtml.slice(0, 400));
+
+    // ── Honest degradation, rendered ─────────────────────────────────────────
+    // A legacy row has no identity at all. It renders its label and NOTHING
+    // extra — never a plausible-looking operation it cannot prove.
+    const legacy = render({ data: preview([view({ id: "leg", kind: "WALLET_SYNC_FAILED", provider: "WALLET",
+                                                  detail: { stage: "balance" }, incidentKey: null })]) });
+    check("a legacy row with no incident key renders no operation qualifier",
+      legacy.text.includes("Wallet sync failed") && !/Reading the/.test(legacy.text), legacy.text);
+    check("…and renders no stray separator where the qualifier would be",
+      !/failed\s*·/.test(legacy.text), legacy.text);
+
+    // An unregistered operation carries a producer's private spelling. It must
+    // not appear on an operator's screen in any form — not raw, not namespaced.
+    const unregStage = "a-stage-nobody-typed-carefully";
+    const unreg = render({ data: preview([view({ id: "unreg", kind: "INVESTMENT_DATA_PERSISTENCE_FAILED",
+      detail: { stage: unregStage },
+      incidentKey: buildIncidentKey({ provider: "PLAID", plaidItemId: null,
+        scope: { kind: "FINANCIAL_ACCOUNT", id: "a" }, domain: "investments",
+        stage: `${UNREGISTERED_PREFIX}${unregStage}` }) })]) });
+    check("an unregistered operation leaks neither the stage nor its namespace",
+      !unreg.html.includes(unregStage) && !unreg.html.includes(UNREGISTERED_PREFIX), unreg.text);
+    check("…and the row is still fully labelled", unreg.text.includes("Investment data persistence failed"));
+
+    // Continuity: a legacy UPSERT_ERROR and the typed kind are ONE incident, so
+    // a taxonomy deployment must remain invisible on BOTH wording axes.
+    const txKey = buildIncidentKey({ provider: "PLAID", plaidItemId: "item-chase",
+                                     domain: "transactions", stage: "transaction-persist" });
+    const asLegacy = render({ data: preview([view({ id: "cl", kind: "UPSERT_ERROR", plaidTransactionId: "t",
+      detail: { stage: "transaction-persist" }, plaidItemId: "item-chase", incidentKey: txKey })]) });
+    const asTyped = render({ data: preview([view({ id: "ct", kind: "TRANSACTION_PERSISTENCE_FAILED",
+      detail: { stage: "transaction-persist" }, plaidItemId: "item-chase", incidentKey: txKey })]) });
+    check("a legacy and a typed row read identically on the title line",
+      asLegacy.text.includes("Transaction persistence failed") &&
+      asTyped.text.includes("Transaction persistence failed") &&
+      asLegacy.text.includes("Storing bank transactions") &&
+      asTyped.text.includes("Storing bank transactions"),
+      `${asLegacy.text}\n${asTyped.text}`);
+    check("no enum spelling leaks alongside the qualifier",
+      !/UPSERT_ERROR|PERSISTENCE_FAILED|_FAILED/.test(asLegacy.text + asTyped.text));
   }
 
   if (failures > 0) { console.error(`\nincident-preview.test: ${failures} failure(s).`); process.exit(1); }

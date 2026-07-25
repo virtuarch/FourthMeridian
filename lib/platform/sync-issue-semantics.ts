@@ -43,6 +43,8 @@
  * PURE: no DB, no clock, no I/O.
  */
 
+import type { OperationKey } from "@/lib/platform/incidents/operation-key";
+
 /** Which subsystem produced this issue. */
 export type SyncIssueDomain =
   | "transactions"    // canonical bank-transaction persistence (Plaid /transactions/sync)
@@ -387,6 +389,110 @@ export function incidentDescription(kind: string, domain: SyncIssueDomain): stri
     default:
       return DOMAIN_DESCRIPTION[domain];
   }
+}
+
+// ── Operation wording (OPS-2D-5C-minimal) ────────────────────────────────────
+//
+// THE AMBIGUITY THIS CLOSES, observed in the running Preview
+// ----------------------------------------------------------
+// Two genuinely different wallet incidents — one from the balance operation, one
+// from the price operation — rendered as two byte-identical rows:
+//
+//     ERROR  Wallet sync failed
+//     Self-custody · BTC Wallet
+//     Occurred once · Last seen 3m ago
+//
+// Two rows is CORRECT: they are two episodes, with two identities, and merging
+// them would be the very collapse OPS-2D-5B-0 exists to prevent. What was wrong
+// is that an operator could not tell them apart, because the LABEL is keyed on
+// the derived `domain` while IDENTITY is keyed on the OPERATION. Five operations
+// share "Investment data persistence failed" for the same reason.
+//
+// The fix is a second, narrower phrase keyed on the OPERATION — the same axis
+// identity already uses — so what an operator reads finally varies along the
+// axis the platform actually distinguishes on.
+//
+// WHY NOT SPLIT THE LABEL INSTEAD
+// -------------------------------
+// Because the label is a TAXONOMY question and the taxonomy was split by
+// operator remediation, not by operation: all three wallet operations mean "the
+// chain or its provider is unhappy" and take the same response. Splitting the
+// label would either re-encode file structure as taxonomy (forbidden by the
+// doctrine in §6 of the roadmap) or drag wording toward identity (forbidden by
+// 5B-0). A qualifier adds the missing information without moving either.
+//
+// WHAT MAY APPEAR HERE
+// --------------------
+// The financial OPERATION and the system it affects, in the words an operator
+// would use out loud. Never the `detail.stage` spelling, never a file, function,
+// module or table name, never an ORM verb. A phrase that would only make sense
+// to someone holding the source is a leak, not a label.
+
+/**
+ * Operator phrase per registered operation.
+ *
+ * TYPED AS `Record<OperationKey, string>` ON PURPOSE: registering a new
+ * operation without deciding how an operator should read it becomes a
+ * compile-time failure rather than a silently unlabelled incident. That is the
+ * whole reason this map is keyed on the registry's type and not on `string`.
+ *
+ * The three "Rebuilding holdings…" phrases are one internal repair reached from
+ * three different places, and they are deliberately distinguished by WHAT
+ * TRIGGERED the repair rather than by which function ran it — the trigger is the
+ * part an operator can act on, and the function is the part they cannot.
+ */
+const OPERATION_PHRASE: Record<OperationKey, string> = {
+  // Bank transactions.
+  "transaction-persist":          "Storing bank transactions",
+
+  // Investments — six operations that otherwise share one label.
+  "investment-events-fetch":      "Retrieving investment activity",
+  "investment-events":            "Recording investment activity",
+  "investment-events-instrument": "Identifying a security",
+  "reconstruction-repair":        "Rebuilding holdings after provider activity",
+  "investment-import-repair":     "Rebuilding holdings after a member import",
+  "opening-position-repair":      "Rebuilding holdings after an opening position",
+
+  // Instrument identity (evidence).
+  "import-weak-ambiguous":        "Matching an imported security",
+  "import-strong-conflict":       "Merging a matched security",
+
+  // Member file imports.
+  "import-rollback-repair":       "Reversing a member import",
+
+  // Wallet sync — the three that rendered identically.
+  discovery:                      "Discovering wallet addresses",
+  balance:                        "Reading the wallet balance",
+  price:                          "Reading the market price",
+};
+
+/**
+ * The operator phrase for a failed operation, or null when the platform cannot
+ * prove which operation failed.
+ *
+ * NULL IS A REAL ANSWER, and it is the only honest one for three populations:
+ * legacy rows written before identity existed (no key at all), EVENT rows (which
+ * never carry a key, by invariant), and operations this registry has not heard
+ * of — including anything namespaced `unregistered:`. In every one of those
+ * cases the caller renders NOTHING extra. It must never fall back to the raw
+ * stage: `unregistered:a-stage-nobody-typed-carefully` is a producer's private
+ * spelling, and putting it in front of an operator is the leak this wording
+ * layer exists to prevent, not a degraded form of it.
+ *
+ * Takes the OPERATION KEY (the last segment of an incident key), not a raw
+ * stage. Resolving a stage into an operation is the registry's job and has
+ * exactly one caller — the lifecycle authority — and this must not become a
+ * second one.
+ */
+export function incidentOperationLabel(operationKey: string | null | undefined): string | null {
+  if (typeof operationKey !== "string") return null;
+  const key = operationKey.trim();
+  if (key === "") return null;
+  // Own-property only: without this, "constructor" and "toString" would resolve
+  // through the prototype chain and render a JavaScript function as an incident.
+  return Object.prototype.hasOwnProperty.call(OPERATION_PHRASE, key)
+    ? OPERATION_PHRASE[key as OperationKey]
+    : null;
 }
 
 /**

@@ -17,7 +17,9 @@
 
 import {
   classifySyncIssue, syncIssueState, isActiveIncident, isSupersededMismatch, stageOf,
+  incidentLabel, incidentOperationLabel,
 } from "./sync-issue-semantics";
+import { OPERATION_KEYS, UNREGISTERED_PREFIX } from "@/lib/platform/incidents/operation-key";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -194,6 +196,84 @@ console.log("6. Safety — what may and may not auto-recover");
     classifySyncIssue({ kind: "UPSERT_ERROR", plaidTransactionId: "t1", detail: { stage: "opening-position-repair" } }).domain === "transactions");
   check("unknown kind fails loud, not silent",
     classifySyncIssue({ kind: "SOMETHING_NEW" }).domain === "unknown");
+}
+
+// ── 7. Operation wording (OPS-2D-5C-minimal) ────────────────────────────────
+console.log("7. every registered operation reads differently, in operator words");
+{
+  const keys = [...new Set(Object.values(OPERATION_KEYS))];
+  const phrases = keys.map((k) => incidentOperationLabel(k));
+
+  // COVERAGE. An unlabelled registered operation is an incident an operator
+  // cannot name — the exact gap this section exists to close. (The map is typed
+  // `Record<OperationKey, string>`, so this also fails at COMPILE time; the
+  // runtime check is here because a type is not a proof about behaviour.)
+  check(`every registered operation has a phrase (${keys.length} keys)`,
+    phrases.every((p) => typeof p === "string" && p.trim() !== ""),
+    keys.filter((k) => !incidentOperationLabel(k)).join(", "));
+
+  // DISTINCTNESS is the whole deliverable: two operations that read the same
+  // are two rows an operator still cannot tell apart.
+  check("no two operations share a phrase",
+    new Set(phrases).size === keys.length,
+    `${new Set(phrases).size} distinct of ${keys.length}`);
+
+  // The two families that were ambiguous in the running Preview.
+  const wallet = (["discovery", "balance", "price"] as const).map((k) => incidentOperationLabel(k));
+  check("the three wallet operations are mutually distinguishable",
+    new Set(wallet).size === 3, wallet.join(" | "));
+  const investments = ([
+    "investment-events-fetch", "investment-events", "investment-events-instrument",
+    "reconstruction-repair", "investment-import-repair", "opening-position-repair",
+  ] as const).map((k) => incidentOperationLabel(k));
+  check("the six investment operations are mutually distinguishable",
+    new Set(investments).size === 6, investments.join(" | "));
+
+  // UNKNOWN STAYS UNKNOWN. Null is a real answer here — a legacy row, an EVENT
+  // (which by invariant carries no key at all), or an operation this registry
+  // has never heard of. None of them may degrade into a guess.
+  check("an absent operation has no phrase",
+    incidentOperationLabel(null) === null && incidentOperationLabel(undefined) === null);
+  check("a blank operation has no phrase",
+    incidentOperationLabel("") === null && incidentOperationLabel("   ") === null);
+  check("an unrecognised operation has no phrase",
+    incidentOperationLabel("some-operation-nobody-registered") === null);
+  // The leak that matters: an `unregistered:` namespace holds a producer's
+  // PRIVATE spelling. Rendering it would put a stage string in front of an
+  // operator, which is the failure this wording layer exists to prevent.
+  check("an unregistered namespace never yields a phrase, and never leaks its stage",
+    incidentOperationLabel(`${UNREGISTERED_PREFIX}a-stage-nobody-typed-carefully`) === null);
+  // Object lookups reach the prototype chain unless stopped.
+  check("a prototype key resolves to nothing, not to a JavaScript builtin",
+    ["constructor", "toString", "hasOwnProperty", "__proto__"]
+      .every((k) => incidentOperationLabel(k) === null));
+
+  // NO IMPLEMENTATION DETAIL. A phrase names the financial operation and the
+  // system it affects; a machine token, a path or an ORM verb is a leak.
+  const MACHINE_TOKEN = /[a-z]+-[a-z]+|_|[a-z][A-Z]|\.[a-z]|\//;
+  check("no phrase contains a machine token, path or identifier spelling",
+    phrases.every((p) => !MACHINE_TOKEN.test(p!)),
+    phrases.filter((p) => MACHINE_TOKEN.test(p!)).join(" | "));
+  const ORM_OR_INTERNALS = /prisma|upsert|findmany|createmany|\bsql\b|\bschema\b|\btable\b|\bcolumn\b|\bmodule\b|\bfunction\b|\bhandler\b/i;
+  check("no phrase names the ORM, the schema, or the code that ran",
+    phrases.every((p) => !ORM_OR_INTERNALS.test(p!)),
+    phrases.filter((p) => ORM_OR_INTERNALS.test(p!)).join(" | "));
+  check("no phrase repeats a raw stage spelling",
+    keys.every((k) => !incidentOperationLabel(k)!.includes(k) || !/[-_]/.test(k)),
+    keys.filter((k) => /[-_]/.test(k) && incidentOperationLabel(k)!.includes(k)).join(", "));
+  check("no phrase repeats an enum kind spelling",
+    phrases.every((p) => !/[A-Z]{2,}|_[A-Z]/.test(p!)));
+  // A qualifier that does not fit beside a label is not a qualifier.
+  check("every phrase is short enough to sit beside a label",
+    phrases.every((p) => p!.length <= 60), phrases.filter((p) => p!.length > 60).join(" | "));
+
+  // CONTINUITY. The qualifier is a SECOND axis; it must not disturb the label,
+  // which OPS-2D-5B-0 pinned as identical for a legacy and a typed row.
+  check("the label is untouched by the qualifier (legacy and typed still read alike)",
+    incidentLabel("UPSERT_ERROR", "transactions") === incidentLabel("TRANSACTION_PERSISTENCE_FAILED", "transactions") &&
+    incidentLabel("UPSERT_ERROR", "transactions") === "Transaction persistence failed");
+  check("the wallet label is still one label for all three operations",
+    incidentLabel("WALLET_SYNC_FAILED", "wallet") === "Wallet sync failed");
 }
 
 console.log(failures === 0

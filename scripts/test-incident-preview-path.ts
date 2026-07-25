@@ -67,6 +67,12 @@ function render(data: Awaited<ReturnType<typeof getIncidentPreview>>) {
   return { html, text: html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() };
 }
 const rowCount = (html: string) => (html.match(/<li/g) ?? []).length;
+/**
+ * Each rendered row, bounded by its own closing tag. NOT `split("<li")` — that
+ * leaves the list footer attached to the last fragment, so "these rows differ"
+ * would pass on the footer alone and could never fail.
+ */
+const rowsOf = (html: string) => html.match(/<li[\s\S]*?<\/li>/g) ?? [];
 
 async function main() {
   // ── Fixture: two real referents so neither incident is orphaned ────────────
@@ -199,6 +205,58 @@ async function main() {
   check("states there are none", emptyR.text.includes("No active sync incidents"));
   check("does not claim health", !/everything is healthy|all clear/i.test(emptyR.text));
   check("disclaims platform health", /does not describe overall platform health/i.test(emptyR.text));
+
+  // ── Two operations, one label — proven on real rows ───────────────────────
+  //
+  // The ambiguity found by rendering the real Preview: a wallet BALANCE failure
+  // and a wallet PRICE failure are two genuine episodes with two identities, and
+  // they rendered as two byte-identical rows. Everything below is written by the
+  // real facade, so the operation is read out of the incident key the LIFECYCLE
+  // actually stored — not one this harness constructed.
+  console.log("G. two operations under one label are distinguishable end to end");
+  {
+    const walletAccount = await db.financialAccount.create({
+      data: {
+        ownerType: "USER", ownerUserId: user.id,
+        name: "BTC Wallet", type: "crypto", institution: "Self-custody", balance: 0,
+      },
+    });
+    for (const stage of ["balance", "price"]) {
+      await recordSyncIssue({
+        kind: "WALLET_SYNC_FAILED", provider: "WALLET",
+        financialAccountId: walletAccount.id,
+        detail: { stage, reason: "SECRET_CHAIN_TRACE" },
+      });
+    }
+
+    const walletEpisodes = await db.syncIssue.findMany({ where: { kind: "WALLET_SYNC_FAILED" } });
+    check("two operations produced TWO episodes, not one", walletEpisodes.length === 2, `${walletEpisodes.length}`);
+    check("…with two distinct identities",
+      new Set(walletEpisodes.map((e) => e.incidentKey)).size === 2,
+      walletEpisodes.map((e) => e.incidentKey).join(" | "));
+
+    const walletPreview = await getIncidentPreview();
+    check("both are active", walletPreview.activeTotal === 2, `${walletPreview.activeTotal}`);
+    check("both wear the SAME canonical label (the taxonomy did not split)",
+      new Set(walletPreview.items.map((i) => i.title)).size === 1 &&
+      walletPreview.items[0].title === "Wallet sync failed",
+      walletPreview.items.map((i) => i.title).join(" | "));
+    check("…and are distinguished by their OPERATION",
+      new Set(walletPreview.items.map((i) => i.operationLabel)).size === 2 &&
+      walletPreview.items.every((i) => i.operationLabel !== null),
+      walletPreview.items.map((i) => i.operationLabel).join(" | "));
+
+    const w = render(walletPreview);
+    check("two rows render", rowCount(w.html) === 2, `${rowCount(w.html)}`);
+    const wRows = rowsOf(w.html);
+    check("the two rendered rows are NOT identical", wRows.length === 2 && wRows[0] !== wRows[1]);
+    check("the operator can read which operation failed, in words",
+      w.text.includes("Reading the wallet balance") && w.text.includes("Reading the market price"), w.text);
+    check("no raw stage spelling reaches the markup",
+      !/["'>](balance|price)["'<]/.test(w.html.replace(/wallet balance|market price/g, "")));
+    check("no incident key or diagnostic detail reaches the markup",
+      !w.html.includes("v1::") && !w.html.includes("SECRET_CHAIN_TRACE") && !w.html.includes(walletAccount.id));
+  }
 
   if (failures > 0) { console.error(`\nincident-preview-path: ${failures} failure(s).`); process.exit(1); }
   console.log("\nincident-preview-path: all passed.");

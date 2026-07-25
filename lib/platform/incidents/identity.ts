@@ -123,3 +123,78 @@ export function buildIncidentKey(input: IncidentIdentityInput): string {
     stage,
   ].join("::");
 }
+
+// ── Reading a key back (OPS-2D-5C-minimal) ───────────────────────────────────
+//
+// WHY THE READER LIVES BESIDE THE BUILDER, AND WHY IT IS NOT A SECOND AUTHORITY
+// ----------------------------------------------------------------------------
+// The key FORMAT is this module's private business. Anything that needs a
+// segment back out of a stored key must therefore ask this module, or the format
+// gets re-derived — a component splitting on "::" would be a second, silent
+// owner of the layout, free to disagree the moment a version changed.
+//
+// So this is a READER, not a second builder: it produces no key, decides no
+// identity, and is not consulted by the lifecycle. It exists because the
+// OPERATION that failed is already persisted (it is the last segment of
+// `SyncIssue.incidentKey`), and an operator surface needs to name it without a
+// new column, a new projection field, or a second trip to the database.
+//
+// IT NEVER THROWS. Legacy rows carry a null key, historical rows carry keys
+// written under rules this code has never seen, and a future version may add
+// segments. Every one of those is answered with `null` — an honest "unknown" —
+// rather than an exception on an operator's dashboard or, worse, a guess.
+
+/**
+ * One incident key, taken apart. Every field is the string AS RECORDED, which is
+ * not the same thing as the current verdict about the row.
+ *
+ * ⚠️ `domain` in particular is a HISTORICAL ARTEFACT of identity — what the
+ * classifier said at write time, frozen so the episode keeps converging. It is
+ * NOT the classification. Anything asking "what domain is this incident?" must
+ * ask `classifySyncIssue`, which reads the row's current `detail`; using the
+ * value below instead would resurrect a stored opinion the semantics authority
+ * deliberately refuses to persist.
+ */
+export interface ParsedIncidentKey {
+  /** The identity rule this key was built under (`v1` → 1). */
+  version: number;
+  provider: string;
+  /** Serialized scope, exactly as `serializeScope` wrote it. */
+  scope: string;
+  /** See the warning above: recorded, not current. */
+  domain: string;
+  /**
+   * The stable operation discriminator — a registered `OperationKey`, an
+   * `unregistered:<stage>` namespace, or `legacy-unspecified`. Consumers must
+   * treat anything they do not recognise as UNKNOWN, never as a stage to render.
+   */
+  operation: string;
+}
+
+/**
+ * The inverse of `buildIncidentKey`. Pure, total, and never throwing.
+ *
+ * Returns null for a key that does not match the shape this module writes —
+ * absent, blank, too few segments, or an unrecognisable version prefix. The
+ * separator is duplicated from `buildIncidentKey` rather than shared, because
+ * touching the builder was out of scope for the slice that added this; the
+ * round-trip is pinned by test instead, which is the stronger guarantee anyway.
+ */
+export function parseIncidentKey(key: string | null | undefined): ParsedIncidentKey | null {
+  if (typeof key !== "string") return null;
+  const parts = key.split("::");
+  // Fewer than five segments is not a key this module ever produced.
+  if (parts.length < 5) return null;
+
+  const [versionTag, provider, scope, domain, ...operationParts] = parts;
+  const match = /^v(\d+)$/.exec(versionTag);
+  if (!match) return null;
+
+  // A stage is a raw producer string and could in principle contain the
+  // separator; the operation is the TAIL, so such a stage is reassembled rather
+  // than silently truncated to its first fragment.
+  const operation = operationParts.join("::");
+  if (!provider || !scope || !domain || !operation) return null;
+
+  return { version: Number(match[1]), provider, scope, domain, operation };
+}
