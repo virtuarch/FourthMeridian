@@ -48,24 +48,28 @@ const LIFECYCLE = "lib/platform/incidents/lifecycle.ts";
 const IDENTITY  = "lib/platform/incidents/identity.ts";
 const FACADE    = "lib/plaid/syncIssues.ts";
 
-/** ADOPTED in this slice — execution-aware Plaid producers. */
-const ADOPTED = ["lib/plaid/syncTransactions.ts", "lib/plaid/refresh.ts"] as const;
+
 
 /**
- * DEFERRED to OPS-2D-5A-2 — no execution envelope. Listed with their exact call
- * counts so the census cannot drift silently in either direction.
+ * THE CLOSED PRODUCER CENSUS (OPS-2D-5A-2). Every production SyncIssue writer,
+ * with its exact call count. Adoption is complete: nothing is deferred, and
+ * `btc-sync.ts` — which bypassed the facade entirely and so never converged —
+ * is now a facade caller like the rest.
  */
-const DEFERRED = [
-  { file: "lib/investments/investment-event-ingest.ts",      sites: 4 },
-  { file: "lib/investments/instrument-resolver-import.ts",   sites: 2 },
-  { file: "lib/investments/instrument-resolver.ts",          sites: 1 },
-  { file: "lib/investments/investment-import-commit.ts",     sites: 1 },
-  { file: "lib/investments/opening-position.ts",             sites: 1 },
-  { file: "app/api/imports/[id]/rollback/route.ts",          sites: 1 },
+const ALL_PRODUCERS = [
+  { file: "lib/plaid/syncTransactions.ts",                   sites: 3, enveloped: true },
+  { file: "lib/plaid/refresh.ts",                            sites: 1, enveloped: true },
+  { file: "lib/investments/investment-event-ingest.ts",      sites: 4, enveloped: false },
+  { file: "lib/investments/instrument-resolver-import.ts",   sites: 2, enveloped: false },
+  { file: "lib/investments/instrument-resolver.ts",          sites: 1, enveloped: false },
+  { file: "lib/investments/investment-import-commit.ts",     sites: 1, enveloped: false },
+  { file: "lib/investments/opening-position.ts",             sites: 1, enveloped: false },
+  { file: "app/api/imports/[id]/rollback/route.ts",          sites: 1, enveloped: false },
+  { file: "lib/crypto/btc-sync.ts",                          sites: 1, enveloped: false },
 ] as const;
 
-/** The one producer that bypasses the facade entirely — 5A-2 must not miss it. */
-const DIRECT_WRITER = "lib/crypto/btc-sync.ts";
+/** The ONLY module permitted to touch SyncIssue rows directly. */
+const LIFECYCLE_INTERNALS = new Set(["lib/platform/incidents/lifecycle.ts"]);
 
 function main() {
   // ── 1. The semantics authority stays the only classifier ────────────────────
@@ -115,7 +119,7 @@ function main() {
   // ── 3. Producers submit facts; they decide nothing ──────────────────────────
   console.log("3. producers cannot reach into the lifecycle");
   {
-    const producers = [...ADOPTED, ...DEFERRED.map((d) => d.file), DIRECT_WRITER, FACADE];
+    const producers = [...ALL_PRODUCERS.map((p) => p.file), FACADE];
     for (const f of producers) {
       const s = code(f);
       check(`${f}: builds no incident key`, !/buildIncidentKey\(/.test(s));
@@ -129,31 +133,47 @@ function main() {
     check("the facade no longer mutates lifecycle fields", !/data:\s*\{\s*resolved:\s*true/.test(code(FACADE)));
   }
 
-  // ── 4. Closed censuses ──────────────────────────────────────────────────────
-  console.log("4. the adopted and deferred censuses are closed");
+  // ── 4. The closed producer census + the direct-write ban ───────────────────
+  console.log("4. every production writer is censused and goes through the facade");
   {
     const count = (f: string) => (code(f).match(/recordSyncIssue\(/g) ?? []).length;
-    check(`syncTransactions.ts has 3 call sites (got ${count(ADOPTED[0])})`, count(ADOPTED[0]) === 3);
-    check(`refresh.ts has 1 call site (got ${count(ADOPTED[1])})`, count(ADOPTED[1]) === 1);
-    for (const d of DEFERRED) {
-      check(`${d.file}: still deferred, ${d.sites} site(s) (got ${count(d.file)})`, count(d.file) === d.sites);
+    let total = 0;
+    for (const p of ALL_PRODUCERS) {
+      check(`${p.file}: ${p.sites} facade call site(s) (got ${count(p.file)})`, count(p.file) === p.sites);
+      total += p.sites;
     }
-    const totalDeferred = DEFERRED.reduce((a, d) => a + d.sites, 0);
-    check(`deferred total is 10 sites across 6 files (got ${totalDeferred})`, totalDeferred === 10);
+    check(`15 write sites across 9 files (got ${total})`, total === 15 && ALL_PRODUCERS.length === 9);
+    check("nothing remains deferred", ALL_PRODUCERS.every((p) => count(p.file) > 0));
 
-    // btc-sync bypasses the facade — the one 5A-2 is most likely to miss.
-    check(`${DIRECT_WRITER}: still writes SyncIssue directly (5A-2 target)`,
-      /db\.syncIssue\.create\(/.test(code(DIRECT_WRITER)));
-    check(`${DIRECT_WRITER}: does not go through the facade`,
-      !/recordSyncIssue\(/.test(code(DIRECT_WRITER)));
+    // THE BAN. Any direct row write outside the lifecycle authority is a bypass
+    // — that is exactly what btc-sync was, and why its failures never converged.
+    const writers = [...walk("lib"), ...walk("app"), ...walk("jobs"), ...walk("components")]
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => !LIFECYCLE_INTERNALS.has(f))
+      .filter((f) => /\bsyncIssue\.(create|createMany|update|updateMany|delete|deleteMany|upsert)\(/.test(code(f)));
+    check("no direct SyncIssue write outside the lifecycle authority", writers.length === 0, writers.join(", "));
 
-    // No producer outside the census may reach the lifecycle authority.
+    const occWriters = [...walk("lib"), ...walk("app"), ...walk("jobs")]
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => !LIFECYCLE_INTERNALS.has(f))
+      .filter((f) => /syncIssueOccurrence\.(create|update|delete)/.test(code(f)));
+    check("no direct occurrence write outside the lifecycle authority", occWriters.length === 0, occWriters.join(", "));
+
+    // Only the facade may reach the authority.
     const consumers = [...walk("lib"), ...walk("app"), ...walk("jobs")]
       .filter((f) => !/\.test\.tsx?$/.test(f))
       .filter((f) => !f.startsWith("lib/platform/incidents/"))
       .filter((f) => /recordIncidentObservation\(|resolveByAutomaticRecovery\(/.test(code(f)));
     check("only the facade calls the lifecycle authority",
       consumers.length === 1 && consumers[0] === FACADE, consumers.join(", "));
+
+    // Unenveloped producers must not fabricate correlation.
+    for (const p of ALL_PRODUCERS.filter((x) => !x.enveloped)) {
+      const s2 = code(p.file);
+      check(`${p.file}: creates no RefreshExecution`, !/refreshExecution\.create\(/.test(s2));
+      check(`${p.file}: infers no execution from timestamps`,
+        !/startedAt[\s\S]{0,60}(gte|lte|lt|gt)[\s\S]{0,60}refreshExecution/.test(s2));
+    }
   }
 
   // ── 5. Correlation is an FK, not JSON ───────────────────────────────────────
@@ -162,8 +182,13 @@ function main() {
     const lc = code(LIFECYCLE);
     // The seam is the DEFAULT of an injection point, not a bare call — production
     // gets the canonical row-seam lookup; tests pass a hermetic one.
+    // The seam is the DEFAULT of an injection point (5A-2 made it forwardable so a
+    // disposable-DB harness can exercise the real contract). The authority must
+    // still never reach the ledger itself.
     check("the authority LOOKS UP the correlator through the row seam",
-      /LookupExecutionId = getExecutionIdByRunId/.test(lc) && !/refreshExecution\./.test(lc));
+      /LookupExecutionId \| undefined = getExecutionIdByRunId/.test(lc) &&
+      /lookupExecutionId \?\? getExecutionIdByRunId/.test(lc) &&
+      !/refreshExecution\./.test(lc));
     check("the FK is stored, not the raw correlator", /refreshExecutionId: executionId/.test(lc));
     check("the raw correlator is kept only as diagnostics", /runId: obs\.runId \?\? null/.test(lc));
     const proj = code("lib/platform/incidents/projections.ts");

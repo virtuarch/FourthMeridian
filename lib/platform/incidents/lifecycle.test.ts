@@ -105,6 +105,27 @@ async function main() {
     check("the key is versioned", a.startsWith(`v${INCIDENT_KEY_VERSION}::`));
     check("no message text, timestamp or execution id in the key",
       !/\d{4}-\d{2}-\d{2}|Error|failed/i.test(a));
+
+    // ── OPS-2D-5A-2 — namespace safety ───────────────────────────────────────
+    // The same literal id can name an item, an account and a wallet. Without
+    // type prefixes those three would collide into ONE episode, silently merging
+    // a bank connection with an account repair and a wallet sync.
+    const asItem   = buildIncidentKey({ provider: "PLAID", plaidItemId: "abc", domain: "transactions", stage: "s" });
+    const asAcct   = buildIncidentKey({ provider: "PLAID", plaidItemId: null, scope: { kind: "FINANCIAL_ACCOUNT", id: "abc" }, domain: "transactions", stage: "s" });
+    const asWallet = buildIncidentKey({ provider: "PLAID", plaidItemId: null, scope: { kind: "WALLET", id: "abc" }, domain: "transactions", stage: "s" });
+    check("item / account / wallet with the SAME id are three distinct keys",
+      new Set([asItem, asAcct, asWallet]).size === 3, [asItem, asAcct, asWallet].join(" | "));
+    check("non-Plaid scopes are type-prefixed",
+      asAcct.includes("FINANCIAL_ACCOUNT:abc") && asWallet.includes("WALLET:abc"));
+
+    // BYTE-IDENTICAL to 5A-1: a Plaid item still serializes bare, so episodes
+    // opened by the previous slice keep converging. This is why there is no
+    // version bump — prefixing the item too would have orphaned live episodes.
+    check("a Plaid key is byte-identical to the 5A-1 output",
+      asItem === "v1::PLAID::abc::transactions::s", asItem);
+    check("an unscoped key is explicit, not empty",
+      buildIncidentKey({ provider: "PLAID", plaidItemId: null, scope: { kind: "LEGACY_UNSCOPED" }, domain: "transactions", stage: "s" })
+        === "v1::PLAID::LEGACY_UNSCOPED::transactions::s");
   }
 
   // ── 2. Detection & convergence ──────────────────────────────────────────────

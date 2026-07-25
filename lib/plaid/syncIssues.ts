@@ -16,6 +16,8 @@ import { recordIncidentObservation, resolveByAutomaticRecovery, type IncidentCli
 
 export interface SyncIssueInput {
   kind:                SyncIssueKind;
+  /** OPS-2D-5A-2 — non-Plaid producers (WALLET) name their provider. */
+  provider?:           string | null;
   plaidItemId?:        string | null;
   financialAccountId?: string | null;
   plaidTransactionId?: string | null;
@@ -75,6 +77,7 @@ export async function resolveCursorBlockingIssues(
    * one; null stays null and is stored honestly rather than fabricated.
    */
   runId?: string | null,
+  deps: SyncIssueDeps = {},
 ): Promise<number> {
   // FACADE over the canonical resolution authority. This no longer mutates
   // lifecycle fields itself — it names the semantic scope that recovered and
@@ -84,13 +87,32 @@ export async function resolveCursorBlockingIssues(
   const { resolved } = await resolveByAutomaticRecovery(
     { plaidItemId, domain: "transactions", runId: runId ?? null },
     client as IncidentClient,
+    deps.getExecutionIdByRunId,
   );
   return resolved;
+}
+
+/**
+ * OPS-2D-5A-2 — the execution-lookup seam, forwarded.
+ *
+ * Exists so a disposable-database harness can exercise the REAL lifecycle path
+ * with only the backing datasource substituted. Without it the module-level
+ * seam reads the primary database, a harness cannot see the execution it just
+ * created, and the FK path silently reads null — which is exactly how a
+ * correlation bug would hide behind a passing test.
+ *
+ * Production never passes this. It is not an environment switch, not an HTTP
+ * option, and not a second lookup: it is the same `getExecutionIdByRunId`
+ * contract, resolved against a different client.
+ */
+export interface SyncIssueDeps {
+  getExecutionIdByRunId?: (runId: string) => Promise<string | null>;
 }
 
 export async function recordSyncIssue(
   input: SyncIssueInput,
   client: Pick<typeof db, "syncIssue"> = db,
+  deps: SyncIssueDeps = {},
 ): Promise<void> {
   // OPS-2D-5A-1 — FACADE. The name and signature stay (14 call sites depend on
   // them), but the decision-making moved to lib/platform/incidents/lifecycle.ts.
@@ -106,6 +128,7 @@ export async function recordSyncIssue(
   await recordIncidentObservation(
     {
       kind:               input.kind,
+      provider:           input.provider ?? null,
       plaidItemId:        input.plaidItemId ?? null,
       financialAccountId: input.financialAccountId ?? null,
       plaidTransactionId: input.plaidTransactionId ?? null,
@@ -114,5 +137,6 @@ export async function recordSyncIssue(
       detail:             input.detail,
     },
     client as IncidentClient,
+    deps.getExecutionIdByRunId,
   );
 }

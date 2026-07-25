@@ -48,10 +48,35 @@ export const INCIDENT_KEY_VERSION = 1;
 /** Used when a row carries no stage and no resource scope to discriminate on. */
 export const LEGACY_UNSPECIFIED = "legacy-unspecified";
 
+/**
+ * The stable thing a failure is scoped to (OPS-2D-5A-2).
+ *
+ * 5A-1 keyed on `plaidItemId` because both adopted producers had one. Most of
+ * the remaining producers do NOT: investment repair and import rollback are
+ * account-scoped, BTC sync is wallet-scoped, and instrument resolution may have
+ * neither. Keying those on a null item would collapse every account, import and
+ * wallet on the platform into ONE episode per domain+stage — a merge that would
+ * make the incident model actively misleading the moment it was adopted.
+ *
+ * PREFIXED so an account id can never collide with an item id.
+ */
+export type ConnectionScope =
+  | { kind: "PLAID_ITEM"; id: string }
+  | { kind: "FINANCIAL_ACCOUNT"; id: string }
+  | { kind: "WALLET"; id: string }
+  /** No stable scope exists — used only when every id above is absent. */
+  | { kind: "LEGACY_UNSCOPED" };
+
 export interface IncidentIdentityInput {
   provider: string;
-  /** The provider connection. Null for producers that do not name one. */
+  /**
+   * The provider connection, when the producer has one. Kept as its own field
+   * rather than folded into `scope` because its serialization is deliberately
+   * UNPREFIXED — see buildIncidentKey.
+   */
   plaidItemId: string | null;
+  /** Used when there is no plaidItemId. */
+  scope?: ConnectionScope;
   /** From classifySyncIssue — asked for, never re-derived here. */
   domain: SyncIssueDomain;
   /** `detail.stage`, when the producer records one. */
@@ -72,8 +97,20 @@ export interface IncidentIdentityInput {
  * string, which is what makes the partial unique index meaningful. Segments are
  * joined with a separator that cannot appear in an id or a stage name.
  */
+function serializeScope(input: IncidentIdentityInput): string {
+  // BACKWARD COMPATIBLE ON PURPOSE. A Plaid item still serializes to its bare
+  // id, exactly as v1 did, so every episode opened by OPS-2D-5A-1 keeps its key
+  // and an active v1 episode still converges with new observations. Prefixing it
+  // would have been tidier and would have orphaned live episodes behind a
+  // version bump — the churn the generalization was supposed to avoid.
+  if (input.plaidItemId) return input.plaidItemId;
+  const s = input.scope;
+  if (!s) return "no-item";
+  return s.kind === "LEGACY_UNSCOPED" ? "LEGACY_UNSCOPED" : `${s.kind}:${s.id}`;
+}
+
 export function buildIncidentKey(input: IncidentIdentityInput): string {
-  const scope =
+  const stage =
     input.stage?.trim() ||
     input.resourceScope?.trim() ||
     LEGACY_UNSPECIFIED;
@@ -81,8 +118,8 @@ export function buildIncidentKey(input: IncidentIdentityInput): string {
   return [
     `v${INCIDENT_KEY_VERSION}`,
     input.provider,
-    input.plaidItemId ?? "no-item",
+    serializeScope(input),
     input.domain,
-    scope,
+    stage,
   ].join("::");
 }

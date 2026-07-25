@@ -34,7 +34,7 @@ import { db } from "@/lib/db";
 import type { Prisma, SyncIssueKind } from "@prisma/client";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
-import { buildIncidentKey, INCIDENT_KEY_VERSION } from "./identity";
+import { buildIncidentKey, INCIDENT_KEY_VERSION, type ConnectionScope } from "./identity";
 import { lifecycleViolation } from "./invariant";
 // The ledger is reached through the canonical row seam — never directly. The
 // OPS-2B read-boundary ratchet enforces this, and caught an earlier version of
@@ -63,6 +63,11 @@ export interface IncidentObservation {
    * and stores the FK only if an execution actually exists.
    */
   runId?: string | null;
+  /**
+   * OPS-2D-5A-2 — wallet scope for non-Plaid providers (BTC). Only consulted
+   * when there is no item and no account.
+   */
+  walletId?: string | null;
   detail?: Prisma.InputJsonValue;
 }
 
@@ -123,7 +128,7 @@ export async function recordIncidentObservation(
   obs: IncidentObservation,
   client: Client = db,
   /** Injection seam — production uses the canonical row seam. */
-  lookupExecutionId: LookupExecutionId = getExecutionIdByRunId,
+  lookupExecutionId: LookupExecutionId | undefined = getExecutionIdByRunId,
 ): Promise<DetectionResult | null> {
   try {
     const provider = obs.provider ?? "PLAID";
@@ -137,14 +142,24 @@ export async function recordIncidentObservation(
     const detailObj = (obs.detail ?? {}) as Record<string, unknown>;
     const stage = typeof detailObj.stage === "string" ? detailObj.stage : null;
 
+    // Scope precedence: the provider connection when there is one, else the
+    // account, else the wallet, else explicitly unscoped. Chosen HERE so no
+    // producer decides its own identity shape.
+    const scope: ConnectionScope =
+      obs.plaidItemId ? { kind: "PLAID_ITEM", id: obs.plaidItemId }
+      : obs.financialAccountId ? { kind: "FINANCIAL_ACCOUNT", id: obs.financialAccountId }
+      : obs.walletId ? { kind: "WALLET", id: obs.walletId }
+      : { kind: "LEGACY_UNSCOPED" };
+
     const incidentKey = buildIncidentKey({
       provider,
       plaidItemId: obs.plaidItemId ?? null,
+      scope,
       domain,
       stage,
     });
 
-    const executionId = await resolveExecutionId(obs.runId, lookupExecutionId);
+    const executionId = await resolveExecutionId(obs.runId, lookupExecutionId ?? getExecutionIdByRunId);
     const now = new Date();
 
     // An EVENT is evidence, not an open problem. It is stored resolved-inert so
@@ -300,10 +315,10 @@ export async function resolveByAutomaticRecovery(
   scope: AutomaticRecoveryScope,
   client: Client = db,
   /** Injection seam — production uses the canonical row seam. */
-  lookupExecutionId: LookupExecutionId = getExecutionIdByRunId,
+  lookupExecutionId: LookupExecutionId | undefined = getExecutionIdByRunId,
 ): Promise<{ resolved: number; resolvingExecutionId: string | null }> {
   try {
-    const resolvingExecutionId = await resolveExecutionId(scope.runId, lookupExecutionId);
+    const resolvingExecutionId = await resolveExecutionId(scope.runId, lookupExecutionId ?? getExecutionIdByRunId);
 
     const candidates = await client.syncIssue.findMany({
       where: { plaidItemId: scope.plaidItemId, resolved: false },

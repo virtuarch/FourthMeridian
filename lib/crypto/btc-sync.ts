@@ -25,6 +25,7 @@
  */
 
 import { db } from "@/lib/db";
+import { recordSyncIssue } from "@/lib/plaid/syncIssues";
 import {
   SyncIssueKind,
   TransactionCategory,
@@ -111,18 +112,21 @@ async function recordWalletSyncIssue(
   message: string,
   extra?: Record<string, unknown>,
 ): Promise<void> {
-  try {
-    await db.syncIssue.create({
-      data: {
-        provider: "WALLET",
-        financialAccountId,
-        kind: SyncIssueKind.UPSERT_ERROR,
-        detail: { chain: BTC_CHAIN, stage, message, ...(extra ?? {}) } as Prisma.InputJsonValue,
-      },
-    });
-  } catch (e) {
-    console.error(`[btc-sync] failed to record SyncIssue for ${financialAccountId} (non-fatal):`, e);
-  }
+  // OPS-2D-5A-2 — through the canonical facade. This was the last direct
+  // `db.syncIssue.create` in the product tree, which meant BTC failures never
+  // converged: every retry of the same stalled wallet inserted a fresh row.
+  //
+  // Scope is the FINANCIAL ACCOUNT, which for a wallet is the wallet — there is
+  // no plaidItemId here, and without an explicit scope the identity builder
+  // would have keyed every wallet on the platform to one episode per stage.
+  // `stage` (discovery / balance / price) already distinguishes the three
+  // failure modes, so it carries identity without any taxonomy change.
+  await recordSyncIssue({
+    kind:               SyncIssueKind.UPSERT_ERROR,
+    provider:           "WALLET",
+    financialAccountId,
+    detail:             { chain: BTC_CHAIN, stage, message, ...(extra ?? {}) } as Prisma.InputJsonValue,
+  });
 }
 
 /** Canonical asset identity for the wallet's native BTC position. */
