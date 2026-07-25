@@ -132,6 +132,8 @@ export interface ExecutionRowDTO {
   parentJobRunId: string | null;
   /** True when the execution recorded an error. Present for EVERY audience. */
   hasError: boolean;
+  /** OPS-2C-4 — the deployment that produced this execution; null when unobserved. */
+  deploymentSha: string | null;
   /** Truncated free text. `null` for `support` — see the header's redaction rule. */
   errorSummary: string | null;
 }
@@ -197,6 +199,7 @@ export interface ExecutionDetailDTO {
 export const EXECUTION_ROW_KEYS: readonly string[] = [
   "id", "runId", "plaidItemId", "trigger", "profile", "startedAt", "completedAt",
   "durationMs", "overallStatus", "parentJobRunId", "hasError", "errorSummary",
+  "deploymentSha",
 ];
 export const ENDPOINT_ROW_KEYS: readonly string[] = [
   "endpoint", "stageKind", "status", "skipReason", "startedAt", "completedAt",
@@ -223,6 +226,7 @@ export function projectExecutionRow(
     id: string; runId: string; plaidItemId: string; trigger: string; profile: string;
     startedAt: Date; completedAt: Date | null; durationMs: number | null;
     overallStatus: string; parentJobRunId: string | null; errorSummary: string | null;
+    deploymentSha: string | null;
   },
   audience: SeamAudience,
 ): ExecutionRowDTO {
@@ -239,6 +243,9 @@ export function projectExecutionRow(
     parentJobRunId: row.parentJobRunId,
     hasError: row.errorSummary != null,
     errorSummary: redactText(audience, row.errorSummary),
+    // Evidence carried on the execution. Both audiences see it: a commit sha is
+    // not customer data and is already public as the Sentry release.
+    deploymentSha: row.deploymentSha,
   };
 }
 

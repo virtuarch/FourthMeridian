@@ -84,6 +84,15 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
     id: "platform-costs", kind: "standard", domain: "platform",
     label: "Costs", icon: "Gauge",
   },
+  // OPS-2C-2 — the Refresh workspace. It answers a question no existing
+  // workspace does ("what did this refresh do, to which accounts, and did it
+  // fail?") and carries a distinct action on failure, which is the standing bar
+  // for a workspace existing. Deliberately NOT folded into Providers, which
+  // already carries six sections and answers whether a provider is trustworthy.
+  "platform-refresh": {
+    id: "platform-refresh", kind: "standard", domain: "platform",
+    label: "Refresh", icon: "RefreshCw",
+  },
 };
 
 // ── Composition: which workspaces each area exposes, and their section-widgets ───
@@ -114,11 +123,19 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       // the two platform-config posture cards (rate limits / environment). The heavy
       // detail (Manual Operations WRITE controls, connection + API-usage breakdowns)
       // deliberately leaves Overview for its dedicated workspace.
-      sections: ["ops_alerts", "ops_job_health", "ops_provider_health", "ops_resource_freshness", "ops_rate_limits", "ops_env_status"],
-      doorways: ["platform-jobs", "platform-providers", "platform-operations", "platform-alerts", "platform-trends", "platform-ai", "platform-costs"],
+      sections: ["ops_alerts", "ops_scheduler", "ops_job_health", "ops_provider_health", "ops_resource_freshness", "ops_rate_limits", "ops_env_status"],
+      doorways: ["platform-jobs", "platform-refresh", "platform-providers", "platform-operations", "platform-alerts", "platform-trends", "platform-ai", "platform-costs"],
     },
-    { workspaceId: "platform-jobs", sections: ["ops_job_health"] },
-    { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_connection_health", "ops_connection_diagnostics", "ops_email_delivery", "ops_resource_freshness", "ops_api_usage"] },
+    { workspaceId: "platform-jobs", sections: ["ops_scheduler", "ops_job_health"] },
+    // OPS-2C-2 — Refresh: outcomes + the execution rows + per-account coverage.
+    // Provider-operation attempt facts (route shipped in 2C-1) deliberately do
+    // NOT live here — they are provider-shaped and land in Providers at 2C-5.
+    { workspaceId: "platform-refresh", sections: ["ops_refresh_summary", "ops_refresh_executions", "ops_refresh_coverage"] },
+    // OPS-2C-5 order: health interpretation → observed behaviour → connections →
+    // consumption → freshness → delivery. Provider Operations sits directly under
+    // Provider Health (the behaviour that supports the interpretation) and well
+    // clear of API Usage, whose question is consumption over time.
+    { workspaceId: "platform-providers", sections: ["ops_provider_health", "ops_provider_operations", "ops_connection_health", "ops_connection_diagnostics", "ops_api_usage", "ops_resource_freshness", "ops_email_delivery"] },
     { workspaceId: "platform-operations", sections: ["ops_manual_operations"] },
     { workspaceId: "platform-alerts", sections: ["ops_alerts"] },
     // OPS-5 Wave B intelligence layer (S7 → S9 → S10 add their sections here).

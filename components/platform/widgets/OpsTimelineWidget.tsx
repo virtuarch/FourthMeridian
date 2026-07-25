@@ -14,9 +14,9 @@ import {
   PlatformWidgetCard,
   WidgetMessage,
   timeAgo,
-  useWidgetFetch,
   type PlatformSection,
 } from "../widget-kit";
+import { useSharedWidgetFetch } from "../workspace-session";
 import type { ConvergenceResult } from "@/lib/platform/convergence/types";
 
 const OUTCOME_TONE: Record<string, string> = {
@@ -28,7 +28,7 @@ const OUTCOME_TONE: Record<string, string> = {
 };
 
 export function OpsTimelineWidget({ section }: { section: PlatformSection }) {
-  const { data, loading, error } = useWidgetFetch<ConvergenceResult>("/api/platform/platform-ops/convergence");
+  const { data, loading, error } = useSharedWidgetFetch<ConvergenceResult>("/api/platform/platform-ops/convergence");
 
   return (
     <PlatformWidgetCard label={section.label} icon={Rss}>

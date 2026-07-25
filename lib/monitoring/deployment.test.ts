@@ -17,7 +17,7 @@
  *   • NOT ON PROJECTIONS — only immutable authorities receive it.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 let failures = 0;
@@ -38,6 +38,23 @@ const strip = (p: string) =>
   readFileSync(path.join(ROOT, p), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
+
+/** Every product-tree .ts/.tsx, for the "who may originate deployment identity" scan. */
+function walkProduct(): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === "node_modules" || e.name === ".next" || e.name === "prototype") continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
+        out.push(path.relative(ROOT, full));
+      }
+    }
+  };
+  for (const root of ["lib", "app", "components"]) walk(path.join(ROOT, root));
+  return out;
+}
 
 /** Re-import the resolver after an env change (module-level consts are cached). */
 async function freshResolver() {
@@ -219,7 +236,18 @@ async function main() {
       check(`${child} is NOT stamped (inherits via its execution FK)`, !/deploymentSha/.test(body));
     }
 
-    // PROJECTIONS AND READ MODELS ARE NEVER STAMPED.
+    // ── READ MODELS: OWNERSHIP, NOT VOCABULARY ────────────────────────────────
+    //
+    //   Read models may CARRY deployment evidence.
+    //   They may never ORIGINATE, STAMP, or MUTATE it.
+    //
+    // The original assertion here was a lexical ban — `deploymentSha` must not
+    // APPEAR in these files. That was broader than the doctrine it stood for: it
+    // forbade reading an attribute already recorded on the authoritative parent
+    // just as firmly as it forbade writing one. OPS-2C-4 surfaces deployment as
+    // evidence on an execution (Execution → deploymentSha), which the lexical ban
+    // blocked and the doctrine never did. Narrowed (approved reopening) to assert
+    // ORIGINATION, which is the thing that actually matters.
     for (const p of [
       "lib/platform/refresh/projections.ts",
       "lib/platform/refresh/projections-core.ts",
@@ -227,8 +255,43 @@ async function main() {
       "lib/platform/refresh/execution-query.ts",
       "lib/platform/refresh/execution-query-core.ts",
     ]) {
-      check(`${p} receives no deployment identity`, !/deploymentSha|currentDeploymentSha/.test(strip(p)));
+      const src = strip(p);
+      // 1. Never RESOLVE deployment identity — only the writers may call the resolver.
+      check(`${p} never invokes currentDeploymentSha()`, !/currentDeploymentSha/.test(src));
+      check(`${p} does not import the deployment resolver`, !/@\/lib\/monitoring\/deployment/.test(src));
+      // 2. Never STAMP it into a persistence payload.
+      check(
+        `${p} never writes deploymentSha into a create/update/upsert payload`,
+        !/(create|createMany|update|updateMany|upsert)\s*\(\s*\{[\s\S]{0,400}?deploymentSha\s*:/.test(src),
+      );
+      // 3. Never MUTATE it — no assignment to a deploymentSha property.
+      check(`${p} never assigns to deploymentSha`, !/\.deploymentSha\s*=[^=]/.test(src));
     }
+
+    // Reading/carrying IS permitted — and is asserted positively so a future hand
+    // cannot "restore" the lexical ban and silently break the evidence path.
+    const seamCore = strip("lib/platform/refresh/execution-query-core.ts");
+    check(
+      "the seam DTO may CARRY deployment evidence (read models carry, never originate)",
+      /deploymentSha/.test(seamCore),
+    );
+
+    // ORIGINATION REMAINS SOLE-SOURCED: only the two sanctioned writers resolve it.
+    const originators = ["lib/jobs/run.ts", "lib/plaid/refresh-execution.ts"];
+    for (const w of originators) {
+      check(`${w} is a sanctioned originator (resolves + stamps)`, /currentDeploymentSha\(\)/.test(strip(w)));
+    }
+    const productFiles = [
+      ...originators,
+      "lib/monitoring/sentry-options.ts",
+      "lib/monitoring/deployment.ts",
+    ];
+    check(
+      "no product file outside the sanctioned set resolves deployment identity",
+      walkProduct().every(
+        (f) => productFiles.includes(f) || !/currentDeploymentSha\s*\(/.test(strip(f)),
+      ),
+    );
   }
 
   // ── projection readiness (Part VI) — answerable, not implemented ───────────────

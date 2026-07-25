@@ -43,6 +43,14 @@ export interface ExecutionFact {
   overallStatus: string;
   parentJobRunId: string | null;
   errorSummary: string | null;
+  /**
+   * OPS-2B′/2C-4 — the deployment that PRODUCED this execution, or null when it
+   * was not observable when the row was written (local dev, self-hosted,
+   * pre-OPS-2B′ history). EVIDENCE ATTACHED TO THE EXECUTION, never a subject of
+   * its own: nothing groups, counts, or rolls up by it, and null is a permanent
+   * honest answer rather than a gap to be filled.
+   */
+  deploymentSha: string | null;
 }
 
 /** One `RefreshEndpointResult` row — stage facts within one execution. */

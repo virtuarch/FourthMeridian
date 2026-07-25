@@ -97,6 +97,19 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
       { key: "ops_ai_trend", label: "AI Usage Trend", order: 13 },
       // OPS-5 Wave B — S10 Cost & Latency Intelligence (derived over S7 + S9).
       { key: "ops_cost", label: "Cost & Latency", order: 11 },
+      // OPS-2C-2 — the Refresh workspace: the FIRST consumers of the DF-2 refresh
+      // ledger's read model (OPS-2B projections + execution query seam), which
+      // shipped with no reader at all. Observation only.
+      { key: "ops_refresh_summary", label: "Refresh Summary", order: 16 },
+      { key: "ops_refresh_executions", label: "Recent Executions", order: 17 },
+      { key: "ops_refresh_coverage", label: "Account Coverage", order: 18 },
+      // OPS-2C-5 — observed provider behaviour DURING refresh executions
+      // (ProviderCall attribution). Distinct from ops_provider_health (health
+      // interpretation) and ops_api_usage (consumption/billing volume).
+      { key: "ops_provider_operations", label: "Provider Operations", order: 19 },
+      // OPS-2C-7 — scheduler OBSERVATION (observed / expected / notes). No
+      // scheduler-health authority exists, so this asserts none.
+      { key: "ops_scheduler", label: "Scheduler", order: 20 },
     ],
   },
   SECURITY_OPS: {

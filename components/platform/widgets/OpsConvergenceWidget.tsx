@@ -15,13 +15,13 @@ import {
   WidgetMessage,
   WidgetStat,
   timeAgo,
-  useWidgetFetch,
   type PlatformSection,
 } from "../widget-kit";
+import { useSharedWidgetFetch } from "../workspace-session";
 import type { ConvergenceResult } from "@/lib/platform/convergence/types";
 
 export function OpsConvergenceWidget({ section }: { section: PlatformSection }) {
-  const { data, loading, error } = useWidgetFetch<ConvergenceResult>("/api/platform/platform-ops/convergence");
+  const { data, loading, error } = useSharedWidgetFetch<ConvergenceResult>("/api/platform/platform-ops/convergence");
 
   return (
     <PlatformWidgetCard label={section.label} icon={GitMerge}>

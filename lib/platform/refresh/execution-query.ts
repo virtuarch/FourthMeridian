@@ -115,6 +115,7 @@ const EXECUTION_SELECT = {
   overallStatus: true,
   parentJobRunId: true,
   errorSummary: true,
+  deploymentSha: true,
 } as const;
 
 function realReaders(): ExecutionQueryReaders {

@@ -174,6 +174,62 @@ capability name like `PLATFORM_OPS_MANAGE` is derived display sugar for
 `SYSTEM_ADMIN` bypasses all of the above (break-glass) and is redirected to the
 admin surface rather than the platform Space host.
 
+## Workspace map (OPS-2C)
+
+Platform Operations is an internal Space on the universal Space architecture. Nine
+workspaces; composition lives in `lib/platform/workspaces.ts`, section identity in
+`lib/platform/policy.ts`, and section→widget in `PlatformSpaceDashboard.tsx`. **A key
+registered in only two of those three renders nothing and fails silently** — pinned by
+`refresh-widgets.test.ts`.
+
+| Workspace | Sections (in render order) |
+|---|---|
+| Overview | alerts · **scheduler** · job health · provider health · resource freshness · rate limits · env status + Explore doorways |
+| Jobs | **scheduler** · job health |
+| **Refresh** *(2C-2)* | refresh summary · recent executions · account coverage |
+| Providers | provider health · **provider operations** *(2C-5)* · connection health · connection diagnostics · api usage · resource freshness · email delivery |
+| Operations · Alerts | manual operations / alerts |
+| History · AI · Costs | history · convergence · timeline · cost / api usage · ai trend / cost · ai trend |
+
+`ops_scheduler` appears in two workspaces deliberately — Overview answers "is anything
+running at all", Jobs answers "what is scheduled". Only one workspace renders at a time,
+so no duplicate request occurs.
+
+### Refresh read surfaces (OPS-2C-1)
+
+Five READ-gated routes over the OPS-2B read model, plus one inspection route:
+
+| Route | Serves |
+|---|---|
+| `/refresh/summary` | execution outcomes + per-endpoint stage roll-up |
+| `/refresh/provider-operations` | per-(provider, operation) attempts, latency, attempt distribution |
+| `/refresh/coverage` | per-endpoint and per-(account, endpoint) coverage evidence |
+| `/refresh/failures` | failures grouped by the provider's own error vocabulary |
+| `/refresh/executions` | the **execution query seam** — bounded, keyset-paged rows |
+| `/refresh/executions/[id]/timeline` | one execution's ordered story (inspection) |
+| `/scheduler` *(2C-7)* | observed / expected / notes |
+
+Shared query parsing lives in `lib/platform/refresh/request-params.ts`. **Scope fails
+closed:** an absent `plaidItemId` means platform-wide; a *present but empty* one means
+nothing. Widening on malformed input exposes data; narrowing only returns nothing.
+
+**Audience is derived from the grant, never from the request.** Platform Operations reads
+as `operator`; the seam's `support` audience (item-scoped, free-text errors redacted in
+favour of the provider's structured codes) exists but has no caller yet.
+
+### Workspace session (OPS-2C-6)
+
+`components/platform/workspace-session.tsx` — the workspace owns the operational session.
+Widgets in one workspace reading the same route share **one** request and therefore one
+operational moment. It consolidates *consumption*, never *authority*: no route merged, no
+aggregate DTO, no dashboard endpoint, each response stored verbatim under its own URL.
+The body is keyed by workspace id, so leaving and returning **refetches** — an operational
+read has no staleness window.
+
+Object-inspection reads (the execution timeline panel) deliberately stay independent: a
+workspace resource is a stable endpoint shared by many widgets; an inspection read is one
+object's identity, fetched on demand and discarded on close.
+
 ## Known limitations
 
 - **`quota-low` alert rule is dormant.** The vocabulary exists (`ALERT_RULES`)
@@ -191,6 +247,29 @@ admin surface rather than the platform Space host.
   reserved kind carries its precise unblock reason.
 - **Sub-daily jobs depend on the paid Vercel cron.** The multi-slot schedule is
   gated by the plan tier, not by code.
+
+### Gaps disclosed by OPS-2C (real, not implied away)
+
+- **Dispatcher invocations are not recorded.** `dispatchDueJobs` logs and returns; a slot
+  with no due jobs writes nothing. A "tick" is therefore **unobservable**, and the
+  scheduler surface says so rather than reporting job executions as ticks. A silent
+  dispatcher surfaces as `overdue`, not on the scheduler card. Making ticks observable
+  would require a new operational fact — out of scope for an observation slice.
+- **`resume-stale-imports` is scheduled outside the registry** (its own `*/5` Vercel
+  cron, ~288 runs/day). It writes `JobRun` rows but is absent from `SCHEDULED_JOBS`, so
+  `checkScheduledJobHealth` never sees it: **no health report, no alert coverage.**
+  Disclosed as an external cron, never folded in with registry jobs and never given a
+  fabricated health state. Registering it is a deliberate open decision.
+- **The four legacy per-job routes** (`/api/jobs/{sync-banks,fetch-fx-rates,
+  fetch-security-prices,process-deletions}`) execute job bodies with only `CRON_SECRET`,
+  bypassing the operations registry's confirm/audit/in-flight guarantees. Notably
+  `process-deletions` is in `EXCLUDED_TARGETS` as *"destructive, automatic-only"* yet its
+  route remains directly callable.
+- **The refresh ledger is still empty in development**, so every refresh surface renders
+  its unobserved state. Projection folding is unit-tested against fakes but has not run
+  over real non-empty ledger rows.
+- **No per-connection scoping in the UI.** The routes accept `plaidItemId`; no widget
+  passes one yet.
 
 ## Extension points
 

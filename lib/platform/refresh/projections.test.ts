@@ -70,6 +70,7 @@ function execution(over: Partial<ExecutionFact> = {}): ExecutionFact {
     overallStatus: "SUCCEEDED",
     parentJobRunId: null,
     errorSummary: null,
+    deploymentSha: null,   // OPS-2C-4 — required on ExecutionFact; tests override via `over`
     ...over,
   };
 }

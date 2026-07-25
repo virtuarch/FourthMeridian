@@ -166,6 +166,7 @@ function realReaders(now: Date): RefreshProjectionReaders {
           overallStatus: true,
           parentJobRunId: true,
           errorSummary: true,
+          deploymentSha: true,
         },
         orderBy: [{ startedAt: "desc" }, { id: "desc" }],
         take: MAX_FACT_ROWS,
@@ -249,6 +250,7 @@ function realReaders(now: Date): RefreshProjectionReaders {
           overallStatus: true,
           parentJobRunId: true,
           errorSummary: true,
+          deploymentSha: true,
         },
       });
     },

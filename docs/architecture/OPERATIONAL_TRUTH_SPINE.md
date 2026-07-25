@@ -621,7 +621,7 @@ gap: four shipped authorities that nothing reads.
 | **OPS-2A** ✅ | **This document.** Operational Truth Spine. | Names the model before anything consumes it |
 | **OPS-2B** ✅ | **Refresh projection layer + execution query seam** — `lib/platform/refresh/`. Five projections (Refresh Summary incl. endpoint roll-up · Provider Operation Summary · Coverage Summary · Failure Summary · Execution Timeline) + the row seam, with a repository-wide boundary ratchet. Closes **DF-2F**. *Deferred within the slice, with reasons:* Refresh Health and Account Staleness (both need a per-endpoint cadence authority that does not exist — `lib/connections/health.ts` already owns the only staleness threshold); **DF-2B.1** cron correlation (a writer change, not a read-model one) | Highest value, zero new facts, unblocks everything downstream |
 | **OPS-2B′** ✅ | **Deployment stamp** — `lib/monitoring/deployment.ts` `currentDeploymentSha()` is the ONE resolver (Sentry's `release` now reads it too, so an incident and the fact that produced it share a key). Nullable `deploymentSha` on `JobRun` + `RefreshExecution`, stamped once at the start write; the completion data types omit the field, so immutability is **compiler-enforced**. A *stamp*, not a pipeline — no `Deployment` table, no FK, no provider. | **Time-sensitive: unstamped history is permanently unstamped.** Marginal cost is one column and two writes; deferring it permanently holes the correlation record |
-| **OPS-2C** | **Refresh workspace** — one new Platform workspace consuming 2B + a per-connection drill-down; **plus** one S7 history *source descriptor* and one provider-latency metric folded into S10 Cost. | First consumer; proves projections in a real surface. Registry additions, not new engines |
+| **OPS-2C** ✅ | **Operations Workspace** (2C-1…2C-8) — refresh read routes · the `platform-refresh` workspace · execution inspection panel · deployment evidence · Provider Operations under Providers · workspace-owned shared consumption · scheduler observation · docs. The DF-2 read model now has rendered consumers. | First consumer; proves the projections in a real surface |
 | **OPS-2D** | **Connection transition fact extraction** — lift CH-2 transitions out of `AuditLog` into an immutable, `lib/connections/`-owned fact; repoint its four existing consumers. | **Moved earlier — earned dependency.** Every "since when" projection (staleness, timeline, customer impact) is otherwise forced to string-match `action` and parse JSON metadata *inside the projection layer* — the exact defect `sync-issue-semantics.ts` exists to kill, and `groupBy` cannot group a JSON path |
 | **OPS-2E** | **Customer-impact projection** + Customer Success workspace decomposition. | Needs 2B (coverage/staleness) **and** 2D (truthful "since"). Operator-internal, so it validates the projections before any customer exposure |
 | **OPS-2F** | **Operational metric provider contract** + **one** local-runtime adapter (pool + function duration), registered as an S7 source. | Closes the PS-0 blind spot with the cheapest possible provider. ADR-006: thin adapter, generalize at provider #2 |
@@ -644,6 +644,99 @@ AuditLog work moved *later*, because after 2D nothing depends on it.
 order, and never a consumer without an authority. The reason DF-2A…2E is a *success*
 with a *gap* is that it correctly refused to build UI before facts — OPS-2B is the
 symmetric obligation: do not build more facts before the existing ones are read.
+
+---
+
+## M′. Doctrine capture — what OPS-2C proved
+
+Seven implementation slices (2C-1…2C-7) surfaced a number of principles. Most were
+implementation detail. A few recurred until they were clearly load-bearing. The rule
+applied here is the repository's own (ADR-006): **a principle is promoted when it has
+been useful in at least three independent slices** — not when it merely sounds true.
+
+### Promoted to doctrine
+
+**1. The consumption boundary — two seams, no third path.**
+*Every slice, 2C-1 through 2C-7.* An operational consumer reads either a **projection**
+(aggregates, summaries, verdicts) or the **query seam** (bounded rows for forensics).
+Nothing else. A widget importing a projection module would "work", bypass the route's
+authorization gate, and create a second consumption path for the same value. This is
+enforced repository-wide by `read-boundary.test.ts`, and per-consumer by the widget
+guards — never by review.
+
+**2. An attribute is never a subject.**
+*2C-4 (deployment), 2C-5 (provider operations), 2C-7 (expected slots).*
+
+```
+Execution → deploymentSha        ✅ an observed attribute of the object
+Deployment → execution summary   ❌ the inversion
+```
+
+Operational tooling drifts into that inversion quietly: a divider becomes a heading, a
+heading acquires a count, and within two slices the attribute owns the objects that
+describe it. The defence is **structural, not editorial** — `isDeploymentBoundary`
+returns a per-index boolean, so no bucket, key, or group exists for a caller to render
+as a heading. Where two surfaces describe the same noun (Provider Operations vs Provider
+Health), each names its own question and neither recomputes the other.
+
+**3. Absence is a state of its own.**
+*2C-2, 2C-4, 2C-5, 2C-7 — the most frequently useful principle of the slice.* Five
+conditions must never collapse into one another:
+
+```
+loading · error · UNOBSERVED · a real counted ZERO · UNAVAILABLE (null)
+```
+
+`tier: "unknown"` means *there was nothing to look at* — it is not health, and must never
+render as green, "0%", or "all clear". A counted zero over real observations IS a fact and
+must render. The discriminator is always the **tier, never the number**. Its sharpest
+form, and the one to preserve permanently:
+
+```
+never observed   →   expected   →   overdue
+```
+
+Three distinct states. `never-ran` is an operator-decides state and is never inflated into
+`overdue`; an expected slot is configuration and is never evidence that anything ran.
+
+**4. Workspace-scoped vs object-scoped resources.**
+*2C-3, 2C-6.* Two genuinely different lifecycles, and conflating them produces stale data
+presented as current:
+
+| | Workspace resource | Object inspection |
+|---|---|---|
+| Identity | a stable endpoint | one object's id |
+| URL | static literal | identity-keyed |
+| Lifetime | the workspace session | until the panel closes |
+| Sharing | shared by many widgets | never shared |
+| Safety | static-url invariant | remount via React `key` |
+
+A changing URL on a shared hook renders the *previous* resource's data with
+`loading: false`. The two mechanisms exist because that failure is silent.
+
+### Emerged, kept as a recurring pattern (not yet doctrine)
+
+- **Workspace session ownership.** The workspace owns *when* a resource is fetched and
+  how long it is the session's answer; the widget still owns *what it needs*. Correct and
+  structurally in place, but only one duplicate pair has exercised it. Promote when a
+  second workspace needs it.
+- **A guard must assert its intent, not a lexical proxy for it.** Four guards in this
+  initiative were broader than the doctrine they stood for and blocked legitimate work
+  (OPS-2B′'s "no deployment identity in read models", two dated fences in 2C-2, one in
+  2C-5). Each was narrowed to what it actually protects. The companion habit — **a fence
+  written for a future slice names that slice** — made every expiry obvious rather than
+  archaeological.
+
+### Confirmed pre-existing doctrine, not created here
+
+Panel = inspect / Modal = decide (`WORKSPACE_CONTRACT_DOCTRINE`); projections consume
+authorities and never recompute them (§D.4); trust vocabulary is `CompletenessTier`
+(§D.3); platform widgets self-fetch by the OPS-5 S6 decision.
+
+### Implementation detail — deliberately not promoted
+
+The `useKeyedFetch` local reader; the 7-character sha; section ordering within a
+workspace; the specific `attemptSemantics` copy; per-widget icon choices.
 
 ---
 

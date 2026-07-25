@@ -35,7 +35,7 @@ import { useRouter } from "next/navigation";
 import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
 import type { SpaceMountContext } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, ArrowRight } from "lucide-react";
+import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, ArrowRight } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
 import { getPlatformAreaWorkspaces, getPlatformWorkspace } from "@/lib/platform/workspaces";
@@ -62,6 +62,12 @@ import { OpsConvergenceWidget } from "./widgets/OpsConvergenceWidget";
 import { OpsTimelineWidget } from "./widgets/OpsTimelineWidget";
 import { OpsAiTrendWidget } from "./widgets/OpsAiTrendWidget";
 import { OpsCostWidget } from "./widgets/OpsCostWidget";
+import { OpsRefreshSummaryWidget } from "./widgets/OpsRefreshSummaryWidget";
+import { OpsRefreshExecutionsWidget } from "./widgets/OpsRefreshExecutionsWidget";
+import { OpsRefreshCoverageWidget } from "./widgets/OpsRefreshCoverageWidget";
+import { OpsProviderOperationsWidget } from "./widgets/OpsProviderOperationsWidget";
+import { OpsSchedulerWidget } from "./widgets/OpsSchedulerWidget";
+import { WorkspaceSessionProvider } from "./workspace-session";
 import { GrowthSignupsWidget } from "./widgets/GrowthSignupsWidget";
 import { GrowthBetaRequestsWidget } from "./widgets/GrowthBetaRequestsWidget";
 import { OpsUsersWidget } from "./widgets/OpsUsersWidget";
@@ -101,6 +107,12 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   ops_timeline:           OpsTimelineWidget,
   ops_ai_trend:           OpsAiTrendWidget,
   ops_cost:               OpsCostWidget,
+  // OPS-2C-2 — Refresh workspace (first consumers of the DF-2 read model).
+  ops_refresh_summary:    OpsRefreshSummaryWidget,
+  ops_refresh_executions: OpsRefreshExecutionsWidget,
+  ops_refresh_coverage:   OpsRefreshCoverageWidget,
+  ops_provider_operations: OpsProviderOperationsWidget,
+  ops_scheduler:          OpsSchedulerWidget,
   // Growth & Revenue
   growth_signups:       GrowthSignupsWidget,
   growth_beta_requests: GrowthBetaRequestsWidget,
@@ -113,7 +125,7 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
 
 /** Lucide icon-name → component, for the Platform workspace identities. */
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
-  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge,
+  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw,
 };
 
 interface Props {
@@ -187,12 +199,20 @@ function PlatformWorkspaceBody({
       {rows.length === 0 ? (
         <p className="text-sm text-[var(--text-secondary)]">No sections enabled for this workspace.</p>
       ) : (
-        <div className="flex flex-col gap-8 md:gap-10">
-          {rows.map((row) => {
-            const Widget = PLATFORM_WIDGET_REGISTRY[row.key];
-            return <Widget key={row.id} section={row} />;
-          })}
-        </div>
+        /* OPS-2C-6 — the workspace owns the operational session. Widgets reading
+           the same route in this workspace share ONE request and therefore one
+           operational moment. Consumption only: no route is merged and no truth
+           is computed here. The session is discarded when the workspace changes
+           (the provider is keyed), so returning refetches rather than serving a
+           previous view's answer as current. */
+        <WorkspaceSessionProvider>
+          <div className="flex flex-col gap-8 md:gap-10">
+            {rows.map((row) => {
+              const Widget = PLATFORM_WIDGET_REGISTRY[row.key];
+              return <Widget key={row.id} section={row} />;
+            })}
+          </div>
+        </WorkspaceSessionProvider>
       )}
 
       {doorways && doorways.length > 0 && (
@@ -273,6 +293,11 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
             <PlatformAreaHero area={area} accessLevel={accessLevel} />
           )}
           <PlatformWorkspaceBody
+            /* OPS-2C-6 — keyed by workspace so the operational session is
+               DISCARDED on switch. Without this the provider would be reused and
+               a return visit would serve the previous session's answers as
+               current; refetch-on-return is the verified, honest behaviour. */
+            key={active.workspaceId}
             sectionKeys={active.sections}
             doorways={active.doorways}
             dbByKey={dbByKey}

@@ -70,6 +70,7 @@ function execution(over: Partial<ExecutionFact> = {}): ExecutionFact {
     overallStatus: "PARTIAL",
     parentJobRunId: null,
     errorSummary: "ITEM_LOGIN_REQUIRED at /accounts/get for item ins_3",
+    deploymentSha: null,   // OPS-2C-4 — required on ExecutionFact; tests override via `over`
     ...over,
   };
 }
