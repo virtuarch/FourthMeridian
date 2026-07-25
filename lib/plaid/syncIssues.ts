@@ -12,6 +12,7 @@
 import { db } from "@/lib/db";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import type { SyncIssueKind, Prisma } from "@prisma/client";
+import { recordIncidentObservation, resolveByAutomaticRecovery, type IncidentClient } from "@/lib/platform/incidents/lifecycle";
 
 export interface SyncIssueInput {
   kind:                SyncIssueKind;
@@ -69,46 +70,49 @@ export interface SyncIssueInput {
 export async function resolveCursorBlockingIssues(
   plaidItemId: string,
   client: Pick<typeof db, "syncIssue"> = db,
+  /**
+   * OPS-2D-5A-1 — the run that proved recovery. Threaded by callers that have
+   * one; null stays null and is stored honestly rather than fabricated.
+   */
+  runId?: string | null,
 ): Promise<number> {
-  try {
-    const { count } = await client.syncIssue.updateMany({
-      where: {
-        plaidItemId,
-        resolved: false,
-        // Json-path equality — the same idiom lib/security/anomaly-alerts.ts
-        // already uses against AuditLog.metadata.
-        detail: { path: ["cursorBlocking"], equals: true },
-      },
-      data: { resolved: true },
-    });
-    if (count > 0) {
-      console.log(
-        `[syncIssue] item ${plaidItemId} — resolved ${count} cursor-blocking issue(s): the held page replayed and every row persisted.`,
-      );
-    }
-    return count;
-  } catch (e) {
-    console.error(`[syncIssue] failed to resolve cursor-blocking issues for item ${plaidItemId} (non-fatal):`, redactedErrorForLog(e));
-    return 0;
-  }
+  // FACADE over the canonical resolution authority. This no longer mutates
+  // lifecycle fields itself — it names the semantic scope that recovered and
+  // lets the authority decide which active conditions that success actually
+  // proves. The matching rule (cursor-blocking transaction conditions only)
+  // lives there, derived from sync-issue-semantics, not duplicated here.
+  const { resolved } = await resolveByAutomaticRecovery(
+    { plaidItemId, domain: "transactions", runId: runId ?? null },
+    client as IncidentClient,
+  );
+  return resolved;
 }
 
 export async function recordSyncIssue(
   input: SyncIssueInput,
   client: Pick<typeof db, "syncIssue"> = db,
 ): Promise<void> {
-  try {
-    await client.syncIssue.create({
-      data: {
-        kind:               input.kind,
-        plaidItemId:        input.plaidItemId ?? null,
-        financialAccountId: input.financialAccountId ?? null,
-        plaidTransactionId: input.plaidTransactionId ?? null,
-        plaidAccountId:     input.plaidAccountId ?? null,
-        ...(input.detail !== undefined ? { detail: input.detail } : {}),
-      },
-    });
-  } catch (e) {
-    console.error(`[syncIssue] failed to record ${input.kind} (non-fatal):`, redactedErrorForLog(e));
-  }
+  // OPS-2D-5A-1 — FACADE. The name and signature stay (14 call sites depend on
+  // them), but the decision-making moved to lib/platform/incidents/lifecycle.ts.
+  // This function no longer creates rows: it forwards typed evidence, and the
+  // lifecycle authority decides identity, convergence and recurrence. Keeping
+  // one entry point avoids two competing detection paths during 5A-2's
+  // migration of the remaining unenveloped producers.
+  //
+  // `detail.runId` is forwarded as a CORRELATOR, not a relation — the authority
+  // looks it up and stores an FK only when a matching execution exists.
+  const detailObj = (input.detail ?? {}) as Record<string, unknown>;
+  const runId = typeof detailObj.runId === "string" ? detailObj.runId : null;
+  await recordIncidentObservation(
+    {
+      kind:               input.kind,
+      plaidItemId:        input.plaidItemId ?? null,
+      financialAccountId: input.financialAccountId ?? null,
+      plaidTransactionId: input.plaidTransactionId ?? null,
+      plaidAccountId:     input.plaidAccountId ?? null,
+      runId,
+      detail:             input.detail,
+    },
+    client as IncidentClient,
+  );
 }

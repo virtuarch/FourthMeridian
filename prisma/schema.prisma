@@ -2473,6 +2473,19 @@ model RateLimit {
 // Ambient Intelligence can reason over sync health. Forensic side-table — no
 // other model references it; best-effort writes never affect sync results.
 // ─────────────────────────────────────────────────────────────────────────────
+/// OPS-2D-5A-1 — SyncIssue is now the INCIDENT EPISODE, not one failure event.
+///
+/// Before this slice every failure inserted an unrelated row, so a bank that
+/// failed on 40 transactions produced 40 "issues" and recurrence after recovery
+/// was indistinguishable from a first occurrence. The row is now the episode and
+/// SyncIssueOccurrence holds each manifestation.
+///
+/// WHAT IS PERSISTED HERE AND WHAT IS NOT: domain, severity, nature and the
+/// active/recovered/evidence/superseded/orphaned state stay DERIVED by
+/// lib/platform/sync-issue-semantics.ts and are deliberately not columns — a
+/// stored severity drifts from the rule that produced it. Only facts that cannot
+/// be reconstructed later (identity, timestamps, relations) are stored. Identity
+/// is a database constraint; severity is a current opinion.
 model SyncIssue {
   id                 String        @id @default(cuid())
   provider           String        @default("PLAID")
@@ -2482,12 +2495,71 @@ model SyncIssue {
   plaidTransactionId String?
   plaidAccountId     String?
   detail             Json? // { merchant, amount, date, balanceDelta, txnSum, threshold, ids, ... }
+  /// COMPATIBILITY PROJECTION, not the lifecycle authority. Kept in this slice
+  /// because lib/platform/sync-issue-semantics.ts and six consumers read it;
+  /// the lifecycle service writes it in lockstep with resolvedAt so the two can
+  /// never disagree. Removal is a later slice, once every read is migrated.
   resolved           Boolean       @default(false)
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
 
+  // ── Incident identity (OPS-2D-5A-1) ────────────────────────────────────────
+  /// Canonical semantic identity, built ONLY by lib/platform/incidents/identity.ts.
+  /// Null on legacy rows written before this slice — they are readable but were
+  /// never episodes, and no identity is invented for them.
+  incidentKey        String?
+  /// Bumped when the identity RULE changes, so a future taxonomy split can
+  /// re-key without silently merging episodes built under the old rule.
+  incidentKeyVersion Int?
+  /// Episode chain: the resolved episode this one recurred from. Null on a first
+  /// episode. Recurrence NEVER reopens a resolved row.
+  previousIncidentId String?
+
+  // ── Lifecycle (OPS-2D-5A-1) ────────────────────────────────────────────────
+  firstOccurredAt    DateTime?
+  lastOccurredAt     DateTime?
+  resolvedAt         DateTime?
+  /// AUTOMATIC_RECOVERY is the only kind any current code path can produce.
+  resolutionKind     String?
+  /// RefreshExecution.id of the run that proved recovery. Soft reference (the
+  /// ledger is append-only and must survive item deletion), null when the
+  /// resolving path had no execution — never fabricated.
+  resolvingExecutionId String?
+
+  occurrences        SyncIssueOccurrence[]
+
   @@index([financialAccountId, resolved])
   @@index([plaidItemId, kind])
+  @@index([incidentKey])
+  @@index([resolvedAt])
+}
+
+/// OPS-2D-5A-1 — one observed manifestation of an incident episode.
+///
+/// This is where execution correlation becomes real. Before, the only link was
+/// `SyncIssue.detail.runId` — an untyped JSON value that is sometimes a genuine
+/// RefreshExecution.runId and sometimes a UUID minted locally by
+/// syncTransactionsForItem when no caller threaded one (exchangeToken still does
+/// this). It could not be joined, indexed, or trusted.
+model SyncIssueOccurrence {
+  id             String   @id @default(cuid())
+  syncIssueId    String
+  syncIssue      SyncIssue @relation(fields: [syncIssueId], references: [id], onDelete: Cascade)
+  /// RefreshExecution.id, resolved by LOOKING UP the runId — stored only when a
+  /// matching execution actually exists. Null is honest and common: several
+  /// producers have no envelope at all. Soft reference for the same reason as
+  /// resolvingExecutionId.
+  refreshExecutionId String?
+  /// The run correlator as the producer knew it. Retained for diagnostics and
+  /// for legacy comparison; it is NOT the relationship authority.
+  runId          String?
+  observedAt     DateTime @default(now())
+  /// Per-occurrence technical evidence. The episode keeps the first detail; this
+  /// keeps every one, so a 40-failure page is 40 occurrences, not 40 incidents.
+  detail         Json?
+
+  @@index([syncIssueId, observedAt])
+  @@index([refreshExecutionId])
 }
 
 enum SyncIssueKind {

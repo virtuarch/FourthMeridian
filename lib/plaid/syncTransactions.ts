@@ -738,7 +738,12 @@ export async function syncTransactionsForItem(
   // is what licenses closing this item's cursor-blocking issues. Best-effort and
   // deliberately after the health flip: resolution is bookkeeping, never a
   // precondition for reporting the item healthy.
-  await resolveCursorBlockingIssues(plaidItemDbId, database);
+  // OPS-2D-5A-1 — thread the run that PROVED recovery, so the resolved episode
+  // records which execution remediated it. `runId` is the owning
+  // RefreshExecution.runId when a caller threaded one; when nobody did (see
+  // exchangeToken) it names no execution and the authority stores null rather
+  // than inventing a link.
+  await resolveCursorBlockingIssues(plaidItemDbId, database, runId);
 
   // OPS-3 S5 Wave 3 — the item provably works again: retire the open
   // SYNC_FAILED condition (releases the :open dedupe key + archives the stale

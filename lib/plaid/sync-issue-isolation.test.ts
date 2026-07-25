@@ -39,7 +39,19 @@ console.log("1. recordSyncIssue writes through the INJECTED client");
 
 async function behavioural(): Promise<void> {
   const written: Record<string, unknown>[] = [];
-  const fake = { syncIssue: { create: async ({ data }: { data: Record<string, unknown> }) => { written.push(data); return { id: "si1" }; } } };
+  // OPS-2D-5A-1 — recordSyncIssue is now a facade over the incident lifecycle,
+  // so the injected client sees the episode write AND the occurrence write. The
+  // ASSERTIONS are unchanged: what this file has always guarded is that the
+  // caller's client is honoured and no bare `db.` escapes it — the leak that put
+  // eight test rows in the developer database.
+  const fake = {
+    syncIssue: {
+      create: async ({ data }: { data: Record<string, unknown> }) => { written.push(data); return { id: "si1" }; },
+      findFirst: async () => null,
+      update: async () => ({ id: "si1" }),
+    },
+    syncIssueOccurrence: { create: async () => ({ id: "so1" }) },
+  };
 
   await recordSyncIssue(
     { kind: "UPSERT_ERROR", plaidTransactionId: "txn_1", detail: { stage: "unit-test" } },
@@ -49,7 +61,10 @@ async function behavioural(): Promise<void> {
   check("payload is intact", written[0]?.kind === "UPSERT_ERROR" && written[0]?.plaidTransactionId === "txn_1");
 
   // Still never throws — the contract that makes it safe inside a catch block.
-  const exploding = { syncIssue: { create: async () => { throw new Error("boom"); } } };
+  const exploding = {
+    syncIssue: { create: async () => { throw new Error("boom"); }, findFirst: async () => null },
+    syncIssueOccurrence: { create: async () => { throw new Error("boom"); } },
+  };
   let threw = false;
   try { await recordSyncIssue({ kind: "UPSERT_ERROR" }, exploding as never); } catch { threw = true; }
   check("a failing recorder still never throws (contract preserved)", !threw);
@@ -58,8 +73,16 @@ async function behavioural(): Promise<void> {
   const src = readFileSync("lib/plaid/syncIssues.ts", "utf8");
   check("default parameter is the real db (production unchanged)",
     /client:\s*Pick<typeof db,\s*"syncIssue">\s*=\s*db/.test(src));
-  check("the write goes through `client`, never a bare `db.`",
-    /await client\.syncIssue\.create/.test(src) && !/await db\.syncIssue\.create/.test(src));
+  // Stated as INTENT. OPS-2D-5A-1 made this function a facade: it no longer
+  // creates rows, it forwards typed evidence to the incident lifecycle. What has
+  // always mattered — and what caused eight test rows to land in a developer's
+  // database — is that the CALLER'S client is the one used, and that no bare
+  // `db.` escapes it. Pinning the old `client.syncIssue.create` literal made a
+  // correct refactor look like the very regression it guards against.
+  check("the caller's client is forwarded, and no bare `db.` write escapes",
+    /recordIncidentObservation\([\s\S]{0,400}client as IncidentClient/.test(src) &&
+    /resolveByAutomaticRecovery\([\s\S]{0,300}client as IncidentClient/.test(src) &&
+    !/await db\.syncIssue\./.test(src));
 }
 
 // ── 2. Drift guard — every call site with a client in scope must pass it ─────

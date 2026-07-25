@@ -77,23 +77,39 @@ function makeFakeDb(opts: {
     // PRE-V26-PLAID-CLOSE Phase 2 — recordSyncIssue now writes through the
     // injected client, so forensic evidence is OBSERVABLE here instead of
     // leaking to the developer's real database.
+    // OPS-2D-5A-1 — recordSyncIssue is now a facade over the incident lifecycle,
+    // so the injected client sees the episode write, a convergence lookup, and an
+    // occurrence write. The INTENT is unchanged: forensic evidence stays
+    // observable here instead of leaking to the developer's real database, and
+    // recovery stays item-scoped.
     syncIssue: {
-      create: async ({ data }: { data: { kind: string; plaidTransactionId: string | null; detail?: Record<string, unknown> } }) => {
-        syncIssues.push({ kind: data.kind, plaidTransactionId: data.plaidTransactionId ?? null, detail: data.detail, resolved: false });
+      create: async ({ data }: { data: { kind: string; plaidTransactionId: string | null; detail?: Record<string, unknown>; incidentKey?: string | null; resolved?: boolean } }) => {
+        syncIssues.push({ kind: data.kind, plaidTransactionId: data.plaidTransactionId ?? null, detail: data.detail, resolved: data.resolved ?? false });
         return { id: `si${syncIssues.length}` };
       },
-      // Phase 4 — scoped auto-recovery. Mirrors the real filter: same item,
-      // unresolved, and detail.cursorBlocking === true.
-      updateMany: async ({ where }: { where: { plaidItemId: string; resolved: boolean; detail: { path: string[]; equals: unknown } } }) => {
+      findFirst: async () => null,   // no active episode in these fixtures
+      update: async () => ({ id: "si1" }),
+      // 5A-1 — the item scoping now happens HERE: the authority selects the
+      // item's unresolved rows, classifies them, then resolves by id. This is
+      // the observable the "item-scoped recovery pass" assertion watches.
+      findMany: async ({ where }: { where?: { plaidItemId?: string } } = {}) => (
+        resolveCalls.push({ plaidItemId: where?.plaidItemId ?? "unscoped", count: 0 }),
+        syncIssues.map((i, n) => ({
+        id: `si${n + 1}`, kind: i.kind, provider: "PLAID", detail: i.detail,
+        plaidTransactionId: i.plaidTransactionId, resolved: i.resolved,
+      }))),
+      // Phase 4 / 5A-1 — scoped auto-recovery. The authority now selects by
+      // classification rather than a Json path, then resolves by id.
+      updateMany: async ({ where }: { where: { id?: { in: string[] } } }) => {
         let count = 0;
-        for (const i of syncIssues) {
-          const flag = i.detail?.[where.detail.path[0]];
-          if (!i.resolved && flag === where.detail.equals) { i.resolved = true; count++; }
+        const ids = where.id?.in ?? [];
+        for (const [n, i] of syncIssues.entries()) {
+          if (ids.includes(`si${n + 1}`) && !i.resolved) { i.resolved = true; count++; }
         }
-        resolveCalls.push({ plaidItemId: where.plaidItemId, count });
         return { count };
       },
     },
+    syncIssueOccurrence: { create: async () => ({ id: "so1" }) },
     plaidItem: {
       findUnique: async () => ({ ...item }),
       update: async ({ data }: { data: { cursor?: string | null } }) => {

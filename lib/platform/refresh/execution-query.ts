@@ -276,3 +276,22 @@ export async function getRefreshExecutionDetail(
     audience: args.audience,
   };
 }
+
+/**
+ * Resolve a run correlator to a RefreshExecution.id, or null. (OPS-2D-5A-1)
+ *
+ * Lives at the row seam because it is a ledger read, and the two-seam doctrine
+ * allows exactly two ways in. The incident lifecycle needs it to turn a
+ * `runId` — which is sometimes a real correlator and sometimes a UUID
+ * syncTransactionsForItem minted for itself — into a relation it can trust. It
+ * is a LOOKUP: null means the correlator named no execution, which is the honest
+ * and common answer, not a reason to fabricate a link.
+ */
+export async function getExecutionIdByRunId(runId: string): Promise<string | null> {
+  try {
+    const row = await db.refreshExecution.findUnique({ where: { runId }, select: { id: true } });
+    return row?.id ?? null;
+  } catch {
+    return null;
+  }
+}
