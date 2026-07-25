@@ -36,6 +36,7 @@ import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
 import { buildIncidentKey, INCIDENT_KEY_VERSION, type ConnectionScope } from "./identity";
 import { lifecycleViolation } from "./invariant";
+import { resolveOperationKey } from "./operation-key";
 // The ledger is reached through the canonical row seam — never directly. The
 // OPS-2B read-boundary ratchet enforces this, and caught an earlier version of
 // this module reading RefreshExecution itself.
@@ -140,7 +141,12 @@ export async function recordIncidentObservation(
     });
 
     const detailObj = (obs.detail ?? {}) as Record<string, unknown>;
-    const stage = typeof detailObj.stage === "string" ? detailObj.stage : null;
+    // OPS-2D-5B-0 — identity reads a REGISTERED operation key, not the raw
+    // stage a producer typed. The two are equal for every current producer, so
+    // no existing incidentKey moves; what changes is the contract — a stage may
+    // now be reworded through the alias table without orphaning live episodes.
+    const rawStage = typeof detailObj.stage === "string" ? detailObj.stage : null;
+    const stage = resolveOperationKey(rawStage);
 
     // Scope precedence: the provider connection when there is one, else the
     // account, else the wallet, else explicitly unscoped. Chosen HERE so no
