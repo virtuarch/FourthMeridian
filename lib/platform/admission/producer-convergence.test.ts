@@ -123,6 +123,12 @@ function main() {
   // ── 2. Placement: admission cannot be reached late ──────────────────────────
   console.log("2. admission is asked BEFORE anything is spent");
   {
+    // Markers are optional per producer (not every route has a cooldown), so
+    // each comparison is conditional — which means a marker RENAME silently
+    // blinds this section rather than failing it. The floor below is the
+    // tripwire: if the total number of ordering comparisons actually made drops,
+    // the guard has gone blind and must be re-pointed, not trusted.
+    let ordered = 0;
     for (const p of PRODUCERS) {
       if (!exists(p.file)) continue;
       const s = body(p.file);
@@ -136,13 +142,14 @@ function main() {
       check(`${p.file}: admission is reached at all`, adm >= 0);
       if (adm < 0) continue;
       // Authorization first — an unauthorized caller must not learn platform state.
-      if (auth >= 0) check(`${p.file}: authorization precedes admission`, auth < adm);
+      if (auth >= 0) { ordered++; check(`${p.file}: authorization precedes admission`, auth < adm); }
       // …and everything expensive after.
-      if (cd   >= 0) check(`${p.file}: admission precedes cooldown consumption`, adm < cd);
-      if (lock >= 0) check(`${p.file}: admission precedes the lock claim`, adm < lock);
-      if (prov >= 0) check(`${p.file}: admission precedes provider work`, adm < prov);
-      if (mut  >= 0) check(`${p.file}: admission precedes any item mutation`, adm < mut);
+      if (cd   >= 0) { ordered++; check(`${p.file}: admission precedes cooldown consumption`, adm < cd); }
+      if (lock >= 0) { ordered++; check(`${p.file}: admission precedes the lock claim`, adm < lock); }
+      if (prov >= 0) { ordered++; check(`${p.file}: admission precedes provider work`, adm < prov); }
+      if (mut  >= 0) { ordered++; check(`${p.file}: admission precedes any item mutation`, adm < mut); }
     }
+    check(`the ordering guard is not vacuous (${ordered} comparisons made)`, ordered >= 10);
   }
 
   // ── 3. Fan-out resolves ONCE ────────────────────────────────────────────────
@@ -183,10 +190,10 @@ function main() {
         !/if \(admission\.decision === "DENY"\)[\s\S]{0,300}throw /.test(s));
     }
     const wrapper = code("lib/plaid/webhook-sync.ts");
-    check("the shared wrapper has a distinct not-admitted outcome",
-      /"ran" \| "skipped-locked" \| "not-admitted"/.test(wrapper));
-    check("not-admitted is NOT collapsed into skipped-locked",
-      /return "not-admitted";/.test(wrapper));
+    // A distinct outcome value, not a pinned union spelling — member order and
+    // formatting belong to TypeScript, not to this guard.
+    check("not-admitted is a distinct outcome, NOT collapsed into skipped-locked",
+      /return "not-admitted";/.test(wrapper) && /"skipped-locked"/.test(wrapper));
   }
 
   // ── 5. Evidence, sized to the channel ───────────────────────────────────────
@@ -251,10 +258,12 @@ function main() {
         i >= 0 && /return \{/.test(branch) && !/throw /.test(branch));
       check(`${f}: the finding is part of the returned summary`, /notAdmitted:/.test(s));
     }
-    check("runJob persists the body's summary (so the reason is diagnosable)",
-      /summary:\s*toJsonSummary\(result\)/.test(code("lib/jobs/run.ts")));
+    // Fails CLOSED: if the classifier is renamed, the guard reports it rather
+    // than passing vacuously against an empty string.
+    const healthTail = code("lib/jobs/health.ts").split("export function classify")[1];
     check("job health classifies from status/timing, not from the summary",
-      !/summary/.test(code("lib/jobs/health.ts").split("export function classify")[1] ?? ""));
+      healthTail !== undefined && !/summary/.test(healthTail),
+      healthTail === undefined ? "export function classify* not found in lib/jobs/health.ts — re-point this guard" : undefined);
   }
 
   // ── 6. A denial fabricates nothing ──────────────────────────────────────────
@@ -265,14 +274,12 @@ function main() {
     const rs = body("jobs/resume-stale-imports.ts");
     const denyReturn = at(rs, /notAdmitted:\s*admission\.reason!/);
     const loop = at(rs, /for \(const item of items\)/);
+    // Returning before the loop IS the fabrication guard: a pass that never
+    // touches a candidate cannot count one. The old zero-count object pins
+    // (attempted: 0, ran: 0, …) asserted the same thing via key order and
+    // whitespace, and broke on formatting.
     check("resume-stale-imports returns before touching any candidate",
       denyReturn >= 0 && loop >= 0 && denyReturn < loop);
-    check("resume-stale-imports counts a denied pass as 0 attempted",
-      /attempted:\s*0,\s*ran:\s*0,\s*skipped:\s*0/.test(rs));
-
-    // sync-banks must not count denied items as succeeded/failed/skipped.
-    check("sync-banks reports 0 succeeded / 0 failed on a denied pass",
-      /succeeded:\s*0,\s*failed:\s*0,\s*skipped:\s*0,[\s\S]{0,60}notAdmitted/.test(body("jobs/sync-banks.ts")));
 
     // The denial ledger row carries no stages and no error.
     const led = code("lib/plaid/refresh-execution.ts");

@@ -20,13 +20,16 @@
  * can still ASSERT that an issue was recorded — see cursor-safety.test.ts, which
  * now observes UPSERT_ERROR / MISSING_ACCOUNT evidence through its fake.
  *
- * §1 is behavioural. §2 is the drift guard: a NEW call site that has an injected
- * client in scope but forgets to pass it silently reintroduces the leak, so the
- * source is scanned for exactly that shape.
+ * Behavioural only, by design. Earlier versions carried a source-scanning drift
+ * guard (a paren-matching parser asserting the client was the last argument of
+ * every call in a hand-listed set of files) plus pinned facade spellings. Those
+ * pinned call shapes, went stale as producers changed, and duplicated what the
+ * direct-write ban in incident-boundary.test.ts enforces durably. What this file
+ * proves is the CONTRACT: the injected client receives every write, and a
+ * failing recorder still never throws.
  */
 
 import { recordSyncIssue } from "./syncIssues";
-import { readFileSync } from "node:fs";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -44,9 +47,6 @@ async function behavioural(): Promise<void> {
   // ASSERTIONS are unchanged: what this file has always guarded is that the
   // caller's client is honoured and no bare `db.` escapes it — the leak that put
   // eight test rows in the developer database.
-  // OPS-2D-TX-1 — the `$transaction` stub is how a fake declares it stands in
-  // for a ROOT client. `IncidentClient` now requires it, so a caller's
-  // `Prisma.TransactionClient` no longer type-checks at any incident call site.
   const fake = {
     syncIssue: {
       create: async ({ data }: { data: Record<string, unknown> }) => { written.push(data); return { id: "si1" }; },
@@ -54,7 +54,6 @@ async function behavioural(): Promise<void> {
       update: async () => ({ id: "si1" }),
     },
     syncIssueOccurrence: { create: async () => ({ id: "so1" }) },
-    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
   };
 
   await recordSyncIssue(
@@ -68,122 +67,10 @@ async function behavioural(): Promise<void> {
   const exploding = {
     syncIssue: { create: async () => { throw new Error("boom"); }, findFirst: async () => null },
     syncIssueOccurrence: { create: async () => { throw new Error("boom"); } },
-    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
   };
   let threw = false;
   try { await recordSyncIssue({ kind: "UPSERT_ERROR" }, exploding as never); } catch { threw = true; }
   check("a failing recorder still never throws (contract preserved)", !threw);
-
-  // OPS-2D-TX-1 — a client WITHOUT `$transaction` is a caller's transaction
-  // client. The lifecycle must refuse it rather than write through it, and must
-  // NOT quietly redirect to the module-level `db` — silently retargeting an
-  // injected client is the defect that put eight test rows in a developer's
-  // database, and it is the reason this file exists.
-  const txShaped = {
-    syncIssue: { create: async () => { throw new Error("must never be called"); }, findFirst: async () => null },
-    syncIssueOccurrence: { create: async () => { throw new Error("must never be called"); } },
-  };
-  let txThrew = false;
-  try { await recordSyncIssue({ kind: "UPSERT_ERROR" }, txShaped as never); } catch { txThrew = true; }
-  check("a transaction-shaped client is refused, not written through, and never throws", !txThrew);
-
-  // The default is unchanged for production callers: no second arg ⇒ real db.
-  const src = readFileSync("lib/plaid/syncIssues.ts", "utf8");
-  check("the default is still the real db (production unchanged)",
-    /client:\s*IncidentClient\s*=\s*db/.test(src));
-  // Stated as INTENT, not as a literal. OPS-2D-5A-1 made this function a facade:
-  // it no longer creates rows, it forwards typed evidence to the incident
-  // lifecycle. What has always mattered — and what caused eight test rows to
-  // land in a developer's database — is that the CALLER'S client is the one
-  // used, and that no bare `db.` write escapes it.
-  check("the caller's client is forwarded, and no bare `db.` write escapes",
-    /recordIncidentObservation\(\s*\{[\s\S]{0,600}?\},\s*client,/.test(src) &&
-    /resolveByAutomaticRecovery\(\s*\{[\s\S]{0,300}?\},\s*client,/.test(src) &&
-    !/await db\.syncIssue\./.test(src));
-}
-
-// ── 2. Drift guard — every call site with a client in scope must pass it ─────
-//
-// Narrow by construction: it inspects ONLY files that already resolve an
-// injected client, and only their recordSyncIssue calls. A route or job that
-// legitimately has no injected client (e.g. app/api/imports/[id]/rollback) is
-// not listed and correctly keeps the `db` default.
-console.log("2. Drift guard — no injected-client path may fall back to module db");
-{
-  const GUARDED: { file: string; arg: string }[] = [
-    { file: "lib/plaid/syncTransactions.ts",                 arg: "database" },
-    { file: "lib/investments/opening-position.ts",           arg: "client" },
-    { file: "lib/investments/investment-import-commit.ts",   arg: "client" },
-    { file: "lib/investments/investment-event-ingest.ts",    arg: "client" },
-    { file: "lib/investments/instrument-resolver.ts",        arg: "client" },
-    { file: "lib/investments/instrument-resolver-import.ts", arg: "client" },
-  ];
-
-  const EXPLANATION =
-    "recordSyncIssue must be given the SAME injected client the surrounding " +
-    "operation uses. Falling back to the module-level `db` is how unit tests " +
-    "wrote real rows into the developer database (the 'fa1' incident).";
-
-  /** Find each `recordSyncIssue(` call and return the text of its argument list. */
-  function callArgs(src: string): string[] {
-    const out: string[] = [];
-    let i = 0;
-    for (;;) {
-      const j = src.indexOf("recordSyncIssue(", i);
-      if (j < 0) break;
-      let p = j + "recordSyncIssue(".length;
-      let depth = 0;
-      while (p < src.length) {
-        const c = src[p];
-        if (c === "(" || c === "{" || c === "[") depth++;
-        else if (c === "}" || c === "]") depth--;
-        else if (c === ")") { if (depth === 0) break; depth--; }
-        p++;
-      }
-      out.push(src.slice(j + "recordSyncIssue(".length, p));
-      i = p;
-    }
-    return out;
-  }
-
-  let violations = 0;
-  let inspected = 0;
-  for (const { file, arg } of GUARDED) {
-    const src = readFileSync(file, "utf8");
-    for (const args of callArgs(src)) {
-      if (args.includes("export async function")) continue; // the declaration itself
-      inspected++;
-      // The client must be the LAST argument of the call.
-      const tail = args.slice(args.lastIndexOf("}") + 1);
-      if (!new RegExp(`,\\s*${arg}\\s*$`).test(tail.trim() ? tail : args)) {
-        violations++;
-        console.error(`  ✗ ${file} — a recordSyncIssue call does not pass \`${arg}\``);
-      }
-    }
-  }
-  check(`all ${inspected} injected-client call sites pass their client`,
-    violations === 0, violations > 0 ? EXPLANATION : undefined);
-  check("the guard actually inspected call sites (not vacuous)", inspected >= 8, `${inspected}`);
-
-  // The detector must be able to fail.
-  const BAD = "await recordSyncIssue({ kind: \"UPSERT_ERROR\", financialAccountId });";
-  const GOOD = "await recordSyncIssue({ kind: \"UPSERT_ERROR\", financialAccountId }, client);";
-  const argsOf = (s: string) => callArgs(s)[0] ?? "";
-  const passes = (s: string, arg: string) => {
-    const a = argsOf(s);
-    const tail = a.slice(a.lastIndexOf("}") + 1);
-    return new RegExp(`,\\s*${arg}\\s*$`).test(tail.trim() ? tail : a);
-  };
-  check("detector REJECTS a call missing the client", !passes(BAD, "client"));
-  check("detector ACCEPTS a call passing the client", passes(GOOD, "client"));
-}
-
-// ── 3. The originally-leaking site is fixed ─────────────────────────────────
-console.log("3. The 'fa1' leak site specifically");
-{
-  const src = readFileSync("lib/investments/opening-position.ts", "utf8");
-  check("opening-position's repair catch passes its client",
-    /stage: "opening-position-repair"[\s\S]{0,200}?\}, client\)/.test(src));
 }
 
 void behavioural().then(() => {

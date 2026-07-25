@@ -80,8 +80,12 @@ function main() {
   console.log("1. the two stages are named, and the module only NAMES them");
   {
     const src = code(EXCHANGE);
-    check("declares CONNECTION_ESTABLISHMENT", /admitOperationalWork\(\{ work: "CONNECTION_ESTABLISHMENT" \}\)/.test(src));
-    check("declares REFRESH_EXECUTION for the ingestion half", /admitOperationalWork\(\{ work: "REFRESH_EXECUTION" \}\)/.test(src));
+    // Whitespace-tolerant: the doctrine is that both work classes are declared,
+    // not how the call is formatted.
+    check("declares CONNECTION_ESTABLISHMENT",
+      /admitOperationalWork\(\s*\{\s*work:\s*"CONNECTION_ESTABLISHMENT"\s*\}\s*\)/.test(src));
+    check("declares REFRESH_EXECUTION for the ingestion half",
+      /admitOperationalWork\(\s*\{\s*work:\s*"REFRESH_EXECUTION"\s*\}\s*\)/.test(src));
 
     // It must not decide anything itself — no local fact reads, no local
     // verdicts, no caller-specific policy branch.
@@ -101,8 +105,8 @@ function main() {
   console.log("2. a known denial never consumes the public token");
   {
     const s = body(EXCHANGE);
-    const connectAdm = at(s, /admitOperationalWork\(\{ work: "CONNECTION_ESTABLISHMENT" \}\)/);
-    const ingestAdm  = at(s, /admitOperationalWork\(\{ work: "REFRESH_EXECUTION" \}\)/);
+    const connectAdm = at(s, /admitOperationalWork\(\s*\{\s*work:\s*"CONNECTION_ESTABLISHMENT"\s*\}\s*\)/);
+    const ingestAdm  = at(s, /admitOperationalWork\(\s*\{\s*work:\s*"REFRESH_EXECUTION"\s*\}\s*\)/);
     const exchange   = at(s, /itemPublicTokenExchange\(/);
     const itemWrite  = at(s, /db\.plaidItem\.upsert\(/);
 
@@ -110,9 +114,12 @@ function main() {
     check("ingestion admission is ALSO resolved before the token exchange", ingestAdm >= 0 && ingestAdm < exchange);
     check("both precede any item persistence", Math.max(connectAdm, ingestAdm) < itemWrite);
 
-    // The inline-ingestion caller aborts up front rather than half-completing.
-    check("an inline-ingestion caller aborts before the exchange when ingestion is denied",
-      /decision === "DENY" && !deferHistorySync[\s\S]{0,200}throw new AdmissionDeniedError/.test(s));
+    // The inline-ingestion caller aborts up front rather than half-completing —
+    // asserted POSITIONALLY (the typed throw sits before the exchange), not by
+    // pinning the guard expression's operand order.
+    const abort = at(s, /throw new AdmissionDeniedError/);
+    check("an inline-ingestion denial aborts before the token is spent",
+      abort >= 0 && abort < exchange);
     check("the abort throws a typed error, not a Plaid-shaped one",
       /class AdmissionDeniedError extends Error/.test(code(EXCHANGE)));
   }
@@ -126,13 +133,10 @@ function main() {
         new RegExp(`${c.call}\\(`).test(s) &&
         !new RegExp(`ingestionAdmitted[\\s\\S]{0,80}${c.call}\\(`).test(s));
     }
-    // POSITIONAL, not proximity-based. An earlier version of this check asked
-    // whether the token "ingestionAdmitted" appeared shortly before the call —
-    // which its own `const` declaration satisfied, so a call inserted ABOVE the
-    // gate still passed. Each ingestion call is now pinned to the specific
-    // construct that guards it, and EVERY occurrence must sit after it.
-    const ternary = at(s, /ingestionAdmitted\s*\n?\s*\?\s*await syncInvestmentsForItem\(/);
-    check("syncInvestmentsForItem runs only inside the ingestionAdmitted ternary", ternary >= 0);
+    // Each ingestion call appears exactly once and sits after the gate (the
+    // per-call positional loop below). The old check additionally pinned the
+    // gate's TERNARY FORMATTING — line-wrapping included — which failed on
+    // reformats that changed nothing.
     check("syncInvestmentsForItem appears exactly once",
       (s.match(/syncInvestmentsForItem\(/g) ?? []).length === 1);
 
@@ -161,8 +165,11 @@ function main() {
   console.log("4. a deferred ingestion is pending, not ready, and not failed");
   {
     const s = code(EXCHANGE);
+    // The marker's value must DEPEND on the denial — asserted as a data-flow
+    // fact, not as the verbatim statement (operand order and local naming are
+    // the implementation's business).
     check("the pending marker is set when ingestion is denied",
-      /const syncIncompleteAt = deferHistorySync \|\| !ingestionAdmitted \? new Date\(\) : null;/.test(s));
+      /syncIncompleteAt\s*=[\s\S]{0,120}!ingestionAdmitted/.test(s));
     check("the denied ingestion intent is ledgered", /recordAdmissionDenial\(/.test(s));
     check("the ledgered denial carries the canonical reason",
       /admissionReason:\s*ingestionAdmission\.reason!/.test(s));
@@ -188,9 +195,12 @@ function main() {
     check("the healthy transition runs in the connection stage, ungated by ingestion",
       at(b, /setPlaidItemHealth\(/) < at(b, /ingestionAdmitted\s*$/m) ||
       !/ingestionAdmitted[\s\S]{0,200}setPlaidItemHealth\(/.test(b));
-    // …and it must not claim readiness.
+    // …and it must not claim readiness. Positional: the snapshot call sits
+    // after the gate and appears once, so a denied pass cannot reach it.
     check("snapshots are not regenerated over an empty import",
-      /if \(ingestionAdmitted\) spacesSnapshotted = await regenerateSnapshotsForAccounts/.test(s));
+      (b.match(/regenerateSnapshotsForAccounts\(/g) ?? []).length === 1 &&
+      at(b, /regenerateSnapshotsForAccounts\(/) > at(b, /const ingestionAdmitted =/) &&
+      /ingestionAdmitted[\s\S]{0,200}regenerateSnapshotsForAccounts\(/.test(b));
   }
 
   // ── 5. The pending state is DISCOVERABLE by existing recovery ───────────────
@@ -206,14 +216,12 @@ function main() {
       /status:\s*PlaidItemStatus\.ACTIVE/.test(recovery) && /deactivatedAt: null/.test(recovery));
     // …and the status derivation renders it as importing, never ready.
     const status = code("lib/sync/status.ts");
-    // Stated as INTENT, not as the literal branch. The Phase B follow-up split
-    // the incomplete case into importing vs sync_deferred; what must hold — and
-    // what this has always been about — is that a pending import NEVER reads as
-    // ready. Pinning the old one-liner made a correct refinement look like a
-    // regression.
+    // Stated as INTENT, not as the literal branch: an incomplete import reaches
+    // a non-ready state, and both non-ready vocabularies exist. The ternary's
+    // spelling belongs to status.ts.
     check("an incomplete import never reads as ready",
-      /if \(item\.syncIncompleteAt !== null\) \{/.test(status) &&
-      /"sync_deferred" : "importing"/.test(status) &&
+      /syncIncompleteAt !== null/.test(status) &&
+      /"sync_deferred"/.test(status) && /"importing"/.test(status) &&
       !/syncIncompleteAt !== null\) return "ready"/.test(status));
     // …and the recovery path itself now asks admission, so it resumes only once
     // the pause is lifted rather than hammering a paused provider every 5 min.

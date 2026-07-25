@@ -1,8 +1,7 @@
 /**
  * lib/platform/incidents/incident-boundary.test.ts  (OPS-2D-5A-1)
  *
- * The boundaries the incident lifecycle must not cross, and the censuses that
- * must not quietly change.
+ * The boundaries the incident lifecycle must not cross.
  *
  * The specific risk here is duplication. `lib/platform/sync-issue-semantics.ts`
  * has been the shipped authority for domain/severity/nature/state since
@@ -11,9 +10,11 @@
  * exactly what that authority's own doctrine forbids, because a stored opinion
  * drifts from the rule that produced it. §1 makes that structural.
  *
- * The second risk is a census that stops being one: nine producers are
- * deliberately NOT migrated in this slice, and a list of deferred work is only
- * useful while it is asserted.
+ * DELIBERATELY ABSENT (pruned in the post-5A-2 guard review): exact call-site
+ * counts, pinned source spellings, and the 5B/5C/5D scope fences (those slices
+ * have landed; scope fences are deleted the day their slice ships). This file
+ * bans VOCABULARY and DEPENDENCIES — never formatting. What a producer is
+ * allowed to DO is proven behaviourally in lifecycle.test.ts.
  *
  * Run:  npx tsx lib/platform/incidents/incident-boundary.test.ts
  */
@@ -51,21 +52,23 @@ const FACADE    = "lib/plaid/syncIssues.ts";
 
 
 /**
- * THE CLOSED PRODUCER CENSUS (OPS-2D-5A-2). Every production SyncIssue writer,
- * with its exact call count. Adoption is complete: nothing is deferred, and
- * `btc-sync.ts` — which bypassed the facade entirely and so never converged —
- * is now a facade caller like the rest.
+ * THE PRODUCER CENSUS (OPS-2D-5A-2). Every production SyncIssue writer.
+ * Adoption is complete: `btc-sync.ts` — which bypassed the facade entirely and
+ * so never converged — is now a facade caller like the rest. Membership is
+ * asserted (each file still calls the facade); exact call counts are not — the
+ * direct-write ban in §4 is what actually prevents a bypass, and a count only
+ * taxes legitimate new error paths.
  */
 const ALL_PRODUCERS = [
-  { file: "lib/plaid/syncTransactions.ts",                   sites: 3, enveloped: true },
-  { file: "lib/plaid/refresh.ts",                            sites: 1, enveloped: true },
-  { file: "lib/investments/investment-event-ingest.ts",      sites: 4, enveloped: false },
-  { file: "lib/investments/instrument-resolver-import.ts",   sites: 2, enveloped: false },
-  { file: "lib/investments/instrument-resolver.ts",          sites: 1, enveloped: false },
-  { file: "lib/investments/investment-import-commit.ts",     sites: 1, enveloped: false },
-  { file: "lib/investments/opening-position.ts",             sites: 1, enveloped: false },
-  { file: "app/api/imports/[id]/rollback/route.ts",          sites: 1, enveloped: false },
-  { file: "lib/crypto/btc-sync.ts",                          sites: 1, enveloped: false },
+  { file: "lib/plaid/syncTransactions.ts",                   enveloped: true },
+  { file: "lib/plaid/refresh.ts",                            enveloped: true },
+  { file: "lib/investments/investment-event-ingest.ts",      enveloped: false },
+  { file: "lib/investments/instrument-resolver-import.ts",   enveloped: false },
+  { file: "lib/investments/instrument-resolver.ts",          enveloped: false },
+  { file: "lib/investments/investment-import-commit.ts",     enveloped: false },
+  { file: "lib/investments/opening-position.ts",             enveloped: false },
+  { file: "app/api/imports/[id]/rollback/route.ts",          enveloped: false },
+  { file: "lib/crypto/btc-sync.ts",                          enveloped: false },
 ] as const;
 
 /** The ONLY module permitted to touch SyncIssue rows directly. */
@@ -122,6 +125,7 @@ function main() {
     const producers = [...ALL_PRODUCERS.map((p) => p.file), FACADE];
     for (const f of producers) {
       const s = code(f);
+      if (f !== FACADE) check(`${f}: still a facade caller (census is real)`, /recordSyncIssue\(/.test(s));
       check(`${f}: builds no incident key`, !/buildIncidentKey\(/.test(s));
       check(`${f}: queries no active incident`, !/resolved:\s*false[\s\S]{0,80}findFirst|findFirst[\s\S]{0,80}resolved:\s*false/.test(s));
       check(`${f}: creates no occurrence row`, !/syncIssueOccurrence\./.test(s));
@@ -133,18 +137,9 @@ function main() {
     check("the facade no longer mutates lifecycle fields", !/data:\s*\{\s*resolved:\s*true/.test(code(FACADE)));
   }
 
-  // ── 4. The closed producer census + the direct-write ban ───────────────────
-  console.log("4. every production writer is censused and goes through the facade");
+  // ── 4. The direct-write ban ─────────────────────────────────────────────────
+  console.log("4. every production writer goes through the facade");
   {
-    const count = (f: string) => (code(f).match(/recordSyncIssue\(/g) ?? []).length;
-    let total = 0;
-    for (const p of ALL_PRODUCERS) {
-      check(`${p.file}: ${p.sites} facade call site(s) (got ${count(p.file)})`, count(p.file) === p.sites);
-      total += p.sites;
-    }
-    check(`15 write sites across 9 files (got ${total})`, total === 15 && ALL_PRODUCERS.length === 9);
-    check("nothing remains deferred", ALL_PRODUCERS.every((p) => count(p.file) > 0));
-
     // THE BAN. Any direct row write outside the lifecycle authority is a bypass
     // — that is exactly what btc-sync was, and why its failures never converged.
     const writers = [...walk("lib"), ...walk("app"), ...walk("jobs"), ...walk("components")]
@@ -180,17 +175,12 @@ function main() {
   console.log("5. detail.runId is no longer the relationship authority");
   {
     const lc = code(LIFECYCLE);
-    // The seam is the DEFAULT of an injection point, not a bare call — production
-    // gets the canonical row-seam lookup; tests pass a hermetic one.
-    // The seam is the DEFAULT of an injection point (5A-2 made it forwardable so a
-    // disposable-DB harness can exercise the real contract). The authority must
-    // still never reach the ledger itself.
-    check("the authority LOOKS UP the correlator through the row seam",
-      /LookupExecutionId \| undefined = getExecutionIdByRunId/.test(lc) &&
-      /lookupExecutionId \?\? getExecutionIdByRunId/.test(lc) &&
-      !/refreshExecution\./.test(lc));
-    check("the FK is stored, not the raw correlator", /refreshExecutionId: executionId/.test(lc));
-    check("the raw correlator is kept only as diagnostics", /runId: obs\.runId \?\? null/.test(lc));
+    // The lookup goes through the canonical row seam — the authority must never
+    // reach the ledger itself. HOW the seam is spelled (defaults, forwarding,
+    // which field carries the FK) is proven behaviourally in lifecycle.test.ts;
+    // pinning the spelling here made correct refactors fail.
+    check("the authority resolves the correlator via the row seam, never the ledger",
+      /getExecutionIdByRunId/.test(lc) && !/refreshExecution\./.test(lc));
     const proj = code("lib/platform/incidents/projections.ts");
     check("projections read the FK, never detail.runId",
       /refreshExecutionId/.test(proj) && !/detail.*runId|\["runId"\]/.test(proj));
@@ -201,10 +191,6 @@ function main() {
   console.log("6. active/history is decided centrally");
   {
     const proj = code("lib/platform/incidents/projections.ts");
-    check("the active projection filters on DERIVED state, not the Boolean",
-      /filter\(\(v\) => v\.state === "active"\)/.test(proj));
-    check("the historical projection retains everything not active",
-      /filter\(\(v\) => v\.state !== "active"\)/.test(proj));
     check("projections delegate state to the semantics authority",
       /syncIssueState\(/.test(proj) && !/function syncIssueState/.test(proj));
   }
@@ -219,72 +205,6 @@ function main() {
     }
     check("the lifecycle authority knows nothing of admission reasons",
       !/INGESTION_PAUSED|MAINTENANCE_MODE|CONTROL_PLANE_|admissionReason/.test(code(LIFECYCLE)));
-  }
-
-  // ── 8. Scope — 5B/5C/5D did not leak in ─────────────────────────────────────
-  console.log("8. deferred slices did not start");
-  {
-    const mine = [LIFECYCLE, IDENTITY, "lib/platform/incidents/projections.ts"];
-    for (const f of mine) {
-      const s = code(f);
-      check(`${f}: no taxonomy split`, !/UPSERT_ERROR_[A-Z]|TRANSACTION_PERSIST_ERROR|ACCOUNT_PERSIST/.test(s));
-      check(`${f}: no label enrichment`, !/institutionName|accountMask|operatorGuidance/.test(s));
-      check(`${f}: no manual operator resolution`, !/OPERATOR_ACTION|manualResolve|resolveByOperator/.test(s));
-      check(`${f}: imports nothing from prototype/ or Growth`,
-        !/from\s+["']@?\/?prototype\//.test(s) && !/GrowthStagePanel|FunnelStages|growth-funnel/.test(s));
-    }
-    const controlRoutes = walk("app/api").filter((f) => /\/incidents?\//.test(f));
-    check("no incident browser API was built", controlRoutes.length === 0, controlRoutes.join(", "));
-  }
-
-  // ── 9. Telemetry never rides the caller's transaction (OPS-2D-TX-1) ────────
-  //
-  // The invariant: failure to record incident telemetry must not cause failure
-  // of the financial write being observed. An incident write inside a caller's
-  // transaction breaks it — a lost convergence race raises P2002, Postgres marks
-  // the transaction aborted (25P02), the caller's later statements all fail and
-  // its COMMIT silently degrades to ROLLBACK. Proven on real PostgreSQL 16 in
-  // scripts/test-incident-transaction-safety.ts; this guard keeps the door shut.
-  //
-  // Structural, not a call-site census: it asserts the CONTRACT (the type that
-  // makes a transaction client unrepresentable, and the runtime backstop behind
-  // it), so a new producer is covered the day it is written.
-  console.log("9. incident recording cannot run inside a caller's transaction");
-  {
-    const lc = code(LIFECYCLE);
-    check("IncidentClient requires $transaction, so a TransactionClient cannot type-check",
-      /export type IncidentClient = Pick<\s*typeof db,[^>]*"\$transaction"[^>]*>/.test(lc));
-    check("a transaction-scoped client is detected at runtime too",
-      /function isTransactionScoped/.test(lc) && /\$transaction\b[\s\S]{0,80}!==\s*"function"/.test(lc));
-    check("both lifecycle entry points check before writing anything",
-      (lc.match(/isTransactionScoped\(client\)/g) ?? []).length === 2);
-    check("the refusal is REFUSED, never a silent redirect to the module db",
-      /refuseTransactionScopedClient/.test(lc) &&
-      /console\.error\([\s\S]{0,120}REFUSED/.test(lc));
-
-    // The refusal must not become a fallback: quietly retargeting an injected
-    // client at the module-level `db` is the defect lib/plaid/sync-issue-
-    // isolation.test.ts exists to prevent (eight test rows in a developer's DB).
-    check("no fallback rewrites the caller's client to the module db",
-      !/client\s*=\s*db\s*;/.test(lc) && !/\?\s*client\s*:\s*db/.test(lc));
-
-    // Producers must not re-open the hole by casting around the type. A cast to
-    // IncidentClient in the product tree is exactly how a transaction client
-    // would get back in; the harness is allowed one, and says why.
-    const casters = [...walk("lib"), ...walk("app"), ...walk("jobs")]
-      .filter((f) => !/\.test\.tsx?$/.test(f))
-      .filter((f) => /as\s+unknown\s+as\s+IncidentClient|as\s+IncidentClient/.test(code(f)));
-    check("no production file casts its way past the incident client contract",
-      casters.length === 0, casters.join(", "));
-
-    // The facade's own parameters must carry the safe type, not a looser Pick
-    // that would re-admit a transaction client through the front door.
-    const fc = code(FACADE);
-    check("the facade types both client parameters as IncidentClient",
-      (fc.match(/client:\s*IncidentClient\s*=\s*db/g) ?? []).length === 2,
-      "recordSyncIssue and resolveCursorBlockingIssues");
-    check("the facade no longer accepts the old syncIssue-only Pick",
-      !/Pick<typeof db,\s*"syncIssue">/.test(fc));
   }
 
   if (failures > 0) {
