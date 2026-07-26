@@ -89,6 +89,10 @@ export interface Snapshot {
   totalInvestments: number;
   totalCrypto: number;
   cashOnHand: number;
+  // V26-PRE (B2) — `netLiquid` column threaded through the canonical read so
+  // AI consumers need no direct SpaceSnapshot query. Optional: pre-existing
+  // constructors of this DTO elsewhere are unaffected.
+  netLiquid?: number;
   // D2.x Slice 4 — true for reconstructed/backfilled historical rows. Optional
   // so existing constructors default to undefined (treated as not-estimated).
   isEstimated?: boolean;

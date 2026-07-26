@@ -7,9 +7,20 @@
  * containing bounded SpaceSnapshot history for the validated Space.
  *
  * ── What this does ───────────────────────────────────────────────────────────
- * Reads existing SpaceSnapshot rows — does NOT recompute them. Snapshots
- * are written once per day by the background sync job (lib/snapshots/
- * regenerate.ts). This assembler is a pure read over whatever history exists.
+ * Reads existing SpaceSnapshot rows THROUGH THE CANONICAL AUTHORITY — it does
+ * NOT query the SpaceSnapshot table and does NOT recompute snapshots.
+ *
+ * V26-PRE (B2) — this assembler previously ran its own `db.spaceSnapshot`
+ * query without selecting `reportingCurrency`, then folded net-worth trends
+ * across rows that may be stamped in different currencies (a Space that ever
+ * changed reporting currency produced a fabricated trend). It now consumes
+ * `getRecentSnapshots()` (lib/data/snapshots.ts), the stamp-aware read every
+ * other snapshot surface uses:
+ *   - off-stamp rows are converted at each snapshot's OWN date;
+ *   - a genuine rate MISS marks the row `fxMiss` — those points are EXCLUDED
+ *     here (never mixed native magnitudes) and the exclusion is DISCLOSED via
+ *     `excludedFxMissPoints`;
+ *   - any converted/reconstructed point sets `estimated` on the section.
  *
  * Returns:
  *   - Up to SNAPSHOT_HISTORY_LIMIT data points, newest-last
@@ -19,17 +30,17 @@
  *
  * ── Permissions ──────────────────────────────────────────────────────────────
  * buildContext() validates Space membership before invoking any assembler.
- * All queries are filtered by spaceCtx.spaceId — no cross-Space data possible.
+ * All reads are scoped by spaceCtx.spaceId — no cross-Space data possible.
  * SpaceSnapshot rows belong directly to the Space (spaceId FK) so no
  * additional permission layer is required.
  *
  * ── Security invariants ──────────────────────────────────────────────────────
  * - Does NOT import lib/plaid/encryption or call any decrypt function.
  * - Does NOT query WorkspaceAccountShare.
- * - Queries are always filtered by spaceCtx.spaceId.
+ * - Reads are always scoped by spaceCtx.spaceId.
  */
 
-import { db } from '@/lib/db';
+import { getRecentSnapshots } from '@/lib/data/snapshots';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
@@ -40,6 +51,7 @@ import type {
   SnapshotDataPoint,
 } from '@/lib/ai/types';
 import type { SpaceContext } from '@/lib/space';
+import type { Snapshot } from '@/types';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -53,62 +65,42 @@ import type { SpaceContext } from '@/lib/space';
 const SNAPSHOT_HISTORY_LIMIT = 90;
 
 // ---------------------------------------------------------------------------
-// Assembler implementation
+// Pure projection (exported for tests)
 // ---------------------------------------------------------------------------
 
-async function assembleSnapshot(
-  spaceCtx: SpaceContext,
-  options:  AssemblerOptions,
-): Promise<ContextDomainSection | null> {
-  const { spaceId } = spaceCtx;
-  const { scopeHint = 'full' } = options;
-  const assembledAt = new Date().toISOString();
+/**
+ * Project canonical Snapshot DTOs into the AI section payload. Pure — the
+ * whole semantic surface of this assembler lives here so it is unit-testable
+ * without a database.
+ *
+ * fxMiss rows are excluded (they carry native, unconverted magnitudes and
+ * would corrupt every delta they touch) and the exclusion is disclosed.
+ */
+export function projectSnapshotSection(
+  rows: Snapshot[],
+  scopeHint: 'brief' | 'full',
+): SnapshotSectionData | null {
+  const usable   = rows.filter((r) => !r.fxMiss);
+  const excluded = rows.length - usable.length;
 
-  // ── Query ─────────────────────────────────────────────────────────────────
-  // Bounded read: last SNAPSHOT_HISTORY_LIMIT rows, ascending by date so
-  // history is oldest→newest and trend calculation is straightforward.
-  // Filtered exclusively to this Space — no cross-Space data possible.
+  // No usable history (brand-new Space, or every point unconvertible) — return
+  // null so the domain is noted as empty rather than surfacing zeros.
+  if (usable.length === 0) return null;
 
-  const rows = await db.spaceSnapshot.findMany({
-    where:   { spaceId },
-    orderBy: { date: 'asc' },
-    take:    -SNAPSHOT_HISTORY_LIMIT, // negative take = last N rows in Prisma
-    select: {
-      date:        true,
-      netWorth:    true,
-      totalAssets: true,
-      debt:        true,
-      cash:        true,
-      savings:     true,
-      stocks:      true,
-      crypto:      true,
-      cashOnHand:  true,
-      netLiquid:   true,
-    },
-  });
-
-  // No history yet (brand-new Space) — return null so the domain is noted
-  // as empty rather than surfacing a section with all-zero values.
-  if (rows.length === 0) return null;
-
-  // ── Normalize ─────────────────────────────────────────────────────────────
-
-  const points: SnapshotDataPoint[] = rows.map((r) => ({
-    date:          r.date.toISOString().split('T')[0],
+  const points: SnapshotDataPoint[] = usable.map((r) => ({
+    date:          r.date,
     netWorth:      r.netWorth,
     totalAssets:   r.totalAssets,
-    liabilities:   r.debt,          // rename for semantic clarity
-    liquid:        r.cash + r.savings,
-    investments:   r.stocks,        // rename for semantic clarity
-    digitalAssets: r.crypto,        // rename for semantic clarity
+    liabilities:   r.totalDebt,                    // rename for semantic clarity
+    liquid:        r.totalCash + r.totalSavings,
+    investments:   r.totalInvestments,             // rename for semantic clarity
+    digitalAssets: r.totalCrypto,                  // rename for semantic clarity
     cashOnHand:    r.cashOnHand,
-    netLiquid:     r.netLiquid,
+    netLiquid:     r.netLiquid ?? 0,
   }));
 
   const oldest = points[0];
   const latest = points[points.length - 1];
-
-  // ── Trend ─────────────────────────────────────────────────────────────────
 
   let netWorthTrend:    number | null = null;
   let netWorthTrendPct: number | null = null;
@@ -120,19 +112,39 @@ async function assembleSnapshot(
     }
   }
 
-  // ── Payload ───────────────────────────────────────────────────────────────
-  // scopeHint='brief' omits the history array — the aggregator only needs
-  // the latest snapshot and trend delta to generate a summary sentence.
+  const estimated = usable.some((r) => r.isEstimated === true);
 
-  const data: SnapshotSectionData = {
-    snapshotCount:    rows.length,
+  return {
+    snapshotCount:    usable.length,
     oldestDate:       oldest.date,
     newestDate:       latest.date,
     netWorthTrend,
     netWorthTrendPct,
     latest,
     history: scopeHint === 'brief' ? [] : points,
+    // Disclosure — additive; absent on clean homogeneous histories.
+    ...(estimated ? { estimated: true } : {}),
+    ...(excluded > 0 ? { excludedFxMissPoints: excluded } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Assembler implementation
+// ---------------------------------------------------------------------------
+
+async function assembleSnapshot(
+  spaceCtx: SpaceContext,
+  options:  AssemblerOptions,
+): Promise<ContextDomainSection | null> {
+  const { spaceId } = spaceCtx;
+  const { scopeHint = 'full' } = options;
+  const assembledAt = new Date().toISOString();
+
+  // Canonical, stamp-aware, bounded read (newest-last, ascending by date).
+  const rows = await getRecentSnapshots(SNAPSHOT_HISTORY_LIMIT, { spaceId });
+
+  const data = projectSnapshotSection(rows, scopeHint === 'brief' ? 'brief' : 'full');
+  if (data === null) return null;
 
   return {
     domain:      FinanceDomains.SNAPSHOT_HISTORY,

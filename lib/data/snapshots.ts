@@ -90,6 +90,9 @@ export async function getRecentSnapshots(days = 30, ctx?: { spaceId: string }): 
       totalInvestments: r.stocks,
       totalCrypto:      r.crypto,
       cashOnHand:       r.cashOnHand,
+      // V26-PRE (B2) — rides the same stamp-aware conversion as every other
+      // total (convertStampedValues converts all keys of this object).
+      netLiquid:        r.netLiquid,
     };
 
     // Homogeneous fast path (stampCtx null) or on-stamp row → pre-MC1 mapping.

@@ -965,6 +965,16 @@ export interface SnapshotSectionData {
   netWorthTrendPct: number | null;
   latest:          SnapshotDataPoint | null;
   history:         SnapshotDataPoint[]; // omitted on scopeHint='brief'
+  /**
+   * V26-PRE (B2) — FX-honesty disclosure, riding the canonical stamp-aware
+   * read (lib/data/snapshots.ts). `estimated` is true when any point in the
+   * window was converted read-time (or reconstructed); `excludedFxMissPoints`
+   * counts off-stamp points DROPPED because their FX rate missed — they would
+   * otherwise mix native magnitudes into one series. Both optional/additive:
+   * absent on homogeneous histories (byte-identical payloads).
+   */
+  estimated?:            boolean;
+  excludedFxMissPoints?: number;
 }
 
 // ---------------------------------------------------------------------------
