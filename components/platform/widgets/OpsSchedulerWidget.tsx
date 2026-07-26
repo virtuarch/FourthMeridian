@@ -1,132 +1,288 @@
 "use client";
 
 /**
- * components/platform/widgets/OpsSchedulerWidget.tsx  (OPS-2C-7 · ops_scheduler)
+ * components/platform/widgets/OpsSchedulerWidget.tsx  (OPS-2C-7 · PM-1 S3)
  *
  * Scheduler OBSERVATION, over GET /api/platform/platform-ops/scheduler
  * (requirePlatformAccess PLATFORM_OPS READ).
  *
- * ── THE THREE GROUPS ARE RENDERED SEPARATELY, ON PURPOSE ──────────────────────
+ * ── THIS SLICE: THE PROTOTYPE'S LAYOUT, THE PRODUCTION ROUTE'S DATA ──────────
+ * The prototype (`prototype-ops-control-plane/Scheduler.tsx`) is the UI
+ * authority; this route is the DATA authority. The widget is now the
+ * prototype's surface — ONE `SectionSurface` holding THREE columns separated by
+ * `VRule`, each column led by a headline `BigStat` — rather than the paragraph
+ * stack that rendered the same facts at the same weight as their own captions.
+ * Nothing about what may be claimed changed; only what the eye lands on first.
  *
- *     OBSERVED   what the ledger recorded
- *     EXPECTED   what the registry declares should happen
- *     NOTES      explanation — prose only, never a figure
+ * ── THE THREE COLUMNS ARE AN EPISTEMIC CLAIM, NOT A LAYOUT PREFERENCE ────────
  *
- * They are visually distinct because they have different epistemic status. A
- * "next slot" is not evidence that anything will run; a recorded execution is
- * not a promise that another follows. Mixing their figures into one row is what
- * makes an operator read configuration as observation.
+ *     OBSERVED   values read out of a ledger. Nothing derived may appear here.
+ *     EXPECTED   values derived from configuration. Nothing recorded may appear.
+ *     NOTES      prose, where prose is what actually prevents the mistake.
  *
- * ── WHAT THIS WIDGET REFUSES TO RENDER ────────────────────────────────────────
+ * The dispatcher does not record its own invocations, so "last recorded
+ * execution" is MAX(JobRun.startedAt) — a run, not a tick — and a dispatcher
+ * that silently stopped looks identical to one that fired with nothing due.
+ * Putting that time beside "next dispatcher slot" without saying which is
+ * measured and which is predicted is exactly how an operator concludes the
+ * scheduler is alive when it is not. Every figure carries its derivation.
+ *
+ * ── WHAT THIS WIDGET REFUSES TO RENDER ───────────────────────────────────────
  *   • No scheduler health, no "dispatcher OK", no green roll-up — no such
  *     authority exists, and a green badge over an unmeasured subsystem is the
  *     false-green defect that created Platform Operations.
- *   • No "last tick". Dispatcher invocations are not recorded, so the honest
- *     fact is "last recorded execution", labelled exactly that.
+ *   • No "last tick". Dispatcher invocations are not recorded.
+ *   • No policy count. The prototype's header note counts DECLARED job policies
+ *     (`JobControlState`); this route serves none, so the slot carries the
+ *     registry count it does serve rather than a figure invented for the shape.
+ *   • No cron expression. Nothing here reads `vercel.json`; the cadence is
+ *     stated as absent, with its reason.
  *   • No controls. Pause / resume / disable / reschedule are OPS-2D.
+ *   • No per-job overdue list. The prototype puts it in the Jobs table, which is
+ *     composed directly below this surface in BOTH workspaces that render it
+ *     (`platform-overview`, `platform-jobs`) — so it is a move, not a loss, and
+ *     the notes already say a silent dispatcher surfaces there and not here.
  *
- * Presentation only: every figure arrives precomputed; nothing is derived here.
+ * ── FOUR STATES, NEVER COLLAPSED ─────────────────────────────────────────────
+ * loading ≠ empty ≠ error ≠ unknown. A failed fetch says the platform could not
+ * be asked; it never renders as zero, as a time, or as nothing-to-see. An
+ * absent instant renders `Unavailable` with its reason, never `00:00`.
+ *
+ * ── THE SPLIT ────────────────────────────────────────────────────────────────
+ * `OpsSchedulerWidget` fetches; `SchedulerSurface` renders. That is the
+ * PlatformHealthSurface precedent, and it is what makes loading / failed /
+ * populated / absent each PROVABLE by rendering the real component (server
+ * rendering never runs an effect, so a self-fetching component can only ever
+ * demonstrate its first frame).
  */
 
-import { Timer } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, CalendarClock, Loader2 } from "lucide-react";
+import type { PlatformSection } from "../widget-kit";
+import { useSharedWidgetFetch, type SharedFetchState } from "../workspace-session";
 import {
-  PlatformWidgetCard,
-  WidgetMessage,
-  timeAgo,
-  type PlatformSection,
-} from "../widget-kit";
-import { useSharedWidgetFetch } from "../workspace-session";
+  BigStat,
+  GroupLabel,
+  Provenance,
+  SectionSurface,
+  Unavailable,
+  VRule,
+} from "../platform-surface";
+import { relTime } from "./job-health-format";
+import { LOADING_TEXT, unavailableText } from "./platform-health-view";
+import {
+  CRON_CADENCE_REASON,
+  EXPECTED_HINT,
+  EXPECTED_PROVENANCE,
+  EXPECTED_PROVENANCE_DETAIL,
+  EXTERNAL_CRON_DERIVATION,
+  EXTERNAL_CRON_HINT,
+  JOBS_IN_SLOT_DERIVATION,
+  NEXT_SLOT_DERIVATION,
+  NO_EXECUTION_REASON,
+  NO_EXTERNAL_CRONS_QUALIFIER,
+  NO_SLOT_REASON,
+  OBSERVED_HINT,
+  SCHEDULER_SUBJECT,
+  UNREADABLE_TIME_REASON,
+  clockQualifier,
+  externalCronNames,
+  isUnreadable,
+  jobsInSlotQualifier,
+  lastExecutionDerivation,
+  registeredJobsNote,
+  utcClock,
+} from "./scheduler-view";
 import type { SchedulerObservationResponse } from "@/app/api/platform/platform-ops/scheduler/route";
 
-function when(iso: string | null): string {
-  return iso ? timeAgo(iso) : "not observed";
+/**
+ * The surface's honesty line. The prototype names `vercel.json` here as a source
+ * of expected slots; production derives them from the registry alone, so the
+ * sentence names the module that actually answered.
+ */
+function SurfaceFootnote() {
+  return (
+    <>
+      Observed values are read from the JobRun ledger. Expected values are derived from{" "}
+      <span className="font-mono text-[10px]">lib/jobs/registry.ts</span> at read time and are never
+      stored. Nothing here is a verdict on whether the scheduler is alive — no such observation
+      exists.
+    </>
+  );
+}
+
+/**
+ * The presentational surface. Prop-driven and fetch-free, so every state is
+ * reachable in a test by handing it props.
+ */
+export function SchedulerSurface({
+  section,
+  state,
+  nowMs,
+}: {
+  section: PlatformSection;
+  state: SharedFetchState<SchedulerObservationResponse>;
+  /** Injected clock — every relative age below is deterministic under test. */
+  nowMs: number;
+}) {
+  const data = state.error ? null : state.data;
+
+  // The header note is a figure, so it exists only where a figure does. A
+  // loading or failed surface carries no count at all.
+  const actions = data ? (
+    <span className="text-[11px] text-[var(--text-muted)]">
+      {registeredJobsNote(data.expected.registeredJobs)}
+    </span>
+  ) : undefined;
+
+  return (
+    <SectionSurface
+      icon={CalendarClock}
+      title={section.label}
+      actions={actions}
+      footnote={<SurfaceFootnote />}
+    >
+      {state.loading ? (
+        // LOADING. Deliberately not the empty state: "nothing recorded" while a
+        // request is still in flight is a claim we cannot support yet.
+        <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]" role="status">
+          <Loader2 size={12} className="animate-spin" aria-hidden /> {LOADING_TEXT}
+        </p>
+      ) : !data ? (
+        // FAILED. An error wins over any data we happen to be holding — showing
+        // the last answer as if it were current is how an outage reads as calm.
+        <p
+          className="flex items-start gap-1.5 text-xs"
+          style={{ color: "var(--coral-400)" }}
+          role="alert"
+        >
+          <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden />
+          <span>{unavailableText(SCHEDULER_SUBJECT)}</span>
+        </p>
+      ) : (
+        <SchedulerColumns data={data} nowMs={nowMs} />
+      )}
+    </SectionSurface>
+  );
+}
+
+/** OBSERVED | EXPECTED | NOTES — one frame, three groups, two hairlines. */
+function SchedulerColumns({
+  data,
+  nowMs,
+}: {
+  data: SchedulerObservationResponse;
+  nowMs: number;
+}) {
+  const { observed, expected, notes } = data;
+
+  const lastClock = utcClock(observed.lastRecordedExecutionAt);
+  const nextClock = utcClock(expected.nextSlotAt);
+  const cronNames = externalCronNames(observed.externalCrons);
+
+  return (
+    // The columns collapse at the real `md` breakpoint, by class, along with the
+    // hairlines between them (VRule is `hidden md:block`). No viewport hook: a
+    // JS read here would fork the breakpoint away from the grid it separates.
+    <div className="flex flex-col gap-8 md:flex-row">
+      {/* ── OBSERVED ── every figure here is a row that exists ─────────────── */}
+      <div className="min-w-0 flex-1">
+        <GroupLabel hint={OBSERVED_HINT}>Observed</GroupLabel>
+        <div className="mt-4 flex flex-col gap-6">
+          <BigStat
+            label="Last recorded execution"
+            value={
+              lastClock ?? (
+                <Unavailable
+                  reason={
+                    isUnreadable(observed.lastRecordedExecutionAt)
+                      ? UNREADABLE_TIME_REASON
+                      : NO_EXECUTION_REASON
+                  }
+                />
+              )
+            }
+            qualifier={
+              lastClock ? clockQualifier(relTime(observed.lastRecordedExecutionAt, nowMs)) : undefined
+            }
+            derivation={lastExecutionDerivation(observed.recordedExecutions)}
+          />
+          <BigStat
+            label="External crons"
+            value={observed.externalCrons.length}
+            qualifier={cronNames ?? NO_EXTERNAL_CRONS_QUALIFIER}
+            derivation={EXTERNAL_CRON_DERIVATION}
+            hint={EXTERNAL_CRON_HINT}
+          />
+        </div>
+      </div>
+
+      <VRule />
+
+      {/* ── EXPECTED ── configuration, and evidence of nothing ─────────────── */}
+      <div className="min-w-0 flex-1">
+        <GroupLabel hint={EXPECTED_HINT}>Expected</GroupLabel>
+        <div className="mt-4 flex flex-col gap-6">
+          <BigStat
+            label="Next dispatcher slot"
+            value={
+              nextClock ?? (
+                <Unavailable
+                  reason={
+                    isUnreadable(expected.nextSlotAt) ? UNREADABLE_TIME_REASON : NO_SLOT_REASON
+                  }
+                />
+              )
+            }
+            qualifier={nextClock ? clockQualifier(relTime(expected.nextSlotAt, nowMs)) : undefined}
+            derivation={NEXT_SLOT_DERIVATION}
+          />
+          <BigStat
+            label="Jobs expected in that slot"
+            value={expected.jobsInNextSlot.length}
+            qualifier={jobsInSlotQualifier(expected.jobsInNextSlot)}
+            derivation={JOBS_IN_SLOT_DERIVATION}
+          />
+        </div>
+      </div>
+
+      <VRule />
+
+      {/* ── NOTES ── documentation embedded in the workspace. This column
+          deliberately carries no figure: a third metric here would be worth less
+          than the sentences that stop an operator misreading the four beside it.
+          The prose is the ROUTE's (SCHEDULER_NOTES), not this file's. */}
+      <div className="min-w-0 flex-1 md:max-w-[15rem]">
+        <GroupLabel>Scheduler notes</GroupLabel>
+        <div className="mt-3 flex flex-col gap-3">
+          {notes.map((n) => (
+            <p key={n} className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
+              {n}
+            </p>
+          ))}
+          <div className="flex flex-col gap-2 pt-1">
+            <Provenance source={EXPECTED_PROVENANCE}>{EXPECTED_PROVENANCE_DETAIL}</Provenance>
+            <Unavailable reason={CRON_CADENCE_REASON} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function OpsSchedulerWidget({ section }: { section: PlatformSection }) {
-  const { data, loading, error } = useSharedWidgetFetch<SchedulerObservationResponse>(
+  // ONE literal url, one workspace-shared read (OPS-2C-6): `ops_scheduler` is
+  // composed into both platform-overview and platform-jobs, and the session is
+  // what keeps two mounts from observing two different operational moments.
+  const state = useSharedWidgetFetch<SchedulerObservationResponse>(
     "/api/platform/platform-ops/scheduler",
   );
 
-  if (loading || error || !data) {
-    return (
-      <PlatformWidgetCard label={section.label} icon={Timer}>
-        <WidgetMessage loading={loading} error={error} />
-      </PlatformWidgetCard>
-    );
-  }
+  // ONE instant for the whole surface, captured at mount, so "1h ago" and "in
+  // 2h" cannot disagree about now. Read once rather than per render: a clock
+  // read during render is impure and would make the same data render
+  // differently on an unrelated re-render.
+  const [nowMs] = useState(() => Date.now());
 
-  const { observed, expected, notes } = data;
-
-  return (
-    <PlatformWidgetCard label={section.label} icon={Timer}>
-      {/* ── OBSERVED ── every figure here is a recorded row ───────────────── */}
-      <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-        Observed
-      </p>
-      <p className="mt-1 text-xs text-[var(--text-secondary)] tabular-nums">
-        Last recorded execution {when(observed.lastRecordedExecutionAt)} ·{" "}
-        {observed.recordedExecutions} in the last 24h
-      </p>
-
-      {observed.overdue.length > 0 && (
-        <ul className="mt-1 flex flex-col gap-0.5">
-          {observed.overdue.map((o) => (
-            <li key={o.job} className="flex items-baseline justify-between gap-2 text-xs">
-              <span className="truncate text-[var(--text-primary)]">{o.job}</span>
-              <span className="shrink-0 tabular-nums" style={{ color: "var(--brass-300, #d9b25a)" }}>
-                {o.status}
-                <span className="text-[var(--text-muted)]"> · last {when(o.lastStartedAt)}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {observed.externalCrons.length > 0 && (
-        <ul className="mt-1 flex flex-col gap-0.5">
-          {observed.externalCrons.map((c) => (
-            <li key={c.job} className="flex items-baseline justify-between gap-2 text-xs">
-              <span className="truncate text-[var(--text-primary)]">
-                {c.job}
-                <span className="ml-1 text-[10px] text-[var(--text-muted)]">external cron</span>
-              </span>
-              <span className="shrink-0 tabular-nums text-[var(--text-secondary)]">
-                {c.recordedExecutions} in 24h
-                <span className="text-[var(--text-muted)]"> · no health report</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {/* ── EXPECTED ── configuration, not evidence ───────────────────────── */}
-      <p className="mt-3 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-        Expected
-      </p>
-      <p className="mt-1 text-xs text-[var(--text-secondary)] tabular-nums">
-        {expected.nextSlotAt ? (
-          <>
-            Next registry slot {new Date(expected.nextSlotAt).toISOString().slice(11, 16)} UTC ·{" "}
-            {expected.jobsInNextSlot.length > 0
-              ? expected.jobsInNextSlot.join(", ")
-              : "no jobs declared"}
-          </>
-        ) : (
-          <>No slot declared by the registry</>
-        )}
-      </p>
-      <p className="text-[11px] text-[var(--text-muted)] tabular-nums">
-        {expected.registeredJobs} registered jobs
-      </p>
-
-      {/* ── NOTES ── prose only; a figure here would be a smuggled observation ── */}
-      <ul className="mt-3 flex flex-col gap-1">
-        {notes.map((n) => (
-          <li key={n} className="text-[11px] leading-relaxed text-[var(--text-muted)]">
-            {n}
-          </li>
-        ))}
-      </ul>
-    </PlatformWidgetCard>
-  );
+  return <SchedulerSurface section={section} state={state} nowMs={nowMs} />;
 }

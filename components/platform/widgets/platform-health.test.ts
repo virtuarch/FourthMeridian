@@ -53,7 +53,8 @@ import {
   PlatformHealthSurface,
   type FetchedResource,
 } from "./OpsPlatformHealthWidget";
-import { SURFACE_FOOTNOTE } from "./platform-health-view";
+import { GROUP_DOORWAY, GROUP_LABEL, SURFACE_FOOTNOTE } from "./platform-health-view";
+import { PLATFORM_AREA_WORKSPACES, getPlatformWorkspace } from "@/lib/platform/workspaces";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -505,6 +506,73 @@ function main() {
       `${(widget.match(/useWidgetFetch</g) ?? []).length}`);
     check("every fetch url is a string literal",
       !/useWidgetFetch<[^>]*>\(\s*[^"]/.test(widget), widget);
+  }
+
+  // ── 12. Each group is a DOORWAY onto the workspace that owns its detail ───
+  console.log("12. every group names the workspace carrying its full read");
+  {
+    // The prototype's doorways: Alerts → Providers → Providers → Operations.
+    // Two groups deliberately share a target — resource freshness lives in the
+    // Providers workspace — so the pairs are asserted by TARGET, not by count
+    // of distinct labels.
+    const wired = renderSurface({ onOpenWorkspace: () => {} });
+    const doorways = [
+      ...wired.html.matchAll(/<button type="button" aria-label="([^"]*)"[^>]*>([^<]*)<svg/g),
+    ].map((m) => ({ aria: m[1], visible: m[2].trim() }));
+
+    check("one doorway per group", doorways.length === 4, JSON.stringify(doorways));
+    check("the doorway labels are the prototype's",
+      doorways.map((d) => d.visible).join(",") === "Alerts,Providers,Providers,Operations",
+      doorways.map((d) => d.visible).join(","));
+
+    // Every target resolves to a REAL rail workspace, and its label is the
+    // registry's — a renamed or removed workspace fails here rather than
+    // shipping a doorway onto nothing.
+    for (const group of ["alerts", "providers", "freshness", "configuration"] as const) {
+      const def = getPlatformWorkspace(GROUP_DOORWAY[group]);
+      check(`${group} opens a real workspace (${GROUP_DOORWAY[group]})`, def != null);
+      check(`${group}'s doorway is labelled from the registry`,
+        def != null && doorways.some((d) => d.visible === def.label && d.aria.includes(GROUP_LABEL[group])),
+        JSON.stringify(doorways));
+    }
+
+    // Every target is one the Overview workspace actually composes as a doorway,
+    // so this surface can never point somewhere the rail does not offer.
+    const overview = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS.find((w) => w.workspaceId === "platform-overview");
+    for (const group of ["alerts", "providers", "freshness", "configuration"] as const) {
+      check(`${group}'s target is a composed Overview doorway`,
+        (overview?.doorways ?? []).includes(GROUP_DOORWAY[group]), (overview?.doorways ?? []).join(","));
+    }
+
+    // WCAG 2.5.3 — the accessible name begins with the visible text, so voice
+    // control still matches what the operator can read.
+    for (const d of doorways) {
+      check(`accessible name starts with the visible label (${d.visible})`, d.aria.startsWith(d.visible), d.aria);
+    }
+
+    // The footnote states the relationship the doorways make good on.
+    check("the footnote says each group summarises a workspace",
+      wired.text.includes("Each group summarises a workspace on the rail. Open one for its full read."),
+      wired.text);
+
+    // Doorways survive every fetch state — a failed group still tells the
+    // operator where the full read lives.
+    const brokenWired = renderSurface({
+      onOpenWorkspace: () => {},
+      alerts: failed(), providers: failed(), freshness: failed(), rateLimits: failed(), env: failed(),
+    });
+    check("doorways still render when every source failed",
+      (brokenWired.html.match(/<button type="button" aria-label=/g) ?? []).length === 4);
+
+    // UNWIRED HOST — the rail is local state in PlatformSpaceDashboard and its
+    // only summary→detail affordance is the `onOpen(workspaceId)` callback it
+    // threads to WorkspaceDoorway. Without it there is nothing to open, so the
+    // doorway renders NOTHING rather than a button that does nothing.
+    const unwired = renderSurface();
+    check("no doorway is rendered when the host wired no handler",
+      !unwired.html.includes('<button type="button" aria-label='), unwired.html.slice(0, 400));
+    check("and no dead button of any kind is left behind",
+      !unwired.html.includes("<button"), unwired.html.slice(0, 400));
   }
 
   if (failures > 0) { console.error(`\nplatform-health.test: ${failures} failure(s).`); process.exit(1); }

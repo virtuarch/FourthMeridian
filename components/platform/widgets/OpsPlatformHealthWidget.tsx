@@ -35,29 +35,46 @@
  * nominal, or as nothing-to-see. Colour never carries meaning alone — every
  * status is a word first (see StatusWord in platform-surface.tsx).
  *
+ * ── PER-GROUP DOORWAYS (PM-1 S3) ─────────────────────────────────────────────
+ * Each group now ends with the prototype's doorway — `Alerts →`, `Providers →`,
+ * `Providers →`, `Operations →` — because a group that summarises a workspace
+ * and does not say so leaves the operator to guess where the full read lives.
+ *
+ * It is NOT a second navigation mechanism. The rail is local state owned by
+ * `PlatformSpaceDashboard`, and its ONLY existing summary→detail affordance is
+ * the `onOpen(workspaceId)` callback it already threads to `WorkspaceDoorway`
+ * (there is no `?workspace=` url, no route, and no context — verified). The same
+ * callback is taken here as an OPTIONAL prop, and when the host has not supplied
+ * one the doorway RENDERS NOTHING rather than a button that does nothing. See
+ * the integration note in the migration plan.
+ *
  * ── NON-GOALS ────────────────────────────────────────────────────────────────
- * No new route, projection, authority or schema. No drill panel and no click
- * targets: the migration plan §6 rules this a consolidated READ, not N objects.
- * No doorway buttons either — `PlatformWorkspaceComposition.doorways` already
- * owns summary→detail navigation and lives outside this file.
+ * No new route, projection, authority or schema. No drill panel and no per-row
+ * click targets: the migration plan §6 rules this a consolidated READ, not N
+ * objects. The doorway opens a WORKSPACE, never an object.
  */
 
 import { useState, type ReactNode } from "react";
-import { Activity, AlertTriangle, Loader2 } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, Loader2 } from "lucide-react";
 import { useWidgetFetch, type PlatformSection } from "../widget-kit";
 import { GroupLabel, Provenance, SectionSurface, StatusWord, TwoLine } from "../platform-surface";
+import { getPlatformWorkspace } from "@/lib/platform/workspaces";
 import {
+  GROUP_DOORWAY,
+  GROUP_LABEL,
   LINE_TOKEN,
   LOADING_TEXT,
   STATUS_TOKEN,
   STATUS_WORD,
   SURFACE_FOOTNOTE,
   alertsView,
+  doorwayLabel,
   envView,
   freshnessView,
   providersView,
   rateLimitsView,
   unavailableText,
+  type HealthGroupId,
   type SourceView,
 } from "./platform-health-view";
 import type { PlatformAlertsResponse } from "@/app/api/platform/platform-ops/alerts/route";
@@ -152,12 +169,53 @@ function SourceBlock<T>({
   );
 }
 
-/** One labelled group inside the surface. Its label renders whatever its sources say. */
-function HealthGroup({ label, children }: { label: string; children: ReactNode }) {
+/**
+ * The doorway out of a group and into the workspace that owns its detail.
+ *
+ * The LABEL is the workspace registry's own (`getPlatformWorkspace`), so a
+ * renamed workspace renames its doorway and cannot drift into a promise the
+ * rail does not keep. A target the registry does not know renders nothing —
+ * as does a surface whose host has not wired `onOpen`, because a doorway that
+ * cannot open is worse than no doorway at all.
+ */
+function GroupDoorway({
+  group,
+  onOpen,
+}: {
+  group: HealthGroupId;
+  onOpen?: (workspaceId: string) => void;
+}) {
+  const targetId = GROUP_DOORWAY[group];
+  const def = getPlatformWorkspace(targetId);
+  if (!def || !onOpen) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(targetId)}
+      aria-label={doorwayLabel(def.label, group)}
+      className="mt-auto flex w-fit items-center gap-1 pt-1 text-[11px] text-[var(--meridian-400)] transition-colors hover:text-[var(--meridian-300)]"
+    >
+      {def.label} <ArrowRight size={10} aria-hidden />
+    </button>
+  );
+}
+
+/** One labelled group inside the surface. Its label renders whatever its sources
+ *  say; its doorway names the workspace that carries the same question in full. */
+function HealthGroup({
+  group,
+  onOpen,
+  children,
+}: {
+  group: HealthGroupId;
+  onOpen?: (workspaceId: string) => void;
+  children: ReactNode;
+}) {
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      <GroupLabel>{label}</GroupLabel>
+      <GroupLabel>{GROUP_LABEL[group]}</GroupLabel>
       {children}
+      <GroupDoorway group={group} onOpen={onOpen} />
     </div>
   );
 }
@@ -174,6 +232,7 @@ export function PlatformHealthSurface({
   rateLimits,
   env,
   nowMs,
+  onOpenWorkspace,
 }: {
   section:    PlatformSection;
   alerts:     FetchedResource<PlatformAlertsResponse>;
@@ -183,6 +242,10 @@ export function PlatformHealthSurface({
   env:        FetchedResource<PlatformEnvStatusResponse>;
   /** Injected clock — relative ages are deterministic under test. */
   nowMs:      number;
+  /** The host's rail-switch callback — the SAME `onOpen(workspaceId)` signature
+   *  `PlatformSpaceDashboard` already threads to `WorkspaceDoorway`. Optional:
+   *  without it the doorways do not render (see the header note). */
+  onOpenWorkspace?: (workspaceId: string) => void;
 }) {
   return (
     <SectionSurface icon={Activity} title={section.label} footnote={SURFACE_FOOTNOTE}>
@@ -190,7 +253,7 @@ export function PlatformHealthSurface({
           Columns collapse through `md:`/`xl:` variants — production scans this
           tree, so the prototype's viewport-as-state hook is not needed here. */}
       <div className="grid gap-8 md:grid-cols-2 xl:grid-cols-4">
-        <HealthGroup label="Alerts">
+        <HealthGroup group="alerts" onOpen={onOpenWorkspace}>
           <SourceBlock
             subject="Alert status"
             provenance="lib/alerts"
@@ -199,7 +262,7 @@ export function PlatformHealthSurface({
           />
         </HealthGroup>
 
-        <HealthGroup label="Providers">
+        <HealthGroup group="providers" onOpen={onOpenWorkspace}>
           <SourceBlock
             subject="Provider health"
             provenance="lib/platform/provider-health"
@@ -208,7 +271,7 @@ export function PlatformHealthSurface({
           />
         </HealthGroup>
 
-        <HealthGroup label="Freshness">
+        <HealthGroup group="freshness" onOpen={onOpenWorkspace}>
           <SourceBlock
             subject="Resource freshness"
             provenance="lib/platform/resource-freshness"
@@ -219,7 +282,7 @@ export function PlatformHealthSurface({
 
         {/* Two sources, two independent states. This group is what keeps the
             rate-limit and environment reads reachable after consolidation. */}
-        <HealthGroup label="Configuration">
+        <HealthGroup group="configuration" onOpen={onOpenWorkspace}>
           <SourceBlock
             caption="Environment"
             subject="Environment status"
@@ -240,7 +303,15 @@ export function PlatformHealthSurface({
   );
 }
 
-export function OpsPlatformHealthWidget({ section }: { section: PlatformSection }) {
+export function OpsPlatformHealthWidget({
+  section,
+  onOpenWorkspace,
+}: {
+  section: PlatformSection;
+  /** Passed straight through to the surface. Supplied by the workspace host;
+   *  see the header note on why it is optional and what happens without it. */
+  onOpenWorkspace?: (workspaceId: string) => void;
+}) {
   // Five reads, one per literal URL — the `useWidgetFetch` static-url contract
   // (components/platform/widget-fetch-static-url.test.ts). Nothing is merged:
   // each response is rendered by the group that asked for it.
@@ -266,6 +337,7 @@ export function OpsPlatformHealthWidget({ section }: { section: PlatformSection 
       rateLimits={rateLimits}
       env={env}
       nowMs={nowMs}
+      onOpenWorkspace={onOpenWorkspace}
     />
   );
 }

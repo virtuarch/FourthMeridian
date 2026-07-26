@@ -91,7 +91,19 @@ type Section = PlatformSection;
  * two domains render different widget families through the same "one entry, no
  * switch/case" pattern.
  */
-const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section }>> = {
+/**
+ * Widgets receive their section row and, optionally, the rail's own workspace
+ * switcher. The prototype's summary surfaces end each group with a doorway into
+ * the workspace that owns its detail ("Alerts →"), so the surface needs a way to
+ * move the rail — and it must be the SAME way `WorkspaceDoorway` already does it,
+ * not a second navigation mechanism. `onOpenWorkspace` is OPTIONAL, so every
+ * existing widget stays assignable to this registry unchanged; a widget that does
+ * not take it simply never moves the rail.
+ */
+const PLATFORM_WIDGET_REGISTRY: Record<
+  string,
+  ComponentType<{ section: Section; onOpenWorkspace?: (id: string) => void }>
+> = {
   // Security Operations
   sec_audit_feed:       SecAuditFeedWidget,
   sec_operator_actions: SecOperatorActionsWidget,
@@ -277,7 +289,7 @@ export function PlatformWorkspaceBody({
                  the row is still one child of the same editorial stack. */
               return (
                 <div key={row.id} id={platformSectionAnchor(row.key)} className="scroll-mt-20">
-                  <Widget section={row} />
+                  <Widget section={row} onOpenWorkspace={onOpen} />
                 </div>
               );
             })}

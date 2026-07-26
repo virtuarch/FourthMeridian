@@ -62,7 +62,12 @@ export const PLATFORM_AREAS: Record<PlatformArea, PlatformAreaMeta> = {
     spaceDescription:
       "Job health, rate-limit posture, and environment status for Fourth Meridian itself.",
     sections: [
-      { key: "ops_job_health",  label: "Job Health",      order: 0 },
+      // PM-JOBS — "Jobs", matching the rail pill and the prototype's dominant
+      // surface. The rail already said Jobs while the section said Job Health,
+      // so one operating object had two names in one sidebar.
+      // NOTE: ensurePlatformSections is create-only, so Spaces seeded before this
+      // keep the old label until their row is re-seeded.
+      { key: "ops_job_health",  label: "Jobs",            order: 0 },
       { key: "ops_rate_limits", label: "Rate Limits",     order: 1 },
       { key: "ops_env_status",  label: "Environment",     order: 2 },
       // Wave 2 S7 — API usage/cost visibility (Part A).

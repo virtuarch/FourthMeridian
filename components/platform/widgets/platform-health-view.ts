@@ -140,11 +140,55 @@ export function unavailableText(subject: string): string {
   return `${subject} unavailable — the platform could not be asked. This is not a report that nothing is wrong.`;
 }
 
-/** The surface's own honesty line. Rendered once, under every group. */
+/** The surface's own honesty line. Rendered once, under every group.
+ *
+ * The closing sentence is the prototype's, and it is what the doorways below
+ * make true: this surface SUMMARISES four workspaces, so an operator who needs
+ * the full read is told there is one and where it is. */
 export const SURFACE_FOOTNOTE =
   "Each group reports only what its named authority observed. Nominal means that authority found nothing " +
   "outside its own thresholds — it is not a verdict on the platform, and anything no authority watches does " +
-  "not appear here at all.";
+  "not appear here at all. Each group summarises a workspace on the rail. Open one for its full read.";
+
+// ── Groups and their doorways ─────────────────────────────────────────────────
+
+/**
+ * The four groups, by identity rather than by position.
+ *
+ * A doorway is a promise that a fuller read EXISTS somewhere, so the target is
+ * named as a rail workspace id from `lib/platform/workspaces.ts` and its LABEL
+ * is resolved from that same registry at render time — never re-typed here.
+ * `platform-health.test.ts` asserts every target resolves, so a workspace that
+ * is renamed or removed fails the suite instead of shipping a doorway onto
+ * nothing.
+ *
+ * Freshness and Providers deliberately share a target: `ops_resource_freshness`
+ * is composed into the Providers workspace, which is where its detail actually
+ * lives. Configuration opens Operations, which is the workspace that owns the
+ * platform's manual operational surface.
+ */
+export type HealthGroupId = "alerts" | "providers" | "freshness" | "configuration";
+
+export const GROUP_LABEL: Record<HealthGroupId, string> = {
+  alerts:        "Alerts",
+  providers:     "Providers",
+  freshness:     "Freshness",
+  configuration: "Configuration",
+};
+
+/** Group → the rail workspace id that owns its detail (PLATFORM_AREA_WORKSPACES). */
+export const GROUP_DOORWAY: Record<HealthGroupId, string> = {
+  alerts:        "platform-alerts",
+  providers:     "platform-providers",
+  freshness:     "platform-providers",
+  configuration: "platform-operations",
+};
+
+/** The accessible name of a doorway. Begins with the visible text (WCAG 2.5.3)
+ *  and then disambiguates, because two groups open the same workspace. */
+export function doorwayLabel(workspaceLabel: string, group: HealthGroupId): string {
+  return `${workspaceLabel} — open the workspace behind ${GROUP_LABEL[group]}`;
+}
 
 // ── Relative age (clock injected, so every builder is deterministic) ──────────
 
