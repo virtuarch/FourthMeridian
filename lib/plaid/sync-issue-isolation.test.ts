@@ -54,6 +54,12 @@ async function behavioural(): Promise<void> {
       update: async () => ({ id: "si1" }),
     },
     syncIssueOccurrence: { create: async () => ({ id: "so1" }) },
+    // OPS-2D-TX-1 — `IncidentClient` requires `$transaction`, and a runtime
+    // backstop REFUSES any client lacking it (a `Prisma.TransactionClient` has
+    // it removed by ITXClientDenyList). Declaring the stub is how a fake says
+    // "I stand in for a ROOT client". It throws if anything ever calls it,
+    // because the lifecycle must not open a transaction of its own.
+    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
   };
 
   await recordSyncIssue(
@@ -67,6 +73,11 @@ async function behavioural(): Promise<void> {
   const exploding = {
     syncIssue: { create: async () => { throw new Error("boom"); }, findFirst: async () => null },
     syncIssueOccurrence: { create: async () => { throw new Error("boom"); } },
+    // Also a ROOT-client stand-in: without this the backstop would REFUSE the
+    // write before reaching `create`, and this case would prove the refusal path
+    // rather than the "a failing recorder still never throws" contract it exists
+    // to guard.
+    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
   };
   let threw = false;
   try { await recordSyncIssue({ kind: "UPSERT_ERROR" }, exploding as never); } catch { threw = true; }
