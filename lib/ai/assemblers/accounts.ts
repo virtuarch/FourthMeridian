@@ -57,6 +57,7 @@ import { buildSpaceConversionContext } from '@/lib/money/server-context';
 import { yesterdayUTCISO } from '@/lib/fx/config';
 import { genericAccountName } from '@/lib/account-privacy';
 import { amountOwed, creditBalance, liabilityState } from '@/lib/debt/balance-semantics';
+import { resolveEffectiveDebtTerms } from '@/lib/debt/effective-terms';
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
 import type {
@@ -316,8 +317,9 @@ async function assembleAccounts(
     if (link.visibilityLevel !== VisibilityLevel.FULL) continue;
 
     const displayName = resolveDisplayName(fa);
-    const effectiveApr = fa.debtProfile?.apr ?? fa.interestRate ?? null;
-    const effectiveMinPayment = fa.debtProfile?.minimumPayment ?? fa.minimumPayment ?? null;
+    // V26-PRE (B3) — effective terms via the single authority (DebtProfile >
+    // flat column), never re-derived inline.
+    const { apr: effectiveApr, minimumPayment: effectiveMinPayment } = resolveEffectiveDebtTerms(fa);
 
     if (effectiveApr === null) {
       knowledgeGaps.push({
@@ -397,8 +399,8 @@ async function assembleAccounts(
         // Effective resolution: DebtProfile (user) → FinancialAccount flat (provider) → null.
         if (fa.type === 'debt') {
           const dp = fa.debtProfile;
-          const effectiveApr        = dp?.apr        ?? fa.interestRate   ?? null;
-          const effectiveMinPayment = dp?.minimumPayment ?? fa.minimumPayment ?? null;
+          // V26-PRE (B3) — effective terms via the single authority.
+          const { apr: effectiveApr, minimumPayment: effectiveMinPayment } = resolveEffectiveDebtTerms(fa);
 
           // rateSource reflects where the effective APR originated.
           const rateSource: 'user' | 'provider' | null =

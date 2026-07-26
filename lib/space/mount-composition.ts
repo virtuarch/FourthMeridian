@@ -34,6 +34,7 @@ import "server-only";
 import { db } from "@/lib/db";
 import { ShareStatus } from "@prisma/client";
 import { normalizeSharedAccounts } from "@/lib/account-privacy";
+import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 import type { DashboardSection, SpaceAccount } from "@/lib/space/dashboard-types";
 
 /** THE sections loader (was inline in /api/spaces/[id]/sections). */
@@ -73,6 +74,12 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
           id: true, name: true, type: true, institution: true, balance: true,
           currency: true, lastUpdated: true, creditLimit: true, debtSubtype: true,
           interestRate: true, minimumPayment: true,
+          // V26-PRE (B3) — DebtProfile joined so the EFFECTIVE terms authority
+          // (lib/debt/effective-terms.ts) can resolve APR/minimum payment.
+          // Before this join, Space debt widgets computed interest and payoff
+          // timelines from the superseded flat column the moment a user
+          // corrected the APR via the debt profile.
+          debtProfile: { select: { apr: true, minimumPayment: true } },
         },
       },
     },
@@ -102,7 +109,26 @@ export async function loadSpaceAccounts(spaceId: string): Promise<SpaceAccount[]
   // the narrower shape when it consumed this route's JSON (the fetch cast the
   // response to SpaceAccount[]), so this assertion preserves the EXACT runtime
   // shape the client has always received — no data is coerced.
-  return normalizeSharedAccounts(links).map((a) => ({
+  // V26-PRE (B3) — resolve effective debt terms through the single authority
+  // BEFORE normalization, so every downstream consumer (LiabilitiesLedger
+  // interest math, SectionCard avgApr/payoff, avalanche ordering) reads the
+  // same effective APR/minimum payment as the Personal Debt surface. The
+  // normalized shape is unchanged: `interestRate`/`minimumPayment` now simply
+  // carry the EFFECTIVE values (DebtProfile > flat column).
+  const effectiveLinks = links.map((l) => {
+    const terms = resolveEffectiveDebtTerms(l.financialAccount);
+    const { debtProfile: _profile, ...account } = l.financialAccount;
+    return {
+      ...l,
+      financialAccount: {
+        ...account,
+        interestRate:   terms.apr,
+        minimumPayment: terms.minimumPayment,
+      },
+    };
+  });
+
+  return normalizeSharedAccounts(effectiveLinks).map((a) => ({
     ...a,
     earliestTxDate: floorByAccount.get(a.id) ?? null,
   })) as unknown as SpaceAccount[];

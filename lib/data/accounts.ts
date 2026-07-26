@@ -22,6 +22,7 @@ import { Account, Holding } from "@/types";
 import { ShareStatus, PlaidItemStatus, type VisibilityLevel } from "@prisma/client";
 import { estimateMinimumPayment } from "@/lib/debt";
 import { amountOwed, hasOutstandingDebt } from "@/lib/debt/balance-semantics";
+import { resolveEffectiveDebtTerms } from "@/lib/debt/effective-terms";
 // KD-19 — visibility-tier enforcement on the UI account/holdings read paths.
 // grantsAccountDetail + TRANSACTION_DETAIL_VISIBILITY share the FULL gate the
 // AI assemblers use, so no read surface can disagree; sanitizeForBalanceOnly
@@ -166,10 +167,11 @@ export async function getAccountsWithVisibility(
         c.connectedByUserId === userId && c.plaidItem?.status === PlaidItemStatus.NEEDS_REAUTH
     );
 
-    // Effective APR/minimum payment: DebtProfile (new, richer source) takes
-    // precedence over the legacy flat columns when present.
-    const effectiveApr = profile?.apr ?? r.interestRate ?? undefined;
-    const manualMinimumPayment = profile?.minimumPayment ?? r.minimumPayment ?? undefined;
+    // Effective APR/minimum payment — resolved by the single authority
+    // (lib/debt/effective-terms.ts; V26-PRE B3). DebtProfile > flat column.
+    const terms = resolveEffectiveDebtTerms(r);
+    const effectiveApr = terms.apr ?? undefined;
+    const manualMinimumPayment = terms.minimumPayment ?? undefined;
 
     let minimumPayment = manualMinimumPayment;
     let minimumPaymentIsEstimated = false;
