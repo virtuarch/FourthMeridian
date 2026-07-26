@@ -327,9 +327,19 @@ function main() {
     const walletKey = (stage: string) =>
       buildIncidentKey({ provider: "WALLET", plaidItemId: null,
                          scope: { kind: "WALLET", id: "wallet-1" }, domain: "wallet", stage });
+    // ONE captured moment for both rows. `view()` otherwise defaults
+    // lastOccurredAt to a FRESH Date.now() per call, and sortIncidentsForOperator
+    // orders equal-severity incidents by recency DESC — so whenever the two
+    // calls straddle a millisecond boundary the rows swap and the ordered
+    // assertions below fail. That made this block pass only when both calls
+    // landed in the same millisecond (intermittent under full-suite load).
+    // Same fix the investment block below already uses via SAME_MOMENT; with a
+    // shared timestamp the sort falls to its `id` tie-break, which is stable.
+    const WALLET_MOMENT = MINUTES_AGO(12);
     const wallet = (id: string, stage: string) =>
       view({ id, kind: "WALLET_SYNC_FAILED", provider: "WALLET", detail: { stage },
-             financialAccountId: "acct-btc", incidentKey: walletKey(stage) });
+             financialAccountId: "acct-btc", incidentKey: walletKey(stage),
+             lastOccurredAt: WALLET_MOMENT });
 
     const subjects = {
       "w-balance": { primary: "Self-custody", secondary: "BTC Wallet" },
