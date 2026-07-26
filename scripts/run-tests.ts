@@ -27,11 +27,17 @@
  * Usage:  npm test   |   npm run test:unit   |   npx tsx scripts/run-tests.ts
  *
  * SCOPE — safe local tests only:
- *   Discovers every ".test.ts" under `lib/`, `app/`, and `components/`. These
- *   are unit / pure / source-scan tests: no live database, no network, no
- *   Plaid, no secrets. Three of them import Prisma enum *values*, so the
- *   generated client must exist — `npm run test:unit` runs `prisma generate`
- *   first.
+ *   Discovers every ".test.ts" under `lib/`, `app/`, `components/`, `jobs/`,
+ *   and `scripts/`. These are unit / pure / source-scan tests: no live
+ *   database, no network, no Plaid, no secrets. Three of them import Prisma
+ *   enum *values*, so the generated client must exist — `npm run test:unit`
+ *   runs `prisma generate` first.
+ *
+ *   V26-PRE (B5): `jobs/` and `scripts/` were added to discovery because two
+ *   colocated unit tests already lived there and had NEVER run in CI —
+ *   including jobs/recovery-isolation.test.ts, the guard born from a real
+ *   incident (an unscoped resumeStaleImports() run overwrote two live Plaid
+ *   cursors). A regression guard that never executes is not a guard.
  *
  * DELIBERATELY EXCLUDED (do not add here): the DB/Plaid dev harnesses
  *   scripts/test-visibility-two-user-space.ts (+ .impl.ts) and
@@ -87,10 +93,15 @@ const files = [
   ...collectTests(path.join(ROOT, "lib")),
   ...collectTests(path.join(ROOT, "app")),
   ...collectTests(path.join(ROOT, "components")),
+  // V26-PRE (B5) — jobs/ and scripts/ carry colocated unit tests too (same
+  // keep-it-unit rule). The `*.test.ts` glob still never matches the DB/Plaid
+  // dev harnesses (`test-*.ts`) named in the header.
+  ...collectTests(path.join(ROOT, "jobs")),
+  ...collectTests(path.join(ROOT, "scripts")),
 ].sort();
 
 if (files.length === 0) {
-  console.error("run-tests: no *.test.ts files found under lib/, app/, or components/.");
+  console.error("run-tests: no *.test.ts files found under lib/, app/, components/, jobs/, or scripts/.");
   process.exit(1);
 }
 
