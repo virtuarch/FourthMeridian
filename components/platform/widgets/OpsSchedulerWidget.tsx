@@ -57,7 +57,7 @@
  */
 
 import { useState } from "react";
-import { AlertTriangle, CalendarClock, Loader2 } from "lucide-react";
+import { AlertTriangle, CalendarClock, Info, Loader2 } from "lucide-react";
 import type { PlatformSection } from "../widget-kit";
 import { useSharedWidgetFetch, type SharedFetchState } from "../workspace-session";
 import {
@@ -69,6 +69,7 @@ import {
   VRule,
 } from "../platform-surface";
 import { relTime } from "./job-health-format";
+
 import { LOADING_TEXT, unavailableText } from "./platform-health-view";
 import {
   CRON_CADENCE_REASON,
@@ -94,6 +95,46 @@ import {
   utcClock,
 } from "./scheduler-view";
 import type { SchedulerObservationResponse } from "@/app/api/platform/platform-ops/scheduler/route";
+
+/**
+ * The COLUMN heading tier — one step above `GroupLabel`, one below the section
+ * title (11px semibold vs the eyebrow's 10px medium; same casing, same tracking,
+ * same token).
+ *
+ * WHY IT IS LOCAL. The prototype defines this inside its own Scheduler for the
+ * same reason: "Observed" and "Expected" are the only two headings in the whole
+ * area that name a COLUMN rather than label a group, and the surface's own
+ * "Scheduler notes" deliberately stays at the eyebrow tier. Promoting an
+ * 11px variant into platform-surface.tsx would ship a shared primitive with one
+ * consumer and invite every eyebrow to drift up a step — the shared module's own
+ * extraction rule (extract on demonstrated repetition) rejects that.
+ *
+ * Spacing is NOT part of this component: the prototype carries `mb-4` here while
+ * production spaces from the content side (`mt-4` on the stack below). Adding
+ * both would double the gap, so only the type tier moves.
+ */
+function GroupHeading({ children, hint }: { children: React.ReactNode; hint?: string }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)]">
+        {children}
+      </span>
+      {hint && (
+        // Same accessible treatment production's GroupLabel already ships: the
+        // hint reaches assistive tech, not just a pointer tooltip.
+        <span
+          role="img"
+          aria-label={hint}
+          title={hint}
+          className="inline-flex text-[var(--text-faint)]"
+          style={{ cursor: "help" }}
+        >
+          <Info size={11} strokeWidth={2} aria-hidden />
+        </span>
+      )}
+    </div>
+  );
+}
 
 /**
  * The surface's honesty line. The prototype names `vercel.json` here as a source
@@ -187,7 +228,7 @@ function SchedulerColumns({
     <div className="flex flex-col gap-8 md:flex-row">
       {/* ── OBSERVED ── every figure here is a row that exists ─────────────── */}
       <div className="min-w-0 flex-1">
-        <GroupLabel hint={OBSERVED_HINT}>Observed</GroupLabel>
+        <GroupHeading hint={OBSERVED_HINT}>Observed</GroupHeading>
         <div className="mt-4 flex flex-col gap-6">
           <BigStat
             label="Last recorded execution"
@@ -221,7 +262,7 @@ function SchedulerColumns({
 
       {/* ── EXPECTED ── configuration, and evidence of nothing ─────────────── */}
       <div className="min-w-0 flex-1">
-        <GroupLabel hint={EXPECTED_HINT}>Expected</GroupLabel>
+        <GroupHeading hint={EXPECTED_HINT}>Expected</GroupHeading>
         <div className="mt-4 flex flex-col gap-6">
           <BigStat
             label="Next dispatcher slot"

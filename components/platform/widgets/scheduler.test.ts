@@ -252,6 +252,42 @@ function main() {
     const { html, text } = renderSurface();
 
     for (const g of GROUPS) check(`group "${g}" renders`, text.includes(g), text);
+
+    // ── The heading TIER (PARITY §1) ─────────────────────────────────────────
+    //
+    // The prototype runs three type tiers inside one surface: the section title,
+    // an 11px semibold COLUMN heading ("Observed"/"Expected"), and the 10px
+    // medium eyebrow ("Scheduler notes"). Production had flattened the middle
+    // one into the eyebrow, so the two columns that carry the surface's whole
+    // epistemic claim read at caption weight.
+    //
+    // Asserted STRUCTURALLY — the span that actually wraps each word — so the
+    // test cannot pass on a heading tier that merely exists somewhere in the
+    // markup, and cannot pass if the eyebrow is silently promoted to match.
+    const tierOf = (word: string): string | null => {
+      const m = html.match(
+        new RegExp(`<span class="([^"]*)"[^>]*>\\s*${word}\\s*</span>`),
+      );
+      return m ? m[1] : null;
+    };
+    const observed = tierOf("Observed");
+    const expected = tierOf("Expected");
+    const notes = tierOf("Scheduler notes");
+
+    check("the column headings are the 11px semibold tier",
+      observed != null && /text-\[11px\]/.test(observed) && /font-semibold/.test(observed), `${observed}`);
+    check("…both of them", expected != null && /text-\[11px\]/.test(expected) && /font-semibold/.test(expected), `${expected}`);
+    check("the eyebrow stays at the 10px medium tier — NOT promoted with them",
+      notes != null && /text-\[10px\]/.test(notes) && /font-medium/.test(notes), `${notes}`);
+    check("the two tiers are genuinely different", observed !== notes, `${observed} vs ${notes}`);
+    // Casing, tracking and colour token are shared — only weight and size move.
+    check("both tiers share casing, tracking and token",
+      [observed, notes].every((c) => c != null
+        && /uppercase/.test(c) && /tracking-wide/.test(c) && /text-\[var\(--text-secondary\)\]/.test(c)));
+    // Spacing is owned by the content stack (`mt-4`), not the heading, so the
+    // prototype's `mb-4` must NOT be duplicated onto it.
+    check("the heading carries no margin of its own (spacing stays with the stack)",
+      observed != null && !/\bmb-\d/.test(observed));
     // Two hairlines, one between each pair, collapsing with the columns at `md`.
     check("two vertical rules separate the three groups",
       (html.match(/hidden w-px self-stretch md:block/g) ?? []).length === 2,
