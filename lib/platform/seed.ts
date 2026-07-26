@@ -68,18 +68,58 @@ export async function ensurePlatformSpaces(
  * declared section against the existing `@@unique([spaceId, key])` on
  * SpaceDashboardSection.
  *
- * CREATE-ONLY, exactly like the Space upsert's empty `update`: an existing row
- * is left untouched (`update: {}`), so an operator's manual `enabled`/`order`
- * edit on a live section is never clobbered by a re-run. Only genuinely-new
- * (spaceId, key) pairs are inserted. Idempotent and safe to run anywhere.
+ * Creates genuinely-new (spaceId, key) pairs, and converges SYSTEM-OWNED
+ * metadata on rows that already exist. Operator-owned columns keep the original
+ * create-only guarantee — see the ownership table above the function.
  *
  * Runs AFTER `ensurePlatformSpaces` (it needs the Space rows to exist); wired
  * into the same entry points. If a Space is somehow absent it is skipped
  * defensively rather than throwing.
  */
+export interface PlatformSectionSeedResult {
+  /** (spaceId, key) pairs inserted because no row existed. */
+  created: number;
+  /** Rows whose SYSTEM-OWNED metadata had drifted and was converged. */
+  relabelled: number;
+}
+
+/**
+ * ── FIELD OWNERSHIP ──────────────────────────────────────────────────────────
+ *
+ * The create-only rule was right about one thing and wrong about another, and
+ * the difference is who owns the field.
+ *
+ *   SYSTEM-OWNED (canonical, must converge)
+ *     `label` — display text declared by PLATFORM_AREAS. There is no operator UI
+ *               that renames a platform section: platform Spaces render no
+ *               SpaceControls and no ManageSpaceModal, so the registry is the
+ *               only writer there has ever been. A create-only `label` therefore
+ *               does not protect an operator edit — it preserves a stale copy of
+ *               our own constant, and the sidebar then disagrees with the code.
+ *     `tab`   — always OVERVIEW for platform sections.
+ *
+ *   OPERATOR-OWNED (must be preserved)
+ *     `enabled` — whether the surface shows. Resetting this to `true` would
+ *                 silently un-hide a section an operator deliberately disabled.
+ *     `order`   — position. For platform areas display order actually comes from
+ *                 PLATFORM_AREA_WORKSPACES and this column is just a unique Int,
+ *                 but it is operator-shaped and nothing here needs to touch it.
+ *     `config`  — section-specific settings, never ours.
+ *
+ * So this reconciles `label` ONLY, and only where it has actually drifted. That
+ * is the narrowest change that makes canonical metadata converge; every other
+ * column keeps the create-only guarantee it had.
+ *
+ * IDEMPOTENT IN THE STRICT SENSE: the convergence is a `updateMany` filtered on
+ * `label: { not: … }`, so a second run matches zero rows and writes nothing —
+ * `updatedAt` does not churn on a no-op re-run.
+ */
 export async function ensurePlatformSections(
   client: PrismaClient = db,
-): Promise<void> {
+): Promise<PlatformSectionSeedResult> {
+  let created = 0;
+  let relabelled = 0;
+
   for (const area of ALL_PLATFORM_AREAS) {
     const meta = PLATFORM_AREAS[area];
     const space = await client.space.findUnique({
@@ -89,18 +129,37 @@ export async function ensurePlatformSections(
     if (!space) continue; // ensurePlatformSpaces guarantees this; be defensive.
 
     for (const s of meta.sections) {
-      await client.spaceDashboardSection.upsert({
+      const existing = await client.spaceDashboardSection.findUnique({
         where:  { spaceId_key: { spaceId: space.id, key: s.key } },
-        update: {}, // create-only — never overwrite enabled/order on a live row
-        create: {
-          spaceId: space.id,
-          key:     s.key,
-          label:   s.label,
-          tab:     "OVERVIEW",
-          enabled: true,
-          order:   s.order,
-        },
+        select: { label: true },
       });
+
+      if (!existing) {
+        await client.spaceDashboardSection.create({
+          data: {
+            spaceId: space.id,
+            key:     s.key,
+            label:   s.label,
+            tab:     "OVERVIEW",
+            enabled: true,
+            order:   s.order,
+          },
+        });
+        created += 1;
+        continue;
+      }
+
+      // Converge system-owned metadata, and ONLY where it drifted. Scoped by
+      // (spaceId, key) — the unique pair — so this can touch exactly one row.
+      if (existing.label !== s.label) {
+        await client.spaceDashboardSection.updateMany({
+          where: { spaceId: space.id, key: s.key },
+          data:  { label: s.label },
+        });
+        relabelled += 1;
+      }
     }
   }
+
+  return { created, relabelled };
 }
