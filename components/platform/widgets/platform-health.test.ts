@@ -521,6 +521,39 @@ function main() {
     ].map((m) => ({ aria: m[1], visible: m[2].trim() }));
 
     check("one doorway per group", doorways.length === 4, JSON.stringify(doorways));
+
+    // ── Touch target (PLATFORM-OPS-UI-POLISH-1) ──────────────────────────────
+    //
+    // The doorways are the surface's only interactive elements, and the
+    // prototype's 11px text link lays out a ~21px hit area — under the 44px
+    // minimum. The target is enlarged by an OVERLAY, never by padding or
+    // min-height: those change the box the grid measures and would push every
+    // group taller, a spacing regression against the prototype at exactly the
+    // widths parity was verified at.
+    //
+    // Asserted on the doorway's own class list, so the guard fails if the
+    // overlay is dropped OR if someone "simplifies" it into layout-affecting
+    // spacing.
+    const doorwayClass = (wired.html.match(/<button[^>]*aria-label="Alerts[^"]*"[^>]*class="([^"]*)"/) ??
+                          wired.html.match(/<button[^>]*class="([^"]*)"[^>]*aria-label="Alerts[^"]*"/))?.[1] ?? "";
+    check("the doorway carries a 44px overlay hit area",
+      /before:h-11/.test(doorwayClass) && /before:absolute/.test(doorwayClass), doorwayClass);
+    check("…at least 44px wide too", /before:min-w-\[44px\]/.test(doorwayClass), doorwayClass);
+    check("…positioned relative to the button, so the overlay is centred on it",
+      /(^|\s)relative(\s|$)/.test(doorwayClass), doorwayClass);
+    // The overlay's OWN utilities are `before:`-prefixed and affect nothing but
+    // the pseudo-element, so the layout assertions read the class list with those
+    // stripped — otherwise `before:h-11` would read as a height on the button.
+    const layoutClasses = doorwayClass
+      .split(/\s+/)
+      .filter((c) => !c.startsWith("before:"))
+      .join(" ");
+    check("the LAYOUT box is untouched — no padding/min-height that would move the grid",
+      !/min-h-|\bpy-\d|\bh-\d/.test(layoutClasses), layoutClasses);
+    check("no negative margin (it would steal the group's last line)",
+      !/(^|\s)-m[trbl]?-\d/.test(layoutClasses), layoutClasses);
+    check("no breakpoint scoping — the overlay is layout-neutral at every width",
+      !/(sm|md|lg|xl):/.test(doorwayClass), doorwayClass);
     check("the doorway labels are the prototype's",
       doorways.map((d) => d.visible).join(",") === "Alerts,Providers,Providers,Operations",
       doorways.map((d) => d.visible).join(","));

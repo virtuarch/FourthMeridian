@@ -193,7 +193,19 @@ function GroupDoorway({
       type="button"
       onClick={() => onOpen(targetId)}
       aria-label={doorwayLabel(def.label, group)}
-      className="mt-auto flex w-fit items-center gap-1 pt-1 text-[11px] text-[var(--meridian-400)] transition-colors hover:text-[var(--meridian-300)]"
+      /* TOUCH TARGET. The prototype's doorway is an 11px text link, which lays out
+         a ~21px-tall hit area — under the 44px minimum, and these are the only
+         interactive elements on the surface.
+         The target is enlarged by an OVERLAY (a `before` pseudo-element centred on
+         the button), not by padding or min-height, because those would change the
+         box the grid measures and push every group taller — a spacing regression
+         against the prototype at exactly the widths where parity was verified.
+         The overlay affects hit-testing only: text treatment, layout and the
+         rendered box are byte-identical at every width, so this needs no
+         breakpoint and cannot regress desktop.
+         Vertical growth is ~11px per edge, well inside the `gap-8` (32px) that
+         separates groups, so no two targets can overlap. */
+      className="relative mt-auto flex w-fit items-center gap-1 pt-1 text-[11px] text-[var(--meridian-400)] transition-colors hover:text-[var(--meridian-300)] before:absolute before:left-1/2 before:top-1/2 before:h-11 before:w-full before:min-w-[44px] before:-translate-x-1/2 before:-translate-y-1/2 before:content-['']"
     >
       {def.label} <ArrowRight size={10} aria-hidden />
     </button>
