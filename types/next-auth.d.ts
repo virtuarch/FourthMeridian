@@ -19,6 +19,14 @@ declare module "next-auth" {
     };
     sessionToken?:     string | null; // opaque id matching UserSession.sessionToken — used to identify current session
     requireTotpSetup?: boolean | null; // set when platform requires TOTP but user hasn't enrolled yet — middleware redirects to /settings
+    /**
+     * PROD-POOLER-AUTH-INCIDENT-1 — set when the UserSession revocation check
+     * could not be answered (DB unreachable / pool exhausted) and no bounded-
+     * stale result was available. Means UNKNOWN: never "valid", never "revoked".
+     * The guards in lib/session.ts translate it to 503, and the session cookie is
+     * deliberately left intact. See lib/auth/session-outcome.ts.
+     */
+    revocationIndeterminate?: boolean;
   }
 
   interface User {

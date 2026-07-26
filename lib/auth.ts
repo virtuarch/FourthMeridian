@@ -34,9 +34,10 @@ import { sendEmail } from "@/lib/email/send";
 import { createNotification } from "@/lib/notifications/create";
 import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
-import { getCachedRevocation, setCachedRevocation, invalidateSession } from "@/lib/session-cache";
+import { resolveRevocation, invalidateSession } from "@/lib/session-cache";
 import { checkKeyLimitStrict, peekKey } from "@/lib/rate-limit";
-import { captureAuthInfraFailure } from "@/lib/monitoring/capture";
+import { captureAuthInfraFailure, captureSessionRevocationFailure } from "@/lib/monitoring/capture";
+import { SESSION_INDETERMINATE_FLAG } from "@/lib/auth/session-outcome";
 import { AUTH_UNAVAILABLE_TOKEN } from "@/lib/auth/login-outcome";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { LOGIN_ID_WINDOW_SEC, LOGIN_ID_LIMIT, LOGIN_CAPTCHA_THRESHOLD } from "@/lib/login-limits";
@@ -95,6 +96,31 @@ async function recordLoginFailure(args: {
     }
   } catch (err) {
     console.error("[auth] recordLoginFailure write failed (non-fatal):", err);
+  }
+}
+
+/**
+ * Best-effort COARSE route for a degraded-session report (no query string).
+ *
+ * Only called on the degradation paths, so it costs nothing on the happy path.
+ * `next/headers` is imported dynamically and the whole thing is guarded: the
+ * session callback also runs outside a request scope (and in contexts where the
+ * headers are unavailable), and monitoring must never become the reason a
+ * request fails. Returns null rather than guessing.
+ *
+ * The query string is deliberately dropped — it carries deep-link state (account
+ * ids, presets, as-of dates) that has no place in an error report.
+ */
+async function coarseRoute(): Promise<string | null> {
+  try {
+    const { headers } = await import("next/headers");
+    const h   = await headers();
+    const raw = h.get("x-matched-path") ?? h.get("x-invoke-path") ?? null;
+    if (!raw) return null;
+    const path = raw.split("?")[0];
+    return path.startsWith("/") ? path : null;
+  } catch {
+    return null;
   }
 }
 
@@ -547,38 +573,67 @@ export const authOptions: NextAuthOptions = {
       // for low-stakes requests is throttled.
       if (sessionToken) {
         const tRevoke = Date.now();
-        const cached = getCachedRevocation(sessionToken);
-        let valid: boolean;
 
-        if (cached !== null) {
-          valid = cached;
-          if (process.env.NODE_ENV !== "production") {
-            console.log(`[auth] session callback revocation check: CACHE HIT, ${Date.now() - tRevoke}ms, valid=${valid}`);
-          }
-        } else {
+        // PROD-POOLER-AUTH-INCIDENT-1 — resolveRevocation() owns three things
+        // this callback used to get wrong:
+        //   1. It COALESCES concurrent misses into one query. Under Fluid Compute
+        //      many requests share this process and its single pooled connection
+        //      (connection_limit=1), so N simultaneous cache misses used to mean
+        //      N queued queries and a 10s P2024 for the losers.
+        //   2. It NEVER THROWS. A throw here reaches NextAuth's catch, which
+        //      deletes the session cookie — a transient DB blip became a logout.
+        //   3. It degrades through a BOUNDED stale window before giving up.
+        const outcome = await resolveRevocation(sessionToken, async () => {
           const dbSession = await db.userSession.findFirst({
             where:  { sessionToken, revokedAt: null },
             select: { id: true },
           });
-          valid = !!dbSession;
-          setCachedRevocation(sessionToken, valid);
-          if (process.env.NODE_ENV !== "production") {
-            console.log(`[auth] session callback revocation check: LIVE DB, ${Date.now() - tRevoke}ms, valid=${valid}`);
-          }
+          return !!dbSession;
+        });
 
-          if (valid) {
-            // Bump lastActiveAt (fire-and-forget — don't block the response).
-            // Only happens on a live check now (at most once per TTL window
-            // per session), not on every single call as before.
-            db.userSession.updateMany({
-              where: { sessionToken },
-              data:  { lastActiveAt: new Date() },
-            }).catch(() => {});
-          }
+        if (process.env.NODE_ENV !== "production") {
+          console.log(`[auth] session callback revocation check: ${outcome.disposition}, ${Date.now() - tRevoke}ms, valid=${outcome.valid}`);
         }
 
-        if (!valid) {
-          // Return a bare expired session — middleware will redirect to /login
+        // Bump lastActiveAt (fire-and-forget — don't block the response). Only on
+        // a genuine live check, as before: a COALESCED caller is riding someone
+        // else's query and must not add a second write, and a STALE_HIT means the
+        // database is already refusing connections — piling on a write there
+        // would add pressure to the exact resource that is failing.
+        if (outcome.disposition === "LIVE" && outcome.valid) {
+          db.userSession.updateMany({
+            where: { sessionToken },
+            data:  { lastActiveAt: new Date() },
+          }).catch(() => {});
+        }
+
+        // ── INDETERMINATE — infrastructure could not answer ───────────────────
+        // Deny THIS request, preserve the credential. Returning a value (rather
+        // than throwing) is what keeps the cookie: NextAuth re-issues it on the
+        // normal path. The user sees a retryable error, not a logout.
+        if (outcome.valid === null) {
+          captureSessionRevocationFailure({
+            error:       outcome.error,
+            disposition: "INDETERMINATE",
+            route:       await coarseRoute(),
+          });
+          return { ...session, user: undefined as never, [SESSION_INDETERMINATE_FLAG]: true };
+        }
+
+        // A bounded-stale answer was used — the window absorbed the pressure.
+        // Still reported: this is the leading indicator of the condition that
+        // produces the INDETERMINATE case above.
+        if (outcome.disposition === "STALE_HIT") {
+          captureSessionRevocationFailure({
+            error:       outcome.error,
+            disposition: "STALE_HIT",
+            route:       await coarseRoute(),
+          });
+        }
+
+        if (!outcome.valid) {
+          // Authoritatively revoked (fresh or bounded-stale). Return a bare
+          // expired session — middleware will redirect to /login.
           return { ...session, user: undefined as never, expires: new Date(0).toISOString() };
         }
       }

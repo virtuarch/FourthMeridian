@@ -51,6 +51,8 @@ import { NextResponse }          from "next/server";
 import { authOptions }           from "@/lib/auth";
 import { db }                    from "@/lib/db";
 import { setCachedRevocation }   from "@/lib/session-cache";
+import { isRevocationIndeterminate } from "@/lib/auth/session-outcome";
+import { captureSessionRevocationFailure } from "@/lib/monitoring/capture";
 import { decideAdminApiAccess }  from "@/lib/admin-totp-enrollment";
 import { env }                    from "@/lib/env";
 import { UserRole,
@@ -98,18 +100,72 @@ export const unauthorized = (): NextResponse =>
 export const forbidden = (): NextResponse =>
   NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
+/**
+ * PROD-POOLER-AUTH-INCIDENT-1 — the honest response when we could not determine
+ * whether this session is still valid.
+ *
+ * 503, NOT 401. A 401 tells the client "you are signed out", which is how a
+ * transient pool timeout used to cascade into users landing on /forgot-password
+ * believing their credentials had broken. 503 + Retry-After says "ask again in a
+ * moment" — which is true, because the session cookie is still intact and the
+ * observed clusters self-healed in ~90 seconds.
+ */
+export const serviceUnavailable = (): NextResponse =>
+  NextResponse.json(
+    { error: "Service temporarily unavailable. Please try again." },
+    { status: 503, headers: { "Retry-After": "5" } },
+  );
+
 // ── Internal resolver ─────────────────────────────────────────────────────────
 
-async function resolveUser(): Promise<SessionUser | null> {
+/**
+ * Three outcomes, deliberately distinct. Collapsing "indeterminate" into
+ * "anonymous" is the masking defect this incident was made of.
+ */
+type SessionResolution =
+  | { kind: "user"; user: SessionUser }
+  | { kind: "anonymous" }
+  | { kind: "indeterminate" };
+
+async function resolveSession(): Promise<SessionResolution> {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return null;
+  // Checked BEFORE the user check: the degraded session deliberately carries no
+  // user, so an ordering mistake here would silently downgrade 503 back to 401.
+  if (isRevocationIndeterminate(session)) return { kind: "indeterminate" };
+  if (!session?.user?.id)                 return { kind: "anonymous" };
   return {
-    id:               session.user.id,
-    role:             session.user.role,
-    username:         session.user.username ?? null,
-    sessionToken:     session.sessionToken  ?? null,
-    requireTotpSetup: session.requireTotpSetup ?? false,
+    kind: "user",
+    user: {
+      id:               session.user.id,
+      role:             session.user.role,
+      username:         session.user.username ?? null,
+      sessionToken:     session.sessionToken  ?? null,
+      requireTotpSetup: session.requireTotpSetup ?? false,
+    },
   };
+}
+
+/**
+ * The live revocation re-check used by the two `requireFresh*` guards.
+ *
+ * Fresh guards deliberately bypass the cache, so they own the same failure mode
+ * the cached path just had fixed: an uncaught P2024 here surfaced as a 500. It
+ * must fail CLOSED (a sensitive action must never proceed on an unverified
+ * session) but HONESTLY (503, not 401, and never a destroyed cookie).
+ */
+async function recheckSessionLive(
+  sessionToken: string,
+): Promise<"valid" | "revoked" | "unavailable"> {
+  try {
+    const dbSession = await db.userSession.findFirst({
+      where:  { sessionToken, revokedAt: null },
+      select: { id: true },
+    });
+    return dbSession ? "valid" : "revoked";
+  } catch (error) {
+    captureSessionRevocationFailure({ error, disposition: "INDETERMINATE" });
+    return "unavailable";
+  }
 }
 
 // ── Forced-TOTP-enrolment gate (SEC-FIX-1) ────────────────────────────────────
@@ -154,8 +210,10 @@ export async function requireUser(
 ): Promise<
   [SessionUser, null] | [null, NextResponse]
 > {
-  const user = await resolveUser();
-  if (!user) return [null, unauthorized()];
+  const resolution = await resolveSession();
+  if (resolution.kind === "indeterminate") return [null, serviceUnavailable()];
+  if (resolution.kind === "anonymous")     return [null, unauthorized()];
+  const user = resolution.user;
   if (totpSetupPending(user, opts)) return [null, forbidden()];
   return [user, null];
 }
@@ -178,21 +236,21 @@ export async function requireFreshUser(
 ): Promise<
   [SessionUser, null] | [null, NextResponse]
 > {
-  const user = await resolveUser();
-  if (!user) return [null, unauthorized()];
+  const resolution = await resolveSession();
+  if (resolution.kind === "indeterminate") return [null, serviceUnavailable()];
+  if (resolution.kind === "anonymous")     return [null, unauthorized()];
+  const user = resolution.user;
   if (totpSetupPending(user, opts)) return [null, forbidden()];
   if (!user.sessionToken) return [null, unauthorized()];
 
   const t0 = Date.now();
-  const dbSession = await db.userSession.findFirst({
-    where:  { sessionToken: user.sessionToken, revokedAt: null },
-    select: { id: true },
-  });
+  const verdict = await recheckSessionLive(user.sessionToken);
   if (process.env.NODE_ENV !== "production") {
-    console.log(`[session] requireFreshUser live revocation check: ${Date.now() - t0}ms, valid=${!!dbSession}`);
+    console.log(`[session] requireFreshUser live revocation check: ${Date.now() - t0}ms, verdict=${verdict}`);
   }
 
-  if (!dbSession) return [null, unauthorized()];
+  if (verdict === "unavailable") return [null, serviceUnavailable()];
+  if (verdict === "revoked")     return [null, unauthorized()];
 
   // Refresh the cache with this authoritative result so any cached reads
   // within the TTL window right after this reflect it too.
@@ -216,8 +274,10 @@ export async function requireFreshUser(
 export async function requireSystemAdmin(): Promise<
   [SessionUser, null] | [null, NextResponse]
 > {
-  const user = await resolveUser();
-  if (!user) return [null, unauthorized()];
+  const resolution = await resolveSession();
+  if (resolution.kind === "indeterminate") return [null, serviceUnavailable()];
+  if (resolution.kind === "anonymous")     return [null, unauthorized()];
+  const user = resolution.user;
   if (adminApiAccess(user) !== "ALLOW") return [null, forbidden()];
   return [user, null];
 }
@@ -247,21 +307,21 @@ function adminApiAccess(user: SessionUser) {
 export async function requireFreshSystemAdmin(): Promise<
   [SessionUser, null] | [null, NextResponse]
 > {
-  const user = await resolveUser();
-  if (!user) return [null, unauthorized()];
+  const resolution = await resolveSession();
+  if (resolution.kind === "indeterminate") return [null, serviceUnavailable()];
+  if (resolution.kind === "anonymous")     return [null, unauthorized()];
+  const user = resolution.user;
   if (adminApiAccess(user) !== "ALLOW") return [null, forbidden()];
   if (!user.sessionToken) return [null, unauthorized()];
 
   const t0 = Date.now();
-  const dbSession = await db.userSession.findFirst({
-    where:  { sessionToken: user.sessionToken, revokedAt: null },
-    select: { id: true },
-  });
+  const verdict = await recheckSessionLive(user.sessionToken);
   if (process.env.NODE_ENV !== "production") {
-    console.log(`[session] requireFreshSystemAdmin live revocation check: ${Date.now() - t0}ms, valid=${!!dbSession}`);
+    console.log(`[session] requireFreshSystemAdmin live revocation check: ${Date.now() - t0}ms, verdict=${verdict}`);
   }
 
-  if (!dbSession) return [null, unauthorized()];
+  if (verdict === "unavailable") return [null, serviceUnavailable()];
+  if (verdict === "revoked")     return [null, unauthorized()];
 
   setCachedRevocation(user.sessionToken, true);
 
@@ -299,8 +359,10 @@ export async function requireSpaceRole(
 ): Promise<
   [{ user: SessionUser; membership: SpaceMembership }, null] | [null, NextResponse]
 > {
-  const user = await resolveUser();
-  if (!user) return [null, unauthorized()];
+  const resolution = await resolveSession();
+  if (resolution.kind === "indeterminate") return [null, serviceUnavailable()];
+  if (resolution.kind === "anonymous")     return [null, unauthorized()];
+  const user = resolution.user;
   if (totpSetupPending(user)) return [null, forbidden()];
 
   const membership = await db.spaceMember.findUnique({

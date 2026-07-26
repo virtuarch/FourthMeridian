@@ -35,8 +35,20 @@ You need two URLs:
 
 **Transaction Pooler** (for `DATABASE_URL` in Vercel — port 6543):
 ```
-postgresql://postgres.[project-ref]:[password]@aws-0-us-east-1.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
+postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres?pgbouncer=true
 ```
+
+> **Do not add `connection_limit` to this URL.** The runtime pool size is owned by
+> `lib/db/connection-url.ts` and applied over whatever the URL contains
+> (PROD-POOLER-AUTH-INCIDENT-1). This doc previously showed
+> `connection_limit=1`, which reached production and Preview and caused P2024
+> pool timeouts: with Vercel Fluid Compute enabled, concurrent requests share one
+> Node process and therefore one Prisma client, so a 1-connection pool serialised
+> them until the 10s `pool_timeout` fired. `pgbouncer=true` and port 6543 are
+> required and unchanged.
+>
+> The region shown above is a placeholder — this project's database is in
+> **`ap-southeast-1`** (Singapore), matching `vercel.json` `regions: ["sin1"]`.
 
 **Direct Connection** (for `DIRECT_URL` in Vercel and for running migrations — port 5432):
 ```
@@ -91,7 +103,7 @@ Set scope to **Production** and **Preview** for all of them unless noted.
 
 | Variable | Value |
 |---|---|
-| `DATABASE_URL` | Supabase Transaction Pooler URL (port 6543, `?pgbouncer=true&connection_limit=1`) |
+| `DATABASE_URL` | Supabase Transaction Pooler URL (port 6543, `?pgbouncer=true` — no `connection_limit`; see above) |
 | `DIRECT_URL` | Supabase Direct Connection URL (port 5432) |
 | `NEXTAUTH_SECRET` | Run `openssl rand -base64 32` locally and paste the result |
 | `NEXTAUTH_URL` | `https://<your-vercel-domain>.vercel.app` (fill in after first deploy) |

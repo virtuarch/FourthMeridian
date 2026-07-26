@@ -122,7 +122,11 @@ async function main() {
     // the registry is decorative.
     const stages = new Set<string>();
     for (const f of [...walk("lib"), ...walk("app")].filter((x) => !/\.test\.tsx?$/.test(x))) {
-      for (const m of code(f).matchAll(/stage:\s*"([a-z][a-z-]*)"/g)) stages.add(m[1]);
+      // `\b` anchors this to a property named exactly `stage`. Without it the
+      // pattern also matched any property whose name merely ENDS in "stage"
+      // (e.g. the auth-monitoring tag `auth_stage: "session"`), which has nothing
+      // to do with SyncIssue operations — a lexical proxy standing in for intent.
+      for (const m of code(f).matchAll(/\bstage:\s*"([a-z][a-z-]*)"/g)) stages.add(m[1]);
     }
     const unregistered = [...stages].filter((s) => !isRegisteredOperation(s));
     // "load" is btc-sync's own result-shape field and never reaches SyncIssue.
