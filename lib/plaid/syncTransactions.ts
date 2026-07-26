@@ -412,6 +412,16 @@ export async function syncTransactionsForItem(
       // same `captured` sidecar buildPlaidFlowInput already produces. Best-effort;
       // null on any classification failure.
       let enrichment: EnrichmentCapture | null = null;
+      // V26-PRE (B1) — did the classification pipeline complete? Degrade-to-null
+      // is a CREATE contract ("the row still persists with its original
+      // fields"); on an UPDATE the same nulls would DESTROY previously-persisted
+      // facts: one transient failure in resolveAccountMeta (the first statement
+      // of the try — a DB read) on a modified[] re-delivery used to null out
+      // flowType/flowDirection/classifierVersion (the row silently left every
+      // economic total), TI facts, transfer evidence, and the rescued category —
+      // durably, since the page still persisted and the cursor advanced. Update
+      // paths now OMIT semantic columns unless this run actually computed them.
+      let classified = false;
       try {
         const meta = await resolveAccountMeta(financialAccountId);
         currency = currency ?? meta.currency;
@@ -496,28 +506,58 @@ export async function syncTransactionsForItem(
           }
         }
         if (shadowEnabled) accumulateShadow(shadowStats, classification, category, amount);
+        classified = true;
       } catch (e) {
-        console.warn(`[flowtype] classification skipped for ${txn.transaction_id} — writing null flow columns:`, e);
+        console.warn(`[flowtype] classification skipped for ${txn.transaction_id} — null flow columns on create, existing facts preserved on update:`, e);
       }
 
       // The 7 original values are byte-identical; flow columns are additive.
       // currency (MC1 Phase 0 Slice 2) rides the shared fields object. Category +
       // flow are held SEPARATELY so a USER correction can override or preserve
       // them (MI M5) without disturbing the base fields.
-      // TI2-4 — factFields ride baseFields so they are stamped identically on all
-      // three write sites (create, modified-update, fingerprint-update), disjoint
-      // from category/flow (which ride `mi`) and independent of MI resolution.
-      const baseFields = { financialAccountId, date, merchant, description, amount, pending: txn.pending, currency, ...factFields, ...transferFields };
+      // TI2-4 — factFields ride createFields so a fresh row is stamped in one
+      // shape, disjoint from category/flow (which ride `mi`) and independent of
+      // MI resolution.
+      //
+      // V26-PRE (B1) — CREATE vs UPDATE write contracts diverge here:
+      //   CREATE — degrade-to-null is honest: a fresh row with null semantics
+      //     lands in the never-classified backlog and needs-classification
+      //     surfaces. All computed fields ride, nulls included.
+      //   UPDATE — facts are durable; a failed run must not erase what a
+      //     successful run persisted. Semantic columns ride ONLY when this run
+      //     computed them (`classified`), `currency` only when known (null means
+      //     "not recorded", which must not overwrite a recorded denomination),
+      //     and transfer evidence follows the reconcile planner's NO_WRITE rule
+      //     (lib/transactions/transfer-evidence-plan.ts): persist only when a
+      //     descriptive axis was RECOGNIZED — an unrecognized/no-signal run, or
+      //     a row currently classified non-TRANSFER, never overwrites stamped
+      //     evidence with nulls (evidence axes are write-time; wiped evidence is
+      //     unrecoverable and silently kills the payment-app honesty prompts).
+      const evidenceRecognized = transferFields !== NULL_TRANSFER_EVIDENCE_FIELDS;
+      const createFields = { financialAccountId, date, merchant, description, amount, pending: txn.pending, currency, ...factFields, ...transferFields };
+      const updateFields = {
+        financialAccountId, date, merchant, description, amount, pending: txn.pending,
+        ...(currency !== null ? { currency } : {}),
+        ...(classified ? factFields : {}),
+        ...(evidenceRecognized ? transferFields : {}),
+      };
       const defaultCategoryFlow = { category, ...flowFields };
 
       // MI M4/M5 — resolve merchant identity + category provenance, mint/reuse the
       // Merchant (+ alias + safe enrichment), apply an owner USER rule (override),
       // or preserve an existing USER_* correction. Returns the full mergeable
       // patch (category/flow + MI columns). Never blocks the write on failure.
+      //
+      // V26-PRE (B1) — `mode` mirrors the create/update contract above: when the
+      // outer classification FAILED and this is an UPDATE, the default
+      // category/flow patch (un-rescued category + null flow columns) is
+      // withheld so existing persisted facts survive. A USER-rule override that
+      // successfully re-classifies through the authoritative pipeline still
+      // applies — that is a real classification, not a degradation.
       async function miData(current: {
         merchantId: string | null;
         categorySource: CategorySource | null;
-      }): Promise<Record<string, unknown>> {
+      }, mode: "create" | "update"): Promise<Record<string, unknown>> {
         try {
           const meta = await resolveAccountMeta(financialAccountId as string);
           const mi = await resolveMerchantWrite(
@@ -549,9 +589,14 @@ export async function syncTransactionsForItem(
             return { ...columns, category: mi.category, ...overrideFlow, categorySource: "USER_RULE", ...(mi.categoryRuleId ? { categoryRuleId: mi.categoryRuleId } : {}) };
           }
           // NORMAL — default category + flow, stamp confirmed provenance.
+          // V26-PRE (B1): withheld on update when classification failed — the
+          // "default" would be an un-rescued category + null flow columns.
+          if (mode === "update" && !classified) return { ...columns };
           return { ...columns, ...defaultCategoryFlow, ...(mi.categorySource ? { categorySource: mi.categorySource } : {}) };
         } catch (e) {
-          console.warn(`[merchant-intelligence] resolution skipped for ${txn.transaction_id} — writing default category/flow, no MI:`, e);
+          console.warn(`[merchant-intelligence] resolution skipped for ${txn.transaction_id} — default category/flow on create, existing facts preserved on update; no MI:`, e);
+          // V26-PRE (B1): same preservation rule on the failure path.
+          if (mode === "update" && !classified) return {};
           return { ...defaultCategoryFlow };
         }
       }
@@ -568,8 +613,8 @@ export async function syncTransactionsForItem(
           // been tombstoned by a prior removed[] and Plaid now re-sends it in
           // added/modified, it is live again — Plaid only sends added/modified
           // for live transactions, so clearing deletedAt here is correct.
-          const mi = await miData({ merchantId: existingByPlaidId.merchantId, categorySource: existingByPlaidId.categorySource });
-          await database.transaction.update({ where: { id: existingByPlaidId.id }, data: { ...baseFields, deletedAt: null, ...mi } });
+          const mi = await miData({ merchantId: existingByPlaidId.merchantId, categorySource: existingByPlaidId.categorySource }, "update");
+          await database.transaction.update({ where: { id: existingByPlaidId.id }, data: { ...updateFields, deletedAt: null, ...mi } });
           updatedByPlaidId++;
           continue;
         }
@@ -590,10 +635,10 @@ export async function syncTransactionsForItem(
             where:  { id: fingerprintMatch.id },
             select: { merchantId: true, categorySource: true },
           });
-          const mi = await miData({ merchantId: cur?.merchantId ?? null, categorySource: cur?.categorySource ?? null });
+          const mi = await miData({ merchantId: cur?.merchantId ?? null, categorySource: cur?.categorySource ?? null }, "update");
           await database.transaction.update({
             where: { id: fingerprintMatch.id },
-            data:  { ...baseFields, plaidTransactionId: txn.transaction_id, ...mi },
+            data:  { ...updateFields, plaidTransactionId: txn.transaction_id, ...mi },
           });
           updatedByFingerprint++;
           console.warn(
@@ -605,8 +650,8 @@ export async function syncTransactionsForItem(
         // 3. Genuinely new transaction. `category` is included explicitly as the
         // required baseline; miData's category (normal/override) overrides it via
         // the later spread (preserve never occurs on a create).
-        const mi = await miData({ merchantId: null, categorySource: null });
-        await database.transaction.create({ data: { ...baseFields, category, plaidTransactionId: txn.transaction_id, ...mi } });
+        const mi = await miData({ merchantId: null, categorySource: null }, "create");
+        await database.transaction.create({ data: { ...createFields, category, plaidTransactionId: txn.transaction_id, ...mi } });
         created++;
       } catch (e) {
         console.error(`[plaid sync] failed to upsert transaction ${txn.transaction_id}:`, redactedErrorForLog(e));
