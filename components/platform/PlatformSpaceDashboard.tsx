@@ -17,6 +17,9 @@
  *     `PLATFORM_AREA_WORKSPACES` (lib/platform/workspaces.ts).
  *   • Frame — SpaceShell owns chrome + the rail (Atlas SegmentedControl); this
  *     host only supplies title/subtitle/toolbar/rail + the active workspace body.
+ *   • Sidebar — identity AND the active workspace's SECTION anchors are published
+ *     up through the ONE SpaceChrome bridge customer workspaces use, so the
+ *     ContextualNavbar's Sections block serves both domains from one model.
  *   • Data — Platform widgets SELF-FETCH (OPS-5 S6 dataNeeds decision A); this
  *     host passes each its enabled DB `SpaceDashboardSection` row and nothing more.
  *
@@ -30,9 +33,13 @@
  * simply skipped), so the placeholder branch was dead (OPS-5 integration gate §12).
  */
 
-import { useEffect, useState, type ComponentType } from "react";
+import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { useRouter } from "next/navigation";
-import { useSpaceChromePublisher } from "@/lib/space/space-chrome-context";
+import {
+  useSpaceChromePublisher,
+  useSpaceSectionsPublisher,
+  type SpaceChromeSection,
+} from "@/lib/space/space-chrome-context";
 import type { SpaceMountContext } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
 import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, ArrowRight } from "lucide-react";
@@ -125,6 +132,57 @@ const PLATFORM_WIDGET_REGISTRY: Record<string, ComponentType<{ section: Section 
   cs_sync_issues: CsSyncIssuesWidget,
 };
 
+/**
+ * The scroll-anchor id for a composed section, derived from its section KEY (the
+ * stable composition identity — labels are editable DB text and would move the
+ * anchor under the sidebar). ONE derivation, used by both the rendered wrapper
+ * and the published anchor, so the sidebar can never point at an id that does
+ * not exist.
+ */
+export function platformSectionAnchor(key: string): string {
+  return `platform-section-${key}`;
+}
+
+/** The DB rows a workspace actually RENDERS: composed, enabled, and backed by a
+ *  widget. A composed key with no enabled row, or no widget, renders nothing. */
+function resolveWorkspaceRows(
+  sectionKeys: readonly string[],
+  dbByKey: ReadonlyMap<string, Section>,
+): Section[] {
+  return sectionKeys
+    .map((key) => dbByKey.get(key))
+    .filter((row): row is Section => row != null && PLATFORM_WIDGET_REGISTRY[row.key] != null);
+}
+
+/**
+ * The ACTIVE workspace's sidebar Sections list — the same `SpaceChromeSection`
+ * contract customer workspaces publish, so Platform adopts the ONE model rather
+ * than growing a second one.
+ *
+ * Honesty rules, both load-bearing:
+ *   • The LABEL is the DB `SpaceDashboardSection.label` — never a hardcoded
+ *     string and never the section key. A composed key with no enabled DB row
+ *     has no label and therefore no row here: it does not exist on this surface.
+ *   • The ANCHOR is null when the section has no widget to scroll to. That row
+ *     renders DISABLED ("· soon") rather than pretending to a scroll target the
+ *     page never mounts.
+ */
+export function platformChromeSections(
+  sectionKeys: readonly string[],
+  dbByKey: ReadonlyMap<string, Section>,
+): SpaceChromeSection[] {
+  return sectionKeys
+    .map((key) => dbByKey.get(key))
+    .filter((row): row is Section => row != null)
+    .map((row) => ({
+      label: row.label,
+      anchor: PLATFORM_WIDGET_REGISTRY[row.key] != null ? platformSectionAnchor(row.key) : null,
+    }));
+}
+
+/** Stable empty composition — keeps the sections memo from re-firing per render. */
+const NO_SECTION_KEYS: readonly string[] = [];
+
 /** Lucide icon-name → component, for the Platform workspace identities. */
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
   LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw,
@@ -180,8 +238,12 @@ function WorkspaceDoorway({ targetId, onOpen }: { targetId: string; onOpen: (id:
  * Atlas Block+Surface (widget-kit) laid out in the same top-to-bottom reading
  * rhythm customer Spaces use (space-y), so density builds down the page instead
  * of tiling isolated metric cards. The doorways keep their summary→detail role
- * but read as a quiet "Explore" region rather than a second card grid. */
-function PlatformWorkspaceBody({
+ * but read as a quiet "Explore" region rather than a second card grid.
+ *
+ * Exported for the render test only (platform-shell.test.ts): the SIDEBAR points
+ * at ids this body emits, so the two must be provable together — a scroll target
+ * asserted only in the publisher would be a promise nothing keeps. */
+export function PlatformWorkspaceBody({
   sectionKeys,
   doorways,
   dbByKey,
@@ -192,9 +254,7 @@ function PlatformWorkspaceBody({
   dbByKey:     Map<string, Section>;
   onOpen:      (id: string) => void;
 }) {
-  const rows = sectionKeys
-    .map((key) => dbByKey.get(key))
-    .filter((row): row is Section => row != null && PLATFORM_WIDGET_REGISTRY[row.key] != null);
+  const rows = resolveWorkspaceRows(sectionKeys, dbByKey);
 
   return (
     <div className="flex flex-col gap-8 md:gap-10 pb-16">
@@ -211,7 +271,15 @@ function PlatformWorkspaceBody({
           <div className="flex flex-col gap-8 md:gap-10">
             {rows.map((row) => {
               const Widget = PLATFORM_WIDGET_REGISTRY[row.key];
-              return <Widget key={row.id} section={row} />;
+              /* The scroll target for the sidebar's Sections list. Structural
+                 only — a wrapper carrying the key-derived id (and the sticky-
+                 header offset customer workspaces use), never a layout change:
+                 the row is still one child of the same editorial stack. */
+              return (
+                <div key={row.id} id={platformSectionAnchor(row.key)} className="scroll-mt-20">
+                  <Widget section={row} />
+                </div>
+              );
             })}
           </div>
         </WorkspaceSessionProvider>
@@ -246,7 +314,7 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
   // deliberately absent from the neutral contract. Keyed by the same workspace ids
   // the contract's rail exposes, so rail and body stay consistent by construction.
   const composition = getPlatformAreaWorkspaces(area);
-  const dbByKey = new Map(sections.map((s) => [s.key, s] as const));
+  const dbByKey = useMemo(() => new Map(sections.map((s) => [s.key, s] as const)), [sections]);
 
   // Rail navigation is the CONTRACT's workspace projection (key/label/icon NAME),
   // not a second registry walk here. Resolving the icon name → component is the
@@ -273,6 +341,21 @@ export function PlatformSpaceDashboard({ area, sections, mountContext }: Props) 
     });
     return () => publishSpace(null);
   }, [publishSpace, publishCurrencyControl, spaceName, chromeSubtitle, router]);
+
+  // SECTIONS — the ACTIVE workspace's "what's inside" list, published UP to the
+  // same ContextualNavbar block customer workspaces feed (SpaceChrome sections
+  // channel). Keyed on the active workspace's composed keys, so switching the
+  // rail re-publishes; cleared on unmount exactly like the identity above, so
+  // leaving a platform Space never leaves its sections behind in the sidebar.
+  const publishSections = useSpaceSectionsPublisher();
+  const chromeSections = useMemo(
+    () => platformChromeSections(active?.sections ?? NO_SECTION_KEYS, dbByKey),
+    [active, dbByKey],
+  );
+  useEffect(() => {
+    publishSections(chromeSections);
+    return () => publishSections([]);
+  }, [publishSections, chromeSections]);
 
   return (
     <SpaceShell
