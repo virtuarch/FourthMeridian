@@ -32,6 +32,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { summarizeError } from "@/lib/jobs/run";
+import { captureLedgerWriteFailure } from "@/lib/monitoring/capture";
 import { currentDeploymentSha } from "@/lib/monitoring/deployment";
 import { refreshPlaidItem, type RefreshItemResult } from "@/lib/plaid/refresh";
 // DF-2D — the provider-call correlation context. runFullRefresh establishes it
@@ -364,6 +365,13 @@ async function openExecution(
     return row.id;
   } catch (err) {
     console.error(`[refresh-execution] ${data.runId}: start write failed (non-fatal):`, err);
+    // Same escalation as the JobRun wrapper (SCHEDULER-DISPATCH-RESTORE-1): a
+    // null here suppresses every downstream write for this execution — endpoint
+    // results, coverage, provider calls — so the refresh runs and the entire
+    // DF-2 ledger records nothing. This ledger had been write-dead in production
+    // since 2026-07-24 (the RefreshExecution table itself was never migrated)
+    // and nothing reported it.
+    captureLedgerWriteFailure("RefreshExecution", "start", err);
     return null;
   }
 }

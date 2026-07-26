@@ -46,3 +46,70 @@ export function captureAuthInfraFailure(stage: AuthInfraStage, error: unknown): 
     // Monitoring must never take down the request it is observing.
   }
 }
+
+// ── Operational-ledger write failures (SCHEDULER-DISPATCH-RESTORE-1) ──────────
+//
+// WHY THIS EXISTS. Both operational ledgers write best-effort and swallow their
+// own failures on purpose — "the ledger must never break the job it observes"
+// (lib/jobs/run.ts) and the identical contract in lib/plaid/refresh-execution.ts.
+// That contract is correct and is NOT being changed here. What was missing is
+// that a swallowed failure went only to console.error, so a ledger that had gone
+// completely write-dead stayed invisible: the dispatcher still returned 200, the
+// Vercel cron dashboard stayed green, and the only visible symptom was every job
+// drifting to "overdue" on a surface nobody watches minute-to-minute.
+//
+// That is exactly what happened on 2026-07-26: the production deploy shipped
+// OPS-2B′ (JobRun.deploymentSha) without its migration, so every jobRun.create()
+// failed P2022 for ten hours while every job body ran normally.
+//
+// So: still swallowed, still non-fatal, but now escalated. A write-dead ledger
+// pages instead of hiding behind a 200.
+
+/** The append-only execution ledgers whose writes are best-effort. */
+export type OperationalLedger = "JobRun" | "RefreshExecution";
+
+/** Which of the two writes failed. Start failures suppress the completion write. */
+export type LedgerWritePhase = "start" | "completion";
+
+/**
+ * Extract a Prisma error code (e.g. "P2022" — column does not exist) when the
+ * error carries one. This is the schema-drift fingerprint and the single most
+ * useful routing tag on the event; it is a static error code, never user data.
+ */
+function prismaCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+/**
+ * Capture a swallowed operational-ledger write failure. Records WHICH ledger,
+ * WHICH write, and the Prisma error code when present. Never throws — capture
+ * must not become a second failure on a path whose whole contract is that it
+ * cannot fail the work it observes.
+ *
+ * SAFE CONTEXT ONLY, same rules as above: a tag set plus the error's own
+ * class/message. The job name is a static registry identifier (lib/jobs/registry.ts),
+ * not user content; no summary, row, or connection string is attached.
+ */
+export function captureLedgerWriteFailure(
+  ledger: OperationalLedger,
+  phase: LedgerWritePhase,
+  error: unknown,
+  jobName?: string,
+): void {
+  try {
+    const code = prismaCode(error);
+    Sentry.captureException(error, {
+      tags: {
+        area: "operational-ledger",
+        ledger,
+        phase,
+        ...(code ? { prismaCode: code } : {}),
+        ...(jobName ? { jobName } : {}),
+      },
+      level: "error",
+    });
+  } catch {
+    // Monitoring must never take down the request it is observing.
+  }
+}

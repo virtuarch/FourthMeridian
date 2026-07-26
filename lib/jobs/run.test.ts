@@ -220,6 +220,80 @@ async function main(): Promise<void> {
     );
   }
 
+  // ── 7. Swallowed ledger failures are REPORTED (SCHEDULER-DISPATCH-RESTORE-1) ─
+  //
+  // The 2026-07-26 incident: a deploy shipped OPS-2B′ without its migration, so
+  // every jobRun.create() failed P2022. Ten jobs ran, none recorded, dispatch
+  // returned 200, and the only symptom was every job ageing into "overdue".
+  // Both catch blocks must escalate, not just console.error — the whole point is
+  // that a write-dead ledger cannot stay quiet again.
+  {
+    const src = readFileSync("lib/jobs/run.ts", "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    check(
+      "start-write failure is captured, not only logged",
+      /captureLedgerWriteFailure\(\s*"JobRun"\s*,\s*"start"/.test(src),
+    );
+    check(
+      "completion-write failure is captured, not only logged",
+      /captureLedgerWriteFailure\(\s*"JobRun"\s*,\s*"completion"/.test(src),
+    );
+    // The escalation must not have quietly become fatal: the swallow is the
+    // contract. Neither catch may rethrow.
+    check(
+      "capture did not make ledger writes fatal — neither catch rethrows",
+      !/catch\s*\(\s*err\s*\)\s*\{[^}]*captureLedgerWriteFailure[^}]*\bthrow\b/.test(src),
+    );
+    // The sibling ledger carries the identical contract and the identical gap.
+    const refreshSrc = readFileSync("lib/plaid/refresh-execution.ts", "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    check(
+      "RefreshExecution start-write failure is captured too",
+      /captureLedgerWriteFailure\(\s*"RefreshExecution"\s*,\s*"start"/.test(refreshSrc),
+    );
+    // A start-write failure still suppresses the completion write — capture is
+    // additive and must not have disturbed the append-only rule.
+    check(
+      "append-only preserved: completion still skipped when start never landed",
+      /if\s*\(runId === null\)\s*return;/.test(src),
+    );
+  }
+
+  // ── 8. The pre-deploy half of the same defence ──────────────────────────────
+  //
+  // Sentry catches drift that reached production. The drift guard catches it
+  // before it can. Neither replaces the other, so the script must keep existing
+  // and must stay read-only — it runs against production DATABASE_URLs.
+  {
+    const drift = readFileSync("scripts/check-schema-drift.ts", "utf8");
+    check(
+      "drift guard reads the real migration ledger",
+      drift.includes("_prisma_migrations") && drift.includes("prisma"),
+    );
+    check(
+      "drift guard exits nonzero on drift",
+      /process\.exit\(1\)/.test(drift),
+    );
+    const driftCode = drift.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    // Assert the CAPABILITY, not the vocabulary: the script prints the remediation
+    // command in its failure message, so banning the words "migrate deploy" would
+    // fail on advice rather than on an action. What must hold is that it cannot
+    // execute anything — no write query, no shell.
+    check(
+      "drift guard cannot write — no executeRaw, no shell",
+      !/\$execute(Raw|RawUnsafe)?\b/.test(driftCode) &&
+        !/child_process|execSync|spawn\(/.test(driftCode),
+    );
+    check(
+      "drift guard's only database call is a read",
+      (driftCode.match(/db\.\$\w+/g) ?? []).every((c) => c === "db.$queryRaw"),
+    );
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
+    check("drift guard is reachable as npm run db:drift", pkg.scripts["db:drift"]?.includes("check-schema-drift"));
+  }
+
   if (failures > 0) {
     console.error(`\nrunJob tests: ${failures} FAILED`);
     process.exit(1);
