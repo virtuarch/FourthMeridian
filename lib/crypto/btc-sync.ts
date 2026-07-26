@@ -316,6 +316,21 @@ function dedupeRawTxsByTxid(txs: RawBtcTx[]): RawBtcTx[] {
 }
 
 /**
+ * V26-PRE (B4) — pure identity filter for the import step (exported for tests).
+ * A movement is fresh only when NO row — active OR tombstoned — already claims
+ * its externalId for this account: tombstone wins, a re-sync never resurrects
+ * a deliberate deletion as a new active row.
+ */
+export function filterFreshMovements<T extends { externalId: string }>(
+  movements: T[],
+  existingExternalIds: Iterable<string | null>,
+): T[] {
+  const seen = new Set<string>();
+  for (const id of existingExternalIds) if (id !== null) seen.add(id);
+  return movements.filter((m) => !seen.has(m.externalId));
+}
+
+/**
  * Import a wallet's confirmed BTC transactions (across ALL its addresses) as
  * ordinary Transaction rows. Raw txs are deduped by txid before normalization,
  * so a tx moving coins between two of the wallet's own addresses is ONE row set
@@ -342,18 +357,38 @@ async function importBtcTransactions(
 
     // Idempotency: skip movements already imported for this account. The
     // externalTransactionId (txid / txid:fee) is the dedupe key — a re-sync is a
-    // no-op. No DB unique needed (see the schema note on externalTransactionId).
+    // no-op.
+    //
+    // V26-PRE (B4) — two identity defenses this path previously lacked (the
+    // Plaid path has both; this one had neither):
+    //
+    //   TOMBSTONE WINS — the dedupe read now INCLUDES soft-deleted rows. An
+    //   on-chain tx never vanishes upstream, so a tombstoned BTC row reflects a
+    //   deliberate user / import-rollback decision; the old `deletedAt: null`
+    //   filter made the very next sync re-create the same externalTransactionId
+    //   as a NEW ACTIVE row, defeating the tombstone and violating the identity
+    //   doctrine's replay invariant ("must not create an additional active row").
+    //
+    //   RACE BACKSTOP — nothing locks a wallet sync, and the manual sync route
+    //   and the daily cron can run concurrently: both used to read `existing`,
+    //   then both createMany the same movements → duplicated financial rows
+    //   with no constraint to stop them. The DB now carries an active-row
+    //   unique index on (financialAccountId, externalTransactionId) WHERE
+    //   deletedAt IS NULL (migration 20260727_v26pre_b4_btc_identity_backstop),
+    //   and `skipDuplicates: true` (ON CONFLICT DO NOTHING) makes the losing
+    //   writer's overlap silently no-op instead of duplicating or failing the
+    //   whole batch.
     const ids = movements.map((m) => m.externalId);
     const existing = await db.transaction.findMany({
-      where:  { financialAccountId: account.id, externalTransactionId: { in: ids }, deletedAt: null },
+      where:  { financialAccountId: account.id, externalTransactionId: { in: ids } },
       select: { externalTransactionId: true },
     });
-    const seen = new Set(existing.map((e) => e.externalTransactionId));
-    const fresh = movements.filter((m) => !seen.has(m.externalId));
+    const fresh = filterFreshMovements(movements, existing.map((e) => e.externalTransactionId));
     if (fresh.length === 0) return;
 
     await db.transaction.createMany({
       data: fresh.map((m) => buildTransactionRow(account.id, m, ownByAddress)),
+      skipDuplicates: true,
     });
   } catch (e) {
     console.warn(`[btc-sync] transaction import failed for account ${account.id} (non-fatal):`, e);

@@ -1820,11 +1820,23 @@ model Transaction {
 
   // D2 Step 4D — written by the import pipeline ("externalId" match
   // resolution in app/api/accounts/[id]/import). Generic sibling of plaidTransactionId
-  // for files/exports that carry their own stable row id. Deliberately no
-  // unique constraint yet — a CSV export's own id is only guaranteed unique
-  // within that one file/institution, not globally; real uniqueness shape
-  // (e.g. scoped to [financialAccountId, externalTransactionId]) is decided
-  // at Step 4D implementation time, not assumed here. See
+  // for files/exports that carry their own stable row id.
+  //
+  // V26-PRE (B4) — the uniqueness shape deferred at Step 4D is now decided and
+  // ENFORCED AT THE DB as a PARTIAL unique index (not representable in this
+  // schema; Prisma 5 has no partial-index syntax):
+  //
+  //   Transaction_account_externalId_active_key
+  //     UNIQUE ("financialAccountId", "externalTransactionId")
+  //     WHERE "externalTransactionId" IS NOT NULL AND "deletedAt" IS NULL
+  //   (migration 20260727_v26pre_b4_btc_identity_backstop)
+  //
+  // Active rows only — exactly the identity-doctrine invariant (no second
+  // ACTIVE row per (account, externalId)); tombstones excluded so import
+  // rollback → re-import keeps working. Backstops the lock-free BTC wallet
+  // sync (btc-sync.ts createMany now passes skipDuplicates so a concurrent
+  // manual-sync/cron overlap no-ops instead of duplicating). DO NOT accept a
+  // `migrate dev` drift-drop of this index. See also
   // docs/initiatives/d2/investigations/D2_STEP4B_IMPORTBATCH_FOUNDATION_INVESTIGATION.md §3.
   importBatchId         String?
   importBatch           ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
