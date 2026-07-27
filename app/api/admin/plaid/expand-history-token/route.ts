@@ -68,6 +68,7 @@ import { parsePlaidError } from "@/lib/plaid/errors";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 import { EXPAND_HISTORY_BLOCKED_INSTITUTIONS } from "@/lib/admin/provider-lifecycle";
+import { resolvePlaidRedirectUri } from "@/lib/plaid/redirect-uri";
 
 export async function POST(req: NextRequest) {
   // Capture the acting admin for attribution. The guard returns before the Plaid
@@ -160,9 +161,13 @@ export async function POST(req: NextRequest) {
   // mode. Passing an access_token would put Link in update mode, which cannot
   // extend transaction history depth (days_requested is immutable after init).
   //
-  // The redirect_uri is required for OAuth institutions (Chase, BoA, etc.)
-  // in Production. Must match the URI registered in Plaid Dashboard.
-  const redirectUri = process.env.PLAID_REDIRECT_URI || undefined;
+  // The redirect_uri is required for OAuth institutions (Chase, BoA, etc.).
+  // V26-PLAID-REDIRECT-1 — same derived authority the customer link-token route
+  // uses, so this admin path can never drift from the deployment's own origin
+  // (it previously read the identical hand-maintained env copy).
+  const redirect = resolvePlaidRedirectUri();
+  const redirectUri = redirect.uri;
+  if (redirect.drift) console.warn(`[plaid][admin] ${redirect.drift}`);
 
   try {
     console.log("[plaid][admin][expand-history-token] config:", {
@@ -172,7 +177,8 @@ export async function POST(req: NextRequest) {
       institutionId:   item.institutionId,
       mode:            "fresh (no access_token)",
       days_requested:  730,
-      redirect_uri:    redirectUri ? "set" : "NOT SET (OAuth institutions will fail)",
+      redirect_uri:    redirectUri ? JSON.stringify(redirectUri) : "NOT SET (OAuth institutions will fail)",
+      redirect_uri_source: redirect.source,
     });
 
     const response = await plaidClient.linkTokenCreate({
