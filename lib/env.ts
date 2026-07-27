@@ -85,6 +85,13 @@ const _e = {
   DISABLE_SYSTEM_ADMIN: process.env.DISABLE_SYSTEM_ADMIN,
   NODE_ENV:             process.env.NODE_ENV,
 
+  // V26-ENV-1 — deployment-environment identity. `VERCEL` is "1" on every Vercel
+  // build/runtime; `VERCEL_ENV` is "production" | "preview" | "development".
+  // These are the ONLY authority on which deployment this is — NODE_ENV is not
+  // (see deploymentEnvironment() below for why that distinction is load-bearing).
+  VERCEL:               process.env.VERCEL,
+  VERCEL_ENV:           process.env.VERCEL_ENV,
+
   // V25-FINAL-2 (Area A) — error-monitoring (Sentry) DSN. PUBLISHABLE, not a
   // secret: it identifies the ingest project, not an auth credential, hence the
   // NEXT_PUBLIC_ prefix (inlined into client bundles so instrumentation-client.ts
@@ -130,6 +137,59 @@ const _e = {
   FLOWTYPE_SHADOW:           process.env.FLOWTYPE_SHADOW,
 } as const;
 
+// ── Deployment-environment classification (V26-ENV-1) ─────────────────────────
+
+/** The deployment environments this app recognises. */
+export type DeploymentEnvironment = "production" | "preview" | "development";
+
+/**
+ * THE TRAP THIS EXISTS TO CLOSE: **Vercel builds Preview deployments with
+ * `NODE_ENV=production`.** Every production-only guard in this file used to key
+ * on `NODE_ENV === "production"`, so a Preview deployment was classified as
+ * Production and had to satisfy every production requirement. Two consequences,
+ * both observed in the wild:
+ *
+ *   - `PROD_REQUIRED_KEYS` were enforced on Preview — which is why Preview was
+ *     made to carry a production-only NEXT_PUBLIC_SENTRY_DSN just to boot.
+ *   - The Plaid production guard fired on Preview, where `PLAID_ENV="sandbox"`
+ *     is the CORRECT setting. It throws from `validateEnv()`, which runs inside
+ *     the instrumentation `register()` hook — so the Preview server never
+ *     booted and EVERY route (not just Plaid) failed with "An error occurred
+ *     while loading instrumentation hook". Preview was down completely.
+ *
+ * `VERCEL_ENV` is the authority on Vercel. `NODE_ENV` is a BUILD-MODE signal
+ * ("is this an optimised build?"), NOT a deployment environment, and must never
+ * be used as one on Vercel.
+ *
+ * Outside Vercel (local dev, CI, tests) there is no `VERCEL_ENV`, so the
+ * original `NODE_ENV` behaviour is preserved exactly.
+ *
+ * NOTE on the `VERCEL=1` + `VERCEL_ENV` unset edge: this classifies as
+ * "development" (non-production), matching the specified contract. Vercel always
+ * sets `VERCEL_ENV` on a real deployment, so this state is not reachable there.
+ */
+export function deploymentEnvironment(): DeploymentEnvironment {
+  if (_e.VERCEL === "1") {
+    if (_e.VERCEL_ENV === "production") return "production";
+    if (_e.VERCEL_ENV === "preview")    return "preview";
+    return "development";
+  }
+  return _e.NODE_ENV === "production" ? "production" : "development";
+}
+
+/**
+ * The single classifier every production-only guard in this file consults.
+ * Equivalent to:
+ *
+ *   VERCEL === "1" ? VERCEL_ENV === "production" : NODE_ENV === "production"
+ *
+ * Expressed via `deploymentEnvironment()` so the boolean and the three-way
+ * classification can never disagree.
+ */
+export function isProductionDeployment(): boolean {
+  return deploymentEnvironment() === "production";
+}
+
 // ── Required variable getter ──────────────────────────────────────────────────
 
 function req(key: keyof typeof _e): string {
@@ -151,7 +211,9 @@ const REQUIRED_KEYS: (keyof typeof _e)[] = [
   "ENCRYPTION_KEY",
 ];
 
-// OPS-1 S6 — required in production only. Dev/test keep working without them:
+// OPS-1 S6 — required in a PRODUCTION DEPLOYMENT only (isProductionDeployment(),
+// i.e. VERCEL_ENV="production" on Vercel — NOT merely NODE_ENV="production", which
+// is also true on Preview). Dev/test/preview keep working without them:
 //   - NEXTAUTH_URL / NEXT_PUBLIC_APP_URL: auto-detected / localhost in dev,
 //     but production email links and auth redirects must never guess.
 //   - RESEND_API_KEY: without it lib/email/send.ts silently captures instead
@@ -167,7 +229,12 @@ const PROD_REQUIRED_KEYS: (keyof typeof _e)[] = [
   // V25-FINAL-2 (Area A) — production error monitoring is a pre-beta requirement
   // (docs/operations/production-readiness.md). Without a DSN a prod deploy would
   // run BLIND to serious failures, so boot fails fast rather than start silently
-  // unmonitored. Dev/test/preview do not require it (SDK simply stays disabled).
+  // unmonitored.
+  //
+  // V26-ENV-1: dev/test/preview genuinely do not require it now (the SDK simply
+  // stays disabled). Before the deployment-aware classifier this comment was
+  // FALSE — Preview matched NODE_ENV="production" and so was forced to carry a
+  // production-only DSN just to pass boot validation.
   "NEXT_PUBLIC_SENTRY_DSN",
 ];
 
@@ -205,7 +272,9 @@ export interface EnvReport {
  * required/prod-required/RATE_LIMIT conditions below.
  */
 export function getEnvReport(): EnvReport {
-  const isProd = _e.NODE_ENV === "production";
+  // V26-ENV-1 — deployment-aware, NOT NODE_ENV. On a Preview deployment the
+  // prod-only keys are a "warn" (unset is fine), never a "fail".
+  const isProd = isProductionDeployment();
   const keys: EnvKeyReport[] = [];
 
   for (const k of REQUIRED_KEYS) {
@@ -260,7 +329,10 @@ export function getEnvReport(): EnvReport {
  * needs the report without risking a throw uses `getEnvReport()` instead.
  */
 export function validateEnv(): EnvReport {
-  const isProd  = _e.NODE_ENV === "production";
+  // V26-ENV-1 — every production-only guard below keys on the DEPLOYMENT
+  // environment, not NODE_ENV (which Vercel also sets to "production" on
+  // Preview). See deploymentEnvironment() for the failure this prevents.
+  const isProd  = isProductionDeployment();
   const missing = [
     ...REQUIRED_KEYS.filter((k) => !_e[k]),
     ...(isProd ? PROD_REQUIRED_KEYS.filter((k) => !_e[k]) : []),
@@ -281,8 +353,14 @@ export function validateEnv(): EnvReport {
   // (both credentials present ⇒ real ingestion is expected), PLAID_ENV must be an
   // explicit "production": otherwise the app talks to sandbox with real users
   // (PLAID_ENV unset defaults to "sandbox" at the accessor), or hits an unguarded
-  // 500 on first call. Fail fast at boot instead. Dev/preview/test never reach
-  // this branch (isProd gate) and keep using sandbox freely.
+  // 500 on first call. Fail fast at boot instead.
+  //
+  // V26-ENV-1: dev/preview/test genuinely never reach this branch now, because
+  // the gate is isProductionDeployment(). The previous comment claimed the same
+  // thing while the gate was NODE_ENV-based — and it was FALSE: Vercel Preview
+  // builds set NODE_ENV="production", so Preview (correctly running
+  // PLAID_ENV="sandbox") threw here at boot and took the ENTIRE deployment down,
+  // every route, not just Plaid. Preview keeps using sandbox freely.
   if (isProd && _e.PLAID_CLIENT_ID && _e.PLAID_SECRET && _e.PLAID_ENV !== "production") {
     const shown = _e.PLAID_ENV ? `"${_e.PLAID_ENV}"` : "unset (defaults to sandbox)";
     throw new Error(
@@ -436,7 +514,16 @@ export const env = {
   get isErrorMonitoringConfigured() { return !!_e.NEXT_PUBLIC_SENTRY_DSN; },
 
   // ── Runtime ───────────────────────────────────────────────────────────────
+  /** Next.js BUILD mode — "am I running `next dev`?". Deliberately still a
+   *  NODE_ENV question: it asks about the build, not the deployment. */
   get isDev()    { return _e.NODE_ENV === "development"; },
-  get isProd()   { return _e.NODE_ENV === "production"; },
+  /** V26-ENV-1 — "is this a PRODUCTION DEPLOYMENT?". Deployment-aware: on Vercel
+   *  this is VERCEL_ENV="production", so a Preview deployment reports false even
+   *  though Vercel builds it with NODE_ENV="production". */
+  get isProd()   { return isProductionDeployment(); },
+  /** Raw NODE_ENV (build mode). For "which deployment is this?" use
+   *  `deploymentEnv` — on Preview, nodeEnv is "production". */
   get nodeEnv()  { return _e.NODE_ENV ?? "development"; },
+  /** "production" | "preview" | "development" — the deployment environment. */
+  get deploymentEnv(): DeploymentEnvironment { return deploymentEnvironment(); },
 } as const;

@@ -13,6 +13,13 @@
  *      vars (NEXTAUTH_URL, NEXT_PUBLIC_APP_URL, RESEND_API_KEY, CRON_SECRET).
  *   4. Production fully configured → passes; RATE_LIMIT_ENABLED=false emits
  *      the loud disabled-in-prod warning (never fatal).
+ *   5-10. The V25-FINAL-2 Plaid production-configuration gate.
+ *   11-20. V26-ENV-1 deployment-environment classification: Vercel builds
+ *      Preview with NODE_ENV=production, so every Vercel case below sets
+ *      NODE_ENV=production and varies ONLY VERCEL/VERCEL_ENV. A regression back
+ *      to NODE_ENV-based gating makes the Preview cases throw again — which is
+ *      exactly the failure that took the whole Preview deployment down (the
+ *      instrumentation hook threw, so EVERY route 500'd, not just Plaid).
  */
 
 import { spawnSync } from "node:child_process";
@@ -125,6 +132,63 @@ if (process.argv[2] === "child") {
   // sandbox gate must not fire (it keys on BOTH creds, matching env.isPlaidEnabled).
   const out10 = run({ ...CORE, ...PROD_EXTRA, PLAID_CLIENT_ID: "cid", PLAID_ENV: "sandbox", NODE_ENV: "production" });
   check("VALIDATE_OK", out10.includes("VALIDATE_OK"), out10.slice(0, 300));
+
+  // ── V26-ENV-1 — deployment-environment classification ──────────────────────
+  // Vercel builds Preview with NODE_ENV=production. Every case below therefore
+  // sets NODE_ENV=production and varies ONLY VERCEL/VERCEL_ENV — if the guards
+  // ever regress to keying on NODE_ENV, the Preview cases start throwing again.
+  const VERCEL_PROD    = { VERCEL: "1", VERCEL_ENV: "production", NODE_ENV: "production" };
+  const VERCEL_PREVIEW = { VERCEL: "1", VERCEL_ENV: "preview",    NODE_ENV: "production" };
+  const VERCEL_DEV     = { VERCEL: "1", VERCEL_ENV: "development", NODE_ENV: "production" };
+
+  console.log("11. Vercel PRODUCTION + Plaid production → passes");
+  const out11 = run({ ...CORE, ...PROD_EXTRA, ...PLAID, PLAID_ENV: "production", ...VERCEL_PROD });
+  check("VALIDATE_OK", out11.includes("VALIDATE_OK"), out11.slice(0, 300));
+
+  console.log("12. Vercel PRODUCTION + Plaid sandbox → THROWS (guard still armed in prod)");
+  const out12 = run({ ...CORE, ...PROD_EXTRA, ...PLAID, PLAID_ENV: "sandbox", ...VERCEL_PROD });
+  check("throws", out12.includes("VALIDATE_THREW"), out12.slice(0, 300));
+  check("names PLAID_ENV / sandbox", out12.includes("PLAID_ENV") && /sandbox/i.test(out12));
+
+  console.log("13. Vercel PRODUCTION missing prod-only keys → THROWS (PROD_REQUIRED_KEYS enforced)");
+  const out13 = run({ ...CORE, ...VERCEL_PROD });
+  check("throws", out13.includes("VALIDATE_THREW"), out13.slice(0, 200));
+  for (const k of Object.keys(PROD_EXTRA)) check(`names ${k}`, out13.includes(k));
+
+  console.log("14. Vercel PREVIEW + Plaid sandbox → passes (THE regression: preview boot)");
+  const out14 = run({ ...CORE, ...PLAID, PLAID_ENV: "sandbox", ...VERCEL_PREVIEW });
+  check("VALIDATE_OK", out14.includes("VALIDATE_OK"), out14.slice(0, 300));
+
+  console.log("15. Vercel PREVIEW + production secrets present → still treated as Preview");
+  // Carrying prod-only secrets must not promote a Preview deployment to Production:
+  // Plaid sandbox stays legal even with the full production key set present.
+  const out15 = run({ ...CORE, ...PROD_EXTRA, ...PLAID, PLAID_ENV: "sandbox", ...VERCEL_PREVIEW });
+  check("VALIDATE_OK", out15.includes("VALIDATE_OK"), out15.slice(0, 300));
+
+  console.log("16. Vercel PREVIEW without prod-only keys → passes (PROD_REQUIRED_KEYS not enforced)");
+  const out16 = run({ ...CORE, ...VERCEL_PREVIEW });
+  check("VALIDATE_OK", out16.includes("VALIDATE_OK"), out16.slice(0, 300));
+  check("does not demand NEXT_PUBLIC_SENTRY_DSN", !out16.includes("VALIDATE_THREW"));
+
+  console.log("17. Vercel DEVELOPMENT (vercel dev) + Plaid sandbox → passes");
+  const out17 = run({ ...CORE, ...PLAID, PLAID_ENV: "sandbox", ...VERCEL_DEV });
+  check("VALIDATE_OK", out17.includes("VALIDATE_OK"), out17.slice(0, 300));
+
+  console.log("18. NON-Vercel NODE_ENV=production → production guards remain ACTIVE");
+  // No VERCEL var at all ⇒ the original NODE_ENV fallback must be preserved.
+  const out18 = run({ ...CORE, ...PROD_EXTRA, ...PLAID, PLAID_ENV: "sandbox", NODE_ENV: "production" });
+  check("throws", out18.includes("VALIDATE_THREW"), out18.slice(0, 300));
+  check("names PLAID_ENV / sandbox", out18.includes("PLAID_ENV") && /sandbox/i.test(out18));
+
+  console.log("19. NON-Vercel development/test → production guards remain INACTIVE");
+  const out19a = run({ ...CORE, ...PLAID, PLAID_ENV: "sandbox", NODE_ENV: "development" });
+  check("development VALIDATE_OK", out19a.includes("VALIDATE_OK"), out19a.slice(0, 300));
+  const out19b = run({ ...CORE, ...PLAID, PLAID_ENV: "sandbox", NODE_ENV: "test" });
+  check("test VALIDATE_OK", out19b.includes("VALIDATE_OK"), out19b.slice(0, 300));
+
+  console.log("20. VERCEL=1 with VERCEL_ENV unset → non-production (documented edge)");
+  const out20 = run({ ...CORE, ...PLAID, PLAID_ENV: "sandbox", VERCEL: "1", NODE_ENV: "production" });
+  check("VALIDATE_OK", out20.includes("VALIDATE_OK"), out20.slice(0, 300));
 
   console.log(failures === 0 ? "\nAll env-validation tests passed." : `\n${failures} failure(s).`);
   process.exit(failures === 0 ? 0 : 1);
