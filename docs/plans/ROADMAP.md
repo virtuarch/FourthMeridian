@@ -4,9 +4,9 @@
 
 The AI evolution ladder frames the whole roadmap: **v2.4.5 makes every answer honest → v2.5 / v2.5.5 make the data singular and semantically sound → v2.6a makes conversations coherent → v2.6b earns the right to speak unprompted → v3.0 sells it.** Each phase's exit criteria are the next phase's entry criteria.
 
-## v2.5 — Spaces Completion + Design Foundation — *in progress*
+## v2.5 — Spaces Completion + Design Foundation — *released*
 
-Branch: `feature/v2.5-spaces-completion`.
+**Closed 2026-07-27 — tag `v2.5.0`, merged to `main`, production-verified.** Development ran on `feature/v2.5-spaces-completion` and finished on `main`. Full scope and the release-day verification record: [releases/v2.5.md](../releases/v2.5.md). Closure included the **V26-PRE B1–B5** production-hardening wave (update-path fact preservation, AI snapshot convergence, single debt-terms authority, BTC identity backstop, CI verification integrity), independently audited and independently certified before integration.
 
 **Remaining exit criteria: none.** The last one — **Atlas/design-system closure** — landed in V25-CLOSE-2: the palette-ratchet fence now scans `components/**` and `app/**` (exclusions: vendored third-party, untracked prototypes, `lib/` which holds no JSX), and the pattern list was corrected so `bg-`/`border-` carry the same colour list as `text-`. That correction is why the baseline moved from `{}` to 41 files / 937 violations — the fence had been reporting clean because it was not looking, not because the burn-down had finished. See [audits/V25_CLOSE_2_GUARD_HARDENING.md](../archive/completed-plans/documentation-audit-pre-migration.md).
 
@@ -31,7 +31,7 @@ Every open item below is classified. Nothing sits in an unlabelled "future" buck
 
 Point milestone: pure data-semantics, **zero new product surface**. The canonical aggregation architecture is substantially implemented (see [../systems/cash-flow.md](../systems/cash-flow.md)); what remains is convergence + test enforcement, not construction.
 
-**Exit criteria (must-have):** DayFacts sole-fold convergence (delete the four dead folds); single-site `economicSpend` clamp; explicitly named net measures; classifier v3 for liability payment-app outflow (version-gated backfill, recorded); transfer-evidence stamping decoupled from `flowType === "TRANSFER"`; compact doctrine oracle + the four named gap tests green; cross-surface parity fixture; multi-currency assembler rollup threading; clean `audit:flow-desync` + `audit:pending-posted`; TI3/backfill runtime verification recorded. **Should-have:** minimum transaction-correction tooling. **Explicitly out:** any new surface, `refundCandidate`, review-queue platform, Decimal money migration.
+**Exit criteria (must-have):** DayFacts sole-fold convergence (delete the four dead folds); single-site `economicSpend` clamp; explicitly named net measures; classifier v4 for liability payment-app outflow (version-gated backfill, recorded — `FLOW_CLASSIFIER_VERSION = 4`; earlier drafts of this line said v3, which never matched the code); transfer-evidence stamping decoupled from `flowType === "TRANSFER"`; compact doctrine oracle + the four named gap tests green; cross-surface parity fixture; multi-currency assembler rollup threading; clean `audit:flow-desync` + `audit:pending-posted`; TI3/backfill runtime verification recorded. **Should-have:** minimum transaction-correction tooling. **Explicitly out:** any new surface, `refundCandidate`, review-queue platform, Decimal money migration.
 
 ## OPS-1 — Platform Operations Foundation — *gates private beta, runs in parallel*
 
@@ -40,6 +40,33 @@ S9 legal/public surfaces and S10 beta-access system are substantially shipped. R
 1. **Consent + disclosure (code + decision):** `User.acceptedTermsAt` capture at registration; `/legal/ai` names OpenAI + a retention posture; legal effective-dates precise; support address published.
 2. **Production verification:** `registration_mode=invite_only` verified in prod; Turnstile keys live; one end-to-end invite executed and recorded.
 3. **Ops floor:** Sentry (or equivalent) error monitoring; external uptime monitor on `/api/health`; backup-restore drill written up (verify Supabase PITR); production Plaid decision/credentials; Resend/domain verification.
+
+## v2.6 — Milestone plan — *opened 2026-07-27 from the `v2.5.0` tag*
+
+Branch: `v2.6`, branched from the tag (not from `main`) so the baseline is exactly what was released and production-verified.
+
+Five workstreams, **in this order**. The ordering is not preference — it is dependency. v2.5's own evidence is that duplicated authority is this codebase's most expensive recurring defect class: two of the five V26-PRE production blockers (B2, B3) were one fact with two owners, and both survived until an external audit. Every AI workstream *consumes* financial metrics, so a metric with two owners becomes a confidently-stated wrong number the moment the product speaks unprompted.
+
+**1. Semantic Authority Convergence** — *foundation; do first*
+Every percentage and derived financial metric has exactly one canonical owner. Extends the pattern proven by B3: a single resolver module plus a source-scan guard that bans inline re-derivation repo-wide (`lib/debt/effective-terms.ts` + `effective-terms.test.ts` is the reference implementation). Absorbs the v2.5.5 exit criteria that are the same shape — DayFacts sole-fold, single-site `economicSpend` clamp, explicitly named net measures.
+*Exit:* no displayed percentage or derived metric is computed at more than one site; each has a named owner and an enrolment guard.
+
+**2. AI Truth Convergence** — *consumes 1*
+B2 converged exactly one assembler onto the canonical snapshot authority. Sweep the rest (`accounts`, `transactions`, `holdings`, `goals`) the same way: consume the canonical authority, never rebuild, exclude-and-disclose what cannot be converted. Feeds directly into the v2.6a substrate below.
+*Exit:* no AI assembler holds an independent financial truth source; every derived figure carries or suppresses its input caveats.
+
+**3. Ambient Intelligence throughout Spaces** — *gated on 1 + 2*
+Contextual insight surfaced naturally across the product. Detailed exit criteria live in **v2.6b** below; the gate is unchanged and binding — *the system may not speak unprompted until it cannot misquote a number.*
+
+**4. Mobile UX refinement** — *parallel track, any time*
+Interaction, hierarchy and integration. Presentation-layer and low-coupling to the semantic work, so it runs alongside 1–3 rather than queuing behind them.
+
+**5. Provider expansion** — *last of the majors*
+Extend a **provider-neutral** ingestion architecture to further institutions. Deliberately last: PROV-1 found `plaidAdapter` decorative with no provider-neutral `persistAccountSpine`, and B1/B4 hardened Plaid and BTC identity *separately*. Budget the provider-neutral spine (PROV-6) as part of this work — not as a prerequisite blocking it, and not as a follow-up after a second hardcoded path exists.
+
+### v2.6 backlog
+
+**DF-6 — Historical Production Duplicate Cleanup.** Retire the three historical duplicate lineages left in production by the 2026-07-22 reconnect re-pull that predates DF-4 (T-Mobile −119.00 / 2026-07-08; YouTube Premium −15.99 / 2026-06-28; Anthropic −42.22 / 2026-07-01 — all on one Amex account). Extend the **DF-5** repair pattern: dry-run by default, `--apply` required to write, **soft-delete only** (preserve forensic evidence), abort on shape mismatch, idempotent, narrowly scoped to the three proven `(date, amount, raw descriptor)` lineages. Retire the later row of each pair — the earlier row is the lineage the provider still maintains. **Not to be executed during a release window.**
 
 ## v2.6a — Advisor Intelligence (AI-5)
 
