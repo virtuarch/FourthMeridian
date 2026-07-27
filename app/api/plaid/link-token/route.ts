@@ -33,6 +33,7 @@ import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { limitByUser } from "@/lib/rate-limit";
 import { env } from "@/lib/env";
+import { resolvePlaidRedirectUri } from "@/lib/plaid/redirect-uri";
 
 /**
  * The public URL Plaid should POST webhooks to (TRANSACTIONS/SYNC_UPDATES_AVAILABLE).
@@ -139,10 +140,13 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // redirect_uri is required for OAuth institutions (Chase, BoA, Wells Fargo, etc.)
-    // in Production. Must be HTTPS and registered in the Plaid Dashboard.
-    // Set PLAID_REDIRECT_URI in .env.local. For local dev use an ngrok/tunnel HTTPS URL.
-    const redirectUri = process.env.PLAID_REDIRECT_URI || undefined;
+    // redirect_uri is required for OAuth institutions (Chase, BoA, Wells Fargo, etc.).
+    // V26-PLAID-REDIRECT-1 — DERIVED from the deployment's own origin rather than
+    // read from a hand-maintained PLAID_REDIRECT_URI copy that drifted and broke
+    // every link token in both environments. See lib/plaid/redirect-uri.ts.
+    const redirect = resolvePlaidRedirectUri();
+    const redirectUri = redirect.uri;
+    if (redirect.drift) console.warn(`[plaid] ${redirect.drift}`);
 
     // Investments intentionally omitted: AmEx and other credit-only institutions
     // reject link tokens that include the investments product. Transactions covers
@@ -186,7 +190,19 @@ export async function GET(req: NextRequest) {
       products:      products.map(String),
       additional_consented_products: additionalConsentedProducts?.map(String) ?? null,
       country_codes: country_codes.map(String),
-      redirect_uri:  redirectUri ? "set" : "NOT SET (OAuth institutions will fail)",
+      // The VALUE, not just "set". A redirect_uri is a PUBLIC url — it appears in
+      // the user's address bar during the OAuth handoff — never a secret, so it is
+      // safe to log. It is also the ONLY way to see what a deployment actually
+      // sends: PLAID_REDIRECT_URI is marked Sensitive in Vercel, so its value is
+      // unreadable by the CLI, the dashboard, and the operator alike.
+      //
+      // Plaid rejects any value that is not byte-identical to an entry under
+      // Dashboard → Team → API → Allowed redirect URIs, with a message that names
+      // no value ("OAuth redirect URI must be configured in the developer
+      // dashboard"). Without this line the mismatch is invisible from BOTH sides.
+      // JSON.stringify so stray whitespace / casing / a trailing slash is visible.
+      redirect_uri:  redirectUri ? JSON.stringify(redirectUri) : "NOT SET (OAuth institutions will fail)",
+      redirect_uri_source: redirect.source, // derived | explicit | none
       webhook:       webhookUrl ? "set" : "NOT SET (no public HTTPS URL — dev needs a tunnel)",
     });
 
