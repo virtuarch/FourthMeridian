@@ -8,13 +8,16 @@
  * and applies these decisions.
  *
  * The gap this closes: lib/snapshots/backfill.ts walks cash and revolving cards
- * back from transactions but HOLDS INVESTMENTS FLAT at today's value on every
- * historical row (backfill.ts §"everything else keeps its current balance").
- * A9 replaces that flat investment component with the canonical A8 historical
- * valuation (getInvestmentValueAsOf → valuedSubtotal), keeping the cash/card
- * walk-backs and the crypto/real-asset components exactly as backfill computed
- * them, and recomputing the derived aggregates through the SAME
- * computeSnapshotFields the live "today" row uses (formula parity).
+ * back from transactions but HOLDS INVESTMENTS AND DIGITAL ASSETS FLAT at
+ * today's value on every historical row (backfill.ts §"everything else keeps
+ * its current balance"). A9 replaces each of those flat components with its
+ * canonical historical valuation when evidence reaches the day — investments
+ * from A8 (getInvestmentValueAsOf → valuedSubtotal), digital assets from
+ * A8-3B (constant quantity × that day's archived price) — keeps the cash/card
+ * walk-backs and the real-asset component exactly as backfill computed them,
+ * and recomputes the derived aggregates through the SAME computeSnapshotFields
+ * the live "today" row uses (formula parity). Absent evidence, each component
+ * keeps its flat estimate; INVALID evidence is rejected outright (see below).
  *
  * Honesty rules (all enforced here, none in the binding):
  *  - FROZEN rows: an isEstimated=false row is an observation of what balances
@@ -23,6 +26,18 @@
  *  - NO FABRICATION: when A8 has no position evidence reaching the day yet flat
  *    investments exist, the day is left as backfill wrote it (a labeled
  *    estimate) rather than zeroed — unknown is preferable to a fabricated value.
+ *  - INVALID EVIDENCE (P0): a historical valuation that is negative or
+ *    non-finite is not an estimate, it is an impossible value — a balance
+ *    component cannot be below zero. Such a day is SKIPPED (skip-unsupported,
+ *    reason INVALID_VALUATION_EVIDENCE), preserving whatever is already
+ *    stored, rather than clamped to 0 or replaced with the flat value: both
+ *    would substitute one wrong number for another and hide the upstream
+ *    reconstruction defect that produced it. Checked INDEPENDENTLY per
+ *    component, but an invalid component skips the WHOLE day — the derived
+ *    aggregates (netWorth/totalAssets) are computed from all components at
+ *    once, so a partial write would be internally inconsistent. This guard is
+ *    the one rule an amendment may NOT bypass: a consented rebuild may revise
+ *    a frozen or membership-changed day, never write an impossible one.
  *  - FLIP: a regenerated row flips isEstimated→false ONLY when every component
  *    is observed (cash + investment). Historical A8 valuation is derived/
  *    estimated, so historical rows stay isEstimated=true → a derived date is
@@ -40,6 +55,32 @@ import type { CompletenessTier } from "@/lib/perspective-engine/types";
 
 /** Sub-dollar noise floor — a flat investment at/below this is "nothing to reconstruct". */
 export const WEALTH_REGEN_EPSILON = 0.5;
+
+/**
+ * P0 — machine-searchable marker for the invalid-evidence skip. Deliberately a
+ * stable prefix on the existing `reason` string rather than a new field on
+ * DayRegenResult: the typed-reason model belongs with the coverage/completeness
+ * work, and P0 must not widen the interface. Grep this to find every day a
+ * historical valuation was rejected.
+ */
+export const INVALID_VALUATION_REASON_CODE = "INVALID_VALUATION_EVIDENCE";
+
+/**
+ * Is a provider-derived historical valuation usable as a balance component?
+ *
+ * A balance component is a magnitude: it may be zero, never negative, and never
+ * non-finite. `Number.isFinite` rejects NaN and ±Infinity; `>= 0` rejects
+ * negatives (and, redundantly but explicitly, -Infinity).
+ *
+ * Exported because the same predicate must hold wherever historical valuations
+ * are accepted — the integrity probe (scripts/check-snapshot-integrity.ts)
+ * mirrors it in SQL as `v >= 0 AND v < 'Infinity'::float8`, which is the exact
+ * PostgreSQL equivalent (note: `v <> v` does NOT detect NaN in PostgreSQL,
+ * which treats NaN as equal to itself so it can be sorted and indexed).
+ */
+export function isUsableValuation(value: number): boolean {
+  return Number.isFinite(value) && value >= 0;
+}
 
 /** What the binding resolves for one day before applying the regeneration rules. */
 export interface DayRegenInput {
@@ -151,6 +192,45 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     return {
       date, action: "skip-unsupported", fields: null, isEstimated: true, tier: "incomplete",
       reason: "No historical position evidence for this date; flat estimate preserved (not fabricated).",
+    };
+  }
+
+  // INVALID EVIDENCE (P0): a historical valuation that is negative or non-finite
+  // is not a weak estimate — it is an impossible balance component, and writing
+  // it corrupts every aggregate derived from it (production carried 92 days of
+  // negative `stocks`, minimum -1,810). Checked INDEPENDENTLY per component,
+  // because the NO-FABRICATION rule above covers only investments and a
+  // crypto-only invalid value must still be caught.
+  //
+  // An invalid component skips the WHOLE day rather than falling back to that
+  // component's flat value: computeSnapshotFields derives netWorth/totalAssets
+  // from all components together, so a partial write would mix fresh evidence
+  // with a stale component and produce internally inconsistent aggregates.
+  // Skipping preserves whatever is already stored (writableRows keeps only
+  // action === "write"), which on a re-run is the better of the two values.
+  //
+  // Deliberately NOT clamped to 0 and NOT replaced with the flat value: both
+  // substitute one wrong number for another and hide the upstream position-
+  // reconstruction defect that produced the impossible value. See the
+  // INVALID EVIDENCE honesty rule in the module header.
+  //
+  // Reached by amendments too — the guards above may be bypassed by an explicit,
+  // consented rebuild; this one may not.
+  const invalidComponents: string[] = [];
+  if (input.hasInvestmentEvidence && !isUsableValuation(input.investmentValue)) {
+    invalidComponents.push("investments");
+  }
+  if (input.hasDigitalAssetEvidence && !isUsableValuation(input.digitalAssetValue)) {
+    invalidComponents.push("digitalAssets");
+  }
+  if (invalidComponents.length > 0) {
+    return {
+      date, action: "skip-unsupported", fields: null,
+      isEstimated: true, tier: "incomplete",
+      reason:
+        `${INVALID_VALUATION_REASON_CODE} (${invalidComponents.join(",")}): historical valuation was ` +
+        `negative or non-finite; the stored value is preserved, not overwritten. ` +
+        `Upstream position reconstruction requires investigation.`,
     };
   }
 

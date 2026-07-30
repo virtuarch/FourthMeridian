@@ -10,7 +10,11 @@
  * formula parity with computeSnapshotFields, and determinism.
  */
 
-import { regenerateDay, regenerateWindow, writableRows, WEALTH_REGEN_EPSILON, type DayRegenInput } from "./regenerate-history.core";
+import {
+  regenerateDay, regenerateWindow, writableRows, WEALTH_REGEN_EPSILON,
+  isUsableValuation, INVALID_VALUATION_REASON_CODE,
+  type DayRegenInput,
+} from "./regenerate-history.core";
 import { computeSnapshotFields, type ClassifyTotals } from "./backfill-core";
 
 let failures = 0;
@@ -169,6 +173,131 @@ function main(): void {
     check("writableRows excludes frozen + unsupported", writableRows(a).length === 1 && writableRows(a)[0].date === "2026-05-01");
     // Monotone: no result turns an observed row estimated.
     check("monotone — a frozen observed row never becomes estimated", !a.some((r) => r.action === "write" && r.date === "2026-05-02"));
+  }
+
+  // ── 8. INVALID EVIDENCE guard (P0) ────────────────────────────────────────
+  // A negative or non-finite historical valuation is an impossible balance
+  // component, not a weak estimate. It must never reach a snapshot write, must
+  // not be clamped to 0 or replaced with the flat value, and must be
+  // distinguishable from ABSENT evidence so the upstream position-reconstruction
+  // defect that produced it stays observable.
+  console.log("\n8. Invalid valuation evidence (P0)");
+  {
+    const INVALID = [
+      ["negative", -1_810],
+      ["NaN", Number.NaN],
+      ["+Infinity", Number.POSITIVE_INFINITY],
+      ["-Infinity", Number.NEGATIVE_INFINITY],
+    ] as const;
+
+    // Predicate itself — the shared definition the SQL probe mirrors.
+    check("isUsableValuation accepts zero", isUsableValuation(0));
+    check("isUsableValuation accepts a positive finite value", isUsableValuation(4_968));
+    for (const [label, v] of INVALID) {
+      check(`isUsableValuation rejects ${label}`, !isUsableValuation(v));
+    }
+
+    // Investments — each invalid form skips the day and writes nothing.
+    for (const [label, v] of INVALID) {
+      const r = regenerateDay(input({ investmentValue: v, hasInvestmentEvidence: true }));
+      check(`investments ${label} → skip-unsupported`, r.action === "skip-unsupported", r.action);
+      check(`investments ${label} → no fields written`, r.fields === null);
+      check(`investments ${label} → reason carries the code + component`,
+        r.reason.startsWith(`${INVALID_VALUATION_REASON_CODE} (investments)`), r.reason);
+    }
+
+    // Digital assets — the NO-FABRICATION rule above covers only investments, so
+    // a crypto-only invalid value must be caught independently.
+    for (const [label, v] of INVALID) {
+      const r = regenerateDay(input({ digitalAssetValue: v, hasDigitalAssetEvidence: true }));
+      check(`digitalAssets ${label} → skip-unsupported`, r.action === "skip-unsupported", r.action);
+      check(`digitalAssets ${label} → reason names digitalAssets`,
+        r.reason.startsWith(`${INVALID_VALUATION_REASON_CODE} (digitalAssets)`), r.reason);
+    }
+
+    // Zero is a legitimate balance component (an emptied portfolio) — it must
+    // still WRITE, and the written component must be exactly 0.
+    {
+      const r = regenerateDay(input({ investmentValue: 0, hasInvestmentEvidence: true }));
+      check("investments zero is valid → write", r.action === "write", r.action);
+      check("investments zero → component written as 0", r.fields?.stocks === 0, String(r.fields?.stocks));
+    }
+    {
+      const r = regenerateDay(input({ digitalAssetValue: 0, hasDigitalAssetEvidence: true }));
+      check("digitalAssets zero is valid → write", r.action === "write", r.action);
+      check("digitalAssets zero → component written as 0", r.fields?.crypto === 0, String(r.fields?.crypto));
+    }
+
+    // MIXED validity — one good component must not be written alongside a stale
+    // one: computeSnapshotFields derives netWorth/totalAssets from ALL
+    // components at once, so a partial write would be internally inconsistent.
+    {
+      const r = regenerateDay(input({
+        investmentValue: 8_500, hasInvestmentEvidence: true,          // valid
+        digitalAssetValue: -1, hasDigitalAssetEvidence: true,          // invalid
+      }));
+      check("mixed validity → the WHOLE day skips", r.action === "skip-unsupported", r.action);
+      check("mixed validity → only the invalid component is named",
+        r.reason.startsWith(`${INVALID_VALUATION_REASON_CODE} (digitalAssets)`), r.reason);
+    }
+
+    // Both invalid — deterministic, machine-searchable component ordering.
+    {
+      const r = regenerateDay(input({
+        investmentValue: -5, hasInvestmentEvidence: true,
+        digitalAssetValue: Number.NaN, hasDigitalAssetEvidence: true,
+      }));
+      check("both invalid → deterministic component list",
+        r.reason.startsWith(`${INVALID_VALUATION_REASON_CODE} (investments,digitalAssets)`), r.reason);
+    }
+
+    // PRECEDENCE — the guards above the new one are unchanged.
+    {
+      const r = regenerateDay(input({ existingIsEstimated: false, investmentValue: -1, hasInvestmentEvidence: true }));
+      check("frozen precedence survives an invalid value", r.action === "skip-frozen", r.action);
+    }
+    {
+      const r = regenerateDay(input({ membershipChangedSince: true, investmentValue: -1, hasInvestmentEvidence: true }));
+      check("membership-change precedence survives an invalid value", r.action === "skip-membership-changed", r.action);
+    }
+
+    // AMENDMENT — a consented rebuild may bypass frozen/membership, never this.
+    {
+      const r = regenerateDay(input({
+        isAmendment: true, existingIsEstimated: false,
+        investmentValue: -1_810, hasInvestmentEvidence: true,
+      }));
+      check("an amendment may NOT write an impossible value", r.action === "skip-unsupported", r.action);
+      check("amendment rejection carries the code", r.reason.startsWith(INVALID_VALUATION_REASON_CODE), r.reason);
+    }
+
+    // Distinguishable from ABSENT evidence — the two skips share an action but
+    // must never share a reason, or the upstream defect becomes invisible.
+    {
+      const absent = regenerateDay(input({ hasInvestmentEvidence: false, base: base({ totalInvestments: 9_999 }) }));
+      const invalid = regenerateDay(input({ investmentValue: -1, hasInvestmentEvidence: true }));
+      check("absent-evidence skip does NOT carry the invalid code",
+        absent.action === "skip-unsupported" && !absent.reason.includes(INVALID_VALUATION_REASON_CODE), absent.reason);
+      check("invalid-evidence skip is distinguishable from absent",
+        invalid.reason !== absent.reason);
+    }
+
+    // Healthy evidence is untouched by the new guard.
+    {
+      const r = regenerateDay(input({ investmentValue: 8_500, hasInvestmentEvidence: true }));
+      check("healthy historical evidence still writes", r.action === "write", r.action);
+      check("healthy value unchanged by the guard", r.fields?.stocks === 8_500, String(r.fields?.stocks));
+    }
+
+    // writableRows must exclude an invalid day, so the stored row survives.
+    {
+      const rows = regenerateWindow([
+        input({ date: "2026-06-01" }),
+        input({ date: "2026-06-02", investmentValue: -1, hasInvestmentEvidence: true }),
+      ]);
+      const w = writableRows(rows);
+      check("writableRows excludes the invalid day", w.length === 1 && w[0].date === "2026-06-01");
+    }
   }
 
   if (failures > 0) {
