@@ -10,6 +10,8 @@ This document is authority, not aspiration: every section describes code in `mai
 
 Before DF-2, refresh work started from four entrypoints — the manual refresh route, the daily cron, reconnect (token exchange), and the Plaid webhook — **each with its own orchestration and its own (or no) operational reporting.**
 
+> **The manual refresh route is two paths, not one — and only one was converged in DF-2A.** `POST /api/plaid/refresh` forks on `body.plaidItemId`: a per-connection branch (the Connections menu, the Investments connections card) and an all-items fan-out branch (the global topbar Refresh button and the sidebar "Refresh Data" row — the product's *primary* refresh gesture, which sends no body). DF-2A integrated the per-connection branch. The fan-out, which lives in `refreshAllActiveItemsForUser` (`lib/plaid/refresh.ts`) rather than in the route file, called `refreshPlaidItem` directly with no recorder and no `runId` and therefore wrote **no execution evidence of any kind** — while making four Plaid endpoints' worth of provider calls and writing transactions, position observations, investment events, reconstruction output and a snapshot. It was converged in **OPS-REFRESH-1A** (§C). The gap survived a convergence ratchet because that ratchet grepped the route file for the token `runFullRefresh(`, which the *other* branch supplied. See `docs/plans/V26-INVESTIGATION-MANUAL-REFRESH-TRACEABILITY.md`.
+
 Different orchestration per path was, and remains, *legitimate*: a reconnect genuinely does more than a webhook; cron runs on a 60s budget that a manual refresh does not. The problem was **not** divergent work. The problem was the absence of one immutable authority that could answer, for a single refresh:
 
 - why it began, which item it concerned, which stages it attempted;
@@ -54,6 +56,17 @@ open execution → run caller-owned orchestration → record stage facts → der
 `runFullRefresh()` is the **lifecycle authority — not the manual refresh workflow.** The caller supplies a `trigger`, a `profile`, and a *runner* that drives the recorder through its own stages. A future caller adopts the ledger by supplying those three things; it never forks the lifecycle. Proven: `runFullRefresh` is generic over the runner's result and its recorder handles both throw-based (manual/cron) and never-throws (reconnect/webhook) callers.
 
 **Current profiles:** MANUAL · CRON · RECONNECT · WEBHOOK.
+
+### Fan-outs create one execution PER ITEM, never one for the fan-out (OPS-REFRESH-1A)
+
+A path that refreshes many items is still many refreshes. `refreshAllActiveItemsForUser` — the all-items manual branch — sends each item through `runManualItemRefresh`, which opens **one MANUAL/FULL_REFRESH execution per item**. There is no fan-out-level execution row, and none should be invented: an execution's grain is one item, and a row spanning N items could not carry truthful stages, coverage, or a derived status. (The batch grain is `JobRun`'s job — see §I. This fan-out has no `JobRun` today; giving it one is OPS-REFRESH-1C.)
+
+**One execution per ATTEMPT, not per candidate.** Two populations correctly produce no row, because nothing was attempted and no provider was called:
+
+- items excluded by the route for being on their manual-refresh **cooldown** — they never reach the service;
+- items with **zero active linked accounts**, which are self-healed and skipped before the envelope opens.
+
+**The lock is claimed INSIDE the envelope.** The runner opens the execution, then claims the shared per-item `syncLockedAt` guard; a held lock records `TRANSACTIONS` SKIPPED(`IN_FLIGHT`) and the execution derives SKIPPED (§G), so contention is *observable* rather than silent. This matches cron, webhook, `/sync`, resume-sync and the operator resync. **The per-connection branch still claims its lock OUTSIDE `runFullRefresh` and therefore records nothing on a 409 in-flight** — a known, deliberate residual inconsistency, tracked as OPS-REFRESH-1D. Both branches are ledgered; only their contention evidence differs.
 
 ---
 
@@ -160,9 +173,22 @@ The ledger is an **authority, not a presentation model.** Future consumers — c
 
 **Retry & pagination semantics.** Each external request re-enters the Proxy → a **distinct immutable row** (`attempt` increments per operation within the execution). A failed attempt is never overwritten by a later success: `HOLDINGS` retried via `withPlaidRetry` yields two `ProviderCall` rows (attempt 1 FAILED, attempt 2 SUCCEEDED) while the enclosing `HOLDINGS` stage may still SUCCEED. **`ProviderCall.status` ≠ `RefreshEndpointResult.status`.** Paginated `transactionsSync` yields one row per page (attempt counts pages — a documented consequence of Proxy-level counting; retry-vs-page is not distinguishable there).
 
-**Initially attributed operations** (all Plaid calls that occur inside a refresh context): `transactionsSync` (TRANSACTIONS, paginated), `accountsGet` (BALANCES), `investmentsHoldingsGet` (HOLDINGS, retried), `investmentsTransactionsGet` (INVESTMENT_ACTIVITY / during HOLDINGS on the manual path). **Known uninstrumented** (outside any refresh, by design): `itemPublicTokenExchange`, `accountsGet` in the connect fast-slice, `linkTokenCreate`, `itemRemove`, `webhookVerificationKeyGet`. Cron's investment-event ingest runs **outside** the execution today, so its `investmentsTransactionsGet` is unattributed.
+**Initially attributed operations** (all Plaid calls that occur inside a refresh context): `transactionsSync` (TRANSACTIONS, paginated), `accountsGet` (BALANCES), `investmentsHoldingsGet` (HOLDINGS, retried), `investmentsTransactionsGet` (INVESTMENT_ACTIVITY / during HOLDINGS on the manual path). Since **OPS-REFRESH-1A** this includes the all-items manual fan-out, whose entire provider footprint was previously unattributed because it established no execution context at all. **Known uninstrumented** (outside any refresh, by design): `itemPublicTokenExchange`, `accountsGet` in the connect fast-slice, `linkTokenCreate`, `itemRemove`, `webhookVerificationKeyGet`. Cron's investment-event ingest runs **outside** the execution today, so its `investmentsTransactionsGet` is unattributed.
 
 **Usage integration:** Option A (correlation only). `ApiUsageCounter` is untouched; billing reconciliation between per-attempt `ProviderCall` and daily aggregates is deferred (DF-2D+). **Telemetry-failure behaviour:** provider/application semantics stay authoritative; a `ProviderCall` write failure is logged and swallowed; no false provider result is ever recorded.
+
+---
+
+## N. What this ledger does NOT answer (standing gaps, stated plainly)
+
+Added in OPS-REFRESH-1A, because a doctrine that claims to be "authority, not aspiration" must name what it cannot do. These are **open**, not resolved.
+
+- **Execution identity never reaches a financial row.** No `Transaction`, `PositionObservation`, `InvestmentEvent`, `PositionReconstruction` or `SpaceSnapshot` row records the execution that wrote it, on **any** path. The ledger explains what a refresh *attempted and cost*; it cannot answer *"which refresh changed this number?"* — and because `SpaceSnapshot` is upserted in place on `[spaceId, date]`, even the `createdAt` fallback is unreliable for a row a later run rewrote. `ImportBatch` (a nullable soft reference carried by every writer in the import pipeline) is the only working provenance pattern in the codebase and is the model to copy if this is ever closed. **Do not read `coveredAccountIds` or `RefreshEndpointAccountCoverage` as an answer** — §H forbids it.
+- **Aggregate snapshot regeneration is unattributed.** The all-items fan-out's post-loop `regenerateCompletedSpaces` reads the union of every item's accounts and therefore belongs to no per-item execution. Each item's execution truthfully records SNAPSHOT SKIPPED(`BUDGET`), which discloses the deferral — it does **not** attribute the write. (OPS-REFRESH-1C.)
+- **Reconstruction is not a declared stage.** Position reconstruction runs four call frames below the manual refresh (`syncInvestmentsForItem` → `ingestInvestmentEvents` → `repairReconstructionForAccount`), inside two nested best-effort catches. It deletes and rewrites DERIVED `PositionObservation` rows and upserts `PositionReconstruction` summaries with no stage, no coverage, and no visible failure. By §F's own test — *"would need a distinct diagnosis/action on failure"* — it warrants a stage. (OPS-REFRESH-1B.)
+- **Post-envelope work escapes the ledger.** Cron's wealth-history self-heal and investment-event ingest, and `resume-sync`'s `regenerateWealthHistoryForItem`, run **after** `runFullRefresh` has closed. They rewrite historical `SpaceSnapshot` rows over a MAX-available window with no execution attribution. §M already concedes the cron *provider call*; the *writes* are the wider gap.
+- **`HISTORY_BACKFILL` records no facts.** The stage that owns the largest historical rewrite in the product closes with `recorder.succeed("HISTORY_BACKFILL")` and no `recordsWritten`, no window, no coverage.
+- **Scripts are unledgered.** `run-reconstruction`, `backfill-*`, `regenerate-wealth-history`, `recover-plaid-item-transactions` mutate the same tables with no execution record; afterwards their writes are indistinguishable from the app's.
 
 ---
 
@@ -170,12 +196,13 @@ The ledger is an **authority, not a presentation model.** Future consumers — c
 
 | Slice | What shipped | Commit |
 |---|---|---|
-| **DF-2A** | Canonical execution authority (`RefreshExecution` + `RefreshEndpointResult`), manual refresh integrated | `5b7be94` |
+| **DF-2A** | Canonical execution authority (`RefreshExecution` + `RefreshEndpointResult`), manual refresh **(per-connection branch only)** integrated | `5b7be94` |
 | **DF-2B** | Cron cutover (behavior-preserving) | `dc348a8` |
 | **DF-2C** | Reconnect + webhook adoption; `HISTORY_BACKFILL` stage; trigger doctrine | `5ad2193` |
 | **DF-2D** | `ProviderCall` attribution via the Plaid Proxy + ALS context | *this slice* |
+| **OPS-REFRESH-1A** | All-items manual fan-out converged onto the authority (one MANUAL/FULL_REFRESH execution per eligible item, lock inside the envelope); convergence ratchet made behavioural; §N standing gaps disclosed | `838b516` |
 
-**Runtime-verification limitations:** all four adoptions and ProviderCall are verified by unit tests + typecheck + source-scan; a **real** production refresh writing rows was **not** runtime-observed (background `after()` + prod DB, out of scope). **Deferred:** DF-2B.1 (cron parent correlation), DF-2D+ (usage reconciliation), **DF-2E** (account-level coverage + freshness projection), **DF-2F** (customer/HQ consumers). Reconnect's inline fast-slice remains outside the ledger by doctrine (§J).
+**Runtime-verification limitations:** all four adoptions, ProviderCall, and the OPS-REFRESH-1A fan-out convergence are verified by unit tests + typecheck + source-scan; a **real** production refresh writing rows was **not** runtime-observed (background `after()` + prod DB, out of scope). OPS-REFRESH-1A's per-item envelope is additionally verified *behaviourally* — the real service and the real `runFullRefresh` over an in-memory write client — rather than by source scan alone, which is precisely how the gap it closed went unnoticed. **Deferred:** DF-2B.1 (cron parent correlation), DF-2D+ (usage reconciliation), **DF-2F** (customer/HQ consumers), **OPS-REFRESH-1B/1C/1D** and the §N standing gaps. Reconnect's inline fast-slice remains outside the ledger by doctrine (§J).
 
 ---
 
@@ -183,4 +210,6 @@ The ledger is an **authority, not a presentation model.** Future consumers — c
 
 > Can Fourth Meridian now explain which provider operations, attempts, failures, retries, duration, and usage facts produced a given refresh execution without reconstructing that history from logs?
 
-**Yes, for provider calls made inside a refresh execution** — `ProviderCall` rows joined to their `RefreshExecution` give operation, attempt, status, duration, `request_id`, HTTP status, and Plaid error code per attempt, with retries and pages as distinct rows. **Unattributed surfaces**, stated precisely: connection-establishment calls (`itemPublicTokenExchange`, the connect fast-slice `accountsGet`), `linkTokenCreate`, `itemRemove`, `webhookVerificationKeyGet`, and cron's out-of-execution `investmentsTransactionsGet` — none occur inside a `runFullRefresh` context, so by design they carry no `ProviderCall`. Billable-dollar attribution is not answered here (usage stays in `ApiUsageCounter`; reconciliation deferred).
+**Yes, for provider calls made inside a refresh execution** — `ProviderCall` rows joined to their `RefreshExecution` give operation, attempt, status, duration, `request_id`, HTTP status, and Plaid error code per attempt, with retries and pages as distinct rows. Since OPS-REFRESH-1A that includes **every** customer-initiated refresh, both branches of `POST /api/plaid/refresh`. **Unattributed surfaces**, stated precisely: connection-establishment calls (`itemPublicTokenExchange`, the connect fast-slice `accountsGet`), `linkTokenCreate`, `itemRemove`, `webhookVerificationKeyGet`, and cron's out-of-execution `investmentsTransactionsGet` — none occur inside a `runFullRefresh` context, so by design they carry no `ProviderCall`. Billable-dollar attribution is not answered here (usage stays in `ApiUsageCounter`; reconciliation deferred).
+
+> **A separate question this ledger still cannot answer:** *which refresh changed this position, transaction, or snapshot?* Provider-operation attribution is not financial-row attribution. See §N.

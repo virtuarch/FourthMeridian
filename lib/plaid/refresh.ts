@@ -55,7 +55,7 @@ import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { classifyPlaidErrorForHealth, redactedErrorForLog } from "@/lib/plaid/errors";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
-import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
+import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-lock";
 import { withPlaidRetry } from "@/lib/plaid/retry";
 // DF-2A — the observational stage recorder for the per-item refresh execution
 // ledger. Optional; when absent, refreshPlaidItem behaves byte-identically.
@@ -467,6 +467,93 @@ export async function refreshPlaidItem(
   };
 }
 
+// ── V26 OPS-REFRESH-1A — the all-items fan-out's per-item execution envelope ──
+
+/**
+ * The canonical execution authority, referenced as a TYPE only.
+ *
+ * WHY NOT A PLAIN IMPORT. `lib/plaid/refresh-execution.ts` imports
+ * `refreshPlaidItem` from THIS module, so a static value import here would close
+ * a runtime cycle — the exact hazard `refresh-execution-types.ts` was created to
+ * avoid (see its header). A `typeof import(...)` type is erased at compile time
+ * and creates no runtime edge, while still giving the injection seam the REAL
+ * signature rather than a hand-copied approximation that could silently drift.
+ */
+type RunFullRefreshFn = typeof import("@/lib/plaid/refresh-execution").runFullRefresh;
+
+/** Injection seam for runManualItemRefresh (house DI-default idiom). Production passes nothing. */
+export interface ManualItemRefreshDeps {
+  runFullRefresh?: RunFullRefreshFn;
+  refreshItem?:    typeof refreshPlaidItem;
+  withLock?:       typeof withPlaidItemSyncLock;
+}
+
+/**
+ * V26 OPS-REFRESH-1A — ONE item of the all-items manual fan-out, run inside the
+ * canonical RefreshExecution envelope.
+ *
+ * THE DEFECT THIS CLOSES. `POST /api/plaid/refresh` forks on `body.plaidItemId`.
+ * The single-item branch has run under `runFullRefresh` since DF-2A; the
+ * all-items branch — the one behind the global topbar Refresh button and the
+ * sidebar "Refresh Data" row, i.e. the product's PRIMARY refresh gesture —
+ * called `refreshPlaidItem` directly with no recorder and no runId. It therefore
+ * made four Plaid endpoints' worth of provider calls and wrote transactions,
+ * position observations, investment events, reconstruction output and a space
+ * snapshot while leaving ZERO execution evidence, in direct contradiction of
+ * REFRESH_EXECUTION_DOCTRINE §C ("every canonical refresh attempt produces
+ * exactly one"). See docs/plans/V26-INVESTIGATION-MANUAL-REFRESH-TRACEABILITY.md.
+ *
+ * THE LOCK SITS INSIDE THE ENVELOPE — deliberately, and unlike the single-item
+ * branch, which claims the lock OUTSIDE `runFullRefresh` and therefore records
+ * nothing at all when a sync is already in flight. Inside is what doctrine §G
+ * actually describes ("Lock contention → the runner records TRANSACTIONS
+ * SKIPPED(IN_FLIGHT); nothing else attempted → SKIPPED") and what every other
+ * converged path does (cron, webhook, /sync, resume-sync, operator resync). It
+ * is the only placement under which lock contention is observable. Aligning the
+ * single-item branch is a named follow-up (OPS-REFRESH-1D), not this slice.
+ *
+ * `deferSnapshot: true` is preserved: refreshPlaidItem records SNAPSHOT as
+ * SKIPPED(BUDGET), which is truthful — this fan-out regenerates each affected
+ * Space ONCE after every item finishes (regenerateCompletedSpaces). That
+ * post-loop write is fan-out-grained and remains UNATTRIBUTED; a skipped stage
+ * discloses the deferral, it does not attribute the write. That gap is DRIFT-5.
+ *
+ * Behaviour is otherwise unchanged: the lock is the same shared guard, the
+ * result is the same `SyncLockResult`, and a thrown provider error is rethrown
+ * by `runFullRefresh` as the ORIGINAL object so the caller's health
+ * classification is byte-identical. Ledger writes are best-effort/non-throwing
+ * inside the authority — telemetry never breaks a refresh.
+ */
+export async function runManualItemRefresh(
+  plaidItemDbId: string,
+  deps: ManualItemRefreshDeps = {},
+): Promise<SyncLockResult<RefreshItemResult>> {
+  // Resolved lazily so the cycle described on RunFullRefreshFn stays type-only.
+  // Node caches the module, so this is a map lookup after the first item.
+  const runFullRefresh = deps.runFullRefresh
+    ?? (await import("@/lib/plaid/refresh-execution")).runFullRefresh;
+  const refreshItem = deps.refreshItem ?? refreshPlaidItem;
+  const withLock    = deps.withLock    ?? withPlaidItemSyncLock;
+
+  return runFullRefresh<SyncLockResult<RefreshItemResult>>(
+    { itemId: plaidItemDbId, trigger: "MANUAL", profile: "FULL_REFRESH" },
+    {
+      refresh: async ({ recorder, runId }) => {
+        const lockResult = await withLock(plaidItemDbId, () =>
+          refreshItem(plaidItemDbId, { deferSnapshot: true, recorder, runId }),
+        );
+        if (!lockResult.ok) {
+          // Nothing was attempted — deriveOverallStatus turns a stage set of
+          // pure SKIPPEDs into SKIPPED, so the execution reads as contention
+          // rather than as a failure or a success.
+          recorder.skip("TRANSACTIONS", "PROVIDER", "IN_FLIGHT");
+        }
+        return lockResult;
+      },
+    },
+  );
+}
+
 /**
  * Snapshot orchestration fix — regenerate each affected Space exactly ONCE
  * after an all-items refresh, from the fully-refreshed account set, EXCLUDING
@@ -527,6 +614,30 @@ export interface RefreshSummary {
 }
 
 /**
+ * V26 OPS-REFRESH-1A — injection seam for refreshAllActiveItemsForUser.
+ *
+ * Small function deps rather than a Prisma-shaped client fake: every default is
+ * an existing function in this module, so the fan-out's ORCHESTRATION (which
+ * items are eligible, that each eligible item goes through the execution
+ * envelope exactly once, that the post-loop snapshot regeneration happens once
+ * with the right inputs) becomes executable in a test with no database, no
+ * Plaid, and no fabricated query semantics. Production passes nothing.
+ *
+ * `runItem` is deliberately the whole per-item unit: the fan-out test asserts it
+ * is invoked once per eligible item, and lib/plaid/refresh-fanout.test.ts
+ * separately exercises the REAL runManualItemRefresh to assert the envelope
+ * itself. Neither test alone is sufficient; together they hold the intent.
+ */
+export interface RefreshAllDeps {
+  listActiveItems?:        (userId: string, excludeItemIds: string[]) => Promise<Array<{ id: string; institutionName: string }>>;
+  hasActiveLinkedAccount?: (plaidItemDbId: string) => Promise<boolean>;
+  selfHealOrphaned?:       (plaidItemDbId: string) => Promise<void>;
+  runItem?:                (plaidItemDbId: string) => Promise<SyncLockResult<RefreshItemResult>>;
+  onItemFailure?:          (plaidItemDbId: string, err: unknown) => Promise<void>;
+  regenerateCompleted?:    (succeededAccountIds: string[], failedItemIds: string[]) => Promise<string[]>;
+}
+
+/**
  * Lifecycle fix — docs/bugfixes/BUGFIX_PLAID_REFRESH_ORPHANED_PLAID_ITEMS.md,
  * Step C.
  *
@@ -569,6 +680,39 @@ async function selfHealOrphanedPlaidItem(plaidItemDbId: string): Promise<void> {
   await disconnectPlaidItemIfOrphaned(plaidItemDbId);
 }
 
+/** The fan-out's candidate query. Extracted verbatim for the injection seam below. */
+async function listActiveItemsForUser(
+  userId: string,
+  excludeItemIds: string[],
+): Promise<Array<{ id: string; institutionName: string }>> {
+  return db.plaidItem.findMany({
+    where: {
+      userId,
+      status: PlaidItemStatus.ACTIVE,
+      ...(excludeItemIds.length && { id: { notIn: excludeItemIds } }),
+    },
+    select: { id: true, institutionName: true },
+  });
+}
+
+/**
+ * One item's failure handling — log, classify, and (only on a genuine health
+ * problem) flip the item's health through the CH-2 chokepoint and ping the
+ * owner. Extracted verbatim from the fan-out loop for the injection seam;
+ * behaviour is unchanged.
+ */
+async function reportItemRefreshFailure(plaidItemDbId: string, err: unknown): Promise<void> {
+  console.error(`[refreshAllActiveItemsForUser] refresh failed for PlaidItem ${plaidItemDbId}:`, redactedErrorForLog(err));
+  const health = classifyPlaidErrorForHealth(err);
+  if (health) {
+    // CH-2 — writes the live columns (unchanged) + a durable transition row
+    // only when the effective state actually changed.
+    await setPlaidItemHealth(plaidItemDbId, { status: health.status, errorCode: health.errorCode });
+    // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
+    await notifyItemSyncFailed(plaidItemDbId);
+  }
+}
+
 /**
  * Refreshes every active PlaidItem owned by the given user. One item's
  * failure (e.g. ITEM_LOGIN_REQUIRED) does not block the others — mirrors the
@@ -586,19 +730,27 @@ async function selfHealOrphanedPlaidItem(plaidItemDbId: string): Promise<void> {
  * entirely, so they're never passed to Plaid. Cooldown itself is decided and
  * marked by the caller (lib/plaid/refreshCooldown.ts) — this function only
  * honors the exclusion list; it has no cooldown logic of its own.
+ *
+ * V26 OPS-REFRESH-1A — each item now runs through `runManualItemRefresh`, i.e.
+ * inside the canonical RefreshExecution envelope. One MANUAL/FULL_REFRESH
+ * execution per item that reaches the lock attempt. NOT one per `items.length`:
+ * an orphaned item is self-healed and skipped BEFORE the envelope (nothing was
+ * attempted, no provider call was made), and cooldown-excluded items never
+ * reach this function at all. Both absences are correct under doctrine §C.
  */
 export async function refreshAllActiveItemsForUser(
   userId: string,
-  options?: { excludeItemIds?: string[] }
+  options?: { excludeItemIds?: string[] },
+  deps: RefreshAllDeps = {},
 ): Promise<RefreshSummary> {
-  const items = await db.plaidItem.findMany({
-    where: {
-      userId,
-      status: PlaidItemStatus.ACTIVE,
-      ...(options?.excludeItemIds?.length && { id: { notIn: options.excludeItemIds } }),
-    },
-    select: { id: true, institutionName: true },
-  });
+  const listItems           = deps.listActiveItems        ?? listActiveItemsForUser;
+  const hasLinkedAccount    = deps.hasActiveLinkedAccount ?? hasActiveLinkedAccount;
+  const selfHealOrphaned    = deps.selfHealOrphaned       ?? selfHealOrphanedPlaidItem;
+  const runItem             = deps.runItem                ?? runManualItemRefresh;
+  const onItemFailure       = deps.onItemFailure          ?? reportItemRefreshFailure;
+  const regenerateCompleted = deps.regenerateCompleted    ?? regenerateCompletedSpaces;
+
+  const items = await listItems(userId, options?.excludeItemIds ?? []);
 
   const results: RefreshItemResult[] = [];
   let totalAccountsUpdated      = 0;
@@ -615,11 +767,11 @@ export async function refreshAllActiveItemsForUser(
   const failedItemIds: string[] = [];
 
   for (const item of items) {
-    if (!(await hasActiveLinkedAccount(item.id))) {
+    if (!(await hasLinkedAccount(item.id))) {
       // No active linked account left for this item — not a failure, just
       // done. Self-heal so it drops out of this query on every later call,
       // and skip straight to the next item without calling Plaid.
-      await selfHealOrphanedPlaidItem(item.id);
+      await selfHealOrphaned(item.id);
       continue;
     }
 
@@ -629,8 +781,13 @@ export async function refreshAllActiveItemsForUser(
     // item's cursor. A skip here isn't a failure — it's deferred to whichever
     // run is already in flight, so it's excluded from both succeededAccountIds
     // and failedItemIds (nothing to snapshot, nothing to mark unhealthy).
+    //
+    // V26 OPS-REFRESH-1A — the lock now lives INSIDE runManualItemRefresh's
+    // execution envelope (see that function), so contention is recorded as a
+    // SKIPPED execution instead of vanishing. The result this loop consumes,
+    // and everything it does with it, is unchanged.
     try {
-      const lockResult = await withPlaidItemSyncLock(item.id, () => refreshPlaidItem(item.id, { deferSnapshot: true }));
+      const lockResult = await runItem(item.id);
       if (!lockResult.ok) {
         results.push({
           plaidItemId:          item.id,
@@ -655,16 +812,10 @@ export async function refreshAllActiveItemsForUser(
       totalTransactionsRemoved  += r.transactionsRemoved;
       succeededAccountIds.push(...(r.updatedAccountIds ?? []));
     } catch (e) {
-      console.error(`[refreshAllActiveItemsForUser] refresh failed for PlaidItem ${item.id}:`, redactedErrorForLog(e));
+      // runFullRefresh rethrows the ORIGINAL error object, so classification
+      // here sees exactly what refreshPlaidItem threw — unchanged by the ledger.
       failedItemIds.push(item.id);
-      const health = classifyPlaidErrorForHealth(e);
-      if (health) {
-        // CH-2 — writes the live columns (unchanged) + a durable transition row
-        // only when the effective state actually changed.
-        await setPlaidItemHealth(item.id, { status: health.status, errorCode: health.errorCode });
-        // OPS-3 S5 Wave 3 — ping the owner (suppress-deduped; best-effort).
-        await notifyItemSyncFailed(item.id);
-      }
+      await onItemFailure(item.id, e);
       results.push({
         plaidItemId:          item.id,
         institution:          item.institutionName,
@@ -683,9 +834,16 @@ export async function refreshAllActiveItemsForUser(
   // Regenerate once per affected Space after ALL institutions are done,
   // excluding any Space touched by a failed item (best-effort; never fails the
   // refresh). This replaces the per-item regeneration removed above.
+  //
+  // V26 OPS-REFRESH-1A — DRIFT-5, stated rather than papered over: this write is
+  // fan-out-grained (it reads the UNION of every item's accounts) and therefore
+  // belongs to no per-item execution. It remains UNATTRIBUTED. Each item's
+  // execution truthfully records SNAPSHOT as SKIPPED(BUDGET), which discloses
+  // the deferral without claiming to attribute the write. Giving this write an
+  // owner is OPS-REFRESH-1C.
   let snapshottedSpaceIds: string[] = [];
   try {
-    snapshottedSpaceIds = await regenerateCompletedSpaces(succeededAccountIds, failedItemIds);
+    snapshottedSpaceIds = await regenerateCompleted(succeededAccountIds, failedItemIds);
   } catch (snapErr) {
     console.error("[refreshAllActiveItemsForUser] post-loop snapshot regeneration failed (non-fatal):", snapErr);
   }

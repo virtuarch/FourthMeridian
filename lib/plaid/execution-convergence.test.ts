@@ -53,6 +53,29 @@ const VIA_WRAPPER = [
 function main() {
   console.log("convergence · every refresh-equivalent path reaches the authority");
   {
+    // V26 OPS-REFRESH-1A — THIS CENSUS ONCE PASSED OVER A REAL GAP.
+    //
+    // `app/api/plaid/refresh/route.ts` forks on `body.plaidItemId`. The
+    // single-item branch has used runFullRefresh since DF-2A, so the token check
+    // below was satisfied — while the all-items branch (the topbar Refresh
+    // button, the product's primary refresh gesture) called refreshPlaidItem
+    // through refreshAllActiveItemsForUser, in a DIFFERENT FILE this list never
+    // read, with no recorder, no runId and no execution row at all.
+    //
+    // The lesson is not "add another file to the list". A `runFullRefresh`
+    // appearing in a file proves a call site exists; it cannot prove that EVERY
+    // branch reaches it. The intent — "every per-item refresh performed by the
+    // fan-out executes through the envelope" — is asserted BEHAVIOURALLY in
+    // lib/plaid/refresh-fanout.test.ts, which runs the real service over
+    // injected collaborators and fails if the envelope is missing OR bypassed.
+    // The pointer below keeps that guard discoverable from here; it does not
+    // pretend to be the guard itself.
+    check(
+      "the all-items fan-out's convergence is asserted behaviourally (see refresh-fanout.test.ts)",
+      /runManualItemRefresh/.test(strip("lib/plaid/refresh.ts"))
+        && /refreshAllActiveItemsForUser/.test(strip("lib/plaid/refresh-fanout.test.ts")),
+    );
+
     for (const p of CONVERGED) {
       const src = strip(p.file);
       check(`${p.file}: uses runFullRefresh`, /runFullRefresh[<(]/.test(src));
