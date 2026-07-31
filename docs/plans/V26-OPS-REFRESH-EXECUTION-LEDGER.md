@@ -47,7 +47,7 @@ query, any schema change, any migration, any data mutation.
 | | |
 |---|---|
 | **Status** | **committed** — DRIFT-1 closed; DRIFT-2..5 explicitly NOT addressed |
-| **Commit** | `838b516` |
+| **Commit** | `980657d` |
 | **Schema / migration** | **none.** No new column, no FK, no migration. |
 | **Objective** | Every per-item refresh inside the all-items manual fan-out executes through the canonical `runFullRefresh` envelope. |
 | **Approved shape** | **Option 1 — the sync lock sits INSIDE the execution envelope.** The doctrine-conformant placement (§G) and the only one under which lock contention is observable. Matches cron, webhook, `/sync`, resume-sync and the operator resync. Branch A's lock-outside placement was **deliberately not aligned** in this slice → OPS-REFRESH-1D. |
@@ -101,7 +101,7 @@ query, any schema change, any migration, any data mutation.
 
 | Check | Result |
 |---|---|
-| `npm test` | **408/408** (407 before + this file) |
+| `npm test` | **408/408** at validation (407 before + this file). A later run in the same working tree reads 409/409 — an unrelated work-in-progress test file (`lib/investments/quantity-replay.core.test.ts`) appeared during the session; it is **not** part of this commit. |
 | `npx tsc --noEmit` | **0 errors** outside the gitignored `prototype/` tree (pre-existing there, untouched) |
 | `npm run lint` | **0 errors**, 7 pre-existing warnings — none in changed files |
 | Focused | `refresh-fanout` · `execution-convergence` · `refresh-execution` · `sync-lock` · `freshness-pipeline` · `producer-convergence` · `admission-boundary` — all PASS |

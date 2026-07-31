@@ -5,7 +5,7 @@ ledger was modified.
 
 > ## ⚠️ DRIFT-1 IS RESOLVED — read this document as a historical record of the defect
 >
-> **OPS-REFRESH-1A (`838b516`)** put every per-item refresh in the all-items
+> **OPS-REFRESH-1A (`980657d`)** put every per-item refresh in the all-items
 > manual fan-out inside the canonical `runFullRefresh` envelope: one
 > MANUAL/FULL_REFRESH `RefreshExecution` per eligible item, the sync lock claimed
 > **inside** the envelope so contention records a SKIPPED execution, `deferSnapshot`

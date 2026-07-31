@@ -200,7 +200,7 @@ Added in OPS-REFRESH-1A, because a doctrine that claims to be "authority, not as
 | **DF-2B** | Cron cutover (behavior-preserving) | `dc348a8` |
 | **DF-2C** | Reconnect + webhook adoption; `HISTORY_BACKFILL` stage; trigger doctrine | `5ad2193` |
 | **DF-2D** | `ProviderCall` attribution via the Plaid Proxy + ALS context | *this slice* |
-| **OPS-REFRESH-1A** | All-items manual fan-out converged onto the authority (one MANUAL/FULL_REFRESH execution per eligible item, lock inside the envelope); convergence ratchet made behavioural; §N standing gaps disclosed | `838b516` |
+| **OPS-REFRESH-1A** | All-items manual fan-out converged onto the authority (one MANUAL/FULL_REFRESH execution per eligible item, lock inside the envelope); convergence ratchet made behavioural; §N standing gaps disclosed | `980657d` |
 
 **Runtime-verification limitations:** all four adoptions, ProviderCall, and the OPS-REFRESH-1A fan-out convergence are verified by unit tests + typecheck + source-scan; a **real** production refresh writing rows was **not** runtime-observed (background `after()` + prod DB, out of scope). OPS-REFRESH-1A's per-item envelope is additionally verified *behaviourally* — the real service and the real `runFullRefresh` over an in-memory write client — rather than by source scan alone, which is precisely how the gap it closed went unnoticed. **Deferred:** DF-2B.1 (cron parent correlation), DF-2D+ (usage reconciliation), **DF-2F** (customer/HQ consumers), **OPS-REFRESH-1B/1C/1D** and the §N standing gaps. Reconnect's inline fast-slice remains outside the ledger by doctrine (§J).
 
