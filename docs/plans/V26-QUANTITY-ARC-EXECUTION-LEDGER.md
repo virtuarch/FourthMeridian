@@ -22,7 +22,9 @@ PRICE solved the price term. QUANTITY must produce `Historical Quantity(t)`
 | QUANTITY-1B — normalized quantity-event contract | committed | `faed5eb` | `quantity-event.core.ts`, `quantity-event.core.test.ts`, `scripts/check-quantity-replay-readiness.ts` |
 | QUANTITY-1C — evidence-aware replay | committed | `3d047fd` | `lib/investments/quantity-replay.core.ts`, `lib/investments/quantity-replay.core.test.ts` |
 | QUANTITY-1C.1 — timeline coverage and anchor representation | committed | `c97cf2d` | same two files |
-| QUANTITY-1D — reconciliation evidence and candidate explanations | planned | — | — |
+| QUANTITY-1D — reconciliation evidence and candidate explanations | committed | `c67c6f1` | `quantity-reconciliation.core.ts`, `quantity-reconciliation.core.test.ts` |
+| QUANTITY-1E — event-stream completeness binding | **BLOCKED** — no ingestion-coverage record exists to bind to (§7) | — | — |
+| QUANTITY-1F — quantity timeline read authority | blocked behind 1E | — | — |
 
 No schema change, no migration, no DB binding, no valuation integration, no
 snapshot regeneration, and no production mutation has occurred in any slice of
@@ -351,3 +353,67 @@ regeneration, no writes, no provider calls. The real-corpus pass ran against the
 not committed) and asserted row counts unchanged on exit: events 50, positions
 159, snapshots 1679. QUANTITY-1C.1 was validated the same way, with the same
 result.
+
+
+---
+
+## 7 · QUANTITY-1E is blocked: there is no ingestion record to bind to
+
+QUANTITY-1C.1 introduced `EventStreamCompleteness` as a pure input and recorded
+that "the DB binding that determines it remains later work". QUANTITY-1E was to
+be that binding. **It cannot be written**, because the fact it would read is not
+stored anywhere.
+
+### Evidence
+
+`lib/investments/investment-event-ingest.ts:52`
+
+```ts
+/** 24-month request window ending today (Plaid's supported historical depth). */
+export function computeIngestWindow(now: Date): { start: string; end: string } {
+  const start = new Date(Date.UTC(now.getUTCFullYear() - 2, now.getUTCMonth(), now.getUTCDate()));
+  return { start: ymd(start), end: ymd(now) };
+}
+```
+
+1. **The window is derived from `now` and never persisted.** `computeIngestWindow`
+   has exactly two references in the entire repository — its definition and its
+   single call site at `:144`. Nothing writes the window, the outcome, or the
+   earliest date any successful pull reached.
+2. **No schema field records investment-event coverage.** `PlaidItem` carries
+   `cursor`, `lastSyncedAt`, `syncIncompleteAt`, `completedSyncCount` — all of
+   which describe the TRANSACTIONS sync. There is no investment equivalent.
+3. **The window slides.** Complete over `[2024-08, 2026-08]` on one day, over
+   `[2024-09, 2026-09]` the next. Rows older than 24 months are never re-fetched
+   and never deleted, so the stored corpus is the union of every window ever
+   pulled — and nothing records which windows those were.
+4. **The corpus does not fill the nominal window.** Stored events span
+   `2025-07-31 → 2026-07-27`, roughly twelve months against a nominal
+   twenty-four. Either Plaid returned only that much or a pull was partial.
+   **Nothing distinguishes those, and nothing records which happened.**
+5. `INVESTMENT_EVENTS_ENABLED` is a kill switch. Any period during which it was
+   off has no events, and nothing records that either.
+6. `ImportBatch` holds **0 rows**; all 50 events are `source=plaid`.
+
+### Why this cannot be worked around
+
+The only two implementations available without a schema change are both wrong:
+
+- **Infer completeness from the events.** Explicitly forbidden by the pinned
+  1C.1 contract, and unsound for the reason that motivated it: a stream with no
+  events looks identical whether nothing happened or nothing was imported.
+- **Return UNKNOWN unconditionally.** Correct, but it ships an authority that
+  can never return anything else — an elaborate constant.
+
+### What 1E actually requires
+
+An ingestion-coverage ledger written at ingest time, recording per (item,
+account) the window requested, the window confirmed returned, the outcome, and
+the flag state. That is **schema + migration + writes on the ingestion path** —
+all three explicitly excluded from every slice of this arc so far, and a change
+to the ingest path, which is a revision of earlier work rather than a new layer
+on top of it.
+
+QUANTITY-1F (a read authority assembling anchors, events and completeness from
+the database) is blocked behind it: without 1E it could only ever produce the
+UNKNOWN timelines the corpus scripts already produce.
